@@ -1,0 +1,17 @@
+[package]
+name = "beamr-core"
+description = "Core abstractions for the BEAMR VST3 WebView framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# SysEx buffer size options (default is 512 bytes)
+sysex-256 = []
+sysex-1024 = []
+sysex-2048 = []
+
+[dependencies]
+# No external dependencies - pure Rust abstractions

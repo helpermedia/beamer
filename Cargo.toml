@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "crates/beamr-core",
+    "crates/beamr-vst3",
+    "crates/beamr",
+    "examples/br-gain",
+    "examples/br-midi-transform",
+    "xtask",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/beamraudio/beamr"
+
+[workspace.dependencies]
+vst3 = "0.3"
+log = "0.4"
+
+# Internal crates
+beamr-core = { path = "crates/beamr-core" }
+beamr-vst3 = { path = "crates/beamr-vst3" }
+beamr = { path = "crates/beamr" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

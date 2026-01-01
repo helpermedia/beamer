@@ -1,0 +1,26 @@
+[package]
+name = "beamr-vst3"
+description = "VST3 implementation layer for the BEAMR framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+## Enable heap-backed fallback for SysEx overflow.
+##
+## When the fixed-size SysEx output pool is exhausted, overflow messages are
+## stored in a heap-allocated buffer and emitted at the start of the next
+## audio block. This guarantees no SysEx data is lost, but may cause heap
+## allocations during audio processing, breaking strict real-time guarantees.
+##
+## Only enable this if your plugin requires reliable SysEx delivery and you
+## accept occasional allocations in the audio thread.
+sysex-heap-fallback = []
+
+[dependencies]
+beamr-core = { workspace = true }
+vst3 = { workspace = true }
+log = { workspace = true }
+com-scrape-types = "0.1"

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BR Gain</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e8e8e8;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            user-select: none;
+        }
+
+        .container {
+            text-align: center;
+            padding: 40px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 300;
+            margin-bottom: 40px;
+            color: #94bbe9;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+        }
+
+        .knob-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .knob {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #2a2a4a, #1e1e3a);
+            box-shadow:
+                10px 10px 30px rgba(0, 0, 0, 0.5),
+                -5px -5px 20px rgba(100, 100, 140, 0.1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .knob::before {
+            content: '';
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            background: conic-gradient(
+                from 135deg,
+                #94bbe9 0deg,
+                #e94560 calc(var(--rotation, 135) * 1deg),
+                #333 calc(var(--rotation, 135) * 1deg),
+                #333 270deg
+            );
+            position: absolute;
+        }
+
+        .knob-inner {
+            width: 160px;
+            height: 160px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #2a2a4a, #1a1a30);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1;
+            box-shadow: inset 2px 2px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .value-display {
+            font-size: 2rem;
+            font-weight: 600;
+            color: #94bbe9;
+        }
+
+        .label {
+            font-size: 1.2rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .indicator {
+            position: absolute;
+            width: 4px;
+            height: 30px;
+            background: #e94560;
+            top: 10px;
+            left: 50%;
+            transform-origin: bottom center;
+            transform: translateX(-50%) rotate(calc((var(--rotation, 135) - 135) * 1deg));
+            border-radius: 2px;
+            z-index: 2;
+        }
+
+        .footer {
+            margin-top: 40px;
+            font-size: 0.9rem;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BR Gain</h1>
+        <div class="knob-container">
+            <div class="knob" id="gainKnob" style="--rotation: 135;">
+                <div class="indicator"></div>
+                <div class="knob-inner">
+                    <span class="value-display" id="gainValue">0.0 dB</span>
+                </div>
+            </div>
+            <span class="label">Gain</span>
+        </div>
+        <div class="footer">
+            BEAMR Framework &bull; WebView GUI Demo
+        </div>
+    </div>
+
+    <script>
+        const knob = document.getElementById('gainKnob');
+        const valueDisplay = document.getElementById('gainValue');
+
+        let isDragging = false;
+        let startY = 0;
+        let currentValue = 0; // 0 dB = unity gain (1.0 linear)
+
+        const minDb = -60;
+        const maxDb = 12;
+
+        function dbToLinear(db) {
+            return Math.pow(10, db / 20);
+        }
+
+        function valueToRotation(db) {
+            const normalized = (db - minDb) / (maxDb - minDb);
+            return 135 + normalized * 270;
+        }
+
+        function updateDisplay(db) {
+            knob.style.setProperty('--rotation', valueToRotation(db));
+            valueDisplay.textContent = db.toFixed(1) + ' dB';
+
+            // Send to plugin (when IPC is implemented)
+            // window.beamr?.setParameter('gain', dbToLinear(db));
+        }
+
+        knob.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startY = e.clientY;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+
+            const delta = startY - e.clientY;
+            startY = e.clientY;
+
+            currentValue = Math.max(minDb, Math.min(maxDb, currentValue + delta * 0.5));
+            updateDisplay(currentValue);
+        });
+
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        // Double-click to reset
+        knob.addEventListener('dblclick', () => {
+            currentValue = 0;
+            updateDisplay(currentValue);
+        });
+
+        // Initialize
+        updateDisplay(currentValue);
+    </script>
+</body>
+</html>

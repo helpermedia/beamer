@@ -1,0 +1,11 @@
+[package]
+name = "beamr"
+description = "VST3 framework for Rust - convenience re-exports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+beamr-core = { workspace = true }
+beamr-vst3 = { workspace = true }
