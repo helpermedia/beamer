@@ -26,7 +26,7 @@
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut AudioBuffer) {
+//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
 //!         // Your DSP here
 //!     }
 //! }
@@ -55,8 +55,20 @@ pub use beamr_vst3 as vst3_impl;
 pub mod prelude {
     // Core traits and types
     pub use beamr_core::{
-        AudioBuffer, AudioProcessor, BusInfo, BusType, EditorConstraints, EditorDelegate, NoEditor,
-        NoParams, ParamFlags, ParamInfo, Parameters, Plugin, PluginError, PluginResult, Rect, Size,
+        // Buffer types
+        AuxiliaryBuffers, AuxInput, AuxOutput, Buffer,
+        // Traits
+        AudioProcessor, EditorDelegate, Parameters, Plugin,
+        // Bus configuration
+        BusInfo, BusType,
+        // Editor types
+        EditorConstraints, NoEditor,
+        // Parameter types
+        NoParams, ParamFlags, ParamInfo,
+        // Error types
+        PluginError, PluginResult,
+        // Geometry
+        Rect, Size,
         // MIDI types
         MidiBuffer, MidiChannel, MidiEvent, MidiEventKind, MidiNote, NoteId, NoteOff, NoteOn,
     };

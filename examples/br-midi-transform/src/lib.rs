@@ -54,9 +54,9 @@ impl AudioProcessor for MidiTransformProcessor {
         // No sample-rate dependent state needed
     }
 
-    fn process(&mut self, buffer: &mut AudioBuffer) {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
         // Pass audio through unchanged
-        buffer.copy_input_to_output();
+        buffer.copy_to_output();
     }
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {

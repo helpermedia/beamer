@@ -5,6 +5,7 @@
 //! 2. Implement the `Parameters` trait for host communication
 //! 3. Combine them with the `Plugin` trait
 //! 4. Export using `Vst3Processor<T>` wrapper
+//! 5. Use multi-bus support for sidechain ducking
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -182,19 +183,53 @@ impl AudioProcessor for GainProcessor {
         // No sample-rate dependent state for a simple gain plugin
     }
 
-    fn process(&mut self, buffer: &mut AudioBuffer) {
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
         let gain = self.params.gain_linear();
-        let num_samples = buffer.num_samples();
 
-        // Process each channel
-        let num_channels = buffer.num_input_channels().min(buffer.num_output_channels());
+        // Calculate sidechain level for ducking (if sidechain is connected)
+        // Using the new AuxInput::rms() helper for cleaner code
+        let sidechain_level = aux
+            .sidechain()
+            .map(|sc| {
+                // Average RMS across all sidechain channels
+                let mut sum = 0.0f32;
+                for ch in 0..sc.num_channels() {
+                    sum += sc.rms(ch);
+                }
+                if sc.num_channels() > 0 {
+                    sum / sc.num_channels() as f32
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
 
-        for ch in 0..num_channels {
-            // Process sample by sample to avoid borrow conflicts
-            for i in 0..num_samples {
-                let input_sample = buffer.input(ch)[i];
-                buffer.output(ch)[i] = input_sample * gain;
+        // Simple ducking: reduce gain when sidechain has signal
+        // Ducking amount: 0 = no ducking, 1 = full ducking
+        let duck_amount = (sidechain_level * 4.0).min(1.0);
+        let effective_gain = gain * (1.0 - duck_amount * 0.8); // Max 80% reduction
+
+        // Process using zip_channels() iterator for cleaner code
+        for (input, output) in buffer.zip_channels() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                *o = *i * effective_gain;
             }
+        }
+    }
+
+    // =========================================================================
+    // Multi-Bus Configuration
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        2 // Main stereo input + Sidechain input
+    }
+
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        match index {
+            0 => Some(BusInfo::stereo("Input")),
+            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
+            _ => None,
         }
     }
 

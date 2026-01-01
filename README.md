@@ -11,6 +11,7 @@ BEAMR provides a clean separation between plugin logic and the VST3 format detai
 ## Features
 
 - **Format-agnostic core** - Plugin logic is independent of VST3 specifics
+- **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
 - **Complete MIDI support** - All VST3 SDK 3.8.0 MIDI features including MPE, Note Expression, and MIDI 2.0
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore
@@ -59,11 +60,11 @@ struct MyPlugin {
 }
 
 impl AudioProcessor for MyPlugin {
-    fn process(&mut self, buffer: &mut AudioBuffer) {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
         let gain = f64::from_bits(self.params.gain.load(Ordering::Relaxed)) as f32;
-        for ch in 0..buffer.num_output_channels() {
-            for i in 0..buffer.num_samples() {
-                buffer.output(ch)[i] = buffer.input(ch)[i] * gain;
+        for (input, output) in buffer.zip_channels() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                *o = *i * gain;
             }
         }
     }
@@ -99,6 +100,23 @@ cargo clippy --workspace
 
 - **br-gain** - Simple gain effect plugin
 - **br-midi-transform** - MIDI instrument that transposes notes
+
+## Multi-Bus Audio
+
+BEAMR separates main bus and auxiliary buses for sidechain and multi-output plugins:
+
+```rust
+fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
+    // Sidechain input (e.g., for compression keying)
+    if let Some(sidechain) = aux.sidechain() {
+        let level = sidechain.rms(0);
+        // Use sidechain level...
+    }
+
+    // Main bus processing
+    buffer.copy_to_output();
+}
+```
 
 ## MIDI Support
 

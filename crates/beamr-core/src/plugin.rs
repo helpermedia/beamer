@@ -1,6 +1,6 @@
 //! Core plugin trait definitions.
 
-use crate::buffer::AudioBuffer;
+use crate::buffer::{AuxiliaryBuffers, Buffer};
 use crate::error::PluginResult;
 use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
@@ -112,17 +112,45 @@ pub trait AudioProcessor: Send {
     /// Process an audio buffer.
     ///
     /// This is the main DSP entry point, called on the audio thread for each
-    /// block of audio. The buffer provides both input samples and mutable
-    /// output buffers.
+    /// block of audio. The buffer provides input samples and mutable output
+    /// buffers for the main bus.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - Main audio bus (stereo/surround input and output)
+    /// * `aux` - Auxiliary buses (sidechain, aux sends) - ignore if not needed
     ///
     /// # Real-Time Safety
     ///
     /// This method must be real-time safe. Do not allocate, lock mutexes,
     /// or perform any operation with unbounded execution time.
     ///
-    /// # Arguments
-    /// * `buffer` - Audio buffer containing input samples and output buffers
-    fn process(&mut self, buffer: &mut AudioBuffer);
+    /// # Example: Simple Gain
+    ///
+    /// ```ignore
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
+    ///     let gain = self.params.gain();
+    ///     for (input, output) in buffer.zip_channels() {
+    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
+    ///             *o = *i * gain;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Example: Sidechain Ducker
+    ///
+    /// ```ignore
+    /// fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
+    ///     let duck = aux.sidechain()
+    ///         .map(|sc| (sc.rms(0) * 4.0).min(1.0))
+    ///         .unwrap_or(0.0);
+    ///
+    ///     buffer.copy_to_output();
+    ///     buffer.apply_output_gain(1.0 - duck * 0.8);
+    /// }
+    /// ```
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers);
 
     /// Called when the plugin is activated or deactivated.
     ///
@@ -268,7 +296,7 @@ pub trait AudioProcessor: Send {
 /// # Example
 ///
 /// ```ignore
-/// use beamr_core::{Plugin, AudioProcessor, AudioBuffer, Parameters};
+/// use beamr_core::{Plugin, AudioProcessor, Buffer, AuxiliaryBuffers, Parameters};
 ///
 /// pub struct MyGain {
 ///     params: MyGainParams,
@@ -277,11 +305,11 @@ pub trait AudioProcessor: Send {
 /// impl AudioProcessor for MyGain {
 ///     fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
 ///
-///     fn process(&mut self, buffer: &mut AudioBuffer) {
+///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
 ///         let gain = self.params.gain_linear();
-///         for ch in 0..buffer.num_output_channels() {
-///             for sample in buffer.output(ch) {
-///                 *sample *= gain;
+///         for (input, output) in buffer.zip_channels() {
+///             for (i, o) in input.iter().zip(output.iter_mut()) {
+///                 *o = *i * gain;
 ///             }
 ///         }
 ///     }

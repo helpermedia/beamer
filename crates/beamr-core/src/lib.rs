@@ -17,7 +17,8 @@
 //!
 //! - [`Size`] - 2D size in pixels
 //! - [`Rect`] - Rectangle in pixels
-//! - [`AudioBuffer`] - Safe audio buffer wrapper
+//! - [`Buffer`] - Main audio I/O buffer
+//! - [`AuxiliaryBuffers`] - Sidechain and aux bus access
 //! - [`BusInfo`] - Audio bus configuration
 //! - [`ParamInfo`] - Parameter metadata
 //! - [`PluginError`] - Error types
@@ -32,7 +33,8 @@ pub mod plugin;
 pub mod types;
 
 // Re-exports for convenience
-pub use buffer::AudioBuffer;
+#[allow(deprecated)]
+pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
 pub use midi::{
