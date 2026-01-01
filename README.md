@@ -1,6 +1,8 @@
 # BEAMR
 
-A Rust framework for building VST3 audio plugins with WebView-based GUIs.
+A Rust framework for building VST3 audio plugins.
+
+Like beams connect notes in musical notation, BEAMR bridges VST3's C++ COM interfaces with safe Rust abstractions and your plugin logic with WebView GUIs.
 
 ## Overview
 
@@ -13,6 +15,14 @@ BEAMR provides a clean separation between plugin logic and the VST3 format detai
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore
 - **WebView GUI** (planned) - Modern web-based plugin interfaces
+
+## Platform Support
+
+| Platform | Status |
+|----------|--------|
+| macOS (arm64) | Tested |
+| Windows | Untested |
+| Linux | Untested |
 
 ## Crates
 
