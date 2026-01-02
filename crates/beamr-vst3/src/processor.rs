@@ -30,7 +30,7 @@ use beamr_core::{
     FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
     ProcessContext as CoreProcessContext, ScaleInfo, SysEx, Transport,
-    MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS,
+    MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
@@ -339,6 +339,200 @@ impl ConversionBuffers {
     }
 }
 
+// =============================================================================
+// Bus Limit Validation
+// =============================================================================
+
+/// Validate that a plugin's bus configuration doesn't exceed compile-time limits.
+///
+/// Returns `Ok(())` if valid, or `Err` with a descriptive message if limits are exceeded.
+fn validate_bus_limits<P: Plugin>(plugin: &P) -> Result<(), String> {
+    let num_inputs = plugin.input_bus_count();
+    let num_outputs = plugin.output_bus_count();
+
+    // Validate bus counts
+    if num_inputs > MAX_BUSES {
+        return Err(format!(
+            "Plugin declares {} input buses, but MAX_BUSES is {}",
+            num_inputs, MAX_BUSES
+        ));
+    }
+    if num_outputs > MAX_BUSES {
+        return Err(format!(
+            "Plugin declares {} output buses, but MAX_BUSES is {}",
+            num_outputs, MAX_BUSES
+        ));
+    }
+
+    // Validate channel counts for each input bus
+    for i in 0..num_inputs {
+        if let Some(info) = plugin.input_bus_info(i) {
+            let channels = info.channel_count as usize;
+            if channels > MAX_CHANNELS {
+                return Err(format!(
+                    "Input bus {} declares {} channels, but MAX_CHANNELS is {}",
+                    i, channels, MAX_CHANNELS
+                ));
+            }
+        }
+    }
+
+    // Validate channel counts for each output bus
+    for i in 0..num_outputs {
+        if let Some(info) = plugin.output_bus_info(i) {
+            let channels = info.channel_count as usize;
+            if channels > MAX_CHANNELS {
+                return Err(format!(
+                    "Output bus {} declares {} channels, but MAX_CHANNELS is {}",
+                    i, channels, MAX_CHANNELS
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that a speaker arrangement doesn't exceed MAX_CHANNELS.
+///
+/// Returns `Ok(())` if valid, or `Err` with a descriptive message if exceeded.
+fn validate_speaker_arrangement(arrangement: SpeakerArrangement) -> Result<(), String> {
+    let channel_count = arrangement.count_ones() as usize;
+    if channel_count > MAX_CHANNELS {
+        return Err(format!(
+            "Speaker arrangement has {} channels, but MAX_CHANNELS is {}",
+            channel_count, MAX_CHANNELS
+        ));
+    }
+    Ok(())
+}
+
+// =============================================================================
+// ProcessBufferStorage - Pre-allocated channel pointer storage
+// =============================================================================
+
+use beamr_core::sample::Sample;
+
+/// Pre-allocated storage for channel pointers during audio processing.
+///
+/// This struct holds Vec storage with pre-reserved capacity based on the
+/// plugin's BusInfo declarations. During process(), we use clear()+push()
+/// which is O(1) and never allocates since capacity is pre-reserved.
+///
+/// Generic over sample type S (f32 or f64) to avoid code duplication.
+///
+/// # Real-Time Safety
+///
+/// After `allocate()` is called in `setupProcessing()`:
+/// - `clear()` is O(1), sets len=0 without deallocating
+/// - `push()` never allocates because capacity is sufficient
+/// - No heap operations occur in the audio processing path
+struct ProcessBufferStorage<S: Sample> {
+    /// Main bus input channel pointers
+    main_inputs: Vec<*const S>,
+    /// Main bus output channel pointers
+    main_outputs: Vec<*mut S>,
+    /// Auxiliary bus input channel pointers (per-bus Vec)
+    aux_inputs: Vec<Vec<*const S>>,
+    /// Auxiliary bus output channel pointers (per-bus Vec)
+    aux_outputs: Vec<Vec<*mut S>>,
+}
+
+// Safety: ProcessBufferStorage is Send because:
+// - Raw pointers point to host-owned audio buffers valid only during process()
+// - The struct is only accessed from the audio thread
+// - Pointers are never dereferenced outside the process() call scope
+unsafe impl<S: Sample> Send for ProcessBufferStorage<S> {}
+
+// Safety: ProcessBufferStorage is Sync because:
+// - Raw pointers are only populated and cleared during process()
+// - VST3 guarantees process() is called from one thread at a time
+// - No shared mutable state is accessed across threads
+unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
+
+impl<S: Sample> ProcessBufferStorage<S> {
+    /// Create empty storage (no capacity reserved).
+    fn new() -> Self {
+        Self {
+            main_inputs: Vec::new(),
+            main_outputs: Vec::new(),
+            aux_inputs: Vec::new(),
+            aux_outputs: Vec::new(),
+        }
+    }
+
+    /// Pre-allocate storage based on plugin's bus declarations.
+    ///
+    /// Reserves Vec capacity for the exact channel counts declared by the plugin.
+    /// This ensures that subsequent push() calls in process() never allocate.
+    ///
+    /// # Panics
+    ///
+    /// Does NOT panic - validation should be done separately via `validate_bus_limits()`.
+    fn allocate<P: Plugin>(plugin: &P) -> Self {
+        let num_input_buses = plugin.input_bus_count();
+        let num_output_buses = plugin.output_bus_count();
+
+        // Get main bus channel counts (bus 0)
+        let main_in_channels = plugin
+            .input_bus_info(0)
+            .map(|b| b.channel_count as usize)
+            .unwrap_or(0);
+        let main_out_channels = plugin
+            .output_bus_info(0)
+            .map(|b| b.channel_count as usize)
+            .unwrap_or(0);
+
+        // Pre-allocate main bus storage
+        let main_inputs = Vec::with_capacity(main_in_channels);
+        let main_outputs = Vec::with_capacity(main_out_channels);
+
+        // Pre-allocate auxiliary bus storage
+        let aux_input_bus_count = num_input_buses.saturating_sub(1);
+        let aux_output_bus_count = num_output_buses.saturating_sub(1);
+
+        let mut aux_inputs = Vec::with_capacity(aux_input_bus_count);
+        for bus_idx in 1..num_input_buses {
+            if let Some(info) = plugin.input_bus_info(bus_idx) {
+                aux_inputs.push(Vec::with_capacity(info.channel_count as usize));
+            } else {
+                aux_inputs.push(Vec::new());
+            }
+        }
+
+        let mut aux_outputs = Vec::with_capacity(aux_output_bus_count);
+        for bus_idx in 1..num_output_buses {
+            if let Some(info) = plugin.output_bus_info(bus_idx) {
+                aux_outputs.push(Vec::with_capacity(info.channel_count as usize));
+            } else {
+                aux_outputs.push(Vec::new());
+            }
+        }
+
+        Self {
+            main_inputs,
+            main_outputs,
+            aux_inputs,
+            aux_outputs,
+        }
+    }
+
+    /// Clear all pointer storage for reuse.
+    ///
+    /// O(1) operation - does not deallocate, just sets len to 0.
+    #[inline]
+    fn clear(&mut self) {
+        self.main_inputs.clear();
+        self.main_outputs.clear();
+        for bus in &mut self.aux_inputs {
+            bus.clear();
+        }
+        for bus in &mut self.aux_outputs {
+            bus.clear();
+        }
+    }
+}
+
 /// Generic VST3 processor wrapping any [`Plugin`] implementation.
 ///
 /// This struct implements the VST3 combined component pattern, providing
@@ -379,6 +573,10 @@ pub struct Vst3Processor<P: Plugin> {
     sysex_output_pool: UnsafeCell<SysExOutputPool>,
     /// Conversion buffers for f64→f32 processing
     conversion_buffers: UnsafeCell<ConversionBuffers>,
+    /// Pre-allocated channel pointer storage for f32 processing
+    buffer_storage_f32: UnsafeCell<ProcessBufferStorage<f32>>,
+    /// Pre-allocated channel pointer storage for f64 processing
+    buffer_storage_f64: UnsafeCell<ProcessBufferStorage<f64>>,
     /// Marker for the plugin type
     _marker: PhantomData<P>,
 }
@@ -408,6 +606,8 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
                 config.sysex_buffer_size,
             )),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
+            buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
+            buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
             _marker: PhantomData,
         }
     }
@@ -455,7 +655,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     /// Process audio at 32-bit (f32) precision.
     ///
     /// This is the standard processing path used when the host uses kSample32.
-    /// Uses stack-allocated arrays - no heap allocations.
+    /// Uses pre-allocated ProcessBufferStorage - no heap allocations.
     #[inline]
     unsafe fn process_audio_f32(
         &self,
@@ -464,97 +664,56 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         plugin: &mut P,
         context: &CoreProcessContext,
     ) {
-        // Stack-allocated storage for channel slices
-        // Main bus
-        let mut main_inputs: [Option<&[f32]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
-        let mut main_outputs: [Option<&mut [f32]>; MAX_CHANNELS] =
-            std::array::from_fn(|_| None);
-        let mut num_main_inputs = 0usize;
-        let mut num_main_outputs = 0usize;
+        // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
+        let storage = &mut *self.buffer_storage_f32.get();
+        storage.clear();
 
-        // Auxiliary buses (bus 1+)
-        let mut aux_inputs: [[Option<&[f32]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
-            [[None; MAX_CHANNELS]; MAX_AUX_BUSES];
-        let mut aux_input_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
-        let mut num_aux_input_buses = 0usize;
-
-        let mut aux_outputs: [[Option<&mut [f32]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
-            std::array::from_fn(|_| std::array::from_fn(|_| None));
-        let mut aux_output_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
-        let mut num_aux_output_buses = 0usize;
-
-        // Collect input channel slices
+        // Collect main input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let num_buses = (process_data.numInputs as usize).min(MAX_BUSES);
-            let input_buses = slice::from_raw_parts(process_data.inputs, num_buses);
-
-            for (bus_idx, bus) in input_buses.iter().enumerate() {
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
-                if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                    let channel_ptrs =
-                        slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
-
-                    if bus_idx == 0 {
-                        // Main bus
-                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                            if !ptr.is_null() {
-                                main_inputs[ch] = Some(slice::from_raw_parts(ptr, num_samples));
-                                num_main_inputs = ch + 1;
-                            }
-                        }
-                    } else {
-                        // Auxiliary bus
-                        let aux_idx = bus_idx - 1;
-                        if aux_idx < MAX_AUX_BUSES {
-                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                                if !ptr.is_null() {
-                                    aux_inputs[aux_idx][ch] =
-                                        Some(slice::from_raw_parts(ptr, num_samples));
-                                    aux_input_counts[aux_idx] = ch + 1;
-                                }
-                            }
-                            if aux_input_counts[aux_idx] > 0 {
-                                num_aux_input_buses = aux_idx + 1;
-                            }
-                        }
+            let bus = &*process_data.inputs;
+            let num_channels = bus.numChannels as usize;
+            let max_channels = storage.main_inputs.capacity();
+            if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
+                let channel_ptrs =
+                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                for &ptr in channel_ptrs.iter().take(max_channels) {
+                    if !ptr.is_null() {
+                        storage.main_inputs.push(ptr);
                     }
                 }
             }
         }
 
-        // Collect output channel slices
+        // Collect main output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let num_buses = (process_data.numOutputs as usize).min(MAX_BUSES);
-            let output_buses = slice::from_raw_parts(process_data.outputs, num_buses);
+            let bus = &*process_data.outputs;
+            let num_channels = bus.numChannels as usize;
+            let max_channels = storage.main_outputs.capacity();
+            if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
+                let channel_ptrs =
+                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                for &ptr in channel_ptrs.iter().take(max_channels) {
+                    if !ptr.is_null() {
+                        storage.main_outputs.push(ptr);
+                    }
+                }
+            }
+        }
 
-            for (bus_idx, bus) in output_buses.iter().enumerate() {
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
-                if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                    let channel_ptrs =
-                        slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
-
-                    if bus_idx == 0 {
-                        // Main bus
-                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+        // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
+        if process_data.numInputs > 1 && !process_data.inputs.is_null() {
+            let input_buses =
+                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
+            for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
+                if aux_idx < storage.aux_inputs.len() {
+                    let num_channels = bus.numChannels as usize;
+                    let max_channels = storage.aux_inputs[aux_idx].capacity();
+                    if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
+                        let channel_ptrs =
+                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                        for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
-                                main_outputs[ch] =
-                                    Some(slice::from_raw_parts_mut(ptr, num_samples));
-                                num_main_outputs = ch + 1;
-                            }
-                        }
-                    } else {
-                        // Auxiliary bus
-                        let aux_idx = bus_idx - 1;
-                        if aux_idx < MAX_AUX_BUSES {
-                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                                if !ptr.is_null() {
-                                    aux_outputs[aux_idx][ch] =
-                                        Some(slice::from_raw_parts_mut(ptr, num_samples));
-                                    aux_output_counts[aux_idx] = ch + 1;
-                                }
-                            }
-                            if aux_output_counts[aux_idx] > 0 {
-                                num_aux_output_buses = aux_idx + 1;
+                                storage.aux_inputs[aux_idx].push(ptr);
                             }
                         }
                     }
@@ -562,23 +721,45 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
             }
         }
 
-        // Create iterators for Buffer::new() from the Option arrays
-        let main_in_iter = main_inputs[..num_main_inputs]
-            .iter()
-            .filter_map(|opt| *opt);
-        let main_out_iter = main_outputs[..num_main_outputs]
-            .iter_mut()
-            .filter_map(|opt| opt.take());
+        // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
+        if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
+            let output_buses =
+                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
+            for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
+                if aux_idx < storage.aux_outputs.len() {
+                    let num_channels = bus.numChannels as usize;
+                    let max_channels = storage.aux_outputs[aux_idx].capacity();
+                    if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
+                        let channel_ptrs =
+                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                        for &ptr in channel_ptrs.iter().take(max_channels) {
+                            if !ptr.is_null() {
+                                storage.aux_outputs[aux_idx].push(ptr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        // Create nested iterators for AuxiliaryBuffers::new()
-        let aux_in_iter = aux_inputs[..num_aux_input_buses]
+        // Create slices from pointers (safe: ProcessData lifetime covers this scope)
+        let main_in_iter = storage
+            .main_inputs
             .iter()
-            .zip(aux_input_counts[..num_aux_input_buses].iter())
-            .map(|(bus, &count)| bus[..count].iter().filter_map(|opt| *opt));
-        let aux_out_iter = aux_outputs[..num_aux_output_buses]
-            .iter_mut()
-            .zip(aux_output_counts[..num_aux_output_buses].iter())
-            .map(|(bus, &count)| bus[..count].iter_mut().filter_map(|opt| opt.take()));
+            .map(|&ptr| slice::from_raw_parts(ptr, num_samples));
+        let main_out_iter = storage
+            .main_outputs
+            .iter()
+            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples));
+
+        let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
+            bus.iter()
+                .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+        });
+        let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
+            bus.iter()
+                .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+        });
 
         // Construct buffers and process
         let mut buffer = Buffer::new(main_in_iter, main_out_iter, num_samples);
@@ -590,7 +771,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     /// Process audio at 64-bit (f64) precision with native plugin support.
     ///
     /// Used when host uses kSample64 and plugin.supports_double_precision() is true.
-    /// Uses stack-allocated arrays - no heap allocations.
+    /// Uses pre-allocated ProcessBufferStorage - no heap allocations.
     #[inline]
     unsafe fn process_audio_f64_native(
         &self,
@@ -599,97 +780,56 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         plugin: &mut P,
         context: &CoreProcessContext,
     ) {
-        // Stack-allocated storage for channel slices
-        // Main bus
-        let mut main_inputs: [Option<&[f64]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
-        let mut main_outputs: [Option<&mut [f64]>; MAX_CHANNELS] =
-            std::array::from_fn(|_| None);
-        let mut num_main_inputs = 0usize;
-        let mut num_main_outputs = 0usize;
+        // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
+        let storage = &mut *self.buffer_storage_f64.get();
+        storage.clear();
 
-        // Auxiliary buses (bus 1+)
-        let mut aux_inputs: [[Option<&[f64]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
-            [[None; MAX_CHANNELS]; MAX_AUX_BUSES];
-        let mut aux_input_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
-        let mut num_aux_input_buses = 0usize;
-
-        let mut aux_outputs: [[Option<&mut [f64]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
-            std::array::from_fn(|_| std::array::from_fn(|_| None));
-        let mut aux_output_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
-        let mut num_aux_output_buses = 0usize;
-
-        // Collect input channel slices
+        // Collect main input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let num_buses = (process_data.numInputs as usize).min(MAX_BUSES);
-            let input_buses = slice::from_raw_parts(process_data.inputs, num_buses);
-
-            for (bus_idx, bus) in input_buses.iter().enumerate() {
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
-                if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                    let channel_ptrs =
-                        slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
-
-                    if bus_idx == 0 {
-                        // Main bus
-                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                            if !ptr.is_null() {
-                                main_inputs[ch] = Some(slice::from_raw_parts(ptr, num_samples));
-                                num_main_inputs = ch + 1;
-                            }
-                        }
-                    } else {
-                        // Auxiliary bus
-                        let aux_idx = bus_idx - 1;
-                        if aux_idx < MAX_AUX_BUSES {
-                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                                if !ptr.is_null() {
-                                    aux_inputs[aux_idx][ch] =
-                                        Some(slice::from_raw_parts(ptr, num_samples));
-                                    aux_input_counts[aux_idx] = ch + 1;
-                                }
-                            }
-                            if aux_input_counts[aux_idx] > 0 {
-                                num_aux_input_buses = aux_idx + 1;
-                            }
-                        }
+            let bus = &*process_data.inputs;
+            let num_channels = bus.numChannels as usize;
+            let max_channels = storage.main_inputs.capacity();
+            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
+                let channel_ptrs =
+                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                for &ptr in channel_ptrs.iter().take(max_channels) {
+                    if !ptr.is_null() {
+                        storage.main_inputs.push(ptr);
                     }
                 }
             }
         }
 
-        // Collect output channel slices
+        // Collect main output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let num_buses = (process_data.numOutputs as usize).min(MAX_BUSES);
-            let output_buses = slice::from_raw_parts(process_data.outputs, num_buses);
+            let bus = &*process_data.outputs;
+            let num_channels = bus.numChannels as usize;
+            let max_channels = storage.main_outputs.capacity();
+            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
+                let channel_ptrs =
+                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                for &ptr in channel_ptrs.iter().take(max_channels) {
+                    if !ptr.is_null() {
+                        storage.main_outputs.push(ptr);
+                    }
+                }
+            }
+        }
 
-            for (bus_idx, bus) in output_buses.iter().enumerate() {
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
-                if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                    let channel_ptrs =
-                        slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
-
-                    if bus_idx == 0 {
-                        // Main bus
-                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+        // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
+        if process_data.numInputs > 1 && !process_data.inputs.is_null() {
+            let input_buses =
+                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
+            for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
+                if aux_idx < storage.aux_inputs.len() {
+                    let num_channels = bus.numChannels as usize;
+                    let max_channels = storage.aux_inputs[aux_idx].capacity();
+                    if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
+                        let channel_ptrs =
+                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                        for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
-                                main_outputs[ch] =
-                                    Some(slice::from_raw_parts_mut(ptr, num_samples));
-                                num_main_outputs = ch + 1;
-                            }
-                        }
-                    } else {
-                        // Auxiliary bus
-                        let aux_idx = bus_idx - 1;
-                        if aux_idx < MAX_AUX_BUSES {
-                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                                if !ptr.is_null() {
-                                    aux_outputs[aux_idx][ch] =
-                                        Some(slice::from_raw_parts_mut(ptr, num_samples));
-                                    aux_output_counts[aux_idx] = ch + 1;
-                                }
-                            }
-                            if aux_output_counts[aux_idx] > 0 {
-                                num_aux_output_buses = aux_idx + 1;
+                                storage.aux_inputs[aux_idx].push(ptr);
                             }
                         }
                     }
@@ -697,27 +837,50 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
             }
         }
 
-        // Create iterators for Buffer::new() from the Option arrays
-        let main_in_iter = main_inputs[..num_main_inputs]
-            .iter()
-            .filter_map(|opt| *opt);
-        let main_out_iter = main_outputs[..num_main_outputs]
-            .iter_mut()
-            .filter_map(|opt| opt.take());
+        // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
+        if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
+            let output_buses =
+                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
+            for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
+                if aux_idx < storage.aux_outputs.len() {
+                    let num_channels = bus.numChannels as usize;
+                    let max_channels = storage.aux_outputs[aux_idx].capacity();
+                    if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
+                        let channel_ptrs =
+                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                        for &ptr in channel_ptrs.iter().take(max_channels) {
+                            if !ptr.is_null() {
+                                storage.aux_outputs[aux_idx].push(ptr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        // Create nested iterators for AuxiliaryBuffers::new()
-        let aux_in_iter = aux_inputs[..num_aux_input_buses]
+        // Create slices from pointers (safe: ProcessData lifetime covers this scope)
+        let main_in_iter = storage
+            .main_inputs
             .iter()
-            .zip(aux_input_counts[..num_aux_input_buses].iter())
-            .map(|(bus, &count)| bus[..count].iter().filter_map(|opt| *opt));
-        let aux_out_iter = aux_outputs[..num_aux_output_buses]
-            .iter_mut()
-            .zip(aux_output_counts[..num_aux_output_buses].iter())
-            .map(|(bus, &count)| bus[..count].iter_mut().filter_map(|opt| opt.take()));
+            .map(|&ptr| slice::from_raw_parts(ptr, num_samples));
+        let main_out_iter = storage
+            .main_outputs
+            .iter()
+            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples));
+
+        let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
+            bus.iter()
+                .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+        });
+        let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
+            bus.iter()
+                .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+        });
 
         // Construct buffers and process
         let mut buffer: Buffer<f64> = Buffer::new(main_in_iter, main_out_iter, num_samples);
-        let mut aux: AuxiliaryBuffers<f64> = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
+        let mut aux: AuxiliaryBuffers<f64> =
+            AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
 
         plugin.process_f64(&mut buffer, &mut aux, context);
     }
@@ -1101,6 +1264,20 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
+        // Early rejection: negative counts or bus count exceeds compile-time limits
+        if num_ins < 0
+            || num_outs < 0
+            || num_ins as usize > MAX_BUSES
+            || num_outs as usize > MAX_BUSES
+        {
+            return kResultFalse;
+        }
+
+        // Early rejection: null pointers with non-zero counts
+        if (num_ins > 0 && inputs.is_null()) || (num_outs > 0 && outputs.is_null()) {
+            return kInvalidArgument;
+        }
+
         let plugin = self.plugin();
 
         // Check if the requested arrangement matches our bus configuration
@@ -1112,8 +1289,13 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
         // Validate each input bus
         for i in 0..num_ins as usize {
+            // Early rejection: channel count exceeds compile-time limits
+            let requested = *inputs.add(i);
+            if validate_speaker_arrangement(requested).is_err() {
+                return kResultFalse;
+            }
+
             if let Some(info) = plugin.input_bus_info(i) {
-                let requested = *inputs.add(i);
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1123,8 +1305,13 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
         // Validate each output bus
         for i in 0..num_outs as usize {
+            // Early rejection: channel count exceeds compile-time limits
+            let requested = *outputs.add(i);
+            if validate_speaker_arrangement(requested).is_err() {
+                return kResultFalse;
+            }
+
             if let Some(info) = plugin.output_bus_info(i) {
-                let requested = *outputs.add(i);
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1187,6 +1374,18 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         // Notify the plugin
         let plugin = self.plugin_mut();
         plugin.setup(setup.sampleRate, setup.maxSamplesPerBlock as usize);
+
+        // Validate plugin's bus configuration against compile-time limits
+        // This prevents silent truncation during processing
+        if let Err(msg) = validate_bus_limits(plugin) {
+            log::error!("Plugin bus configuration exceeds limits: {}", msg);
+            return kResultFalse;
+        }
+
+        // Pre-allocate buffer storage based on plugin's bus declarations
+        // This ensures no heap allocation during process()
+        *self.buffer_storage_f32.get() = ProcessBufferStorage::allocate(plugin);
+        *self.buffer_storage_f64.get() = ProcessBufferStorage::allocate(plugin);
 
         // Pre-allocate conversion buffers for f64→f32 processing
         // Only needed if host is using 64-bit and plugin doesn't support native f64
