@@ -103,6 +103,49 @@ impl ParamInfo {
         self.flags = flags;
         self
     }
+
+    /// Create a bypass toggle parameter with standard configuration.
+    ///
+    /// This creates a parameter pre-configured as a bypass switch:
+    /// - Toggle (step_count = 1)
+    /// - Automatable
+    /// - Marked with `is_bypass = true` flag
+    /// - Default value = 0.0 (not bypassed)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// const PARAM_BYPASS: u32 = 0;
+    ///
+    /// struct MyParams {
+    ///     bypass: AtomicU64,
+    ///     bypass_info: ParamInfo,
+    /// }
+    ///
+    /// impl MyParams {
+    ///     fn new() -> Self {
+    ///         Self {
+    ///             bypass: AtomicU64::new(0.0f64.to_bits()),
+    ///             bypass_info: ParamInfo::bypass(PARAM_BYPASS),
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub const fn bypass(id: ParamId) -> Self {
+        Self {
+            id,
+            name: "Bypass",
+            short_name: "Byp",
+            units: "",
+            default_normalized: 0.0,
+            step_count: 1,
+            flags: ParamFlags {
+                can_automate: true,
+                is_readonly: false,
+                is_bypass: true,
+            },
+        }
+    }
 }
 
 /// Trait for plugin parameter collections.

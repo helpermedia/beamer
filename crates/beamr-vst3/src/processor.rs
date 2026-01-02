@@ -913,7 +913,8 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
     }
 
     unsafe fn getTailSamples(&self) -> u32 {
-        self.plugin().tail_samples()
+        let plugin = self.plugin();
+        plugin.tail_samples().saturating_add(plugin.bypass_ramp_samples())
     }
 }
 
@@ -984,10 +985,15 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             info.stepCount = param_info.step_count;
             info.defaultNormalizedValue = param_info.default_normalized;
             info.unitId = 0;
-            info.flags = if param_info.flags.can_automate {
-                ParameterInfo_::ParameterFlags_::kCanAutomate
-            } else {
-                0
+            info.flags = {
+                let mut flags = 0;
+                if param_info.flags.can_automate {
+                    flags |= ParameterInfo_::ParameterFlags_::kCanAutomate;
+                }
+                if param_info.flags.is_bypass {
+                    flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
+                }
+                flags
             };
             kResultOk
         } else {

@@ -27,6 +27,7 @@
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod buffer;
+pub mod bypass;
 pub mod editor;
 pub mod error;
 pub mod midi;
@@ -38,6 +39,7 @@ pub mod types;
 // Re-exports for convenience
 #[allow(deprecated)]
 pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus};
+pub use bypass::{BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
 pub use midi::{

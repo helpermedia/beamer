@@ -206,6 +206,33 @@ pub trait AudioProcessor: Send {
         0
     }
 
+    /// Get the bypass ramp length in samples.
+    ///
+    /// When bypass is engaged or disengaged, this defines the crossfade
+    /// duration to avoid clicks. The host uses this value (combined with
+    /// `tail_samples()`) to determine how long to continue calling `process()`
+    /// after input stops.
+    ///
+    /// Return 0 for instant bypass (no crossfade), or a sample count for
+    /// smooth crossfading. Typical values:
+    /// - 64 samples (~1.3ms at 48kHz) - fast, suitable for most effects
+    /// - 256 samples (~5.3ms at 48kHz) - smoother, for sensitive material
+    /// - 512+ samples - very smooth, for reverbs/delays with long tails
+    ///
+    /// Default returns 64 samples.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn bypass_ramp_samples(&self) -> u32 {
+    ///     // Use 10ms crossfade based on current sample rate
+    ///     (self.sample_rate * 0.01) as u32
+    /// }
+    /// ```
+    fn bypass_ramp_samples(&self) -> u32 {
+        64
+    }
+
     /// Save the plugin state to bytes.
     ///
     /// This is called when the DAW saves a project or preset. The returned
