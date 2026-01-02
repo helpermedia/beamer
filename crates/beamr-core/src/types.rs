@@ -1,5 +1,35 @@
 //! Common types used throughout the BEAMR framework.
 
+// =============================================================================
+// Audio Buffer Limits
+// =============================================================================
+//
+// These constants define upper bounds for stack-allocated audio buffer storage.
+// They are chosen to support common professional configurations while keeping
+// memory usage reasonable:
+//
+// - 8 channels: Supports up to 7.1 surround (L, R, C, LFE, Ls, Rs, Lrs, Rrs)
+// - 4 buses: Main + sidechain + 2 aux (covers most multi-bus scenarios)
+// - 3 aux buses: Total buses minus main bus
+// =============================================================================
+
+/// Maximum number of audio channels per bus.
+///
+/// Set to 8 to support up to 7.1 surround configurations.
+/// Used for stack-allocated channel storage in [`Buffer`](crate::Buffer).
+pub const MAX_CHANNELS: usize = 8;
+
+/// Maximum number of audio buses (main + auxiliary).
+///
+/// Set to 4 to support main bus + sidechain + 2 aux buses.
+/// Used for stack-allocated bus storage.
+pub const MAX_BUSES: usize = 4;
+
+/// Maximum number of auxiliary buses (total buses minus main bus).
+///
+/// Equal to `MAX_BUSES - 1`.
+pub const MAX_AUX_BUSES: usize = MAX_BUSES - 1;
+
 /// Size in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Size {

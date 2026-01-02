@@ -233,7 +233,24 @@ impl BypassHandler {
     ///
     /// Call this at the start of each process() with the current bypass parameter value.
     /// State transitions happen automatically.
+    ///
+    /// When `ramp_samples == 0` (instant bypass), state snaps directly to
+    /// `Bypassed` or `Active` without passing through ramping states.
     pub fn set_bypass(&mut self, bypassed: bool) {
+        // Handle instant bypass (zero ramp) - snap directly to final state
+        if self.ramp_samples == 0 {
+            let target = if bypassed {
+                BypassState::Bypassed
+            } else {
+                BypassState::Active
+            };
+            if self.state != target {
+                self.state = target;
+                self.ramp_position = 0;
+            }
+            return;
+        }
+
         match (self.state, bypassed) {
             // Start ramping to bypassed
             (BypassState::Active, true) => {

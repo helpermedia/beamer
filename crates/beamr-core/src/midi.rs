@@ -1663,6 +1663,14 @@ impl MidiBuffer {
     pub fn iter(&self) -> impl Iterator<Item = &MidiEvent> {
         self.events[..self.len].iter()
     }
+
+    /// Get the events as a slice.
+    ///
+    /// This is useful for passing to functions that expect `&[MidiEvent]`.
+    #[inline]
+    pub fn as_slice(&self) -> &[MidiEvent] {
+        &self.events[..self.len]
+    }
 }
 
 impl Default for MidiBuffer {

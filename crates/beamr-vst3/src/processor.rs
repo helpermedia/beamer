@@ -30,17 +30,13 @@ use beamr_core::{
     FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
     ProcessContext as CoreProcessContext, ScaleInfo, SysEx, Transport,
+    MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 use crate::wrapper::PluginConfig;
-
-// Maximum number of channels we support per bus (for stack allocation)
-const MAX_CHANNELS_PER_BUS: usize = 8;
-// Maximum number of buses we support (for stack allocation)
-const MAX_BUSES: usize = 4;
 
 // VST3 event type constants
 const K_NOTE_ON_EVENT: u16 = 0;
@@ -459,6 +455,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     /// Process audio at 32-bit (f32) precision.
     ///
     /// This is the standard processing path used when the host uses kSample32.
+    /// Uses stack-allocated arrays - no heap allocations.
     #[inline]
     unsafe fn process_audio_f32(
         &self,
@@ -467,69 +464,125 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         plugin: &mut P,
         context: &CoreProcessContext,
     ) {
-        // Collect input channel slices per bus
-        let mut input_buses_slices: Vec<Vec<&[f32]>> = Vec::with_capacity(MAX_BUSES);
+        // Stack-allocated storage for channel slices
+        // Main bus
+        let mut main_inputs: [Option<&[f32]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
+        let mut main_outputs: [Option<&mut [f32]>; MAX_CHANNELS] =
+            std::array::from_fn(|_| None);
+        let mut num_main_inputs = 0usize;
+        let mut num_main_outputs = 0usize;
 
+        // Auxiliary buses (bus 1+)
+        let mut aux_inputs: [[Option<&[f32]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
+            [[None; MAX_CHANNELS]; MAX_AUX_BUSES];
+        let mut aux_input_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
+        let mut num_aux_input_buses = 0usize;
+
+        let mut aux_outputs: [[Option<&mut [f32]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
+            std::array::from_fn(|_| std::array::from_fn(|_| None));
+        let mut aux_output_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
+        let mut num_aux_output_buses = 0usize;
+
+        // Collect input channel slices
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let input_buses =
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
-            for bus in input_buses {
-                let mut bus_channels: Vec<&[f32]> = Vec::with_capacity(MAX_CHANNELS_PER_BUS);
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS_PER_BUS);
+            let num_buses = (process_data.numInputs as usize).min(MAX_BUSES);
+            let input_buses = slice::from_raw_parts(process_data.inputs, num_buses);
+
+            for (bus_idx, bus) in input_buses.iter().enumerate() {
+                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
                 if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
                     let channel_ptrs =
                         slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
-                    for &ptr in channel_ptrs {
-                        if !ptr.is_null() {
-                            bus_channels.push(slice::from_raw_parts(ptr, num_samples));
+
+                    if bus_idx == 0 {
+                        // Main bus
+                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                            if !ptr.is_null() {
+                                main_inputs[ch] = Some(slice::from_raw_parts(ptr, num_samples));
+                                num_main_inputs = ch + 1;
+                            }
+                        }
+                    } else {
+                        // Auxiliary bus
+                        let aux_idx = bus_idx - 1;
+                        if aux_idx < MAX_AUX_BUSES {
+                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                                if !ptr.is_null() {
+                                    aux_inputs[aux_idx][ch] =
+                                        Some(slice::from_raw_parts(ptr, num_samples));
+                                    aux_input_counts[aux_idx] = ch + 1;
+                                }
+                            }
+                            if aux_input_counts[aux_idx] > 0 {
+                                num_aux_input_buses = aux_idx + 1;
+                            }
                         }
                     }
                 }
-                input_buses_slices.push(bus_channels);
             }
         }
 
-        // Collect output channel slices per bus
-        let mut output_buses_slices: Vec<Vec<&mut [f32]>> = Vec::with_capacity(MAX_BUSES);
-
+        // Collect output channel slices
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let output_buses =
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
-            for bus in output_buses {
-                let mut bus_channels: Vec<&mut [f32]> = Vec::with_capacity(MAX_CHANNELS_PER_BUS);
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS_PER_BUS);
+            let num_buses = (process_data.numOutputs as usize).min(MAX_BUSES);
+            let output_buses = slice::from_raw_parts(process_data.outputs, num_buses);
+
+            for (bus_idx, bus) in output_buses.iter().enumerate() {
+                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
                 if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
                     let channel_ptrs =
                         slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
-                    for &ptr in channel_ptrs {
-                        if !ptr.is_null() {
-                            bus_channels.push(slice::from_raw_parts_mut(ptr, num_samples));
+
+                    if bus_idx == 0 {
+                        // Main bus
+                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                            if !ptr.is_null() {
+                                main_outputs[ch] =
+                                    Some(slice::from_raw_parts_mut(ptr, num_samples));
+                                num_main_outputs = ch + 1;
+                            }
+                        }
+                    } else {
+                        // Auxiliary bus
+                        let aux_idx = bus_idx - 1;
+                        if aux_idx < MAX_AUX_BUSES {
+                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                                if !ptr.is_null() {
+                                    aux_outputs[aux_idx][ch] =
+                                        Some(slice::from_raw_parts_mut(ptr, num_samples));
+                                    aux_output_counts[aux_idx] = ch + 1;
+                                }
+                            }
+                            if aux_output_counts[aux_idx] > 0 {
+                                num_aux_output_buses = aux_idx + 1;
+                            }
                         }
                     }
                 }
-                output_buses_slices.push(bus_channels);
             }
         }
 
-        // Split into main bus and aux buses
-        let main_inputs = if !input_buses_slices.is_empty() {
-            std::mem::take(&mut input_buses_slices[0])
-        } else {
-            Vec::new()
-        };
+        // Create iterators for Buffer::new() from the Option arrays
+        let main_in_iter = main_inputs[..num_main_inputs]
+            .iter()
+            .filter_map(|opt| *opt);
+        let main_out_iter = main_outputs[..num_main_outputs]
+            .iter_mut()
+            .filter_map(|opt| opt.take());
 
-        let main_outputs = if !output_buses_slices.is_empty() {
-            std::mem::take(&mut output_buses_slices[0])
-        } else {
-            Vec::new()
-        };
-
-        let aux_inputs: Vec<Vec<&[f32]>> = input_buses_slices.into_iter().skip(1).collect();
-        let aux_outputs: Vec<Vec<&mut [f32]>> = output_buses_slices.into_iter().skip(1).collect();
+        // Create nested iterators for AuxiliaryBuffers::new()
+        let aux_in_iter = aux_inputs[..num_aux_input_buses]
+            .iter()
+            .zip(aux_input_counts[..num_aux_input_buses].iter())
+            .map(|(bus, &count)| bus[..count].iter().filter_map(|opt| *opt));
+        let aux_out_iter = aux_outputs[..num_aux_output_buses]
+            .iter_mut()
+            .zip(aux_output_counts[..num_aux_output_buses].iter())
+            .map(|(bus, &count)| bus[..count].iter_mut().filter_map(|opt| opt.take()));
 
         // Construct buffers and process
-        let mut buffer = Buffer::new(main_inputs, main_outputs, num_samples);
-        let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, num_samples);
+        let mut buffer = Buffer::new(main_in_iter, main_out_iter, num_samples);
+        let mut aux = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
 
         plugin.process(&mut buffer, &mut aux, context);
     }
@@ -537,6 +590,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     /// Process audio at 64-bit (f64) precision with native plugin support.
     ///
     /// Used when host uses kSample64 and plugin.supports_double_precision() is true.
+    /// Uses stack-allocated arrays - no heap allocations.
     #[inline]
     unsafe fn process_audio_f64_native(
         &self,
@@ -545,69 +599,125 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         plugin: &mut P,
         context: &CoreProcessContext,
     ) {
-        // Collect input channel slices per bus (f64)
-        let mut input_buses_slices: Vec<Vec<&[f64]>> = Vec::with_capacity(MAX_BUSES);
+        // Stack-allocated storage for channel slices
+        // Main bus
+        let mut main_inputs: [Option<&[f64]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
+        let mut main_outputs: [Option<&mut [f64]>; MAX_CHANNELS] =
+            std::array::from_fn(|_| None);
+        let mut num_main_inputs = 0usize;
+        let mut num_main_outputs = 0usize;
 
+        // Auxiliary buses (bus 1+)
+        let mut aux_inputs: [[Option<&[f64]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
+            [[None; MAX_CHANNELS]; MAX_AUX_BUSES];
+        let mut aux_input_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
+        let mut num_aux_input_buses = 0usize;
+
+        let mut aux_outputs: [[Option<&mut [f64]>; MAX_CHANNELS]; MAX_AUX_BUSES] =
+            std::array::from_fn(|_| std::array::from_fn(|_| None));
+        let mut aux_output_counts: [usize; MAX_AUX_BUSES] = [0; MAX_AUX_BUSES];
+        let mut num_aux_output_buses = 0usize;
+
+        // Collect input channel slices
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let input_buses =
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
-            for bus in input_buses {
-                let mut bus_channels: Vec<&[f64]> = Vec::with_capacity(MAX_CHANNELS_PER_BUS);
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS_PER_BUS);
+            let num_buses = (process_data.numInputs as usize).min(MAX_BUSES);
+            let input_buses = slice::from_raw_parts(process_data.inputs, num_buses);
+
+            for (bus_idx, bus) in input_buses.iter().enumerate() {
+                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
                 if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
                     let channel_ptrs =
                         slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
-                    for &ptr in channel_ptrs {
-                        if !ptr.is_null() {
-                            bus_channels.push(slice::from_raw_parts(ptr, num_samples));
+
+                    if bus_idx == 0 {
+                        // Main bus
+                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                            if !ptr.is_null() {
+                                main_inputs[ch] = Some(slice::from_raw_parts(ptr, num_samples));
+                                num_main_inputs = ch + 1;
+                            }
+                        }
+                    } else {
+                        // Auxiliary bus
+                        let aux_idx = bus_idx - 1;
+                        if aux_idx < MAX_AUX_BUSES {
+                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                                if !ptr.is_null() {
+                                    aux_inputs[aux_idx][ch] =
+                                        Some(slice::from_raw_parts(ptr, num_samples));
+                                    aux_input_counts[aux_idx] = ch + 1;
+                                }
+                            }
+                            if aux_input_counts[aux_idx] > 0 {
+                                num_aux_input_buses = aux_idx + 1;
+                            }
                         }
                     }
                 }
-                input_buses_slices.push(bus_channels);
             }
         }
 
-        // Collect output channel slices per bus (f64)
-        let mut output_buses_slices: Vec<Vec<&mut [f64]>> = Vec::with_capacity(MAX_BUSES);
-
+        // Collect output channel slices
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let output_buses =
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
-            for bus in output_buses {
-                let mut bus_channels: Vec<&mut [f64]> = Vec::with_capacity(MAX_CHANNELS_PER_BUS);
-                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS_PER_BUS);
+            let num_buses = (process_data.numOutputs as usize).min(MAX_BUSES);
+            let output_buses = slice::from_raw_parts(process_data.outputs, num_buses);
+
+            for (bus_idx, bus) in output_buses.iter().enumerate() {
+                let num_channels = (bus.numChannels as usize).min(MAX_CHANNELS);
                 if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
                     let channel_ptrs =
                         slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
-                    for &ptr in channel_ptrs {
-                        if !ptr.is_null() {
-                            bus_channels.push(slice::from_raw_parts_mut(ptr, num_samples));
+
+                    if bus_idx == 0 {
+                        // Main bus
+                        for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                            if !ptr.is_null() {
+                                main_outputs[ch] =
+                                    Some(slice::from_raw_parts_mut(ptr, num_samples));
+                                num_main_outputs = ch + 1;
+                            }
+                        }
+                    } else {
+                        // Auxiliary bus
+                        let aux_idx = bus_idx - 1;
+                        if aux_idx < MAX_AUX_BUSES {
+                            for (ch, &ptr) in channel_ptrs.iter().enumerate() {
+                                if !ptr.is_null() {
+                                    aux_outputs[aux_idx][ch] =
+                                        Some(slice::from_raw_parts_mut(ptr, num_samples));
+                                    aux_output_counts[aux_idx] = ch + 1;
+                                }
+                            }
+                            if aux_output_counts[aux_idx] > 0 {
+                                num_aux_output_buses = aux_idx + 1;
+                            }
                         }
                     }
                 }
-                output_buses_slices.push(bus_channels);
             }
         }
 
-        // Split into main bus and aux buses
-        let main_inputs = if !input_buses_slices.is_empty() {
-            std::mem::take(&mut input_buses_slices[0])
-        } else {
-            Vec::new()
-        };
+        // Create iterators for Buffer::new() from the Option arrays
+        let main_in_iter = main_inputs[..num_main_inputs]
+            .iter()
+            .filter_map(|opt| *opt);
+        let main_out_iter = main_outputs[..num_main_outputs]
+            .iter_mut()
+            .filter_map(|opt| opt.take());
 
-        let main_outputs = if !output_buses_slices.is_empty() {
-            std::mem::take(&mut output_buses_slices[0])
-        } else {
-            Vec::new()
-        };
-
-        let aux_inputs: Vec<Vec<&[f64]>> = input_buses_slices.into_iter().skip(1).collect();
-        let aux_outputs: Vec<Vec<&mut [f64]>> = output_buses_slices.into_iter().skip(1).collect();
+        // Create nested iterators for AuxiliaryBuffers::new()
+        let aux_in_iter = aux_inputs[..num_aux_input_buses]
+            .iter()
+            .zip(aux_input_counts[..num_aux_input_buses].iter())
+            .map(|(bus, &count)| bus[..count].iter().filter_map(|opt| *opt));
+        let aux_out_iter = aux_outputs[..num_aux_output_buses]
+            .iter_mut()
+            .zip(aux_output_counts[..num_aux_output_buses].iter())
+            .map(|(bus, &count)| bus[..count].iter_mut().filter_map(|opt| opt.take()));
 
         // Construct buffers and process
-        let mut buffer: Buffer<f64> = Buffer::new(main_inputs, main_outputs, num_samples);
-        let mut aux: AuxiliaryBuffers<f64> = AuxiliaryBuffers::new(aux_inputs, aux_outputs, num_samples);
+        let mut buffer: Buffer<f64> = Buffer::new(main_in_iter, main_out_iter, num_samples);
+        let mut aux: AuxiliaryBuffers<f64> = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
 
         plugin.process_f64(&mut buffer, &mut aux, context);
     }
@@ -668,28 +778,24 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
             }
         }
 
-        // Build f32 buffer slices
-        let main_input_slices: Vec<&[f32]> = conv.main_input_f32
+        // Build f32 buffer slices using iterators (no allocation)
+        let main_input_iter = conv.main_input_f32
             .iter()
-            .map(|v| &v[..num_samples])
-            .collect();
-        let main_output_slices: Vec<&mut [f32]> = conv.main_output_f32
+            .map(|v| &v[..num_samples]);
+        let main_output_iter = conv.main_output_f32
             .iter_mut()
-            .map(|v| &mut v[..num_samples])
-            .collect();
+            .map(|v| &mut v[..num_samples]);
 
-        let aux_input_slices: Vec<Vec<&[f32]>> = conv.aux_input_f32
+        let aux_input_iter = conv.aux_input_f32
             .iter()
-            .map(|bus| bus.iter().map(|v| &v[..num_samples]).collect())
-            .collect();
-        let aux_output_slices: Vec<Vec<&mut [f32]>> = conv.aux_output_f32
+            .map(|bus| bus.iter().map(|v| &v[..num_samples]));
+        let aux_output_iter = conv.aux_output_f32
             .iter_mut()
-            .map(|bus| bus.iter_mut().map(|v| &mut v[..num_samples]).collect())
-            .collect();
+            .map(|bus| bus.iter_mut().map(|v| &mut v[..num_samples]));
 
         // Construct f32 buffers and process
-        let mut buffer = Buffer::new(main_input_slices, main_output_slices, num_samples);
-        let mut aux = AuxiliaryBuffers::new(aux_input_slices, aux_output_slices, num_samples);
+        let mut buffer = Buffer::new(main_input_iter, main_output_iter, num_samples);
+        let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
 
         plugin.process(&mut buffer, &mut aux, context);
 
@@ -1134,8 +1240,8 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
             }
         }
 
-        // 2. Handle MIDI events
-        let mut midi_input: Vec<MidiEvent> = Vec::with_capacity(128);
+        // 2. Handle MIDI events (stack-allocated buffer, no heap allocation)
+        let mut midi_input = MidiBuffer::new();
 
         if let Some(event_list) = ComRef::from_raw(process_data.inputEvents) {
             let event_count = event_list.getEventCount();
@@ -1148,6 +1254,14 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
                     }
                 }
             }
+        }
+
+        // Check for MIDI input buffer overflow (once per block)
+        if midi_input.has_overflowed() {
+            warn!(
+                "MIDI input buffer overflow: {} events max, some events were dropped",
+                beamr_core::midi::MAX_MIDI_EVENTS
+            );
         }
 
         // Clear and prepare MIDI output buffer and SysEx pool
@@ -1188,7 +1302,7 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
         // Process MIDI events
         let plugin = self.plugin_mut();
-        plugin.process_midi(&midi_input, midi_output);
+        plugin.process_midi(midi_input.as_slice(), midi_output);
 
         // Write output MIDI events
         if let Some(event_list) = ComRef::from_raw(process_data.outputEvents) {

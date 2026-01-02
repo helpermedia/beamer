@@ -76,4 +76,4 @@ pub use plugin::{
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
-pub use types::{ParamId, ParamValue, Rect, Size};
+pub use types::{ParamId, ParamValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
