@@ -6,6 +6,7 @@
 //! 3. Combine them with the `Plugin` trait
 //! 4. Export using `Vst3Processor<T>` wrapper
 //! 5. Use multi-bus support for sidechain ducking
+//! 6. Access transport info via ProcessContext
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,7 +27,7 @@ const COMPONENT_UID: vst3::Steinberg::TUID =
 /// you would add .with_controller(CONTROLLER_UID).with_editor()
 pub static CONFIG: PluginConfig = PluginConfig::new("BR Gain", COMPONENT_UID)
     .with_vendor("BEAMR Framework")
-    .with_url("https://github.com/beamraudio/beamr")
+    .with_url("https://github.com/helpermedia/beamr")
     .with_email("support@example.com")
     .with_version("1.0.0")
     .with_sub_categories("Fx|Dynamics");
@@ -183,8 +184,17 @@ impl AudioProcessor for GainProcessor {
         // No sample-rate dependent state for a simple gain plugin
     }
 
-    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         let gain = self.params.gain_linear();
+
+        // Example: Access transport info from host
+        // tempo is available when the DAW provides it (most do)
+        let _tempo = context.transport.tempo.unwrap_or(120.0);
+        let _is_playing = context.transport.is_playing;
+
+        // You could use tempo for tempo-synced effects:
+        // let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
+        // let delay_samples = samples_per_beat * 0.25; // 16th note delay
 
         // Calculate sidechain level for ducking (if sidechain is connected)
         // Using the new AuxInput::rms() helper for cleaner code

@@ -31,8 +31,8 @@ const COMPONENT_UID: vst3::Steinberg::TUID =
 /// section of the DAW's plugin browser, not in effects.
 pub static CONFIG: PluginConfig = PluginConfig::new("BR Midi Transform", COMPONENT_UID)
     .with_vendor("BEAMR Framework")
-    .with_url("https://github.com/beamraudio/beamr")
-    .with_email("support@beamraudio.dev")
+    .with_url("https://github.com/helpermedia/beamr")
+    .with_email("support@example.com")
     .with_version("1.0.0")
     .with_sub_categories("Instrument");
 
@@ -54,7 +54,7 @@ impl AudioProcessor for MidiTransformProcessor {
         // No sample-rate dependent state needed
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         // Pass audio through unchanged
         buffer.copy_to_output();
     }

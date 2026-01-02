@@ -23,6 +23,8 @@
 //! - [`ParamInfo`] - Parameter metadata
 //! - [`PluginError`] - Error types
 //! - [`MidiEvent`] - MIDI event types
+//! - [`Transport`] - DAW transport/timing state
+//! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod buffer;
 pub mod editor;
@@ -30,6 +32,7 @@ pub mod error;
 pub mod midi;
 pub mod params;
 pub mod plugin;
+pub mod process_context;
 pub mod types;
 
 // Re-exports for convenience
@@ -68,4 +71,5 @@ pub use plugin::{
     AudioProcessor, BusInfo, BusType, Midi1Assignment, Midi2Assignment, MidiControllerAssignment,
     Plugin,
 };
+pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use types::{ParamId, ParamValue, Rect, Size};

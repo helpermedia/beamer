@@ -8,6 +8,8 @@ Like beams connect notes in musical notation, BEAMR bridges VST3's C++ COM inter
 
 BEAMR provides a clean separation between plugin logic and the VST3 format details. You implement simple traits for your audio processing and parameters, and BEAMR handles the rest.
 
+The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8). BEAMR uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
+
 ## Features
 
 - **Format-agnostic core** - Plugin logic is independent of VST3 specifics
@@ -94,6 +96,16 @@ cargo build --release
 
 # Run clippy
 cargo clippy --workspace
+```
+
+## Bundling for DAW
+
+```bash
+# Build, bundle, and install to user VST3 folder (macOS)
+cargo xtask bundle br-gain --release --install
+
+# Or just bundle (output: target/release/BrGain.vst3)
+cargo xtask bundle br-gain --release
 ```
 
 ## Examples

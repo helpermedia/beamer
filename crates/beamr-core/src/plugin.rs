@@ -7,6 +7,7 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::params::Parameters;
+use crate::process_context::ProcessContext;
 
 // =============================================================================
 // Bus Configuration
@@ -109,7 +110,7 @@ pub trait AudioProcessor: Send {
     /// * `max_buffer_size` - Maximum number of samples per process call
     fn setup(&mut self, sample_rate: f64, max_buffer_size: usize);
 
-    /// Process an audio buffer.
+    /// Process an audio buffer with transport context.
     ///
     /// This is the main DSP entry point, called on the audio thread for each
     /// block of audio. The buffer provides input samples and mutable output
@@ -119,6 +120,7 @@ pub trait AudioProcessor: Send {
     ///
     /// * `buffer` - Main audio bus (stereo/surround input and output)
     /// * `aux` - Auxiliary buses (sidechain, aux sends) - ignore if not needed
+    /// * `context` - Processing context with sample rate, buffer size, and transport info
     ///
     /// # Real-Time Safety
     ///
@@ -128,7 +130,7 @@ pub trait AudioProcessor: Send {
     /// # Example: Simple Gain
     ///
     /// ```ignore
-    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     ///     let gain = self.params.gain();
     ///     for (input, output) in buffer.zip_channels() {
     ///         for (i, o) in input.iter().zip(output.iter_mut()) {
@@ -138,10 +140,31 @@ pub trait AudioProcessor: Send {
     /// }
     /// ```
     ///
+    /// # Example: Tempo-Synced LFO
+    ///
+    /// ```ignore
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    ///     // Calculate LFO rate synced to host tempo
+    ///     let lfo_hz = context.transport.tempo
+    ///         .map(|tempo| tempo / 60.0 / 4.0)  // 1 cycle per 4 beats
+    ///         .unwrap_or(2.0);                   // Fallback: 2 Hz
+    ///
+    ///     let increment = (lfo_hz * 2.0 * std::f32::consts::PI) / context.sample_rate as f32;
+    ///
+    ///     for (input, output) in buffer.zip_channels() {
+    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
+    ///             let lfo = self.phase.sin();
+    ///             *o = *i * (1.0 + lfo * 0.5);
+    ///             self.phase += increment;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
     /// # Example: Sidechain Ducker
     ///
     /// ```ignore
-    /// fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
+    /// fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     ///     let duck = aux.sidechain()
     ///         .map(|sc| (sc.rms(0) * 4.0).min(1.0))
     ///         .unwrap_or(0.0);
@@ -150,7 +173,7 @@ pub trait AudioProcessor: Send {
     ///     buffer.apply_output_gain(1.0 - duck * 0.8);
     /// }
     /// ```
-    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers);
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext);
 
     /// Called when the plugin is activated or deactivated.
     ///
@@ -296,7 +319,7 @@ pub trait AudioProcessor: Send {
 /// # Example
 ///
 /// ```ignore
-/// use beamr_core::{Plugin, AudioProcessor, Buffer, AuxiliaryBuffers, Parameters};
+/// use beamr_core::{Plugin, AudioProcessor, Buffer, AuxiliaryBuffers, Parameters, ProcessContext};
 ///
 /// pub struct MyGain {
 ///     params: MyGainParams,
@@ -305,7 +328,7 @@ pub trait AudioProcessor: Send {
 /// impl AudioProcessor for MyGain {
 ///     fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
 ///
-///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
+///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 ///         let gain = self.params.gain_linear();
 ///         for (input, output) in buffer.zip_channels() {
 ///             for (i, o) in input.iter().zip(output.iter_mut()) {

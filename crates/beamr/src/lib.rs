@@ -26,7 +26,7 @@
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
+//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
 //!         // Your DSP here
 //!     }
 //! }
@@ -71,6 +71,8 @@ pub mod prelude {
         Rect, Size,
         // MIDI types
         MidiBuffer, MidiChannel, MidiEvent, MidiEventKind, MidiNote, NoteId, NoteOff, NoteOn,
+        // Process context and transport
+        FrameRate, ProcessContext, Transport,
     };
 
     // VST3 implementation

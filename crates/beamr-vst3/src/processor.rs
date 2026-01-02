@@ -26,9 +26,10 @@ use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamr_core::{
-    AuxiliaryBuffers, Buffer, BusType as CoreBusType, ChordInfo, MidiBuffer, MidiEvent,
-    MidiEventKind, NoteExpressionInt, NoteExpressionText,
-    NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin, ScaleInfo, SysEx,
+    AuxiliaryBuffers, Buffer, BusType as CoreBusType, ChordInfo,
+    FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, NoteExpressionInt,
+    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
+    ProcessContext as CoreProcessContext, ScaleInfo, SysEx, Transport,
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
@@ -100,12 +101,10 @@ impl SysExOutputPool {
     fn with_capacity(slots: usize, buffer_size: usize) -> Self {
         let mut buffers = Vec::with_capacity(slots);
         for _ in 0..slots {
-            let mut buf = Vec::with_capacity(buffer_size);
-            buf.resize(buffer_size, 0u8);
+            let buf = vec![0u8; buffer_size];
             buffers.push(buf);
         }
-        let mut lengths = Vec::with_capacity(slots);
-        lengths.resize(slots, 0usize);
+        let lengths = vec![0usize; slots];
 
         Self {
             buffers,
@@ -186,6 +185,89 @@ impl SysExOutputPool {
         self.lengths[slot] = copy_len;
 
         Some((self.buffers[slot].as_ptr(), copy_len))
+    }
+}
+
+// =============================================================================
+// Transport Extraction
+// =============================================================================
+
+/// Helper macro for extracting optional fields based on validity flags.
+/// Reduces repetitive `if state & FLAG != 0 { Some(value) } else { None }` patterns.
+macro_rules! valid_if {
+    ($state:expr, $flag:expr, $value:expr) => {
+        if $state & $flag != 0 {
+            Some($value)
+        } else {
+            None
+        }
+    };
+}
+
+/// Extract transport information from VST3 ProcessContext.
+///
+/// Converts VST3's validity flags to Rust's Option<T> idiom.
+/// Returns a default Transport if the context pointer is null.
+///
+/// # Safety
+///
+/// The caller must ensure `ctx_ptr` is either null or points to a valid
+/// ProcessContext struct for the duration of this call.
+unsafe fn extract_transport(ctx_ptr: *const ProcessContext) -> Transport {
+    if ctx_ptr.is_null() {
+        return Transport::default();
+    }
+
+    let ctx = &*ctx_ptr;
+    let state = ctx.state;
+
+    // VST3 ProcessContext state flags
+    const K_PLAYING: u32 = 1 << 1;
+    const K_CYCLE_ACTIVE: u32 = 1 << 2;
+    const K_RECORDING: u32 = 1 << 3;
+    const K_SYSTEM_TIME_VALID: u32 = 1 << 8;
+    const K_PROJECT_TIME_MUSIC_VALID: u32 = 1 << 9;
+    const K_TEMPO_VALID: u32 = 1 << 10;
+    const K_BAR_POSITION_VALID: u32 = 1 << 11;
+    const K_CYCLE_VALID: u32 = 1 << 12;
+    const K_TIME_SIG_VALID: u32 = 1 << 13;
+    const K_SMPTE_VALID: u32 = 1 << 14;
+    const K_CLOCK_VALID: u32 = 1 << 15;
+    const K_CONT_TIME_VALID: u32 = 1 << 17;
+
+    Transport {
+        // Tempo and time signature
+        tempo: valid_if!(state, K_TEMPO_VALID, ctx.tempo),
+        time_sig_numerator: valid_if!(state, K_TIME_SIG_VALID, ctx.timeSigNumerator),
+        time_sig_denominator: valid_if!(state, K_TIME_SIG_VALID, ctx.timeSigDenominator),
+
+        // Position
+        project_time_samples: Some(ctx.projectTimeSamples),
+        project_time_beats: valid_if!(state, K_PROJECT_TIME_MUSIC_VALID, ctx.projectTimeMusic),
+        bar_position_beats: valid_if!(state, K_BAR_POSITION_VALID, ctx.barPositionMusic),
+
+        // Cycle/loop
+        cycle_start_beats: valid_if!(state, K_CYCLE_VALID, ctx.cycleStartMusic),
+        cycle_end_beats: valid_if!(state, K_CYCLE_VALID, ctx.cycleEndMusic),
+
+        // Transport state (always valid)
+        is_playing: state & K_PLAYING != 0,
+        is_recording: state & K_RECORDING != 0,
+        is_cycle_active: state & K_CYCLE_ACTIVE != 0,
+
+        // Advanced timing
+        system_time_ns: valid_if!(state, K_SYSTEM_TIME_VALID, ctx.systemTime),
+        continuous_time_samples: valid_if!(state, K_CONT_TIME_VALID, ctx.continousTimeSamples), // Note: VST3 SDK typo
+        samples_to_next_clock: valid_if!(state, K_CLOCK_VALID, ctx.samplesToNextClock),
+
+        // SMPTE - use FrameRate::from_raw() for conversion
+        smpte_offset_subframes: valid_if!(state, K_SMPTE_VALID, ctx.smpteOffsetSubframes),
+        frame_rate: if state & K_SMPTE_VALID != 0 {
+            let is_drop = ctx.frameRate.flags & 1 != 0;
+            CoreFrameRate::from_raw(ctx.frameRate.framesPerSecond, is_drop)
+        } else {
+            None
+        },
     }
 }
 
@@ -814,12 +896,18 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         let aux_inputs: Vec<Vec<&[f32]>> = input_buses_slices.into_iter().skip(1).collect();
         let aux_outputs: Vec<Vec<&mut [f32]>> = output_buses_slices.into_iter().skip(1).collect();
 
-        // 5. Construct buffers and call plugin process
+        // 5. Construct buffers and process context
         let mut buffer = Buffer::new(main_inputs, main_outputs, num_samples);
         let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, num_samples);
 
+        // 6. Extract transport info from VST3 ProcessContext
+        let transport = extract_transport(process_data.processContext);
+        let sample_rate = *self.sample_rate.get();
+        let context = CoreProcessContext::new(sample_rate, num_samples, transport);
+
+        // 7. Call plugin process with context
         let plugin = self.plugin_mut();
-        plugin.process(&mut buffer, &mut aux);
+        plugin.process(&mut buffer, &mut aux, &context);
 
         kResultOk
     }
@@ -831,7 +919,30 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
 impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P> {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        0
+        // Request all available transport information from host.
+        // These flags tell the host which ProcessContext fields we need.
+        // See VST3 SDK: IProcessContextRequirements interface
+        const K_NEED_SYSTEM_TIME: u32 = 1 << 0;
+        const K_NEED_CONTINUOUS_TIME_SAMPLES: u32 = 1 << 1;
+        const K_NEED_PROJECT_TIME_MUSIC: u32 = 1 << 2;
+        const K_NEED_BAR_POSITION_MUSIC: u32 = 1 << 3;
+        const K_NEED_CYCLE_MUSIC: u32 = 1 << 4;
+        const K_NEED_SAMPLES_TO_NEXT_CLOCK: u32 = 1 << 5;
+        const K_NEED_TEMPO: u32 = 1 << 6;
+        const K_NEED_TIME_SIGNATURE: u32 = 1 << 7;
+        const K_NEED_FRAME_RATE: u32 = 1 << 9;
+        const K_NEED_TRANSPORT_STATE: u32 = 1 << 10;
+
+        K_NEED_SYSTEM_TIME
+            | K_NEED_CONTINUOUS_TIME_SAMPLES
+            | K_NEED_PROJECT_TIME_MUSIC
+            | K_NEED_BAR_POSITION_MUSIC
+            | K_NEED_CYCLE_MUSIC
+            | K_NEED_SAMPLES_TO_NEXT_CLOCK
+            | K_NEED_TEMPO
+            | K_NEED_TIME_SIGNATURE
+            | K_NEED_FRAME_RATE
+            | K_NEED_TRANSPORT_STATE
     }
 }
 
