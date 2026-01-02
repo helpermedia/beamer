@@ -179,13 +179,19 @@ pub struct GainProcessor {
     params: GainParams,
 }
 
-impl AudioProcessor for GainProcessor {
-    fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {
-        // No sample-rate dependent state for a simple gain plugin
-    }
-
-    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
-        let gain = self.params.gain_linear();
+impl GainProcessor {
+    /// Generic processing implementation for both f32 and f64.
+    ///
+    /// This demonstrates the recommended pattern: write your DSP once
+    /// using the Sample trait, then delegate from both process() and
+    /// process_f64() to avoid code duplication.
+    fn process_generic<S: Sample>(
+        &mut self,
+        buffer: &mut Buffer<S>,
+        aux: &mut AuxiliaryBuffers<S>,
+        context: &ProcessContext,
+    ) {
+        let gain = S::from_f32(self.params.gain_linear());
 
         // Example: Access transport info from host
         // tempo is available when the DAW provides it (most do)
@@ -198,26 +204,26 @@ impl AudioProcessor for GainProcessor {
 
         // Calculate sidechain level for ducking (if sidechain is connected)
         // Using the new AuxInput::rms() helper for cleaner code
-        let sidechain_level = aux
+        let sidechain_level: S = aux
             .sidechain()
             .map(|sc| {
                 // Average RMS across all sidechain channels
-                let mut sum = 0.0f32;
+                let mut sum = S::ZERO;
                 for ch in 0..sc.num_channels() {
-                    sum += sc.rms(ch);
+                    sum = sum + sc.rms(ch);
                 }
                 if sc.num_channels() > 0 {
-                    sum / sc.num_channels() as f32
+                    sum / S::from_f32(sc.num_channels() as f32)
                 } else {
-                    0.0
+                    S::ZERO
                 }
             })
-            .unwrap_or(0.0);
+            .unwrap_or(S::ZERO);
 
         // Simple ducking: reduce gain when sidechain has signal
         // Ducking amount: 0 = no ducking, 1 = full ducking
-        let duck_amount = (sidechain_level * 4.0).min(1.0);
-        let effective_gain = gain * (1.0 - duck_amount * 0.8); // Max 80% reduction
+        let duck_amount = (sidechain_level * S::from_f32(4.0)).min(S::ONE);
+        let effective_gain = gain * (S::ONE - duck_amount * S::from_f32(0.8)); // Max 80% reduction
 
         // Process using zip_channels() iterator for cleaner code
         for (input, output) in buffer.zip_channels() {
@@ -225,6 +231,35 @@ impl AudioProcessor for GainProcessor {
                 *o = *i * effective_gain;
             }
         }
+    }
+}
+
+impl AudioProcessor for GainProcessor {
+    fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {
+        // No sample-rate dependent state for a simple gain plugin
+    }
+
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+        // Delegate to generic implementation
+        self.process_generic(buffer, aux, context);
+    }
+
+    // =========================================================================
+    // 64-bit Processing Support
+    // =========================================================================
+
+    fn supports_double_precision(&self) -> bool {
+        true // This plugin supports native f64 processing
+    }
+
+    fn process_f64(
+        &mut self,
+        buffer: &mut Buffer<f64>,
+        aux: &mut AuxiliaryBuffers<f64>,
+        context: &ProcessContext,
+    ) {
+        // Delegate to generic implementation - same code works for both f32 and f64!
+        self.process_generic(buffer, aux, context);
     }
 
     // =========================================================================

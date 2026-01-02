@@ -43,6 +43,7 @@
 //! ```
 
 use crate::buffer::Buffer;
+use crate::sample::Sample;
 
 // =============================================================================
 // BypassState
@@ -89,10 +90,10 @@ impl CrossfadeCurve {
     /// * `t` - Normalized position (0.0 = fully wet, 1.0 = fully dry)
     ///
     /// # Returns
-    /// Tuple of (wet_gain, dry_gain)
+    /// Tuple of (wet_gain, dry_gain) as the specified sample type
     #[inline]
-    pub fn gains(&self, t: f32) -> (f32, f32) {
-        match self {
+    pub fn gains<S: Sample>(&self, t: f32) -> (S, S) {
+        let (wet_f32, dry_f32) = match self {
             CrossfadeCurve::Linear => (1.0 - t, t),
             CrossfadeCurve::EqualPower => {
                 let angle = t * std::f32::consts::FRAC_PI_2;
@@ -102,7 +103,8 @@ impl CrossfadeCurve {
                 let smooth = t * t * (3.0 - 2.0 * t); // smoothstep
                 (1.0 - smooth, smooth)
             }
-        }
+        };
+        (S::from_f32(wet_f32), S::from_f32(dry_f32))
     }
 }
 
@@ -114,6 +116,13 @@ impl CrossfadeCurve {
 ///
 /// Maintains bypass state and provides automatic crossfade between
 /// wet (processed) and dry (passthrough) signals when bypass is toggled.
+///
+/// # Sample Type Flexibility
+///
+/// BypassHandler is not generic over sample type - instead, the `process()`
+/// method is generic. This means a single BypassHandler instance can process
+/// both `Buffer<f32>` and `Buffer<f64>` buffers, and plugins don't need
+/// separate handlers for different precision modes.
 ///
 /// # Real-Time Safety
 ///
@@ -258,6 +267,11 @@ impl BypassHandler {
     /// - Normal processing when fully active
     /// - Crossfading during transitions
     ///
+    /// # Type Parameter
+    ///
+    /// `S` is the sample type (`f32` or `f64`). The same BypassHandler instance
+    /// can process buffers of either precision.
+    ///
     /// # Arguments
     /// * `buffer` - Audio buffer to process
     /// * `bypassed` - Current bypass parameter state (true = bypassed)
@@ -271,9 +285,9 @@ impl BypassHandler {
     /// | RampingToBypassed | Yes | Crossfade wet→dry |
     /// | Bypassed | No | Dry passthrough |
     /// | RampingToActive | Yes | Crossfade dry→wet |
-    pub fn process<F>(&mut self, buffer: &mut Buffer, bypassed: bool, process_fn: F)
+    pub fn process<S: Sample, F>(&mut self, buffer: &mut Buffer<S>, bypassed: bool, process_fn: F)
     where
-        F: FnOnce(&mut Buffer),
+        F: FnOnce(&mut Buffer<S>),
     {
         // Update target state
         self.set_bypass(bypassed);
@@ -301,7 +315,7 @@ impl BypassHandler {
         }
     }
 
-    fn apply_crossfade(&mut self, buffer: &mut Buffer, num_samples: usize) {
+    fn apply_crossfade<S: Sample>(&mut self, buffer: &mut Buffer<S>, num_samples: usize) {
         // Guard: instant bypass when ramp_samples is 0
         if self.ramp_samples == 0 {
             return;
@@ -320,7 +334,7 @@ impl BypassHandler {
         for sample_idx in 0..num_samples {
             // Calculate normalized position (0.0 = wet, 1.0 = dry)
             let t = (self.ramp_position as f32) / ramp_samples_f;
-            let (wet_gain, dry_gain) = self.curve.gains(t);
+            let (wet_gain, dry_gain): (S, S) = self.curve.gains(t);
 
             // Apply crossfade to all channels for this sample
             for ch in 0..num_channels {

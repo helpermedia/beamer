@@ -57,6 +57,8 @@ pub mod prelude {
     pub use beamr_core::{
         // Buffer types
         AuxiliaryBuffers, AuxInput, AuxOutput, Buffer,
+        // Sample trait for generic f32/f64 processing
+        Sample,
         // Traits
         AudioProcessor, EditorDelegate, Parameters, Plugin,
         // Bus configuration

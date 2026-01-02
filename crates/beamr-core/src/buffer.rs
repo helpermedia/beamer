@@ -13,6 +13,11 @@
 //! This separation solves Rust's lifetime variance constraints with nested mutable
 //! references while providing a clean, ergonomic API.
 //!
+//! # Generic Sample Type
+//!
+//! All buffer types are generic over `S: Sample`, defaulting to `f32`. This enables
+//! zero-cost generic processing for both 32-bit and 64-bit audio.
+//!
 //! # Example: Simple Gain Plugin
 //!
 //! ```ignore
@@ -45,6 +50,8 @@
 //! }
 //! ```
 
+use crate::sample::Sample;
+
 // =============================================================================
 // Buffer - Main Audio I/O
 // =============================================================================
@@ -53,6 +60,11 @@
 ///
 /// Contains input and output channel slices for the primary audio bus.
 /// This is what most plugins interact with - simple stereo or surround I/O.
+///
+/// # Type Parameter
+///
+/// `S` is the sample type, defaulting to `f32`. Use `Buffer<f64>` for
+/// 64-bit double precision processing.
 ///
 /// # Lifetime
 ///
@@ -64,23 +76,23 @@
 /// Channels are indexed starting from 0:
 /// - Stereo: 0 = Left, 1 = Right
 /// - Surround: 0 = Left, 1 = Right, 2 = Center, etc.
-pub struct Buffer<'a> {
+pub struct Buffer<'a, S: Sample = f32> {
     /// Input channel slices (immutable audio from host)
-    inputs: Vec<&'a [f32]>,
+    inputs: Vec<&'a [S]>,
     /// Output channel slices (mutable audio to host)
-    outputs: Vec<&'a mut [f32]>,
+    outputs: Vec<&'a mut [S]>,
     /// Number of samples in this processing block
     num_samples: usize,
 }
 
-impl<'a> Buffer<'a> {
+impl<'a, S: Sample> Buffer<'a, S> {
     /// Create a new buffer from channel slices.
     ///
     /// This is called by the VST3 wrapper, not by plugin code.
     #[inline]
     pub fn new(
-        inputs: Vec<&'a [f32]>,
-        outputs: Vec<&'a mut [f32]>,
+        inputs: Vec<&'a [S]>,
+        outputs: Vec<&'a mut [S]>,
         num_samples: usize,
     ) -> Self {
         Self { inputs, outputs, num_samples }
@@ -128,7 +140,7 @@ impl<'a> Buffer<'a> {
     ///
     /// Returns an empty slice if the channel doesn't exist.
     #[inline]
-    pub fn input(&self, channel: usize) -> &[f32] {
+    pub fn input(&self, channel: usize) -> &[S] {
         self.inputs
             .get(channel)
             .map(|ch| &ch[..self.num_samples])
@@ -141,7 +153,7 @@ impl<'a> Buffer<'a> {
     ///
     /// Panics if the channel index is out of bounds.
     #[inline]
-    pub fn output(&mut self, channel: usize) -> &mut [f32] {
+    pub fn output(&mut self, channel: usize) -> &mut [S] {
         &mut self.outputs[channel][..self.num_samples]
     }
 
@@ -149,7 +161,7 @@ impl<'a> Buffer<'a> {
     ///
     /// Returns `None` if the channel doesn't exist.
     #[inline]
-    pub fn output_checked(&mut self, channel: usize) -> Option<&mut [f32]> {
+    pub fn output_checked(&mut self, channel: usize) -> Option<&mut [S]> {
         self.outputs
             .get_mut(channel)
             .map(|ch| &mut ch[..self.num_samples])
@@ -161,14 +173,14 @@ impl<'a> Buffer<'a> {
 
     /// Iterate over all input channels.
     #[inline]
-    pub fn inputs(&self) -> impl Iterator<Item = &[f32]> + '_ {
+    pub fn inputs(&self) -> impl Iterator<Item = &[S]> + '_ {
         let n = self.num_samples;
         self.inputs.iter().map(move |ch| &ch[..n])
     }
 
     /// Iterate over all output channels mutably.
     #[inline]
-    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_, 'a> {
+    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'a, S> {
         let n = self.num_samples;
         self.outputs.iter_mut().map(move |ch| &mut ch[..n])
     }
@@ -188,7 +200,7 @@ impl<'a> Buffer<'a> {
     /// }
     /// ```
     #[inline]
-    pub fn zip_channels(&mut self) -> impl Iterator<Item = (&[f32], &mut [f32])> + use<'_, 'a> {
+    pub fn zip_channels(&mut self) -> impl Iterator<Item = (&[S], &mut [S])> + use<'_, 'a, S> {
         let n = self.num_samples;
         let num_pairs = self.inputs.len().min(self.outputs.len());
         self.inputs[..num_pairs]
@@ -217,15 +229,15 @@ impl<'a> Buffer<'a> {
     /// Clear all output channels to silence.
     pub fn clear_outputs(&mut self) {
         for output in self.outputs.iter_mut() {
-            output[..self.num_samples].fill(0.0);
+            output[..self.num_samples].fill(S::ZERO);
         }
     }
 
     /// Apply a gain factor to all output channels.
-    pub fn apply_output_gain(&mut self, gain: f32) {
+    pub fn apply_output_gain(&mut self, gain: S) {
         for output in self.outputs.iter_mut() {
             for sample in &mut output[..self.num_samples] {
-                *sample *= gain;
+                *sample = *sample * gain;
             }
         }
     }
@@ -239,6 +251,11 @@ impl<'a> Buffer<'a> {
 ///
 /// Contains all non-main audio buses. Most plugins don't need this -
 /// they only use the main [`Buffer`].
+///
+/// # Type Parameter
+///
+/// `S` is the sample type, defaulting to `f32`. Use `AuxiliaryBuffers<f64>` for
+/// 64-bit double precision processing.
 ///
 /// # Bus Indexing
 ///
@@ -254,23 +271,23 @@ impl<'a> Buffer<'a> {
 ///     // Use for compression keying, ducking, etc.
 /// }
 /// ```
-pub struct AuxiliaryBuffers<'a> {
+pub struct AuxiliaryBuffers<'a, S: Sample = f32> {
     /// Auxiliary input buses (e.g., sidechain inputs)
-    inputs: Vec<Vec<&'a [f32]>>,
+    inputs: Vec<Vec<&'a [S]>>,
     /// Auxiliary output buses (e.g., aux sends)
-    outputs: Vec<Vec<&'a mut [f32]>>,
+    outputs: Vec<Vec<&'a mut [S]>>,
     /// Number of samples in this processing block
     num_samples: usize,
 }
 
-impl<'a> AuxiliaryBuffers<'a> {
+impl<'a, S: Sample> AuxiliaryBuffers<'a, S> {
     /// Create new auxiliary buffers.
     ///
     /// This is called by the VST3 wrapper, not by plugin code.
     #[inline]
     pub fn new(
-        inputs: Vec<Vec<&'a [f32]>>,
-        outputs: Vec<Vec<&'a mut [f32]>>,
+        inputs: Vec<Vec<&'a [S]>>,
+        outputs: Vec<Vec<&'a mut [S]>>,
         num_samples: usize,
     ) -> Self {
         Self { inputs, outputs, num_samples }
@@ -331,7 +348,7 @@ impl<'a> AuxiliaryBuffers<'a> {
     ///     .unwrap_or(0.0);
     /// ```
     #[inline]
-    pub fn sidechain(&self) -> Option<AuxInput<'_>> {
+    pub fn sidechain(&self) -> Option<AuxInput<'_, S>> {
         self.input(0)
     }
 
@@ -339,7 +356,7 @@ impl<'a> AuxiliaryBuffers<'a> {
     ///
     /// Returns `None` if the bus doesn't exist or has no channels.
     #[inline]
-    pub fn input(&self, bus: usize) -> Option<AuxInput<'_>> {
+    pub fn input(&self, bus: usize) -> Option<AuxInput<'_, S>> {
         self.inputs.get(bus).and_then(|channels| {
             if channels.is_empty() {
                 None
@@ -356,7 +373,7 @@ impl<'a> AuxiliaryBuffers<'a> {
     ///
     /// Returns `None` if the bus doesn't exist or has no channels.
     #[inline]
-    pub fn output(&mut self, bus: usize) -> Option<AuxOutput<'_, 'a>> {
+    pub fn output(&mut self, bus: usize) -> Option<AuxOutput<'_, 'a, S>> {
         let num_samples = self.num_samples;
         self.outputs.get_mut(bus).and_then(move |channels| {
             if channels.is_empty() {
@@ -376,7 +393,7 @@ impl<'a> AuxiliaryBuffers<'a> {
 
     /// Iterate over all auxiliary input buses.
     #[inline]
-    pub fn iter_inputs(&self) -> impl Iterator<Item = AuxInput<'_>> + '_ {
+    pub fn iter_inputs(&self) -> impl Iterator<Item = AuxInput<'_, S>> + '_ {
         let num_samples = self.num_samples;
         self.inputs
             .iter()
@@ -386,7 +403,7 @@ impl<'a> AuxiliaryBuffers<'a> {
 
     /// Iterate over all auxiliary output buses mutably.
     #[inline]
-    pub fn iter_outputs(&mut self) -> impl Iterator<Item = AuxOutput<'_, 'a>> + '_ {
+    pub fn iter_outputs(&mut self) -> impl Iterator<Item = AuxOutput<'_, 'a, S>> + '_ {
         let num_samples = self.num_samples;
         self.outputs
             .iter_mut()
@@ -405,6 +422,10 @@ impl<'a> AuxiliaryBuffers<'a> {
 /// (typically sidechain). Created via [`AuxiliaryBuffers::sidechain()`]
 /// or [`AuxiliaryBuffers::input()`].
 ///
+/// # Type Parameter
+///
+/// `S` is the sample type, defaulting to `f32`.
+///
 /// # Example
 ///
 /// ```ignore
@@ -418,12 +439,12 @@ impl<'a> AuxiliaryBuffers<'a> {
 ///     }
 /// }
 /// ```
-pub struct AuxInput<'a> {
-    channels: &'a [&'a [f32]],
+pub struct AuxInput<'a, S: Sample = f32> {
+    channels: &'a [&'a [S]],
     num_samples: usize,
 }
 
-impl<'a> AuxInput<'a> {
+impl<'a, S: Sample> AuxInput<'a, S> {
     /// Number of samples in each channel.
     #[inline]
     pub fn num_samples(&self) -> usize {
@@ -440,7 +461,7 @@ impl<'a> AuxInput<'a> {
     ///
     /// Returns an empty slice if the channel doesn't exist.
     #[inline]
-    pub fn channel(&self, index: usize) -> &[f32] {
+    pub fn channel(&self, index: usize) -> &[S] {
         self.channels
             .get(index)
             .map(|ch| &ch[..self.num_samples])
@@ -449,7 +470,7 @@ impl<'a> AuxInput<'a> {
 
     /// Iterate over all channel slices.
     #[inline]
-    pub fn iter_channels(&self) -> impl Iterator<Item = &[f32]> + '_ {
+    pub fn iter_channels(&self) -> impl Iterator<Item = &[S]> + '_ {
         let n = self.num_samples;
         self.channels.iter().map(move |ch| &ch[..n])
     }
@@ -460,35 +481,38 @@ impl<'a> AuxInput<'a> {
 
     /// Calculate the RMS (root mean square) level of a channel.
     ///
-    /// Returns 0.0 if the channel doesn't exist or is empty.
-    pub fn rms(&self, channel: usize) -> f32 {
+    /// Returns zero if the channel doesn't exist or is empty.
+    pub fn rms(&self, channel: usize) -> S {
         let ch = self.channel(channel);
         if ch.is_empty() {
-            return 0.0;
+            return S::ZERO;
         }
-        let sum: f32 = ch.iter().map(|&s| s * s).sum();
-        (sum / ch.len() as f32).sqrt()
+        let sum: S = ch.iter().fold(S::ZERO, |acc, &s| acc + s * s);
+        let len = S::from_f32(ch.len() as f32);
+        (sum / len).sqrt()
     }
 
     /// Calculate the peak level of a channel.
     ///
-    /// Returns 0.0 if the channel doesn't exist or is empty.
-    pub fn peak(&self, channel: usize) -> f32 {
+    /// Returns zero if the channel doesn't exist or is empty.
+    pub fn peak(&self, channel: usize) -> S {
         self.channel(channel)
             .iter()
-            .map(|s| s.abs())
-            .fold(0.0f32, |a, b| a.max(b))
+            .map(|&s| s.abs())
+            .fold(S::ZERO, |a, b| a.max(b))
     }
 
     /// Calculate the average absolute level of a channel.
     ///
-    /// Returns 0.0 if the channel doesn't exist or is empty.
-    pub fn average(&self, channel: usize) -> f32 {
+    /// Returns zero if the channel doesn't exist or is empty.
+    pub fn average(&self, channel: usize) -> S {
         let ch = self.channel(channel);
         if ch.is_empty() {
-            return 0.0;
+            return S::ZERO;
         }
-        ch.iter().map(|s| s.abs()).sum::<f32>() / ch.len() as f32
+        let sum: S = ch.iter().map(|&s| s.abs()).fold(S::ZERO, |a, b| a + b);
+        let len = S::from_f32(ch.len() as f32);
+        sum / len
     }
 }
 
@@ -500,6 +524,10 @@ impl<'a> AuxInput<'a> {
 ///
 /// Provides access to output channels for a single auxiliary bus
 /// (e.g., aux sends, multi-out). Created via [`AuxiliaryBuffers::output()`].
+///
+/// # Type Parameter
+///
+/// `S` is the sample type, defaulting to `f32`.
 ///
 /// # Lifetime Parameters
 ///
@@ -519,12 +547,12 @@ impl<'a> AuxInput<'a> {
 ///     }
 /// }
 /// ```
-pub struct AuxOutput<'borrow, 'data> {
-    channels: &'borrow mut [&'data mut [f32]],
+pub struct AuxOutput<'borrow, 'data, S: Sample = f32> {
+    channels: &'borrow mut [&'data mut [S]],
     num_samples: usize,
 }
 
-impl<'borrow, 'data> AuxOutput<'borrow, 'data> {
+impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
     /// Number of samples in each channel.
     #[inline]
     pub fn num_samples(&self) -> usize {
@@ -543,7 +571,7 @@ impl<'borrow, 'data> AuxOutput<'borrow, 'data> {
     ///
     /// Panics if the channel index is out of bounds.
     #[inline]
-    pub fn channel(&mut self, index: usize) -> &mut [f32] {
+    pub fn channel(&mut self, index: usize) -> &mut [S] {
         &mut self.channels[index][..self.num_samples]
     }
 
@@ -551,7 +579,7 @@ impl<'borrow, 'data> AuxOutput<'borrow, 'data> {
     ///
     /// Returns `None` if the channel doesn't exist.
     #[inline]
-    pub fn channel_checked(&mut self, index: usize) -> Option<&mut [f32]> {
+    pub fn channel_checked(&mut self, index: usize) -> Option<&mut [S]> {
         self.channels
             .get_mut(index)
             .map(|ch| &mut ch[..self.num_samples])
@@ -559,7 +587,7 @@ impl<'borrow, 'data> AuxOutput<'borrow, 'data> {
 
     /// Iterate over all channel slices mutably.
     #[inline]
-    pub fn iter_channels(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_, 'data> {
+    pub fn iter_channels(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'data, S> {
         let n = self.num_samples;
         self.channels.iter_mut().map(move |ch| &mut ch[..n])
     }
@@ -567,12 +595,12 @@ impl<'borrow, 'data> AuxOutput<'borrow, 'data> {
     /// Clear all channels to silence.
     pub fn clear(&mut self) {
         for ch in self.channels.iter_mut() {
-            ch[..self.num_samples].fill(0.0);
+            ch[..self.num_samples].fill(S::ZERO);
         }
     }
 
     /// Fill all channels with a constant value.
-    pub fn fill(&mut self, value: f32) {
+    pub fn fill(&mut self, value: S) {
         for ch in self.channels.iter_mut() {
             ch[..self.num_samples].fill(value);
         }

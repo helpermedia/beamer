@@ -34,6 +34,7 @@ pub mod midi;
 pub mod params;
 pub mod plugin;
 pub mod process_context;
+pub mod sample;
 pub mod types;
 
 // Re-exports for convenience
@@ -74,4 +75,5 @@ pub use plugin::{
     Plugin,
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
+pub use sample::Sample;
 pub use types::{ParamId, ParamValue, Rect, Size};

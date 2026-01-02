@@ -233,6 +233,119 @@ pub trait AudioProcessor: Send {
         64
     }
 
+    // =========================================================================
+    // 64-bit Processing Support
+    // =========================================================================
+
+    /// Returns true if the plugin supports native 64-bit (double precision) processing.
+    ///
+    /// Override this to return `true` if your plugin implements `process_f64()` natively.
+    /// When false (default), the framework will automatically convert 64-bit host buffers
+    /// to 32-bit, call `process()`, and convert back.
+    ///
+    /// # Performance Considerations
+    ///
+    /// - For most plugins, f32 is sufficient and the default conversion is fine
+    /// - Implement native f64 only if your DSP algorithm benefits from double precision
+    ///   (e.g., IIR filters with long decay, precision-sensitive synthesis)
+    /// - The conversion overhead is minimal (~few microseconds per buffer)
+    ///
+    /// Default returns `false`.
+    fn supports_double_precision(&self) -> bool {
+        false
+    }
+
+    /// Process an audio buffer at 64-bit (double) precision.
+    ///
+    /// This is the f64 equivalent of `process()`. Override this method AND
+    /// return `true` from `supports_double_precision()` to enable native
+    /// 64-bit processing.
+    ///
+    /// If `supports_double_precision()` returns `false`, this method is never
+    /// called - the framework converts to f32 and calls `process()` instead.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation converts f64→f32, calls `process()`, then
+    /// converts f32→f64. This allows any plugin to work in a 64-bit host
+    /// without modification.
+    ///
+    /// # Example: Native f64 Plugin
+    ///
+    /// ```ignore
+    /// fn supports_double_precision(&self) -> bool {
+    ///     true
+    /// }
+    ///
+    /// fn process_f64(
+    ///     &mut self,
+    ///     buffer: &mut Buffer<f64>,
+    ///     aux: &mut AuxiliaryBuffers<f64>,
+    ///     context: &ProcessContext,
+    /// ) {
+    ///     let gain = self.params.gain_linear() as f64;
+    ///     for (input, output) in buffer.zip_channels() {
+    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
+    ///             *o = *i * gain;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    fn process_f64(
+        &mut self,
+        buffer: &mut Buffer<f64>,
+        _aux: &mut AuxiliaryBuffers<f64>,
+        context: &ProcessContext,
+    ) {
+        // Default implementation: convert f64 → f32, process, convert back
+        //
+        // NOTE: This is a fallback implementation that allocates memory.
+        // In practice, this method is rarely called because:
+        // - The VST3 wrapper handles conversion with pre-allocated buffers
+        //   (see `process_audio_f64_converted` in beamr-vst3/src/processor.rs)
+        // - Future format wrappers (CLAP, etc.) should also pre-allocate
+        //
+        // If you're implementing a custom wrapper, ensure you handle
+        // f64→f32 conversion with pre-allocated buffers for real-time safety.
+
+        let num_samples = buffer.num_samples();
+        let num_input_channels = buffer.num_input_channels();
+        let num_output_channels = buffer.num_output_channels();
+
+        // Allocate conversion buffers (VST3 wrapper uses pre-allocated buffers,
+        // this is only for the fallback default implementation)
+        let input_f32: Vec<Vec<f32>> = (0..num_input_channels)
+            .map(|ch| buffer.input(ch).iter().map(|&s| s as f32).collect())
+            .collect();
+        let mut output_f32: Vec<Vec<f32>> = (0..num_output_channels)
+            .map(|_| vec![0.0f32; num_samples])
+            .collect();
+
+        // Build f32 buffer slices
+        let input_slices: Vec<&[f32]> = input_f32.iter().map(|v| v.as_slice()).collect();
+        let output_slices: Vec<&mut [f32]> = output_f32
+            .iter_mut()
+            .map(|v| v.as_mut_slice())
+            .collect();
+
+        let mut buffer_f32 = Buffer::new(input_slices, output_slices, num_samples);
+
+        // For aux buffers, we use empty for now (full aux conversion is complex)
+        // The VST3 wrapper handles proper aux conversion
+        let mut aux_f32: AuxiliaryBuffers<f32> = AuxiliaryBuffers::empty();
+
+        // Process at f32
+        self.process(&mut buffer_f32, &mut aux_f32, context);
+
+        // Convert output back to f64
+        for (ch, output_samples) in output_f32.iter().enumerate().take(num_output_channels) {
+            let output_ch = buffer.output(ch);
+            for (i, sample) in output_samples.iter().enumerate() {
+                output_ch[i] = *sample as f64;
+            }
+        }
+    }
+
     /// Save the plugin state to bytes.
     ///
     /// This is called when the DAW saves a project or preset. The returned

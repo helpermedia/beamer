@@ -13,6 +13,7 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (a
 ## Features
 
 - **Format-agnostic core** - Plugin logic is independent of VST3 specifics
+- **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
 - **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
 - **Complete MIDI support** - All VST3 SDK 3.8.0 MIDI features including MPE, Note Expression, and MIDI 2.0
 - **Real-time safe** - No heap allocations in the audio path
