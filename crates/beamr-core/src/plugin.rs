@@ -426,12 +426,16 @@ pub trait AudioProcessor: Send {
     /// This method must be real-time safe. Do not allocate, lock mutexes,
     /// or perform any operation with unbounded execution time.
     ///
+    /// **Note:** Cloning a `SysEx` event allocates due to `Box<SysEx>`. SysEx
+    /// events are rare in typical use cases. If strict real-time safety is
+    /// required, override this method to handle SysEx specially.
+    ///
     /// # Default Implementation
     ///
     /// The default implementation passes all events through unchanged.
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         for event in input {
-            output.push(*event);
+            output.push(event.clone());
         }
     }
 

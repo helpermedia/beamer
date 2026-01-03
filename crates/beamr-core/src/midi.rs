@@ -1,8 +1,17 @@
 //! MIDI event types for audio plugins.
 //!
 //! This module provides format-agnostic MIDI event types designed for
-//! real-time audio processing. All types are `Copy` to ensure they can
-//! be passed without heap allocation.
+//! real-time audio processing. Most basic types (notes, CC, pitch bend)
+//! are `Copy` and can be passed without heap allocation.
+//!
+//! ## SysEx Handling
+//!
+//! The [`MidiEventKind::SysEx`] variant uses `Box<SysEx>` to avoid stack
+//! overflow from the large 512-byte SysEx buffer. As a result, [`MidiEvent`]
+//! and [`MidiEventKind`] are `Clone` but not `Copy`.
+//!
+//! **Note:** Cloning a SysEx event allocates. For pass-through of SysEx in
+//! `process_midi()`, consider whether allocation is acceptable for your use case.
 //!
 //! ## Buffer Sizes
 //!
@@ -333,7 +342,10 @@ pub struct ProgramChange {
 
 /// System Exclusive (SysEx) message.
 ///
-/// Uses a fixed-size buffer to maintain `Copy` semantics for real-time safety.
+/// Uses a fixed-size buffer for efficient storage. When used in [`MidiEventKind`],
+/// it is boxed (`Box<SysEx>`) to prevent the large buffer from bloating the enum
+/// size and causing stack overflow.
+///
 /// The buffer size is configurable via Cargo features (default 512 bytes).
 #[derive(Clone, Copy)]
 pub struct SysEx {
@@ -1286,11 +1298,9 @@ pub mod note_expression {
 
 /// MIDI event types.
 ///
-/// Note: This enum intentionally has large size variance between variants
-/// (SysEx contains a fixed buffer). This is by design for real-time safety -
-/// all variants must be `Copy` with no heap allocation.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(clippy::large_enum_variant)]
+/// Most variants are small (8-32 bytes). The `SysEx` variant uses `Box<SysEx>`
+/// to avoid bloating the enum size and prevent stack overflow.
+#[derive(Debug, Clone, PartialEq)]
 pub enum MidiEventKind {
     // =========================================================================
     // Note-related events (have note_id for tracking)
@@ -1321,7 +1331,10 @@ pub enum MidiEventKind {
     // =========================================================================
 
     /// System Exclusive (SysEx) message.
-    SysEx(SysEx),
+    ///
+    /// Uses `Box<SysEx>` to avoid bloating the enum size. SysEx messages are
+    /// relatively rare compared to notes and CCs, so the heap allocation is acceptable.
+    SysEx(Box<SysEx>),
     /// Per-note expression value (MPE, f64 precision).
     NoteExpressionValue(NoteExpressionValue),
     /// Per-note expression integer value.
@@ -1338,12 +1351,30 @@ pub enum MidiEventKind {
 ///
 /// The `sample_offset` field specifies when within the current audio buffer
 /// this event should be processed, enabling sample-accurate MIDI timing.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MidiEvent {
     /// Sample offset within the current buffer (0 = start of buffer).
     pub sample_offset: u32,
     /// The MIDI event data.
     pub event: MidiEventKind,
+}
+
+impl Default for MidiEvent {
+    /// Creates a default MidiEvent (NoteOff with all fields zeroed).
+    ///
+    /// Used for buffer initialization. Does not allocate.
+    fn default() -> Self {
+        Self {
+            sample_offset: 0,
+            event: MidiEventKind::NoteOff(NoteOff {
+                channel: 0,
+                pitch: 0,
+                velocity: 0.0,
+                note_id: -1,
+                tuning: 0.0,
+            }),
+        }
+    }
 }
 
 impl MidiEvent {
@@ -1461,7 +1492,8 @@ impl MidiEvent {
 
     /// Create a SysEx event.
     ///
-    /// Note: This is not `const` because it initializes the fixed-size buffer.
+    /// Note: This allocates the SysEx data on the heap. SysEx messages are
+    /// relatively rare, so the allocation is acceptable.
     pub fn sysex(sample_offset: u32, data: &[u8]) -> Self {
         let mut sysex = SysEx::new();
         let copy_len = data.len().min(MAX_SYSEX_SIZE);
@@ -1469,7 +1501,7 @@ impl MidiEvent {
         sysex.len = copy_len as u16;
         Self {
             sample_offset,
-            event: MidiEventKind::SysEx(sysex),
+            event: MidiEventKind::SysEx(Box::new(sysex)),
         }
     }
 
@@ -1598,20 +1630,12 @@ pub struct MidiBuffer {
 
 impl MidiBuffer {
     /// Create a new empty MIDI buffer.
+    ///
+    /// Uses `std::array::from_fn` with `MidiEvent::default()` since
+    /// `MidiEvent` is no longer `Copy` (due to `Box<SysEx>`).
     pub fn new() -> Self {
-        // Initialize with dummy events (will be overwritten)
-        let default_event = MidiEvent {
-            sample_offset: 0,
-            event: MidiEventKind::NoteOff(NoteOff {
-                channel: 0,
-                pitch: 0,
-                velocity: 0.0,
-                note_id: -1,
-                tuning: 0.0,
-            }),
-        };
         Self {
-            events: [default_event; MAX_MIDI_EVENTS],
+            events: std::array::from_fn(|_| MidiEvent::default()),
             len: 0,
             overflowed: false,
         }

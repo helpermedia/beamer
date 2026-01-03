@@ -111,7 +111,7 @@ impl AudioProcessor for MidiTransformProcessor {
                 | MidiEventKind::PitchBend(_)
                 | MidiEventKind::ChannelPressure(_)
                 | MidiEventKind::ProgramChange(_) => {
-                    output.push(*event);
+                    output.push(event.clone());
                 }
 
                 // Pass through advanced VST3 events unchanged
@@ -122,7 +122,7 @@ impl AudioProcessor for MidiTransformProcessor {
                 | MidiEventKind::NoteExpressionText(_)
                 | MidiEventKind::ChordInfo(_)
                 | MidiEventKind::ScaleInfo(_) => {
-                    output.push(*event);
+                    output.push(event.clone());
                 }
             }
         }

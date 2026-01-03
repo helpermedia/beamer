@@ -567,6 +567,8 @@ pub struct Vst3Processor<P: Plugin> {
     max_block_size: UnsafeCell<usize>,
     /// Current symbolic sample size (kSample32 or kSample64)
     symbolic_sample_size: UnsafeCell<i32>,
+    /// MIDI input buffer (reused each process call to avoid stack overflow)
+    midi_input: UnsafeCell<MidiBuffer>,
     /// MIDI output buffer (reused each process call)
     midi_output: UnsafeCell<MidiBuffer>,
     /// SysEx output buffer pool (for VST3 DataEvent pointer stability)
@@ -600,6 +602,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
+            midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
                 config.sysex_slots,
@@ -1449,8 +1452,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
             }
         }
 
-        // 2. Handle MIDI events (stack-allocated buffer, no heap allocation)
-        let mut midi_input = MidiBuffer::new();
+        // 2. Handle MIDI events (reuse pre-allocated buffer to avoid stack overflow)
+        let midi_input = &mut *self.midi_input.get();
+        midi_input.clear();
 
         if let Some(event_list) = ComRef::from_raw(process_data.inputEvents) {
             let event_count = event_list.getEventCount();
@@ -2330,7 +2334,7 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
                 }
                 Some(MidiEvent {
                     sample_offset,
-                    event: MidiEventKind::SysEx(sysex),
+                    event: MidiEventKind::SysEx(Box::new(sysex)),
                 })
             } else {
                 None
