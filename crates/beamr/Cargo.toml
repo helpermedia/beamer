@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["derive"]
+derive = ["beamr-macros"]
+
 [dependencies]
 beamr-core = { workspace = true }
 beamr-vst3 = { workspace = true }
+beamr-macros = { workspace = true, optional = true }

@@ -1,17 +1,17 @@
 //! BR Gain - Example gain plugin demonstrating the BEAMR framework.
 //!
 //! This plugin shows how to:
-//! 1. Implement the `AudioProcessor` trait for DSP
-//! 2. Implement the `Parameters` trait for host communication
+//! 1. Use `#[derive(Params)]` macro for automatic trait implementations
+//! 2. Implement the `AudioProcessor` trait for DSP
 //! 3. Combine them with the `Plugin` trait
 //! 4. Export using `Vst3Processor<T>` wrapper
 //! 5. Use multi-bus support for sidechain ducking
 //! 6. Access transport info via ProcessContext
-
-use std::sync::atomic::{AtomicU64, Ordering};
+//! 7. Use the new `FloatParam` type for cleaner parameter storage
 
 use beamr::prelude::*;
 use beamr::vst3_impl::vst3;
+use beamr::Params; // Import the derive macro
 
 // =============================================================================
 // Plugin Configuration
@@ -33,57 +33,50 @@ pub static CONFIG: PluginConfig = PluginConfig::new("BR Gain", COMPONENT_UID)
     .with_sub_categories("Fx|Dynamics");
 
 // =============================================================================
-// Parameter IDs
-// =============================================================================
-
-const PARAM_GAIN: u32 = 0;
-
-// =============================================================================
 // Parameters
 // =============================================================================
 
 /// Parameter collection for the gain plugin.
 ///
-/// Uses `AtomicU64` for lock-free parameter storage, enabling safe access
-/// from both the audio thread and UI/host threads.
+/// **Phase 2 approach**: Uses `#[derive(Params)]` macro for automatic
+/// trait implementations. The macro generates:
+/// - `Params` trait (count, iter, by_id, save_state, load_state)
+/// - `Parameters` trait (VST3 integration)
+/// - Compile-time hash collision detection
+///
+/// This reduces boilerplate from ~100 lines to ~10 lines!
+#[derive(Params)]
 pub struct GainParams {
-    /// Gain value stored as atomic bits (normalized 0.0 to 1.0)
-    gain: AtomicU64,
-    /// Parameter metadata
-    gain_info: ParamInfo,
+    /// Gain parameter using the new FloatParam type.
+    /// Internally stores linear amplitude, displays as dB.
+    /// The string ID "gain" is hashed to a u32 at compile time.
+    #[param(id = "gain")]
+    pub gain: FloatParam,
 }
 
 impl GainParams {
     /// Create a new parameter collection with default values.
     pub fn new() -> Self {
         Self {
-            // Default: 0.5 normalized = 0 dB (unity gain)
-            gain: AtomicU64::new(0.5f64.to_bits()),
-            gain_info: ParamInfo {
-                id: PARAM_GAIN,
-                name: "Gain",
-                short_name: "Gain",
-                units: "dB",
-                default_normalized: 0.5,
-                step_count: 0, // Continuous
-                flags: ParamFlags {
-                    can_automate: true,
-                    is_readonly: false,
-                    is_bypass: false,
-                },
-            },
+            // Default: 0 dB (unity gain = linear 1.0)
+            // Range: -60 dB to +12 dB
+            // Note: ID is set automatically by the derive macro via FNV-1a hash
+            gain: FloatParam::db("Gain", 0.0, -60.0..=12.0)
+                .with_id(GainParams::PARAM_GAIN_VST3_ID),
         }
     }
 
-    /// Get the gain as a linear multiplier (0.0 to 2.0).
+    /// Get the gain as a linear multiplier.
     ///
-    /// - normalized 0.0 → linear 0.0 (silence)
-    /// - normalized 0.5 → linear 1.0 (unity gain, 0 dB)
-    /// - normalized 1.0 → linear 2.0 (+6 dB)
+    /// FloatParam::db() stores the value as linear amplitude internally,
+    /// so we can use it directly in DSP without conversion.
+    ///
+    /// - 0 dB → linear 1.0 (unity gain)
+    /// - -6 dB → linear ~0.5
+    /// - +6 dB → linear ~2.0
     #[inline]
     pub fn gain_linear(&self) -> f32 {
-        let normalized = f64::from_bits(self.gain.load(Ordering::Relaxed));
-        (normalized * 2.0) as f32
+        self.gain.as_linear() as f32
     }
 }
 
@@ -93,79 +86,11 @@ impl Default for GainParams {
     }
 }
 
-impl Parameters for GainParams {
-    fn count(&self) -> usize {
-        1
-    }
-
-    fn info(&self, index: usize) -> Option<&ParamInfo> {
-        match index {
-            0 => Some(&self.gain_info),
-            _ => None,
-        }
-    }
-
-    fn get_normalized(&self, id: u32) -> f64 {
-        match id {
-            PARAM_GAIN => f64::from_bits(self.gain.load(Ordering::Relaxed)),
-            _ => 0.0,
-        }
-    }
-
-    fn set_normalized(&self, id: u32, value: f64) {
-        if id == PARAM_GAIN {
-            self.gain
-                .store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    fn normalized_to_string(&self, id: u32, normalized: f64) -> String {
-        match id {
-            PARAM_GAIN => {
-                // Convert normalized (0-1) to dB display
-                let linear = normalized * 2.0;
-                let db = if linear < 0.0001 {
-                    -100.0
-                } else {
-                    20.0 * linear.log10()
-                };
-                format!("{:.1} dB", db)
-            }
-            _ => String::new(),
-        }
-    }
-
-    fn string_to_normalized(&self, id: u32, string: &str) -> Option<f64> {
-        match id {
-            PARAM_GAIN => {
-                // Parse dB value to normalized
-                let trimmed = string
-                    .trim()
-                    .trim_end_matches(" dB")
-                    .trim_end_matches("dB")
-                    .trim();
-                let db: f64 = trimmed.parse().ok()?;
-                let linear = 10.0f64.powf(db / 20.0);
-                Some((linear / 2.0).clamp(0.0, 1.0))
-            }
-            _ => None,
-        }
-    }
-
-    fn normalized_to_plain(&self, id: u32, normalized: f64) -> f64 {
-        match id {
-            PARAM_GAIN => normalized * 2.0, // 0-1 → 0-2 linear
-            _ => 0.0,
-        }
-    }
-
-    fn plain_to_normalized(&self, id: u32, plain: f64) -> f64 {
-        match id {
-            PARAM_GAIN => (plain / 2.0).clamp(0.0, 1.0), // 0-2 linear → 0-1
-            _ => 0.0,
-        }
-    }
-}
+// The #[derive(Params)] macro automatically generates:
+// - impl Params for GainParams { ... }
+// - impl Parameters for GainParams { ... }
+// - const PARAM_GAIN_VST3_ID: u32 = fnv1a("gain")
+// - Compile-time collision detection
 
 // =============================================================================
 // Audio Processor
@@ -279,29 +204,13 @@ impl AudioProcessor for GainProcessor {
     }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        // State format: version byte + gain value as f64 bytes
-        let mut data = Vec::with_capacity(9);
-        data.push(1); // Version 1
-        let gain = self.params.get_normalized(PARAM_GAIN);
-        data.extend_from_slice(&gain.to_le_bytes());
-        Ok(data)
+        // Delegate to the macro-generated save_state which uses string-based IDs
+        Ok(self.params.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        if data.is_empty() {
-            return Ok(());
-        }
-
-        // Check version
-        let version = data[0];
-        if version == 1 && data.len() >= 9 {
-            let bytes: [u8; 8] = data[1..9].try_into().unwrap();
-            let gain = f64::from_le_bytes(bytes);
-            self.params.set_normalized(PARAM_GAIN, gain.clamp(0.0, 1.0));
-        }
-        // Unknown versions are silently ignored (forward compatibility)
-
-        Ok(())
+        // Delegate to the macro-generated load_state
+        self.params.load_state(data).map_err(|e| PluginError::StateError(e))
     }
 }
 

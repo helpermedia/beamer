@@ -16,6 +16,95 @@
 
 use crate::types::{ParamId, ParamValue};
 
+// =============================================================================
+// VST3 Unit System (Parameter Grouping)
+// =============================================================================
+
+/// VST3 Unit ID type.
+///
+/// Units are used to organize parameters into hierarchical groups in the DAW UI.
+/// Each unit has a unique ID and can have a parent unit.
+pub type UnitId = i32;
+
+/// Root unit ID constant (parameters with no group).
+///
+/// The root unit (ID 0) always exists and contains ungrouped parameters.
+pub const ROOT_UNIT_ID: UnitId = 0;
+
+/// Information about a parameter group (VST3 Unit).
+///
+/// Units form a tree structure via parent_id references:
+/// - Root unit (id=0, parent=0) always exists implicitly
+/// - Top-level groups have parent_id=0
+/// - Nested groups reference their parent's unit_id
+#[derive(Debug, Clone)]
+pub struct UnitInfo {
+    /// Unique unit identifier.
+    pub id: UnitId,
+    /// Display name shown in DAW (e.g., "Filter", "Amp Envelope").
+    pub name: &'static str,
+    /// Parent unit ID (ROOT_UNIT_ID for top-level groups).
+    pub parent_id: UnitId,
+}
+
+impl UnitInfo {
+    /// Create a new unit info.
+    pub const fn new(id: UnitId, name: &'static str, parent_id: UnitId) -> Self {
+        Self { id, name, parent_id }
+    }
+
+    /// Create the root unit.
+    pub const fn root() -> Self {
+        Self {
+            id: ROOT_UNIT_ID,
+            name: "",
+            parent_id: ROOT_UNIT_ID,
+        }
+    }
+}
+
+/// Trait for querying VST3 unit hierarchy.
+///
+/// Implemented automatically by `#[derive(Params)]` when nested groups are present.
+/// Provides information about parameter groups for DAW display.
+///
+/// Unit IDs are assigned dynamically at runtime to support deeply nested groups
+/// where the same nested struct type can appear in multiple contexts with
+/// different parent units.
+pub trait Units {
+    /// Total number of units (including root).
+    ///
+    /// Returns 1 if there are no groups (just the root unit).
+    /// For nested groups, this returns 1 + total nested groups (including deeply nested).
+    fn unit_count(&self) -> usize {
+        1 // Default: only root unit
+    }
+
+    /// Get unit info by index.
+    ///
+    /// Index 0 always returns the root unit.
+    /// Returns `UnitInfo` by value to support dynamic construction for nested groups.
+    fn unit_info(&self, index: usize) -> Option<UnitInfo> {
+        if index == 0 {
+            Some(UnitInfo::root())
+        } else {
+            None
+        }
+    }
+
+    /// Find unit ID by name (linear search).
+    fn find_unit_by_name(&self, name: &str) -> Option<UnitId> {
+        for i in 0..self.unit_count() {
+            if let Some(info) = self.unit_info(i) {
+                if info.name == name {
+                    return Some(info.id);
+                }
+            }
+        }
+        None
+    }
+}
+
 /// Flags controlling parameter behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParamFlags {
@@ -54,6 +143,8 @@ pub struct ParamInfo {
     pub step_count: i32,
     /// Behavioral flags.
     pub flags: ParamFlags,
+    /// VST3 Unit ID (parameter group). ROOT_UNIT_ID (0) for ungrouped parameters.
+    pub unit_id: UnitId,
 }
 
 impl ParamInfo {
@@ -71,6 +162,7 @@ impl ParamInfo {
                 is_readonly: false,
                 is_bypass: false,
             },
+            unit_id: ROOT_UNIT_ID,
         }
     }
 
@@ -144,7 +236,14 @@ impl ParamInfo {
                 is_readonly: false,
                 is_bypass: true,
             },
+            unit_id: ROOT_UNIT_ID,
         }
+    }
+
+    /// Set the unit ID (parameter group).
+    pub const fn with_unit(mut self, unit_id: UnitId) -> Self {
+        self.unit_id = unit_id;
+        self
     }
 }
 
@@ -251,6 +350,8 @@ pub trait Parameters: Send + Sync {
 /// Empty parameter collection for plugins with no parameters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoParams;
+
+impl Units for NoParams {}
 
 impl Parameters for NoParams {
     fn count(&self) -> usize {

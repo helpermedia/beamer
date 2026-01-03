@@ -30,7 +30,11 @@ pub mod buffer;
 pub mod bypass;
 pub mod editor;
 pub mod error;
+pub mod fnv;
 pub mod midi;
+pub mod param_format;
+pub mod param_range;
+pub mod param_types;
 pub mod params;
 pub mod plugin;
 pub mod process_context;
@@ -43,6 +47,7 @@ pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus
 pub use bypass::{BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
+pub use fnv::fnv1a_32;
 pub use midi::{
     // Basic types
     cc, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,
@@ -69,7 +74,10 @@ pub use midi::{
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_KEYSWITCH_TITLE_SIZE,
     MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
-pub use params::{NoParams, ParamFlags, ParamInfo, Parameters};
+pub use param_format::Formatter;
+pub use param_range::{LinearMapper, LogMapper, RangeMapper};
+pub use param_types::{BoolParam, FloatParam, IntParam, ParamRef, Params};
+pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use plugin::{
     AudioProcessor, BusInfo, BusType, Midi1Assignment, Midi2Assignment, MidiControllerAssignment,
     Plugin,

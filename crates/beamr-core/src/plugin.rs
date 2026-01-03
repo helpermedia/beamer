@@ -492,7 +492,7 @@ pub trait AudioProcessor: Send {
 /// ```
 pub trait Plugin: AudioProcessor {
     /// The parameter collection type for this plugin.
-    type Params: Parameters;
+    type Params: Parameters + crate::params::Units;
 
     /// Returns a reference to the plugin's parameters.
     ///

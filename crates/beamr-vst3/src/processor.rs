@@ -1018,6 +1018,7 @@ impl<P: Plugin + 'static> Class for Vst3Processor<P> {
         IAudioProcessor,
         IProcessContextRequirements,
         IEditController,
+        IUnitInfo,
         IMidiMapping,
         IMidiLearn,
         IMidiMapping2,
@@ -1626,7 +1627,7 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             copy_wstring(param_info.units, &mut info.units);
             info.stepCount = param_info.step_count;
             info.defaultNormalizedValue = param_info.default_normalized;
-            info.unitId = 0;
+            info.unitId = param_info.unit_id;
             info.flags = {
                 let mut flags = 0;
                 if param_info.flags.can_automate {
@@ -1716,6 +1717,105 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
         // TODO: Integrate WebView editor via EditorDelegate in Phase 2
         // For now, return null (no editor)
         std::ptr::null_mut()
+    }
+}
+
+// =============================================================================
+// IUnitInfo implementation (VST3 Unit/Group hierarchy)
+// =============================================================================
+
+impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P> {
+    unsafe fn getUnitCount(&self) -> i32 {
+        use beamr_core::params::Units;
+        self.plugin().params().unit_count() as i32
+    }
+
+    unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
+        if info.is_null() || unit_index < 0 {
+            return kInvalidArgument;
+        }
+
+        use beamr_core::params::Units;
+        let params = self.plugin().params();
+
+        if let Some(unit_info) = params.unit_info(unit_index as usize) {
+            let info = &mut *info;
+            info.id = unit_info.id;
+            info.parentUnitId = unit_info.parent_id;
+            info.programListId = kNoProgramListId;
+            copy_wstring(unit_info.name, &mut info.name);
+            kResultOk
+        } else {
+            kInvalidArgument
+        }
+    }
+
+    unsafe fn getProgramListCount(&self) -> i32 {
+        0 // No program lists (presets) for now
+    }
+
+    unsafe fn getProgramListInfo(
+        &self,
+        _list_index: i32,
+        _info: *mut ProgramListInfo,
+    ) -> tresult {
+        kNotImplemented
+    }
+
+    unsafe fn getProgramName(&self, _list_id: i32, _program_index: i32, _name: *mut String128) -> tresult {
+        kNotImplemented
+    }
+
+    unsafe fn getProgramInfo(
+        &self,
+        _list_id: i32,
+        _program_index: i32,
+        _attribute_id: *const c_char,
+        _attribute_value: *mut String128,
+    ) -> tresult {
+        kNotImplemented
+    }
+
+    unsafe fn hasProgramPitchNames(&self, _list_id: i32, _program_index: i32) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn getProgramPitchName(
+        &self,
+        _list_id: i32,
+        _program_index: i32,
+        _midi_pitch: i16,
+        _name: *mut String128,
+    ) -> tresult {
+        kNotImplemented
+    }
+
+    unsafe fn getSelectedUnit(&self) -> i32 {
+        0 // Return root unit
+    }
+
+    unsafe fn selectUnit(&self, _unit_id: i32) -> tresult {
+        kResultOk // Accept but ignore unit selection
+    }
+
+    unsafe fn getUnitByBus(
+        &self,
+        _media_type: MediaType,
+        _dir: BusDirection,
+        _bus_index: i32,
+        _channel: i32,
+        _unit_id: *mut i32,
+    ) -> tresult {
+        kNotImplemented
+    }
+
+    unsafe fn setUnitProgramData(
+        &self,
+        _list_or_unit_id: i32,
+        _program_index: i32,
+        _data: *mut IBStream,
+    ) -> tresult {
+        kNotImplemented
     }
 }
 

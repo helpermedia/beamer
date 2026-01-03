@@ -46,6 +46,10 @@
 pub use beamr_core as core;
 pub use beamr_vst3 as vst3_impl;
 
+// Re-export derive macro when feature is enabled
+#[cfg(feature = "derive")]
+pub use beamr_macros::Params;
+
 /// Prelude module for convenient imports.
 ///
 /// Import everything you need to build a plugin:
@@ -65,8 +69,14 @@ pub mod prelude {
         BusInfo, BusType,
         // Editor types
         EditorConstraints, NoEditor,
-        // Parameter types
+        // Parameter types (legacy)
         NoParams, ParamFlags, ParamInfo,
+        // New parameter types (Phase 1)
+        BoolParam, FloatParam, IntParam, Formatter, ParamRef, Params,
+        // VST3 Unit system (parameter groups)
+        UnitId, UnitInfo, Units, ROOT_UNIT_ID,
+        // Range mapping
+        LinearMapper, LogMapper, RangeMapper,
         // Error types
         PluginError, PluginResult,
         // Geometry
@@ -79,4 +89,8 @@ pub mod prelude {
 
     // VST3 implementation
     pub use beamr_vst3::{export_vst3, PluginConfig, Vst3Processor};
+
+    // Derive macro for parameters (when feature enabled)
+    #[cfg(feature = "derive")]
+    pub use beamr_macros::Params as DeriveParams;
 }

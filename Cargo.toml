@@ -2,6 +2,7 @@
 members = [
     "crates/beamr-core",
     "crates/beamr-vst3",
+    "crates/beamr-macros",
     "crates/beamr",
     "examples/br-gain",
     "examples/br-midi-transform",
@@ -19,9 +20,15 @@ repository = "https://github.com/helpermedia/beamr"
 vst3 = "0.3"
 log = "0.4"
 
+# Proc-macro dependencies
+syn = { version = "2", features = ["full", "parsing", "printing", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
 # Internal crates
 beamr-core = { path = "crates/beamr-core" }
 beamr-vst3 = { path = "crates/beamr-vst3" }
+beamr-macros = { path = "crates/beamr-macros" }
 beamr = { path = "crates/beamr" }
 
 [profile.release]
