@@ -24,8 +24,8 @@ pub struct ParamsIR {
 pub enum FieldIR {
     /// A direct parameter field (FloatParam, IntParam, BoolParam)
     Param(ParamFieldIR),
-    /// A nested parameter struct
-    Nested(NestedFieldIR),
+    /// A nested parameter struct (boxed to reduce enum size)
+    Nested(Box<NestedFieldIR>),
 }
 
 /// A direct parameter field.
@@ -66,6 +66,7 @@ pub enum ParamType {
     Float,
     Int,
     Bool,
+    Enum,
 }
 
 impl ParamsIR {
@@ -81,7 +82,7 @@ impl ParamsIR {
     pub fn nested_fields(&self) -> impl Iterator<Item = &NestedFieldIR> {
         self.fields.iter().filter_map(|f| match f {
             FieldIR::Param(_) => None,
-            FieldIR::Nested(n) => Some(n),
+            FieldIR::Nested(n) => Some(n.as_ref()),
         })
     }
 

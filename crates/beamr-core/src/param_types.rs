@@ -1304,8 +1304,359 @@ impl ParamRef for BoolParam {
 }
 
 // =============================================================================
+// EnumParamValue Trait - For enums used as parameter values
+// =============================================================================
+
+/// Trait for enums that can be used as parameter values.
+///
+/// This trait is implemented by `#[derive(EnumParam)]` and provides the
+/// interface for converting between enum variants and indices.
+///
+/// # Example
+///
+/// ```ignore
+/// use beamr::EnumParam;
+///
+/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// pub enum FilterType {
+///     #[name = "Low Pass"]
+///     LowPass,
+///     #[default]
+///     #[name = "High Pass"]
+///     HighPass,
+///     BandPass,  // Uses "BandPass" as display name
+/// }
+/// ```
+pub trait EnumParamValue: Copy + Clone + PartialEq + Send + Sync + 'static {
+    /// Number of variants in the enum.
+    const COUNT: usize;
+
+    /// Index of the default variant (from `#[default]` or first variant).
+    const DEFAULT_INDEX: usize;
+
+    /// Convert variant index (0-based) to enum value.
+    fn from_index(index: usize) -> Option<Self>;
+
+    /// Convert enum value to variant index.
+    fn to_index(self) -> usize;
+
+    /// Get the default enum value (from `#[default]` or first variant).
+    fn default_value() -> Self;
+
+    /// Get display name for a variant index.
+    fn name(index: usize) -> &'static str;
+
+    /// Get all variant names in order.
+    fn names() -> &'static [&'static str];
+}
+
+// =============================================================================
+// EnumParam - Enum parameter with atomic storage
+// =============================================================================
+
+/// Enum parameter for discrete choices (filter types, waveforms, etc.).
+///
+/// # Example
+///
+/// ```ignore
+/// use beamr::prelude::*;
+/// use beamr::EnumParam;
+///
+/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// pub enum FilterType {
+///     #[name = "Low Pass"]
+///     LowPass,
+///     #[default]
+///     #[name = "High Pass"]
+///     HighPass,
+/// }
+///
+/// #[derive(Params)]
+/// pub struct FilterParams {
+///     #[param(id = "filter_type")]
+///     pub filter_type: EnumParam<FilterType>,
+/// }
+///
+/// impl Default for FilterParams {
+///     fn default() -> Self {
+///         Self {
+///             // Uses HighPass as default (from #[default] attribute)
+///             filter_type: EnumParam::new("Filter Type"),
+///         }
+///     }
+/// }
+///
+/// // In DSP code:
+/// fn process(&self) {
+///     match self.params.filter_type.get() {
+///         FilterType::LowPass => { /* ... */ }
+///         FilterType::HighPass => { /* ... */ }
+///     }
+/// }
+/// ```
+pub struct EnumParam<E: EnumParamValue> {
+    /// Parameter metadata (id, name, units, flags, etc.)
+    info: ParamInfo,
+    /// Atomic storage for the variant index
+    value: std::sync::atomic::AtomicUsize,
+    /// Phantom data for the enum type
+    _marker: std::marker::PhantomData<E>,
+}
+
+impl<E: EnumParamValue> EnumParam<E> {
+    /// Create a new enum parameter using the trait's default value.
+    ///
+    /// The default value is determined by the `#[default]` attribute on the enum,
+    /// or the first variant if no default is specified.
+    ///
+    /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
+    /// or the `#[derive(Params)]` macro.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let filter_type = EnumParam::new("Filter Type")
+    ///     .with_id(hash);
+    /// ```
+    pub fn new(name: &'static str) -> Self {
+        Self::with_value(name, E::default_value())
+    }
+
+    /// Create a new enum parameter with an explicit default value.
+    ///
+    /// Use this when you want to override the `#[default]` attribute.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name
+    /// * `default` - Default enum value
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let filter_type = EnumParam::with_value("Filter Type", FilterType::LowPass)
+    ///     .with_id(hash);
+    /// ```
+    pub fn with_value(name: &'static str, default: E) -> Self {
+        let default_index = default.to_index();
+        let default_normalized = index_to_normalized(default_index, E::COUNT);
+
+        Self {
+            info: ParamInfo {
+                id: 0,
+                name,
+                short_name: name,
+                units: "",
+                default_normalized,
+                step_count: (E::COUNT.saturating_sub(1)) as i32,
+                flags: ParamFlags::default(),
+                unit_id: crate::params::ROOT_UNIT_ID,
+            },
+            value: std::sync::atomic::AtomicUsize::new(default_index),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    // === Builder methods ===
+
+    /// Set the parameter ID.
+    ///
+    /// This is typically called by the `#[derive(Params)]` macro to assign
+    /// the FNV-1a hash of the string ID.
+    pub fn with_id(mut self, id: ParamId) -> Self {
+        self.info.id = id;
+        self
+    }
+
+    /// Set the short name for constrained UIs.
+    pub fn with_short_name(mut self, short: &'static str) -> Self {
+        self.info.short_name = short;
+        self
+    }
+
+    /// Set the unit ID (parameter group) for this parameter.
+    ///
+    /// Used by the `#[derive(Params)]` macro to assign parameters to VST3 units.
+    pub fn with_unit(mut self, unit_id: crate::params::UnitId) -> Self {
+        self.info.unit_id = unit_id;
+        self
+    }
+
+    /// Set the unit ID in-place (for runtime assignment by parent structs).
+    pub fn set_unit_id(&mut self, unit_id: crate::params::UnitId) {
+        self.info.unit_id = unit_id;
+    }
+
+    /// Make the parameter read-only.
+    pub fn readonly(mut self) -> Self {
+        self.info.flags.is_readonly = true;
+        self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Disable automation for this parameter.
+    pub fn non_automatable(mut self) -> Self {
+        self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Get the parameter metadata.
+    pub fn info(&self) -> &ParamInfo {
+        &self.info
+    }
+
+    /// Get mutable access to the parameter metadata.
+    ///
+    /// Used for runtime modification of parameter properties like unit_id.
+    pub fn info_mut(&mut self) -> &mut ParamInfo {
+        &mut self.info
+    }
+
+    // === Value access ===
+
+    /// Get the current enum value.
+    ///
+    /// If the stored index is invalid (e.g., due to corrupted state),
+    /// returns the first variant as a fallback.
+    #[inline]
+    pub fn get(&self) -> E {
+        let index = self.value.load(Ordering::Relaxed);
+        // Defensive: if index is somehow out of bounds, fall back to first variant
+        E::from_index(index).unwrap_or_else(|| {
+            E::from_index(0).expect("enum must have at least one variant")
+        })
+    }
+
+    /// Set the enum value.
+    #[inline]
+    pub fn set(&self, value: E) {
+        self.value.store(value.to_index(), Ordering::Relaxed);
+    }
+}
+
+impl<E: EnumParamValue> ParamRef for EnumParam<E> {
+    fn id(&self) -> ParamId {
+        self.info.id
+    }
+
+    fn name(&self) -> &'static str {
+        self.info.name
+    }
+
+    fn short_name(&self) -> &'static str {
+        self.info.short_name
+    }
+
+    fn units(&self) -> &'static str {
+        self.info.units
+    }
+
+    fn flags(&self) -> &ParamFlags {
+        &self.info.flags
+    }
+
+    fn default_normalized(&self) -> ParamValue {
+        self.info.default_normalized
+    }
+
+    fn step_count(&self) -> i32 {
+        self.info.step_count
+    }
+
+    fn get_normalized(&self) -> ParamValue {
+        let index = self.value.load(Ordering::Relaxed);
+        index_to_normalized(index, E::COUNT)
+    }
+
+    fn set_normalized(&self, value: ParamValue) {
+        let index = normalized_to_index(value, E::COUNT);
+        self.value.store(index, Ordering::Relaxed);
+    }
+
+    fn get_plain(&self) -> ParamValue {
+        self.value.load(Ordering::Relaxed) as f64
+    }
+
+    fn set_plain(&self, value: ParamValue) {
+        let index = (value.round() as usize).min(E::COUNT.saturating_sub(1));
+        self.value.store(index, Ordering::Relaxed);
+    }
+
+    fn display_normalized(&self, normalized: ParamValue) -> String {
+        let index = normalized_to_index(normalized, E::COUNT);
+        E::name(index).to_string()
+    }
+
+    fn parse(&self, s: &str) -> Option<ParamValue> {
+        // Try to match variant name (case-insensitive)
+        let s_lower = s.to_lowercase();
+        for (i, name) in E::names().iter().enumerate() {
+            if name.to_lowercase() == s_lower {
+                return Some(self.plain_to_normalized(i as f64));
+            }
+        }
+        // Also try parsing as index
+        s.parse::<usize>()
+            .ok()
+            .filter(|&i| i < E::COUNT)
+            .map(|i| self.plain_to_normalized(i as f64))
+    }
+
+    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue {
+        normalized_to_index(normalized, E::COUNT) as f64
+    }
+
+    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue {
+        index_to_normalized(plain.round() as usize, E::COUNT)
+    }
+
+    fn info(&self) -> &ParamInfo {
+        &self.info
+    }
+}
+
+// EnumParam<E> is Send + Sync because:
+// - AtomicUsize is Send + Sync
+// - PhantomData<E> is Send + Sync when E: Send + Sync (required by EnumParamValue trait bounds)
+// - ParamInfo is Send + Sync
+// No unsafe impl needed - the compiler verifies this automatically.
+
+// =============================================================================
 // Helper functions
 // =============================================================================
+
+// --- Enum normalization helpers ---
+
+/// Convert an enum variant index to a normalized value [0.0, 1.0].
+///
+/// For enums with N variants, index 0 maps to 0.0 and index N-1 maps to 1.0.
+/// Single-variant enums always return 0.0.
+#[inline]
+fn index_to_normalized(index: usize, count: usize) -> f64 {
+    if count <= 1 {
+        0.0
+    } else {
+        index as f64 / (count - 1) as f64
+    }
+}
+
+/// Convert a normalized value [0.0, 1.0] to an enum variant index.
+///
+/// The result is clamped to [0, count-1]. Rounds to nearest index.
+#[inline]
+fn normalized_to_index(normalized: f64, count: usize) -> usize {
+    if count <= 1 {
+        0
+    } else {
+        ((normalized * (count - 1) as f64).round() as usize).min(count - 1)
+    }
+}
+
+// --- Other helpers ---
 
 /// Convert decibels to linear amplitude.
 #[inline]

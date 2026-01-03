@@ -78,13 +78,16 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
             return parse_param_field(field, attr).map(|p| Some(FieldIR::Param(p)));
         }
         if attr.path().is_ident("nested") {
-            return parse_nested_field(field, attr).map(|n| Some(FieldIR::Nested(n)));
+            return parse_nested_field(field, attr).map(|n| Some(FieldIR::Nested(Box::new(n))));
         }
     }
 
     // Check if this field LOOKS like a parameter type but lacks the attribute
     if let Some(type_name) = extract_type_name(&field.ty) {
-        if matches!(type_name.as_str(), "FloatParam" | "IntParam" | "BoolParam") {
+        if matches!(
+            type_name.as_str(),
+            "FloatParam" | "IntParam" | "BoolParam" | "EnumParam"
+        ) {
             return Err(syn::Error::new_spanned(
                 field,
                 format!(
@@ -132,7 +135,7 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
     let param_type = extract_param_type(&field.ty).ok_or_else(|| {
         syn::Error::new_spanned(
             &field.ty,
-            "#[param] can only be used on FloatParam, IntParam, or BoolParam fields",
+            "#[param] can only be used on FloatParam, IntParam, BoolParam, or EnumParam fields",
         )
     })?;
 
@@ -210,6 +213,7 @@ fn extract_param_type(ty: &syn::Type) -> Option<ParamType> {
         "FloatParam" => Some(ParamType::Float),
         "IntParam" => Some(ParamType::Int),
         "BoolParam" => Some(ParamType::Bool),
+        "EnumParam" => Some(ParamType::Enum),
         _ => None,
     }
 }

@@ -29,6 +29,7 @@
 use proc_macro::TokenStream;
 
 mod codegen;
+mod enum_param;
 mod fnv;
 mod ir;
 mod parse;
@@ -78,4 +79,56 @@ fn derive_params_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::Token
     let ir = parse::parse(input)?;
     validate::validate(&ir)?;
     Ok(codegen::generate(&ir))
+}
+
+/// Derive macro for implementing `EnumParamValue` trait on enums.
+///
+/// This macro generates the `EnumParamValue` implementation that allows
+/// an enum to be used with `EnumParam<E>` in parameter structs.
+///
+/// # Requirements
+///
+/// - The type must be an enum
+/// - All variants must be unit variants (no fields)
+/// - The enum must also derive `Copy`, `Clone`, and `PartialEq`
+///
+/// # Attributes
+///
+/// - `#[name = "..."]` - Optional display name for a variant. If not specified,
+///   the variant identifier is used as the display name.
+/// - `#[default]` - Mark a variant as the default. If not specified, the first
+///   variant is used. Only one variant can be marked as default.
+///
+/// # Example
+///
+/// ```ignore
+/// use beamr::EnumParam;
+///
+/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// pub enum FilterType {
+///     #[name = "Low Pass"]
+///     LowPass,
+///     #[default]
+///     #[name = "High Pass"]
+///     HighPass,
+///     #[name = "Band Pass"]
+///     BandPass,
+///     Notch,  // Uses "Notch" as display name
+/// }
+///
+/// // Now FilterType can be used with EnumParam:
+/// #[derive(Params)]
+/// pub struct FilterParams {
+///     #[param(id = "filter_type")]
+///     pub filter_type: EnumParam<FilterType>,
+/// }
+/// ```
+#[proc_macro_derive(EnumParam, attributes(name, default))]
+pub fn derive_enum_param(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+
+    match enum_param::derive_enum_param_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }
