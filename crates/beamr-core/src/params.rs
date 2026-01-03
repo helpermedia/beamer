@@ -384,3 +384,17 @@ impl Parameters for NoParams {
         plain
     }
 }
+
+impl crate::param_types::Params for NoParams {
+    fn count(&self) -> usize {
+        0
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &dyn crate::param_types::ParamRef> + '_> {
+        Box::new(std::iter::empty())
+    }
+
+    fn by_id(&self, _id: ParamId) -> Option<&dyn crate::param_types::ParamRef> {
+        None
+    }
+}

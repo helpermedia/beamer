@@ -1212,7 +1212,16 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
         // Load into plugin
         let plugin = self.plugin_mut();
         match plugin.load_state(&buffer) {
-            Ok(()) => kResultOk,
+            Ok(()) => {
+                // Apply current sample rate (if available) and reset smoothers
+                use beamr_core::param_types::Params;
+                let sample_rate = *self.sample_rate.get();
+                if sample_rate > 0.0 {
+                    plugin.params_mut().set_sample_rate(sample_rate);
+                }
+                plugin.params_mut().reset_smoothing();
+                kResultOk
+            }
             Err(_) => kResultFalse,
         }
     }

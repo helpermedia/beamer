@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use crate::param_format::Formatter;
 use crate::param_range::{LinearMapper, LogMapper, RangeMapper};
 use crate::params::{ParamFlags, ParamInfo};
+use crate::smoothing::{Smoother, SmoothingStyle};
 use crate::types::{ParamId, ParamValue};
 
 // =============================================================================
@@ -398,6 +399,41 @@ pub trait Params: Send + Sync + crate::params::Units {
 
         Ok(())
     }
+
+    // =========================================================================
+    // Smoothing Support
+    // =========================================================================
+
+    /// Set sample rate for all smoothers in this parameter collection.
+    ///
+    /// Call this from `AudioProcessor::setup()` to initialize smoothers
+    /// with the correct sample rate.
+    ///
+    /// **Oversampling:** If your plugin uses oversampling, pass the actual
+    /// processing rate: `sample_rate * oversampling_factor`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl AudioProcessor for MyPlugin {
+    ///     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
+    ///         self.params.set_sample_rate(sample_rate);
+    ///     }
+    /// }
+    /// ```
+    fn set_sample_rate(&mut self, _sample_rate: f64) {
+        // Default no-op. The #[derive(Params)] macro generates an override
+        // that calls set_sample_rate on each param field.
+    }
+
+    /// Reset all smoothers to their current values (no ramp).
+    ///
+    /// Called automatically by the framework after loading state to avoid
+    /// ramps to loaded values. You typically don't need to call this directly.
+    fn reset_smoothing(&mut self) {
+        // Default no-op. The #[derive(Params)] macro generates an override
+        // that calls reset_smoothing on each param field.
+    }
 }
 
 // =============================================================================
@@ -440,6 +476,8 @@ pub struct FloatParam {
     range: Box<dyn RangeMapper>,
     /// Formatter for display string conversion
     formatter: Formatter,
+    /// Optional smoother for avoiding zipper noise
+    smoother: Option<Smoother>,
 }
 
 impl FloatParam {
@@ -471,6 +509,7 @@ impl FloatParam {
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
             formatter: Formatter::Float { precision: 2 },
+            smoother: None,
         }
     }
 
@@ -523,6 +562,7 @@ impl FloatParam {
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
             formatter: Formatter::Decibel { precision: 1 },
+            smoother: None,
         }
     }
 
@@ -563,6 +603,7 @@ impl FloatParam {
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
             formatter: Formatter::Frequency,
+            smoother: None,
         }
     }
 
@@ -755,6 +796,134 @@ impl FloatParam {
             db_to_linear(plain)
         } else {
             plain
+        }
+    }
+
+    // === Smoothing methods ===
+
+    /// Add smoothing to this parameter.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
+    ///     .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms
+    /// ```
+    pub fn with_smoother(mut self, style: SmoothingStyle) -> Self {
+        let current = self.get();
+        let mut smoother = Smoother::new(style);
+        smoother.reset(current);
+        self.smoother = Some(smoother);
+        self
+    }
+
+    /// Set sample rate for smoothing.
+    ///
+    /// Call this from `AudioProcessor::setup()`. If using oversampling,
+    /// pass `sample_rate * oversampling_factor`.
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        let current_value = self.get();
+        if let Some(ref mut smoother) = self.smoother {
+            smoother.set_sample_rate(sample_rate);
+            smoother.set_target(current_value);
+        }
+    }
+
+    /// Get the current smoothed value without advancing.
+    ///
+    /// If no smoother is configured, returns the raw value.
+    #[inline]
+    pub fn smoothed(&self) -> f64 {
+        match &self.smoother {
+            Some(s) => s.current(),
+            None => self.get(),
+        }
+    }
+
+    /// Get the current smoothed value as f32.
+    #[inline]
+    pub fn smoothed_f32(&self) -> f32 {
+        self.smoothed() as f32
+    }
+
+    /// Get next smoothed value, advancing the smoother.
+    ///
+    /// Call once per sample in the audio loop. Requires `&mut self`.
+    ///
+    /// If no smoother is configured, returns the raw value.
+    #[inline]
+    pub fn next_smoothed(&mut self) -> f64 {
+        let current_value = self.get();
+        match &mut self.smoother {
+            Some(s) => {
+                // Update target from atomic value (in case host changed it)
+                s.set_target(current_value);
+                s.next()
+            }
+            None => current_value,
+        }
+    }
+
+    /// Get next smoothed value as f32.
+    #[inline]
+    pub fn next_smoothed_f32(&mut self) -> f32 {
+        self.next_smoothed() as f32
+    }
+
+    /// Skip smoothing forward by n samples.
+    ///
+    /// Use for block processing when per-sample smoothing isn't needed.
+    pub fn skip_smoothing(&mut self, samples: usize) {
+        let current_value = self.get();
+        if let Some(ref mut smoother) = self.smoother {
+            smoother.set_target(current_value);
+            smoother.skip(samples);
+        }
+    }
+
+    /// Fill buffer with smoothed values (f64).
+    pub fn fill_smoothed(&mut self, buffer: &mut [f64]) {
+        let current_value = self.get();
+        match &mut self.smoother {
+            Some(s) => {
+                s.set_target(current_value);
+                s.fill(buffer);
+            }
+            None => {
+                buffer.fill(current_value);
+            }
+        }
+    }
+
+    /// Fill buffer with smoothed values (f32).
+    pub fn fill_smoothed_f32(&mut self, buffer: &mut [f32]) {
+        let current_value = self.get();
+        match &mut self.smoother {
+            Some(s) => {
+                s.set_target(current_value);
+                s.fill_f32(buffer);
+            }
+            None => {
+                buffer.fill(current_value as f32);
+            }
+        }
+    }
+
+    /// Check if parameter is currently smoothing.
+    pub fn is_smoothing(&self) -> bool {
+        self.smoother
+            .as_ref()
+            .map(|s| s.is_smoothing())
+            .unwrap_or(false)
+    }
+
+    /// Reset smoother to current value (no ramp).
+    ///
+    /// Use when loading state to avoid ramps to loaded values.
+    pub fn reset_smoothing(&mut self) {
+        let current_value = self.get();
+        if let Some(ref mut smoother) = self.smoother {
+            smoother.reset(current_value);
         }
     }
 }

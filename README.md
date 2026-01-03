@@ -40,31 +40,36 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (a
 
 ```rust
 use beamr::prelude::*;
+use beamr::Params;
 
-// Parameters with thread-safe atomic storage
-struct MyParams {
-    gain: AtomicU64,
+// Parameters using derive macro - handles atomic storage, VST3 integration, state persistence
+#[derive(Params)]
+struct GainParams {
+    #[param(id = "gain")]
+    gain: FloatParam,
 }
 
-impl Parameters for MyParams {
-    fn count(&self) -> usize { 1 }
-    fn get_normalized(&self, id: u32) -> f64 {
-        f64::from_bits(self.gain.load(Ordering::Relaxed))
+impl GainParams {
+    fn new() -> Self {
+        Self {
+            // 0 dB default, range -60 to +12 dB
+            gain: FloatParam::db("Gain", 0.0, -60.0..=12.0),
+        }
     }
-    fn set_normalized(&self, id: u32, value: f64) {
-        self.gain.store(value.to_bits(), Ordering::Relaxed);
-    }
-    // ... other required methods
+}
+
+impl Default for GainParams {
+    fn default() -> Self { Self::new() }
 }
 
 // Plugin with DSP logic
-struct MyPlugin {
-    params: MyParams,
+struct GainPlugin {
+    params: GainParams,
 }
 
-impl AudioProcessor for MyPlugin {
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
-        let gain = f64::from_bits(self.params.gain.load(Ordering::Relaxed)) as f32;
+impl AudioProcessor for GainPlugin {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+        let gain = self.params.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -73,14 +78,12 @@ impl AudioProcessor for MyPlugin {
     }
 }
 
-impl Plugin for MyPlugin {
-    type Params = MyParams;
+impl Plugin for GainPlugin {
+    type Params = GainParams;
 
     fn params(&self) -> &Self::Params { &self.params }
-
-    fn create() -> Self {
-        Self { params: MyParams { gain: AtomicU64::new(1.0f64.to_bits()) } }
-    }
+    fn params_mut(&mut self) -> &mut Self::Params { &mut self.params }
+    fn create() -> Self { Self { params: GainParams::new() } }
 }
 ```
 

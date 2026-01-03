@@ -75,6 +75,8 @@ pub mod prelude {
         NoParams, ParamFlags, ParamInfo,
         // New parameter types (Phase 1)
         BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, Formatter, ParamRef, Params,
+        // Parameter smoothing
+        Smoother, SmoothingStyle,
         // VST3 Unit system (parameter groups)
         UnitId, UnitInfo, Units, ROOT_UNIT_ID,
         // Range mapping

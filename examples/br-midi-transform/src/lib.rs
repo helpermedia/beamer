@@ -47,7 +47,9 @@ const TRANSPOSE_SEMITONES: i8 = 2;
 ///
 /// Transposes all incoming MIDI notes up by 2 semitones.
 /// Audio is passed through unchanged.
-pub struct MidiTransformProcessor;
+pub struct MidiTransformProcessor {
+    params: NoParams,
+}
 
 impl AudioProcessor for MidiTransformProcessor {
     fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {
@@ -135,11 +137,17 @@ impl Plugin for MidiTransformProcessor {
     type Params = NoParams;
 
     fn params(&self) -> &Self::Params {
-        &NoParams
+        &self.params
+    }
+
+    fn params_mut(&mut self) -> &mut Self::Params {
+        &mut self.params
     }
 
     fn create() -> Self {
-        Self
+        Self {
+            params: NoParams,
+        }
     }
 }
 

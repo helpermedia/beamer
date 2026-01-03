@@ -225,6 +225,10 @@ impl Plugin for GainProcessor {
         &self.params
     }
 
+    fn params_mut(&mut self) -> &mut Self::Params {
+        &mut self.params
+    }
+
     fn create() -> Self {
         Self {
             params: GainParams::new(),

@@ -39,6 +39,7 @@ pub mod params;
 pub mod plugin;
 pub mod process_context;
 pub mod sample;
+pub mod smoothing;
 pub mod types;
 
 // Re-exports for convenience
@@ -77,6 +78,7 @@ pub use midi::{
 pub use param_format::Formatter;
 pub use param_range::{LinearMapper, LogMapper, RangeMapper};
 pub use param_types::{BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, ParamRef, Params};
+pub use smoothing::{Smoother, SmoothingStyle};
 pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use plugin::{
     AudioProcessor, BusInfo, BusType, Midi1Assignment, Midi2Assignment, MidiControllerAssignment,

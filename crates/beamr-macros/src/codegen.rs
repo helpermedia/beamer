@@ -233,6 +233,8 @@ fn generate_params_impl(ir: &ParamsIR) -> TokenStream {
     let load_state_impl = generate_load_state(ir);
     let set_all_unit_ids_impl = generate_set_all_unit_ids(ir);
     let nested_discovery_impl = generate_nested_discovery(ir);
+    let set_sample_rate_impl = generate_set_sample_rate(ir);
+    let reset_smoothing_impl = generate_reset_smoothing(ir);
 
     quote! {
         impl #impl_generics ::beamr::core::param_types::Params for #struct_name #ty_generics #where_clause {
@@ -259,6 +261,10 @@ fn generate_params_impl(ir: &ParamsIR) -> TokenStream {
             #save_state_impl
 
             #load_state_impl
+
+            #set_sample_rate_impl
+
+            #reset_smoothing_impl
         }
     }
 }
@@ -770,6 +776,72 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
                     #(#param_match_arms)*
                     _ => None,
                 }
+            }
+        }
+    }
+}
+
+/// Generate the `set_sample_rate()` method for the Params trait.
+fn generate_set_sample_rate(ir: &ParamsIR) -> TokenStream {
+    // Generate calls for direct param fields
+    let param_calls: Vec<TokenStream> = ir
+        .param_fields()
+        .map(|param| {
+            let field = &param.field_name;
+            quote! { self.#field.set_sample_rate(sample_rate); }
+        })
+        .collect();
+
+    // Generate calls for nested fields
+    let nested_calls: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            quote! { self.#field.set_sample_rate(sample_rate); }
+        })
+        .collect();
+
+    if param_calls.is_empty() && nested_calls.is_empty() {
+        // No params = use default no-op
+        quote! {}
+    } else {
+        quote! {
+            fn set_sample_rate(&mut self, sample_rate: f64) {
+                #(#param_calls)*
+                #(#nested_calls)*
+            }
+        }
+    }
+}
+
+/// Generate the `reset_smoothing()` method for the Params trait.
+fn generate_reset_smoothing(ir: &ParamsIR) -> TokenStream {
+    // Generate calls for direct param fields
+    let param_calls: Vec<TokenStream> = ir
+        .param_fields()
+        .map(|param| {
+            let field = &param.field_name;
+            quote! { self.#field.reset_smoothing(); }
+        })
+        .collect();
+
+    // Generate calls for nested fields
+    let nested_calls: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            quote! { self.#field.reset_smoothing(); }
+        })
+        .collect();
+
+    if param_calls.is_empty() && nested_calls.is_empty() {
+        // No params = use default no-op
+        quote! {}
+    } else {
+        quote! {
+            fn reset_smoothing(&mut self) {
+                #(#param_calls)*
+                #(#nested_calls)*
             }
         }
     }

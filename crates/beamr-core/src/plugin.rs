@@ -492,12 +492,18 @@ pub trait AudioProcessor: Send {
 /// ```
 pub trait Plugin: AudioProcessor {
     /// The parameter collection type for this plugin.
-    type Params: Parameters + crate::params::Units;
+    type Params: Parameters + crate::params::Units + crate::param_types::Params;
 
     /// Returns a reference to the plugin's parameters.
     ///
     /// The VST3 wrapper uses this to communicate parameter values with the host.
     fn params(&self) -> &Self::Params;
+
+    /// Returns a mutable reference to the plugin's parameters.
+    ///
+    /// Used by the framework for operations like resetting smoothers after
+    /// loading state. Most plugins can use the default implementation.
+    fn params_mut(&mut self) -> &mut Self::Params;
 
     /// Creates a new instance of the plugin with default state.
     ///
