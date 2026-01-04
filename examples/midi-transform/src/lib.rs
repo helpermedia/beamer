@@ -38,7 +38,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform", COM
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version("1.0.0")
+    .with_version("0.0.1")
     .with_sub_categories("Instrument");
 
 // =============================================================================

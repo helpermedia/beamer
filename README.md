@@ -10,6 +10,11 @@ Beamer provides a clean separation between plugin logic and the VST3 format deta
 
 The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
 
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Design decisions, threading model, guarantees
+- [docs/REFERENCE.md](docs/REFERENCE.md) — Detailed API reference
+
 ## Features
 
 - **Format-agnostic core** - Plugin logic is independent of VST3 specifics
