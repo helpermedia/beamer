@@ -1,14 +1,14 @@
-# BEAMR
+# BEAMER
 
 A Rust framework for building VST3 audio plugins.
 
-Like beams connect notes in musical notation, BEAMR bridges VST3's C++ COM interfaces with safe Rust abstractions and your plugin logic with WebView GUIs.
+A modern framework bridging VST3's C++ COM interfaces with safe Rust abstractions and WebView GUIs.
 
 ## Overview
 
-BEAMR provides a clean separation between plugin logic and the VST3 format details. You implement simple traits for your audio processing and parameters, and BEAMR handles the rest.
+Beamer provides a clean separation between plugin logic and the VST3 format details. You implement simple traits for your audio processing and parameters, and Beamer handles the rest.
 
-The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8). BEAMR uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
+The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8). Beamer uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
 
 ## Features
 
@@ -32,15 +32,15 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (a
 
 | Crate | Description |
 |-------|-------------|
-| `beamr` | Main facade crate (re-exports everything) |
-| `beamr-core` | Platform-agnostic traits and types |
-| `beamr-vst3` | VST3 wrapper implementation |
+| `beamer` | Main facade crate (re-exports everything) |
+| `beamer-core` | Platform-agnostic traits and types |
+| `beamer-vst3` | VST3 wrapper implementation |
 
 ## Quick Start
 
 ```rust
-use beamr::prelude::*;
-use beamr::Params;
+use beamer::prelude::*;
+use beamer::Params;
 
 // Parameters using derive macro - handles atomic storage, VST3 integration, state persistence
 #[derive(Params)]
@@ -106,20 +106,20 @@ cargo clippy --workspace
 
 ```bash
 # Build, bundle, and install to user VST3 folder (macOS)
-cargo xtask bundle br-gain --release --install
+cargo xtask bundle gain --release --install
 
-# Or just bundle (output: target/release/BrGain.vst3)
-cargo xtask bundle br-gain --release
+# Or just bundle (output: target/release/BeamerGain.vst3)
+cargo xtask bundle gain --release
 ```
 
 ## Examples
 
-- **br-gain** - Simple gain effect plugin
-- **br-midi-transform** - MIDI instrument that transposes notes
+- **gain** - Simple gain effect plugin
+- **midi-transform** - MIDI instrument that transposes notes
 
 ## Multi-Bus Audio
 
-BEAMR separates main bus and auxiliary buses for sidechain and multi-output plugins:
+Beamer separates main bus and auxiliary buses for sidechain and multi-output plugins:
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
@@ -136,7 +136,7 @@ fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
 
 ## MIDI Support
 
-BEAMR provides comprehensive MIDI support:
+Beamer provides comprehensive MIDI support:
 
 - Note On/Off with velocity, tuning, and note length
 - Control Change with 14-bit resolution helpers

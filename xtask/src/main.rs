@@ -1,4 +1,4 @@
-//! Build tooling for BEAMR plugins.
+//! Build tooling for Beamer plugins.
 //!
 //! Usage: cargo xtask bundle <package> [--release] [--install]
 
@@ -136,8 +136,8 @@ fn get_workspace_root() -> Result<PathBuf, String> {
 }
 
 fn to_bundle_name(package: &str) -> String {
-    // Convert package name to CamelCase bundle name
-    // e.g., "beamr-gain" -> "BeamrGain.vst3"
+    // Convert package name to CamelCase bundle name with Beamer prefix
+    // e.g., "gain" -> "BeamerGain.vst3", "midi-transform" -> "BeamerMidiTransform.vst3"
     let name: String = package
         .split('-')
         .map(|part| {
@@ -148,7 +148,7 @@ fn to_bundle_name(package: &str) -> String {
             }
         })
         .collect();
-    format!("{}.vst3", name)
+    format!("Beamer{}.vst3", name)
 }
 
 fn create_info_plist(package: &str, bundle_name: &str) -> String {
@@ -164,7 +164,7 @@ fn create_info_plist(package: &str, bundle_name: &str) -> String {
     <key>CFBundleExecutable</key>
     <string>{}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.beamr.{}</string>
+    <string>com.beamer.{}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

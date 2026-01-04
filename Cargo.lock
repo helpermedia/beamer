@@ -3,20 +3,20 @@
 version = 4
 
 [[package]]
-name = "beamr"
+name = "beamer"
 version = "0.0.1"
 dependencies = [
- "beamr-core",
- "beamr-macros",
- "beamr-vst3",
+ "beamer-core",
+ "beamer-macros",
+ "beamer-vst3",
 ]
 
 [[package]]
-name = "beamr-core"
+name = "beamer-core"
 version = "0.0.1"
 
 [[package]]
-name = "beamr-macros"
+name = "beamer-macros"
 version = "0.0.1"
 dependencies = [
  "proc-macro2",
@@ -25,28 +25,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "beamr-vst3"
+name = "beamer-vst3"
 version = "0.0.1"
 dependencies = [
- "beamr-core",
+ "beamer-core",
  "com-scrape-types",
  "log",
- "vst3",
-]
-
-[[package]]
-name = "br-gain"
-version = "0.0.1"
-dependencies = [
- "beamr",
- "vst3",
-]
-
-[[package]]
-name = "br-midi-transform"
-version = "0.0.1"
-dependencies = [
- "beamr",
  "vst3",
 ]
 
@@ -57,10 +41,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
+name = "gain"
+version = "0.0.1"
+dependencies = [
+ "beamer",
+ "vst3",
+]
+
+[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "midi-transform"
+version = "0.0.1"
+dependencies = [
+ "beamer",
+ "vst3",
+]
 
 [[package]]
 name = "proc-macro2"

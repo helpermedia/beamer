@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "crates/beamr-core",
-    "crates/beamr-vst3",
-    "crates/beamr-macros",
-    "crates/beamr",
-    "examples/br-gain",
-    "examples/br-midi-transform",
+    "crates/beamer-core",
+    "crates/beamer-vst3",
+    "crates/beamer-macros",
+    "crates/beamer",
+    "examples/gain",
+    "examples/midi-transform",
     "xtask",
 ]
 resolver = "2"
@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/helpermedia/beamr"
+repository = "https://github.com/helpermedia/beamer"
 
 [workspace.dependencies]
 vst3 = "0.3"
@@ -26,10 +26,10 @@ quote = "1"
 proc-macro2 = "1"
 
 # Internal crates
-beamr-core = { path = "crates/beamr-core" }
-beamr-vst3 = { path = "crates/beamr-vst3" }
-beamr-macros = { path = "crates/beamr-macros" }
-beamr = { path = "crates/beamr" }
+beamer-core = { path = "crates/beamer-core" }
+beamer-vst3 = { path = "crates/beamer-vst3" }
+beamer-macros = { path = "crates/beamer-macros" }
+beamer = { path = "crates/beamer" }
 
 [profile.release]
 lto = true

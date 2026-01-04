@@ -1,0 +1,16 @@
+[package]
+name = "beamer"
+description = "VST3 framework for Rust - convenience re-exports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["derive"]
+derive = ["beamer-macros"]
+
+[dependencies]
+beamer-core = { workspace = true }
+beamer-vst3 = { workspace = true }
+beamer-macros = { workspace = true, optional = true }
