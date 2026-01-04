@@ -6,6 +6,7 @@ members = [
     "crates/beamer",
     "examples/gain",
     "examples/midi-transform",
+    "examples/delay",
     "xtask",
 ]
 resolver = "2"

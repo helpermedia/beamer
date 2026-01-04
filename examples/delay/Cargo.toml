@@ -1,0 +1,13 @@
+[package]
+name = "delay"
+description = "Example delay plugin using the Beamer framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+beamer = { workspace = true }
+vst3 = { workspace = true }
