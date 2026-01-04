@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "beamer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "beamer-core",
  "beamer-macros",
@@ -13,11 +13,11 @@ dependencies = [
 
 [[package]]
 name = "beamer-core"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "beamer-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-vst3"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "beamer-core",
  "com-scrape-types",
@@ -42,7 +42,7 @@ checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "delay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "beamer",
  "vst3",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "gain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "beamer",
  "vst3",
@@ -64,7 +64,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "midi-transform"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "beamer",
  "vst3",

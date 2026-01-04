@@ -25,7 +25,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay", COMPONENT_UI
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version("0.1.1")
+    .with_version("0.1.2")
     .with_sub_categories("Fx|Delay");
 
 // =============================================================================
