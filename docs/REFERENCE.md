@@ -258,7 +258,7 @@ impl AudioProcessor for MyPlugin {
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
-            let gain = self.params.gain.next_smoothed();  // Advances smoother
+            let gain = self.params.gain.tick_smoothed();  // Advances smoother
             *o = *i * gain as f32;
         }
     }
@@ -295,7 +295,7 @@ self.params.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 |--------|-------------|
 | `.with_smoother(style)` | Builder: add smoothing to parameter |
 | `.set_sample_rate(sr)` | Initialize with sample rate (call in setup) |
-| `.next_smoothed()` | Get next value, advance smoother (per-sample) |
+| `.tick_smoothed()` | Advance smoother, return value (per-sample) |
 | `.smoothed()` | Get current value without advancing |
 | `.skip_smoothing(n)` | Skip n samples (block processing) |
 | `.fill_smoothed(buf)` | Fill buffer with smoothed values |

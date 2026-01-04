@@ -852,28 +852,28 @@ impl FloatParam {
         self.smoothed() as f32
     }
 
-    /// Get next smoothed value, advancing the smoother.
+    /// Advance the smoother by one sample and return the smoothed value.
     ///
     /// Call once per sample in the audio loop. Requires `&mut self`.
     ///
     /// If no smoother is configured, returns the raw value.
     #[inline]
-    pub fn next_smoothed(&mut self) -> f64 {
+    pub fn tick_smoothed(&mut self) -> f64 {
         let current_value = self.get();
         match &mut self.smoother {
             Some(s) => {
                 // Update target from atomic value (in case host changed it)
                 s.set_target(current_value);
-                s.next()
+                s.tick()
             }
             None => current_value,
         }
     }
 
-    /// Get next smoothed value as f32.
+    /// Advance the smoother by one sample and return the smoothed value as f32.
     #[inline]
-    pub fn next_smoothed_f32(&mut self) -> f32 {
-        self.next_smoothed() as f32
+    pub fn tick_smoothed_f32(&mut self) -> f32 {
+        self.tick_smoothed() as f32
     }
 
     /// Skip smoothing forward by n samples.

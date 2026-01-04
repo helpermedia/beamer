@@ -217,8 +217,8 @@ impl DelayProcessor {
         // For simplicity, we'll process in-place by reading input before writing output
         for sample_idx in 0..num_samples {
             // Get smoothed parameter values (advances smoother each sample)
-            let feedback = self.params.feedback.next_smoothed();
-            let mix = self.params.mix.next_smoothed();
+            let feedback = self.params.feedback.tick_smoothed();
+            let mix = self.params.mix.tick_smoothed();
 
             // Read input samples
             let in_l = buffer.input(0)[sample_idx].to_f64();

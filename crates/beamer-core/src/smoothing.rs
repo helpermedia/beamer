@@ -18,7 +18,7 @@
 //! smoother.set_sample_rate(44100.0);
 //! smoother.reset(1.0);
 //! smoother.set_target(0.5);
-//! let value = smoother.next();  // Per-sample
+//! let value = smoother.tick();  // Per-sample
 //! ```
 //!
 //! # Thread Safety
@@ -33,9 +33,10 @@ const SNAP_THRESHOLD: f64 = 1e-8;
 /// Smoothing algorithm selection.
 ///
 /// The `f64` parameter is the smoothing time in milliseconds.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SmoothingStyle {
     /// No smoothing - value changes instantly.
+    #[default]
     None,
 
     /// Linear interpolation over specified milliseconds.
@@ -54,12 +55,6 @@ pub enum SmoothingStyle {
     /// CANNOT cross zero or handle negative values - use Exponential for dB parameters.
     /// Good for: filter frequencies (Hz), other always-positive parameters.
     Logarithmic(f64),
-}
-
-impl Default for SmoothingStyle {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// A parameter value smoother.
@@ -155,11 +150,11 @@ impl Smoother {
         self.step_size = 0.0;
     }
 
-    /// Get the next smoothed value (per-sample).
+    /// Advance by one sample and return the smoothed value.
     ///
     /// Call this once per sample in the audio loop.
     #[inline]
-    pub fn next(&mut self) -> f64 {
+    pub fn tick(&mut self) -> f64 {
         match self.style {
             SmoothingStyle::None => self.target,
             SmoothingStyle::Linear(_) => {
@@ -219,7 +214,7 @@ impl Smoother {
 
     /// Skip forward by n samples (for block processing).
     ///
-    /// This is equivalent to calling `next()` n times but may be optimized
+    /// This is equivalent to calling `tick()` n times but may be optimized
     /// for some smoothing styles.
     pub fn skip(&mut self, samples: usize) {
         match self.style {
@@ -266,14 +261,14 @@ impl Smoother {
     /// Fill a slice with smoothed values (f64).
     pub fn fill(&mut self, buffer: &mut [f64]) {
         for sample in buffer.iter_mut() {
-            *sample = self.next();
+            *sample = self.tick();
         }
     }
 
     /// Fill a slice with smoothed values (f32).
     pub fn fill_f32(&mut self, buffer: &mut [f32]) {
         for sample in buffer.iter_mut() {
-            *sample = self.next() as f32;
+            *sample = self.tick() as f32;
         }
     }
 
@@ -331,7 +326,7 @@ mod tests {
         s.set_sample_rate(44100.0);
         s.reset(0.0);
         s.set_target(1.0);
-        assert!((s.next() - 1.0).abs() < 1e-10);
+        assert!((s.tick() - 1.0).abs() < 1e-10);
         assert!(!s.is_smoothing());
     }
 
@@ -344,7 +339,7 @@ mod tests {
 
         // Should take 10 samples to reach target
         for _ in 0..10 {
-            s.next();
+            s.tick();
         }
         assert!((s.current() - 1.0).abs() < 1e-10);
         assert!(!s.is_smoothing());
@@ -359,7 +354,7 @@ mod tests {
 
         // After many samples, should be very close to target
         for _ in 0..10000 {
-            s.next();
+            s.tick();
         }
         assert!((s.current() - 1.0).abs() < 1e-6);
     }

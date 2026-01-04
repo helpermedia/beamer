@@ -38,7 +38,7 @@ impl ParamAttrs {
             ParamType::Float => {
                 self.name.is_some()
                     && self.default.is_some()
-                    && (self.range.is_some() || self.kind.as_ref().map_or(false, |k| k.has_fixed_range()))
+                    && (self.range.is_some() || self.kind.as_ref().is_some_and(|k| k.has_fixed_range()))
             }
             ParamType::Int => {
                 self.name.is_some() && self.default.is_some() && self.range.is_some()

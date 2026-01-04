@@ -198,7 +198,7 @@ impl AudioProcessor for GainProcessor {
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
         // Delegate to the macro-generated load_state
-        self.params.load_state(data).map_err(|e| PluginError::StateError(e))
+        self.params.load_state(data).map_err(PluginError::StateError)
     }
 }
 
