@@ -1,35 +1,40 @@
-//! Beamer Midi Transform - Example VST3 instrument demonstrating MIDI processing.
+//! Beamer MIDI Transform - Example VST3 instrument demonstrating advanced parameter features.
 //!
-//! This is a **VST3 instrument** that transforms MIDI notes:
-//! - MIDI In → Transpose +2 semitones → MIDI Out
-//! - Audio passes through unchanged (or silence if no input)
+//! This plugin showcases the Beamer parameter system:
+//! - **Nested parameter groups** with `#[nested(group = "...")]`
+//! - **EnumParam** for discrete choices (transform modes)
+//! - **IntParam** for note/CC number selection
+//! - **BoolParam** for enable toggles
+//! - **FloatParam** for velocity/value scaling
 //!
-//! Use case: Insert before another instrument to transpose all notes.
-//! Example: Play C1 on keyboard → Beamer Midi Transform → D1 sent to synth
+//! # Features
 //!
-//! It demonstrates:
-//! - VST3 instrument category (not an effect)
-//! - Processing MIDI events with `process_midi`
-//! - MIDI bus configuration with `wants_midi`
-//! - Note transformation while preserving noteId
+//! **Note Transform Group:**
+//! - Enable/disable note processing
+//! - Multiple transform modes (Transpose, Octave shifts, Remap, Invert)
+//! - Note remapping (Note In → Note Out)
+//! - Velocity scaling
+//!
+//! **CC Transform Group:**
+//! - Enable/disable CC processing
+//! - Multiple CC modes (Remap, Scale, Invert)
+//! - CC number remapping (CC X → CC Y)
+//! - Value scaling
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
+use beamer::{EnumParam, Params};
 
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
 /// Unique ID for this plugin component.
-/// Generated using random values - must be unique for each plugin.
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xA1B2C3D4, 0xE5F6A7B8, 0xC9D0E1F2, 0x03040506);
 
 /// Plugin configuration exported to the VST3 factory.
-///
-/// Note: This is categorized as "Instrument" so it appears in the instrument
-/// section of the DAW's plugin browser, not in effects.
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Midi Transform", COMPONENT_UID)
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform", COMPONENT_UID)
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -37,23 +42,333 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Midi Transform", COM
     .with_sub_categories("Instrument");
 
 // =============================================================================
+// Enum Types for Parameter Choices
+// =============================================================================
+
+/// Note transformation mode.
+///
+/// Demonstrates `#[derive(EnumParam)]` with custom display names.
+#[derive(Copy, Clone, PartialEq, EnumParam)]
+pub enum NoteTransformMode {
+    /// Pass notes through with optional velocity scaling
+    #[default]
+    #[name = "Through"]
+    Through,
+    /// Transpose all notes by semitones
+    #[name = "Transpose"]
+    Transpose,
+    /// Shift notes up one octave (+12 semitones)
+    #[name = "Octave Up"]
+    OctaveUp,
+    /// Shift notes down one octave (-12 semitones)
+    #[name = "Octave Down"]
+    OctaveDown,
+    /// Remap a specific note to another note
+    #[name = "Remap Note"]
+    Remap,
+    /// Invert pitch around middle C (C4 = 60)
+    #[name = "Invert"]
+    Invert,
+}
+
+/// CC transformation mode.
+#[derive(Copy, Clone, PartialEq, EnumParam)]
+pub enum CcTransformMode {
+    /// Pass CC through unchanged
+    #[default]
+    #[name = "Through"]
+    Through,
+    /// Remap CC number (CC X → CC Y)
+    #[name = "Remap CC"]
+    Remap,
+    /// Scale CC value
+    #[name = "Scale"]
+    Scale,
+    /// Invert CC value (127 - value)
+    #[name = "Invert"]
+    Invert,
+    /// Remap and scale CC
+    #[name = "Remap + Scale"]
+    RemapAndScale,
+}
+
+// =============================================================================
+// Nested Parameter Groups
+// =============================================================================
+
+/// Note transformation parameters.
+///
+/// This is a nested parameter group that appears as "Note Transform" in the DAW.
+#[derive(Params)]
+pub struct NoteTransformParams {
+    /// Enable note transformation
+    #[param(id = "note_enabled")]
+    pub enabled: BoolParam,
+
+    /// Transformation mode
+    #[param(id = "note_mode")]
+    pub mode: EnumParam<NoteTransformMode>,
+
+    /// Transpose amount in semitones (-24 to +24)
+    #[param(id = "note_transpose")]
+    pub transpose: IntParam,
+
+    /// Input note for remap mode (0-127)
+    #[param(id = "note_input")]
+    pub input_note: IntParam,
+
+    /// Output note for remap mode (0-127)
+    #[param(id = "note_output")]
+    pub output_note: IntParam,
+
+    /// Velocity scale (0% to 200%)
+    #[param(id = "note_velocity")]
+    pub velocity_scale: FloatParam,
+}
+
+impl NoteTransformParams {
+    pub fn new() -> Self {
+        Self {
+            enabled: BoolParam::new("Enabled", true)
+                .with_id(Self::PARAM_ENABLED_VST3_ID),
+
+            mode: EnumParam::new("Mode")
+                .with_id(Self::PARAM_MODE_VST3_ID),
+
+            transpose: IntParam::semitones("Transpose", 0, -24..=24)
+                .with_id(Self::PARAM_TRANSPOSE_VST3_ID),
+
+            input_note: IntParam::new("Input Note", 60, 0..=127)
+                .with_id(Self::PARAM_INPUT_NOTE_VST3_ID),
+
+            output_note: IntParam::new("Output Note", 60, 0..=127)
+                .with_id(Self::PARAM_OUTPUT_NOTE_VST3_ID),
+
+            velocity_scale: FloatParam::percent("Velocity", 1.0)
+                .with_id(Self::PARAM_VELOCITY_SCALE_VST3_ID),
+        }
+    }
+}
+
+impl Default for NoteTransformParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// CC transformation parameters.
+///
+/// This is a nested parameter group that appears as "CC Transform" in the DAW.
+#[derive(Params)]
+pub struct CcTransformParams {
+    /// Enable CC transformation
+    #[param(id = "cc_enabled")]
+    pub enabled: BoolParam,
+
+    /// Transformation mode
+    #[param(id = "cc_mode")]
+    pub mode: EnumParam<CcTransformMode>,
+
+    /// Input CC number (0-127)
+    #[param(id = "cc_input")]
+    pub input_cc: IntParam,
+
+    /// Output CC number (0-127)
+    #[param(id = "cc_output")]
+    pub output_cc: IntParam,
+
+    /// Value scale (0% to 200%)
+    #[param(id = "cc_scale")]
+    pub value_scale: FloatParam,
+}
+
+impl CcTransformParams {
+    pub fn new() -> Self {
+        Self {
+            enabled: BoolParam::new("Enabled", true)
+                .with_id(Self::PARAM_ENABLED_VST3_ID),
+
+            mode: EnumParam::new("Mode")
+                .with_id(Self::PARAM_MODE_VST3_ID),
+
+            // Default: Mod wheel (CC 1) → Expression (CC 11)
+            input_cc: IntParam::new("Input CC", 1, 0..=127)
+                .with_id(Self::PARAM_INPUT_CC_VST3_ID),
+
+            output_cc: IntParam::new("Output CC", 11, 0..=127)
+                .with_id(Self::PARAM_OUTPUT_CC_VST3_ID),
+
+            value_scale: FloatParam::percent("Scale", 1.0)
+                .with_id(Self::PARAM_VALUE_SCALE_VST3_ID),
+        }
+    }
+}
+
+impl Default for CcTransformParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// Top-Level Parameters with Nested Groups
+// =============================================================================
+
+/// Main parameter structure with nested groups.
+///
+/// Demonstrates the `#[nested(group = "...")]` attribute for creating
+/// hierarchical parameter organization in the DAW.
+#[derive(Params)]
+pub struct MidiTransformParams {
+    /// Global bypass
+    #[param(id = "bypass")]
+    pub bypass: BoolParam,
+
+    /// Note transformation parameters (nested group)
+    #[nested(group = "Note Transform")]
+    pub note: NoteTransformParams,
+
+    /// CC transformation parameters (nested group)
+    #[nested(group = "CC Transform")]
+    pub cc: CcTransformParams,
+}
+
+impl MidiTransformParams {
+    pub fn new() -> Self {
+        Self {
+            bypass: BoolParam::bypass()
+                .with_id(Self::PARAM_BYPASS_VST3_ID),
+            note: NoteTransformParams::new(),
+            cc: CcTransformParams::new(),
+        }
+    }
+}
+
+impl Default for MidiTransformParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
 // Plugin Implementation
 // =============================================================================
 
-/// Semitones to transpose notes up.
-const TRANSPOSE_SEMITONES: i8 = 2;
-
-/// MIDI note transformer plugin.
+/// MIDI transformer plugin.
 ///
-/// Transposes all incoming MIDI notes up by 2 semitones.
-/// Audio is passed through unchanged.
+/// Transforms MIDI notes and CC messages based on parameter settings.
 pub struct MidiTransformProcessor {
-    params: NoParams,
+    params: MidiTransformParams,
+}
+
+impl MidiTransformProcessor {
+    /// Transform a MIDI note pitch based on current settings.
+    fn transform_pitch(&self, pitch: u8) -> Option<u8> {
+        if !self.params.note.enabled.get() {
+            return Some(pitch);
+        }
+
+        let new_pitch = match self.params.note.mode.get() {
+            NoteTransformMode::Through => pitch as i16,
+
+            NoteTransformMode::Transpose => {
+                pitch as i16 + self.params.note.transpose.get() as i16
+            }
+
+            NoteTransformMode::OctaveUp => pitch as i16 + 12,
+
+            NoteTransformMode::OctaveDown => pitch as i16 - 12,
+
+            NoteTransformMode::Remap => {
+                if pitch == self.params.note.input_note.get() as u8 {
+                    self.params.note.output_note.get() as i16
+                } else {
+                    pitch as i16
+                }
+            }
+
+            NoteTransformMode::Invert => {
+                // Invert around middle C (60)
+                // pitch 60 stays at 60, pitch 61 becomes 59, etc.
+                60 + (60 - pitch as i16)
+            }
+        };
+
+        // Clamp to valid MIDI range, return None if completely out of range
+        if (0..=127).contains(&new_pitch) {
+            Some(new_pitch as u8)
+        } else {
+            None
+        }
+    }
+
+    /// Transform a velocity value based on current settings.
+    fn transform_velocity(&self, velocity: f32) -> f32 {
+        if !self.params.note.enabled.get() {
+            return velocity;
+        }
+
+        let scale = self.params.note.velocity_scale.get() as f32;
+        (velocity * scale).clamp(0.0, 1.0)
+    }
+
+    /// Transform a CC number based on current settings.
+    fn transform_cc_number(&self, cc: u8) -> Option<u8> {
+        if !self.params.cc.enabled.get() {
+            return Some(cc);
+        }
+
+        match self.params.cc.mode.get() {
+            CcTransformMode::Through | CcTransformMode::Scale | CcTransformMode::Invert => {
+                Some(cc)
+            }
+            CcTransformMode::Remap | CcTransformMode::RemapAndScale => {
+                if cc == self.params.cc.input_cc.get() as u8 {
+                    Some(self.params.cc.output_cc.get() as u8)
+                } else {
+                    Some(cc)
+                }
+            }
+        }
+    }
+
+    /// Transform a CC value based on current settings.
+    fn transform_cc_value(&self, cc: u8, value: f32) -> f32 {
+        if !self.params.cc.enabled.get() {
+            return value;
+        }
+
+        // Only transform if this is the targeted CC (for remap modes)
+        // or if we're in a mode that affects all CCs
+        let should_transform = match self.params.cc.mode.get() {
+            CcTransformMode::Through => false,
+            CcTransformMode::Scale | CcTransformMode::Invert => true,
+            CcTransformMode::Remap => false, // Remap only changes number, not value
+            CcTransformMode::RemapAndScale => {
+                cc == self.params.cc.input_cc.get() as u8
+            }
+        };
+
+        if !should_transform {
+            return value;
+        }
+
+        match self.params.cc.mode.get() {
+            CcTransformMode::Scale | CcTransformMode::RemapAndScale => {
+                let scale = self.params.cc.value_scale.get() as f32;
+                (value * scale).clamp(0.0, 1.0)
+            }
+            CcTransformMode::Invert => {
+                1.0 - value
+            }
+            _ => value,
+        }
+    }
 }
 
 impl AudioProcessor for MidiTransformProcessor {
-    fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {
-        // No sample-rate dependent state needed
+    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
+        self.params.set_sample_rate(sample_rate);
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
@@ -62,61 +377,75 @@ impl AudioProcessor for MidiTransformProcessor {
     }
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
+        // If bypassed, pass everything through unchanged
+        if self.params.bypass.get() {
+            for event in input {
+                output.push(event.clone());
+            }
+            return;
+        }
+
         for event in input {
             match &event.event {
                 MidiEventKind::NoteOn(note_on) => {
-                    // Transpose pitch up, clamp to valid MIDI range (0-127)
-                    let new_pitch = (note_on.pitch as i16 + TRANSPOSE_SEMITONES as i16)
-                        .clamp(0, 127) as u8;
-
-                    output.push(MidiEvent::note_on(
-                        event.sample_offset,
-                        note_on.channel,
-                        new_pitch,
-                        note_on.velocity,
-                        note_on.note_id, // Preserve note ID for proper tracking!
-                        note_on.tuning,  // Preserve tuning for MPE/microtonal
-                        note_on.length,  // Preserve note length
-                    ));
+                    if let Some(new_pitch) = self.transform_pitch(note_on.pitch) {
+                        let new_velocity = self.transform_velocity(note_on.velocity);
+                        output.push(MidiEvent::note_on(
+                            event.sample_offset,
+                            note_on.channel,
+                            new_pitch,
+                            new_velocity,
+                            note_on.note_id,
+                            note_on.tuning,
+                            note_on.length,
+                        ));
+                    }
+                    // If transform_pitch returns None, the note is filtered out
                 }
+
                 MidiEventKind::NoteOff(note_off) => {
-                    // Must transpose note-off to match the transposed note-on
-                    let new_pitch = (note_off.pitch as i16 + TRANSPOSE_SEMITONES as i16)
-                        .clamp(0, 127) as u8;
-
-                    output.push(MidiEvent::note_off(
-                        event.sample_offset,
-                        note_off.channel,
-                        new_pitch,
-                        note_off.velocity,
-                        note_off.note_id,
-                        note_off.tuning, // Preserve tuning for MPE/microtonal
-                    ));
+                    if let Some(new_pitch) = self.transform_pitch(note_off.pitch) {
+                        let new_velocity = self.transform_velocity(note_off.velocity);
+                        output.push(MidiEvent::note_off(
+                            event.sample_offset,
+                            note_off.channel,
+                            new_pitch,
+                            new_velocity,
+                            note_off.note_id,
+                            note_off.tuning,
+                        ));
+                    }
                 }
+
                 MidiEventKind::PolyPressure(poly) => {
-                    // Transpose poly pressure to match the transposed notes
-                    let new_pitch = (poly.pitch as i16 + TRANSPOSE_SEMITONES as i16)
-                        .clamp(0, 127) as u8;
-
-                    output.push(MidiEvent::poly_pressure(
-                        event.sample_offset,
-                        poly.channel,
-                        new_pitch,
-                        poly.pressure,
-                        poly.note_id,
-                    ));
+                    if let Some(new_pitch) = self.transform_pitch(poly.pitch) {
+                        output.push(MidiEvent::poly_pressure(
+                            event.sample_offset,
+                            poly.channel,
+                            new_pitch,
+                            poly.pressure,
+                            poly.note_id,
+                        ));
+                    }
                 }
-                // Pass through channel-wide events unchanged
-                MidiEventKind::ControlChange(_)
-                | MidiEventKind::PitchBend(_)
+
+                MidiEventKind::ControlChange(cc) => {
+                    if let Some(new_cc) = self.transform_cc_number(cc.controller) {
+                        let new_value = self.transform_cc_value(cc.controller, cc.value);
+                        output.push(MidiEvent::control_change(
+                            event.sample_offset,
+                            cc.channel,
+                            new_cc,
+                            new_value,
+                        ));
+                    }
+                }
+
+                // Pass through other events unchanged
+                MidiEventKind::PitchBend(_)
                 | MidiEventKind::ChannelPressure(_)
-                | MidiEventKind::ProgramChange(_) => {
-                    output.push(event.clone());
-                }
-
-                // Pass through advanced VST3 events unchanged
-                // (SysEx, Note Expression, Chord, Scale info)
-                MidiEventKind::SysEx(_)
+                | MidiEventKind::ProgramChange(_)
+                | MidiEventKind::SysEx(_)
                 | MidiEventKind::NoteExpressionValue(_)
                 | MidiEventKind::NoteExpressionInt(_)
                 | MidiEventKind::NoteExpressionText(_)
@@ -131,10 +460,20 @@ impl AudioProcessor for MidiTransformProcessor {
     fn wants_midi(&self) -> bool {
         true
     }
+
+    fn save_state(&self) -> PluginResult<Vec<u8>> {
+        Ok(self.params.save_state())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
+        self.params
+            .load_state(data)
+            .map_err(PluginError::StateError)
+    }
 }
 
 impl Plugin for MidiTransformProcessor {
-    type Params = NoParams;
+    type Params = MidiTransformParams;
 
     fn params(&self) -> &Self::Params {
         &self.params
@@ -146,7 +485,7 @@ impl Plugin for MidiTransformProcessor {
 
     fn create() -> Self {
         Self {
-            params: NoParams,
+            params: MidiTransformParams::new(),
         }
     }
 }
@@ -155,5 +494,4 @@ impl Plugin for MidiTransformProcessor {
 // VST3 Export
 // =============================================================================
 
-// Export VST3 entry points using the generic wrapper
 export_vst3!(CONFIG, Vst3Processor<MidiTransformProcessor>);

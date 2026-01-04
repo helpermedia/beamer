@@ -359,7 +359,8 @@ fn generate_count(ir: &ParamsIR) -> TokenStream {
             .nested_fields()
             .map(|nested| {
                 let field = &nested.field_name;
-                quote! { self.#field.count() }
+                // Use fully qualified syntax to disambiguate between Params::count and Parameters::count
+                quote! { ::beamer::core::param_types::Params::count(&self.#field) }
             })
             .collect();
 
@@ -746,11 +747,13 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
             .nested_fields()
             .map(|nested| {
                 let field = &nested.field_name;
+                // Use fully qualified syntax to disambiguate
                 quote! {
-                    if adjusted_index < self.#field.count() {
-                        return self.#field.info(adjusted_index);
+                    let nested_count = ::beamer::core::param_types::Params::count(&self.#field);
+                    if adjusted_index < nested_count {
+                        return ::beamer::core::params::Parameters::info(&self.#field, adjusted_index);
                     }
-                    adjusted_index -= self.#field.count();
+                    adjusted_index -= nested_count;
                 }
             })
             .collect();

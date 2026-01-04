@@ -1169,6 +1169,24 @@ impl IntParam {
         self.value
             .store(value.clamp(self.min, self.max), Ordering::Relaxed);
     }
+
+    // === Smoothing compatibility (no-ops for IntParam) ===
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Integer parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
+        // No-op: IntParam doesn't support smoothing
+    }
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Integer parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn reset_smoothing(&mut self) {
+        // No-op: IntParam doesn't support smoothing
+    }
 }
 
 impl ParamRef for IntParam {
@@ -1399,6 +1417,24 @@ impl BoolParam {
     #[inline]
     pub fn set(&self, value: bool) {
         self.value.store(value, Ordering::Relaxed);
+    }
+
+    // === Smoothing compatibility (no-ops for BoolParam) ===
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Boolean parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
+        // No-op: BoolParam doesn't support smoothing
+    }
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Boolean parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn reset_smoothing(&mut self) {
+        // No-op: BoolParam doesn't support smoothing
     }
 }
 
@@ -1704,6 +1740,24 @@ impl<E: EnumParamValue> EnumParam<E> {
     #[inline]
     pub fn set(&self, value: E) {
         self.value.store(value.to_index(), Ordering::Relaxed);
+    }
+
+    // === Smoothing compatibility (no-ops for EnumParam) ===
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Enum parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
+        // No-op: EnumParam doesn't support smoothing
+    }
+
+    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    ///
+    /// Enum parameters don't support smoothing, so this does nothing.
+    #[inline]
+    pub fn reset_smoothing(&mut self) {
+        // No-op: EnumParam doesn't support smoothing
     }
 }
 
