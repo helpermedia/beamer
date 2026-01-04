@@ -2,13 +2,13 @@
 
 A Rust framework for building VST3 audio plugins.
 
-A modern framework bridging VST3's C++ COM interfaces with safe Rust abstractions and WebView GUIs.
+Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. It bridges VST3's C++ COM interfaces with safe Rust abstractions.
 
 ## Overview
 
 Beamer provides a clean separation between plugin logic and the VST3 format details. You implement simple traits for your audio processing and parameters, and Beamer handles the rest.
 
-The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8). Beamer uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
+The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
 
 ## Features
 
