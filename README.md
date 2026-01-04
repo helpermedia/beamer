@@ -42,24 +42,11 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (a
 use beamer::prelude::*;
 use beamer::Params;
 
-// Parameters using derive macro - handles atomic storage, VST3 integration, state persistence
+// Declarative parameters - macro generates Default, VST3 integration, state persistence
 #[derive(Params)]
 struct GainParams {
-    #[param(id = "gain")]
+    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParam,
-}
-
-impl GainParams {
-    fn new() -> Self {
-        Self {
-            // 0 dB default, range -60 to +12 dB
-            gain: FloatParam::db("Gain", 0.0, -60.0..=12.0),
-        }
-    }
-}
-
-impl Default for GainParams {
-    fn default() -> Self { Self::new() }
 }
 
 // Plugin with DSP logic
@@ -83,11 +70,49 @@ impl Plugin for GainPlugin {
 
     fn params(&self) -> &Self::Params { &self.params }
     fn params_mut(&mut self) -> &mut Self::Params { &mut self.params }
-    fn create() -> Self { Self { params: GainParams::new() } }
+    fn create() -> Self { Self { params: GainParams::default() } }
 }
 ```
 
 See the [examples](examples/) for complete working plugins.
+
+## Parameter Attributes
+
+The `#[param(...)]` attribute supports:
+
+| Attribute | Description |
+|-----------|-------------|
+| `id = "..."` | Required. String ID (hashed to u32 for VST3) |
+| `name = "..."` | Display name in DAW |
+| `default = <value>` | Default value |
+| `range = start..=end` | Value range |
+| `kind = "..."` | Unit type: `db`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones` |
+| `group = "..."` | Visual grouping in DAW (flat access, grouped display) |
+| `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) |
+| `bypass` | Mark as bypass parameter (BoolParam only) |
+
+### Visual Grouping
+
+Use `group = "..."` for flat parameter access with DAW grouping:
+
+```rust
+#[derive(Params)]
+struct SynthParams {
+    #[param(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
+    cutoff: FloatParam,
+
+    #[param(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
+    resonance: FloatParam,
+
+    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
+    gain: FloatParam,
+}
+
+// Access: params.cutoff, params.resonance, params.gain (flat)
+// DAW shows collapsible "Filter" and "Output" groups
+```
+
+For nested structs with separate parameter groups, use `#[nested(group = "...")]`.
 
 ## Building
 

@@ -3,28 +3,52 @@
 //! This crate provides the `#[derive(Params)]` macro for generating parameter
 //! trait implementations automatically.
 //!
-//! # Example
+//! # Declarative Parameter Definition
+//!
+//! Parameters can be defined entirely through attributes - the macro generates
+//! the `Default` impl automatically:
 //!
 //! ```ignore
 //! use beamer::prelude::*;
 //!
 //! #[derive(Params)]
 //! pub struct GainParams {
-//!     #[param(id = "gain")]
+//!     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     pub gain: FloatParam,
+//!
+//!     #[param(id = "bypass", bypass = true)]
+//!     pub bypass: BoolParam,
 //! }
 //!
-//! impl Default for GainParams {
-//!     fn default() -> Self {
-//!         Self {
-//!             gain: FloatParam::db("Gain", 0.0, -60.0..=12.0),
-//!         }
-//!     }
-//! }
+//! // No manual Default impl needed - macro generates everything!
 //! ```
 //!
 //! The macro generates implementations for both `Params` (new system) and
-//! `Parameters` (VST3 integration) traits.
+//! `Parameters` (VST3 integration) traits, plus `Default` when all required
+//! attributes are present.
+//!
+//! # Flat Visual Grouping
+//!
+//! Use `group = "..."` for visual grouping in the DAW without nested structs:
+//!
+//! ```ignore
+//! #[derive(Params)]
+//! pub struct SynthParams {
+//!     // Filter parameters - grouped visually in DAW
+//!     #[param(id = "cutoff", name = "Cutoff", group = "Filter", ...)]
+//!     pub cutoff: FloatParam,
+//!
+//!     #[param(id = "reso", name = "Resonance", group = "Filter", ...)]
+//!     pub resonance: FloatParam,
+//!
+//!     // Output parameters - different visual group
+//!     #[param(id = "gain", name = "Gain", group = "Output", ...)]
+//!     pub gain: FloatParam,
+//! }
+//!
+//! // Access is flat: params.cutoff, params.resonance, params.gain
+//! // But DAW shows them in collapsible "Filter" and "Output" groups
+//! ```
 
 use proc_macro::TokenStream;
 
@@ -33,6 +57,7 @@ mod enum_param;
 mod fnv;
 mod ir;
 mod parse;
+mod range_eval;
 mod validate;
 
 /// Derive macro for implementing parameter traits.
@@ -40,25 +65,36 @@ mod validate;
 /// This macro generates:
 /// - `Params` trait implementation (count, iter, by_id, save_state, load_state)
 /// - `Parameters` trait implementation (VST3 integration)
+/// - `Default` implementation (when declarative attributes are complete)
 /// - Compile-time hash collision detection
 ///
 /// # Attributes
 ///
-/// - `#[param(id = "...")]` - Required on every `FloatParam`, `IntParam`, or `BoolParam` field.
-///   The ID is a string that gets hashed to a u32 for VST3 compatibility.
+/// ## Required
+/// - `id = "..."` - String ID that gets hashed to u32 for VST3.
 ///
-/// - `#[nested(group = "...")]` - Applied to fields containing nested parameter structs.
-///   The group name is used for VST3 unit hierarchy.
+/// ## Declarative (enables auto-generated Default)
+/// - `name = "..."` - Display name
+/// - `default = <value>` - Default value (float, int, or bool)
+/// - `range = start..=end` - Value range (for FloatParam/IntParam)
+/// - `kind = "..."` - Unit type: db, hz, ms, seconds, percent, pan, ratio, linear, semitones
+/// - `short_name = "..."` - Short name for constrained UIs
+/// - `smoothing = "exp:5.0"` - Parameter smoothing (exp or linear)
+/// - `bypass` - Mark as bypass parameter (BoolParam only)
+/// - `group = "..."` - Visual grouping in DAW without nested struct
+///
+/// ## Nested Groups
+/// - `#[nested(group = "...")]` - For fields containing nested parameter structs
 ///
 /// # Example
 ///
 /// ```ignore
 /// #[derive(Params)]
 /// pub struct PluginParams {
-///     #[param(id = "gain")]
+///     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 ///     pub gain: FloatParam,
 ///
-///     #[param(id = "freq")]
+///     #[param(id = "freq", name = "Frequency", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
 ///     pub frequency: FloatParam,
 ///
 ///     #[nested(group = "Output")]

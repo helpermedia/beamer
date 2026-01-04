@@ -478,6 +478,8 @@ pub struct FloatParam {
     formatter: Formatter,
     /// Optional smoother for avoiding zipper noise
     smoother: Option<Smoother>,
+    /// Whether this parameter stores dB values (for as_linear() optimization)
+    is_db: bool,
 }
 
 impl FloatParam {
@@ -510,6 +512,7 @@ impl FloatParam {
             range: Box::new(mapper),
             formatter: Formatter::Float { precision: 2 },
             smoother: None,
+            is_db: false,
         }
     }
 
@@ -545,7 +548,8 @@ impl FloatParam {
     pub fn db(name: &'static str, default_db: f64, range_db: RangeInclusive<f64>) -> Self {
         // Store dB values directly (not linear) so normalized_to_plain returns dB
         // Use as_linear() in DSP code to get linear amplitude
-        let mapper = LinearMapper::new(range_db.clone());
+        let min_db = *range_db.start();
+        let mapper = LinearMapper::new(range_db);
         let default_normalized = mapper.normalize(default_db);
 
         Self {
@@ -561,8 +565,9 @@ impl FloatParam {
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
-            formatter: Formatter::Decibel { precision: 1 },
+            formatter: Formatter::DecibelDirect { precision: 1, min_db },
             smoother: None,
+            is_db: true,
         }
     }
 
@@ -604,6 +609,7 @@ impl FloatParam {
             range: Box::new(mapper),
             formatter: Formatter::Frequency,
             smoother: None,
+            is_db: false,
         }
     }
 
@@ -792,7 +798,7 @@ impl FloatParam {
     #[inline]
     pub fn as_linear(&self) -> f64 {
         let plain = self.get();
-        if self.info.units == "dB" {
+        if self.is_db {
             db_to_linear(plain)
         } else {
             plain

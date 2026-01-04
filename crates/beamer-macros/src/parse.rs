@@ -3,10 +3,15 @@
 //! This module transforms `syn::DeriveInput` into our intermediate representation.
 
 use proc_macro2::Span;
+use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Field, Fields};
 
 use crate::fnv::fnv1a_32;
-use crate::ir::{FieldIR, NestedFieldIR, ParamFieldIR, ParamType, ParamsIR};
+use crate::ir::{
+    FieldIR, NestedFieldIR, ParamAttrs, ParamDefault, ParamFieldIR, ParamKind, ParamType,
+    ParamsIR, RangeSpec, SmoothingSpec, SmoothingStyle,
+};
+use crate::range_eval;
 
 /// Parse a `DeriveInput` into our intermediate representation.
 pub fn parse(input: DeriveInput) -> syn::Result<ParamsIR> {
@@ -101,7 +106,11 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
     Ok(None)
 }
 
-/// Parse a field with `#[param(id = "...")]` attribute.
+/// Parse a field with `#[param(...)]` attribute.
+///
+/// Supports both minimal and declarative styles:
+/// - Minimal: `#[param(id = "gain")]` (requires manual Default)
+/// - Declarative: `#[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]`
 fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamFieldIR> {
     let field_name = field
         .ident
@@ -110,14 +119,60 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
 
     // Parse the attribute using syn 2.x API
     let mut string_id: Option<String> = None;
+    let mut attrs = ParamAttrs::default();
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("id") {
             let value: syn::LitStr = meta.value()?.parse()?;
             string_id = Some(value.value());
             Ok(())
+        } else if meta.path.is_ident("name") {
+            let value: syn::LitStr = meta.value()?.parse()?;
+            attrs.name = Some(value.value());
+            Ok(())
+        } else if meta.path.is_ident("default") {
+            attrs.default = Some(parse_default_value(&meta)?);
+            Ok(())
+        } else if meta.path.is_ident("range") {
+            attrs.range = Some(parse_range_spec(&meta)?);
+            Ok(())
+        } else if meta.path.is_ident("kind") {
+            let value: syn::LitStr = meta.value()?.parse()?;
+            let kind_str = value.value();
+            attrs.kind = Some(ParamKind::from_str(&kind_str).ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &value,
+                    format!(
+                        "unknown kind '{}'. Valid kinds: db, hz, ms, seconds, percent, pan, ratio, linear, semitones",
+                        kind_str
+                    ),
+                )
+            })?);
+            Ok(())
+        } else if meta.path.is_ident("short_name") {
+            let value: syn::LitStr = meta.value()?.parse()?;
+            attrs.short_name = Some(value.value());
+            Ok(())
+        } else if meta.path.is_ident("smoothing") {
+            attrs.smoothing = Some(parse_smoothing_spec(&meta)?);
+            Ok(())
+        } else if meta.path.is_ident("bypass") {
+            // bypass can be `bypass` (flag) or `bypass = true`
+            if meta.input.peek(syn::Token![=]) {
+                let value: syn::LitBool = meta.value()?.parse()?;
+                attrs.bypass = value.value();
+            } else {
+                attrs.bypass = true;
+            }
+            Ok(())
+        } else if meta.path.is_ident("group") {
+            let value: syn::LitStr = meta.value()?.parse()?;
+            attrs.group = Some(value.value());
+            Ok(())
         } else {
-            Err(meta.error("expected `id = \"...\"`"))
+            Err(meta.error(
+                "unknown attribute. Expected: id, name, default, range, kind, short_name, smoothing, bypass, group"
+            ))
         }
     })?;
 
@@ -130,6 +185,17 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
             ),
         )
     })?;
+
+    // Validate that the ID doesn't contain path separators (used for nested group routing)
+    if string_id.contains('/') {
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!(
+                "parameter id '{}' cannot contain '/' (reserved for nested group path routing)",
+                string_id
+            ),
+        ));
+    }
 
     // Determine parameter type
     let param_type = extract_param_type(&field.ty).ok_or_else(|| {
@@ -148,6 +214,127 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
         string_id,
         hash_id,
         span: attr.path().segments[0].ident.span(),
+        attrs,
+    })
+}
+
+/// Parse a default value from `default = <literal>`.
+fn parse_default_value(meta: &syn::meta::ParseNestedMeta) -> syn::Result<ParamDefault> {
+    let expr: syn::Expr = meta.value()?.parse()?;
+    parse_default_expr(&expr)
+}
+
+/// Parse a default value expression.
+fn parse_default_expr(expr: &syn::Expr) -> syn::Result<ParamDefault> {
+    match expr {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Float(f) => {
+                let value: f64 = f.base10_parse()?;
+                Ok(ParamDefault::Float(value))
+            }
+            syn::Lit::Int(i) => {
+                let value: i64 = i.base10_parse()?;
+                Ok(ParamDefault::Int(value))
+            }
+            syn::Lit::Bool(b) => Ok(ParamDefault::Bool(b.value())),
+            _ => Err(syn::Error::new_spanned(
+                lit,
+                "default must be a float, int, or bool literal",
+            )),
+        },
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            if let syn::Expr::Lit(lit) = &*unary.expr {
+                match &lit.lit {
+                    syn::Lit::Float(f) => {
+                        let value: f64 = f.base10_parse()?;
+                        Ok(ParamDefault::Float(-value))
+                    }
+                    syn::Lit::Int(i) => {
+                        let value: i64 = i.base10_parse()?;
+                        Ok(ParamDefault::Int(-value))
+                    }
+                    _ => Err(syn::Error::new_spanned(
+                        unary,
+                        "expected float or int literal after -",
+                    )),
+                }
+            } else {
+                Err(syn::Error::new_spanned(
+                    unary,
+                    "expected literal after -",
+                ))
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            "default must be a literal value (e.g., 0.0, -12, true)",
+        )),
+    }
+}
+
+/// Parse a range specification from `range = start..=end`.
+fn parse_range_spec(meta: &syn::meta::ParseNestedMeta) -> syn::Result<RangeSpec> {
+    let expr: syn::ExprRange = meta.value()?.parse().map_err(|_| {
+        syn::Error::new(
+            meta.path.span(),
+            "range must be an inclusive range expression like `-60.0..=12.0`",
+        )
+    })?;
+
+    let start_expr = expr.start.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(&expr, "range must have a start value")
+    })?;
+    let end_expr = expr.end.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(&expr, "range must have an end value")
+    })?;
+
+    // Verify it's an inclusive range
+    if !matches!(expr.limits, syn::RangeLimits::Closed(_)) {
+        return Err(syn::Error::new_spanned(
+            &expr,
+            "range must be inclusive (use ..= not ..)",
+        ));
+    }
+
+    // Evaluate the range bounds
+    let (start, end) = range_eval::eval_float_range(start_expr, end_expr)?;
+
+    Ok(RangeSpec {
+        start,
+        end,
+        span: expr.span(),
+    })
+}
+
+/// Parse a smoothing specification from `smoothing = "exp:5.0"`.
+fn parse_smoothing_spec(meta: &syn::meta::ParseNestedMeta) -> syn::Result<SmoothingSpec> {
+    let value: syn::LitStr = meta.value()?.parse()?;
+    let s = value.value();
+    let span = value.span();
+
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 2 {
+        return Err(syn::Error::new(
+            span,
+            "smoothing must be in format 'exp:5.0' or 'linear:10.0'",
+        ));
+    }
+
+    let style = SmoothingStyle::from_str(parts[0]).ok_or_else(|| {
+        syn::Error::new(
+            span,
+            "smoothing style must be 'exp' or 'linear'",
+        )
+    })?;
+
+    let time_ms: f64 = parts[1].parse().map_err(|_| {
+        syn::Error::new(span, "invalid time value in smoothing (expected number)")
+    })?;
+
+    Ok(SmoothingSpec {
+        style,
+        time_ms,
+        span,
     })
 }
 
@@ -193,9 +380,14 @@ fn parse_nested_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Neste
 
 /// Assign sequential unit IDs to nested fields.
 ///
-/// Unit 0 is reserved for root, so nested groups get IDs 1, 2, 3, ...
+/// Unit 0 is reserved for root. Flat groups (via `group = "..."`) get IDs 1, 2, 3, ...
+/// Nested groups get IDs starting after flat groups.
 fn assign_unit_ids(fields: &mut [FieldIR]) {
-    let mut next_unit_id: i32 = 1;
+    // Count flat groups first - they get IDs 1, 2, 3, ...
+    let flat_group_count = count_flat_groups(fields);
+
+    // Nested groups start after flat groups
+    let mut next_unit_id: i32 = flat_group_count as i32 + 1;
 
     for field in fields {
         if let FieldIR::Nested(nested) = field {
@@ -204,6 +396,19 @@ fn assign_unit_ids(fields: &mut [FieldIR]) {
             next_unit_id += 1;
         }
     }
+}
+
+/// Count unique flat group names in the fields.
+fn count_flat_groups(fields: &[FieldIR]) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    for field in fields {
+        if let FieldIR::Param(p) = field {
+            if let Some(ref group) = p.attrs.group {
+                seen.insert(group.as_str());
+            }
+        }
+    }
+    seen.len()
 }
 
 /// Extract the parameter type from a type path.

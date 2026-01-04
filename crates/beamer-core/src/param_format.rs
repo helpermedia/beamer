@@ -40,6 +40,17 @@ pub enum Formatter {
         precision: usize,
     },
 
+    /// Direct decibel formatter where input is already in dB.
+    ///
+    /// Used by `FloatParam::db()` where the plain value is stored as dB.
+    /// Display: "+12.0 dB", "-60.0 dB"
+    DecibelDirect {
+        /// Number of decimal places.
+        precision: usize,
+        /// Minimum dB value (below this shows "-inf dB")
+        min_db: f64,
+    },
+
     /// Frequency formatter with automatic Hz/kHz scaling.
     ///
     /// Display: "440 Hz", "1.50 kHz"
@@ -127,6 +138,18 @@ impl Formatter {
                 }
             }
 
+            Formatter::DecibelDirect { precision, min_db } => {
+                // Value is already in dB, just format it
+                // Use strict less-than so that min_db itself displays correctly
+                if value < *min_db {
+                    "-inf dB".to_string()
+                } else if value >= 0.0 {
+                    format!("+{:.prec$} dB", value, prec = *precision)
+                } else {
+                    format!("{:.prec$} dB", value, prec = *precision)
+                }
+            }
+
             Formatter::Frequency => {
                 if value >= 1000.0 {
                     format!("{:.2} kHz", value / 1000.0)
@@ -211,6 +234,23 @@ impl Formatter {
 
                 let db: f64 = trimmed.parse().ok()?;
                 Some(10.0_f64.powf(db / 20.0))
+            }
+
+            Formatter::DecibelDirect { min_db, .. } => {
+                // Parse dB value directly (no conversion)
+                let trimmed = s
+                    .trim_end_matches(" dB")
+                    .trim_end_matches("dB")
+                    .trim();
+
+                if trimmed.eq_ignore_ascii_case("-inf")
+                    || trimmed.eq_ignore_ascii_case("-∞")
+                    || trimmed == "-infinity"
+                {
+                    return Some(*min_db);
+                }
+
+                trimmed.parse().ok()
             }
 
             Formatter::Frequency => {
@@ -312,6 +352,7 @@ impl Formatter {
         match self {
             Formatter::Float { .. } => "",
             Formatter::Decibel { .. } => "dB",
+            Formatter::DecibelDirect { .. } => "dB",
             Formatter::Frequency => "Hz",
             Formatter::Milliseconds { .. } => "ms",
             Formatter::Seconds { .. } => "s",

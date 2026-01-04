@@ -99,116 +99,64 @@ pub enum CcTransformMode {
 /// Note transformation parameters.
 ///
 /// This is a nested parameter group that appears as "Note Transform" in the DAW.
+/// Uses **declarative parameter definition** - no manual Default impl needed!
 #[derive(Params)]
 pub struct NoteTransformParams {
     /// Enable note transformation
-    #[param(id = "note_enabled")]
+    #[param(id = "note_enabled", name = "Enabled", default = true)]
     pub enabled: BoolParam,
 
     /// Transformation mode
-    #[param(id = "note_mode")]
+    #[param(id = "note_mode", name = "Mode")]
     pub mode: EnumParam<NoteTransformMode>,
 
     /// Transpose amount in semitones (-24 to +24)
-    #[param(id = "note_transpose")]
+    #[param(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
     pub transpose: IntParam,
 
     /// Input note for remap mode (0-127)
-    #[param(id = "note_input")]
+    #[param(id = "note_input", name = "Input Note", default = 60, range = 0..=127)]
     pub input_note: IntParam,
 
     /// Output note for remap mode (0-127)
-    #[param(id = "note_output")]
+    #[param(id = "note_output", name = "Output Note", default = 60, range = 0..=127)]
     pub output_note: IntParam,
 
-    /// Velocity scale (0% to 200%)
-    #[param(id = "note_velocity")]
+    /// Velocity scale (0.0 to 2.0, where 1.0 = 100%)
+    #[param(id = "note_velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
     pub velocity_scale: FloatParam,
 }
 
-impl NoteTransformParams {
-    pub fn new() -> Self {
-        Self {
-            enabled: BoolParam::new("Enabled", true)
-                .with_id(Self::PARAM_ENABLED_VST3_ID),
-
-            mode: EnumParam::new("Mode")
-                .with_id(Self::PARAM_MODE_VST3_ID),
-
-            transpose: IntParam::semitones("Transpose", 0, -24..=24)
-                .with_id(Self::PARAM_TRANSPOSE_VST3_ID),
-
-            input_note: IntParam::new("Input Note", 60, 0..=127)
-                .with_id(Self::PARAM_INPUT_NOTE_VST3_ID),
-
-            output_note: IntParam::new("Output Note", 60, 0..=127)
-                .with_id(Self::PARAM_OUTPUT_NOTE_VST3_ID),
-
-            velocity_scale: FloatParam::percent("Velocity", 1.0)
-                .with_id(Self::PARAM_VELOCITY_SCALE_VST3_ID),
-        }
-    }
-}
-
-impl Default for NoteTransformParams {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// No manual Default impl needed - macro generates everything from attributes!
 
 /// CC transformation parameters.
 ///
 /// This is a nested parameter group that appears as "CC Transform" in the DAW.
+/// Uses **declarative parameter definition** - no manual Default impl needed!
 #[derive(Params)]
 pub struct CcTransformParams {
     /// Enable CC transformation
-    #[param(id = "cc_enabled")]
+    #[param(id = "cc_enabled", name = "Enabled", default = true)]
     pub enabled: BoolParam,
 
     /// Transformation mode
-    #[param(id = "cc_mode")]
+    #[param(id = "cc_mode", name = "Mode")]
     pub mode: EnumParam<CcTransformMode>,
 
-    /// Input CC number (0-127)
-    #[param(id = "cc_input")]
+    /// Input CC number (0-127) - Default: Mod wheel (CC 1)
+    #[param(id = "cc_input", name = "Input CC", default = 1, range = 0..=127)]
     pub input_cc: IntParam,
 
-    /// Output CC number (0-127)
-    #[param(id = "cc_output")]
+    /// Output CC number (0-127) - Default: Expression (CC 11)
+    #[param(id = "cc_output", name = "Output CC", default = 11, range = 0..=127)]
     pub output_cc: IntParam,
 
-    /// Value scale (0% to 200%)
-    #[param(id = "cc_scale")]
+    /// Value scale (0.0 to 2.0, where 1.0 = 100%)
+    #[param(id = "cc_scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
     pub value_scale: FloatParam,
 }
 
-impl CcTransformParams {
-    pub fn new() -> Self {
-        Self {
-            enabled: BoolParam::new("Enabled", true)
-                .with_id(Self::PARAM_ENABLED_VST3_ID),
-
-            mode: EnumParam::new("Mode")
-                .with_id(Self::PARAM_MODE_VST3_ID),
-
-            // Default: Mod wheel (CC 1) → Expression (CC 11)
-            input_cc: IntParam::new("Input CC", 1, 0..=127)
-                .with_id(Self::PARAM_INPUT_CC_VST3_ID),
-
-            output_cc: IntParam::new("Output CC", 11, 0..=127)
-                .with_id(Self::PARAM_OUTPUT_CC_VST3_ID),
-
-            value_scale: FloatParam::percent("Scale", 1.0)
-                .with_id(Self::PARAM_VALUE_SCALE_VST3_ID),
-        }
-    }
-}
-
-impl Default for CcTransformParams {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// No manual Default impl needed - macro generates everything from attributes!
 
 // =============================================================================
 // Top-Level Parameters with Nested Groups
@@ -218,10 +166,11 @@ impl Default for CcTransformParams {
 ///
 /// Demonstrates the `#[nested(group = "...")]` attribute for creating
 /// hierarchical parameter organization in the DAW.
+/// Uses **declarative parameter definition** - no manual Default impl needed!
 #[derive(Params)]
 pub struct MidiTransformParams {
-    /// Global bypass
-    #[param(id = "bypass")]
+    /// Global bypass - uses the special `bypass` attribute
+    #[param(id = "bypass", bypass)]
     pub bypass: BoolParam,
 
     /// Note transformation parameters (nested group)
@@ -233,22 +182,7 @@ pub struct MidiTransformParams {
     pub cc: CcTransformParams,
 }
 
-impl MidiTransformParams {
-    pub fn new() -> Self {
-        Self {
-            bypass: BoolParam::bypass()
-                .with_id(Self::PARAM_BYPASS_VST3_ID),
-            note: NoteTransformParams::new(),
-            cc: CcTransformParams::new(),
-        }
-    }
-}
-
-impl Default for MidiTransformParams {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// No manual Default impl needed - macro generates everything from attributes!
 
 // =============================================================================
 // Plugin Implementation
@@ -485,7 +419,7 @@ impl Plugin for MidiTransformProcessor {
 
     fn create() -> Self {
         Self {
-            params: MidiTransformParams::new(),
+            params: MidiTransformParams::default(),
         }
     }
 }

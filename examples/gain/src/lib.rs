@@ -38,34 +38,27 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain", COMPONENT_UID
 
 /// Parameter collection for the gain plugin.
 ///
-/// **Phase 2 approach**: Uses `#[derive(Params)]` macro for automatic
-/// trait implementations. The macro generates:
+/// Uses **declarative parameter definition**: all configuration is in
+/// attributes, and the `#[derive(Params)]` macro generates everything
+/// including the `Default` implementation!
+///
+/// The macro generates:
 /// - `Params` trait (count, iter, by_id, save_state, load_state)
 /// - `Parameters` trait (VST3 integration)
+/// - `Default` trait (from attribute values)
 /// - Compile-time hash collision detection
-///
-/// This reduces boilerplate from ~100 lines to ~10 lines!
 #[derive(Params)]
 pub struct GainParams {
-    /// Gain parameter using the new FloatParam type.
-    /// Internally stores linear amplitude, displays as dB.
-    /// The string ID "gain" is hashed to a u32 at compile time.
-    #[param(id = "gain")]
+    /// Gain parameter using declarative attribute syntax.
+    /// - Default: 0 dB (unity gain)
+    /// - Range: -60 dB to +12 dB
+    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParam,
 }
 
-impl GainParams {
-    /// Create a new parameter collection with default values.
-    pub fn new() -> Self {
-        Self {
-            // Default: 0 dB (unity gain = linear 1.0)
-            // Range: -60 dB to +12 dB
-            // Note: ID is set automatically by the derive macro via FNV-1a hash
-            gain: FloatParam::db("Gain", 0.0, -60.0..=12.0)
-                .with_id(GainParams::PARAM_GAIN_VST3_ID),
-        }
-    }
+// No manual `new()` or `Default` impl needed - the macro generates everything!
 
+impl GainParams {
     /// Get the gain as a linear multiplier.
     ///
     /// FloatParam::db() stores the value as linear amplitude internally,
@@ -80,15 +73,10 @@ impl GainParams {
     }
 }
 
-impl Default for GainParams {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // The #[derive(Params)] macro automatically generates:
 // - impl Params for GainParams { ... }
 // - impl Parameters for GainParams { ... }
+// - impl Default for GainParams { ... } (when using declarative attrs)
 // - const PARAM_GAIN_VST3_ID: u32 = fnv1a("gain")
 // - Compile-time collision detection
 
@@ -231,7 +219,7 @@ impl Plugin for GainProcessor {
 
     fn create() -> Self {
         Self {
-            params: GainParams::new(),
+            params: GainParams::default(),
         }
     }
 }
