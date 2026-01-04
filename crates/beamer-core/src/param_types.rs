@@ -1348,6 +1348,7 @@ impl BoolParam {
                     can_automate: true,
                     is_readonly: false,
                     is_bypass: true,
+                    is_list: false,
                 },
                 unit_id: crate::params::ROOT_UNIT_ID,
             },
@@ -1664,7 +1665,11 @@ impl<E: EnumParamValue> EnumParam<E> {
                 units: "",
                 default_normalized,
                 step_count: (E::COUNT.saturating_sub(1)) as i32,
-                flags: ParamFlags::default(),
+                // EnumParam is always a list (dropdown), even with only 2 choices
+                flags: ParamFlags {
+                    is_list: true,
+                    ..ParamFlags::default()
+                },
                 unit_id: crate::params::ROOT_UNIT_ID,
             },
             value: std::sync::atomic::AtomicUsize::new(default_index),

@@ -114,6 +114,9 @@ pub struct ParamFlags {
     pub is_readonly: bool,
     /// Parameter is the bypass switch.
     pub is_bypass: bool,
+    /// Parameter should be displayed as a dropdown list (for enums).
+    /// When true, host shows text labels from getParamStringByValue().
+    pub is_list: bool,
 }
 
 impl Default for ParamFlags {
@@ -122,6 +125,7 @@ impl Default for ParamFlags {
             can_automate: true,
             is_readonly: false,
             is_bypass: false,
+            is_list: false,
         }
     }
 }
@@ -161,6 +165,7 @@ impl ParamInfo {
                 can_automate: true,
                 is_readonly: false,
                 is_bypass: false,
+                is_list: false,
             },
             unit_id: ROOT_UNIT_ID,
         }
@@ -235,6 +240,7 @@ impl ParamInfo {
                 can_automate: true,
                 is_readonly: false,
                 is_bypass: true,
+                is_list: false,
             },
             unit_id: ROOT_UNIT_ID,
         }

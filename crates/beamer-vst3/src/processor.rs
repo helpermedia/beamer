@@ -1649,6 +1649,10 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
                 if param_info.flags.is_bypass {
                     flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
                 }
+                // List parameters (enums) - display as dropdown with text labels
+                if param_info.flags.is_list {
+                    flags |= ParameterInfo_::ParameterFlags_::kIsList;
+                }
                 flags
             };
             kResultOk
