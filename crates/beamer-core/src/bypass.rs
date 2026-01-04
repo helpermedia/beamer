@@ -92,11 +92,11 @@ impl CrossfadeCurve {
     /// # Returns
     /// Tuple of (wet_gain, dry_gain) as the specified sample type
     #[inline]
-    pub fn gains<S: Sample>(&self, t: f32) -> (S, S) {
-        let (wet_f32, dry_f32) = match self {
+    pub fn gains<S: Sample>(&self, t: f64) -> (S, S) {
+        let (wet, dry) = match self {
             CrossfadeCurve::Linear => (1.0 - t, t),
             CrossfadeCurve::EqualPower => {
-                let angle = t * std::f32::consts::FRAC_PI_2;
+                let angle = t * std::f64::consts::FRAC_PI_2;
                 (angle.cos(), angle.sin())
             }
             CrossfadeCurve::SCurve => {
@@ -104,7 +104,7 @@ impl CrossfadeCurve {
                 (1.0 - smooth, smooth)
             }
         };
-        (S::from_f32(wet_f32), S::from_f32(dry_f32))
+        (S::from_f64(wet), S::from_f64(dry))
     }
 }
 
@@ -344,13 +344,13 @@ impl BypassHandler {
             return;
         }
 
-        let ramp_samples_f = self.ramp_samples as f32;
+        let ramp_samples_f = self.ramp_samples as f64;
         let ramping_to_bypass = self.state == BypassState::RampingToBypassed;
 
         // Process sample by sample
         for sample_idx in 0..num_samples {
             // Calculate normalized position (0.0 = wet, 1.0 = dry)
-            let t = (self.ramp_position as f32) / ramp_samples_f;
+            let t = (self.ramp_position as f64) / ramp_samples_f;
             let (wet_gain, dry_gain): (S, S) = self.curve.gains(t);
 
             // Apply crossfade to all channels for this sample

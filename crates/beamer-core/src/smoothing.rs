@@ -32,7 +32,7 @@ const SNAP_THRESHOLD: f64 = 1e-8;
 
 /// Smoothing algorithm selection.
 ///
-/// The `f32` parameter is the smoothing time in milliseconds.
+/// The `f64` parameter is the smoothing time in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SmoothingStyle {
     /// No smoothing - value changes instantly.
@@ -41,19 +41,19 @@ pub enum SmoothingStyle {
     /// Linear interpolation over specified milliseconds.
     /// Reaches target exactly after the specified time.
     /// Good for: general purpose, predictable behavior.
-    Linear(f32),
+    Linear(f64),
 
     /// Exponential (one-pole IIR) smoothing.
     /// Fast initial response, asymptotically approaches target.
     /// Reaches ~63% of target in the specified time (time constant).
     /// Good for: most musical parameters, can cross zero.
-    Exponential(f32),
+    Exponential(f64),
 
     /// Logarithmic smoothing for frequency and other positive-only values.
     /// Slow start, accelerating curve.
     /// CANNOT cross zero or handle negative values - use Exponential for dB parameters.
     /// Good for: filter frequencies (Hz), other always-positive parameters.
-    Logarithmic(f32),
+    Logarithmic(f64),
 }
 
 impl Default for SmoothingStyle {
@@ -74,7 +74,7 @@ impl Default for SmoothingStyle {
 #[derive(Debug, Clone)]
 pub struct Smoother {
     style: SmoothingStyle,
-    sample_rate: f32,
+    sample_rate: f64,
 
     // Current state
     current: f64,
@@ -117,7 +117,7 @@ impl Smoother {
     /// Call this from `AudioProcessor::setup()`. Recomputes coefficients
     /// based on time constants.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate as f32;
+        self.sample_rate = sample_rate;
         self.recompute_coefficients();
     }
 
@@ -303,8 +303,8 @@ impl Smoother {
                 // One-pole coefficient: reaches ~63% in `ms` milliseconds
                 // coef = 1 - e^(-1 / (tau * sr))
                 // where tau = ms / 1000
-                let tau = ms as f64 / 1000.0;
-                let samples_per_tau = tau * self.sample_rate as f64;
+                let tau = ms / 1000.0;
+                let samples_per_tau = tau * self.sample_rate;
                 if samples_per_tau > 0.0 {
                     self.coefficient = 1.0 - (-1.0 / samples_per_tau).exp();
                 } else {
