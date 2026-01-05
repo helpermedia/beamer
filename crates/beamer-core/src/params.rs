@@ -117,6 +117,9 @@ pub struct ParamFlags {
     /// Parameter should be displayed as a dropdown list (for enums).
     /// When true, host shows text labels from getParamStringByValue().
     pub is_list: bool,
+    /// Parameter is hidden from the DAW's parameter list.
+    /// Used for internal parameters like MIDI CC emulation.
+    pub is_hidden: bool,
 }
 
 impl Default for ParamFlags {
@@ -126,6 +129,7 @@ impl Default for ParamFlags {
             is_readonly: false,
             is_bypass: false,
             is_list: false,
+            is_hidden: false,
         }
     }
 }
@@ -166,6 +170,7 @@ impl ParamInfo {
                 is_readonly: false,
                 is_bypass: false,
                 is_list: false,
+                is_hidden: false,
             },
             unit_id: ROOT_UNIT_ID,
         }
@@ -241,6 +246,7 @@ impl ParamInfo {
                 is_readonly: false,
                 is_bypass: true,
                 is_list: false,
+                is_hidden: false,
             },
             unit_id: ROOT_UNIT_ID,
         }

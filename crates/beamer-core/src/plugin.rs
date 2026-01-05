@@ -6,6 +6,7 @@ use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
+use crate::midi_params::MidiCcParams;
 use crate::params::Parameters;
 use crate::process_context::ProcessContext;
 
@@ -546,6 +547,41 @@ pub trait Plugin: AudioProcessor {
     /// ```
     fn midi_cc_to_param(&self, bus_index: i32, channel: i16, cc: u8) -> Option<u32> {
         let _ = (bus_index, channel, cc);
+        None
+    }
+
+    // =========================================================================
+    // MIDI CC Emulation (VST3 IMidiMapping hidden parameters)
+    // =========================================================================
+
+    /// Returns MIDI CC parameters for automatic host mapping.
+    ///
+    /// Override to enable MIDI CC/pitch bend/aftertouch reception via IMidiMapping.
+    /// The framework will create hidden parameters that receive CC values from
+    /// the host and convert them to MidiEvents before calling process_midi().
+    ///
+    /// This solves the VST3 MIDI input problem where most DAWs don't send
+    /// `kLegacyMIDICCOutEvent` for input. Instead, they use the `IMidiMapping`
+    /// interface to map MIDI controllers to parameters.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn midi_cc_params(&self) -> Option<&MidiCcParams> {
+    ///     Some(&self.midi_cc_params)
+    /// }
+    ///
+    /// fn create() -> Self {
+    ///     Self {
+    ///         params: MyParams::default(),
+    ///         midi_cc_params: MidiCcParams::new()
+    ///             .with_pitch_bend()
+    ///             .with_mod_wheel()
+    ///             .with_ccs(&[7, 10, 11, 64]),
+    ///     }
+    /// }
+    /// ```
+    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
         None
     }
 

@@ -32,6 +32,7 @@ pub mod editor;
 pub mod error;
 pub mod fnv;
 pub mod midi;
+pub mod midi_params;
 pub mod param_format;
 pub mod param_range;
 pub mod param_types;
@@ -80,6 +81,7 @@ pub use param_range::{LinearMapper, LogMapper, RangeMapper};
 pub use param_types::{BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, ParamRef, Params};
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
+pub use midi_params::{MidiCcParams, MIDI_CC_PARAM_BASE};
 pub use plugin::{
     AudioProcessor, BusInfo, BusType, Midi1Assignment, Midi2Assignment, MidiControllerAssignment,
     Plugin,

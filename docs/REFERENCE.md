@@ -433,7 +433,9 @@ pub struct ParamInfo {
 pub struct ParamFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
-    pub is_bypass: bool,  // Maps to VST3 kIsBypass (see §3.2)
+    pub is_bypass: bool,   // Maps to VST3 kIsBypass (see §3.2)
+    pub is_list: bool,     // Display as dropdown list (for enums)
+    pub is_hidden: bool,   // Hide from DAW parameter list (used by MidiCcParams)
 }
 
 impl ParamInfo {
@@ -873,7 +875,65 @@ MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
 MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 ```
 
-### 2.5 MIDI Mapping and Learn
+### 2.5 MIDI CC Emulation (MidiCcParams)
+
+VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcParams` provides automatic handling:
+
+```rust
+use beamer::prelude::*;
+
+struct MySynth {
+    params: MyParams,
+    midi_cc_params: MidiCcParams,
+}
+
+impl Plugin for MySynth {
+    fn create() -> Self {
+        Self {
+            params: MyParams::default(),
+            midi_cc_params: MidiCcParams::new()
+                .with_pitch_bend()           // Controller 129
+                .with_aftertouch()           // Controller 128
+                .with_mod_wheel()            // CC 1
+                .with_ccs(&[7, 10, 11, 64]), // Volume, Pan, Expression, Sustain
+        }
+    }
+
+    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
+        Some(&self.midi_cc_params)
+    }
+}
+```
+
+**How it works:**
+1. Plugin configures `MidiCcParams` with desired controllers
+2. Framework exposes hidden parameters for each enabled controller
+3. DAW queries `IMidiMapping` and maps MIDI controllers to these parameters
+4. Framework converts parameter changes back to `MidiEvent` before `process_midi()`
+5. Plugin receives pitch bend, CC, etc. as normal MIDI events
+
+**Builder Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `.with_pitch_bend()` | Enable pitch bend (±1.0, centered at 0) |
+| `.with_aftertouch()` | Enable channel aftertouch (0.0-1.0) |
+| `.with_mod_wheel()` | Enable CC 1 (0.0-1.0) |
+| `.with_cc(n)` | Enable single CC (0-127) |
+| `.with_ccs(&[...])` | Enable multiple CCs |
+| `.with_all_ccs()` | Enable all 128 CCs (creates many params) |
+
+**Query Methods:**
+
+```rust
+let pitch = self.midi_cc_params.pitch_bend();   // -1.0 to 1.0
+let mod_whl = self.midi_cc_params.mod_wheel();  // 0.0 to 1.0
+let volume = self.midi_cc_params.cc(7);         // 0.0 to 1.0
+```
+
+### 2.6 Manual MIDI Mapping
+
+For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 
 **IMidiMapping** — CC to parameter:
 
@@ -902,7 +962,7 @@ fn on_midi_learn(&mut self, _bus: i32, _channel: i16, cc: u8) -> bool {
 
 **MIDI 2.0:** `midi1_assignments()`, `midi2_assignments()`, `on_midi2_learn()`
 
-### 2.6 Keyswitch Controller
+### 2.7 Keyswitch Controller
 
 ```rust
 fn keyswitch_count(&self, _bus: i32, _channel: i16) -> usize { 4 }
@@ -916,7 +976,7 @@ fn keyswitch_info(&self, _bus: i32, _channel: i16, index: usize) -> Option<Keysw
 }
 ```
 
-### 2.7 RPN/NRPN Helpers
+### 2.8 RPN/NRPN Helpers
 
 **Constants:**
 
@@ -964,7 +1024,7 @@ pub struct ParameterNumberMessage {
 }
 ```
 
-### 2.8 CC Utilities
+### 2.9 CC Utilities
 
 **Constants:**
 
@@ -1010,7 +1070,7 @@ let combined = combine_14bit_raw(msb, lsb);  // → 0-16383
 let (msb, lsb) = split_14bit_raw(combined);
 ```
 
-### 2.9 VST3 Event Mapping
+### 2.10 VST3 Event Mapping
 
 | Beamer Type | VST3 Event ID | Direction |
 |------------|---------------|-----------|

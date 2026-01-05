@@ -91,7 +91,9 @@ beamer/
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
 │   ├── gain/                # Audio effect example
-│   └── midi-transform/      # MIDI instrument example
+│   ├── delay/               # Delay effect with tempo sync
+│   ├── synth/               # Polyphonic synthesizer with MIDI CC emulation
+│   └── midi-transform/      # MIDI effect example
 └── xtask/                   # Build tooling
 ```
 

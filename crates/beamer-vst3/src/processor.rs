@@ -27,7 +27,7 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     AuxiliaryBuffers, Buffer, BusType as CoreBusType, ChordInfo,
-    FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, NoteExpressionInt,
+    FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, MidiCcParams, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
     ProcessContext as CoreProcessContext, ScaleInfo, SysEx, Transport,
     MAX_BUSES, MAX_CHANNELS,
@@ -1469,6 +1469,44 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
             }
         }
 
+        // 2.5. Convert MIDI CC parameter changes to MIDI events
+        // This handles the VST3 IMidiMapping flow where DAWs send CC/pitch bend
+        // as parameter changes instead of raw MIDI events.
+        if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
+            let plugin = self.plugin();
+            if let Some(cc_params) = plugin.midi_cc_params() {
+                let param_count = param_changes.getParameterCount();
+
+                for i in 0..param_count {
+                    if let Some(queue) = ComRef::from_raw(param_changes.getParameterData(i)) {
+                        let param_id = queue.getParameterId();
+
+                        // Check if this is a MIDI CC parameter
+                        if let Some(controller) = MidiCcParams::param_id_to_controller(param_id) {
+                            if cc_params.has_controller(controller) {
+                                let point_count = queue.getPointCount();
+
+                                // Process all points for sample-accurate timing
+                                for j in 0..point_count {
+                                    let mut sample_offset: i32 = 0;
+                                    let mut value: f64 = 0.0;
+
+                                    if queue.getPoint(j, &mut sample_offset, &mut value) == kResultOk {
+                                        let midi_event = convert_cc_param_to_midi(
+                                            controller,
+                                            value as f32,
+                                            sample_offset as u32,
+                                        );
+                                        midi_input.push(midi_event);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Check for MIDI input buffer overflow (once per block)
         if midi_input.has_overflowed() {
             warn!(
@@ -1622,7 +1660,10 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        self.plugin().params().count() as i32
+        let plugin = self.plugin();
+        let user_params = plugin.params().count();
+        let cc_params = plugin.midi_cc_params().map(|p| p.enabled_count()).unwrap_or(0);
+        (user_params + cc_params) as i32
     }
 
     unsafe fn getParameterInfo(&self, param_index: i32, info: *mut ParameterInfo) -> tresult {
@@ -1630,35 +1671,64 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let params = self.plugin().params();
+        let plugin = self.plugin();
+        let params = plugin.params();
+        let user_param_count = params.count();
 
-        if let Some(param_info) = params.info(param_index as usize) {
-            let info = &mut *info;
-            info.id = param_info.id;
-            copy_wstring(param_info.name, &mut info.title);
-            copy_wstring(param_info.short_name, &mut info.shortTitle);
-            copy_wstring(param_info.units, &mut info.units);
-            info.stepCount = param_info.step_count;
-            info.defaultNormalizedValue = param_info.default_normalized;
-            info.unitId = param_info.unit_id;
-            info.flags = {
-                let mut flags = 0;
-                if param_info.flags.can_automate {
-                    flags |= ParameterInfo_::ParameterFlags_::kCanAutomate;
-                }
-                if param_info.flags.is_bypass {
-                    flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
-                }
-                // List parameters (enums) - display as dropdown with text labels
-                if param_info.flags.is_list {
-                    flags |= ParameterInfo_::ParameterFlags_::kIsList;
-                }
-                flags
-            };
-            kResultOk
-        } else {
-            kInvalidArgument
+        // User-defined parameters first
+        if (param_index as usize) < user_param_count {
+            if let Some(param_info) = params.info(param_index as usize) {
+                let info = &mut *info;
+                info.id = param_info.id;
+                copy_wstring(param_info.name, &mut info.title);
+                copy_wstring(param_info.short_name, &mut info.shortTitle);
+                copy_wstring(param_info.units, &mut info.units);
+                info.stepCount = param_info.step_count;
+                info.defaultNormalizedValue = param_info.default_normalized;
+                info.unitId = param_info.unit_id;
+                info.flags = {
+                    let mut flags = 0;
+                    if param_info.flags.can_automate {
+                        flags |= ParameterInfo_::ParameterFlags_::kCanAutomate;
+                    }
+                    if param_info.flags.is_bypass {
+                        flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
+                    }
+                    // List parameters (enums) - display as dropdown with text labels
+                    if param_info.flags.is_list {
+                        flags |= ParameterInfo_::ParameterFlags_::kIsList;
+                    }
+                    // Hidden parameters (MIDI CC emulation)
+                    if param_info.flags.is_hidden {
+                        flags |= ParameterInfo_::ParameterFlags_::kIsHidden;
+                    }
+                    flags
+                };
+                return kResultOk;
+            }
+            return kInvalidArgument;
         }
+
+        // Hidden MIDI CC parameters
+        if let Some(cc_params) = plugin.midi_cc_params() {
+            let cc_index = (param_index as usize) - user_param_count;
+            if let Some(param_info) = cc_params.info(cc_index) {
+                let info = &mut *info;
+                info.id = param_info.id;
+                copy_wstring(param_info.name, &mut info.title);
+                copy_wstring(param_info.short_name, &mut info.shortTitle);
+                copy_wstring(param_info.units, &mut info.units);
+                info.stepCount = param_info.step_count;
+                info.defaultNormalizedValue = param_info.default_normalized;
+                info.unitId = param_info.unit_id;
+                // Hidden + automatable
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
+                    | ParameterInfo_::ParameterFlags_::kIsHidden;
+                return kResultOk;
+            }
+        }
+
+        kInvalidArgument
     }
 
     unsafe fn getParamStringByValue(
@@ -1707,11 +1777,30 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
-        self.plugin().params().get_normalized(id)
+        let plugin = self.plugin();
+
+        // Check if this is a MIDI CC parameter
+        if MidiCcParams::is_midi_cc_param(id) {
+            if let Some(cc_params) = plugin.midi_cc_params() {
+                return cc_params.get_normalized(id);
+            }
+        }
+
+        plugin.params().get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
-        self.plugin().params().set_normalized(id, value);
+        let plugin = self.plugin();
+
+        // Check if this is a MIDI CC parameter
+        if MidiCcParams::is_midi_cc_param(id) {
+            if let Some(cc_params) = plugin.midi_cc_params() {
+                cc_params.set_normalized(id, value);
+                return kResultOk;
+            }
+        }
+
+        plugin.params().set_normalized(id, value);
         kResultOk
     }
 
@@ -1853,14 +1942,23 @@ impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P> {
         }
 
         let plugin = self.plugin();
-        if let Some(param_id) =
-            plugin.midi_cc_to_param(bus_index, channel, midi_controller_number as u8)
-        {
+        let controller = midi_controller_number as u8;
+
+        // 1. First check plugin's custom mappings
+        if let Some(param_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
             *id = param_id;
-            kResultOk
-        } else {
-            kResultFalse
+            return kResultOk;
         }
+
+        // 2. Check hidden MIDI CC parameters (omni channel - ignore channel param)
+        if let Some(cc_params) = plugin.midi_cc_params() {
+            if cc_params.has_controller(controller) {
+                *id = MidiCcParams::param_id(controller);
+                return kResultOk;
+            }
+        }
+
+        kResultFalse
     }
 }
 
@@ -2282,6 +2380,31 @@ fn channel_count_to_speaker_arrangement(channel_count: u32) -> SpeakerArrangemen
         2 => SpeakerArr::kStereo,
         // For other channel counts, create a bitmask with that many speakers
         n => (1u64 << n) - 1,
+    }
+}
+
+/// Convert a MIDI CC parameter value to a MidiEvent.
+///
+/// This is used to convert parameter changes from IMidiMapping back to MIDI events.
+/// The controller number determines the event type:
+/// - 0-127: Standard MIDI CC (ControlChange)
+/// - 128: Channel Aftertouch (ChannelPressure)
+/// - 129: Pitch Bend (PitchBend)
+fn convert_cc_param_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent {
+    match controller {
+        LEGACY_CC_PITCH_BEND => {
+            // Pitch bend: 0.0-1.0 normalized → -1.0 to 1.0
+            let bend = normalized_value * 2.0 - 1.0;
+            MidiEvent::pitch_bend(sample_offset, 0, bend)
+        }
+        LEGACY_CC_CHANNEL_PRESSURE => {
+            // Channel aftertouch: 0.0-1.0
+            MidiEvent::channel_pressure(sample_offset, 0, normalized_value)
+        }
+        cc => {
+            // Standard CC: 0.0-1.0
+            MidiEvent::control_change(sample_offset, 0, cc, normalized_value)
+        }
     }
 }
 

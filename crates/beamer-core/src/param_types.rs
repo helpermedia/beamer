@@ -1349,6 +1349,7 @@ impl BoolParam {
                     is_readonly: false,
                     is_bypass: true,
                     is_list: false,
+                    is_hidden: false,
                 },
                 unit_id: crate::params::ROOT_UNIT_ID,
             },
