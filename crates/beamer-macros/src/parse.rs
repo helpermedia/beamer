@@ -143,7 +143,7 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
                 syn::Error::new_spanned(
                     &value,
                     format!(
-                        "unknown kind '{}'. Valid kinds: db, hz, ms, seconds, percent, pan, ratio, linear, semitones",
+                        "unknown kind '{}'. Valid kinds: db, db_log, db_log_offset, hz, ms, seconds, percent, pan, ratio, linear, semitones",
                         kind_str
                     ),
                 )

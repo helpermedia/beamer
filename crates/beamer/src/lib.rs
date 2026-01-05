@@ -63,6 +63,8 @@ pub mod prelude {
     pub use beamer_core::{
         // Buffer types
         AuxiliaryBuffers, AuxInput, AuxOutput, Buffer,
+        // Bypass handling
+        BypassAction, BypassHandler, BypassState, CrossfadeCurve,
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
@@ -82,7 +84,7 @@ pub mod prelude {
         // VST3 Unit system (parameter groups)
         UnitId, UnitInfo, Units, ROOT_UNIT_ID,
         // Range mapping
-        LinearMapper, LogMapper, RangeMapper,
+        LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper,
         // Error types
         PluginError, PluginResult,
         // Geometry

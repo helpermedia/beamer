@@ -197,6 +197,24 @@ pub struct MidiTransformProcessor {
 
 impl MidiTransformProcessor {
     /// Transform a MIDI note pitch based on current settings.
+    ///
+    /// # Transformation Modes
+    ///
+    /// | Mode       | Formula / Description                          |
+    /// |------------|-----------------------------------------------|
+    /// | Through    | `pitch` (unchanged)                           |
+    /// | Transpose  | `pitch + transpose_amount`                    |
+    /// | Octave Up  | `pitch + 12`                                  |
+    /// | Octave Down| `pitch - 12`                                  |
+    /// | Remap      | `output_note` if `pitch == input_note`        |
+    /// | Invert     | `60 + (60 - pitch)` (mirror around middle C)  |
+    ///
+    /// # Arguments
+    /// * `pitch` - Input MIDI pitch (0-127)
+    ///
+    /// # Returns
+    /// * `Some(pitch)` - Transformed pitch within valid MIDI range
+    /// * `None` - Pitch out of range (note should be filtered)
     fn transform_pitch(&self, pitch: u8) -> Option<u8> {
         if !self.params.note.enabled.get() {
             return Some(pitch);
@@ -223,12 +241,12 @@ impl MidiTransformProcessor {
 
             NoteTransformMode::Invert => {
                 // Invert around middle C (60)
-                // pitch 60 stays at 60, pitch 61 becomes 59, etc.
+                // Examples: 60→60, 61→59, 72→48, 48→72
                 60 + (60 - pitch as i16)
             }
         };
 
-        // Clamp to valid MIDI range, return None if completely out of range
+        // Clamp to valid MIDI range, return None if out of range
         if (0..=127).contains(&new_pitch) {
             Some(new_pitch as u8)
         } else {
@@ -237,6 +255,14 @@ impl MidiTransformProcessor {
     }
 
     /// Transform a velocity value based on current settings.
+    ///
+    /// Applies velocity scaling: `output = input * scale`
+    ///
+    /// # Arguments
+    /// * `velocity` - Input velocity (0.0-1.0)
+    ///
+    /// # Returns
+    /// Scaled velocity, clamped to 0.0-1.0
     fn transform_velocity(&self, velocity: f32) -> f32 {
         if !self.params.note.enabled.get() {
             return velocity;
@@ -247,6 +273,16 @@ impl MidiTransformProcessor {
     }
 
     /// Transform a CC number based on current settings.
+    ///
+    /// Only Remap and RemapAndScale modes change the CC number.
+    /// Other modes pass the CC number through unchanged.
+    ///
+    /// # Arguments
+    /// * `cc` - Input CC number (0-127)
+    ///
+    /// # Returns
+    /// * `Some(cc)` - Output CC number (possibly remapped)
+    /// * `None` - CC should be filtered (not currently used)
     fn transform_cc_number(&self, cc: u8) -> Option<u8> {
         if !self.params.cc.enabled.get() {
             return Some(cc);
@@ -267,6 +303,23 @@ impl MidiTransformProcessor {
     }
 
     /// Transform a CC value based on current settings.
+    ///
+    /// # Transformation Modes
+    ///
+    /// | Mode           | Formula                        |
+    /// |----------------|--------------------------------|
+    /// | Through        | `value` (unchanged)            |
+    /// | Scale          | `value * scale_factor`         |
+    /// | Invert         | `1.0 - value`                  |
+    /// | Remap          | `value` (only number changes)  |
+    /// | RemapAndScale  | `value * scale_factor`         |
+    ///
+    /// # Arguments
+    /// * `cc` - CC number (used to check if this CC should be transformed)
+    /// * `value` - Input CC value (0.0-1.0)
+    ///
+    /// # Returns
+    /// Transformed CC value, clamped to 0.0-1.0
     fn transform_cc_value(&self, cc: u8, value: f32) -> f32 {
         if !self.params.cc.enabled.get() {
             return value;

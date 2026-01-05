@@ -131,7 +131,10 @@ The `#[derive(Params)]` macro generates:
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) | Optional |
 | `bypass` | Mark as bypass parameter (BoolParam only) | Optional |
 
-**Kind Values:** `db`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
+**Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
+
+- `db_log` — Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
+- `db_log_offset` — True logarithmic mapping for dB ranges (geometric mean at midpoint)
 
 Supported field types: `FloatParam`, `IntParam`, `BoolParam`, `EnumParam<E>`
 
@@ -632,6 +635,13 @@ pub enum BypassState {
     RampingToActive,
 }
 
+/// What action the plugin should take for this buffer.
+pub enum BypassAction {
+    Passthrough,          // Fully bypassed - copy input to output
+    Process,              // Fully active - run DSP normally
+    ProcessAndCrossfade,  // Transitioning - run DSP, then call finish()
+}
+
 pub enum CrossfadeCurve {
     Linear,      // Slight loudness dip at center
     EqualPower,  // Constant loudness (recommended)
@@ -643,13 +653,12 @@ pub struct BypassHandler { /* ... */ }
 impl BypassHandler {
     pub fn new(ramp_samples: u32, curve: CrossfadeCurve) -> Self;
 
-    /// Automatic crossfade handling.
-    pub fn process<S: Sample, F>(
-        &mut self,
-        buffer: &mut Buffer<S>,
-        is_bypassed: bool,
-        process_fn: F,
-    ) where F: FnMut(&mut Buffer<S>);
+    /// Begin bypass processing. Returns what action to take.
+    pub fn begin(&mut self, bypassed: bool) -> BypassAction;
+
+    /// Finish bypass processing by applying crossfade.
+    /// Call after DSP when begin() returned ProcessAndCrossfade.
+    pub fn finish<S: Sample>(&mut self, buffer: &mut Buffer<S>);
 
     pub fn state(&self) -> BypassState;
     pub fn ramp_samples(&self) -> u32;
@@ -660,13 +669,24 @@ impl BypassHandler {
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
-    let is_bypassed = self.params.bypass_normalized() > 0.5;
+    let is_bypassed = self.params.bypass.get();
 
-    self.bypass_handler.process(buffer, is_bypassed, |buf| {
-        self.process_reverb(buf);  // Only runs when not fully bypassed
-    });
+    match self.bypass_handler.begin(is_bypassed) {
+        BypassAction::Passthrough => {
+            buffer.copy_to_output();
+        }
+        BypassAction::Process => {
+            self.process_reverb(buffer);
+        }
+        BypassAction::ProcessAndCrossfade => {
+            self.process_reverb(buffer);
+            self.bypass_handler.finish(buffer);
+        }
+    }
 }
 ```
+
+**Why Split API?** The split pattern (begin/finish) avoids Rust borrow checker conflicts that occur with closure-based APIs when your DSP code needs to access `&mut self`.
 
 ---
 

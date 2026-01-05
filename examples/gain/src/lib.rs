@@ -59,14 +59,25 @@ pub struct GainParams {
 // No manual `new()` or `Default` impl needed - the macro generates everything!
 
 impl GainParams {
-    /// Get the gain as a linear multiplier.
+    /// Get the gain as a linear multiplier for DSP calculations.
     ///
-    /// FloatParam::db() stores the value as linear amplitude internally,
-    /// so we can use it directly in DSP without conversion.
+    /// Converts the dB value to a linear amplitude multiplier using the formula:
     ///
-    /// - 0 dB → linear 1.0 (unity gain)
-    /// - -6 dB → linear ~0.5
-    /// - +6 dB → linear ~2.0
+    /// ```text
+    /// linear = 10^(dB / 20)
+    /// ```
+    ///
+    /// # Returns
+    /// Linear amplitude multiplier (always positive)
+    ///
+    /// # Examples
+    /// | dB Value | Linear Multiplier |
+    /// |----------|-------------------|
+    /// | 0 dB     | 1.0 (unity gain)  |
+    /// | -6 dB    | ~0.501 (half)     |
+    /// | +6 dB    | ~1.995 (double)   |
+    /// | -12 dB   | ~0.251 (quarter)  |
+    /// | -∞ dB    | 0.0 (silence)     |
     #[inline]
     pub fn gain_linear(&self) -> f32 {
         self.gain.as_linear() as f32
@@ -115,12 +126,17 @@ impl GainProcessor {
         // let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
         // let delay_samples = samples_per_beat * 0.25; // 16th note delay
 
-        // Calculate sidechain level for ducking (if sidechain is connected)
-        // Using the new AuxInput::rms() helper for cleaner code
+        // =================================================================
+        // Sidechain Ducking
+        // =================================================================
+        // Calculate average RMS level across sidechain channels.
+        // RMS (Root Mean Square) measures the "power" of the signal:
+        //   RMS = sqrt(sum(samples²) / N)
+        //
+        // This gives a more musical/perceptual level than peak detection.
         let sidechain_level: S = aux
             .sidechain()
             .map(|sc| {
-                // Average RMS across all sidechain channels
                 let mut sum = S::ZERO;
                 for ch in 0..sc.num_channels() {
                     sum = sum + sc.rms(ch);
@@ -133,10 +149,15 @@ impl GainProcessor {
             })
             .unwrap_or(S::ZERO);
 
-        // Simple ducking: reduce gain when sidechain has signal
-        // Ducking amount: 0 = no ducking, 1 = full ducking
+        // Simple ducking formula:
+        //   duck_amount = clamp(sidechain_level * sensitivity, 0, 1)
+        //   effective_gain = gain * (1 - duck_amount * max_reduction)
+        //
+        // With sensitivity=4.0 and max_reduction=0.8:
+        // - Sidechain at 0.0 → no ducking (gain unchanged)
+        // - Sidechain at 0.25 → full ducking (80% gain reduction)
         let duck_amount = (sidechain_level * S::from_f32(4.0)).min(S::ONE);
-        let effective_gain = gain * (S::ONE - duck_amount * S::from_f32(0.8)); // Max 80% reduction
+        let effective_gain = gain * (S::ONE - duck_amount * S::from_f32(0.8));
 
         // Process using zip_channels() iterator for cleaner code
         for (input, output) in buffer.zip_channels() {

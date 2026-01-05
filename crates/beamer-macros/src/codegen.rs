@@ -1082,6 +1082,12 @@ fn generate_float_constructor(param: &ParamFieldIR) -> TokenStream {
         ParamKind::Db => quote! {
             ::beamer::core::param_types::FloatParam::db(#name, #default, #start..=#end)
         },
+        ParamKind::DbLog => quote! {
+            ::beamer::core::param_types::FloatParam::db_log(#name, #default, #start..=#end)
+        },
+        ParamKind::DbLogOffset => quote! {
+            ::beamer::core::param_types::FloatParam::db_log_offset(#name, #default, #start..=#end)
+        },
         ParamKind::Hz => quote! {
             ::beamer::core::param_types::FloatParam::hz(#name, #default, #start..=#end)
         },

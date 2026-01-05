@@ -75,6 +75,8 @@ pub struct RangeSpec {
 pub enum ParamKind {
     // Float kinds
     Db,
+    DbLog,
+    DbLogOffset,
     Hz,
     Ms,
     Seconds,
@@ -92,6 +94,8 @@ impl ParamKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "db" => Some(ParamKind::Db),
+            "db_log" => Some(ParamKind::DbLog),
+            "db_log_offset" => Some(ParamKind::DbLogOffset),
             "hz" => Some(ParamKind::Hz),
             "ms" => Some(ParamKind::Ms),
             "seconds" => Some(ParamKind::Seconds),

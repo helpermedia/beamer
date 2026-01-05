@@ -129,6 +129,17 @@ pub struct SynthParams {
 /// Each voice contains oscillator, envelope, and filter state.
 /// Uses soft retrigger: when stealing a voice, the envelope level
 /// is not reset, preventing clicks.
+///
+/// # Voice Architecture
+///
+/// ```text
+/// ┌─────────────┐     ┌──────────┐     ┌────────────┐
+/// │ Oscillator  │────→│ Envelope │────→│   Filter   │────→ output
+/// │ (waveform)  │     │  (ADSR)  │     │ (lowpass)  │
+/// └─────────────┘     └──────────┘     └────────────┘
+///       ↑                   ↑                ↑
+///  pitch + bend         velocity        cutoff + res
+/// ```
 #[derive(Copy, Clone)]
 struct Voice {
     // Voice state
@@ -138,14 +149,14 @@ struct Voice {
     velocity: f32,
     note_on_time: u64,
 
-    // Oscillator state
+    // Oscillator state (phase accumulator, 0.0-1.0)
     phase: f64,
 
-    // Envelope state
+    // Envelope state (current level and stage)
     envelope_level: f64,
     envelope_stage: EnvelopeStage,
 
-    // Filter state
+    // Filter state (one-pole lowpass with resonance)
     filter_state: f64,
 }
 
@@ -187,7 +198,24 @@ impl Voice {
         }
     }
 
-    /// Process one sample of audio.
+    /// Process one sample of audio for this voice.
+    ///
+    /// # Processing Pipeline
+    ///
+    /// 1. **Oscillator** - Generate raw waveform at the note's frequency
+    /// 2. **Envelope** - Apply ADSR amplitude shaping
+    /// 3. **Filter** - Apply resonant lowpass filter
+    ///
+    /// # Arguments
+    /// * `params` - Plugin parameters (envelope times, etc.)
+    /// * `waveform` - Selected oscillator waveform
+    /// * `cutoff` - Filter cutoff frequency in Hz (smoothed)
+    /// * `resonance` - Filter resonance 0.0-0.95 (smoothed)
+    /// * `pitch_bend` - Pitch bend amount -1.0 to +1.0
+    /// * `sample_rate` - Current sample rate in Hz
+    ///
+    /// # Returns
+    /// The processed audio sample for this voice
     fn process_sample<S: Sample>(
         &mut self,
         params: &SynthParams,
@@ -201,12 +229,23 @@ impl Voice {
             return S::ZERO;
         }
 
-        // 1. Generate oscillator sample with pitch bend and octave offset applied
+        // =================================================================
+        // 1. Oscillator - Generate waveform at note frequency
+        // =================================================================
+        // MIDI pitch to frequency formula:
+        //   freq = 440 * 2^((pitch - 69 + bend + octave) / 12)
+        //
+        // Where: pitch 69 = A4 = 440 Hz
         let bend_semitones = pitch_bend * PITCH_BEND_RANGE;
         let octave_semitones = OCTAVE_OFFSET * 12.0;
         let freq = 440.0 * 2.0_f64.powf((self.pitch as f64 - 69.0 + bend_semitones + octave_semitones) / 12.0);
         let phase_inc = freq / sample_rate;
 
+        // Waveform generation (naive, non-bandlimited):
+        //   Sine:     sin(2π * phase)
+        //   Saw:      2 * phase - 1 (ramp from -1 to +1)
+        //   Square:   +1 if phase < 0.5, else -1
+        //   Triangle: 4 * |phase - 0.5| - 1 (tent shape)
         let osc = match waveform {
             Waveform::Sine => (self.phase * 2.0 * PI).sin(),
             Waveform::Saw => 2.0 * self.phase - 1.0,
@@ -220,12 +259,24 @@ impl Voice {
             Waveform::Triangle => 4.0 * (self.phase - 0.5).abs() - 1.0,
         };
 
+        // Advance phase (wrap at 1.0)
         self.phase += phase_inc;
         if self.phase >= 1.0 {
             self.phase -= 1.0;
         }
 
-        // 2. Update envelope
+        // =================================================================
+        // 2. ADSR Envelope
+        // =================================================================
+        // Classic 4-stage envelope:
+        //
+        // Level ^
+        //   1.0 |    /\
+        //       |   /  \______ Sustain
+        //       |  /          \
+        //   0.0 |_/____________\___
+        //        A  D    S    R
+        //
         let attack_samples = (params.attack.get() / 1000.0 * sample_rate).max(1.0);
         let decay_samples = (params.decay.get() / 1000.0 * sample_rate).max(1.0);
         let sustain_level = params.sustain.get();
@@ -234,7 +285,7 @@ impl Voice {
         match self.envelope_stage {
             EnvelopeStage::Idle => {}
             EnvelopeStage::Attack => {
-                // Linear ramp to 1.0 over attack time
+                // Linear ramp from current level to 1.0
                 self.envelope_level += 1.0 / attack_samples;
                 if self.envelope_level >= 1.0 {
                     self.envelope_level = 1.0;
@@ -251,9 +302,12 @@ impl Voice {
                 }
             }
             EnvelopeStage::Sustain => {
+                // Hold at sustain level until note-off
                 self.envelope_level = sustain_level;
             }
             EnvelopeStage::Release => {
+                // Exponential decay to zero
+                // Faster than linear, sounds more natural
                 self.envelope_level -= self.envelope_level / release_samples;
                 if self.envelope_level < 0.0001 {
                     self.envelope_level = 0.0;
@@ -263,14 +317,24 @@ impl Voice {
             }
         }
 
-        // 3. Apply envelope and velocity
+        // Apply envelope and velocity scaling
         let mut sample = osc * self.envelope_level * self.velocity as f64;
 
-        // 4. Apply one-pole lowpass filter with resonance feedback
+        // =================================================================
+        // 3. One-Pole Lowpass Filter with Resonance
+        // =================================================================
+        // Simple IIR filter with feedback for resonance:
+        //
+        //   α = ω / (1 + ω)  where ω = 2π * cutoff / sample_rate
+        //   feedback = resonance * (filter_state - input)
+        //   filter_state += α * (input + feedback - filter_state)
+        //
+        // Higher resonance = more "squelchy" character
         let omega = 2.0 * PI * cutoff / sample_rate;
         let alpha = omega / (1.0 + omega);
         let feedback = resonance * (self.filter_state - sample);
         self.filter_state += alpha * (sample + feedback - self.filter_state);
+
         // Clamp filter state to prevent instability at high resonance
         self.filter_state = self.filter_state.clamp(-4.0, 4.0);
         sample = self.filter_state;
@@ -304,7 +368,19 @@ pub struct SynthProcessor {
 }
 
 impl SynthProcessor {
-    /// Handle a note-on event.
+    /// Handle a note-on event with voice allocation.
+    ///
+    /// # Voice Allocation Strategy
+    ///
+    /// 1. **Retrigger** - If the same note_id is already playing, retrigger it
+    ///    (soft retrigger: envelope continues from current level)
+    /// 2. **Free voice** - Find an inactive voice and use it
+    /// 3. **Voice stealing** - If all voices are active, steal the oldest one
+    ///
+    /// # Arguments
+    /// * `note_id` - VST3 note identifier (for tracking note-off)
+    /// * `pitch` - MIDI pitch (0-127, 60 = middle C)
+    /// * `velocity` - Note velocity (0.0-1.0)
     fn handle_note_on(&mut self, note_id: i32, pitch: u8, velocity: f32) {
         // 1. Check for retrigger (same note_id already playing)
         for voice in &mut self.voices {
@@ -324,7 +400,8 @@ impl SynthProcessor {
             }
         }
 
-        // 3. Steal oldest voice
+        // 3. Steal oldest voice (simple "oldest note" algorithm)
+        // More sophisticated synths might use "lowest velocity" or "release phase"
         let oldest_idx = self
             .voices
             .iter()
@@ -338,6 +415,9 @@ impl SynthProcessor {
     }
 
     /// Handle a note-off event.
+    ///
+    /// Finds all voices with the matching note_id and transitions them
+    /// to the release stage of their ADSR envelope.
     fn handle_note_off(&mut self, note_id: i32) {
         for voice in &mut self.voices {
             if voice.note_id == note_id && voice.active {

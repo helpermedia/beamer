@@ -77,7 +77,7 @@ mod validate;
 /// - `name = "..."` - Display name
 /// - `default = <value>` - Default value (float, int, or bool)
 /// - `range = start..=end` - Value range (for FloatParam/IntParam)
-/// - `kind = "..."` - Unit type: db, hz, ms, seconds, percent, pan, ratio, linear, semitones
+/// - `kind = "..."` - Unit type: db, db_log, db_log_offset, hz, ms, seconds, percent, pan, ratio, linear, semitones
 /// - `short_name = "..."` - Short name for constrained UIs
 /// - `smoothing = "exp:5.0"` - Parameter smoothing (exp or linear)
 /// - `bypass` - Mark as bypass parameter (BoolParam only)

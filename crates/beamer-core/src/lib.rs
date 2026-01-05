@@ -46,7 +46,7 @@ pub mod types;
 // Re-exports for convenience
 #[allow(deprecated)]
 pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus};
-pub use bypass::{BypassHandler, BypassState, CrossfadeCurve};
+pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
 pub use fnv::fnv1a_32;
@@ -77,7 +77,7 @@ pub use midi::{
     MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 pub use param_format::Formatter;
-pub use param_range::{LinearMapper, LogMapper, RangeMapper};
+pub use param_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use param_types::{BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, ParamRef, Params};
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};

@@ -29,7 +29,7 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use crate::param_format::Formatter;
-use crate::param_range::{LinearMapper, LogMapper, RangeMapper};
+use crate::param_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 use crate::params::{ParamFlags, ParamInfo};
 use crate::smoothing::{Smoother, SmoothingStyle};
 use crate::types::{ParamId, ParamValue};
@@ -550,6 +550,99 @@ impl FloatParam {
         // Use as_linear() in DSP code to get linear amplitude
         let min_db = *range_db.start();
         let mapper = LinearMapper::new(range_db);
+        let default_normalized = mapper.normalize(default_db);
+
+        Self {
+            info: ParamInfo {
+                id: 0,
+                name,
+                short_name: name,
+                units: "dB",
+                default_normalized,
+                step_count: 0,
+                flags: ParamFlags::default(),
+                unit_id: crate::params::ROOT_UNIT_ID,
+            },
+            value: AtomicU64::new(default_normalized.to_bits()),
+            range: Box::new(mapper),
+            formatter: Formatter::DecibelDirect { precision: 1, min_db },
+            smoother: None,
+            is_db: true,
+        }
+    }
+
+    /// Create a dB parameter with power curve mapping for more resolution at maximum.
+    ///
+    /// Uses a power curve (exponent = 2.0) to provide more resolution near 0 dB
+    /// and less resolution at the minimum. Ideal for threshold parameters where
+    /// precision near 0 dB is important.
+    ///
+    /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
+    /// or the `#[derive(Params)]` macro.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name
+    /// * `default_db` - Default value in dB
+    /// * `range_db` - Valid range in dB (inclusive)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Threshold parameter: -60 to 0 dB with more resolution near 0 dB
+    /// let threshold = FloatParam::db_log("Threshold", -20.0, -60.0..=0.0);
+    /// ```
+    pub fn db_log(name: &'static str, default_db: f64, range_db: RangeInclusive<f64>) -> Self {
+        let min_db = *range_db.start();
+        let mapper = PowerMapper::new(range_db, 2.0);
+        let default_normalized = mapper.normalize(default_db);
+
+        Self {
+            info: ParamInfo {
+                id: 0,
+                name,
+                short_name: name,
+                units: "dB",
+                default_normalized,
+                step_count: 0,
+                flags: ParamFlags::default(),
+                unit_id: crate::params::ROOT_UNIT_ID,
+            },
+            value: AtomicU64::new(default_normalized.to_bits()),
+            range: Box::new(mapper),
+            formatter: Formatter::DecibelDirect { precision: 1, min_db },
+            smoother: None,
+            is_db: true,
+        }
+    }
+
+    /// Create a dB parameter with true logarithmic mapping (using offset).
+    ///
+    /// Uses logarithmic mapping for ranges that include negative values by
+    /// offsetting to positive space. Provides geometric mean at midpoint.
+    ///
+    /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
+    /// or the `#[derive(Params)]` macro.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name
+    /// * `default_db` - Default value in dB
+    /// * `range_db` - Valid range in dB (inclusive)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Threshold parameter with true logarithmic behavior
+    /// let threshold = FloatParam::db_log_offset("Threshold", -20.0, -60.0..=0.0);
+    /// ```
+    pub fn db_log_offset(
+        name: &'static str,
+        default_db: f64,
+        range_db: RangeInclusive<f64>,
+    ) -> Self {
+        let min_db = *range_db.start();
+        let mapper = LogOffsetMapper::new(range_db);
         let default_normalized = mapper.normalize(default_db);
 
         Self {

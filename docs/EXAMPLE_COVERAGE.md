@@ -3,7 +3,7 @@
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
 **Last Updated:** 2026-01-05
-**Current Examples:** gain, delay, synth, midi-transform
+**Current Examples:** gain, delay, synth, midi-transform, compressor
 
 ---
 
@@ -19,56 +19,57 @@
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Delay | Synth | MIDI Transform | Notes |
-|-----------------|---------|------|-------|-------|----------------|-------|
-| **Parameters** | FloatParam | ✅ | ✅ | ✅ | ✅ | Core parameter type |
-| | IntParam | ❌ | ❌ | ❌ | ✅ | Transpose, note/CC numbers |
-| | BoolParam | ❌ | ❌ | ❌ | ✅ | Enable toggles, bypass |
-| | EnumParam | ❌ | ✅ | ✅ | ✅ | Waveform, sync, transform modes |
-| **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | Default mapping |
-| | LogMapper | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Organization** | Units (param groups) | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (VST3 units - questionable DAW support) |
-| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (claims DAW grouping, unverified) |
-| | Custom Formatter | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | bypass attribute | ❌ | ❌ | ❌ | ✅ | Special bypass param marker |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | All support f64 |
-| | tail_samples | ❌ | ✅ | ✅ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | set_active | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Bypass** | BypassHandler | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | CrossfadeCurve | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | bypass_ramp_samples | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | All use stereo |
-| | Mono bus | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | Sidechain input (AuxInput) | ✅ | ❌ | ❌ | ❌ | Gain ducking |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Transport** | tempo access | ✅ | ✅ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ✅ | ❌ | ❌ | ❌ | Read but unused |
-| | samples_per_beat | ❌ | ✅ | ❌ | ❌ | Delay tempo sync |
-| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ✅ | ✅ | Synth voices |
-| | PitchBend | ❌ | ❌ | ✅ | ❌ | Synth ±2 semitones |
-| | ControlChange (CC) | ❌ | ❌ | ✅ | ✅ | Mod wheel, transform |
-| | MidiCcParams | ❌ | ❌ | ✅ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ❌ | ✅ | Poly aftertouch transform |
-| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ProgramChange | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
-| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | MPE Support | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | SysEx | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RpnTracker | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
-| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| Feature Category | Feature | Gain | Delay | Synth | MIDI Transform | Compressor | Notes |
+|-----------------|---------|------|-------|-------|----------------|------------|-------|
+| **Parameters** | FloatParam | ✅ | ✅ | ✅ | ✅ | 🚧 | Core parameter type |
+| | IntParam | ❌ | ❌ | ❌ | ✅ | ❌ | Transpose, note/CC numbers |
+| | BoolParam | ❌ | ❌ | ❌ | ✅ | 🚧 | Enable toggles, bypass, soft knee |
+| | EnumParam | ❌ | ✅ | ✅ | ✅ | 🚧 | Waveform, sync, ratio |
+| **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
+| | Linear | ❌ | ❌ | ❌ | ❌ | 🚧 | Attack/release smoothing |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | 🚧 | Default mapping |
+| | PowerMapper | ❌ | ❌ | ❌ | ❌ | 🚧 | Threshold (db_log) |
+| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | Available but not used |
+| **Organization** | Units (param groups) | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (VST3 units - questionable DAW support) |
+| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
+| | Flat groups (group = "...") | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (claims DAW grouping, unverified) |
+| | Custom Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | bypass attribute | ❌ | ❌ | ❌ | ✅ | 🚧 | Special bypass param marker |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f64 |
+| | tail_samples | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
+| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | set_active | ❌ | ❌ | ❌ | ❌ | 🚧 | Reset envelope on activation |
+| **Bypass** | BypassHandler | ❌ | ❌ | ❌ | ❌ | 🚧 | Split API (begin/finish) |
+| | CrossfadeCurve | ❌ | ❌ | ❌ | ❌ | 🚧 | EqualPower curve |
+| | bypass_ramp_samples | ❌ | ❌ | ❌ | ❌ | 🚧 | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | 🚧 | All use stereo |
+| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | Sidechain input (AuxInput) | ✅ | ❌ | ❌ | ❌ | 🚧 | Gain ducking, external key |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Transport** | tempo access | ✅ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ✅ | ❌ | ❌ | ❌ | ❌ | Read but unused |
+| | samples_per_beat | ❌ | ✅ | ❌ | ❌ | ❌ | Delay tempo sync |
+| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ✅ | ✅ | ❌ | Synth voices |
+| | PitchBend | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
+| | ControlChange (CC) | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
+| | MidiCcParams | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
+| | PolyPressure | ❌ | ❌ | ❌ | ✅ | ❌ | Poly aftertouch transform |
+| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
+| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
+| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 
 **Legend:**
 - ✅ Tested/Used
@@ -87,9 +88,9 @@
    - `LogMapper` - Logarithmic parameter scaling
 
 2. **Bypass Handling**
-   - `BypassHandler` - Smooth bypass with crossfading
-   - `CrossfadeCurve` - Linear/EqualPower/SCurve shapes
-   - `bypass_ramp_samples()` - Soft bypass implementation
+   - 🚧 `BypassHandler` - Implemented in compressor (split API: begin/finish), needs DAW testing
+   - 🚧 `CrossfadeCurve` - Implemented in compressor (EqualPower), needs DAW testing
+   - 🚧 `bypass_ramp_samples()` - Implemented in compressor, needs DAW testing
 
 3. **Bus Configuration**
    - Mono buses (all examples use stereo)
@@ -98,7 +99,7 @@
 
 4. **Processing Callbacks**
    - `latency_samples()` - Lookahead reporting
-   - `set_active()` - Bypass notification
+   - 🚧 `set_active()` - Implemented in compressor (reset envelope on activation), needs DAW testing
 
 ### Medium Priority (Advanced Features)
 
@@ -107,8 +108,8 @@
    - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
    - Flat groups (`group = "..."`) - Claims DAW visual grouping (**needs verification**)
    - Custom `Formatter` - Parameter display formatting
-   - Linear smoothing (only exponential is tested)
-   - ✅ ~~`bypass` attribute~~ - Tested in midi-transform
+   - 🚧 Linear smoothing - Implemented in compressor (attack/release params), needs DAW testing
+   - ✅ ~~`bypass` attribute~~ - Tested in midi-transform; also in compressor (needs DAW testing)
 
 6. **MIDI - Message Types**
    - ✅ ~~`PolyPressure`~~ - Tested in midi-transform
@@ -426,7 +427,7 @@
 - [x] midi-transform - MIDI pass-through, CC transformation
 
 ### Phase 2: Advanced Parameters & Processing
-- [ ] compressor - IntParam, BoolParam, BypassHandler, LogMapper
+- [x] compressor - BoolParam, EnumParam, BypassHandler, PowerMapper, linear smoothing, set_active (implemented, needs DAW testing)
 - [ ] eq - Units system, custom Formatter, mono buses
 - [ ] limiter - latency_samples, lookahead processing
 

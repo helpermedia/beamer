@@ -7,37 +7,39 @@
 //! # Overview
 //!
 //! - [`BypassState`] - Current bypass state (Active, Bypassed, or transitioning)
+//! - [`BypassAction`] - What the plugin should do this buffer
 //! - [`CrossfadeCurve`] - Crossfade curve shape (Linear, EqualPower, SCurve)
 //! - [`BypassHandler`] - Main utility for handling bypass with automatic crossfading
 //!
 //! # Example
 //!
 //! ```ignore
-//! use beamer_core::{BypassHandler, CrossfadeCurve, Buffer, AudioProcessor, AuxiliaryBuffers, ProcessContext};
+//! use beamer_core::{BypassHandler, BypassAction, CrossfadeCurve, Buffer};
 //!
 //! struct MyPlugin {
 //!     bypass_handler: BypassHandler,
-//!     // ...
+//!     gain: f32,
 //! }
 //!
 //! impl AudioProcessor for MyPlugin {
-//!     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-//!         // 10ms crossfade with equal-power curve
-//!         let ramp_samples = (sample_rate * 0.01) as u32;
-//!         self.bypass_handler = BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower);
-//!     }
-//!
 //!     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, ctx: &ProcessContext) {
-//!         let is_bypassed = self.params.bypass_value() > 0.5;
+//!         let is_bypassed = self.params.bypass.get();
 //!
-//!         self.bypass_handler.process(buffer, is_bypassed, |buf| {
-//!             // Your DSP code here - only called when processing is needed
-//!             self.apply_reverb(buf, aux);
-//!         });
-//!     }
-//!
-//!     fn bypass_ramp_samples(&self) -> u32 {
-//!         self.bypass_handler.ramp_samples()
+//!         match self.bypass_handler.begin(is_bypassed) {
+//!             BypassAction::Passthrough => {
+//!                 // Fully bypassed - just copy input to output
+//!                 buffer.copy_to_output();
+//!             }
+//!             BypassAction::Process => {
+//!                 // Normal processing
+//!                 self.apply_gain(buffer);
+//!             }
+//!             BypassAction::ProcessAndCrossfade => {
+//!                 // Process first, then crossfade
+//!                 self.apply_gain(buffer);
+//!                 self.bypass_handler.finish(buffer);
+//!             }
+//!         }
 //!     }
 //! }
 //! ```
@@ -63,6 +65,28 @@ pub enum BypassState {
 }
 
 // =============================================================================
+// BypassAction
+// =============================================================================
+
+/// What action the plugin should take for this buffer.
+///
+/// Returned by [`BypassHandler::begin()`] to tell you what to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BypassAction {
+    /// Plugin is fully bypassed. Copy input to output (or call `buffer.copy_to_output()`).
+    /// No DSP processing needed.
+    Passthrough,
+
+    /// Plugin is fully active. Run your DSP normally.
+    /// No crossfade needed.
+    Process,
+
+    /// Plugin is transitioning. Run your DSP, then call `bypass_handler.finish(buffer)`
+    /// to apply the crossfade.
+    ProcessAndCrossfade,
+}
+
+// =============================================================================
 // CrossfadeCurve
 // =============================================================================
 
@@ -78,7 +102,7 @@ pub enum CrossfadeCurve {
     /// gain = sin(position * PI/2) for fade-in, cos(position * PI/2) for fade-out
     EqualPower,
 
-    /// S-curve crossfade. Attempt at faster start/end, smoother middle.
+    /// S-curve crossfade. Faster start/end, smoother middle.
     /// gain = 3x^2 - 2x^3 (smoothstep)
     SCurve,
 }
@@ -117,49 +141,29 @@ impl CrossfadeCurve {
 /// Maintains bypass state and provides automatic crossfade between
 /// wet (processed) and dry (passthrough) signals when bypass is toggled.
 ///
+/// # Usage Pattern
+///
+/// ```ignore
+/// match self.bypass_handler.begin(is_bypassed) {
+///     BypassAction::Passthrough => buffer.copy_to_output(),
+///     BypassAction::Process => self.process_dsp(buffer),
+///     BypassAction::ProcessAndCrossfade => {
+///         self.process_dsp(buffer);
+///         self.bypass_handler.finish(buffer);
+///     }
+/// }
+/// ```
+///
 /// # Sample Type Flexibility
 ///
-/// BypassHandler is not generic over sample type - instead, the `process()`
-/// method is generic. This means a single BypassHandler instance can process
-/// both `Buffer<f32>` and `Buffer<f64>` buffers, and plugins don't need
-/// separate handlers for different precision modes.
+/// BypassHandler is not generic over sample type. The `finish()` method
+/// is generic, so a single BypassHandler instance can process both
+/// `Buffer<f32>` and `Buffer<f64>` buffers.
 ///
 /// # Real-Time Safety
 ///
 /// This struct performs no heap allocations and is safe to use in
 /// audio processing callbacks.
-///
-/// # Example
-///
-/// ```ignore
-/// use beamer_core::{BypassHandler, CrossfadeCurve, Buffer};
-///
-/// struct MyPlugin {
-///     bypass_handler: BypassHandler,
-///     // ...
-/// }
-///
-/// impl AudioProcessor for MyPlugin {
-///     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-///         // 10ms crossfade with equal-power curve
-///         let ramp_samples = (sample_rate * 0.01) as u32;
-///         self.bypass_handler = BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower);
-///     }
-///
-///     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, ctx: &ProcessContext) {
-///         let is_bypassed = self.params.bypass_value() > 0.5;
-///
-///         self.bypass_handler.process(buffer, is_bypassed, |buf| {
-///             // Your DSP code here - only called when processing is needed
-///             self.apply_reverb(buf, aux);
-///         });
-///     }
-///
-///     fn bypass_ramp_samples(&self) -> u32 {
-///         self.bypass_handler.ramp_samples()
-///     }
-/// }
-/// ```
 pub struct BypassHandler {
     /// Current bypass state
     state: BypassState,
@@ -229,14 +233,61 @@ impl BypassHandler {
         self.curve = curve;
     }
 
-    /// Update bypass target state.
+    /// Begin bypass processing for this buffer.
     ///
-    /// Call this at the start of each process() with the current bypass parameter value.
-    /// State transitions happen automatically.
+    /// Call this at the start of your `process()` method. It updates the internal
+    /// state and returns what action you should take.
     ///
-    /// When `ramp_samples == 0` (instant bypass), state snaps directly to
-    /// `Bypassed` or `Active` without passing through ramping states.
-    pub fn set_bypass(&mut self, bypassed: bool) {
+    /// # Arguments
+    /// * `bypassed` - Current bypass parameter state (true = bypassed)
+    ///
+    /// # Returns
+    /// A [`BypassAction`] telling you what to do:
+    /// - `Passthrough`: Just copy input to output, no DSP needed
+    /// - `Process`: Run your DSP normally
+    /// - `ProcessAndCrossfade`: Run your DSP, then call `finish()`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// match self.bypass_handler.begin(is_bypassed) {
+    ///     BypassAction::Passthrough => buffer.copy_to_output(),
+    ///     BypassAction::Process => self.process_dsp(buffer),
+    ///     BypassAction::ProcessAndCrossfade => {
+    ///         self.process_dsp(buffer);
+    ///         self.bypass_handler.finish(buffer);
+    ///     }
+    /// }
+    /// ```
+    pub fn begin(&mut self, bypassed: bool) -> BypassAction {
+        self.set_bypass(bypassed);
+
+        match self.state {
+            BypassState::Bypassed => BypassAction::Passthrough,
+            BypassState::Active => BypassAction::Process,
+            BypassState::RampingToBypassed | BypassState::RampingToActive => {
+                BypassAction::ProcessAndCrossfade
+            }
+        }
+    }
+
+    /// Finish bypass processing by applying the crossfade.
+    ///
+    /// Call this AFTER your DSP processing when `begin()` returned
+    /// `BypassAction::ProcessAndCrossfade`.
+    ///
+    /// This blends the wet signal (in output buffer) with the dry signal
+    /// (in input buffer) according to the current ramp position.
+    ///
+    /// # Arguments
+    /// * `buffer` - The buffer containing processed (wet) output and original (dry) input
+    pub fn finish<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
+        let num_samples = buffer.num_samples();
+        self.apply_crossfade(buffer, num_samples);
+    }
+
+    /// Update bypass target state (internal).
+    fn set_bypass(&mut self, bypassed: bool) {
         // Handle instant bypass (zero ramp) - snap directly to final state
         if self.ramp_samples == 0 {
             let target = if bypassed {
@@ -274,61 +325,6 @@ impl BypassHandler {
             }
             // Already in correct stable state, or continuing ramp
             _ => {}
-        }
-    }
-
-    /// Process audio with bypass handling.
-    ///
-    /// This is the main method plugins should call. It handles:
-    /// - Passthrough when fully bypassed
-    /// - Normal processing when fully active
-    /// - Crossfading during transitions
-    ///
-    /// # Type Parameter
-    ///
-    /// `S` is the sample type (`f32` or `f64`). The same BypassHandler instance
-    /// can process buffers of either precision.
-    ///
-    /// # Arguments
-    /// * `buffer` - Audio buffer to process
-    /// * `bypassed` - Current bypass parameter state (true = bypassed)
-    /// * `process_fn` - Closure that performs DSP (only called when needed)
-    ///
-    /// # Behavior
-    ///
-    /// | State | process_fn called? | Output |
-    /// |-------|-------------------|--------|
-    /// | Active | Yes | Wet signal |
-    /// | RampingToBypassed | Yes | Crossfade wet→dry |
-    /// | Bypassed | No | Dry passthrough |
-    /// | RampingToActive | Yes | Crossfade dry→wet |
-    pub fn process<S: Sample, F>(&mut self, buffer: &mut Buffer<S>, bypassed: bool, process_fn: F)
-    where
-        F: FnOnce(&mut Buffer<S>),
-    {
-        // Update target state
-        self.set_bypass(bypassed);
-
-        let num_samples = buffer.num_samples();
-
-        match self.state {
-            BypassState::Bypassed => {
-                // Fully bypassed: just copy input to output
-                buffer.copy_to_output();
-            }
-
-            BypassState::Active => {
-                // Fully active: just run DSP
-                process_fn(buffer);
-            }
-
-            BypassState::RampingToBypassed | BypassState::RampingToActive => {
-                // Need to crossfade - run DSP first to get wet signal
-                process_fn(buffer);
-
-                // Apply per-sample crossfade
-                self.apply_crossfade(buffer, num_samples);
-            }
         }
     }
 
