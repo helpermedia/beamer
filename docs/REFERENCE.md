@@ -1,6 +1,6 @@
 # Beamer API Reference
 
-**Version:** 0.1.2
+**Version:** 0.1.3
 
 This document provides detailed API documentation for Beamer. For high-level architecture and design decisions, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
