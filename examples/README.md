@@ -2,6 +2,8 @@
 
 Working Beamer plugins demonstrating framework features.
 
+**For a comprehensive feature coverage matrix and roadmap for future examples, see [docs/EXAMPLE_COVERAGE.md](../docs/EXAMPLE_COVERAGE.md).**
+
 ## Running Examples
 
 ```bash

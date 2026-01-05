@@ -3,6 +3,7 @@
 This document describes the high-level architecture of Beamer, a Rust framework for building VST3 audio plugins with WebView-based GUIs.
 
 For detailed API documentation, see [docs/REFERENCE.md](docs/REFERENCE.md).
+For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EXAMPLE_COVERAGE.md).
 
 ---
 

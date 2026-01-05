@@ -12,8 +12,9 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (a
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Design decisions, threading model, guarantees
-- [docs/REFERENCE.md](docs/REFERENCE.md) — Detailed API reference
+- [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) — Design decisions, threading model, guarantees
+- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) — Detailed API reference
+- [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) — Example testing roadmap and feature coverage matrix
 
 ## Features
 
@@ -79,7 +80,7 @@ impl Plugin for GainPlugin {
 }
 ```
 
-See the [examples](examples/) for complete working plugins.
+See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for complete working plugins.
 
 ## Parameter Attributes
 
