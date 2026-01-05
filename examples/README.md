@@ -119,3 +119,49 @@ MIDI instrument that transforms notes and CC messages.
 ```bash
 cargo xtask bundle midi-transform --release --install
 ```
+
+---
+
+### [Synth](synth/)
+
+8-voice polyphonic synthesizer with MIDI CC emulation.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Waveform** | Oscillator shape: Sine, Saw, Square, or Triangle |
+| **Attack** | Envelope attack time (1-2000ms) |
+| **Decay** | Envelope decay time (1-2000ms) |
+| **Sustain** | Envelope sustain level (0-100%) |
+| **Release** | Envelope release time (1-5000ms) |
+| **Cutoff** | Lowpass filter cutoff frequency (20-20000Hz) |
+| **Resonance** | Filter resonance amount (0-95%) |
+| **Gain** | Master output level (-60 to +6 dB) |
+
+**MIDI Controls:**
+- **Pitch Bend** - ±2 semitones (standard range)
+- **Mod Wheel (CC1)** - Controls vibrato depth (0.5 semitones max at 5Hz LFO)
+
+**Note:** The synth plays one octave down from the input note (bass range). This is set via `OCTAVE_OFFSET` constant.
+
+**Typical Settings:**
+- **Pad**: Sine wave, slow attack (200ms), high sustain, long release (1000ms)
+- **Bass**: Saw wave, fast attack (5ms), low cutoff (400Hz), short release
+- **Lead**: Square wave, medium attack, high cutoff, add vibrato via mod wheel
+- **Pluck**: Triangle wave, instant attack, short decay, low sustain, medium release
+
+**Why MidiCcParams?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcParams` creates hidden parameters that receive these values and converts them back to MIDI events for your plugin.
+
+**Demonstrates:**
+- `MidiCcParams` for pitch bend/mod wheel via IMidiMapping
+- Sample-accurate MIDI event processing
+- Voice allocation with oldest-note stealing
+- ADSR envelope generator
+- One-pole lowpass filter with resonance
+- Parameter smoothing for filter cutoff
+- Generic f32/f64 processing
+
+```bash
+cargo xtask bundle synth --release --install
+```
