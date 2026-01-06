@@ -7,9 +7,13 @@
 //! 4. Create naive waveform oscillators (sine, saw, square, triangle)
 //! 5. Implement a simple one-pole lowpass filter with resonance
 //! 6. Use `EnumParam` for waveform selection
-//! 7. Apply parameter smoothing for filter cutoff/resonance
-//! 8. Handle pitch bend messages (±2 semitones)
-//! 9. Use mod wheel (CC 1) to control vibrato depth
+//! 7. Use `IntParam` for transpose (±2 octaves)
+//! 8. Use flat parameter groups (`group = "..."`)
+//! 9. Apply parameter smoothing for filter cutoff/resonance
+//! 10. Handle pitch bend messages (±2 semitones)
+//! 11. Use mod wheel (CC 1) to control vibrato depth and filter cutoff
+//! 12. Handle polyphonic aftertouch (per-note vibrato control)
+//! 13. Handle channel aftertouch (global vibrato control)
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
@@ -40,14 +44,14 @@ const PI: f64 = std::f64::consts::PI;
 /// Pitch bend range in semitones (±2 semitones is standard)
 const PITCH_BEND_RANGE: f64 = 2.0;
 
-/// Octave transpose offset (-1 = one octave down, +1 = one octave up)
-const OCTAVE_OFFSET: f64 = -1.0;
-
 /// Vibrato depth in semitones at max mod wheel
-const VIBRATO_DEPTH_SEMITONES: f64 = 0.5;
+const VIBRATO_DEPTH_SEMITONES: f64 = 1.0;
 
 /// Vibrato LFO rate in Hz
 const VIBRATO_RATE_HZ: f64 = 5.0;
+
+/// Filter cutoff modulation range in Hz (added to base cutoff when mod wheel is at max)
+const CUTOFF_MOD_RANGE: f64 = 8000.0;
 
 // =============================================================================
 // Enum Types
@@ -84,39 +88,60 @@ enum EnvelopeStage {
 /// Parameter collection for the synthesizer.
 ///
 /// Uses declarative parameter definition with `#[derive(Params)]`.
+/// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
 #[derive(Params)]
 pub struct SynthParams {
+    // =========================================================================
+    // Oscillator
+    // =========================================================================
+
     /// Oscillator waveform selection
-    #[param(id = "waveform", name = "Waveform")]
+    #[param(id = "waveform", name = "Waveform", group = "Oscillator")]
     pub waveform: EnumParam<Waveform>,
 
+    // =========================================================================
+    // Envelope
+    // =========================================================================
+
     /// Envelope attack time in milliseconds
-    #[param(id = "attack", name = "Attack", default = 5.0, range = 1.0..=2000.0, kind = "ms")]
+    #[param(id = "attack", name = "Attack", default = 5.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
     pub attack: FloatParam,
 
     /// Envelope decay time in milliseconds
-    #[param(id = "decay", name = "Decay", default = 50.0, range = 1.0..=2000.0, kind = "ms")]
+    #[param(id = "decay", name = "Decay", default = 50.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
     pub decay: FloatParam,
 
     /// Envelope sustain level (0-100%)
-    #[param(id = "sustain", name = "Sustain", default = 0.6, range = 0.0..=1.0, kind = "percent")]
+    #[param(id = "sustain", name = "Sustain", default = 0.6, range = 0.0..=1.0, kind = "percent", group = "Envelope")]
     pub sustain: FloatParam,
 
     /// Envelope release time in milliseconds
-    #[param(id = "release", name = "Release", default = 30.0, range = 1.0..=5000.0, kind = "ms")]
+    #[param(id = "release", name = "Release", default = 30.0, range = 1.0..=5000.0, kind = "ms", group = "Envelope")]
     pub release: FloatParam,
 
+    // =========================================================================
+    // Filter
+    // =========================================================================
+
     /// Lowpass filter cutoff frequency (smoothed)
-    #[param(id = "cutoff", name = "Cutoff", default = 800.0, range = 20.0..=20000.0, kind = "hz", smoothing = "exp:5.0")]
+    #[param(id = "cutoff", name = "Cutoff", default = 800.0, range = 20.0..=20000.0, kind = "hz", smoothing = "exp:5.0", group = "Filter")]
     pub cutoff: FloatParam,
 
     /// Filter resonance amount (smoothed)
-    #[param(id = "resonance", name = "Resonance", default = 0.0, range = 0.0..=0.95, kind = "percent", smoothing = "exp:5.0")]
+    #[param(id = "resonance", name = "Resonance", default = 0.0, range = 0.0..=0.95, kind = "percent", smoothing = "exp:5.0", group = "Filter")]
     pub resonance: FloatParam,
 
+    // =========================================================================
+    // Global Parameters
+    // =========================================================================
+
+    /// Transpose in semitones (±2 octaves)
+    #[param(id = "transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones", group = "Global")]
+    pub transpose: IntParam,
+
     /// Master output gain in dB
-    #[param(id = "gain", name = "Gain", default = -6.0, range = -60.0..=6.0, kind = "db")]
+    #[param(id = "gain", name = "Gain", default = -6.0, range = -60.0..=6.0, kind = "db", group = "Global")]
     pub gain: FloatParam,
 }
 
@@ -126,9 +151,11 @@ pub struct SynthParams {
 
 /// A single synthesizer voice.
 ///
-/// Each voice contains oscillator, envelope, and filter state.
+/// Each voice contains oscillator, envelope, and filter state, plus
+/// per-note polyphonic pressure tracking for vibrato modulation.
 /// Uses soft retrigger: when stealing a voice, the envelope level
-/// is not reset, preventing clicks.
+/// is not reset (preventing clicks), but poly pressure is reset to
+/// ensure new notes start without inherited vibrato.
 ///
 /// # Voice Architecture
 ///
@@ -158,6 +185,9 @@ struct Voice {
 
     // Filter state (one-pole lowpass with resonance)
     filter_state: f64,
+
+    // Polyphonic pressure (per-note aftertouch, 0.0 to 1.0)
+    poly_pressure: f64,
 }
 
 impl Voice {
@@ -172,6 +202,7 @@ impl Voice {
             envelope_level: 0.0,
             envelope_stage: EnvelopeStage::Idle,
             filter_state: 0.0,
+            poly_pressure: 0.0,
         }
     }
 
@@ -189,6 +220,8 @@ impl Voice {
         self.phase = 0.0;
         // Soft retrigger: don't reset envelope_level
         self.envelope_stage = EnvelopeStage::Attack;
+        // Reset polyphonic pressure (new note shouldn't inherit old pressure)
+        self.poly_pressure = 0.0;
     }
 
     /// Release the note (enter release stage).
@@ -212,10 +245,12 @@ impl Voice {
     /// * `cutoff` - Filter cutoff frequency in Hz (smoothed)
     /// * `resonance` - Filter resonance 0.0-0.95 (smoothed)
     /// * `pitch_bend` - Pitch bend amount -1.0 to +1.0
+    /// * `transpose_semitones` - Transpose offset in semitones
     /// * `sample_rate` - Current sample rate in Hz
     ///
     /// # Returns
     /// The processed audio sample for this voice
+    #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
         params: &SynthParams,
@@ -223,6 +258,7 @@ impl Voice {
         cutoff: f64,
         resonance: f64,
         pitch_bend: f64,
+        transpose_semitones: i32,
         sample_rate: f64,
     ) -> S {
         if !self.active {
@@ -233,12 +269,11 @@ impl Voice {
         // 1. Oscillator - Generate waveform at note frequency
         // =================================================================
         // MIDI pitch to frequency formula:
-        //   freq = 440 * 2^((pitch - 69 + bend + octave) / 12)
+        //   freq = 440 * 2^((pitch - 69 + bend + transpose) / 12)
         //
         // Where: pitch 69 = A4 = 440 Hz
         let bend_semitones = pitch_bend * PITCH_BEND_RANGE;
-        let octave_semitones = OCTAVE_OFFSET * 12.0;
-        let freq = 440.0 * 2.0_f64.powf((self.pitch as f64 - 69.0 + bend_semitones + octave_semitones) / 12.0);
+        let freq = 440.0 * 2.0_f64.powf((self.pitch as f64 - 69.0 + bend_semitones + transpose_semitones as f64) / 12.0);
         let phase_inc = freq / sample_rate;
 
         // Waveform generation (naive, non-bandlimited):
@@ -365,6 +400,8 @@ pub struct SynthProcessor {
     mod_wheel: f64,
     /// Vibrato LFO phase (0.0 to 1.0)
     vibrato_phase: f64,
+    /// Channel pressure (global aftertouch, 0.0 to 1.0)
+    channel_pressure: f64,
 }
 
 impl SynthProcessor {
@@ -466,6 +503,18 @@ impl SynthProcessor {
                                 self.mod_wheel = cc.value as f64;
                             }
                         }
+                        MidiEventKind::PolyPressure(poly) => {
+                            // Find voice(s) with matching note_id and update pressure
+                            for voice in &mut self.voices {
+                                if voice.note_id == poly.note_id && voice.active {
+                                    voice.poly_pressure = poly.pressure as f64;
+                                }
+                            }
+                        }
+                        MidiEventKind::ChannelPressure(cp) => {
+                            // Global aftertouch affects all voices
+                            self.channel_pressure = cp.pressure as f64;
+                        }
                         _ => {}
                     }
                     event_idx += 1;
@@ -481,30 +530,62 @@ impl SynthProcessor {
                 self.vibrato_phase -= 1.0;
             }
 
-            // Calculate vibrato: sine LFO scaled by mod wheel
-            let vibrato = (self.vibrato_phase * 2.0 * PI).sin()
-                * self.mod_wheel
-                * VIBRATO_DEPTH_SEMITONES;
+            // Calculate base vibrato LFO (sine wave, no scaling yet)
+            let vibrato_lfo = (self.vibrato_phase * 2.0 * PI).sin();
 
-            // Tick parameter smoothers
-            let cutoff = self.params.cutoff.tick_smoothed();
+            // =================================================================
+            // Filter Modulation
+            // =================================================================
+            // Mod wheel controls filter brightness by adding to base cutoff.
+            // - Cutoff param = base frequency (your starting point)
+            // - Mod wheel adds up to +8000 Hz (opens filter for brightness)
+            // - Clamped at 20kHz to stay below Nyquist frequency
+            let base_cutoff = self.params.cutoff.tick_smoothed();
+            let cutoff_modulation = self.mod_wheel * CUTOFF_MOD_RANGE;
+            let cutoff = (base_cutoff + cutoff_modulation).min(20000.0);
             let resonance = self.params.resonance.tick_smoothed();
 
             // Render all voices
             let mut out_l = S::ZERO;
             let mut out_r = S::ZERO;
 
-            // Combine pitch bend and vibrato for total pitch modulation
-            let total_pitch_mod = self.pitch_bend + vibrato / PITCH_BEND_RANGE;
-
             for voice in &mut self.voices {
                 if voice.active {
+                    // =============================================================
+                    // Per-Voice Vibrato Depth Calculation
+                    // =============================================================
+                    // We use a global LFO (all voices vibrato in sync) but calculate
+                    // per-voice depth to allow pressure-based expression.
+                    //
+                    // Pressure Priority:
+                    //   1. If PolyPressure > 0: use poly pressure (per-note control)
+                    //   2. Else: use ChannelPressure (global aftertouch)
+                    //
+                    // Mod Wheel Combination:
+                    //   - Mod wheel and pressure are additive (both can contribute)
+                    //   - Range: 0.0 to 2.0 (allows super-expressive 2x depth)
+                    //   - Example: mod wheel at 100% + pressure at 100% = 200% depth
+                    let pressure_depth = if voice.poly_pressure > 0.0 {
+                        voice.poly_pressure  // Use poly pressure if present
+                    } else {
+                        self.channel_pressure  // Fall back to channel pressure
+                    };
+
+                    let total_vibrato_depth = (self.mod_wheel + pressure_depth).min(2.0);
+
+                    // Scale LFO by depth
+                    let vibrato = vibrato_lfo * total_vibrato_depth * VIBRATO_DEPTH_SEMITONES;
+
+                    // Per-voice pitch modulation (pitch bend + this voice's vibrato)
+                    let total_pitch_mod = self.pitch_bend + vibrato / PITCH_BEND_RANGE;
+
                     let sample = voice.process_sample::<S>(
                         &self.params,
                         waveform,
                         cutoff,
                         resonance,
                         total_pitch_mod,
+                        self.params.transpose.get() as i32,
                         self.sample_rate,
                     );
                     out_l = out_l + sample;
@@ -608,6 +689,7 @@ impl Plugin for SynthProcessor {
             pitch_bend: 0.0,
             mod_wheel: 0.0,
             vibrato_phase: 0.0,
+            channel_pressure: 0.0,
         }
     }
 

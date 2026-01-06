@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-01-05
+**Last Updated:** 2026-01-06
 **Current Examples:** gain, delay, synth, midi-transform, compressor
 
 ---
@@ -22,7 +22,7 @@
 | Feature Category | Feature | Gain | Delay | Synth | MIDI Transform | Compressor | Notes |
 |-----------------|---------|------|-------|-------|----------------|------------|-------|
 | **Parameters** | FloatParam | ✅ | ✅ | ✅ | ✅ | 🚧 | Core parameter type |
-| | IntParam | ❌ | ❌ | ❌ | ✅ | ❌ | Transpose, note/CC numbers |
+| | IntParam | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synth), note/CC numbers (midi-transform) |
 | | BoolParam | ❌ | ❌ | ❌ | ✅ | 🚧 | Enable toggles, bypass, soft knee |
 | | EnumParam | ❌ | ✅ | ✅ | ✅ | 🚧 | Waveform, sync, ratio |
 | **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
@@ -30,9 +30,9 @@
 | **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | 🚧 | Default mapping |
 | | PowerMapper | ❌ | ❌ | ❌ | ❌ | 🚧 | Threshold (db_log) |
 | | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | Available but not used |
-| **Organization** | Units (param groups) | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (VST3 units - questionable DAW support) |
+| **Organization** | Units (param groups) | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
 | | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (claims DAW grouping, unverified) |
+| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ❌ | Synth uses 4 groups (works in Cubase) |
 | | Custom Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | bypass attribute | ❌ | ❌ | ❌ | ✅ | 🚧 | Special bypass param marker |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f32 |
@@ -54,8 +54,8 @@
 | | PitchBend | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
 | | ControlChange (CC) | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
 | | MidiCcParams | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ❌ | ✅ | ❌ | Poly aftertouch transform |
-| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | PolyPressure | ❌ | ❌ | ✅ | ✅ | ❌ | Per-note vibrato, transform |
+| | ChannelPressure | ❌ | ❌ | ✅ | ❌ | ❌ | Global vibrato (synth) |
 | | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
 | | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
@@ -104,16 +104,16 @@
 ### Medium Priority (Advanced Features)
 
 5. **Parameter Organization**
-   - Units system - Parameter grouping (VST3 IUnitInfo - **questionable practical value**)
+   - ✅ ~~Units system~~ - Tested in synth (4 flat groups: Oscillator, Envelope, Filter, Global - **works in Cubase**)
    - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
-   - Flat groups (`group = "..."`) - Claims DAW visual grouping (**needs verification**)
+   - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synth (**works in Cubase, verified with screenshot**)
    - Custom `Formatter` - Parameter display formatting
    - 🚧 Linear smoothing - Implemented in compressor (attack/release params), needs DAW testing
    - ✅ ~~`bypass` attribute~~ - Tested in midi-transform; also in compressor (needs DAW testing)
 
 6. **MIDI - Message Types**
-   - ✅ ~~`PolyPressure`~~ - Tested in midi-transform
-   - `ChannelPressure` - Channel aftertouch (available via MidiCcParams but not directly tested)
+   - ✅ ~~`PolyPressure`~~ - Tested in midi-transform (event transform) and synth (per-note vibrato)
+   - ✅ ~~`ChannelPressure`~~ - Tested in synth (global vibrato control)
    - `ProgramChange` - Patch selection
    - `SysEx` - System exclusive messages
 
@@ -360,12 +360,16 @@
 - ✅ `latency_samples()` - Report minimum delay time as latency
 
 #### **synth** (Current)
-**Could add:**
-- ✅ `IntParam` - Add "Voice Count" parameter (1-16 voices)
-- ✅ `BoolParam` - Add "Legato Mode" toggle
-- ✅ Units - Group "Oscillator", "Filter", "Envelope" parameters
-- ✅ `PolyPressure` - Add per-note aftertouch → filter cutoff
-- ✅ `ChannelPressure` - Add channel aftertouch → vibrato depth
+**Recently added:**
+- ✅ `IntParam` - Transpose parameter (±2 octaves, -24 to +24 semitones)
+- ✅ Flat parameter groups - "Oscillator", "Envelope", "Filter", "Global" groups (works in Cubase)
+- ✅ `PolyPressure` - Per-note aftertouch → vibrato depth (polyphonic expression)
+- ✅ `ChannelPressure` - Channel aftertouch → vibrato depth (global expression)
+- ✅ Mod wheel - Controls both vibrato depth AND filter cutoff modulation
+
+**Could still add:**
+- ❌ `BoolParam` - Add "Legato Mode" toggle
+- ❌ "Voice Count" parameter (1-16 voices) using IntParam
 
 #### **midi-transform** (Current)
 **Could add:**
@@ -502,7 +506,7 @@ pub cc: CcTransformParams,
 
 **Needs investigation:** Test in multiple DAWs (Reaper, Logic, Cubase, etc.) to verify if groups are actually visible to users.
 
-#### 4. **PolyPressure (Polyphonic Aftertouch)** ⚠️ CRITICAL
+#### 4. **PolyPressure (Polyphonic Aftertouch)** ✅ TESTED
 ```rust
 MidiEventKind::PolyPressure(poly) => {
     if let Some(new_pitch) = self.transform_pitch(poly.pitch) {
@@ -516,7 +520,8 @@ MidiEventKind::PolyPressure(poly) => {
     }
 }
 ```
-- ❌ Not used in: gain, delay, synth
+- ✅ **Also used in synth** - Per-note vibrato depth control via polyphonic aftertouch
+- ❌ Not used in: gain, delay
 
 #### 5. **Special `bypass` Attribute**
 ```rust
@@ -537,12 +542,12 @@ fn process(&mut self, buffer: &mut Buffer, ...) {
 
 ### Coverage Summary
 
-**If midi-transform is removed, we lose ALL test coverage for:**
-- ✅ IntParam (integer parameters) - **CRITICAL**
-- ✅ BoolParam (boolean/toggle parameters) - **CRITICAL**
-- ⚠️ Nested parameter groups (`#[nested]`) - **Questionable practical value** (may be Rust-only organization)
-- ✅ PolyPressure MIDI events - **CRITICAL**
-- ✅ `bypass` attribute - **CRITICAL**
+**If midi-transform is removed, we lose test coverage for:**
+- ✅ IntParam - **Now also tested in synth** (transpose parameter)
+- ✅ BoolParam - **Still unique to midi-transform** (would lose coverage)
+- ⚠️ Nested parameter groups (`#[nested]`) - **Still unique to midi-transform** (Rust-only organization)
+- ✅ PolyPressure - **Now also tested in synth** (per-note vibrato control)
+- ✅ `bypass` attribute - **Still unique to midi-transform** (would lose coverage)
 
 ### Recommendations
 
@@ -573,15 +578,15 @@ Accept that it's a contrived example but serves an important testing purpose:
 
 **Before removing midi-transform, ensure these features are tested elsewhere:**
 
-- [ ] IntParam - Add to another example (compressor, eq)
+- [x] IntParam - ✅ **Added to synth** (transpose parameter)
 - [ ] BoolParam - Add to another example (compressor, eq)
 - [ ] Nested parameter groups - Add to another example (eq with bands)
-- [ ] PolyPressure - Add to synth or new MPE example
+- [x] PolyPressure - ✅ **Added to synth** (per-note vibrato control)
 - [ ] `bypass` attribute - Add to any effect example
 - [ ] Update coverage matrix after migration
 - [ ] Update ARCHITECTURE.md and examples README
 
-**Current Status:** midi-transform cannot be safely removed without losing critical feature coverage (IntParam, BoolParam, PolyPressure, bypass attribute).
+**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParam and PolyPressure are now tested in synth. However, we would still lose BoolParam, nested groups, and bypass attribute coverage.
 
 ---
 

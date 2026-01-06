@@ -126,42 +126,54 @@ cargo xtask bundle midi-transform --release --install
 
 ### [Synth](synth/)
 
-8-voice polyphonic synthesizer with MIDI CC emulation.
+8-voice polyphonic synthesizer with expressive MIDI controls and parameter groups.
 
-**Parameters:**
+**Parameters** (organized in groups):
 
-| Parameter | Description |
-|-----------|-------------|
-| **Waveform** | Oscillator shape: Sine, Saw, Square, or Triangle |
-| **Attack** | Envelope attack time (1-2000ms) |
-| **Decay** | Envelope decay time (1-2000ms) |
-| **Sustain** | Envelope sustain level (0-100%) |
-| **Release** | Envelope release time (1-5000ms) |
-| **Cutoff** | Lowpass filter cutoff frequency (20-20000Hz) |
-| **Resonance** | Filter resonance amount (0-95%) |
-| **Gain** | Master output level (-60 to +6 dB) |
+| Group | Parameter | Description |
+|-------|-----------|-------------|
+| **Oscillator** | Waveform | Oscillator shape: Sine, Saw, Square, or Triangle |
+| **Envelope** | Attack | Envelope attack time (1-2000ms) |
+| | Decay | Envelope decay time (1-2000ms) |
+| | Sustain | Envelope sustain level (0-100%) |
+| | Release | Envelope release time (1-5000ms) |
+| **Filter** | Cutoff | Lowpass filter cutoff frequency (20-20000Hz, smoothed) |
+| | Resonance | Filter resonance amount (0-95%, smoothed) |
+| **Global** | Transpose | Pitch transpose (±2 octaves, -24 to +24 semitones) |
+| | Gain | Master output level (-60 to +6 dB) |
 
 **MIDI Controls:**
 - **Pitch Bend** - ±2 semitones (standard range)
-- **Mod Wheel (CC1)** - Controls vibrato depth (0.5 semitones max at 5Hz LFO)
+- **Mod Wheel (CC1)** - Controls both vibrato depth AND filter brightness (additive modulation)
+- **Polyphonic Aftertouch** - Per-note vibrato control (requires poly aftertouch keyboard)
+- **Channel Aftertouch** - Global vibrato control for all notes
 
-**Note:** The synth plays one octave down from the input note (bass range). This is set via `OCTAVE_OFFSET` constant.
+**Expressive Performance:**
+- **Vibrato depth**: Base controlled by mod wheel, enhanced by aftertouch (pressure)
+- **Combined control**: Mod wheel + pressure = up to 2x vibrato depth (±2 semitones max)
+- **Priority logic**: Polyphonic aftertouch overrides channel aftertouch per-note
+- **Filter modulation**: Mod wheel opens cutoff by up to +8000 Hz for brightness
 
 **Typical Settings:**
 - **Pad**: Sine wave, slow attack (200ms), high sustain, long release (1000ms)
-- **Bass**: Saw wave, fast attack (5ms), low cutoff (400Hz), short release
-- **Lead**: Square wave, medium attack, high cutoff, add vibrato via mod wheel
+- **Bass**: Saw wave, fast attack (5ms), low cutoff (400Hz), short release, transpose -12
+- **Lead**: Square wave, medium attack, high cutoff, add expression via mod wheel + aftertouch
 - **Pluck**: Triangle wave, instant attack, short decay, low sustain, medium release
 
 **Why MidiCcParams?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcParams` creates hidden parameters that receive these values and converts them back to MIDI events for your plugin.
 
 **Demonstrates:**
+- `IntParam` for transpose (±2 octaves in semitones)
+- Flat parameter groups (`group = "..."`) - works in Cubase
 - `MidiCcParams` for pitch bend/mod wheel via IMidiMapping
+- Polyphonic aftertouch (PolyPressure) for per-note vibrato
+- Channel aftertouch (ChannelPressure) for global vibrato
+- Mod wheel controlling multiple parameters (vibrato + filter)
 - Sample-accurate MIDI event processing
 - Voice allocation with oldest-note stealing
 - ADSR envelope generator
 - One-pole lowpass filter with resonance
-- Parameter smoothing for filter cutoff
+- Parameter smoothing (exponential for filter cutoff/resonance)
 - Generic f32/f64 processing
 
 ```bash
