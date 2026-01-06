@@ -10,10 +10,11 @@
 //!
 //! ## DSP Overview
 //!
-//! Classic feed-forward compressor with:
-//! - Peak envelope follower (stereo-linked)
-//! - Soft/hard knee selection (6 dB fixed soft knee width)
-//! - Auto makeup gain calculation
+//! Classic feed-forward compressor with dB-domain envelope processing:
+//! - Envelope tracks overshoot above threshold
+//! - Stereo-linked peak detection
+//! - Soft/hard knee selection
+//! - Dynamic auto makeup gain
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
@@ -80,9 +81,6 @@ impl Ratio {
 // =============================================================================
 
 /// Parameter collection for the compressor plugin.
-///
-/// Uses **declarative parameter definition** with the new `db_log` kind
-/// for threshold (power curve mapping - more resolution near 0 dB).
 #[derive(Params)]
 pub struct CompressorParams {
     // =========================================================================
@@ -90,11 +88,10 @@ pub struct CompressorParams {
     // =========================================================================
 
     /// Threshold level in dB.
-    /// Uses `db_log` for more resolution near 0 dB (power curve mapping).
     #[param(
         id = "threshold",
         name = "Threshold",
-        default = -20.0,
+        default = 0.0,
         range = -60.0..=0.0,
         kind = "db_log"
     )]
@@ -105,37 +102,38 @@ pub struct CompressorParams {
     pub ratio: EnumParam<Ratio>,
 
     /// Attack time in milliseconds.
-    /// Uses **linear smoothing** to test this currently untested feature.
     #[param(
         id = "attack",
         name = "Attack",
         default = 10.0,
-        range = 0.1..=100.0,
+        range = 0.1..=200.0,
         kind = "ms",
         smoothing = "linear:50.0"
     )]
     pub attack: FloatParam,
 
     /// Release time in milliseconds.
-    /// Uses **linear smoothing** to test this currently untested feature.
     #[param(
         id = "release",
         name = "Release",
         default = 100.0,
-        range = 10.0..=1000.0,
+        range = 10.0..=2000.0,
         kind = "ms",
         smoothing = "linear:50.0"
     )]
     pub release: FloatParam,
 
     /// Knee mode: soft (true) or hard (false).
-    /// Soft knee uses 6 dB fixed width.
     #[param(id = "knee", name = "Soft Knee", default = true)]
     pub soft_knee: BoolParam,
 
     // =========================================================================
     // Gain Controls
     // =========================================================================
+
+    /// Auto makeup gain toggle.
+    #[param(id = "auto_makeup", name = "Auto Makeup", default = false)]
+    pub auto_makeup: BoolParam,
 
     /// Manual makeup gain in dB.
     #[param(
@@ -147,11 +145,6 @@ pub struct CompressorParams {
     )]
     pub makeup_gain: FloatParam,
 
-    /// Auto makeup gain toggle.
-    /// When enabled, automatically compensates for gain reduction.
-    #[param(id = "auto_makeup", name = "Auto Makeup", default = false)]
-    pub auto_makeup: BoolParam,
-
     // =========================================================================
     // Bypass
     // =========================================================================
@@ -159,6 +152,14 @@ pub struct CompressorParams {
     /// Global bypass with smooth crossfade.
     #[param(id = "bypass", bypass)]
     pub bypass: BoolParam,
+
+    // =========================================================================
+    // Sidechain
+    // =========================================================================
+
+    /// Use sidechain input for detection signal.
+    #[param(id = "sidechain", name = "Sidechain", default = false)]
+    pub use_sidechain: BoolParam,
 }
 
 // =============================================================================
@@ -194,39 +195,6 @@ fn update_envelope(current: f64, input_level: f64, attack_coeff: f64, release_co
     current + coeff * (input_level - current)
 }
 
-/// Compute gain reduction in dB using soft/hard knee.
-///
-/// # Arguments
-/// * `input_db` - Input level in dB
-/// * `threshold_db` - Threshold level in dB
-/// * `ratio` - Compression ratio (e.g., 4.0 for 4:1)
-/// * `knee_width_db` - Knee width in dB (0 for hard knee)
-///
-/// # Returns
-/// Gain reduction amount in dB (always <= 0)
-#[inline]
-fn compute_gain_reduction(
-    input_db: f64,
-    threshold_db: f64,
-    ratio: f64,
-    knee_width_db: f64,
-) -> f64 {
-    let overshoot = input_db - threshold_db;
-
-    if overshoot <= -knee_width_db / 2.0 {
-        // Below knee - no compression
-        0.0
-    } else if knee_width_db <= 0.0 || overshoot >= knee_width_db / 2.0 {
-        // Above knee (or hard knee) - full compression
-        // Gain reduction = overshoot * (1 - 1/ratio)
-        -overshoot * (1.0 - 1.0 / ratio)
-    } else {
-        // In soft knee region - quadratic interpolation
-        let x = overshoot + knee_width_db / 2.0;
-        -(x * x) / (2.0 * knee_width_db) * (1.0 - 1.0 / ratio)
-    }
-}
-
 /// Convert linear amplitude to dB with floor.
 #[inline]
 fn linear_to_db(linear: f64) -> f64 {
@@ -253,38 +221,42 @@ const BYPASS_RAMP_MS: f64 = 10.0;
 /// Fixed soft knee width in dB.
 const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
 
+/// DC offset to prevent denormals in envelope follower.
+const DC_OFFSET: f64 = 1e-25;
+
 // =============================================================================
 // Audio Processor
 // =============================================================================
 
 /// The compressor plugin processor.
-///
-/// Implements a classic feed-forward compressor with:
-/// - Peak-based envelope follower
-/// - Stereo linking (max of L/R envelopes)
-/// - Smooth bypass crossfade using `BypassHandler`
 pub struct CompressorProcessor {
     /// Plugin parameters
     params: CompressorParams,
 
-    /// Bypass handler for smooth crossfade transitions.
-    /// Uses `CrossfadeCurve::EqualPower` for constant loudness.
+    /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
 
-    /// Compression state (envelope followers)
+    /// Compression state
     state: CompressionState,
 
     /// Current sample rate
     sample_rate: f64,
 
-    /// Cached bypass ramp samples (updated in setup)
+    /// Cached bypass ramp samples
     ramp_samples: u32,
 }
 
-/// Compression state (envelope followers).
+/// Compression state (envelope and gain reduction tracking).
+///
+/// Uses dB-domain envelope following:
+/// - Envelope tracks overshoot above threshold
+/// - Single stereo-linked envelope after max detection
+/// - DC offset prevents denormals
 struct CompressionState {
-    envelope_l: f64,
-    envelope_r: f64,
+    /// Overshoot envelope in dB (with DC offset applied)
+    env_db: f64,
+    /// Smoothed average gain reduction in dB (for dynamic auto makeup)
+    average_gr_db: f64,
 }
 
 impl CompressorProcessor {
@@ -305,6 +277,12 @@ impl CompressorProcessor {
 }
 
 /// Inner compression processing function.
+///
+/// Processing steps:
+/// 1. Rectify input and stereo-link (max of L/R)
+/// 2. Convert to dB and compute overshoot above threshold
+/// 3. Run attack/release envelope on the overshoot
+/// 4. Compute gain reduction from smoothed overshoot
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
@@ -328,34 +306,26 @@ fn process_compression_inner<S: Sample>(
         0.0
     };
 
-    // Calculate auto makeup gain
-    let auto_makeup_db = if params.auto_makeup.get() {
-        // Formula: makeup_db = threshold_db * (1 - 1/ratio)
-        // This compensates for the average gain reduction at threshold
-        -threshold_db * (1.0 - 1.0 / ratio)
-    } else {
-        0.0
-    };
-
     let manual_makeup_db = params.makeup_gain.get();
-    let total_makeup_linear = db_to_linear(auto_makeup_db + manual_makeup_db);
 
-    // Check if sidechain is connected
-    let use_sidechain = aux.sidechain().is_some();
+    // Only use sidechain when explicitly enabled by parameter and buffer exists
+    let use_sidechain = params.use_sidechain.get() && aux.sidechain().is_some();
 
-    // Pre-calculate envelope coefficients from smoothed attack/release values.
-    // We use block-based smoothing (one value per buffer) rather than per-sample
-    // since attack/release change slowly and coefficient calculation is expensive.
+    // Pre-calculate envelope coefficients from smoothed attack/release values
     let attack_ms = params.attack.smoothed();
     let release_ms = params.release.smoothed();
     let attack_coeff = time_to_coeff(attack_ms, sample_rate);
     let release_coeff = time_to_coeff(release_ms, sample_rate);
 
+    // Coefficient for smoothing average gain reduction (1 second time constant)
+    let gr_smooth_coeff = time_to_coeff(1000.0, sample_rate);
+
     // Process sample by sample
     for sample_idx in 0..num_samples {
-
-        // Determine detection signal source
-        let (detect_l, detect_r) = if use_sidechain {
+        // =====================================================================
+        // Step 1: Get detection signal and stereo-link
+        // =====================================================================
+        let detect_linked = if use_sidechain {
             // Use sidechain input for detection
             if let Some(sc) = aux.sidechain() {
                 let sc_l = if sc.num_channels() > 0 {
@@ -368,9 +338,9 @@ fn process_compression_inner<S: Sample>(
                 } else {
                     sc_l
                 };
-                (sc_l, sc_r)
+                sc_l.max(sc_r)
             } else {
-                (0.0, 0.0)
+                0.0
             }
         } else {
             // Use main input for detection
@@ -380,26 +350,60 @@ fn process_compression_inner<S: Sample>(
             } else {
                 in_l
             };
-            (in_l, in_r)
+            in_l.max(in_r) // Stereo link: use max of L/R
         };
 
-        // Update envelope followers
-        state.envelope_l =
-            update_envelope(state.envelope_l, detect_l, attack_coeff, release_coeff);
-        state.envelope_r =
-            update_envelope(state.envelope_r, detect_r, attack_coeff, release_coeff);
+        // =====================================================================
+        // Step 2: Convert to dB and compute overshoot
+        // =====================================================================
+        // Add DC offset before log to avoid log(0)
+        let key_db = linear_to_db(detect_linked + DC_OFFSET);
 
-        // Stereo link: use max of both channels for consistent stereo image
-        let envelope_max = state.envelope_l.max(state.envelope_r);
-        let envelope_db = linear_to_db(envelope_max);
+        // Compute overshoot above threshold (clamped to >= 0)
+        let over_db = (key_db - threshold_db).max(0.0);
 
-        // Calculate gain reduction
-        let gain_reduction_db =
-            compute_gain_reduction(envelope_db, threshold_db, ratio, knee_width);
-        let gain_linear = db_to_linear(gain_reduction_db) * total_makeup_linear;
+        // =====================================================================
+        // Step 3: Run attack/release envelope on overshoot (dB domain)
+        // =====================================================================
+        // Add DC offset to prevent denormals
+        let over_db_offset = over_db + DC_OFFSET;
+
+        // Run one-pole envelope on the overshoot
+        state.env_db = update_envelope(state.env_db, over_db_offset, attack_coeff, release_coeff);
+
+        // Remove DC offset to get actual overshoot
+        let smoothed_over_db = state.env_db - DC_OFFSET;
+
+        // =====================================================================
+        // Step 4: Compute gain reduction with soft/hard knee
+        // =====================================================================
+        let gain_reduction_db = if knee_width <= 0.0 || smoothed_over_db >= knee_width / 2.0 {
+            // Hard knee or above knee region: full compression
+            -smoothed_over_db * (1.0 - 1.0 / ratio)
+        } else if smoothed_over_db <= 0.0 {
+            // Below threshold: no compression
+            0.0
+        } else {
+            // In soft knee region: quadratic interpolation
+            -(smoothed_over_db * smoothed_over_db) / (knee_width / 2.0) * (1.0 - 1.0 / ratio)
+        };
+
+        // =====================================================================
+        // Step 5: Auto makeup and final gain
+        // =====================================================================
+        // Update smoothed average gain reduction
+        state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
+
+        let auto_makeup_db = if params.auto_makeup.get() {
+            -state.average_gr_db
+        } else {
+            0.0
+        };
+
+        let total_gain_linear = db_to_linear(gain_reduction_db + auto_makeup_db + manual_makeup_db);
 
         // Apply gain to output
-        let gain = S::from_f64(gain_linear);
+        let gain = S::from_f64(total_gain_linear);
 
         buffer.output(0)[sample_idx] = buffer.input(0)[sample_idx] * gain;
         if num_channels > 1 {
@@ -419,20 +423,14 @@ impl AudioProcessor for CompressorProcessor {
     }
 
     /// Called when plugin is activated/deactivated.
-    ///
-    /// Resets envelope followers to avoid clicks on activation.
-    /// This tests the `set_active()` method which was previously untested.
     fn set_active(&mut self, active: bool) {
         if active {
-            // Reset envelope state to avoid clicks
-            self.state.envelope_l = 0.0;
-            self.state.envelope_r = 0.0;
+            self.state.env_db = DC_OFFSET;
+            self.state.average_gr_db = 0.0;
         }
     }
 
     /// Report bypass ramp duration to host.
-    ///
-    /// This tests the `bypass_ramp_samples()` method which was previously untested.
     fn bypass_ramp_samples(&self) -> u32 {
         self.bypass_handler.ramp_samples()
     }
@@ -541,11 +539,10 @@ impl Plugin for CompressorProcessor {
     fn create() -> Self {
         Self {
             params: CompressorParams::default(),
-            // Initialize with EqualPower curve for constant loudness during bypass
             bypass_handler: BypassHandler::new(64, CrossfadeCurve::EqualPower),
             state: CompressionState {
-                envelope_l: 0.0,
-                envelope_r: 0.0,
+                env_db: DC_OFFSET,
+                average_gr_db: 0.0,
             },
             sample_rate: 44100.0,
             ramp_samples: 64,

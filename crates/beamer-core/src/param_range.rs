@@ -264,14 +264,16 @@ impl RangeMapper for PowerMapper {
         // Linear normalize first
         let linear = ((plain - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
 
-        // Apply inverse power curve (must be inverse of denormalize)
-        linear.powf(self.inv_exponent)
+        // Apply power curve (square for exponent=2.0)
+        // This compresses the linear range so more slider travel is near max
+        linear.powf(1.0 / self.inv_exponent)
     }
 
     fn denormalize(&self, normalized: f64) -> f64 {
         let normalized = normalized.clamp(0.0, 1.0);
 
-        // Inverse power curve
+        // Apply inverse power curve (square root for exponent=2.0)
+        // This expands the normalized range back to linear
         let linear = normalized.powf(self.inv_exponent);
 
         // Linear denormalize

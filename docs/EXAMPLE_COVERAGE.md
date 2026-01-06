@@ -377,6 +377,12 @@
 - ✅ 14-bit CC - Demonstrate 14-bit CC MSB/LSB handling
 - ✅ `ProgramChange` - Add program change filtering/remapping
 
+#### **compressor** (Current)
+**Could add:**
+- ❌ Look-ahead option - Professional limiters use look-ahead to catch transients before they happen. Requires delay buffer and `latency_samples()` for delay compensation reporting to host.
+- ❌ RMS detection mode - Add toggle for RMS averaging instead of peak detection. RMS provides smoother, more musical compression that's less sensitive to individual transients.
+- ❌ Gain reduction metering - Expose GR as an output parameter for DAW metering display.
+
 ---
 
 ## Testing Strategy
