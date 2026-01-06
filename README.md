@@ -4,43 +4,19 @@ A Rust framework for building VST3 audio plugins.
 
 Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. It bridges VST3's C++ COM interfaces with safe Rust abstractions.
 
-## Overview
+## Why Beamer?
 
-Beamer provides a clean separation between plugin logic and the VST3 format details. You implement simple traits for your audio processing and parameters, and Beamer handles the rest.
+Audio plugin development has traditionally meant wrestling with C++ memory management, threading bugs, and cryptic SDK interfaces—time spent debugging instead of creating. Beamer changes this.
 
-The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses the [vst3](https://github.com/coupler-rs/vst3-rs) crate for Rust bindings.
+**Built on Rust's guarantees.** Memory leaks, dangling pointers, and data races are caught at compile time, not discovered during a live session. Your plugin won't crash someone's mix because of a subtle threading bug.
 
-## Documentation
+**No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
-- [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) — Design decisions, threading model, guarantees
-- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) — Detailed API reference
-- [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) — Example testing roadmap and feature coverage matrix
+**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Params)]` and Beamer generates VST3 integration, state persistence, and DAW automation—all from a simple struct definition. Focus on your DSP, not boilerplate.
 
-## Features
+**Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools—HTML, CSS, JavaScript—while your audio code stays in safe Rust. Each team does what they do best.
 
-- **Format-agnostic core** - Plugin logic is independent of VST3 specifics
-- **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
-- **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
-- **Complete MIDI support** - All VST3 SDK 3.8.0 MIDI features including MPE, Note Expression, and MIDI 2.0
-- **Real-time safe** - No heap allocations in the audio path
-- **State persistence** - Automatic preset/state save and restore
-- **WebView GUI** (planned) - Modern web-based plugin interfaces
-
-## Platform Support
-
-| Platform | Status |
-|----------|--------|
-| macOS (arm64) | Tested |
-| Windows | Untested |
-| Linux | Untested |
-
-## Crates
-
-| Crate | Description |
-|-------|-------------|
-| `beamer` | Main facade crate (re-exports everything) |
-| `beamer-core` | Platform-agnostic traits and types |
-| `beamer-vst3` | VST3 wrapper implementation |
+**For creative developers.** Whether you're an audio engineer learning Rust or a Rust developer exploring audio, Beamer handles the VST3 plumbing so you can focus on what matters: making something that sounds great.
 
 ## Quick Start
 
@@ -80,7 +56,37 @@ impl Plugin for GainPlugin {
 }
 ```
 
-See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for complete working plugins.
+## Examples
+
+### Effects
+
+| Example | Description |
+|---------|-------------|
+| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain with sidechain ducking. Demonstrates `#[derive(Params)]`, dB scaling, and multi-bus audio. |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParam`, tempo sync via `ProcessContext`, and parameter smoothing. |
+| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
+
+### Instruments
+
+| Example | Description |
+|---------|-------------|
+| **[synth](https://github.com/helpermedia/beamer/tree/main/examples/synth)** | 8-voice polyphonic synthesizer with full ADSR envelope and lowpass filter. Features expressive MIDI: polyphonic aftertouch for per-note vibrato, channel aftertouch, pitch bend, and mod wheel controlling both vibrato depth and filter brightness. |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI processor that transforms notes and CC messages. Shows nested parameter groups, `process_midi()`, and various transform modes (transpose, remap, invert). |
+
+See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
+
+## MIDI Support
+
+Beamer provides comprehensive MIDI support:
+
+- Note On/Off with velocity, tuning, and note length
+- Control Change with 14-bit resolution helpers
+- Pitch Bend, Channel Pressure, Poly Pressure
+- Program Change
+- SysEx (configurable buffer size)
+- Note Expression (MPE)
+- RPN/NRPN decoding
+- Chord and Scale info from DAW
 
 ## Parameter Attributes
 
@@ -120,7 +126,39 @@ struct SynthParams {
 
 For nested structs with separate parameter groups, use `#[nested(group = "...")]`.
 
-## Building
+## Features
+
+- **Format-agnostic core** - Plugin logic is independent of VST3 specifics
+- **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
+- **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
+- **Complete MIDI support** - All VST3 SDK 3.8.0 MIDI features including MPE, Note Expression, and MIDI 2.0
+- **Real-time safe** - No heap allocations in the audio path
+- **State persistence** - Automatic preset/state save and restore
+- **WebView GUI** (planned) - Modern web-based plugin interfaces
+
+## Documentation
+
+- [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) — Design decisions, threading model, guarantees
+- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) — Detailed API reference
+- [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) — Example testing roadmap and feature coverage matrix
+
+## Platform Support
+
+| Platform | Status |
+|----------|--------|
+| macOS (arm64) | Tested |
+| Windows | Untested |
+| Linux | Untested |
+
+## Crates
+
+| Crate | Description |
+|-------|-------------|
+| `beamer` | Main facade crate (re-exports everything) |
+| `beamer-core` | Platform-agnostic traits and types |
+| `beamer-vst3` | VST3 wrapper implementation |
+
+## Building & Installation
 
 ```bash
 # Build all crates
@@ -129,54 +167,12 @@ cargo build
 # Build release
 cargo build --release
 
-# Run clippy
-cargo clippy --workspace
-```
-
-## Bundling for DAW
-
-```bash
 # Build, bundle, and install to user VST3 folder (macOS)
 cargo xtask bundle gain --release --install
 
 # Or just bundle (output: target/release/BeamerGain.vst3)
 cargo xtask bundle gain --release
 ```
-
-## Examples
-
-- **gain** - Simple gain effect plugin
-- **midi-transform** - MIDI instrument that transposes notes
-
-## Multi-Bus Audio
-
-Beamer separates main bus and auxiliary buses for sidechain and multi-output plugins:
-
-```rust
-fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
-    // Sidechain input (e.g., for compression keying)
-    if let Some(sidechain) = aux.sidechain() {
-        let level = sidechain.rms(0);
-        // Use sidechain level...
-    }
-
-    // Main bus processing
-    buffer.copy_to_output();
-}
-```
-
-## MIDI Support
-
-Beamer provides comprehensive MIDI support:
-
-- Note On/Off with velocity, tuning, and note length
-- Control Change with 14-bit resolution helpers
-- Pitch Bend, Channel Pressure, Poly Pressure
-- Program Change
-- SysEx (configurable buffer size)
-- Note Expression (MPE)
-- RPN/NRPN decoding
-- Chord and Scale info from DAW
 
 ## License
 
