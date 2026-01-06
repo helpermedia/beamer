@@ -1,0 +1,11 @@
+[package]
+name = "beamer-utils"
+description = "Internal utilities for the Beamer VST3 framework"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# No external dependencies - pure Rust utilities for compile-time and runtime use

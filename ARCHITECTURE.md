@@ -89,6 +89,7 @@ beamer/
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
 │   ├── beamer-vst3/         # VST3 wrapper implementation
 │   ├── beamer-macros/       # Proc macros (#[derive(Params)])
+│   ├── beamer-utils/        # Shared utilities (zero deps)
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
 │   ├── gain/                # Audio effect example
@@ -106,6 +107,7 @@ beamer/
 | `beamer-core` | Platform-agnostic traits (`Plugin`, `AudioProcessor`), buffer types, MIDI types |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
 | `beamer-macros` | `#[derive(Params)]`, `#[derive(EnumParam)]` proc macros |
+| `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
 
 ---

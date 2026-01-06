@@ -1,29 +1,37 @@
-//! New parameter types with encapsulated atomic storage.
+//! High-level parameter types with encapsulated atomic storage.
 //!
-//! This module provides high-level parameter types that encapsulate atomic storage,
-//! range mapping, and value formatting. Each type implements the [`ParamRef`] trait
-//! for type-erased runtime access.
+//! This module provides the recommended way to define plugin parameters. It includes
+//! parameter types ([`FloatParam`], [`IntParam`], [`BoolParam`], [`EnumParam`]) that
+//! encapsulate atomic storage, range mapping, and value formatting.
 //!
-//! # Example
+//! # The `Params` Trait (Recommended)
+//!
+//! The [`Params`] trait is the preferred way to define parameters. Use `#[derive(Params)]`
+//! for automatic implementation:
 //!
 //! ```ignore
-//! use beamer_core::param_types::{FloatParam, IntParam, BoolParam, Params, ParamRef};
+//! use beamer::prelude::*;
 //!
-//! struct MyParams {
-//!     gain: FloatParam,
-//!     attack: FloatParam,
-//! }
+//! #[derive(Params)]
+//! pub struct MyParams {
+//!     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     pub gain: FloatParam,
 //!
-//! impl MyParams {
-//!     fn new() -> Self {
-//!         Self {
-//!             // IDs are set via with_id() for manual usage, or by #[derive(Params)] macro
-//!             gain: FloatParam::db("Gain", 0.0, -60.0..=12.0).with_id(0),
-//!             attack: FloatParam::ms("Attack", 10.0, 0.1..=100.0).with_id(1),
-//!         }
-//!     }
+//!     #[param(id = "attack", name = "Attack", default = 10.0, range = 0.1..=100.0, kind = "ms")]
+//!     pub attack: FloatParam,
 //! }
 //! ```
+//!
+//! The derive macro generates implementations for both `Params` and
+//! [`Parameters`](crate::params::Parameters) traits. See [`crate::params`] for details
+//! on the relationship between these traits.
+//!
+//! # Parameter Types
+//!
+//! - [`FloatParam`] - Continuous float values with range mapping and smoothing
+//! - [`IntParam`] - Discrete integer values
+//! - [`BoolParam`] - Toggle/boolean values
+//! - [`EnumParam`] - Discrete enum choices (use with `#[derive(EnumParam)]`)
 
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/beamer-utils",
     "crates/beamer-core",
     "crates/beamer-vst3",
     "crates/beamer-macros",
@@ -29,6 +30,7 @@ quote = "1"
 proc-macro2 = "1"
 
 # Internal crates
+beamer-utils = { version = "0.1.3", path = "crates/beamer-utils" }
 beamer-core = { version = "0.1.3", path = "crates/beamer-core" }
 beamer-vst3 = { version = "0.1.3", path = "crates/beamer-vst3" }
 beamer-macros = { version = "0.1.3", path = "crates/beamer-macros" }

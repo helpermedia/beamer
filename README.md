@@ -157,6 +157,8 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
+| `beamer-macros` | Derive macros (`#[derive(Params)]`, `#[derive(EnumParam)]`) |
+| `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation
 

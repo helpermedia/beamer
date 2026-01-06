@@ -1,8 +1,24 @@
-//! Parameter system for audio plugins.
+//! Low-level parameter system for VST3 host communication.
 //!
-//! This module provides traits and types for declaring and managing plugin parameters
-//! in a format-agnostic way. Parameters use normalized values (0.0 to 1.0) for
-//! host communication, with conversion to/from plain values handled by the plugin.
+//! This module provides the [`Parameters`] trait for direct VST3 host communication.
+//! It exposes the raw normalized value interface that VST3 expects.
+//!
+//! # Choosing Between `Params` and `Parameters`
+//!
+//! Beamer provides two parameter traits that work together:
+//!
+//! - **[`Params`](crate::param_types::Params)** (recommended): High-level trait with
+//!   type-erased iteration, automatic state serialization, and support for parameter
+//!   types like `FloatParam`, `IntParam`, and `BoolParam`. Use `#[derive(Params)]`
+//!   for automatic implementation.
+//!
+//! - **[`Parameters`]**: Low-level trait for direct VST3 host communication. Provides
+//!   raw access to normalized values and parameter metadata. Useful when you need
+//!   fine-grained control over parameter handling or are building custom parameter
+//!   systems.
+//!
+//! For most plugins, use `#[derive(Params)]` which automatically implements both traits.
+//! The `Params` trait builds on top of `Parameters` to provide a more ergonomic API.
 //!
 //! # Thread Safety
 //!

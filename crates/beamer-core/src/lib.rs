@@ -30,7 +30,6 @@ pub mod buffer;
 pub mod bypass;
 pub mod editor;
 pub mod error;
-pub mod fnv;
 pub mod midi;
 pub mod midi_params;
 pub mod param_format;
@@ -49,7 +48,6 @@ pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
-pub use fnv::fnv1a_32;
 pub use midi::{
     // Basic types
     cc, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,

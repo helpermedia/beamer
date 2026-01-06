@@ -14,15 +14,23 @@ dependencies = [
 [[package]]
 name = "beamer-core"
 version = "0.1.3"
+dependencies = [
+ "beamer-utils",
+]
 
 [[package]]
 name = "beamer-macros"
 version = "0.1.3"
 dependencies = [
+ "beamer-utils",
  "proc-macro2",
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "beamer-utils"
+version = "0.1.3"
 
 [[package]]
 name = "beamer-vst3"

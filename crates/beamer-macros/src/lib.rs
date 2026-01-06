@@ -54,7 +54,6 @@ use proc_macro::TokenStream;
 
 mod codegen;
 mod enum_param;
-mod fnv;
 mod ir;
 mod parse;
 mod range_eval;

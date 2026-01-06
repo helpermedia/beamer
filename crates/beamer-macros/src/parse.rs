@@ -6,7 +6,7 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Field, Fields};
 
-use crate::fnv::fnv1a_32;
+use beamer_utils::fnv1a_32;
 use crate::ir::{
     FieldIR, NestedFieldIR, ParamAttrs, ParamDefault, ParamFieldIR, ParamKind, ParamType,
     ParamsIR, RangeSpec, SmoothingSpec, SmoothingStyle,

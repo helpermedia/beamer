@@ -15,4 +15,5 @@ sysex-1024 = []
 sysex-2048 = []
 
 [dependencies]
-# No external dependencies - pure Rust abstractions
+# Internal utilities crate (zero external deps)
+beamer-utils.workspace = true
