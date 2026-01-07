@@ -18,7 +18,7 @@ use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
-use crate::midi_params::MidiCcParams;
+use crate::midi_cc_config::MidiCcConfig;
 use crate::params::Parameters;
 use crate::process_context::ProcessContext;
 
@@ -675,18 +675,6 @@ pub trait AudioProcessor: HasParams {
         false
     }
 
-    /// Returns MIDI CC parameters if this processor handles MIDI CC emulation.
-    ///
-    /// The VST3 wrapper uses this to convert host parameter changes (from
-    /// IMidiMapping) back into MIDI events during processing.
-    ///
-    /// Plugins that use `MidiCcParams` should store them in the processor
-    /// (moved from Plugin during `prepare()`) and return a reference here.
-    ///
-    /// Default returns `None` (no MIDI CC emulation).
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
-        None
-    }
 }
 
 // =============================================================================
@@ -901,14 +889,17 @@ pub trait Plugin: HasParams + Default {
     }
 
     // =========================================================================
-    // MIDI CC Emulation (VST3 IMidiMapping hidden parameters)
+    // MIDI CC Configuration (VST3 IMidiMapping hidden parameters)
     // =========================================================================
 
-    /// Returns MIDI CC parameters for automatic host mapping.
+    /// Returns MIDI CC configuration for automatic host mapping.
     ///
     /// Override to enable MIDI CC/pitch bend/aftertouch reception via IMidiMapping.
-    /// The framework will create hidden parameters that receive CC values from
-    /// the host and convert them to MidiEvents before calling process_midi().
+    /// The framework will:
+    /// 1. Create hidden parameters for each enabled controller
+    /// 2. Handle IMidiMapping queries from the DAW
+    /// 3. Convert parameter changes to MidiEvents in process_midi()
+    /// 4. Provide direct CC value access via ProcessContext::midi_cc()
     ///
     /// This solves the VST3 MIDI input problem where most DAWs don't send
     /// `kLegacyMIDICCOutEvent` for input. Instead, they use the `IMidiMapping`
@@ -917,21 +908,25 @@ pub trait Plugin: HasParams + Default {
     /// # Example
     ///
     /// ```ignore
-    /// fn midi_cc_params(&self) -> Option<&MidiCcParams> {
-    ///     Some(&self.midi_cc_params)
-    /// }
-    ///
-    /// fn create() -> Self {
-    ///     Self {
-    ///         params: MyParams::default(),
-    ///         midi_cc_params: MidiCcParams::new()
+    /// impl Plugin for MySynth {
+    ///     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
+    ///         Some(MidiCcConfig::new()
     ///             .with_pitch_bend()
     ///             .with_mod_wheel()
-    ///             .with_ccs(&[7, 10, 11, 64]),
+    ///             .with_aftertouch()
+    ///             .with_ccs(&[7, 10, 11, 64]))  // Volume, Pan, Expression, Sustain
+    ///     }
+    /// }
+    ///
+    /// // Access CC values during processing:
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    ///     if let Some(cc) = context.midi_cc() {
+    ///         let pitch_bend = cc.pitch_bend();  // -1.0 to 1.0
+    ///         let mod_wheel = cc.mod_wheel();    // 0.0 to 1.0
     ///     }
     /// }
     /// ```
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> {
         None
     }
 

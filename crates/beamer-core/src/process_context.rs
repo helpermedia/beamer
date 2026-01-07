@@ -18,6 +18,20 @@
 //!     // ...
 //! }
 //! ```
+//!
+//! # Example: Accessing MIDI CC Values
+//!
+//! ```ignore
+//! fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+//!     if let Some(cc) = context.midi_cc() {
+//!         let pitch_bend = cc.pitch_bend();  // -1.0 to 1.0
+//!         let mod_wheel = cc.mod_wheel();    // 0.0 to 1.0
+//!         let volume = cc.cc(7);             // 0.0 to 1.0
+//!     }
+//! }
+//! ```
+
+use crate::midi_cc_state::MidiCcState;
 
 // =============================================================================
 // FrameRate Enum
@@ -310,12 +324,13 @@ impl Transport {
 
 /// Complete processing context for a single `process()` call.
 ///
-/// Contains sample rate, buffer size, and transport/timing information.
+/// Contains sample rate, buffer size, transport/timing information, and
+/// optional MIDI CC state for direct access to controller values.
 /// Passed as the third parameter to [`AudioProcessor::process()`].
 ///
 /// # Lifetime
 ///
-/// ProcessContext is `Copy` and valid only within a single `process()` call.
+/// ProcessContext is valid only within a single `process()` call.
 /// Do not store references to it across calls.
 ///
 /// # Example
@@ -333,6 +348,11 @@ impl Transport {
 ///             (0.5 * context.sample_rate) as usize
 ///         };
 ///
+///         // Access MIDI CC values directly
+///         if let Some(cc) = context.midi_cc() {
+///             let mod_depth = cc.mod_wheel();
+///         }
+///
 ///         // Use context.num_samples for buffer size
 ///         for i in 0..context.num_samples {
 ///             // Process...
@@ -340,8 +360,8 @@ impl Transport {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
-pub struct ProcessContext {
+#[derive(Debug, Clone)]
+pub struct ProcessContext<'a> {
     /// Current sample rate in Hz.
     ///
     /// Same value passed to [`AudioProcessor::setup()`], provided here
@@ -355,9 +375,15 @@ pub struct ProcessContext {
 
     /// Host transport and timing information.
     pub transport: Transport,
+
+    /// MIDI CC state for direct access to controller values.
+    ///
+    /// Only present if the plugin returned `Some(MidiCcConfig)` from
+    /// `midi_cc_config()`. Use [`ProcessContext::midi_cc()`] to access.
+    midi_cc_state: Option<&'a MidiCcState>,
 }
 
-impl ProcessContext {
+impl<'a> ProcessContext<'a> {
     /// Creates a new ProcessContext.
     ///
     /// This is called by the VST3 wrapper, not by plugin code.
@@ -367,6 +393,25 @@ impl ProcessContext {
             sample_rate,
             num_samples,
             transport,
+            midi_cc_state: None,
+        }
+    }
+
+    /// Creates a new ProcessContext with MIDI CC state.
+    ///
+    /// This is called by the VST3 wrapper when the plugin has MIDI CC config.
+    #[inline]
+    pub fn with_midi_cc(
+        sample_rate: f64,
+        num_samples: usize,
+        transport: Transport,
+        midi_cc_state: &'a MidiCcState,
+    ) -> Self {
+        Self {
+            sample_rate,
+            num_samples,
+            transport,
+            midi_cc_state: Some(midi_cc_state),
         }
     }
 
@@ -379,7 +424,29 @@ impl ProcessContext {
             sample_rate,
             num_samples,
             transport: Transport::default(),
+            midi_cc_state: None,
         }
+    }
+
+    /// Returns MIDI CC state for direct access to controller values.
+    ///
+    /// Only returns `Some` if the plugin returned `Some(MidiCcConfig)` from
+    /// `midi_cc_config()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    ///     if let Some(cc) = context.midi_cc() {
+    ///         let pitch_bend = cc.pitch_bend();  // -1.0 to 1.0
+    ///         let mod_wheel = cc.mod_wheel();    // 0.0 to 1.0
+    ///         let volume = cc.cc(7);             // 0.0 to 1.0
+    ///     }
+    /// }
+    /// ```
+    #[inline]
+    pub fn midi_cc(&self) -> Option<&MidiCcState> {
+        self.midi_cc_state
     }
 
     /// Calculates the duration of this buffer in seconds.
@@ -407,12 +474,13 @@ impl ProcessContext {
     }
 }
 
-impl Default for ProcessContext {
+impl Default for ProcessContext<'_> {
     fn default() -> Self {
         Self {
             sample_rate: 44100.0,
             num_samples: 0,
             transport: Transport::default(),
+            midi_cc_state: None,
         }
     }
 }

@@ -152,13 +152,13 @@ cargo xtask bundle compressor --release --install
 - **Lead**: Square wave, medium attack, high cutoff, add expression via mod wheel + aftertouch
 - **Pluck**: Triangle wave, instant attack, short decay, low sustain, medium release
 
-**Why MidiCcParams?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcParams` creates hidden parameters that receive these values and converts them back to MIDI events for your plugin.
+**Why MidiCcConfig?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcConfig` tells the framework which controllers to enable - it creates hidden parameters that receive these values and converts them back to MIDI events for your plugin. No manual state management needed!
 
 **Demonstrates:**
 - `AudioSetup` config for sample-rate-dependent filter calculations
 - `IntParam` for transpose (±2 octaves in semitones)
 - Flat parameter groups (`group = "..."`) - works in Cubase
-- `MidiCcParams` for pitch bend/mod wheel via IMidiMapping
+- `MidiCcConfig` for pitch bend/mod wheel via IMidiMapping (framework manages state)
 - Polyphonic aftertouch (PolyPressure) for per-note vibrato
 - Channel aftertouch (ChannelPressure) for global vibrato
 - Mod wheel controlling multiple parameters (vibrato + filter)

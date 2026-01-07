@@ -393,6 +393,7 @@ pub struct SynthPlugin {
     /// Plugin parameters
     #[params]
     params: SynthParams,
+    // No midi_cc_params field needed! Framework manages MIDI CC state.
 }
 
 impl Plugin for SynthPlugin {
@@ -405,13 +406,7 @@ impl Plugin for SynthPlugin {
 
         SynthProcessor {
             params: self.params,
-            // Enable MIDI CC emulation for pitch bend, mod wheel, and common CCs
-            // This allows the synth to receive these controllers in DAWs that use
-            // IMidiMapping instead of sending raw MIDI events.
-            midi_cc_params: MidiCcParams::new()
-                .with_pitch_bend()
-                .with_mod_wheel()
-                .with_ccs(&[7, 10, 11, 64]), // Volume, Pan, Expression, Sustain
+            // No midi_cc_params to move! Framework manages it.
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: config.sample_rate,
             time_counter: 0,
@@ -421,6 +416,14 @@ impl Plugin for SynthPlugin {
             vibrato_phase: 0.0,
             channel_pressure: 0.0,
         }
+    }
+
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> {
+        // Use the SYNTH_FULL preset which includes pitch bend, aftertouch,
+        // mod wheel, breath, volume, pan, expression, and sustain.
+        // This solves the VST3 MIDI input problem where most DAWs don't send
+        // raw MIDI CC events - instead they use IMidiMapping (hidden parameters).
+        Some(MidiCcConfig::SYNTH_FULL)
     }
 
     // =========================================================================
@@ -454,8 +457,7 @@ pub struct SynthProcessor {
     /// Plugin parameters
     #[params]
     params: SynthParams,
-    /// MIDI CC emulation parameters for pitch bend, mod wheel, etc.
-    midi_cc_params: MidiCcParams,
+    // No midi_cc_params field needed! Framework manages MIDI CC state.
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -676,11 +678,10 @@ impl AudioProcessor for SynthProcessor {
     type Plugin = SynthPlugin;
 
     fn unprepare(self) -> SynthPlugin {
-        // Return just the params; voices and DSP state are discarded
+        // Return params; voices and DSP state are discarded
         // They'll be reallocated on next prepare()
-        SynthPlugin {
-            params: self.params,
-        }
+        // No midi_cc_params to move - framework manages it!
+        SynthPlugin { params: self.params }
     }
 
     fn process(
@@ -719,9 +720,7 @@ impl AudioProcessor for SynthProcessor {
         (5.0 * self.sample_rate) as u32
     }
 
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
-        Some(&self.midi_cc_params)
-    }
+    // No midi_cc_params() method needed - framework manages MIDI CC state!
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
         Ok(self.params.save_state())

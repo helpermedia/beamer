@@ -1610,6 +1610,39 @@ impl MidiEvent {
             event: MidiEventKind::ScaleInfo(info),
         }
     }
+
+    // =========================================================================
+    // Event transformation
+    // =========================================================================
+
+    /// Create a new event with the same timing but different event data.
+    ///
+    /// This preserves the `sample_offset` while replacing the `MidiEventKind`.
+    /// Useful when transforming MIDI events where you've already matched on
+    /// the event type and want to create a modified version.
+    ///
+    /// # Arguments
+    /// * `kind` - The new event data
+    ///
+    /// # Returns
+    /// A new `MidiEvent` with the same `sample_offset` but new event data.
+    ///
+    /// # Example
+    /// ```ignore
+    /// MidiEventKind::NoteOn(note_on) => {
+    ///     output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+    ///         pitch: new_pitch,
+    ///         velocity: new_velocity,
+    ///         ..*note_on  // Copy channel, note_id, tuning, length
+    ///     })));
+    /// }
+    /// ```
+    pub fn with(self, kind: MidiEventKind) -> Self {
+        MidiEvent {
+            sample_offset: self.sample_offset,
+            event: kind,
+        }
+    }
 }
 
 /// Maximum number of MIDI events per buffer.

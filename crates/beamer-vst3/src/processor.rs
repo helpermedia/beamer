@@ -28,7 +28,7 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 use beamer_core::{
     AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParams,
-    MidiBuffer, MidiCcParams, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
+    MidiBuffer, MidiCcState, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
     ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx, Transport, MAX_BUSES,
     MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
@@ -208,15 +208,15 @@ macro_rules! valid_if {
 ///
 /// # Safety
 ///
-/// The caller must ensure `ctx_ptr` is either null or points to a valid
+/// The caller must ensure `context_ptr` is either null or points to a valid
 /// ProcessContext struct for the duration of this call.
-unsafe fn extract_transport(ctx_ptr: *const ProcessContext) -> Transport {
-    if ctx_ptr.is_null() {
+unsafe fn extract_transport(context_ptr: *const ProcessContext) -> Transport {
+    if context_ptr.is_null() {
         return Transport::default();
     }
 
-    let ctx = &*ctx_ptr;
-    let state = ctx.state;
+    let context = &*context_ptr;
+    let state = context.state;
 
     // VST3 ProcessContext state flags
     const K_PLAYING: u32 = 1 << 1;
@@ -234,18 +234,18 @@ unsafe fn extract_transport(ctx_ptr: *const ProcessContext) -> Transport {
 
     Transport {
         // Tempo and time signature
-        tempo: valid_if!(state, K_TEMPO_VALID, ctx.tempo),
-        time_sig_numerator: valid_if!(state, K_TIME_SIG_VALID, ctx.timeSigNumerator),
-        time_sig_denominator: valid_if!(state, K_TIME_SIG_VALID, ctx.timeSigDenominator),
+        tempo: valid_if!(state, K_TEMPO_VALID, context.tempo),
+        time_sig_numerator: valid_if!(state, K_TIME_SIG_VALID, context.timeSigNumerator),
+        time_sig_denominator: valid_if!(state, K_TIME_SIG_VALID, context.timeSigDenominator),
 
         // Position
-        project_time_samples: Some(ctx.projectTimeSamples),
-        project_time_beats: valid_if!(state, K_PROJECT_TIME_MUSIC_VALID, ctx.projectTimeMusic),
-        bar_position_beats: valid_if!(state, K_BAR_POSITION_VALID, ctx.barPositionMusic),
+        project_time_samples: Some(context.projectTimeSamples),
+        project_time_beats: valid_if!(state, K_PROJECT_TIME_MUSIC_VALID, context.projectTimeMusic),
+        bar_position_beats: valid_if!(state, K_BAR_POSITION_VALID, context.barPositionMusic),
 
         // Cycle/loop
-        cycle_start_beats: valid_if!(state, K_CYCLE_VALID, ctx.cycleStartMusic),
-        cycle_end_beats: valid_if!(state, K_CYCLE_VALID, ctx.cycleEndMusic),
+        cycle_start_beats: valid_if!(state, K_CYCLE_VALID, context.cycleStartMusic),
+        cycle_end_beats: valid_if!(state, K_CYCLE_VALID, context.cycleEndMusic),
 
         // Transport state (always valid)
         is_playing: state & K_PLAYING != 0,
@@ -253,15 +253,15 @@ unsafe fn extract_transport(ctx_ptr: *const ProcessContext) -> Transport {
         is_cycle_active: state & K_CYCLE_ACTIVE != 0,
 
         // Advanced timing
-        system_time_ns: valid_if!(state, K_SYSTEM_TIME_VALID, ctx.systemTime),
-        continuous_time_samples: valid_if!(state, K_CONT_TIME_VALID, ctx.continousTimeSamples), // Note: VST3 SDK typo
-        samples_to_next_clock: valid_if!(state, K_CLOCK_VALID, ctx.samplesToNextClock),
+        system_time_ns: valid_if!(state, K_SYSTEM_TIME_VALID, context.systemTime),
+        continuous_time_samples: valid_if!(state, K_CONT_TIME_VALID, context.continousTimeSamples), // Note: VST3 SDK typo
+        samples_to_next_clock: valid_if!(state, K_CLOCK_VALID, context.samplesToNextClock),
 
         // SMPTE - use FrameRate::from_raw() for conversion
-        smpte_offset_subframes: valid_if!(state, K_SMPTE_VALID, ctx.smpteOffsetSubframes),
+        smpte_offset_subframes: valid_if!(state, K_SMPTE_VALID, context.smpteOffsetSubframes),
         frame_rate: if state & K_SMPTE_VALID != 0 {
-            let is_drop = ctx.frameRate.flags & 1 != 0;
-            CoreFrameRate::from_raw(ctx.frameRate.framesPerSecond, is_drop)
+            let is_drop = context.frameRate.flags & 1 != 0;
+            CoreFrameRate::from_raw(context.frameRate.framesPerSecond, is_drop)
         } else {
             None
         },
@@ -709,6 +709,9 @@ pub struct Vst3Processor<P: Plugin> {
     buffer_storage_f32: UnsafeCell<ProcessBufferStorage<f32>>,
     /// Pre-allocated channel pointer storage for f64 processing
     buffer_storage_f64: UnsafeCell<ProcessBufferStorage<f64>>,
+    /// MIDI CC state (created from Plugin's midi_cc_config())
+    /// Framework owns this - plugin authors don't touch it
+    midi_cc_state: Option<MidiCcState>,
     /// Marker for the plugin type
     _marker: PhantomData<P>,
 }
@@ -737,9 +740,14 @@ where
     /// The wrapper starts in the Unprepared state with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static PluginConfig) -> Self {
+        let plugin = P::default();
+
+        // Create MidiCcState from plugin's config (framework-managed)
+        let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
+
         Self {
             state: UnsafeCell::new(PluginState::Unprepared {
-                plugin: P::default(),
+                plugin,
                 pending_state: None,
             }),
             config,
@@ -755,6 +763,7 @@ where
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
+            midi_cc_state,
             _marker: PhantomData,
         }
     }
@@ -1933,9 +1942,9 @@ where
         // 2.5. Convert MIDI CC parameter changes to MIDI events
         // This handles the VST3 IMidiMapping flow where DAWs send CC/pitch bend
         // as parameter changes instead of raw MIDI events.
-        // Gets MIDI CC config directly from the prepared processor.
+        // Uses framework-owned MidiCcState.
         if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
-            if let Some(cc_params) = self.processor_mut().midi_cc_params() {
+            if let Some(cc_state) = self.midi_cc_state.as_ref() {
                 let param_count = param_changes.getParameterCount();
 
                 for i in 0..param_count {
@@ -1943,8 +1952,8 @@ where
                         let param_id = queue.getParameterId();
 
                         // Check if this is a MIDI CC parameter
-                        if let Some(controller) = MidiCcParams::param_id_to_controller(param_id) {
-                            if cc_params.has_controller(controller) {
+                        if let Some(controller) = MidiCcState::param_id_to_controller(param_id) {
+                            if cc_state.has_controller(controller) {
                                 let point_count = queue.getPointCount();
 
                                 // Process all points for sample-accurate timing
@@ -2044,7 +2053,11 @@ where
         // 3. Extract transport info from VST3 ProcessContext
         let transport = extract_transport(process_data.processContext);
         let sample_rate = *self.sample_rate.get();
-        let context = CoreProcessContext::new(sample_rate, num_samples, transport);
+        let context = if let Some(cc_state) = self.midi_cc_state.as_ref() {
+            CoreProcessContext::with_midi_cc(sample_rate, num_samples, transport, cc_state)
+        } else {
+            CoreProcessContext::new(sample_rate, num_samples, transport)
+        };
 
         // 4. Process audio based on sample size
         let symbolic_sample_size = *self.symbolic_sample_size.get();
@@ -2133,10 +2146,11 @@ where
 
     unsafe fn getParameterCount(&self) -> i32 {
         let user_params = self.params().count();
-        // midi_cc_params is on Plugin, only available in unprepared state
-        let cc_params = self.try_plugin()
-            .and_then(|p| p.midi_cc_params())
-            .map(|p| p.enabled_count())
+        // MIDI CC state is framework-owned, always available
+        let cc_params = self
+            .midi_cc_state
+            .as_ref()
+            .map(|s| s.enabled_count())
             .unwrap_or(0);
         (user_params + cc_params) as i32
     }
@@ -2183,10 +2197,10 @@ where
             return kInvalidArgument;
         }
 
-        // Hidden MIDI CC parameters (only available in unprepared state)
-        if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
+        // Hidden MIDI CC parameters (framework-owned state)
+        if let Some(cc_state) = self.midi_cc_state.as_ref() {
             let cc_index = (param_index as usize) - user_param_count;
-            if let Some(param_info) = cc_params.info(cc_index) {
+            if let Some(param_info) = cc_state.info(cc_index) {
                 let info = &mut *info;
                 info.id = param_info.id;
                 copy_wstring(param_info.name, &mut info.title);
@@ -2252,9 +2266,9 @@ where
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
         // Check if this is a MIDI CC parameter
-        if MidiCcParams::is_midi_cc_param(id) {
-            if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
-                return cc_params.get_normalized(id);
+        if MidiCcState::is_midi_cc_param(id) {
+            if let Some(cc_state) = self.midi_cc_state.as_ref() {
+                return cc_state.get_normalized(id);
             }
         }
 
@@ -2263,9 +2277,9 @@ where
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
         // Check if this is a MIDI CC parameter
-        if MidiCcParams::is_midi_cc_param(id) {
-            if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
-                cc_params.set_normalized(id, value);
+        if MidiCcState::is_midi_cc_param(id) {
+            if let Some(cc_state) = self.midi_cc_state.as_ref() {
+                cc_state.set_normalized(id, value);
                 return kResultOk;
             }
         }
@@ -2419,20 +2433,19 @@ where
 
         let controller = midi_controller_number as u8;
 
-        // These methods are on Plugin, only available in unprepared state
+        // 1. First check plugin's custom mappings (only available in unprepared state)
         if let Some(plugin) = self.try_plugin() {
-            // 1. First check plugin's custom mappings
             if let Some(param_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
                 *id = param_id;
                 return kResultOk;
             }
+        }
 
-            // 2. Check hidden MIDI CC parameters (omni channel - ignore channel param)
-            if let Some(cc_params) = plugin.midi_cc_params() {
-                if cc_params.has_controller(controller) {
-                    *id = MidiCcParams::param_id(controller);
-                    return kResultOk;
-                }
+        // 2. Check framework-owned MIDI CC state (omni channel - ignore channel param)
+        if let Some(cc_state) = self.midi_cc_state.as_ref() {
+            if cc_state.has_controller(controller) {
+                *id = MidiCcState::param_id(controller);
+                return kResultOk;
             }
         }
 

@@ -29,7 +29,7 @@
 //! 2. Use `export_vst3!` macro to generate entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::{Plugin, AudioProcessor, AudioBuffer, Parameters, ParamInfo};
+//! use beamer_core::{Plugin, AudioProcessor, Buffer, Parameters, ParamInfo};
 //! use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig, vst3};
 //!
 //! // Define your plugin
@@ -37,7 +37,7 @@
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut AudioBuffer) { /* DSP here */ }
+//!     fn process(&mut self, buffer: &mut Buffer) { /* DSP here */ }
 //! }
 //!
 //! impl Plugin for MyGain {

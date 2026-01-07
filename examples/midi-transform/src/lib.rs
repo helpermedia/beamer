@@ -1,12 +1,13 @@
 //! Beamer MIDI Transform - Example VST3 instrument demonstrating advanced parameter features.
 //!
-//! This plugin showcases the Beamer parameter system:
+//! This plugin showcases the Beamer parameter system and MIDI event handling:
 //! - **Nested parameter groups** with `#[nested(group = "...")]`
 //! - **EnumParam** for discrete choices (transform modes)
 //! - **IntParam** for note/CC number selection
 //! - **BoolParam** for enable toggles
 //! - **FloatParam** for velocity/value scaling
 //! - **Two-phase Plugin → AudioProcessor lifecycle**
+//! - **Clean MIDI event modification** with the `with()` method
 //!
 //! # Features
 //!
@@ -21,6 +22,24 @@
 //! - Multiple CC modes (Remap, Scale, Invert)
 //! - CC number remapping (CC X → CC Y)
 //! - Value scaling
+//!
+//! # MIDI Event Handling
+//!
+//! Use the `with()` method to transform MIDI events while preserving timing.
+//! Combined with Rust's struct update syntax (`..`), this is clean and safe:
+//!
+//! ```ignore
+//! MidiEventKind::NoteOn(note_on) => {
+//!     output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+//!         pitch: new_pitch,
+//!         velocity: new_velocity,
+//!         ..*note_on  // Copy channel, note_id, tuning, length
+//!     })));
+//! }
+//! ```
+//!
+//! The `with()` method automatically preserves `sample_offset`, so you only
+//! need to specify what changes.
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
@@ -415,15 +434,13 @@ impl AudioProcessor for MidiTransformProcessor {
                 MidiEventKind::NoteOn(note_on) => {
                     if let Some(new_pitch) = self.transform_pitch(note_on.pitch) {
                         let new_velocity = self.transform_velocity(note_on.velocity);
-                        output.push(MidiEvent::note_on(
-                            event.sample_offset,
-                            note_on.channel,
-                            new_pitch,
-                            new_velocity,
-                            note_on.note_id,
-                            note_on.tuning,
-                            note_on.length,
-                        ));
+
+                        // Use with() to preserve sample_offset, struct update for the rest
+                        output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+                            pitch: new_pitch,
+                            velocity: new_velocity,
+                            ..*note_on
+                        })));
                     }
                     // If transform_pitch returns None, the note is filtered out
                 }
@@ -431,51 +448,40 @@ impl AudioProcessor for MidiTransformProcessor {
                 MidiEventKind::NoteOff(note_off) => {
                     if let Some(new_pitch) = self.transform_pitch(note_off.pitch) {
                         let new_velocity = self.transform_velocity(note_off.velocity);
-                        output.push(MidiEvent::note_off(
-                            event.sample_offset,
-                            note_off.channel,
-                            new_pitch,
-                            new_velocity,
-                            note_off.note_id,
-                            note_off.tuning,
-                        ));
+                        output.push(event.clone().with(MidiEventKind::NoteOff(NoteOff {
+                            pitch: new_pitch,
+                            velocity: new_velocity,
+                            ..*note_off
+                        })));
                     }
                 }
 
                 MidiEventKind::PolyPressure(poly) => {
                     if let Some(new_pitch) = self.transform_pitch(poly.pitch) {
-                        output.push(MidiEvent::poly_pressure(
-                            event.sample_offset,
-                            poly.channel,
-                            new_pitch,
-                            poly.pressure,
-                            poly.note_id,
-                        ));
+                        output.push(event.clone().with(MidiEventKind::PolyPressure(
+                            PolyPressure {
+                                pitch: new_pitch,
+                                ..*poly
+                            },
+                        )));
                     }
                 }
 
                 MidiEventKind::ControlChange(cc) => {
                     if let Some(new_cc) = self.transform_cc_number(cc.controller) {
                         let new_value = self.transform_cc_value(cc.controller, cc.value);
-                        output.push(MidiEvent::control_change(
-                            event.sample_offset,
-                            cc.channel,
-                            new_cc,
-                            new_value,
-                        ));
+                        output.push(event.clone().with(MidiEventKind::ControlChange(
+                            ControlChange {
+                                controller: new_cc,
+                                value: new_value,
+                                ..*cc
+                            },
+                        )));
                     }
                 }
 
                 // Pass through other events unchanged
-                MidiEventKind::PitchBend(_)
-                | MidiEventKind::ChannelPressure(_)
-                | MidiEventKind::ProgramChange(_)
-                | MidiEventKind::SysEx(_)
-                | MidiEventKind::NoteExpressionValue(_)
-                | MidiEventKind::NoteExpressionInt(_)
-                | MidiEventKind::NoteExpressionText(_)
-                | MidiEventKind::ChordInfo(_)
-                | MidiEventKind::ScaleInfo(_) => {
+                _ => {
                     output.push(event.clone());
                 }
             }

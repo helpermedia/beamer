@@ -31,7 +31,8 @@ pub mod bypass;
 pub mod editor;
 pub mod error;
 pub mod midi;
-pub mod midi_params;
+pub mod midi_cc_config;
+pub mod midi_cc_state;
 pub mod param_format;
 pub mod param_range;
 pub mod param_types;
@@ -43,8 +44,7 @@ pub mod smoothing;
 pub mod types;
 
 // Re-exports for convenience
-#[allow(deprecated)]
-pub use buffer::{AudioBuffer, AuxiliaryBuffers, AuxInput, AuxOutput, Buffer, Bus};
+pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
@@ -79,7 +79,8 @@ pub use param_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, Ran
 pub use param_types::{BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, ParamRef, Params};
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
-pub use midi_params::{MidiCcParams, MIDI_CC_PARAM_BASE};
+pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
+pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
     AudioProcessor, AudioSetup, BusInfo, BusLayout, BusType, FullAudioSetup, HasParams,
     Midi1Assignment, Midi2Assignment, MidiControllerAssignment, NoConfig, Plugin, ProcessorConfig,

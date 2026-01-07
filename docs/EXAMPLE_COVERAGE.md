@@ -53,7 +53,7 @@
 | **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ✅ | ✅ | ❌ | Synth voices |
 | | PitchBend | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
 | | ControlChange (CC) | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
-| | MidiCcParams | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
+| | MidiCcConfig | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
 | | PolyPressure | ❌ | ❌ | ✅ | ✅ | ❌ | Per-note vibrato, transform |
 | | ChannelPressure | ❌ | ❌ | ✅ | ❌ | ❌ | Global vibrato (synth) |
 | | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
@@ -433,7 +433,7 @@
 ### Phase 1: Core Coverage (Current)
 - [x] gain - FloatParam, f32/f64, multi-bus, transport
 - [x] delay - EnumParam, smoothing, tempo sync, tail_samples
-- [x] synth - MIDI basics, MidiCcParams, polyphony
+- [x] synth - MIDI basics, MidiCcConfig, polyphony
 - [x] midi-transform - MIDI pass-through, CC transformation
 
 ### Phase 2: Advanced Parameters & Processing
@@ -460,7 +460,7 @@
 
 ## Notes
 
-- **Bug Discovery:** As of 2026-01-05, implementing examples has already helped find bugs in MidiCcParams and smoothing
+- **Bug Discovery:** As of 2026-01-05, implementing examples has already helped find bugs in MidiCcConfig and smoothing
 - **Real-World Testing:** Examples should reflect actual use cases, not contrived scenarios
 - **Keep Simple:** Examples should be minimal while demonstrating features effectively
 - **Cross-Reference:** Link examples in REFERENCE.md feature documentation

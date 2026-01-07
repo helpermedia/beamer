@@ -26,7 +26,7 @@
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 //!         // Your DSP here
 //!     }
 //! }
@@ -81,8 +81,8 @@ pub mod prelude {
         NoParams, ParamFlags, ParamInfo,
         // New parameter types (Phase 1)
         BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, Formatter, ParamRef, Params,
-        // MIDI CC emulation parameters
-        MidiCcParams,
+        // MIDI CC configuration (framework manages runtime state)
+        MidiCcConfig,
         // Parameter smoothing
         Smoother, SmoothingStyle,
         // VST3 Unit system (parameter groups)
@@ -94,7 +94,8 @@ pub mod prelude {
         // Geometry
         Rect, Size,
         // MIDI types
-        MidiBuffer, MidiChannel, MidiEvent, MidiEventKind, MidiNote, NoteId, NoteOff, NoteOn,
+        ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,
+        MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
         // Process context and transport
         FrameRate, ProcessContext, Transport,
     };

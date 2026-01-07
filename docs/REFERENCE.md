@@ -147,8 +147,8 @@ pub trait AudioProcessor: HasParams {
         // Default: no-op (framework converts via f32 path)
     }
 
-    /// MIDI CC parameters for CC emulation (see §2.5).
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> { None }
+    /// MIDI CC configuration for CC emulation (see §2.5).
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 
     /// State persistence
     fn save_state(&self) -> PluginResult<Vec<u8>>;
@@ -362,7 +362,7 @@ impl Plugin for MyPlugin {
 **Per-Sample Processing:**
 
 ```rust
-fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
             let gain = self.params.gain.tick_smoothed();  // Advances smoother
@@ -375,7 +375,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &P
 **Block Processing:**
 
 ```rust
-fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     let gain = self.params.gain.smoothed();  // Current value, no advance
     self.params.gain.skip_smoothing(buffer.len());
 
@@ -542,7 +542,7 @@ pub struct ParamFlags {
     pub is_readonly: bool,
     pub is_bypass: bool,   // Maps to VST3 kIsBypass (see §3.2)
     pub is_list: bool,     // Display as dropdown list (for enums)
-    pub is_hidden: bool,   // Hide from DAW parameter list (used by MidiCcParams)
+    pub is_hidden: bool,   // Hide from DAW parameter list (used by MIDI CC emulation)
 }
 
 impl ParamInfo {
@@ -717,7 +717,7 @@ impl MyPlugin {
         &mut self,
         buffer: &mut Buffer<S>,
         _aux: &mut AuxiliaryBuffers<S>,
-        _ctx: &ProcessContext,
+        _context: &ProcessContext,
     ) {
         let gain = S::from_f32(self.params.gain_linear());
         for (input, output) in buffer.zip_channels() {
@@ -772,7 +772,7 @@ impl BypassHandler {
 **Usage:**
 
 ```rust
-fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     let is_bypassed = self.params.bypass.get();
 
     match self.bypass_handler.begin(is_bypassed) {
@@ -999,99 +999,111 @@ MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
 MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 ```
 
-### 2.5 MIDI CC Emulation (MidiCcParams)
+### 2.5 MIDI CC Emulation (MidiCcConfig)
 
-VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcParams` provides automatic handling:
+VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want—it handles all the state management automatically:
 
 ```rust
 use beamer::prelude::*;
 use beamer::HasParams;
 
-// Unprepared plugin state
+// Unprepared plugin state - no midi_cc field needed!
 #[derive(Default, HasParams)]
 struct MySynthPlugin {
     #[params]
     params: MyParams,
-    midi_cc_params: MidiCcParams,
-}
-
-impl MySynthPlugin {
-    fn new() -> Self {
-        Self {
-            params: MyParams::default(),
-            midi_cc_params: MidiCcParams::new()
-                .with_pitch_bend()           // Controller 129
-                .with_aftertouch()           // Controller 128
-                .with_mod_wheel()            // CC 1
-                .with_ccs(&[7, 10, 11, 64]), // Volume, Pan, Expression, Sustain
-        }
-    }
 }
 
 impl Plugin for MySynthPlugin {
     type Config = AudioSetup;
     type Processor = MySynthProcessor;
 
-    fn prepare(self, config: AudioSetup) -> MySynthProcessor {
+    fn prepare(mut self, config: AudioSetup) -> MySynthProcessor {
         MySynthProcessor {
             params: self.params,
-            midi_cc_params: self.midi_cc_params,
-            // ...
+            // No midi_cc to move - framework manages it!
         }
+    }
+
+    // Just return configuration - framework handles state
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> {
+        // Use a preset for common configurations
+        Some(MidiCcConfig::SYNTH_BASIC)
+
+        // Or build a custom configuration
+        // Some(MidiCcConfig::new()
+        //     .with_pitch_bend()
+        //     .with_mod_wheel()
+        //     .with_ccs(&[7, 10, 11, 64]))
     }
 }
 
-// Prepared processor state
+// Prepared processor state - no midi_cc field needed!
 #[derive(HasParams)]
 struct MySynthProcessor {
     #[params]
     params: MyParams,
-    midi_cc_params: MidiCcParams,
-    // ...
 }
 
 impl AudioProcessor for MySynthProcessor {
     type Plugin = MySynthPlugin;
 
     fn unprepare(self) -> MySynthPlugin {
-        MySynthPlugin {
-            params: self.params,
-            midi_cc_params: self.midi_cc_params,
-        }
+        MySynthPlugin { params: self.params }
+        // No midi_cc to move back!
     }
 
-    // midi_cc_params() is on AudioProcessor, not Plugin
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
-        Some(&self.midi_cc_params)
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+        // Access CC values directly via ProcessContext
+        if let Some(cc) = context.midi_cc() {
+            let pitch_bend = cc.pitch_bend();  // -1.0 to 1.0
+            let mod_wheel = cc.mod_wheel();    // 0.0 to 1.0
+            let volume = cc.cc(7);             // 0.0 to 1.0
+        }
     }
     // ...
 }
 ```
 
 **How it works:**
-1. Plugin configures `MidiCcParams` with desired controllers
-2. Framework exposes hidden parameters for each enabled controller
-3. DAW queries `IMidiMapping` and maps MIDI controllers to these parameters
-4. Framework converts parameter changes back to `MidiEvent` before `process_midi()`
-5. Plugin receives pitch bend, CC, etc. as normal MIDI events
+1. Plugin returns `MidiCcConfig` from `midi_cc_config()` - pure configuration
+2. Framework creates and owns `MidiCcState` internally
+3. Framework exposes hidden parameters for each enabled controller
+4. DAW queries `IMidiMapping` and maps MIDI controllers to these parameters
+5. Framework converts parameter changes to `MidiEvent` before `process_midi()`
+6. Plugin can also read current values directly via `context.midi_cc()`
 
-**Builder Methods:**
+**Presets (const, ready to use):**
+
+| Preset | Controllers Included |
+|--------|---------------------|
+| `MidiCcConfig::SYNTH_BASIC` | Pitch bend, mod wheel, volume (7), expression (11), sustain (64) |
+| `MidiCcConfig::SYNTH_FULL` | Basic + aftertouch, breath (2), pan (10) |
+| `MidiCcConfig::EFFECT_BASIC` | Mod wheel, expression (11) |
+
+**Builder Methods (all const fn):**
 
 | Method | Description |
 |--------|-------------|
 | `.with_pitch_bend()` | Enable pitch bend (±1.0, centered at 0) |
 | `.with_aftertouch()` | Enable channel aftertouch (0.0-1.0) |
 | `.with_mod_wheel()` | Enable CC 1 (0.0-1.0) |
-| `.with_cc(n)` | Enable single CC (0-127) |
-| `.with_ccs(&[...])` | Enable multiple CCs |
+| `.with_cc(n)` | Enable single CC (0-127). **Panics if n ≥ 128.** |
+| `.with_ccs(&[...])` | Enable multiple CCs (not const fn). **Panics if any CC ≥ 128.** |
 | `.with_all_ccs()` | Enable all 128 CCs (creates many params) |
 
-**Query Methods:**
+> **Note:** `with_cc()` and `with_ccs()` panic on invalid CC numbers (≥128) to catch typos like `.with_cc(130)` at runtime. In const context, this becomes a compile-time error.
+
+**Reading Values via ProcessContext:**
 
 ```rust
-let pitch = self.midi_cc_params.pitch_bend();   // -1.0 to 1.0
-let mod_whl = self.midi_cc_params.mod_wheel();  // 0.0 to 1.0
-let volume = self.midi_cc_params.cc(7);         // 0.0 to 1.0
+fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    if let Some(cc) = context.midi_cc() {
+        let pitch = cc.pitch_bend();   // -1.0 to 1.0
+        let mod_whl = cc.mod_wheel();  // 0.0 to 1.0
+        let volume = cc.cc(7);         // 0.0 to 1.0
+    }
+}
 ```
 
 ### 2.6 Manual MIDI Mapping
@@ -1559,7 +1571,7 @@ impl AudioProcessor for GainProcessor {
         GainPlugin { params: self.params }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.params.gain_linear();
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
@@ -1587,7 +1599,7 @@ export_vst3!(CONFIG, Vst3Processor<GainPlugin>);
 ### C. Example: Sidechain Compressor
 
 ```rust
-fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     let key_level = aux.sidechain().map(|sc| sc.rms(0)).unwrap_or(0.0);
     let reduction = self.compute_gain_reduction(key_level);
     buffer.copy_to_output();

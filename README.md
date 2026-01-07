@@ -62,7 +62,7 @@ impl AudioProcessor for GainProcessor {
         GainPlugin { params: self.params }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.params.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
@@ -89,9 +89,7 @@ Plugin::default() → Plugin (unprepared, holds params)
                     Plugin (params preserved)
 ```
 
-**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. The old pattern used placeholder values (`sample_rate: 44100.0`) that could cause subtle bugs.
-
-Beamer's solution: `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders, no bugs.
+**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
 
 | Config Type | Use Case |
 |-------------|----------|
@@ -130,6 +128,7 @@ Beamer provides comprehensive MIDI support:
 - Note Expression (MPE)
 - RPN/NRPN decoding
 - Chord and Scale info from DAW
+- **VST3 CC emulation** via `MidiCcConfig` - receive MIDI CC in DAWs that don't send raw CC events
 
 ## Parameter Attributes
 

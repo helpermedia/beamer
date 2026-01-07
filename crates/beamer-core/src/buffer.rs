@@ -761,18 +761,3 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
     }
 }
 
-// =============================================================================
-// Deprecated Compatibility Types
-// =============================================================================
-
-/// DEPRECATED: Use [`Buffer`] and [`AuxiliaryBuffers`] instead.
-///
-/// This type alias exists for migration purposes only.
-#[deprecated(since = "0.2.0", note = "Use Buffer and AuxiliaryBuffers instead")]
-pub type AudioBuffer<'a> = Buffer<'a>;
-
-/// DEPRECATED: Use [`AuxInput`] or [`AuxOutput`] instead.
-///
-/// This type alias exists for migration purposes only.
-#[deprecated(since = "0.2.0", note = "Use AuxInput or AuxOutput instead")]
-pub type Bus<'a> = AuxInput<'a>;
