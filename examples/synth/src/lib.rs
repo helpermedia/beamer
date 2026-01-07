@@ -33,7 +33,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth", COMPONENT_UI
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version("0.1.4")
+    .with_version("0.1.5")
     .with_sub_categories("Instrument|Synth");
 
 /// Number of polyphonic voices
@@ -433,6 +433,10 @@ impl Plugin for SynthPlugin {
 
     fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
         None // No inputs
+    }
+
+    fn wants_midi(&self) -> bool {
+        true // Synth needs MIDI input
     }
 }
 

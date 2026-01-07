@@ -952,11 +952,11 @@ where
 
     /// Check if plugin wants MIDI (works in both states).
     ///
-    /// Returns false when unprepared (conservative default), processor's value when prepared.
+    /// Queries both Plugin (unprepared) and AudioProcessor (prepared) for MIDI support.
     #[inline]
     unsafe fn wants_midi(&self) -> bool {
         match &*self.state.get() {
-            PluginState::Unprepared { .. } => false,
+            PluginState::Unprepared { plugin, .. } => plugin.wants_midi(),
             PluginState::Prepared { processor, .. } => processor.wants_midi(),
         }
     }

@@ -853,6 +853,20 @@ pub trait Plugin: HasParams + Default {
         }
     }
 
+    /// Returns whether this plugin processes MIDI events.
+    ///
+    /// Override to return `true` if your plugin needs MIDI input/output.
+    /// This is used by the host to determine event bus configuration.
+    ///
+    /// **Note:** This method is also on [`AudioProcessor`], but the Plugin
+    /// version is queried during bus configuration (before prepare).
+    /// Both should return the same value.
+    ///
+    /// Default returns `false`.
+    fn wants_midi(&self) -> bool {
+        false
+    }
+
     // =========================================================================
     // MIDI Mapping (IMidiMapping)
     // =========================================================================

@@ -1,6 +1,6 @@
 # Beamer API Reference
 
-**Version:** 0.1.4
+**Version:** 0.1.5
 
 This document provides detailed API documentation for Beamer. For high-level architecture and design decisions, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -41,6 +41,9 @@ pub trait Plugin: HasParams + Default {
     fn output_bus_count(&self) -> usize { 1 }
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
     fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
+
+    /// Whether this plugin processes MIDI events (queried before prepare).
+    fn wants_midi(&self) -> bool { false }
 }
 
 // HasParams supertrait provides parameter access

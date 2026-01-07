@@ -39,7 +39,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform", COM
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version("0.1.4")
+    .with_version("0.1.5")
     .with_sub_categories("Instrument");
 
 // =============================================================================
@@ -204,6 +204,10 @@ impl Plugin for MidiTransformPlugin {
         MidiTransformProcessor {
             params: self.params,
         }
+    }
+
+    fn wants_midi(&self) -> bool {
+        true // MIDI transformer needs MIDI input/output
     }
 }
 
