@@ -1,10 +1,13 @@
 [package]
 name = "compressor"
-version = "0.1.4"
-edition = "2021"
+description = "Example compressor plugin using the Beamer framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-beamer = { path = "../../crates/beamer" }
+beamer = { workspace = true }
+vst3 = { workspace = true }
