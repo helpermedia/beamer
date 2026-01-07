@@ -12,7 +12,7 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 **No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
-**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Params)]` and Beamer generates VST3 integration, state persistence, and DAW automation—all from a simple struct definition. Focus on your DSP, not boilerplate.
+**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Params)]` and Beamer generates VST3 integration, state persistence, and DAW automation. Use `#[derive(HasParams)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
 
 **Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools—HTML, CSS, JavaScript—while your audio code stays in safe Rust. Each team does what they do best.
 
@@ -22,7 +22,7 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 ```rust
 use beamer::prelude::*;
-use beamer::Params;
+use beamer::{HasParams, Params};
 
 // Declarative parameters - macro generates Default, VST3 integration, state persistence
 #[derive(Params)]
@@ -31,12 +31,37 @@ struct GainParams {
     gain: FloatParam,
 }
 
-// Plugin with DSP logic
+// Plugin (unprepared state) - holds parameters before audio config is known
+// HasParams derive eliminates params()/params_mut() boilerplate
+#[derive(Default, HasParams)]
 struct GainPlugin {
+    #[params]
     params: GainParams,
 }
 
-impl AudioProcessor for GainPlugin {
+impl Plugin for GainPlugin {
+    type Config = NoConfig;  // Simple gain doesn't need sample rate
+    type Processor = GainProcessor;
+
+    fn prepare(self, _config: NoConfig) -> GainProcessor {
+        GainProcessor { params: self.params }
+    }
+}
+
+// Processor (prepared state) - ready for audio processing
+#[derive(HasParams)]
+struct GainProcessor {
+    #[params]
+    params: GainParams,
+}
+
+impl AudioProcessor for GainProcessor {
+    type Plugin = GainPlugin;
+
+    fn unprepare(self) -> GainPlugin {
+        GainPlugin { params: self.params }
+    }
+
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
         let gain = self.params.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -46,15 +71,33 @@ impl AudioProcessor for GainPlugin {
         }
     }
 }
-
-impl Plugin for GainPlugin {
-    type Params = GainParams;
-
-    fn params(&self) -> &Self::Params { &self.params }
-    fn params_mut(&mut self) -> &mut Self::Params { &mut self.params }
-    fn create() -> Self { Self { params: GainParams::default() } }
-}
 ```
+
+## Two-Phase Lifecycle
+
+Beamer uses a type-safe two-phase initialization that eliminates placeholder values:
+
+```text
+Plugin::default() → Plugin (unprepared, holds params)
+                         │
+                         ▼  prepare(config)
+                         │
+                    AudioProcessor (prepared, ready for audio)
+                         │
+                         ▼  unprepare()
+                         │
+                    Plugin (params preserved)
+```
+
+**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. The old pattern used placeholder values (`sample_rate: 44100.0`) that could cause subtle bugs.
+
+Beamer's solution: `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders, no bugs.
+
+| Config Type | Use Case |
+|-------------|----------|
+| `NoConfig` | Stateless plugins (gain, pan) |
+| `AudioSetup` | Most plugins (delay, compressor, synth) |
+| `FullAudioSetup` | Plugins needing channel layout info |
 
 ## Examples
 
@@ -128,6 +171,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Features
 
+- **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of VST3 specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
 - **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
@@ -157,7 +201,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-macros` | Derive macros (`#[derive(Params)]`, `#[derive(EnumParam)]`) |
+| `beamer-macros` | Derive macros (`#[derive(Params)]`, `#[derive(HasParams)]`, `#[derive(EnumParam)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

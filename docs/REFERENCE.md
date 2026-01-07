@@ -22,25 +22,85 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ### 1.1 Plugin Trait
 
+The `Plugin` trait represents a plugin in its **unprepared state** — before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into an `AudioProcessor` via the `prepare()` method.
+
 ```rust
-pub trait Plugin: Send + Sync + 'static {
-    /// Plugin configuration (name, UID, buses, etc.)
-    fn config() -> &'static PluginConfig;
+pub trait Plugin: HasParams + Default {
+    /// Configuration type for prepare() — determines what info is needed
+    type Config: ProcessorConfig;
 
-    /// Parameter definitions
-    fn params(&self) -> &dyn Parameters;
+    /// The prepared processor type
+    type Processor: AudioProcessor<Plugin = Self, Params = Self::Params>;
 
-    /// Create the audio processor
-    fn create_processor(&self) -> Box<dyn AudioProcessor>;
+    /// Transform into a prepared processor with audio configuration.
+    /// Consumes self — the plugin moves into the prepared state.
+    fn prepare(self, config: Self::Config) -> Self::Processor;
+
+    // Bus configuration (defaults provided)
+    fn input_bus_count(&self) -> usize { 1 }
+    fn output_bus_count(&self) -> usize { 1 }
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
+    fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
+}
+
+// HasParams supertrait provides parameter access
+pub trait HasParams: Send + 'static {
+    type Params: Parameters + Units + Params;
+    fn params(&self) -> &Self::Params;
+    fn params_mut(&mut self) -> &mut Self::Params;
+}
+```
+
+**HasParams Derive Macro:** Use `#[derive(HasParams)]` to eliminate boilerplate:
+
+```rust
+#[derive(Default, HasParams)]
+struct GainPlugin {
+    #[params]
+    params: GainParams,
+}
+```
+
+#### ProcessorConfig Types
+
+Choose the config type based on what your plugin needs:
+
+| Type | When to Use | Provides |
+|------|-------------|----------|
+| `NoConfig` | Simple plugins (gain, utility) | Nothing |
+| `AudioSetup` | Most plugins needing sample rate | `sample_rate`, `max_buffer_size` |
+| `FullAudioSetup` | Plugins needing bus layout | `AudioSetup` + `BusLayout` |
+
+```rust
+// Simple plugin — no configuration needed
+impl Plugin for GainPlugin {
+    type Config = NoConfig;
+    fn prepare(self, _config: NoConfig) -> GainProcessor { /* ... */ }
+}
+
+// Plugin needing sample rate (delays, filters, smoothing)
+impl Plugin for DelayPlugin {
+    type Config = AudioSetup;
+    fn prepare(self, config: AudioSetup) -> DelayProcessor {
+        // config.sample_rate, config.max_buffer_size available
+    }
 }
 ```
 
 ### 1.2 AudioProcessor Trait
 
+The `AudioProcessor` trait represents a plugin in its **prepared state** — ready for real-time audio processing. Created by `Plugin::prepare()`, it can transform back to unprepared state via `unprepare()`.
+
 ```rust
-pub trait AudioProcessor: Send {
-    /// Called when sample rate or max buffer size changes.
-    fn setup(&mut self, sample_rate: f64, max_buffer_size: usize);
+pub trait AudioProcessor: HasParams {
+    /// The unprepared plugin type this processor came from
+    type Plugin: Plugin<Processor = Self, Params = Self::Params>;
+
+    /// Transform back to unprepared state.
+    /// Called when host calls setProcessing(false).
+    fn unprepare(self) -> Self::Plugin;
+
+    // Note: params() and params_mut() are provided by HasParams supertrait
 
     /// Process audio. Called on the audio thread.
     fn process(
@@ -64,6 +124,10 @@ pub trait AudioProcessor: Send {
     /// Tail length in samples (for reverbs, delays).
     fn tail_samples(&self) -> u32 { 0 }
 
+    /// Called when plugin is activated/deactivated.
+    /// Reset DSP state when active == true.
+    fn set_active(&mut self, active: bool) { }
+
     /// Bypass crossfade duration in samples.
     fn bypass_ramp_samples(&self) -> u32 { 64 }
 
@@ -79,7 +143,41 @@ pub trait AudioProcessor: Send {
     ) {
         // Default: no-op (framework converts via f32 path)
     }
+
+    /// MIDI CC parameters for CC emulation (see §2.5).
+    fn midi_cc_params(&self) -> Option<&MidiCcParams> { None }
+
+    /// State persistence
+    fn save_state(&self) -> PluginResult<Vec<u8>>;
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()>;
 }
+```
+
+**When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
+
+#### Two-Phase Lifecycle
+
+The plugin transitions between states based on host actions:
+
+```
+                    ┌─────────────────┐
+                    │  Plugin         │
+                    │  (unprepared)   │
+                    └────────┬────────┘
+                             │ setupProcessing(true)
+                             │ + prepare(config)
+                             ▼
+                    ┌─────────────────┐
+                    │  AudioProcessor │
+                    │  (prepared)     │◄───── process() calls
+                    └────────┬────────┘
+                             │ setProcessing(false)
+                             │ + unprepare()
+                             ▼
+                    ┌─────────────────┐
+                    │  Plugin         │
+                    │  (unprepared)   │
+                    └─────────────────┘
 ```
 
 ### 1.3 Parameters
@@ -242,18 +340,21 @@ let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
 
 **Sample Rate Initialization:**
 
-Call `set_sample_rate()` in `setup()` to initialize smoothers:
+Call `set_sample_rate()` in `prepare()` to initialize smoothers:
 
 ```rust
-impl AudioProcessor for MyPlugin {
-    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-        self.params.set_sample_rate(sample_rate);
+impl Plugin for MyPlugin {
+    type Config = AudioSetup;
+
+    fn prepare(mut self, config: AudioSetup) -> MyProcessor {
+        self.params.set_sample_rate(config.sample_rate);
+        MyProcessor { params: self.params, /* ... */ }
     }
 }
 ```
 
 > **Oversampling:** If your plugin uses oversampling, pass the actual processing rate:
-> `self.params.set_sample_rate(sample_rate * oversampling_factor as f64);`
+> `self.params.set_sample_rate(config.sample_rate * oversampling_factor as f64);`
 
 **Per-Sample Processing:**
 
@@ -297,7 +398,7 @@ self.params.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 | Method | Description |
 |--------|-------------|
 | `.with_smoother(style)` | Builder: add smoothing to parameter |
-| `.set_sample_rate(sr)` | Initialize with sample rate (call in setup) |
+| `.set_sample_rate(sr)` | Initialize with sample rate (call in prepare) |
 | `.tick_smoothed()` | Advance smoother, return value (per-sample) |
 | `.smoothed()` | Get current value without advancing |
 | `.skip_smoothing(n)` | Skip n samples (block processing) |
@@ -901,14 +1002,18 @@ VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most D
 
 ```rust
 use beamer::prelude::*;
+use beamer::HasParams;
 
-struct MySynth {
+// Unprepared plugin state
+#[derive(Default, HasParams)]
+struct MySynthPlugin {
+    #[params]
     params: MyParams,
     midi_cc_params: MidiCcParams,
 }
 
-impl Plugin for MySynth {
-    fn create() -> Self {
+impl MySynthPlugin {
+    fn new() -> Self {
         Self {
             params: MyParams::default(),
             midi_cc_params: MidiCcParams::new()
@@ -918,10 +1023,45 @@ impl Plugin for MySynth {
                 .with_ccs(&[7, 10, 11, 64]), // Volume, Pan, Expression, Sustain
         }
     }
+}
 
+impl Plugin for MySynthPlugin {
+    type Config = AudioSetup;
+    type Processor = MySynthProcessor;
+
+    fn prepare(self, config: AudioSetup) -> MySynthProcessor {
+        MySynthProcessor {
+            params: self.params,
+            midi_cc_params: self.midi_cc_params,
+            // ...
+        }
+    }
+}
+
+// Prepared processor state
+#[derive(HasParams)]
+struct MySynthProcessor {
+    #[params]
+    params: MyParams,
+    midi_cc_params: MidiCcParams,
+    // ...
+}
+
+impl AudioProcessor for MySynthProcessor {
+    type Plugin = MySynthPlugin;
+
+    fn unprepare(self) -> MySynthPlugin {
+        MySynthPlugin {
+            params: self.params,
+            midi_cc_params: self.midi_cc_params,
+        }
+    }
+
+    // midi_cc_params() is on AudioProcessor, not Plugin
     fn midi_cc_params(&self) -> Option<&MidiCcParams> {
         Some(&self.midi_cc_params)
     }
+    // ...
 }
 ```
 
@@ -1355,10 +1495,15 @@ cargo clippy
 
 ```rust
 use beamer::prelude::*;
-use beamer::Params;
+use beamer::vst3_impl::vst3;
+use beamer::{HasParams, Params};
+
+// =============================================================================
+// Parameters
+// =============================================================================
 
 #[derive(Params)]
-struct GainParams {
+pub struct GainParams {
     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParam,
 }
@@ -1369,14 +1514,71 @@ impl GainParams {
     }
 }
 
-fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
-    let gain = self.params.gain_linear();
-    for (input, output) in buffer.zip_channels() {
-        for (i, o) in input.iter().zip(output.iter_mut()) {
-            *o = *i * gain;
-        }
+// =============================================================================
+// Plugin (Unprepared State)
+// =============================================================================
+
+const UID: vst3::Steinberg::TUID = vst3::uid(0x12345678, 0x12345678, 0x12345678, 0x12345678);
+
+pub static CONFIG: PluginConfig = PluginConfig::new("My Gain", UID)
+    .with_vendor("My Company")
+    .with_version("1.0.0");
+
+#[derive(Default, HasParams)]
+pub struct GainPlugin {
+    #[params]
+    params: GainParams,
+}
+
+impl Plugin for GainPlugin {
+    type Config = NoConfig;  // Simple gain doesn't need sample rate
+    type Processor = GainProcessor;
+
+    fn prepare(self, _config: NoConfig) -> GainProcessor {
+        GainProcessor { params: self.params }
     }
 }
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+#[derive(HasParams)]
+pub struct GainProcessor {
+    #[params]
+    params: GainParams,
+}
+
+impl AudioProcessor for GainProcessor {
+    type Plugin = GainPlugin;
+
+    fn unprepare(self) -> GainPlugin {
+        GainPlugin { params: self.params }
+    }
+
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _ctx: &ProcessContext) {
+        let gain = self.params.gain_linear();
+        for (input, output) in buffer.zip_channels() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                *o = *i * gain;
+            }
+        }
+    }
+
+    fn save_state(&self) -> PluginResult<Vec<u8>> {
+        Ok(self.params.save_state())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
+        self.params.load_state(data).map_err(PluginError::StateError)
+    }
+}
+
+// =============================================================================
+// VST3 Export
+// =============================================================================
+
+export_vst3!(CONFIG, Vst3Processor<GainPlugin>);
 ```
 
 ### C. Example: Sidechain Compressor

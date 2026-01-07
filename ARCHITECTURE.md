@@ -88,7 +88,7 @@ beamer/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
 │   ├── beamer-vst3/         # VST3 wrapper implementation
-│   ├── beamer-macros/       # Proc macros (#[derive(Params)])
+│   ├── beamer-macros/       # Proc macros (#[derive(Params)], #[derive(HasParams)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
@@ -104,11 +104,90 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`Plugin`, `AudioProcessor`), buffer types, MIDI types |
+| `beamer-core` | Platform-agnostic traits (`HasParams`, `Plugin`, `AudioProcessor`), buffer types, MIDI types |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
-| `beamer-macros` | `#[derive(Params)]`, `#[derive(EnumParam)]` proc macros |
+| `beamer-macros` | `#[derive(Params)]`, `#[derive(HasParams)]`, `#[derive(EnumParam)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
+
+---
+
+## Two-Phase Plugin Lifecycle
+
+Beamer uses a type-safe two-phase initialization that eliminates placeholder values:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Plugin (Unprepared)                         │
+│  • Created via Default::default()                               │
+│  • Holds parameters and bus configuration                       │
+│  • No sample rate or audio state                                │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  │
+                                  │ prepare(config)
+                                  │ [setupProcessing]
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   AudioProcessor (Prepared)                     │
+│  • Created with real sample rate and buffer size                │
+│  • Allocates DSP state (delay buffers, filter coefficients)     │
+│  • Ready for process() calls                                    │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  │
+                                  │ unprepare()
+                                  │ [sample rate change]
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Plugin (Unprepared)                         │
+│  • Parameters preserved                                         │
+│  • DSP state discarded                                          │
+│  • Ready for prepare() with new config                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why Two Phases?
+
+Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. The traditional pattern used placeholder values:
+
+```rust
+// ❌ Old pattern - placeholder values cause bugs
+struct MyPlugin {
+    sample_rate: f64,  // 44100.0 placeholder, overwritten later
+    buffer: Vec<f64>,  // Allocated with wrong size!
+}
+```
+
+Beamer's solution makes it impossible to process audio without valid configuration:
+
+```rust
+// ✅ New pattern - type system enforces correctness
+impl Plugin for MyPlugin {
+    type Config = AudioSetup;
+
+    fn prepare(self, config: AudioSetup) -> MyProcessor {
+        MyProcessor {
+            sample_rate: config.sample_rate,  // Real value from start!
+            buffer: vec![0.0; (config.sample_rate * 2.0) as usize],  // Correct size!
+        }
+    }
+}
+```
+
+### Configuration Types
+
+| Type | Use Case | Fields |
+|------|----------|--------|
+| `NoConfig` | Stateless plugins (gain, pan) | None |
+| `AudioSetup` | Most plugins (delay, compressor, synth) | `sample_rate`, `max_buffer_size` |
+| `FullAudioSetup` | Channel-dependent plugins | Above + `BusLayout` |
+
+### Trait Responsibilities
+
+| Trait | State | Responsibilities |
+|-------|-------|------------------|
+| `HasParams` | Both | Parameter access (`params()`, `params_mut()`) - supertrait of Plugin and AudioProcessor |
+| `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
+| `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` |
 
 ---
 
@@ -194,7 +273,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin", UID)
 The buffer allocation flow ensures all memory is reserved before audio processing begins:
 
 ```
-Plugin Load
+Plugin Load (creates Plugin in Unprepared state)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -215,6 +294,9 @@ Plugin Load
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
+│   • Plugin::prepare(config) → AudioProcessor                │
+│     - Plugin consumed, AudioProcessor created               │
+│     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate()                        │
 │     - input_ptrs.reserve(main_channels)                     │
 │     - output_ptrs.reserve(main_channels)                    │
@@ -231,6 +313,16 @@ Plugin Load
 │   • storage.push(ptr) — into reserved capacity, no alloc    │
 │   • .take(MAX_CHANNELS) — bounds check even if host lies    │
 │   • Build Buffer/AuxiliaryBuffers from pointers             │
+│   • Call AudioProcessor::process()                          │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼ (on sample rate change)
+┌─────────────────────────────────────────────────────────────┐
+│ setupProcessing() with new config                           │
+│   • AudioProcessor::unprepare() → Plugin                    │
+│     - Parameters preserved, DSP state discarded             │
+│   • Plugin::prepare(new_config) → AudioProcessor            │
+│     - DSP state reallocated for new sample rate             │
 └─────────────────────────────────────────────────────────────┘
 ```
 

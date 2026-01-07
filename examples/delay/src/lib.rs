@@ -2,15 +2,18 @@
 //!
 //! This plugin shows how to:
 //! 1. Use `EnumParam` for sync mode (quarter, eighth, 16th, 32nd, free)
-//! 2. Use tempo information from `ProcessContext` for tempo-synced delays
-//! 3. Implement a ring buffer delay line
-//! 4. Apply parameter smoothing to avoid zipper noise
-//! 5. Support both simple stereo and ping-pong modes
-//! 6. Declare proper tail length for delay decay
+//! 2. Use `#[derive(HasParams)]` to eliminate params() boilerplate
+//! 3. Use tempo information from `ProcessContext` for tempo-synced delays
+//! 4. Implement a ring buffer delay line
+//! 5. Apply parameter smoothing to avoid zipper noise
+//! 6. Support both simple stereo and ping-pong modes
+//! 7. Declare proper tail length for delay decay
+//! 8. Use `AudioSetup` config for sample-rate-dependent initialization
+//! 9. Implement `reset()` to clear internal state on playback restart
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, Params};
+use beamer::{EnumParam, HasParams, Params};
 
 // =============================================================================
 // Plugin Configuration
@@ -128,25 +131,16 @@ struct DelayLine {
 }
 
 impl DelayLine {
-    fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-            write_pos: 0,
-            max_samples: 0,
-        }
-    }
-
-    /// Allocate buffer for the given sample rate.
+    /// Create and allocate a delay line for the given sample rate.
     ///
     /// Buffer size is calculated as: `MAX_DELAY_SECONDS * sample_rate`
-    ///
-    /// # Arguments
-    /// * `sample_rate` - Current sample rate in Hz (e.g., 44100.0, 48000.0)
-    fn allocate(&mut self, sample_rate: f64) {
-        self.max_samples = (MAX_DELAY_SECONDS * sample_rate) as usize;
-        self.buffer.resize(self.max_samples, 0.0);
-        self.buffer.fill(0.0);
-        self.write_pos = 0;
+    fn new(sample_rate: f64) -> Self {
+        let max_samples = (MAX_DELAY_SECONDS * sample_rate) as usize;
+        Self {
+            buffer: vec![0.0; max_samples],
+            write_pos: 0,
+            max_samples,
+        }
     }
 
     /// Read from the delay line at the given delay in samples.
@@ -155,12 +149,6 @@ impl DelayLine {
     /// ```text
     /// read_pos = (write_pos + max_samples - delay) % max_samples
     /// ```
-    ///
-    /// # Arguments
-    /// * `delay_samples` - Delay time in samples (clamped to buffer size)
-    ///
-    /// # Returns
-    /// The delayed sample value
     fn read(&self, delay_samples: usize) -> f64 {
         if self.max_samples == 0 {
             return 0.0;
@@ -174,9 +162,6 @@ impl DelayLine {
     ///
     /// After writing, the write pointer advances by 1 and wraps around
     /// when it reaches the end of the buffer.
-    ///
-    /// # Arguments
-    /// * `sample` - The sample value to write (typically input + feedback)
     fn write(&mut self, sample: f64) {
         if self.max_samples == 0 {
             return;
@@ -193,16 +178,54 @@ impl DelayLine {
 }
 
 // =============================================================================
-// Audio Processor
+// Plugin (Unprepared State)
 // =============================================================================
 
-/// The delay plugin processor.
+/// The delay plugin in its unprepared state.
+///
+/// This struct holds the parameters before audio configuration is known.
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`DelayProcessor`] via the [`Plugin::prepare()`] method.
+#[derive(Default, HasParams)]
+pub struct DelayPlugin {
+    /// Plugin parameters
+    #[params]
+    params: DelayParams,
+}
+
+impl Plugin for DelayPlugin {
+    type Config = AudioSetup; // Delay needs sample rate for buffer allocation
+    type Processor = DelayProcessor;
+
+    fn prepare(mut self, config: AudioSetup) -> DelayProcessor {
+        // Set sample rate on params for smoothing calculations
+        self.params.set_sample_rate(config.sample_rate);
+
+        DelayProcessor {
+            params: self.params,
+            delay_l: DelayLine::new(config.sample_rate),
+            delay_r: DelayLine::new(config.sample_rate),
+            sample_rate: config.sample_rate,
+        }
+    }
+}
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+/// The delay plugin processor, ready for audio processing.
+///
+/// This struct is created by [`DelayPlugin::prepare()`] with valid
+/// sample rate configuration. All fields have real values from the start.
+#[derive(HasParams)]
 pub struct DelayProcessor {
     /// Plugin parameters
+    #[params]
     params: DelayParams,
-    /// Left channel delay line
+    /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
-    /// Right channel delay line
+    /// Right channel delay line (allocated for current sample rate)
     delay_r: DelayLine,
     /// Current sample rate
     sample_rate: f64,
@@ -347,13 +370,14 @@ impl DelayProcessor {
 }
 
 impl AudioProcessor for DelayProcessor {
-    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-        self.sample_rate = sample_rate;
-        self.params.set_sample_rate(sample_rate);
+    type Plugin = DelayPlugin;
 
-        // Allocate delay buffers for the new sample rate
-        self.delay_l.allocate(sample_rate);
-        self.delay_r.allocate(sample_rate);
+    fn unprepare(self) -> DelayPlugin {
+        // Return just the params; delay buffers are discarded
+        // They'll be reallocated with correct size on next prepare()
+        DelayPlugin {
+            params: self.params,
+        }
     }
 
     fn process(
@@ -378,6 +402,15 @@ impl AudioProcessor for DelayProcessor {
         self.process_generic(buffer, aux, context);
     }
 
+    fn set_active(&mut self, active: bool) {
+        if active {
+            // Clear delay buffers when activated (e.g., after deactivation/reactivation)
+            // This ensures no stale audio bleeds into the new playback position
+            self.delay_l.clear();
+            self.delay_r.clear();
+        }
+    }
+
     fn tail_samples(&self) -> u32 {
         // Return the maximum delay buffer size as tail length
         // This ensures the host knows the plugin has audio tail
@@ -394,32 +427,7 @@ impl AudioProcessor for DelayProcessor {
 }
 
 // =============================================================================
-// Plugin Trait Implementation
-// =============================================================================
-
-impl Plugin for DelayProcessor {
-    type Params = DelayParams;
-
-    fn params(&self) -> &Self::Params {
-        &self.params
-    }
-
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn create() -> Self {
-        Self {
-            params: DelayParams::default(),
-            delay_l: DelayLine::new(),
-            delay_r: DelayLine::new(),
-            sample_rate: 44100.0,
-        }
-    }
-}
-
-// =============================================================================
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<DelayProcessor>);
+export_vst3!(CONFIG, Vst3Processor<DelayPlugin>);

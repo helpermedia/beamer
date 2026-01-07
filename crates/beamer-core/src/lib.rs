@@ -81,8 +81,8 @@ pub use smoothing::{Smoother, SmoothingStyle};
 pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use midi_params::{MidiCcParams, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AudioProcessor, BusInfo, BusType, Midi1Assignment, Midi2Assignment, MidiControllerAssignment,
-    Plugin,
+    AudioProcessor, AudioSetup, BusInfo, BusLayout, BusType, FullAudioSetup, HasParams,
+    Midi1Assignment, Midi2Assignment, MidiControllerAssignment, NoConfig, Plugin, ProcessorConfig,
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;

@@ -51,6 +51,8 @@ pub use beamer_vst3 as vst3_impl;
 pub use beamer_macros::Params;
 #[cfg(feature = "derive")]
 pub use beamer_macros::EnumParam;
+#[cfg(feature = "derive")]
+pub use beamer_macros::HasParams;
 
 /// Prelude module for convenient imports.
 ///
@@ -68,7 +70,9 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        AudioProcessor, EditorDelegate, Parameters, Plugin,
+        AudioProcessor, EditorDelegate, HasParams, Parameters, Plugin,
+        // Processor configuration types
+        ProcessorConfig, NoConfig, AudioSetup, FullAudioSetup, BusLayout,
         // Bus configuration
         BusInfo, BusType,
         // Editor types
@@ -103,4 +107,6 @@ pub mod prelude {
     pub use beamer_macros::Params as DeriveParams;
     #[cfg(feature = "derive")]
     pub use beamer_macros::EnumParam as DeriveEnumParam;
+    #[cfg(feature = "derive")]
+    pub use beamer_macros::HasParams as DeriveHasParams;
 }

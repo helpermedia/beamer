@@ -1,4 +1,16 @@
 //! Core plugin trait definitions.
+//!
+//! This module defines the two-phase plugin lifecycle:
+//!
+//! - **[`Plugin`]** (unprepared state): Holds parameters, created before audio config is known.
+//!   Transforms into a processor via [`Plugin::prepare()`] when configuration arrives.
+//!
+//! - **[`AudioProcessor`]** (prepared state): Ready for audio processing with real sample rate
+//!   and buffer configuration. Created by [`Plugin::prepare()`], can return to unprepared
+//!   state via [`AudioProcessor::unprepare()`] for sample rate changes.
+//!
+//! This design eliminates placeholder values by making it impossible to process audio
+//! until proper configuration is available.
 
 use crate::buffer::{AuxiliaryBuffers, Buffer};
 use crate::error::PluginResult;
@@ -9,6 +21,187 @@ use crate::midi::{
 use crate::midi_params::MidiCcParams;
 use crate::params::Parameters;
 use crate::process_context::ProcessContext;
+
+// =============================================================================
+// HasParams Trait (Shared Parameter Access)
+// =============================================================================
+
+/// Trait for types that hold parameters.
+///
+/// This trait provides a common interface for parameter access, shared between
+/// [`Plugin`] (unprepared state) and [`AudioProcessor`] (prepared state).
+/// Both traits require `HasParams` as a supertrait.
+///
+/// # Derive Macro
+///
+/// Use `#[derive(HasParams)]` to automatically implement this trait for structs
+/// with a `#[params]` field annotation:
+///
+/// ```ignore
+/// #[derive(Default, HasParams)]
+/// pub struct GainPlugin {
+///     #[params]
+///     params: GainParams,
+/// }
+///
+/// #[derive(HasParams)]
+/// pub struct GainProcessor {
+///     #[params]
+///     params: GainParams,
+/// }
+/// ```
+///
+/// This eliminates the boilerplate of implementing `params()` and `params_mut()`
+/// on both your Plugin and Processor types.
+pub trait HasParams: Send + 'static {
+    /// The parameter collection type.
+    type Params: Parameters + crate::params::Units + crate::param_types::Params;
+
+    /// Returns a reference to the parameters.
+    fn params(&self) -> &Self::Params;
+
+    /// Returns a mutable reference to the parameters.
+    fn params_mut(&mut self) -> &mut Self::Params;
+}
+
+// =============================================================================
+// Processor Configuration Types
+// =============================================================================
+
+/// Marker trait for processor configuration types.
+///
+/// Plugins declare their configuration requirements via the associated
+/// [`Plugin::Config`] type. The framework provides these standard configs:
+///
+/// - [`NoConfig`]: For plugins that don't need sample rate (e.g., simple gain)
+/// - [`AudioSetup`]: For plugins that need sample rate and max buffer size
+/// - [`FullAudioSetup`]: For plugins that also need bus layout information
+///
+/// Plugins can also define custom config types by implementing this trait.
+pub trait ProcessorConfig: Clone + Send + 'static {}
+
+/// Configuration for plugins that don't need audio setup information.
+///
+/// Use this for stateless plugins like simple gain, pan, or polarity flip
+/// that don't have any sample-rate-dependent state.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for GainPlugin {
+///     type Config = NoConfig;
+///     // ...
+///     fn prepare(self, _: NoConfig) -> GainProcessor {
+///         GainProcessor { params: self.params }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NoConfig;
+impl ProcessorConfig for NoConfig {}
+
+/// Standard audio setup configuration with sample rate and max buffer size.
+///
+/// Use this for most plugins that have sample-rate-dependent state,
+/// such as delays, filters, compressors, or any plugin with smoothing.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for DelayPlugin {
+///     type Config = AudioSetup;
+///     // ...
+///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
+///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
+///         DelayProcessor {
+///             params: self.params,
+///             sample_rate: config.sample_rate,  // Real value from start!
+///             buffer: vec![0.0; buffer_size],   // Correct allocation!
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioSetup {
+    /// Sample rate in Hz (e.g., 44100.0, 48000.0, 96000.0)
+    pub sample_rate: f64,
+    /// Maximum number of samples per process() call
+    pub max_buffer_size: usize,
+}
+impl ProcessorConfig for AudioSetup {}
+
+/// Full audio setup including bus layout information.
+///
+/// Use this for plugins that need to know the channel configuration,
+/// such as surround processors or plugins with channel-specific processing.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for SurroundPlugin {
+///     type Config = FullAudioSetup;
+///     // ...
+///     fn prepare(self, config: FullAudioSetup) -> SurroundProcessor {
+///         let channel_count = config.layout.main_output_channels();
+///         SurroundProcessor {
+///             params: self.params,
+///             sample_rate: config.sample_rate,
+///             per_channel_state: vec![ChannelState::new(); channel_count],
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct FullAudioSetup {
+    /// Sample rate in Hz
+    pub sample_rate: f64,
+    /// Maximum number of samples per process() call
+    pub max_buffer_size: usize,
+    /// Bus layout information
+    pub layout: BusLayout,
+}
+impl ProcessorConfig for FullAudioSetup {}
+
+/// Bus layout information for plugins that need channel configuration.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BusLayout {
+    /// Number of channels on the main input bus
+    pub main_input_channels: u32,
+    /// Number of channels on the main output bus
+    pub main_output_channels: u32,
+    /// Number of auxiliary input buses
+    pub aux_input_count: usize,
+    /// Number of auxiliary output buses
+    pub aux_output_count: usize,
+}
+
+impl BusLayout {
+    /// Create a stereo (2 in, 2 out) layout with no aux buses.
+    pub const fn stereo() -> Self {
+        Self {
+            main_input_channels: 2,
+            main_output_channels: 2,
+            aux_input_count: 0,
+            aux_output_count: 0,
+        }
+    }
+
+    /// Create a layout from a plugin's bus configuration.
+    pub fn from_plugin<P: Plugin>(plugin: &P) -> Self {
+        Self {
+            main_input_channels: plugin
+                .input_bus_info(0)
+                .map(|b| b.channel_count)
+                .unwrap_or(2),
+            main_output_channels: plugin
+                .output_bus_info(0)
+                .map(|b| b.channel_count)
+                .unwrap_or(2),
+            aux_input_count: plugin.input_bus_count().saturating_sub(1),
+            aux_output_count: plugin.output_bus_count().saturating_sub(1),
+        }
+    }
+}
 
 // =============================================================================
 // Bus Configuration
@@ -84,12 +277,33 @@ impl BusInfo {
 // AudioProcessor Trait
 // =============================================================================
 
-/// Core trait for audio processing logic.
+/// The prepared processor - ready for audio processing.
 ///
 /// This trait defines the DSP (Digital Signal Processing) interface that
 /// plugin implementations must provide. It is designed to be format-agnostic,
 /// meaning the same implementation can be wrapped for VST3, CLAP, or other
 /// plugin formats.
+///
+/// An `AudioProcessor` is created by calling [`Plugin::prepare()`] with the
+/// audio configuration. Unlike the old design where `setup()` was called
+/// after construction, here the processor is created with valid configuration
+/// from the start - no placeholder values.
+///
+/// # Lifecycle
+///
+/// ```text
+/// Plugin::default() -> Plugin (unprepared, holds params)
+///                      |
+///                      v  Plugin::prepare(config)
+///                      |
+///                      v
+///                AudioProcessor (prepared, ready for audio)
+///                      |
+///                      v  AudioProcessor::unprepare()
+///                      |
+///                      v
+///                 Plugin (unprepared, params preserved)
+/// ```
 ///
 /// # Thread Safety
 ///
@@ -99,17 +313,18 @@ impl BusInfo {
 /// - No locks (use lock-free structures)
 /// - No syscalls
 /// - No unbounded loops
-pub trait AudioProcessor: Send {
-    /// Called when audio processing setup changes.
+///
+/// # Note on HasParams
+///
+/// The `AudioProcessor` trait requires [`HasParams`] as a supertrait, which provides
+/// the `params()` and `params_mut()` methods. Use `#[derive(HasParams)]` with a
+/// `#[params]` field annotation to implement this automatically.
+pub trait AudioProcessor: HasParams {
+    /// The unprepared plugin type that created this processor.
     ///
-    /// This is called before audio processing begins, whenever the sample rate
-    /// or maximum block size changes. Use this to initialize buffers, filters,
-    /// or other sample-rate dependent state.
-    ///
-    /// # Arguments
-    /// * `sample_rate` - The sample rate in Hz (e.g., 44100.0, 48000.0)
-    /// * `max_buffer_size` - Maximum number of samples per process call
-    fn setup(&mut self, sample_rate: f64, max_buffer_size: usize);
+    /// Used by [`AudioProcessor::unprepare()`] to return to the unprepared state.
+    /// The Params type must match the plugin's Params type.
+    type Plugin: Plugin<Processor = Self, Params = Self::Params>;
 
     /// Process an audio buffer with transport context.
     ///
@@ -176,11 +391,61 @@ pub trait AudioProcessor: Send {
     /// ```
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext);
 
+    /// Return to the unprepared plugin state.
+    ///
+    /// This is used when sample rate or buffer configuration changes.
+    /// The processor is consumed and returns the original plugin with
+    /// parameters preserved. The wrapper can then call `prepare()` again
+    /// with the new configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl AudioProcessor for DelayProcessor {
+    ///     type Plugin = DelayPlugin;
+    ///
+    ///     fn unprepare(self) -> DelayPlugin {
+    ///         DelayPlugin {
+    ///             params: self.params,
+    ///             // DSP state (delay_lines, etc.) is discarded
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    fn unprepare(self) -> Self::Plugin
+    where
+        Self: Sized;
+
+    // Note: `params()` and `params_mut()` are provided by the `HasParams` supertrait.
+    // Use `#[derive(HasParams)]` with a `#[params]` field annotation to implement them.
+
+    // =========================================================================
+    // Activation State
+    // =========================================================================
+
     /// Called when the plugin is activated or deactivated.
     ///
     /// Activation typically happens when the user inserts the plugin into a
     /// track or opens a project. Deactivation happens when removed or project
     /// is closed.
+    ///
+    /// **Important:** When `active == true`, you should reset your DSP state
+    /// (clear delay lines, reset filter histories, zero envelopes, etc.).
+    /// Hosts call `setActive(false)` followed by `setActive(true)` to request
+    /// a full state reset.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn set_active(&mut self, active: bool) {
+    ///     if active {
+    ///         // Reset DSP state on activation
+    ///         self.delay_line.clear();
+    ///         self.envelope.reset();
+    ///         self.filter_state = FilterState::default();
+    ///     }
+    /// }
+    /// ```
     ///
     /// Default implementation does nothing.
     fn set_active(&mut self, _active: bool) {}
@@ -369,46 +634,6 @@ pub trait AudioProcessor: Send {
     }
 
     // =========================================================================
-    // Bus Configuration
-    // =========================================================================
-
-    /// Returns the number of audio input buses.
-    ///
-    /// Default returns 1 (single stereo input).
-    fn input_bus_count(&self) -> usize {
-        1
-    }
-
-    /// Returns the number of audio output buses.
-    ///
-    /// Default returns 1 (single stereo output).
-    fn output_bus_count(&self) -> usize {
-        1
-    }
-
-    /// Returns information about an input bus.
-    ///
-    /// Default returns a stereo main bus for index 0.
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        if index == 0 {
-            Some(BusInfo::stereo("Input"))
-        } else {
-            None
-        }
-    }
-
-    /// Returns information about an output bus.
-    ///
-    /// Default returns a stereo main bus for index 0.
-    fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
-        if index == 0 {
-            Some(BusInfo::stereo("Output"))
-        } else {
-            None
-        }
-    }
-
-    // =========================================================================
     // MIDI Processing
     // =========================================================================
 
@@ -449,29 +674,74 @@ pub trait AudioProcessor: Send {
     fn wants_midi(&self) -> bool {
         false
     }
+
+    /// Returns MIDI CC parameters if this processor handles MIDI CC emulation.
+    ///
+    /// The VST3 wrapper uses this to convert host parameter changes (from
+    /// IMidiMapping) back into MIDI events during processing.
+    ///
+    /// Plugins that use `MidiCcParams` should store them in the processor
+    /// (moved from Plugin during `prepare()`) and return a reference here.
+    ///
+    /// Default returns `None` (no MIDI CC emulation).
+    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
+        None
+    }
 }
 
 // =============================================================================
 // Plugin Trait
 // =============================================================================
 
-/// Main plugin trait combining audio processing and parameters.
+/// The unprepared plugin - holds parameters before audio config is known.
 ///
 /// This is the primary trait that plugin authors implement to create a complete
-/// audio plugin. It combines [`AudioProcessor`] for DSP with a [`Parameters`]
-/// collection for host communication.
+/// audio plugin. It holds parameters and configuration that doesn't depend on
+/// sample rate, and transforms into an [`AudioProcessor`] via [`Plugin::prepare()`]
+/// when audio configuration becomes available.
 ///
-/// # Example
+/// # Two-Phase Lifecycle
+///
+/// ```text
+/// Plugin::default() -> Plugin (unprepared, holds params)
+///                      |
+///                      v  Plugin::prepare(config)
+///                      |
+///                      v
+///                AudioProcessor (prepared, ready for audio)
+///                      |
+///                      v  AudioProcessor::unprepare()
+///                      |
+///                      v
+///                 Plugin (unprepared, params preserved)
+/// ```
+///
+/// # Example: Simple Gain (NoConfig)
 ///
 /// ```ignore
-/// use beamer_core::{Plugin, AudioProcessor, Buffer, AuxiliaryBuffers, Parameters, ProcessContext};
-///
-/// pub struct MyGain {
-///     params: MyGainParams,
+/// #[derive(Default, HasParams)]
+/// pub struct GainPlugin {
+///     #[params]
+///     params: GainParams,
 /// }
 ///
-/// impl AudioProcessor for MyGain {
-///     fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+/// impl Plugin for GainPlugin {
+///     type Config = NoConfig;
+///     type Processor = GainProcessor;
+///
+///     fn prepare(self, _: NoConfig) -> GainProcessor {
+///         GainProcessor { params: self.params }
+///     }
+/// }
+///
+/// #[derive(HasParams)]
+/// pub struct GainProcessor {
+///     #[params]
+///     params: GainParams,
+/// }
+///
+/// impl AudioProcessor for GainProcessor {
+///     type Plugin = GainPlugin;
 ///
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 ///         let gain = self.params.gain_linear();
@@ -481,41 +751,107 @@ pub trait AudioProcessor: Send {
 ///             }
 ///         }
 ///     }
-/// }
 ///
-/// impl Plugin for MyGain {
-///     type Params = MyGainParams;
-///
-///     fn params(&self) -> &Self::Params {
-///         &self.params
-///     }
-///
-///     fn create() -> Self {
-///         Self { params: MyGainParams::new() }
+///     fn unprepare(self) -> GainPlugin {
+///         GainPlugin { params: self.params }
 ///     }
 /// }
 /// ```
-pub trait Plugin: AudioProcessor {
-    /// The parameter collection type for this plugin.
-    type Params: Parameters + crate::params::Units + crate::param_types::Params;
-
-    /// Returns a reference to the plugin's parameters.
+///
+/// # Example: Delay (AudioSetup)
+///
+/// ```ignore
+/// #[derive(Default, HasParams)]
+/// pub struct DelayPlugin {
+///     #[params]
+///     params: DelayParams,
+/// }
+///
+/// impl Plugin for DelayPlugin {
+///     type Config = AudioSetup;
+///     type Processor = DelayProcessor;
+///
+///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
+///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
+///         DelayProcessor {
+///             params: self.params,
+///             sample_rate: config.sample_rate,  // Real value from start!
+///             buffer: vec![0.0; buffer_size],   // Correct allocation!
+///         }
+///     }
+/// }
+/// ```
+///
+/// # Note on HasParams
+///
+/// The `Plugin` trait requires [`HasParams`] as a supertrait, which provides the
+/// `params()` and `params_mut()` methods. Use `#[derive(HasParams)]` with a
+/// `#[params]` field annotation to implement this automatically.
+pub trait Plugin: HasParams + Default {
+    /// The configuration type this plugin needs to prepare.
     ///
-    /// The VST3 wrapper uses this to communicate parameter values with the host.
-    fn params(&self) -> &Self::Params;
+    /// - [`NoConfig`]: For plugins that don't need sample rate (simple gain)
+    /// - [`AudioSetup`]: For plugins that need sample rate and max buffer size
+    /// - [`FullAudioSetup`]: For plugins that also need bus layout information
+    type Config: ProcessorConfig;
 
-    /// Returns a mutable reference to the plugin's parameters.
-    ///
-    /// Used by the framework for operations like resetting smoothers after
-    /// loading state. Most plugins can use the default implementation.
-    fn params_mut(&mut self) -> &mut Self::Params;
+    /// The prepared processor type created by [`Plugin::prepare()`].
+    type Processor: AudioProcessor<Plugin = Self, Params = Self::Params>;
 
-    /// Creates a new instance of the plugin with default state.
+    /// Transform this plugin into a prepared processor.
     ///
-    /// Called by the host when instantiating the plugin.
-    fn create() -> Self
-    where
-        Self: Sized;
+    /// This is called when audio configuration becomes available (in VST3,
+    /// during `setupProcessing()`). The plugin is consumed and transformed
+    /// into a processor with valid configuration - no placeholder values.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The audio configuration (sample rate, buffer size, layout)
+    ///
+    /// # Returns
+    ///
+    /// A prepared processor ready for audio processing.
+    fn prepare(self, config: Self::Config) -> Self::Processor;
+
+    // =========================================================================
+    // Bus Configuration (static, known before prepare)
+    // =========================================================================
+
+    /// Returns the number of audio input buses.
+    ///
+    /// Default returns 1 (single stereo input).
+    fn input_bus_count(&self) -> usize {
+        1
+    }
+
+    /// Returns the number of audio output buses.
+    ///
+    /// Default returns 1 (single stereo output).
+    fn output_bus_count(&self) -> usize {
+        1
+    }
+
+    /// Returns information about an input bus.
+    ///
+    /// Default returns a stereo main bus for index 0.
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        if index == 0 {
+            Some(BusInfo::stereo("Input"))
+        } else {
+            None
+        }
+    }
+
+    /// Returns information about an output bus.
+    ///
+    /// Default returns a stereo main bus for index 0.
+    fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
+        if index == 0 {
+            Some(BusInfo::stereo("Output"))
+        } else {
+            None
+        }
+    }
 
     // =========================================================================
     // MIDI Mapping (IMidiMapping)

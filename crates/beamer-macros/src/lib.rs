@@ -54,6 +54,7 @@ use proc_macro::TokenStream;
 
 mod codegen;
 mod enum_param;
+mod has_params;
 mod ir;
 mod parse;
 mod range_eval;
@@ -163,6 +164,64 @@ pub fn derive_enum_param(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
     match enum_param::derive_enum_param_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive macro for implementing the `HasParams` trait.
+///
+/// This macro generates the `HasParams` implementation for structs that hold
+/// parameter collections. It eliminates the boilerplate of implementing
+/// `params()` and `params_mut()` on both Plugin and Processor types.
+///
+/// # Usage
+///
+/// Mark the field containing your parameters with `#[params]`:
+///
+/// ```ignore
+/// use beamer::prelude::*;
+///
+/// #[derive(Default, HasParams)]
+/// pub struct GainPlugin {
+///     #[params]
+///     params: GainParams,
+/// }
+///
+/// #[derive(HasParams)]
+/// pub struct GainProcessor {
+///     #[params]
+///     params: GainParams,
+///     // other processor-only fields...
+/// }
+/// ```
+///
+/// # Requirements
+///
+/// - The struct must have named fields
+/// - Exactly one field must be marked with `#[params]`
+/// - The marked field's type must implement `Parameters`, `Units`, and `Params`
+///
+/// # What It Generates
+///
+/// ```ignore
+/// impl HasParams for GainPlugin {
+///     type Params = GainParams;
+///
+///     fn params(&self) -> &Self::Params {
+///         &self.params
+///     }
+///
+///     fn params_mut(&mut self) -> &mut Self::Params {
+///         &mut self.params
+///     }
+/// }
+/// ```
+#[proc_macro_derive(HasParams, attributes(params))]
+pub fn derive_has_params(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+
+    match has_params::derive_has_params_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

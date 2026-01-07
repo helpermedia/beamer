@@ -26,12 +26,13 @@ use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, BusType as CoreBusType, ChordInfo,
-    FrameRate as CoreFrameRate, MidiBuffer, MidiEvent, MidiEventKind, MidiCcParams, NoteExpressionInt,
+    AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
+    BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParams,
+    MidiBuffer, MidiCcParams, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
-    ProcessContext as CoreProcessContext, ScaleInfo, SysEx, Transport,
-    MAX_BUSES, MAX_CHANNELS,
-    MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
+    ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx, Transport, MAX_BUSES,
+    MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
+    MAX_SYSEX_SIZE,
 };
 
 use crate::factory::ComponentFactory;
@@ -292,14 +293,14 @@ impl ConversionBuffers {
         }
     }
 
-    /// Pre-allocate buffers based on bus configuration and max block size.
-    fn allocate<P: Plugin>(plugin: &P, max_block_size: usize) -> Self {
-        let num_input_buses = plugin.input_bus_count();
-        let num_output_buses = plugin.output_bus_count();
-
+    /// Pre-allocate buffers based on cached bus configuration and max block size.
+    ///
+    /// This is used during setupProcessing() when we don't have a plugin reference
+    /// anymore (it was consumed by prepare()).
+    fn allocate_from_config(bus_config: &CachedBusConfig, max_block_size: usize) -> Self {
         // Main bus (bus 0) channels
-        let main_in_channels = plugin.input_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
-        let main_out_channels = plugin.output_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
+        let main_in_channels = bus_config.input_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
+        let main_out_channels = bus_config.output_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
 
         let main_input_f32: Vec<Vec<f32>> = (0..main_in_channels)
             .map(|_| vec![0.0f32; max_block_size])
@@ -311,8 +312,8 @@ impl ConversionBuffers {
 
         // Auxiliary buses (bus 1+)
         let mut aux_input_f32 = Vec::new();
-        for bus_idx in 1..num_input_buses {
-            if let Some(info) = plugin.input_bus_info(bus_idx) {
+        for bus_idx in 1..bus_config.input_bus_count {
+            if let Some(info) = bus_config.input_bus_info(bus_idx) {
                 let channels: Vec<Vec<f32>> = (0..info.channel_count)
                     .map(|_| vec![0.0f32; max_block_size])
                     .collect();
@@ -321,8 +322,8 @@ impl ConversionBuffers {
         }
 
         let mut aux_output_f32 = Vec::new();
-        for bus_idx in 1..num_output_buses {
-            if let Some(info) = plugin.output_bus_info(bus_idx) {
+        for bus_idx in 1..bus_config.output_bus_count {
+            if let Some(info) = bus_config.output_bus_info(bus_idx) {
                 let channels: Vec<Vec<f32>> = (0..info.channel_count)
                     .map(|_| vec![0.0f32; max_block_size])
                     .collect();
@@ -343,50 +344,44 @@ impl ConversionBuffers {
 // Bus Limit Validation
 // =============================================================================
 
-/// Validate that a plugin's bus configuration doesn't exceed compile-time limits.
+/// Validate that a cached bus configuration doesn't exceed compile-time limits.
 ///
 /// Returns `Ok(())` if valid, or `Err` with a descriptive message if limits are exceeded.
-fn validate_bus_limits<P: Plugin>(plugin: &P) -> Result<(), String> {
-    let num_inputs = plugin.input_bus_count();
-    let num_outputs = plugin.output_bus_count();
-
+/// Used during setupProcessing() to validate the cached config.
+fn validate_bus_limits_from_config(bus_config: &CachedBusConfig) -> Result<(), String> {
     // Validate bus counts
-    if num_inputs > MAX_BUSES {
+    if bus_config.input_bus_count > MAX_BUSES {
         return Err(format!(
             "Plugin declares {} input buses, but MAX_BUSES is {}",
-            num_inputs, MAX_BUSES
+            bus_config.input_bus_count, MAX_BUSES
         ));
     }
-    if num_outputs > MAX_BUSES {
+    if bus_config.output_bus_count > MAX_BUSES {
         return Err(format!(
             "Plugin declares {} output buses, but MAX_BUSES is {}",
-            num_outputs, MAX_BUSES
+            bus_config.output_bus_count, MAX_BUSES
         ));
     }
 
     // Validate channel counts for each input bus
-    for i in 0..num_inputs {
-        if let Some(info) = plugin.input_bus_info(i) {
-            let channels = info.channel_count as usize;
-            if channels > MAX_CHANNELS {
-                return Err(format!(
-                    "Input bus {} declares {} channels, but MAX_CHANNELS is {}",
-                    i, channels, MAX_CHANNELS
-                ));
-            }
+    for (i, info) in bus_config.input_buses.iter().enumerate() {
+        let channels = info.channel_count as usize;
+        if channels > MAX_CHANNELS {
+            return Err(format!(
+                "Input bus {} declares {} channels, but MAX_CHANNELS is {}",
+                i, channels, MAX_CHANNELS
+            ));
         }
     }
 
     // Validate channel counts for each output bus
-    for i in 0..num_outputs {
-        if let Some(info) = plugin.output_bus_info(i) {
-            let channels = info.channel_count as usize;
-            if channels > MAX_CHANNELS {
-                return Err(format!(
-                    "Output bus {} declares {} channels, but MAX_CHANNELS is {}",
-                    i, channels, MAX_CHANNELS
-                ));
-            }
+    for (i, info) in bus_config.output_buses.iter().enumerate() {
+        let channels = info.channel_count as usize;
+        if channels > MAX_CHANNELS {
+            return Err(format!(
+                "Output bus {} declares {} channels, but MAX_CHANNELS is {}",
+                i, channels, MAX_CHANNELS
+            ));
         }
     }
 
@@ -461,24 +456,17 @@ impl<S: Sample> ProcessBufferStorage<S> {
         }
     }
 
-    /// Pre-allocate storage based on plugin's bus declarations.
+    /// Pre-allocate storage based on cached bus configuration.
     ///
     /// Reserves Vec capacity for the exact channel counts declared by the plugin.
     /// This ensures that subsequent push() calls in process() never allocate.
-    ///
-    /// # Panics
-    ///
-    /// Does NOT panic - validation should be done separately via `validate_bus_limits()`.
-    fn allocate<P: Plugin>(plugin: &P) -> Self {
-        let num_input_buses = plugin.input_bus_count();
-        let num_output_buses = plugin.output_bus_count();
-
-        // Get main bus channel counts (bus 0)
-        let main_in_channels = plugin
+    fn allocate_from_config(bus_config: &CachedBusConfig) -> Self {
+        // Get main bus channel counts
+        let main_in_channels = bus_config
             .input_bus_info(0)
             .map(|b| b.channel_count as usize)
             .unwrap_or(0);
-        let main_out_channels = plugin
+        let main_out_channels = bus_config
             .output_bus_info(0)
             .map(|b| b.channel_count as usize)
             .unwrap_or(0);
@@ -488,12 +476,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
         let main_outputs = Vec::with_capacity(main_out_channels);
 
         // Pre-allocate auxiliary bus storage
-        let aux_input_bus_count = num_input_buses.saturating_sub(1);
-        let aux_output_bus_count = num_output_buses.saturating_sub(1);
+        let aux_input_bus_count = bus_config.input_bus_count.saturating_sub(1);
+        let aux_output_bus_count = bus_config.output_bus_count.saturating_sub(1);
 
         let mut aux_inputs = Vec::with_capacity(aux_input_bus_count);
-        for bus_idx in 1..num_input_buses {
-            if let Some(info) = plugin.input_bus_info(bus_idx) {
+        for bus_idx in 1..bus_config.input_bus_count {
+            if let Some(info) = bus_config.input_bus_info(bus_idx) {
                 aux_inputs.push(Vec::with_capacity(info.channel_count as usize));
             } else {
                 aux_inputs.push(Vec::new());
@@ -501,8 +489,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
         }
 
         let mut aux_outputs = Vec::with_capacity(aux_output_bus_count);
-        for bus_idx in 1..num_output_buses {
-            if let Some(info) = plugin.output_bus_info(bus_idx) {
+        for bus_idx in 1..bus_config.output_bus_count {
+            if let Some(info) = bus_config.output_bus_info(bus_idx) {
                 aux_outputs.push(Vec::with_capacity(info.channel_count as usize));
             } else {
                 aux_outputs.push(Vec::new());
@@ -533,19 +521,161 @@ impl<S: Sample> ProcessBufferStorage<S> {
     }
 }
 
+// =============================================================================
+// Config Building
+// =============================================================================
+
+/// Internal trait for building plugin configs from VST3 ProcessSetup.
+///
+/// Each ProcessorConfig type implements this to construct itself from the
+/// VST3 setup information and optional plugin reference.
+///
+/// This trait is `pub(crate)` to satisfy the bound in `Vst3Processor<P>` where
+/// `P::Config: BuildConfig`. External users don't need to implement this -
+/// all standard ProcessorConfig types (NoConfig, AudioSetup, FullAudioSetup)
+/// have built-in implementations.
+pub(crate) trait BuildConfig: ProcessorConfig {
+    fn build<P: Plugin>(setup: &ProcessSetup, plugin: &P, bus_layout: &BusLayout) -> Self;
+}
+
+impl BuildConfig for NoConfig {
+    fn build<P: Plugin>(_setup: &ProcessSetup, _plugin: &P, _bus_layout: &BusLayout) -> Self {
+        NoConfig
+    }
+}
+
+impl BuildConfig for AudioSetup {
+    fn build<P: Plugin>(setup: &ProcessSetup, _plugin: &P, _bus_layout: &BusLayout) -> Self {
+        AudioSetup {
+            sample_rate: setup.sampleRate,
+            max_buffer_size: setup.maxSamplesPerBlock as usize,
+        }
+    }
+}
+
+impl BuildConfig for FullAudioSetup {
+    fn build<P: Plugin>(setup: &ProcessSetup, _plugin: &P, bus_layout: &BusLayout) -> Self {
+        FullAudioSetup {
+            sample_rate: setup.sampleRate,
+            max_buffer_size: setup.maxSamplesPerBlock as usize,
+            layout: bus_layout.clone(),
+        }
+    }
+}
+
+// =============================================================================
+// Plugin State Machine
+// =============================================================================
+
+// Note: beamer_core::BusInfo is imported as CoreBusInfo in the main imports
+// to avoid collision with vst3::Steinberg::Vst::BusInfo used in COM interfaces.
+// We use CoreBusInfo throughout this module for the beamer type.
+
+/// Cached bus configuration for the Prepared state.
+///
+/// VST3 can query bus info at any time, including after setupProcessing().
+/// Since the Plugin is consumed during prepare(), we cache the bus config.
+#[derive(Clone)]
+struct CachedBusConfig {
+    input_bus_count: usize,
+    output_bus_count: usize,
+    input_buses: Vec<CoreBusInfo>,
+    output_buses: Vec<CoreBusInfo>,
+}
+
+impl CachedBusConfig {
+    /// Create from a plugin's bus configuration.
+    fn from_plugin<P: Plugin>(plugin: &P) -> Self {
+        let input_bus_count = plugin.input_bus_count();
+        let output_bus_count = plugin.output_bus_count();
+
+        let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
+            .filter_map(|i| plugin.input_bus_info(i))
+            .collect();
+
+        let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
+            .filter_map(|i| plugin.output_bus_info(i))
+            .collect();
+
+        Self {
+            input_bus_count,
+            output_bus_count,
+            input_buses,
+            output_buses,
+        }
+    }
+
+    fn input_bus_info(&self, index: usize) -> Option<&CoreBusInfo> {
+        self.input_buses.get(index)
+    }
+
+    fn output_bus_info(&self, index: usize) -> Option<&CoreBusInfo> {
+        self.output_buses.get(index)
+    }
+}
+
+/// Internal state machine for plugin lifecycle.
+///
+/// The wrapper manages two states:
+/// - **Unprepared**: Plugin exists, but audio config (sample rate) is unknown
+/// - **Prepared**: Processor exists with valid audio config, ready for processing
+///
+/// This enables the type-safe prepare/unprepare cycle where processors cannot
+/// be used until they have valid configuration.
+enum PluginState<P: Plugin> {
+    /// Before setupProcessing() - plugin exists but no audio config yet.
+    Unprepared {
+        /// The unprepared plugin (holds parameters)
+        plugin: P,
+        /// State data received before prepare (deferred loading)
+        pending_state: Option<Vec<u8>>,
+    },
+    /// After setupProcessing() - processor is ready for audio.
+    Prepared {
+        /// The prepared processor (ready for audio)
+        processor: P::Processor,
+        /// Cached bus configuration (since Plugin is consumed)
+        bus_config: CachedBusConfig,
+    },
+}
+
+// =============================================================================
+// Vst3Processor Wrapper
+// =============================================================================
+
 /// Generic VST3 processor wrapping any [`Plugin`] implementation.
 ///
 /// This struct implements the VST3 combined component pattern, providing
 /// `IComponent`, `IAudioProcessor`, and `IEditController` interfaces that
 /// delegate to the wrapped plugin.
 ///
+/// # Two-Phase Lifecycle
+///
+/// The wrapper manages the plugin's two-phase lifecycle:
+///
+/// ```text
+/// Vst3Processor::new()
+///     ↓ creates Plugin::default()
+/// PluginState::Unprepared { plugin }
+///     ↓ setupProcessing() calls plugin.prepare(config)
+/// PluginState::Prepared { processor }
+///     ↓ sample rate change: processor.unprepare()
+/// PluginState::Unprepared { plugin }
+///     ↓ setupProcessing() again
+/// PluginState::Prepared { processor }
+/// ```
+///
 /// # Usage
 ///
 /// ```ignore
 /// use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig};
 ///
-/// struct MyPlugin { /* ... */ }
+/// #[derive(Default)]
+/// struct MyPlugin { params: MyParams }
 /// impl Plugin for MyPlugin { /* ... */ }
+///
+/// struct MyProcessor { params: MyParams, sample_rate: f64 }
+/// impl AudioProcessor for MyProcessor { /* ... */ }
 ///
 /// static CONFIG: PluginConfig = PluginConfig::new("MyPlugin", MY_UID);
 /// export_vst3!(CONFIG, Vst3Processor<MyPlugin>);
@@ -557,8 +687,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
 /// We use `UnsafeCell` for interior mutability in `process()` since the COM
 /// interface only provides `&self`.
 pub struct Vst3Processor<P: Plugin> {
-    /// The wrapped plugin instance (uses UnsafeCell for interior mutability)
-    plugin: UnsafeCell<P>,
+    /// The plugin state machine (Unprepared or Prepared)
+    state: UnsafeCell<PluginState<P>>,
     /// Plugin configuration reference
     config: &'static PluginConfig,
     /// Current sample rate
@@ -585,6 +715,7 @@ pub struct Vst3Processor<P: Plugin> {
 
 // Safety: Vst3Processor is Send because:
 // - Plugin: Send is required by the Plugin trait
+// - AudioProcessor: Send is required by the AudioProcessor trait
 // - UnsafeCell contents are only accessed from VST3's guaranteed single-threaded contexts
 unsafe impl<P: Plugin> Send for Vst3Processor<P> {}
 
@@ -593,11 +724,24 @@ unsafe impl<P: Plugin> Send for Vst3Processor<P> {}
 // - Parameter access through Parameters trait requires Sync
 unsafe impl<P: Plugin> Sync for Vst3Processor<P> {}
 
-impl<P: Plugin + 'static> Vst3Processor<P> {
+// Allow private_bounds: BuildConfig is intentionally private (sealed pattern).
+// External users use standard ProcessorConfig types (NoConfig, AudioSetup, FullAudioSetup)
+// which already implement BuildConfig. Custom ProcessorConfig types are internal only.
+#[allow(private_bounds)]
+impl<P: Plugin + 'static> Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     /// Create a new VST3 processor wrapping the given plugin configuration.
+    ///
+    /// The wrapper starts in the Unprepared state with a default plugin instance.
+    /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static PluginConfig) -> Self {
         Self {
-            plugin: UnsafeCell::new(P::create()),
+            state: UnsafeCell::new(PluginState::Unprepared {
+                plugin: P::default(),
+                pending_state: None,
+            }),
             config,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
@@ -615,24 +759,241 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         }
     }
 
-    /// Get a reference to the wrapped plugin.
+    /// Get a reference to the prepared processor.
+    ///
+    /// # Safety
+    /// - Must only be called when no mutable reference exists.
+    /// - Must only be called when in Prepared state.
+    ///
+    /// # Panics
+    /// Panics if called when in Unprepared state (VST3 host violation).
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    unsafe fn processor(&self) -> &P::Processor {
+        match &*self.state.get() {
+            PluginState::Prepared { processor, .. } => processor,
+            PluginState::Unprepared { .. } => {
+                panic!("Attempted to access processor before setupProcessing()")
+            }
+        }
+    }
+
+    /// Get a mutable reference to the prepared processor.
+    ///
+    /// # Safety
+    /// - Must only be called from contexts where VST3 guarantees single-threaded access
+    ///   (e.g., process(), setupProcessing()).
+    /// - Must only be called when in Prepared state.
+    ///
+    /// # Panics
+    /// Panics if called when in Unprepared state (VST3 host violation).
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn processor_mut(&self) -> &mut P::Processor {
+        match &mut *self.state.get() {
+            PluginState::Prepared { processor, .. } => processor,
+            PluginState::Unprepared { .. } => {
+                panic!("Attempted to access processor before setupProcessing()")
+            }
+        }
+    }
+
+    /// Get a reference to the unprepared plugin.
+    ///
+    /// # Safety
+    /// Must only be called when no mutable reference exists.
+    ///
+    /// # Panics
+    /// Panics if called when in Prepared state.
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    unsafe fn unprepared_plugin(&self) -> &P {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin,
+            PluginState::Prepared { .. } => {
+                panic!("Attempted to access unprepared plugin after setupProcessing()")
+            }
+        }
+    }
+
+    /// Get a mutable reference to the unprepared plugin.
+    ///
+    /// # Safety
+    /// Must only be called from contexts where VST3 guarantees single-threaded access.
+    ///
+    /// # Panics
+    /// Panics if called when in Prepared state.
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn unprepared_plugin_mut(&self) -> &mut P {
+        match &mut *self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin,
+            PluginState::Prepared { .. } => {
+                panic!("Attempted to access unprepared plugin after setupProcessing()")
+            }
+        }
+    }
+
+    /// Check if the wrapper is in prepared state.
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    unsafe fn is_prepared(&self) -> bool {
+        matches!(&*self.state.get(), PluginState::Prepared { .. })
+    }
+
+    /// Try to get a reference to the unprepared plugin.
+    ///
+    /// Returns Some(&P) when in unprepared state, None when prepared.
+    /// Use this for Plugin methods that might be called in either state.
+    #[inline]
+    unsafe fn try_plugin(&self) -> Option<&P> {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => Some(plugin),
+            PluginState::Prepared { .. } => None,
+        }
+    }
+
+    /// Try to get a mutable reference to the unprepared plugin.
+    ///
+    /// Returns Some(&mut P) when in unprepared state, None when prepared.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn try_plugin_mut(&self) -> Option<&mut P> {
+        match &mut *self.state.get() {
+            PluginState::Unprepared { plugin, .. } => Some(plugin),
+            PluginState::Prepared { .. } => None,
+        }
+    }
+
+    // =========================================================================
+    // Bus Info Access (works in both states)
+    // =========================================================================
+
+    /// Get input bus count (works in both states).
+    #[inline]
+    unsafe fn input_bus_count(&self) -> usize {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.input_bus_count(),
+            PluginState::Prepared { bus_config, .. } => bus_config.input_bus_count,
+        }
+    }
+
+    /// Get output bus count (works in both states).
+    #[inline]
+    unsafe fn output_bus_count(&self) -> usize {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.output_bus_count(),
+            PluginState::Prepared { bus_config, .. } => bus_config.output_bus_count,
+        }
+    }
+
+    /// Get input bus info (works in both states).
+    /// Returns beamer_core::BusInfo (not vst3::BusInfo).
+    #[inline]
+    unsafe fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
+            PluginState::Prepared { bus_config, .. } => bus_config.input_bus_info(index).cloned(),
+        }
+    }
+
+    /// Get output bus info (works in both states).
+    /// Returns beamer_core::BusInfo (not vst3::BusInfo).
+    #[inline]
+    unsafe fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
+            PluginState::Prepared { bus_config, .. } => bus_config.output_bus_info(index).cloned(),
+        }
+    }
+
+    // =========================================================================
+    // Parameter Access (works in both states)
+    // =========================================================================
+
+    /// Get parameters (works in both states).
     ///
     /// # Safety
     /// Must only be called when no mutable reference exists.
     #[inline]
-    unsafe fn plugin(&self) -> &P {
-        &*self.plugin.get()
+    unsafe fn params(&self) -> &P::Params {
+        match &*self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.params(),
+            PluginState::Prepared { processor, .. } => {
+                // SAFETY: Trait bounds guarantee P::Processor::Params == P::Params.
+                // Pointer cast through *const _ lets compiler verify type equality.
+                &*(processor.params() as *const _)
+            }
+        }
     }
 
-    /// Get a mutable reference to the wrapped plugin.
+    /// Get mutable parameters (works in both states).
     ///
     /// # Safety
-    /// Must only be called from contexts where VST3 guarantees single-threaded access
-    /// (e.g., process(), setupProcessing()).
+    /// Must only be called from contexts where VST3 guarantees single-threaded access.
     #[inline]
+    #[allow(dead_code)] // API method for potential future use
     #[allow(clippy::mut_from_ref)]
-    unsafe fn plugin_mut(&self) -> &mut P {
-        &mut *self.plugin.get()
+    unsafe fn params_mut(&self) -> &mut P::Params {
+        match &mut *self.state.get() {
+            PluginState::Unprepared { plugin, .. } => plugin.params_mut(),
+            PluginState::Prepared { processor, .. } => {
+                // SAFETY: Trait bounds guarantee P::Processor::Params == P::Params.
+                // Pointer cast through *mut _ lets compiler verify type equality.
+                &mut *(processor.params_mut() as *mut _)
+            }
+        }
+    }
+
+    // =========================================================================
+    // AudioProcessor Method Access (works in both states)
+    // =========================================================================
+
+    /// Check if plugin wants MIDI (works in both states).
+    ///
+    /// Returns false when unprepared (conservative default), processor's value when prepared.
+    #[inline]
+    unsafe fn wants_midi(&self) -> bool {
+        match &*self.state.get() {
+            PluginState::Unprepared { .. } => false,
+            PluginState::Prepared { processor, .. } => processor.wants_midi(),
+        }
+    }
+
+    /// Get latency samples (works in both states).
+    ///
+    /// Returns 0 when unprepared (conservative default), processor's value when prepared.
+    #[inline]
+    unsafe fn latency_samples(&self) -> u32 {
+        match &*self.state.get() {
+            PluginState::Unprepared { .. } => 0,
+            PluginState::Prepared { processor, .. } => processor.latency_samples(),
+        }
+    }
+
+    /// Get tail samples (works in both states).
+    ///
+    /// Returns 0 when unprepared (conservative default), processor's value when prepared.
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    unsafe fn tail_samples(&self) -> u32 {
+        match &*self.state.get() {
+            PluginState::Unprepared { .. } => 0,
+            PluginState::Prepared { processor, .. } => processor.tail_samples(),
+        }
+    }
+
+    /// Check if processor supports double precision (works in both states).
+    ///
+    /// Returns false when unprepared (conservative default), processor's value when prepared.
+    #[inline]
+    #[allow(dead_code)] // API method for potential future use
+    unsafe fn supports_double_precision(&self) -> bool {
+        match &*self.state.get() {
+            PluginState::Unprepared { .. } => false,
+            PluginState::Prepared { processor, .. } => processor.supports_double_precision(),
+        }
     }
 
     // =========================================================================
@@ -664,7 +1025,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         &self,
         process_data: &ProcessData,
         num_samples: usize,
-        plugin: &mut P,
+        processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
         // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
@@ -768,19 +1129,19 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         let mut buffer = Buffer::new(main_in_iter, main_out_iter, num_samples);
         let mut aux = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
 
-        plugin.process(&mut buffer, &mut aux, context);
+        processor.process(&mut buffer, &mut aux, context);
     }
 
     /// Process audio at 64-bit (f64) precision with native plugin support.
     ///
-    /// Used when host uses kSample64 and plugin.supports_double_precision() is true.
+    /// Used when host uses kSample64 and processor.supports_double_precision() is true.
     /// Uses pre-allocated ProcessBufferStorage - no heap allocations.
     #[inline]
     unsafe fn process_audio_f64_native(
         &self,
         process_data: &ProcessData,
         num_samples: usize,
-        plugin: &mut P,
+        processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
         // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
@@ -885,19 +1246,19 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         let mut aux: AuxiliaryBuffers<f64> =
             AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
 
-        plugin.process_f64(&mut buffer, &mut aux, context);
+        processor.process_f64(&mut buffer, &mut aux, context);
     }
 
     /// Process audio at 64-bit (f64) with conversion to/from f32.
     ///
-    /// Used when host uses kSample64 but plugin.supports_double_precision() is false.
+    /// Used when host uses kSample64 but processor.supports_double_precision() is false.
     /// Converts f64→f32, calls process(), converts f32→f64.
     #[inline]
     unsafe fn process_audio_f64_converted(
         &self,
         process_data: &ProcessData,
         num_samples: usize,
-        plugin: &mut P,
+        processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
         let conv = &mut *self.conversion_buffers.get();
@@ -963,7 +1324,7 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
         let mut buffer = Buffer::new(main_input_iter, main_output_iter, num_samples);
         let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
 
-        plugin.process(&mut buffer, &mut aux, context);
+        processor.process(&mut buffer, &mut aux, context);
 
         // Convert main output f32 → f64
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
@@ -1009,13 +1370,19 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     }
 }
 
-impl<P: Plugin + 'static> ComponentFactory for Vst3Processor<P> {
+impl<P: Plugin + 'static> ComponentFactory for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     fn create(config: &'static PluginConfig) -> Self {
         Self::new(config)
     }
 }
 
-impl<P: Plugin + 'static> Class for Vst3Processor<P> {
+impl<P: Plugin + 'static> Class for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     type Interfaces = (
         IComponent,
         IAudioProcessor,
@@ -1037,7 +1404,10 @@ impl<P: Plugin + 'static> Class for Vst3Processor<P> {
 // IPluginBase implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
         kResultOk
     }
@@ -1051,7 +1421,10 @@ impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P> {
 // IComponent implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         if class_id.is_null() {
             return kInvalidArgument;
@@ -1071,17 +1444,15 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
     }
 
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
-        let plugin = self.plugin();
-
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => plugin.input_bus_count() as i32,
-                BusDirections_::kOutput => plugin.output_bus_count() as i32,
+                BusDirections_::kInput => self.input_bus_count() as i32,
+                BusDirections_::kOutput => self.output_bus_count() as i32,
                 _ => 0,
             },
             MediaTypes_::kEvent => {
                 // Return 1 event bus in each direction if plugin wants MIDI
-                if plugin.wants_midi() {
+                if self.wants_midi() {
                     1
                 } else {
                     0
@@ -1102,13 +1473,11 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
-
         match media_type as MediaTypes {
             MediaTypes_::kAudio => {
                 let info = match dir as BusDirections {
-                    BusDirections_::kInput => plugin.input_bus_info(index as usize),
-                    BusDirections_::kOutput => plugin.output_bus_info(index as usize),
+                    BusDirections_::kInput => self.core_input_bus_info(index as usize),
+                    BusDirections_::kOutput => self.core_output_bus_info(index as usize),
                     _ => None,
                 };
 
@@ -1134,7 +1503,7 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
             }
             MediaTypes_::kEvent => {
                 // Only index 0 for event bus, and only if plugin wants MIDI
-                if index != 0 || !plugin.wants_midi() {
+                if index != 0 || !self.wants_midi() {
                     return kInvalidArgument;
                 }
 
@@ -1175,8 +1544,11 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
     }
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
-        let plugin = self.plugin_mut();
-        plugin.set_active(state != 0);
+        // set_active is only meaningful when prepared (processor exists)
+        if let PluginState::Prepared { processor, .. } = &mut *self.state.get() {
+            processor.set_active(state != 0);
+        }
+        // When unprepared, silently succeed (host may call this before setupProcessing)
         kResultOk
     }
 
@@ -1212,20 +1584,28 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
             return kResultOk;
         }
 
-        // Load into plugin
-        let plugin = self.plugin_mut();
-        match plugin.load_state(&buffer) {
-            Ok(()) => {
-                // Apply current sample rate (if available) and reset smoothers
-                use beamer_core::param_types::Params;
-                let sample_rate = *self.sample_rate.get();
-                if sample_rate > 0.0 {
-                    plugin.params_mut().set_sample_rate(sample_rate);
-                }
-                plugin.params_mut().reset_smoothing();
+        // Load state based on current state
+        match &mut *self.state.get() {
+            PluginState::Unprepared { pending_state, .. } => {
+                // Store for deferred loading when prepare() is called
+                *pending_state = Some(buffer);
                 kResultOk
             }
-            Err(_) => kResultFalse,
+            PluginState::Prepared { processor, .. } => {
+                match processor.load_state(&buffer) {
+                    Ok(()) => {
+                        // Apply current sample rate and reset smoothers
+                        use beamer_core::param_types::Params;
+                        let sample_rate = *self.sample_rate.get();
+                        if sample_rate > 0.0 {
+                            processor.params_mut().set_sample_rate(sample_rate);
+                        }
+                        processor.params_mut().reset_smoothing();
+                        kResultOk
+                    }
+                    Err(_) => kResultFalse,
+                }
+            }
         }
     }
 
@@ -1234,11 +1614,19 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        // Get plugin state as bytes
-        let plugin = self.plugin();
-        let data = match plugin.save_state() {
-            Ok(d) => d,
-            Err(_) => return kResultFalse,
+        // Get state from processor (only available when prepared)
+        let data: Vec<u8> = match &*self.state.get() {
+            PluginState::Unprepared { .. } => {
+                // When unprepared, we can't save processor state
+                // Return empty success (some hosts call this before prepare)
+                return kResultOk;
+            }
+            PluginState::Prepared { processor, .. } => {
+                match processor.save_state() {
+                    Ok(d) => d,
+                    Err(_) => return kResultFalse,
+                }
+            }
         };
 
         if data.is_empty() {
@@ -1269,7 +1657,10 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P> {
 // IAudioProcessor implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn setBusArrangements(
         &self,
         inputs: *mut SpeakerArrangement,
@@ -1291,11 +1682,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
-
         // Check if the requested arrangement matches our bus configuration
-        if num_ins as usize != plugin.input_bus_count()
-            || num_outs as usize != plugin.output_bus_count()
+        if num_ins as usize != self.input_bus_count()
+            || num_outs as usize != self.output_bus_count()
         {
             return kResultFalse;
         }
@@ -1308,7 +1697,7 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
                 return kResultFalse;
             }
 
-            if let Some(info) = plugin.input_bus_info(i) {
+            if let Some(info) = self.core_input_bus_info(i) {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1324,7 +1713,7 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
                 return kResultFalse;
             }
 
-            if let Some(info) = plugin.output_bus_info(i) {
+            if let Some(info) = self.core_output_bus_info(i) {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1345,10 +1734,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
         let info = match dir as BusDirections {
-            BusDirections_::kInput => plugin.input_bus_info(index as usize),
-            BusDirections_::kOutput => plugin.output_bus_info(index as usize),
+            BusDirections_::kInput => self.core_input_bus_info(index as usize),
+            BusDirections_::kOutput => self.core_output_bus_info(index as usize),
             _ => None,
         };
 
@@ -1369,7 +1757,7 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
     }
 
     unsafe fn getLatencySamples(&self) -> u32 {
-        self.plugin().latency_samples()
+        self.latency_samples()
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
@@ -1384,29 +1772,102 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
         *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
 
-        // Notify the plugin
-        let plugin = self.plugin_mut();
-        plugin.setup(setup.sampleRate, setup.maxSamplesPerBlock as usize);
+        // Handle state transition
+        let state = &mut *self.state.get();
+        match state {
+            PluginState::Unprepared { plugin, pending_state } => {
+                // Cache bus config before consuming the plugin
+                let bus_config = CachedBusConfig::from_plugin(plugin);
+                let bus_layout = BusLayout::from_plugin(plugin);
 
-        // Validate plugin's bus configuration against compile-time limits
-        // This prevents silent truncation during processing
-        if let Err(msg) = validate_bus_limits(plugin) {
-            log::error!("Plugin bus configuration exceeds limits: {}", msg);
-            return kResultFalse;
-        }
+                // Validate plugin's bus configuration against compile-time limits
+                if let Err(msg) = validate_bus_limits_from_config(&bus_config) {
+                    log::error!("Plugin bus configuration exceeds limits: {}", msg);
+                    return kResultFalse;
+                }
 
-        // Pre-allocate buffer storage based on plugin's bus declarations
-        // This ensures no heap allocation during process()
-        *self.buffer_storage_f32.get() = ProcessBufferStorage::allocate(plugin);
-        *self.buffer_storage_f64.get() = ProcessBufferStorage::allocate(plugin);
+                // Build the processor config
+                let config = P::Config::build(setup, plugin, &bus_layout);
 
-        // Pre-allocate conversion buffers for f64→f32 processing
-        // Only needed if host is using 64-bit and plugin doesn't support native f64
-        if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
-            && !plugin.supports_double_precision()
-        {
-            *self.conversion_buffers.get() =
-                ConversionBuffers::allocate(plugin, setup.maxSamplesPerBlock as usize);
+                // Take ownership of the plugin and any pending state
+                let plugin = std::mem::take(plugin);
+                let pending = pending_state.take();
+
+                // Prepare the processor
+                let mut processor = plugin.prepare(config);
+
+                // Apply any pending state that was set before preparation
+                if let Some(data) = pending {
+                    let _ = processor.load_state(&data);
+                    // Update params sample rate after loading
+                    use beamer_core::Params;
+                    processor.params_mut().set_sample_rate(setup.sampleRate);
+                }
+
+                // Pre-allocate buffer storage based on bus config
+                *self.buffer_storage_f32.get() =
+                    ProcessBufferStorage::allocate_from_config(&bus_config);
+                *self.buffer_storage_f64.get() =
+                    ProcessBufferStorage::allocate_from_config(&bus_config);
+
+                // Pre-allocate conversion buffers for f64→f32 processing
+                if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
+                    && !processor.supports_double_precision()
+                {
+                    *self.conversion_buffers.get() =
+                        ConversionBuffers::allocate_from_config(&bus_config, setup.maxSamplesPerBlock as usize);
+                }
+
+                // Update state to Prepared
+                *state = PluginState::Prepared {
+                    processor,
+                    bus_config,
+                };
+            }
+            PluginState::Prepared { processor, bus_config } => {
+                // Already prepared - check if sample rate changed
+                let current_sample_rate = *self.sample_rate.get();
+                if (current_sample_rate - setup.sampleRate).abs() > 0.001 {
+                    // Sample rate changed - unprepare and re-prepare
+                    let bus_layout = BusLayout {
+                        main_input_channels: bus_config
+                            .input_bus_info(0)
+                            .map(|b| b.channel_count)
+                            .unwrap_or(2),
+                        main_output_channels: bus_config
+                            .output_bus_info(0)
+                            .map(|b| b.channel_count)
+                            .unwrap_or(2),
+                        aux_input_count: bus_config.input_bus_count.saturating_sub(1),
+                        aux_output_count: bus_config.output_bus_count.saturating_sub(1),
+                    };
+
+                    // Take ownership of the processor
+                    let old_processor = std::mem::replace(
+                        processor,
+                        // This placeholder will be overwritten
+                        unsafe { std::mem::zeroed() },
+                    );
+
+                    // Unprepare to get the plugin back
+                    let plugin = old_processor.unprepare();
+
+                    // Build new config and re-prepare
+                    let config = P::Config::build(setup, &plugin, &bus_layout);
+                    let new_processor = plugin.prepare(config);
+
+                    // Pre-allocate conversion buffers if needed
+                    if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
+                        && !new_processor.supports_double_precision()
+                    {
+                        *self.conversion_buffers.get() =
+                            ConversionBuffers::allocate_from_config(bus_config, setup.maxSamplesPerBlock as usize);
+                    }
+
+                    *processor = new_processor;
+                }
+                // If sample rate hasn't changed, nothing to do
+            }
         }
 
         kResultOk
@@ -1430,7 +1891,7 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
         // 1. Handle incoming parameter changes from host
         if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
-            let params = self.plugin().params();
+            let params = self.params();
             let param_count = param_changes.getParameterCount();
 
             for i in 0..param_count {
@@ -1472,9 +1933,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         // 2.5. Convert MIDI CC parameter changes to MIDI events
         // This handles the VST3 IMidiMapping flow where DAWs send CC/pitch bend
         // as parameter changes instead of raw MIDI events.
+        // Gets MIDI CC config directly from the prepared processor.
         if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
-            let plugin = self.plugin();
-            if let Some(cc_params) = plugin.midi_cc_params() {
+            if let Some(cc_params) = self.processor_mut().midi_cc_params() {
                 let param_count = param_changes.getParameterCount();
 
                 for i in 0..param_count {
@@ -1551,9 +2012,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
         }
         // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
-        // Process MIDI events
-        let plugin = self.plugin_mut();
-        plugin.process_midi(midi_input.as_slice(), midi_output);
+        // Process MIDI events (process_midi is on AudioProcessor)
+        let processor = self.processor_mut();
+        processor.process_midi(midi_input.as_slice(), midi_output);
 
         // Write output MIDI events
         if let Some(event_list) = ComRef::from_raw(process_data.outputEvents) {
@@ -1587,32 +2048,40 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P> {
 
         // 4. Process audio based on sample size
         let symbolic_sample_size = *self.symbolic_sample_size.get();
-        let plugin = self.plugin_mut();
+        let processor = self.processor_mut();
 
         if symbolic_sample_size == SymbolicSampleSizes_::kSample64 as i32 {
             // 64-bit processing path
-            if plugin.supports_double_precision() {
+            if processor.supports_double_precision() {
                 // Native f64: extract f64 buffers and call process_f64()
-                self.process_audio_f64_native(process_data, num_samples, plugin, &context);
+                self.process_audio_f64_native(process_data, num_samples, processor, &context);
             } else {
                 // Conversion: f64→f32, process, f32→f64
-                self.process_audio_f64_converted(process_data, num_samples, plugin, &context);
+                self.process_audio_f64_converted(process_data, num_samples, processor, &context);
             }
         } else {
             // 32-bit processing path (default)
-            self.process_audio_f32(process_data, num_samples, plugin, &context);
+            self.process_audio_f32(process_data, num_samples, processor, &context);
         }
 
         kResultOk
     }
 
     unsafe fn getTailSamples(&self) -> u32 {
-        let plugin = self.plugin();
-        plugin.tail_samples().saturating_add(plugin.bypass_ramp_samples())
+        // tail_samples and bypass_ramp_samples are on AudioProcessor
+        match &*self.state.get() {
+            PluginState::Unprepared { .. } => 0,
+            PluginState::Prepared { processor, .. } => {
+                processor.tail_samples().saturating_add(processor.bypass_ramp_samples())
+            }
+        }
     }
 }
 
-impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         // Request all available transport information from host.
         // These flags tell the host which ProcessContext fields we need.
@@ -1645,7 +2114,10 @@ impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P> 
 // IEditController implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
         // For combined component, state is handled by IComponent::setState
         kResultOk
@@ -1660,9 +2132,12 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        let plugin = self.plugin();
-        let user_params = plugin.params().count();
-        let cc_params = plugin.midi_cc_params().map(|p| p.enabled_count()).unwrap_or(0);
+        let user_params = self.params().count();
+        // midi_cc_params is on Plugin, only available in unprepared state
+        let cc_params = self.try_plugin()
+            .and_then(|p| p.midi_cc_params())
+            .map(|p| p.enabled_count())
+            .unwrap_or(0);
         (user_params + cc_params) as i32
     }
 
@@ -1671,8 +2146,7 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
-        let params = plugin.params();
+        let params = self.params();
         let user_param_count = params.count();
 
         // User-defined parameters first
@@ -1709,8 +2183,8 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        // Hidden MIDI CC parameters
-        if let Some(cc_params) = plugin.midi_cc_params() {
+        // Hidden MIDI CC parameters (only available in unprepared state)
+        if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
             let cc_index = (param_index as usize) - user_param_count;
             if let Some(param_info) = cc_params.info(cc_index) {
                 let info = &mut *info;
@@ -1741,7 +2215,7 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let params = self.plugin().params();
+        let params = self.params();
         let display = params.normalized_to_string(id, value_normalized);
         copy_wstring(&display, &mut *string);
         kResultOk
@@ -1759,7 +2233,7 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
 
         let len = len_wstring(string as *const TChar);
         if let Ok(s) = String::from_utf16(slice::from_raw_parts(string as *const u16, len)) {
-            let params = self.plugin().params();
+            let params = self.params();
             if let Some(value) = params.string_to_normalized(id, &s) {
                 *value_normalized = value;
                 return kResultOk;
@@ -1769,38 +2243,34 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
     }
 
     unsafe fn normalizedParamToPlain(&self, id: u32, value_normalized: f64) -> f64 {
-        self.plugin().params().normalized_to_plain(id, value_normalized)
+        self.params().normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
-        self.plugin().params().plain_to_normalized(id, plain_value)
+        self.params().plain_to_normalized(id, plain_value)
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
-        let plugin = self.plugin();
-
         // Check if this is a MIDI CC parameter
         if MidiCcParams::is_midi_cc_param(id) {
-            if let Some(cc_params) = plugin.midi_cc_params() {
+            if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
                 return cc_params.get_normalized(id);
             }
         }
 
-        plugin.params().get_normalized(id)
+        self.params().get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
-        let plugin = self.plugin();
-
         // Check if this is a MIDI CC parameter
         if MidiCcParams::is_midi_cc_param(id) {
-            if let Some(cc_params) = plugin.midi_cc_params() {
+            if let Some(cc_params) = self.try_plugin().and_then(|p| p.midi_cc_params()) {
                 cc_params.set_normalized(id, value);
                 return kResultOk;
             }
         }
 
-        plugin.params().set_normalized(id, value);
+        self.params().set_normalized(id, value);
         kResultOk
     }
 
@@ -1830,10 +2300,13 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P> {
 // IUnitInfo implementation (VST3 Unit/Group hierarchy)
 // =============================================================================
 
-impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::params::Units;
-        self.plugin().params().unit_count() as i32
+        self.params().unit_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -1842,7 +2315,7 @@ impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P> {
         }
 
         use beamer_core::params::Units;
-        let params = self.plugin().params();
+        let params = self.params();
 
         if let Some(unit_info) = params.unit_info(unit_index as usize) {
             let info = &mut *info;
@@ -1929,7 +2402,10 @@ impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P> {
 // IMidiMapping implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getMidiControllerAssignment(
         &self,
         bus_index: i32,
@@ -1941,20 +2417,22 @@ impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
         let controller = midi_controller_number as u8;
 
-        // 1. First check plugin's custom mappings
-        if let Some(param_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
-            *id = param_id;
-            return kResultOk;
-        }
-
-        // 2. Check hidden MIDI CC parameters (omni channel - ignore channel param)
-        if let Some(cc_params) = plugin.midi_cc_params() {
-            if cc_params.has_controller(controller) {
-                *id = MidiCcParams::param_id(controller);
+        // These methods are on Plugin, only available in unprepared state
+        if let Some(plugin) = self.try_plugin() {
+            // 1. First check plugin's custom mappings
+            if let Some(param_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
+                *id = param_id;
                 return kResultOk;
+            }
+
+            // 2. Check hidden MIDI CC parameters (omni channel - ignore channel param)
+            if let Some(cc_params) = plugin.midi_cc_params() {
+                if cc_params.has_controller(controller) {
+                    *id = MidiCcParams::param_id(controller);
+                    return kResultOk;
+                }
             }
         }
 
@@ -1966,19 +2444,23 @@ impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P> {
 // IMidiLearn implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn onLiveMIDIControllerInput(
         &self,
         bus_index: i32,
         channel: i16,
         midi_cc: i16,
     ) -> tresult {
-        let plugin = self.plugin_mut();
-        if plugin.on_midi_learn(bus_index, channel, midi_cc as u8) {
-            kResultOk
-        } else {
-            kResultFalse
+        // on_midi_learn is on Plugin, only available in unprepared state
+        if let Some(plugin) = self.try_plugin_mut() {
+            if plugin.on_midi_learn(bus_index, channel, midi_cc as u8) {
+                return kResultOk;
+            }
         }
+        kResultFalse
     }
 }
 
@@ -1986,14 +2468,19 @@ impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P> {
 // IMidiMapping2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getNumMidi1ControllerAssignments(&self, direction: BusDirections) -> u32 {
         // Only support input direction
         if direction != BusDirections_::kInput {
             return 0;
         }
-        let plugin = self.plugin();
-        plugin.midi1_assignments().len() as u32
+        // midi1_assignments is on Plugin, only available in unprepared state
+        self.try_plugin()
+            .map(|p| p.midi1_assignments().len() as u32)
+            .unwrap_or(0)
     }
 
     unsafe fn getMidi1ControllerAssignments(
@@ -2005,7 +2492,10 @@ impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        // midi1_assignments is on Plugin, only available in unprepared state
+        let Some(plugin) = self.try_plugin() else {
+            return kResultFalse;
+        };
         let assignments = plugin.midi1_assignments();
         let list_ref = &*list;
 
@@ -2035,8 +2525,10 @@ impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P> {
         if direction != BusDirections_::kInput {
             return 0;
         }
-        let plugin = self.plugin();
-        plugin.midi2_assignments().len() as u32
+        // midi2_assignments is on Plugin, only available in unprepared state
+        self.try_plugin()
+            .map(|p| p.midi2_assignments().len() as u32)
+            .unwrap_or(0)
     }
 
     unsafe fn getMidi2ControllerAssignments(
@@ -2048,7 +2540,10 @@ impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        // midi2_assignments is on Plugin, only available in unprepared state
+        let Some(plugin) = self.try_plugin() else {
+            return kResultFalse;
+        };
         let assignments = plugin.midi2_assignments();
         let list_ref = &*list;
 
@@ -2083,19 +2578,22 @@ impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P> {
 // IMidiLearn2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn onLiveMidi1ControllerInput(
         &self,
         bus_index: i32,
         channel: u8,
         midi_cc: i16,
     ) -> tresult {
-        let plugin = self.plugin_mut();
-        if plugin.on_midi1_learn(bus_index, channel, midi_cc as u8) {
-            kResultOk
-        } else {
-            kResultFalse
+        if let Some(plugin) = self.try_plugin_mut() {
+            if plugin.on_midi1_learn(bus_index, channel, midi_cc as u8) {
+                return kResultOk;
+            }
         }
+        kResultFalse
     }
 
     unsafe fn onLiveMidi2ControllerInput(
@@ -2104,17 +2602,17 @@ impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P> {
         channel: u8,
         midi_cc: Midi2Controller,
     ) -> tresult {
-        let plugin = self.plugin_mut();
-        let controller = beamer_core::Midi2Controller {
-            bank: midi_cc.bank,
-            registered: midi_cc.registered != 0,
-            index: midi_cc.index,
-        };
-        if plugin.on_midi2_learn(bus_index, channel, controller) {
-            kResultOk
-        } else {
-            kResultFalse
+        if let Some(plugin) = self.try_plugin_mut() {
+            let controller = beamer_core::Midi2Controller {
+                bank: midi_cc.bank,
+                registered: midi_cc.registered != 0,
+                index: midi_cc.index,
+            };
+            if plugin.on_midi2_learn(bus_index, channel, controller) {
+                return kResultOk;
+            }
         }
+        kResultFalse
     }
 }
 
@@ -2122,10 +2620,14 @@ impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P> {
 // INoteExpressionController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
-        let plugin = self.plugin();
-        plugin.note_expression_count(bus_index, channel) as i32
+        self.try_plugin()
+            .map(|p| p.note_expression_count(bus_index, channel) as i32)
+            .unwrap_or(0)
     }
 
     unsafe fn getNoteExpressionInfo(
@@ -2139,7 +2641,9 @@ impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        let Some(plugin) = self.try_plugin() else {
+            return kInvalidArgument;
+        };
         if let Some(expr_info) =
             plugin.note_expression_info(bus_index, channel, note_expression_index as usize)
         {
@@ -2173,7 +2677,9 @@ impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        let Some(plugin) = self.try_plugin() else {
+            return kInvalidArgument;
+        };
         let display = plugin.note_expression_value_to_string(bus_index, channel, id, value_normalized);
         copy_wstring(&display, &mut *string);
         kResultOk
@@ -2193,11 +2699,11 @@ impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P> {
 
         let len = len_wstring(string);
         if let Ok(s) = String::from_utf16(slice::from_raw_parts(string, len)) {
-            let plugin = self.plugin();
-            if let Some(value) = plugin.note_expression_string_to_value(bus_index, channel, id, &s)
-            {
-                *value_normalized = value;
-                return kResultOk;
+            if let Some(plugin) = self.try_plugin() {
+                if let Some(value) = plugin.note_expression_string_to_value(bus_index, channel, id, &s) {
+                    *value_normalized = value;
+                    return kResultOk;
+                }
             }
         }
         kResultFalse
@@ -2208,10 +2714,14 @@ impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P> {
 // IKeyswitchController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
-        let plugin = self.plugin();
-        plugin.keyswitch_count(bus_index, channel) as i32
+        self.try_plugin()
+            .map(|p| p.keyswitch_count(bus_index, channel) as i32)
+            .unwrap_or(0)
     }
 
     unsafe fn getKeyswitchInfo(
@@ -2225,7 +2735,9 @@ impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        let Some(plugin) = self.try_plugin() else {
+            return kInvalidArgument;
+        };
         if let Some(ks_info) =
             plugin.keyswitch_info(bus_index, channel, keyswitch_index as usize)
         {
@@ -2249,7 +2761,10 @@ impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P> {
 // INoteExpressionPhysicalUIMapping implementation (VST3 SDK 3.6.11)
 // =============================================================================
 
-impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn getPhysicalUIMapping(
         &self,
         bus_index: i32,
@@ -2260,7 +2775,9 @@ impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processo
             return kInvalidArgument;
         }
 
-        let plugin = self.plugin();
+        let Some(plugin) = self.try_plugin() else {
+            return kInvalidArgument;
+        };
         let mappings = plugin.physical_ui_mappings(bus_index, channel);
         let list_ref = &mut *list;
 
@@ -2282,14 +2799,17 @@ impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processo
 // IVst3WrapperMPESupport implementation (VST3 SDK 3.6.12)
 // =============================================================================
 
-impl<P: Plugin + 'static> IVst3WrapperMPESupportTrait for Vst3Processor<P> {
+impl<P: Plugin + 'static> IVst3WrapperMPESupportTrait for Vst3Processor<P>
+where
+    P::Config: BuildConfig,
+{
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
-        let plugin = self.plugin_mut();
-        if plugin.enable_mpe_input_processing(state != 0) {
-            kResultOk
-        } else {
-            kResultFalse
+        if let Some(plugin) = self.try_plugin_mut() {
+            if plugin.enable_mpe_input_processing(state != 0) {
+                return kResultOk;
+            }
         }
+        kResultFalse
     }
 
     unsafe fn setMPEInputDeviceSettings(
@@ -2298,17 +2818,17 @@ impl<P: Plugin + 'static> IVst3WrapperMPESupportTrait for Vst3Processor<P> {
         member_begin_channel: i32,
         member_end_channel: i32,
     ) -> tresult {
-        let plugin = self.plugin_mut();
-        let settings = beamer_core::MpeInputDeviceSettings {
-            master_channel,
-            member_begin_channel,
-            member_end_channel,
-        };
-        if plugin.set_mpe_input_device_settings(settings) {
-            kResultOk
-        } else {
-            kResultFalse
+        if let Some(plugin) = self.try_plugin_mut() {
+            let settings = beamer_core::MpeInputDeviceSettings {
+                master_channel,
+                member_begin_channel,
+                member_end_channel,
+            };
+            if plugin.set_mpe_input_device_settings(settings) {
+                return kResultOk;
+            }
         }
+        kResultFalse
     }
 }
 

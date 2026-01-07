@@ -5,7 +5,7 @@ VST3 implementation layer for the Beamer framework.
 This crate provides the VST3 SDK integration that bridges `beamer-core` abstractions to the VST3 plugin format:
 
 - **VST3 factory**: Plugin registration and entry points
-- **Component implementation**: Audio processor lifecycle (setup, process, activate)
+- **Two-phase lifecycle**: Plugin ↔ AudioProcessor state machine (prepare/unprepare)
 - **Edit controller**: Parameter management and host communication
 - **MIDI conversion**: Bidirectional mapping between Beamer and VST3 MIDI events
 - **Real-time buffer management**: Zero-allocation audio processing

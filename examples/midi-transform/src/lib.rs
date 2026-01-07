@@ -6,6 +6,7 @@
 //! - **IntParam** for note/CC number selection
 //! - **BoolParam** for enable toggles
 //! - **FloatParam** for velocity/value scaling
+//! - **Two-phase Plugin → AudioProcessor lifecycle**
 //!
 //! # Features
 //!
@@ -23,7 +24,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, Params};
+use beamer::{EnumParam, HasParams, Params};
 
 // =============================================================================
 // Plugin Configuration
@@ -127,8 +128,6 @@ pub struct NoteTransformParams {
     pub velocity_scale: FloatParam,
 }
 
-// No manual Default impl needed - macro generates everything from attributes!
-
 /// CC transformation parameters.
 ///
 /// This is a nested parameter group that appears as "CC Transform" in the DAW.
@@ -156,8 +155,6 @@ pub struct CcTransformParams {
     pub value_scale: FloatParam,
 }
 
-// No manual Default impl needed - macro generates everything from attributes!
-
 // =============================================================================
 // Top-Level Parameters with Nested Groups
 // =============================================================================
@@ -182,16 +179,44 @@ pub struct MidiTransformParams {
     pub cc: CcTransformParams,
 }
 
-// No manual Default impl needed - macro generates everything from attributes!
-
 // =============================================================================
-// Plugin Implementation
+// Plugin (Unprepared State)
 // =============================================================================
 
-/// MIDI transformer plugin.
+/// The MIDI transform plugin in its unprepared state.
+///
+/// This struct holds the parameters before audio configuration is known.
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`MidiTransformProcessor`] via the [`Plugin::prepare()`] method.
+#[derive(Default, HasParams)]
+pub struct MidiTransformPlugin {
+    #[params]
+    params: MidiTransformParams,
+}
+
+impl Plugin for MidiTransformPlugin {
+    type Config = AudioSetup; // Needs sample rate for parameter smoothing
+    type Processor = MidiTransformProcessor;
+
+    fn prepare(mut self, config: AudioSetup) -> MidiTransformProcessor {
+        self.params.set_sample_rate(config.sample_rate);
+
+        MidiTransformProcessor {
+            params: self.params,
+        }
+    }
+}
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+/// MIDI transformer processor, ready for audio/MIDI processing.
 ///
 /// Transforms MIDI notes and CC messages based on parameter settings.
+#[derive(HasParams)]
 pub struct MidiTransformProcessor {
+    #[params]
     params: MidiTransformParams,
 }
 
@@ -354,11 +379,20 @@ impl MidiTransformProcessor {
 }
 
 impl AudioProcessor for MidiTransformProcessor {
-    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-        self.params.set_sample_rate(sample_rate);
+    type Plugin = MidiTransformPlugin;
+
+    fn unprepare(self) -> MidiTransformPlugin {
+        MidiTransformPlugin {
+            params: self.params,
+        }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        _context: &ProcessContext,
+    ) {
         // Pass audio through unchanged
         buffer.copy_to_output();
     }
@@ -459,26 +493,8 @@ impl AudioProcessor for MidiTransformProcessor {
     }
 }
 
-impl Plugin for MidiTransformProcessor {
-    type Params = MidiTransformParams;
-
-    fn params(&self) -> &Self::Params {
-        &self.params
-    }
-
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn create() -> Self {
-        Self {
-            params: MidiTransformParams::default(),
-        }
-    }
-}
-
 // =============================================================================
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<MidiTransformProcessor>);
+export_vst3!(CONFIG, Vst3Processor<MidiTransformPlugin>);

@@ -7,6 +7,7 @@
 //! 4. Use `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
 //! 5. Use linear smoothing (`smoothing = "linear:50.0"`)
 //! 6. Access sidechain input for external key signal
+//! 7. Use `AudioSetup` config for sample-rate-dependent initialization
 //!
 //! ## DSP Overview
 //!
@@ -18,7 +19,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, Params};
+use beamer::{EnumParam, HasParams, Params};
 
 // =============================================================================
 // Plugin Configuration
@@ -225,12 +226,72 @@ const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
 const DC_OFFSET: f64 = 1e-25;
 
 // =============================================================================
-// Audio Processor
+// Plugin (Unprepared State)
 // =============================================================================
 
-/// The compressor plugin processor.
+/// The compressor plugin in its unprepared state.
+///
+/// This struct holds the parameters before audio configuration is known.
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`CompressorProcessor`] via the [`Plugin::prepare()`] method.
+#[derive(Default, HasParams)]
+pub struct CompressorPlugin {
+    /// Plugin parameters
+    #[params]
+    params: CompressorParams,
+}
+
+impl Plugin for CompressorPlugin {
+    type Config = AudioSetup; // Compressor needs sample rate for envelope coefficients
+    type Processor = CompressorProcessor;
+
+    fn prepare(mut self, config: AudioSetup) -> CompressorProcessor {
+        // Set sample rate on params for smoothing calculations
+        self.params.set_sample_rate(config.sample_rate);
+
+        // Calculate bypass ramp samples based on sample rate
+        let ramp_samples = (config.sample_rate * BYPASS_RAMP_MS * 0.001) as u32;
+
+        CompressorProcessor {
+            params: self.params,
+            bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
+            state: CompressionState {
+                env_db: DC_OFFSET,
+                average_gr_db: 0.0,
+            },
+            sample_rate: config.sample_rate,
+        }
+    }
+
+    // =========================================================================
+    // Multi-Bus Configuration (Sidechain)
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        2 // Main stereo input + Sidechain input
+    }
+
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        match index {
+            0 => Some(BusInfo::stereo("Input")),
+            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+/// The compressor processor, ready for audio processing.
+///
+/// This struct is created by [`CompressorPlugin::prepare()`] with valid
+/// sample rate configuration. All DSP state is properly initialized.
+#[derive(HasParams)]
 pub struct CompressorProcessor {
     /// Plugin parameters
+    #[params]
     params: CompressorParams,
 
     /// Bypass handler for smooth crossfade transitions
@@ -239,11 +300,8 @@ pub struct CompressorProcessor {
     /// Compression state
     state: CompressionState,
 
-    /// Current sample rate
+    /// Current sample rate (real value from start!)
     sample_rate: f64,
-
-    /// Cached bypass ramp samples
-    ramp_samples: u32,
 }
 
 /// Compression state (envelope and gain reduction tracking).
@@ -413,13 +471,14 @@ fn process_compression_inner<S: Sample>(
 }
 
 impl AudioProcessor for CompressorProcessor {
-    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-        self.sample_rate = sample_rate;
-        self.params.set_sample_rate(sample_rate);
+    type Plugin = CompressorPlugin;
 
-        // Calculate bypass ramp samples based on sample rate
-        self.ramp_samples = (sample_rate * BYPASS_RAMP_MS * 0.001) as u32;
-        self.bypass_handler.set_ramp_samples(self.ramp_samples);
+    fn unprepare(self) -> CompressorPlugin {
+        // Return just the params; DSP state is discarded
+        // It'll be reallocated on next prepare()
+        CompressorPlugin {
+            params: self.params,
+        }
     }
 
     /// Called when plugin is activated/deactivated.
@@ -493,22 +552,6 @@ impl AudioProcessor for CompressorProcessor {
     }
 
     // =========================================================================
-    // Multi-Bus Configuration (Sidechain)
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        2 // Main stereo input + Sidechain input
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        match index {
-            0 => Some(BusInfo::stereo("Input")),
-            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
-            _ => None,
-        }
-    }
-
-    // =========================================================================
     // State Persistence
     // =========================================================================
 
@@ -522,36 +565,7 @@ impl AudioProcessor for CompressorProcessor {
 }
 
 // =============================================================================
-// Plugin Trait Implementation
-// =============================================================================
-
-impl Plugin for CompressorProcessor {
-    type Params = CompressorParams;
-
-    fn params(&self) -> &Self::Params {
-        &self.params
-    }
-
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn create() -> Self {
-        Self {
-            params: CompressorParams::default(),
-            bypass_handler: BypassHandler::new(64, CrossfadeCurve::EqualPower),
-            state: CompressionState {
-                env_db: DC_OFFSET,
-                average_gr_db: 0.0,
-            },
-            sample_rate: 44100.0,
-            ramp_samples: 64,
-        }
-    }
-}
-
-// =============================================================================
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<CompressorProcessor>);
+export_vst3!(CONFIG, Vst3Processor<CompressorPlugin>);

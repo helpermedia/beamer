@@ -2,16 +2,16 @@
 //!
 //! This plugin shows how to:
 //! 1. Use `#[derive(Params)]` macro for automatic trait implementations
-//! 2. Implement the `AudioProcessor` trait for DSP
-//! 3. Combine them with the `Plugin` trait
+//! 2. Use `#[derive(HasParams)]` to eliminate params() boilerplate
+//! 3. Implement the two-phase Plugin → AudioProcessor lifecycle
 //! 4. Export using `Vst3Processor<T>` wrapper
 //! 5. Use multi-bus support for sidechain ducking
 //! 6. Access transport info via ProcessContext
-//! 7. Use the new `FloatParam` type for cleaner parameter storage
+//! 7. Use the `FloatParam` type for cleaner parameter storage
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::Params; // Import the derive macro
+use beamer::{HasParams, Params}; // Import the derive macros
 
 // =============================================================================
 // Plugin Configuration
@@ -84,22 +84,67 @@ impl GainParams {
     }
 }
 
-// The #[derive(Params)] macro automatically generates:
-// - impl Params for GainParams { ... }
-// - impl Parameters for GainParams { ... }
-// - impl Default for GainParams { ... } (when using declarative attrs)
-// - const PARAM_GAIN_VST3_ID: u32 = fnv1a("gain")
-// - Compile-time collision detection
-
 // =============================================================================
-// Audio Processor
+// Plugin (Unprepared State)
 // =============================================================================
 
-/// The gain plugin processor.
+/// The gain plugin in its unprepared state.
 ///
-/// This struct holds the plugin state and implements the DSP logic.
+/// This struct holds the parameters before audio configuration is known.
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`GainProcessor`] via the [`Plugin::prepare()`] method.
+///
+/// The `#[derive(HasParams)]` macro automatically implements `params()` and
+/// `params_mut()` by looking for the field marked with `#[params]`.
+#[derive(Default, HasParams)]
+pub struct GainPlugin {
+    /// Plugin parameters
+    #[params]
+    params: GainParams,
+}
+
+impl Plugin for GainPlugin {
+    type Config = NoConfig; // Simple gain doesn't need sample rate
+    type Processor = GainProcessor;
+
+    fn prepare(self, _config: NoConfig) -> GainProcessor {
+        GainProcessor {
+            params: self.params,
+        }
+    }
+
+    // =========================================================================
+    // Multi-Bus Configuration
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        2 // Main stereo input + Sidechain input
+    }
+
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        match index {
+            0 => Some(BusInfo::stereo("Input")),
+            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+/// The gain plugin processor, ready for audio processing.
+///
+/// This struct is created by [`GainPlugin::prepare()`] and contains
+/// everything needed for real-time audio processing.
+///
+/// The `#[derive(HasParams)]` macro automatically implements `params()` and
+/// `params_mut()` by looking for the field marked with `#[params]`.
+#[derive(HasParams)]
 pub struct GainProcessor {
     /// Plugin parameters
+    #[params]
     params: GainParams,
 }
 
@@ -169,11 +214,20 @@ impl GainProcessor {
 }
 
 impl AudioProcessor for GainProcessor {
-    fn setup(&mut self, _sample_rate: f64, _max_buffer_size: usize) {
-        // No sample-rate dependent state for a simple gain plugin
+    type Plugin = GainPlugin;
+
+    fn unprepare(self) -> GainPlugin {
+        GainPlugin {
+            params: self.params,
+        }
     }
 
-    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        aux: &mut AuxiliaryBuffers,
+        context: &ProcessContext,
+    ) {
         // Delegate to generic implementation
         self.process_generic(buffer, aux, context);
     }
@@ -197,20 +251,8 @@ impl AudioProcessor for GainProcessor {
     }
 
     // =========================================================================
-    // Multi-Bus Configuration
+    // State Persistence
     // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        2 // Main stereo input + Sidechain input
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        match index {
-            0 => Some(BusInfo::stereo("Input")),
-            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
-            _ => None,
-        }
-    }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
         // Delegate to the macro-generated save_state which uses string-based IDs
@@ -224,30 +266,8 @@ impl AudioProcessor for GainProcessor {
 }
 
 // =============================================================================
-// Plugin Trait Implementation
-// =============================================================================
-
-impl Plugin for GainProcessor {
-    type Params = GainParams;
-
-    fn params(&self) -> &Self::Params {
-        &self.params
-    }
-
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn create() -> Self {
-        Self {
-            params: GainParams::default(),
-        }
-    }
-}
-
-// =============================================================================
 // VST3 Export
 // =============================================================================
 
 // Export VST3 entry points using the generic wrapper
-export_vst3!(CONFIG, Vst3Processor<GainProcessor>);
+export_vst3!(CONFIG, Vst3Processor<GainPlugin>);

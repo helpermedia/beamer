@@ -29,7 +29,10 @@ Simple stereo gain effect with sidechain ducking.
 **Sidechain Ducking:** When a sidechain input is connected, the plugin automatically reduces gain when the sidechain signal is loud (like a kick drum). This creates the classic "pumping" effect used in EDM and radio production.
 
 **Demonstrates:**
+- Two-phase lifecycle: `Plugin` → `AudioProcessor` via `prepare()`
 - `#[derive(Params)]` with declarative attributes
+- `#[derive(HasParams)]` for params access boilerplate
+- `NoConfig` for plugins without sample-rate-dependent state
 - `FloatParam` with dB scaling
 - Multi-bus audio (main + sidechain input)
 - Generic f32/f64 processing via `Sample` trait
@@ -60,6 +63,8 @@ Tempo-synced stereo delay with ping-pong mode.
 - **Ambient tail**: 1/4 note, high feedback (60-80%), low mix (20-30%)
 
 **Demonstrates:**
+- `AudioSetup` config for sample-rate-dependent initialization
+- `set_active()` for clearing delay buffers on reset
 - `EnumParam` for sync mode and stereo mode
 - Tempo sync using `ProcessContext.samples_per_beat()`
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
@@ -72,54 +77,41 @@ cargo xtask bundle delay --release --install
 
 ---
 
-### [MIDI Transform](midi-transform/)
+### [Compressor](compressor/)
 
-MIDI instrument that transforms notes and CC messages.
+Feed-forward compressor with soft/hard knee and sidechain input.
 
-**Note Transform Parameters:**
-
-| Parameter | Description |
-|-----------|-------------|
-| **Enabled** | Toggle note processing on/off |
-| **Mode** | How notes are transformed (see below) |
-| **Transpose** | Semitones to shift (-24 to +24), only for Transpose mode |
-| **Input Note** | Source note for Remap mode (0-127) |
-| **Output Note** | Target note for Remap mode (0-127) |
-| **Velocity** | Velocity scaling (0-200%). 100% = no change |
-
-**Note Modes:**
-- **Through** - Pass notes unchanged (with optional velocity scaling)
-- **Transpose** - Shift all notes by semitones
-- **Octave Up/Down** - Shift all notes by one octave
-- **Remap Note** - Change one specific note to another (e.g., kick on C1 → D1)
-- **Invert** - Mirror pitches around middle C (C4)
-
-**CC Transform Parameters:**
+**Parameters:**
 
 | Parameter | Description |
 |-----------|-------------|
-| **Enabled** | Toggle CC processing on/off |
-| **Mode** | How CC messages are transformed (see below) |
-| **Input CC** | Source CC number for Remap modes (0-127) |
-| **Output CC** | Target CC number for Remap modes (0-127) |
-| **Scale** | Value scaling (0-200%). 100% = no change |
+| **Threshold** | Level at which compression begins (-60 to 0 dB). Uses logarithmic mapping for finer control near 0 dB. |
+| **Ratio** | Compression intensity. 2:1 (gentle) through 20:1 (near-limiting). |
+| **Attack** | How fast compression engages (0.1-200 ms). Slower preserves transients. |
+| **Release** | How fast compression releases (10-2000 ms). Faster = punchier, slower = smoother. |
+| **Soft Knee** | Toggle between soft knee (gradual onset) and hard knee (abrupt). |
+| **Auto Makeup** | Automatically compensate for volume reduction from compression. |
+| **Makeup Gain** | Manual output boost (0-24 dB). Only active when Auto Makeup is off. |
+| **Sidechain** | Use external sidechain input for detection instead of main input. |
 
-**CC Modes:**
-- **Through** - Pass CC messages unchanged
-- **Remap CC** - Change CC number (e.g., Mod Wheel → Expression)
-- **Scale** - Multiply all CC values
-- **Invert** - Flip CC values (0→127, 127→0)
-- **Remap + Scale** - Remap CC number AND scale value
+**Typical Settings:**
+- **Transparent leveling**: Low ratio (2:1), slow attack (50ms), medium release (200ms), soft knee
+- **Punchy drums**: 4:1 ratio, fast attack (5ms), fast release (50ms), hard knee
+- **Vocal control**: 4:1-8:1 ratio, medium attack (20ms), medium release (150ms), soft knee
+- **Sidechain ducking**: Enable sidechain, route kick to sidechain input, high ratio, fast attack/release
 
 **Demonstrates:**
-- Nested parameter groups with `#[nested(group = "...")]`
-- `EnumParam` for discrete choices
-- `IntParam` for note/CC selection
-- `BoolParam` for enable toggles
-- `process_midi()` for MIDI processing
+- `AudioSetup` config for sample-rate-dependent envelope coefficients
+- `BypassHandler` with `CrossfadeCurve::EqualPower` for click-free bypass
+- `set_active()` for resetting envelope state on activation
+- `kind = "db_log"` for logarithmic-feel threshold control
+- Linear parameter smoothing (`smoothing = "linear:50.0"`)
+- `EnumParam` for discrete ratio values
+- Multi-bus audio (main + sidechain input)
+- dB-domain envelope processing
 
 ```bash
-cargo xtask bundle midi-transform --release --install
+cargo xtask bundle compressor --release --install
 ```
 
 ---
@@ -163,6 +155,7 @@ cargo xtask bundle midi-transform --release --install
 **Why MidiCcParams?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcParams` creates hidden parameters that receive these values and converts them back to MIDI events for your plugin.
 
 **Demonstrates:**
+- `AudioSetup` config for sample-rate-dependent filter calculations
 - `IntParam` for transpose (±2 octaves in semitones)
 - Flat parameter groups (`group = "..."`) - works in Cubase
 - `MidiCcParams` for pitch bend/mod wheel via IMidiMapping
@@ -178,4 +171,56 @@ cargo xtask bundle midi-transform --release --install
 
 ```bash
 cargo xtask bundle synth --release --install
+```
+---
+
+### [MIDI Transform](midi-transform/)
+
+MIDI instrument that transforms notes and CC messages.
+
+**Note Transform Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Enabled** | Toggle note processing on/off |
+| **Mode** | How notes are transformed (see below) |
+| **Transpose** | Semitones to shift (-24 to +24), only for Transpose mode |
+| **Input Note** | Source note for Remap mode (0-127) |
+| **Output Note** | Target note for Remap mode (0-127) |
+| **Velocity** | Velocity scaling (0-200%). 100% = no change |
+
+**Note Modes:**
+- **Through** - Pass notes unchanged (with optional velocity scaling)
+- **Transpose** - Shift all notes by semitones
+- **Octave Up/Down** - Shift all notes by one octave
+- **Remap Note** - Change one specific note to another (e.g., kick on C1 → D1)
+- **Invert** - Mirror pitches around middle C (C4)
+
+**CC Transform Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Enabled** | Toggle CC processing on/off |
+| **Mode** | How CC messages are transformed (see below) |
+| **Input CC** | Source CC number for Remap modes (0-127) |
+| **Output CC** | Target CC number for Remap modes (0-127) |
+| **Scale** | Value scaling (0-200%). 100% = no change |
+
+**CC Modes:**
+- **Through** - Pass CC messages unchanged
+- **Remap CC** - Change CC number (e.g., Mod Wheel → Expression)
+- **Scale** - Multiply all CC values
+- **Invert** - Flip CC values (0→127, 127→0)
+- **Remap + Scale** - Remap CC number AND scale value
+
+**Demonstrates:**
+- `AudioSetup` config for parameter smoothing
+- Nested parameter groups with `#[nested(group = "...")]`
+- `EnumParam` for discrete choices
+- `IntParam` for note/CC selection
+- `BoolParam` for enable toggles
+- `process_midi()` for MIDI processing
+
+```bash
+cargo xtask bundle midi-transform --release --install
 ```

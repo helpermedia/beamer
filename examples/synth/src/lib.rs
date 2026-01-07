@@ -14,10 +14,11 @@
 //! 11. Use mod wheel (CC 1) to control vibrato depth and filter cutoff
 //! 12. Handle polyphonic aftertouch (per-note vibrato control)
 //! 13. Handle channel aftertouch (global vibrato control)
+//! 14. Use `AudioSetup` config for sample-rate-dependent initialization
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, Params};
+use beamer::{EnumParam, HasParams, Params};
 
 // =============================================================================
 // Plugin Configuration
@@ -379,20 +380,85 @@ impl Voice {
 }
 
 // =============================================================================
-// Audio Processor
+// Plugin (Unprepared State)
 // =============================================================================
 
-/// The synthesizer processor.
+/// The synthesizer plugin in its unprepared state.
 ///
-/// Manages 8 polyphonic voices with sample-accurate MIDI timing
-/// and oldest-note voice stealing.
+/// This struct holds the parameters before audio configuration is known.
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`SynthProcessor`] via the [`Plugin::prepare()`] method.
+#[derive(Default, HasParams)]
+pub struct SynthPlugin {
+    /// Plugin parameters
+    #[params]
+    params: SynthParams,
+}
+
+impl Plugin for SynthPlugin {
+    type Config = AudioSetup; // Synth needs sample rate for filter calculations
+    type Processor = SynthProcessor;
+
+    fn prepare(mut self, config: AudioSetup) -> SynthProcessor {
+        // Set sample rate on params for smoothing calculations
+        self.params.set_sample_rate(config.sample_rate);
+
+        SynthProcessor {
+            params: self.params,
+            // Enable MIDI CC emulation for pitch bend, mod wheel, and common CCs
+            // This allows the synth to receive these controllers in DAWs that use
+            // IMidiMapping instead of sending raw MIDI events.
+            midi_cc_params: MidiCcParams::new()
+                .with_pitch_bend()
+                .with_mod_wheel()
+                .with_ccs(&[7, 10, 11, 64]), // Volume, Pan, Expression, Sustain
+            voices: [Voice::new(); NUM_VOICES],
+            sample_rate: config.sample_rate,
+            time_counter: 0,
+            pending_events: Vec::with_capacity(64),
+            pitch_bend: 0.0,
+            mod_wheel: 0.0,
+            vibrato_phase: 0.0,
+            channel_pressure: 0.0,
+        }
+    }
+
+    // =========================================================================
+    // Bus Configuration
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        0 // Synth has no audio input
+    }
+
+    fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
+        None // No inputs
+    }
+}
+
+// =============================================================================
+// Audio Processor (Prepared State)
+// =============================================================================
+
+/// The synthesizer processor, ready for audio processing.
+///
+/// This struct is created by [`SynthPlugin::prepare()`] with valid
+/// sample rate configuration. Manages 8 polyphonic voices with
+/// sample-accurate MIDI timing and oldest-note voice stealing.
+#[derive(HasParams)]
 pub struct SynthProcessor {
+    /// Plugin parameters
+    #[params]
     params: SynthParams,
     /// MIDI CC emulation parameters for pitch bend, mod wheel, etc.
     midi_cc_params: MidiCcParams,
+    /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
+    /// Current sample rate (real value from start!)
     sample_rate: f64,
+    /// Voice allocation time counter
     time_counter: u64,
+    /// Pending MIDI events for sample-accurate processing
     pending_events: Vec<MidiEvent>,
     /// Current pitch bend value (-1.0 to +1.0)
     pitch_bend: f64,
@@ -603,9 +669,14 @@ impl SynthProcessor {
 }
 
 impl AudioProcessor for SynthProcessor {
-    fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-        self.sample_rate = sample_rate;
-        self.params.set_sample_rate(sample_rate);
+    type Plugin = SynthPlugin;
+
+    fn unprepare(self) -> SynthPlugin {
+        // Return just the params; voices and DSP state are discarded
+        // They'll be reallocated on next prepare()
+        SynthPlugin {
+            params: self.params,
+        }
     }
 
     fn process(
@@ -644,8 +715,8 @@ impl AudioProcessor for SynthProcessor {
         (5.0 * self.sample_rate) as u32
     }
 
-    fn input_bus_count(&self) -> usize {
-        0 // Synth has no audio input
+    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
+        Some(&self.midi_cc_params)
     }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
@@ -658,48 +729,7 @@ impl AudioProcessor for SynthProcessor {
 }
 
 // =============================================================================
-// Plugin Trait Implementation
-// =============================================================================
-
-impl Plugin for SynthProcessor {
-    type Params = SynthParams;
-
-    fn params(&self) -> &Self::Params {
-        &self.params
-    }
-
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn create() -> Self {
-        Self {
-            params: SynthParams::default(),
-            // Enable MIDI CC emulation for pitch bend, mod wheel, and common CCs
-            // This allows the synth to receive these controllers in DAWs that use
-            // IMidiMapping instead of sending raw MIDI events.
-            midi_cc_params: MidiCcParams::new()
-                .with_pitch_bend()
-                .with_mod_wheel()
-                .with_ccs(&[7, 10, 11, 64]),  // Volume, Pan, Expression, Sustain
-            voices: [Voice::new(); NUM_VOICES],
-            sample_rate: 44100.0,
-            time_counter: 0,
-            pending_events: Vec::with_capacity(64),
-            pitch_bend: 0.0,
-            mod_wheel: 0.0,
-            vibrato_phase: 0.0,
-            channel_pressure: 0.0,
-        }
-    }
-
-    fn midi_cc_params(&self) -> Option<&MidiCcParams> {
-        Some(&self.midi_cc_params)
-    }
-}
-
-// =============================================================================
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<SynthProcessor>);
+export_vst3!(CONFIG, Vst3Processor<SynthPlugin>);
