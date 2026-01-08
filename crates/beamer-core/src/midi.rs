@@ -776,8 +776,8 @@ pub mod rpn {
 
     /// Check if a parameter number represents RPN Null.
     #[inline]
-    pub const fn is_null(param: u16) -> bool {
-        param == NULL
+    pub const fn is_null(parameter: u16) -> bool {
+        parameter == NULL
     }
 }
 
@@ -911,9 +911,9 @@ impl ParameterNumberMessage {
 #[derive(Debug, Clone, Copy, Default)]
 struct RpnChannelState {
     /// Currently selected parameter MSB (CC 99/101).
-    param_msb: Option<u8>,
+    parameter_msb: Option<u8>,
     /// Currently selected parameter LSB (CC 98/100).
-    param_lsb: Option<u8>,
+    parameter_lsb: Option<u8>,
     /// Current data entry MSB (CC 6).
     data_msb: Option<u8>,
     /// Current data entry LSB (CC 38).
@@ -930,12 +930,12 @@ impl RpnChannelState {
 
     /// Check if we have a complete parameter selection.
     fn has_parameter(&self) -> bool {
-        self.param_msb.is_some() && self.param_lsb.is_some()
+        self.parameter_msb.is_some() && self.parameter_lsb.is_some()
     }
 
     /// Get the 14-bit parameter number if both MSB and LSB are set.
     fn parameter(&self) -> Option<u16> {
-        match (self.param_msb, self.param_lsb) {
+        match (self.parameter_msb, self.parameter_lsb) {
             (Some(msb), Some(lsb)) => Some(combine_14bit_raw(msb, lsb)),
             _ => None,
         }
@@ -1001,8 +1001,8 @@ impl RpnTracker {
     pub const fn new() -> Self {
         Self {
             channels: [RpnChannelState {
-                param_msb: None,
-                param_lsb: None,
+                parameter_msb: None,
+                parameter_lsb: None,
                 data_msb: None,
                 data_lsb: None,
                 is_rpn: false,
@@ -1045,7 +1045,7 @@ impl RpnTracker {
         match cc.controller {
             // RPN parameter selection
             cc::RPN_MSB => {
-                state.param_msb = Some(value_7bit);
+                state.parameter_msb = Some(value_7bit);
                 state.is_rpn = true;
                 // Clear data values on new parameter selection
                 state.data_msb = None;
@@ -1053,11 +1053,11 @@ impl RpnTracker {
                 None
             }
             cc::RPN_LSB => {
-                state.param_lsb = Some(value_7bit);
+                state.parameter_lsb = Some(value_7bit);
                 state.is_rpn = true;
                 // Check for RPN Null
-                if let Some(param) = state.parameter() {
-                    if rpn::is_null(param) {
+                if let Some(parameter) = state.parameter() {
+                    if rpn::is_null(parameter) {
                         state.reset();
                     }
                 }
@@ -1066,14 +1066,14 @@ impl RpnTracker {
 
             // NRPN parameter selection
             cc::NRPN_MSB => {
-                state.param_msb = Some(value_7bit);
+                state.parameter_msb = Some(value_7bit);
                 state.is_rpn = false;
                 state.data_msb = None;
                 state.data_lsb = None;
                 None
             }
             cc::NRPN_LSB => {
-                state.param_lsb = Some(value_7bit);
+                state.parameter_lsb = Some(value_7bit);
                 state.is_rpn = false;
                 None
             }
@@ -1924,8 +1924,8 @@ impl NoteExpressionTypeInfo {
     }
 
     /// Builder: set associated parameter.
-    pub fn with_associated_parameter(mut self, param_id: i32) -> Self {
-        self.associated_parameter_id = param_id;
+    pub fn with_associated_parameter(mut self, parameter_id: i32) -> Self {
+        self.associated_parameter_id = parameter_id;
         self.flags = self.flags.or(NoteExpressionTypeFlags::ASSOCIATED_PARAMETER_ID_VALID);
         self
     }

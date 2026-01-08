@@ -25,12 +25,12 @@ This document provides detailed API documentation for Beamer. For high-level arc
 The `Plugin` trait represents a plugin in its **unprepared state** — before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into an `AudioProcessor` via the `prepare()` method.
 
 ```rust
-pub trait Plugin: HasParams + Default {
+pub trait Plugin: HasParameters + Default {
     /// Configuration type for prepare() — determines what info is needed
     type Config: ProcessorConfig;
 
     /// The prepared processor type
-    type Processor: AudioProcessor<Plugin = Self, Params = Self::Params>;
+    type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
 
     /// Transform into a prepared processor with audio configuration.
     /// Consumes self — the plugin moves into the prepared state.
@@ -46,21 +46,21 @@ pub trait Plugin: HasParams + Default {
     fn wants_midi(&self) -> bool { false }
 }
 
-// HasParams supertrait provides parameter access
-pub trait HasParams: Send + 'static {
-    type Params: Parameters + Units + Params;
-    fn params(&self) -> &Self::Params;
-    fn params_mut(&mut self) -> &mut Self::Params;
+// HasParameters supertrait provides parameter access
+pub trait HasParameters: Send + 'static {
+    type Parameters: Parameters + Units + Parameters;
+    fn parameters(&self) -> &Self::Parameters;
+    fn parameters_mut(&mut self) -> &mut Self::Parameters;
 }
 ```
 
-**HasParams Derive Macro:** Use `#[derive(HasParams)]` to eliminate boilerplate:
+**HasParameters Derive Macro:** Use `#[derive(HasParameters)]` to eliminate boilerplate:
 
 ```rust
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 struct GainPlugin {
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 ```
 
@@ -95,15 +95,15 @@ impl Plugin for DelayPlugin {
 The `AudioProcessor` trait represents a plugin in its **prepared state** — ready for real-time audio processing. Created by `Plugin::prepare()`, it can transform back to unprepared state via `unprepare()`.
 
 ```rust
-pub trait AudioProcessor: HasParams {
+pub trait AudioProcessor: HasParameters {
     /// The unprepared plugin type this processor came from
-    type Plugin: Plugin<Processor = Self, Params = Self::Params>;
+    type Plugin: Plugin<Processor = Self, Parameters = Self::Parameters>;
 
     /// Transform back to unprepared state.
     /// Called when host calls setProcessing(false).
     fn unprepare(self) -> Self::Plugin;
 
-    // Note: params() and params_mut() are provided by HasParams supertrait
+    // Note: parameters() and parameters_mut() are provided by HasParameters supertrait
 
     /// Process audio. Called on the audio thread.
     fn process(
@@ -187,7 +187,7 @@ The plugin transitions between states based on host actions:
 
 Beamer provides two parameter APIs:
 - **`Parameters` trait**: Low-level VST3 integration (manual implementation)
-- **`Params` trait + derive macro**: High-level ergonomic API (recommended)
+- **`Parameters` trait + derive macro**: High-level ergonomic API (recommended)
 - **Parameter smoothing**: Opt-in smoothing to avoid zipper noise during automation
 
 #### Derive Macro (Recommended)
@@ -196,22 +196,22 @@ Beamer provides two parameter APIs:
 
 ```rust
 use beamer::prelude::*;
-use beamer::Params;
+use beamer::Parameters;
 
-#[derive(Params)]
-pub struct GainParams {
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+#[derive(Parameters)]
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParam,
 
-    #[param(id = "bypass", bypass)]
+    #[parameter(id = "bypass", bypass)]
     pub bypass: BoolParam,
 }
 
 // No manual new() or Default impl needed - macro generates everything!
 ```
 
-The `#[derive(Params)]` macro generates:
-- `Params` trait implementation (count, iter, by_id, save_state, load_state)
+The `#[derive(Parameters)]` macro generates:
+- `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
 - `Parameters` trait implementation (VST3 integration)
 - `Units` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present)
@@ -225,12 +225,12 @@ The `#[derive(Params)]` macro generates:
 | `id = "..."` | String ID (hashed to u32 for VST3) | Yes |
 | `name = "..."` | Display name in DAW | For Default |
 | `default = <value>` | Default value (float, int, or bool) | For Default |
-| `range = start..=end` | Value range | For FloatParam/IntParam |
+| `range = start..=end` | Value range | For FloatParam/IntParameter |
 | `kind = "..."` | Unit type (see below) | Optional |
 | `group = "..."` | Visual grouping without nested struct | Optional |
 | `short_name = "..."` | Short name for constrained UIs | Optional |
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) | Optional |
-| `bypass` | Mark as bypass parameter (BoolParam only) | Optional |
+| `bypass` | Mark as bypass parameter (BoolParameter only) | Optional |
 
 **Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
 
@@ -270,7 +270,7 @@ let bypass = BoolParam::new("Bypass", false);
 **EnumParam** — Discrete choice parameter:
 
 ```rust
-use beamer::EnumParam as DeriveEnumParam;
+use beamer::EnumParameter as DeriveEnumParam;
 
 #[derive(Copy, Clone, PartialEq, DeriveEnumParam)]
 pub enum FilterType {
@@ -284,13 +284,13 @@ pub enum FilterType {
     Notch,  // Uses "Notch" as display name
 }
 
-#[derive(Params)]
-pub struct FilterParams {
-    #[param(id = "filter_type")]
+#[derive(Parameters)]
+pub struct FilterParameters {
+    #[parameter(id = "filter_type")]
     pub filter_type: EnumParam<FilterType>,
 }
 
-impl Default for FilterParams {
+impl Default for FilterParameters {
     fn default() -> Self {
         Self {
             // Uses HighPass (from #[default]) as the default value
@@ -300,7 +300,7 @@ impl Default for FilterParams {
 }
 
 // In DSP code:
-match self.params.filter_type.get() {
+match self.parameters.filter_type.get() {
     FilterType::LowPass => { /* ... */ }
     FilterType::HighPass => { /* ... */ }
     FilterType::BandPass => { /* ... */ }
@@ -315,7 +315,7 @@ The `#[derive(EnumParam)]` macro generates the `EnumParamValue` trait implementa
 | `#[name = "..."]` | Display name for variant (defaults to identifier) |
 | `#[default]` | Mark as default variant (defaults to first) |
 
-EnumParam constructors:
+EnumParameter constructors:
 
 | Constructor | Purpose |
 |-------------|---------|
@@ -339,7 +339,7 @@ let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
 | `SmoothingStyle::None` | Instant (default) | Non-audio parameters |
 | `SmoothingStyle::Linear(ms)` | Linear ramp | Predictable timing |
 | `SmoothingStyle::Exponential(ms)` | One-pole IIR, can cross zero | dB gain, most musical parameters |
-| `SmoothingStyle::Logarithmic(ms)` | Log-domain, positive values only | Frequencies (Hz), other positive-only params |
+| `SmoothingStyle::Logarithmic(ms)` | Log-domain, positive values only | Frequencies (Hz), other positive-only parameters |
 
 **Sample Rate Initialization:**
 
@@ -350,14 +350,14 @@ impl Plugin for MyPlugin {
     type Config = AudioSetup;
 
     fn prepare(mut self, config: AudioSetup) -> MyProcessor {
-        self.params.set_sample_rate(config.sample_rate);
-        MyProcessor { params: self.params, /* ... */ }
+        self.parameters.set_sample_rate(config.sample_rate);
+        MyProcessor { parameters: self.parameters, /* ... */ }
     }
 }
 ```
 
 > **Oversampling:** If your plugin uses oversampling, pass the actual processing rate:
-> `self.params.set_sample_rate(config.sample_rate * oversampling_factor as f64);`
+> `self.parameters.set_sample_rate(config.sample_rate * oversampling_factor as f64);`
 
 **Per-Sample Processing:**
 
@@ -365,7 +365,7 @@ impl Plugin for MyPlugin {
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
-            let gain = self.params.gain.tick_smoothed();  // Advances smoother
+            let gain = self.parameters.gain.tick_smoothed();  // Advances smoother
             *o = *i * gain as f32;
         }
     }
@@ -376,8 +376,8 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    let gain = self.params.gain.smoothed();  // Current value, no advance
-    self.params.gain.skip_smoothing(buffer.len());
+    let gain = self.parameters.gain.smoothed();  // Current value, no advance
+    self.parameters.gain.skip_smoothing(buffer.len());
 
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
@@ -392,7 +392,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 ```rust
 let mut gain_buffer = [0.0f32; 512];
 let len = buffer.len().min(512);
-self.params.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
+self.parameters.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 // Use gain_buffer[i] per sample
 ```
 
@@ -422,19 +422,19 @@ The framework automatically calls `reset_smoothing()` after loading state to pre
 Use `group = "..."` for visual grouping in the DAW without nested structs:
 
 ```rust
-#[derive(Params)]
-pub struct SynthParams {
-    #[param(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
+#[derive(Parameters)]
+pub struct SynthParameters {
+    #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
     pub cutoff: FloatParam,
 
-    #[param(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
+    #[parameter(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
     pub resonance: FloatParam,
 
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
     pub gain: FloatParam,
 }
 
-// Access is flat: params.cutoff, params.resonance, params.gain
+// Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
 // DAW shows collapsible "Filter" and "Output" groups
 ```
 
@@ -443,7 +443,7 @@ pub struct SynthParams {
 | Feature | Flat (`group = "..."`) | Nested (`#[nested(...)]`) |
 |---------|------------------------|---------------------------|
 | Struct layout | Single struct | Separate struct per group |
-| Access pattern | `params.cutoff` | `params.filter.cutoff` |
+| Access pattern | `parameters.cutoff` | `parameters.filter.cutoff` |
 | Reusability | N/A | Same struct reusable |
 | Complexity | Simple | More structure |
 
@@ -454,33 +454,33 @@ Choose flat grouping for simple organization; nested for reusable parameter coll
 Use `#[nested]` to organize parameters into separate structs with VST3 units:
 
 ```rust
-#[derive(Params)]
-pub struct SynthParams {
-    #[param(id = "master", name = "Master", default = 0.0, range = -60.0..=12.0, kind = "db")]
+#[derive(Parameters)]
+pub struct SynthParameters {
+    #[parameter(id = "master", name = "Master", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub master: FloatParam,
 
     #[nested(group = "Filter")]
-    pub filter: FilterParams,
+    pub filter: FilterParameters,
 
     #[nested(group = "Amp Envelope")]
-    pub amp_env: EnvelopeParams,
+    pub amp_env: EnvelopeParameters,
 }
 
-#[derive(Params)]
-pub struct FilterParams {
-    #[param(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz")]
+#[derive(Parameters)]
+pub struct FilterParameters {
+    #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz")]
     pub cutoff: FloatParam,
 
-    #[param(id = "resonance", name = "Resonance", default = 0.5, range = 0.0..=1.0)]
+    #[parameter(id = "resonance", name = "Resonance", default = 0.5, range = 0.0..=1.0)]
     pub resonance: FloatParam,
 }
 
-#[derive(Params)]
-pub struct EnvelopeParams {
-    #[param(id = "attack", name = "Attack", default = 10.0, range = 0.1..=1000.0, kind = "ms")]
+#[derive(Parameters)]
+pub struct EnvelopeParameters {
+    #[parameter(id = "attack", name = "Attack", default = 10.0, range = 0.1..=1000.0, kind = "ms")]
     pub attack: FloatParam,
 
-    #[param(id = "release", name = "Release", default = 100.0, range = 0.1..=5000.0, kind = "ms")]
+    #[parameter(id = "release", name = "Release", default = 100.0, range = 0.1..=5000.0, kind = "ms")]
     pub release: FloatParam,
 }
 ```
@@ -504,10 +504,10 @@ The same nested struct can be reused in multiple groups without ID collision:
 
 ```rust
 #[nested(group = "Osc 1")]
-pub osc1: OscParams,
+pub osc1: OscParameters,
 
 #[nested(group = "Osc 2")]
-pub osc2: OscParams,  // Same struct, different paths: "osc1/attack" vs "osc2/attack"
+pub osc2: OscParameters,  // Same struct, different paths: "osc1/attack" vs "osc2/attack"
 ```
 
 #### Low-Level Parameters Trait
@@ -719,7 +719,7 @@ impl MyPlugin {
         _aux: &mut AuxiliaryBuffers<S>,
         _context: &ProcessContext,
     ) {
-        let gain = S::from_f32(self.params.gain_linear());
+        let gain = S::from_f32(self.parameters.gain_linear());
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -773,7 +773,7 @@ impl BypassHandler {
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    let is_bypassed = self.params.bypass.get();
+    let is_bypassed = self.parameters.bypass.get();
 
     match self.bypass_handler.begin(is_bypassed) {
         BypassAction::Passthrough => {
@@ -1005,13 +1005,13 @@ VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most D
 
 ```rust
 use beamer::prelude::*;
-use beamer::HasParams;
+use beamer::HasParameters;
 
 // Unprepared plugin state - no midi_cc field needed!
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 struct MySynthPlugin {
-    #[params]
-    params: MyParams,
+    #[parameters]
+    parameters: MyParameters,
 }
 
 impl Plugin for MySynthPlugin {
@@ -1020,7 +1020,7 @@ impl Plugin for MySynthPlugin {
 
     fn prepare(mut self, config: AudioSetup) -> MySynthProcessor {
         MySynthProcessor {
-            params: self.params,
+            parameters: self.parameters,
             // No midi_cc to move - framework manages it!
         }
     }
@@ -1039,17 +1039,17 @@ impl Plugin for MySynthPlugin {
 }
 
 // Prepared processor state - no midi_cc field needed!
-#[derive(HasParams)]
+#[derive(HasParameters)]
 struct MySynthProcessor {
-    #[params]
-    params: MyParams,
+    #[parameters]
+    parameters: MyParameters,
 }
 
 impl AudioProcessor for MySynthProcessor {
     type Plugin = MySynthPlugin;
 
     fn unprepare(self) -> MySynthPlugin {
-        MySynthPlugin { params: self.params }
+        MySynthPlugin { parameters: self.parameters }
         // No midi_cc to move back!
     }
 
@@ -1090,7 +1090,7 @@ impl AudioProcessor for MySynthProcessor {
 | `.with_mod_wheel()` | Enable CC 1 (0.0-1.0) |
 | `.with_cc(n)` | Enable single CC (0-127). **Panics if n ≥ 128.** |
 | `.with_ccs(&[...])` | Enable multiple CCs (not const fn). **Panics if any CC ≥ 128.** |
-| `.with_all_ccs()` | Enable all 128 CCs (creates many params) |
+| `.with_all_ccs()` | Enable all 128 CCs (creates many parameters) |
 
 > **Note:** `with_cc()` and `with_ccs()` panic on invalid CC numbers (≥128) to catch typos like `.with_cc(130)` at runtime. In const context, this becomes a compile-time error.
 
@@ -1126,8 +1126,8 @@ fn midi_cc_to_param(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
 
 ```rust
 fn on_midi_learn(&mut self, _bus: i32, _channel: i16, cc: u8) -> bool {
-    if let Some(param_id) = self.learning_param.take() {
-        self.midi_map.insert(cc, param_id);
+    if let Some(parameter_id) = self.learning_parameter.take() {
+        self.midi_map.insert(cc, parameter_id);
         true
     } else {
         false
@@ -1401,7 +1401,7 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 │  │    invoke(cmd, args) → Promise                      │    │
 │  │    on(event, callback)                              │    │
 │  │    emit(event, data)                                │    │
-│  │    getParam(id) → ParamState                        │    │
+│  │    getParameter(id) → ParamState                        │    │
 │  │  }                                                  │    │
 │  └─────────────────────────────────────────────────────┘    │
 │              │                         ▲                    │
@@ -1446,11 +1446,11 @@ const result = await window.__PLUGIN__.invoke('getParameterValue', { paramId: 0 
 
 // Listen for events
 window.__PLUGIN__.on('parameterChanged', (data) => {
-    console.log(`Param ${data.paramId} = ${data.value}`);
+    console.log(`Parameter ${data.paramId} = ${data.value}`);
 });
 
 // Parameter state helper with automation support
-const gain = window.__PLUGIN__.getParam(0);
+const gain = window.__PLUGIN__.getParameter(0);
 gain.onValueChanged((value, display) => updateKnob(value));
 
 // Proper automation gesture
@@ -1511,19 +1511,19 @@ cargo clippy
 ```rust
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{HasParams, Params};
+use beamer::{HasParameters, Parameters};
 
 // =============================================================================
 // Parameters
 // =============================================================================
 
-#[derive(Params)]
-pub struct GainParams {
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+#[derive(Parameters)]
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParam,
 }
 
-impl GainParams {
+impl GainParameters {
     fn gain_linear(&self) -> f32 {
         self.gain.as_linear() as f32
     }
@@ -1539,10 +1539,10 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Gain", UID)
     .with_vendor("My Company")
     .with_version("1.0.0");
 
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 pub struct GainPlugin {
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl Plugin for GainPlugin {
@@ -1550,7 +1550,7 @@ impl Plugin for GainPlugin {
     type Processor = GainProcessor;
 
     fn prepare(self, _config: NoConfig) -> GainProcessor {
-        GainProcessor { params: self.params }
+        GainProcessor { parameters: self.parameters }
     }
 }
 
@@ -1558,21 +1558,21 @@ impl Plugin for GainPlugin {
 // Audio Processor (Prepared State)
 // =============================================================================
 
-#[derive(HasParams)]
+#[derive(HasParameters)]
 pub struct GainProcessor {
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
 
     fn unprepare(self) -> GainPlugin {
-        GainPlugin { params: self.params }
+        GainPlugin { parameters: self.parameters }
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.params.gain_linear();
+        let gain = self.parameters.gain_linear();
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -1581,11 +1581,11 @@ impl AudioProcessor for GainProcessor {
     }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.params.load_state(data).map_err(PluginError::StateError)
+        self.parameters.load_state(data).map_err(PluginError::StateError)
     }
 }
 

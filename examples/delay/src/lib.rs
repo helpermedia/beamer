@@ -1,8 +1,8 @@
 //! Beamer Delay - Example tempo-synced delay plugin demonstrating the Beamer framework.
 //!
 //! This plugin shows how to:
-//! 1. Use `EnumParam` for sync mode (quarter, eighth, 16th, 32nd, free)
-//! 2. Use `#[derive(HasParams)]` to eliminate params() boilerplate
+//! 1. Use `EnumParameter` for sync mode (quarter, eighth, 16th, 32nd, free)
+//! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
 //! 3. Use tempo information from `ProcessContext` for tempo-synced delays
 //! 4. Implement a ring buffer delay line
 //! 5. Apply parameter smoothing to avoid zipper noise
@@ -13,7 +13,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, HasParams, Params};
+use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration
@@ -36,7 +36,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay", COMPONENT_UI
 // =============================================================================
 
 /// Delay sync mode - determines how delay time is calculated.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum SyncMode {
     /// Free-running delay using time in milliseconds
     #[default]
@@ -57,7 +57,7 @@ pub enum SyncMode {
 }
 
 /// Stereo mode - determines how delay is applied to stereo channels.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum StereoMode {
     /// Same delay time on both channels
     #[default]
@@ -75,29 +75,29 @@ pub enum StereoMode {
 /// Parameter collection for the delay plugin.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
-/// attributes, and the `#[derive(Params)]` macro generates everything
+/// attributes, and the `#[derive(Parameters)]` macro generates everything
 /// including the `Default` implementation!
-#[derive(Params)]
-pub struct DelayParams {
+#[derive(Parameters)]
+pub struct DelayParameters {
     /// Sync mode selection (Free, 1/4, 1/8, 1/16, 1/32)
-    #[param(id = "sync_mode", name = "Sync Mode")]
-    pub sync_mode: EnumParam<SyncMode>,
+    #[parameter(id = "sync_mode", name = "Sync Mode")]
+    pub sync_mode: EnumParameter<SyncMode>,
 
     /// Stereo mode selection (Stereo, Ping-Pong)
-    #[param(id = "stereo_mode", name = "Stereo Mode")]
-    pub stereo_mode: EnumParam<StereoMode>,
+    #[parameter(id = "stereo_mode", name = "Stereo Mode")]
+    pub stereo_mode: EnumParameter<StereoMode>,
 
     /// Delay time in milliseconds (only used when Sync Mode = Free)
-    #[param(id = "time", name = "Time", default = 250.0, range = 1.0..=2000.0, kind = "ms")]
-    pub time_ms: FloatParam,
+    #[parameter(id = "time", name = "Time", default = 250.0, range = 1.0..=2000.0, kind = "ms")]
+    pub time_ms: FloatParameter,
 
     /// Feedback amount (0% to 100%) - smoothed to avoid zipper noise
-    #[param(id = "feedback", name = "Feedback", default = 0.4, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
-    pub feedback: FloatParam,
+    #[parameter(id = "feedback", name = "Feedback", default = 0.4, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
+    pub feedback: FloatParameter,
 
     /// Wet/dry mix (0% = dry, 100% = wet) - smoothed to avoid zipper noise
-    #[param(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
-    pub mix: FloatParam,
+    #[parameter(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
+    pub mix: FloatParameter,
 }
 
 // =============================================================================
@@ -186,11 +186,11 @@ impl DelayLine {
 /// This struct holds the parameters before audio configuration is known.
 /// When the host calls setupProcessing(), it is transformed into a
 /// [`DelayProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 pub struct DelayPlugin {
     /// Plugin parameters
-    #[params]
-    params: DelayParams,
+    #[parameters]
+    parameters: DelayParameters,
 }
 
 impl Plugin for DelayPlugin {
@@ -198,11 +198,11 @@ impl Plugin for DelayPlugin {
     type Processor = DelayProcessor;
 
     fn prepare(mut self, config: AudioSetup) -> DelayProcessor {
-        // Set sample rate on params for smoothing calculations
-        self.params.set_sample_rate(config.sample_rate);
+        // Set sample rate on parameters for smoothing calculations
+        self.parameters.set_sample_rate(config.sample_rate);
 
         DelayProcessor {
-            params: self.params,
+            parameters: self.parameters,
             delay_l: DelayLine::new(config.sample_rate),
             delay_r: DelayLine::new(config.sample_rate),
             sample_rate: config.sample_rate,
@@ -218,11 +218,11 @@ impl Plugin for DelayPlugin {
 ///
 /// This struct is created by [`DelayPlugin::prepare()`] with valid
 /// sample rate configuration. All fields have real values from the start.
-#[derive(HasParams)]
+#[derive(HasParameters)]
 pub struct DelayProcessor {
     /// Plugin parameters
-    #[params]
-    params: DelayParams,
+    #[parameters]
+    parameters: DelayParameters,
     /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
@@ -260,10 +260,10 @@ impl DelayProcessor {
         // Default fallback: 22050 samples = 500ms at 44.1kHz (120 BPM quarter note)
         let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
 
-        let delay_samples = match self.params.sync_mode.get() {
+        let delay_samples = match self.parameters.sync_mode.get() {
             SyncMode::Free => {
                 // Convert milliseconds to samples
-                self.params.time_ms.get() / 1000.0 * self.sample_rate
+                self.parameters.time_ms.get() / 1000.0 * self.sample_rate
             }
             SyncMode::Quarter => samples_per_beat,           // 1 beat
             SyncMode::Eighth => samples_per_beat * 0.5,      // 1/2 beat
@@ -300,7 +300,7 @@ impl DelayProcessor {
         context: &ProcessContext,
     ) {
         let delay_samples = self.calculate_delay_samples(context);
-        let stereo_mode = self.params.stereo_mode.get();
+        let stereo_mode = self.parameters.stereo_mode.get();
 
         let num_samples = buffer.num_samples();
         let num_channels = buffer.num_output_channels().min(2);
@@ -312,8 +312,8 @@ impl DelayProcessor {
         for sample_idx in 0..num_samples {
             // Get smoothed parameter values (advances smoother each sample)
             // This prevents "zipper noise" when automating parameters
-            let feedback = self.params.feedback.tick_smoothed();
-            let mix = self.params.mix.tick_smoothed();
+            let feedback = self.parameters.feedback.tick_smoothed();
+            let mix = self.parameters.mix.tick_smoothed();
 
             // Read input samples
             let in_l = buffer.input(0)[sample_idx].to_f64();
@@ -373,10 +373,10 @@ impl AudioProcessor for DelayProcessor {
     type Plugin = DelayPlugin;
 
     fn unprepare(self) -> DelayPlugin {
-        // Return just the params; delay buffers are discarded
+        // Return just the parameters; delay buffers are discarded
         // They'll be reallocated with correct size on next prepare()
         DelayPlugin {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -418,11 +418,11 @@ impl AudioProcessor for DelayProcessor {
     }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.params.load_state(data).map_err(PluginError::StateError)
+        self.parameters.load_state(data).map_err(PluginError::StateError)
     }
 }
 

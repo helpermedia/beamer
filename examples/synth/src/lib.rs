@@ -7,7 +7,7 @@
 //! 4. Create naive waveform oscillators (sine, saw, square, triangle)
 //! 5. Implement a simple one-pole lowpass filter with resonance
 //! 6. Use `EnumParam` for waveform selection
-//! 7. Use `IntParam` for transpose (±2 octaves)
+//! 7. Use `IntParameter` for transpose (±2 octaves)
 //! 8. Use flat parameter groups (`group = "..."`)
 //! 9. Apply parameter smoothing for filter cutoff/resonance
 //! 10. Handle pitch bend messages (±2 semitones)
@@ -18,7 +18,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, HasParams, Params};
+use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration
@@ -59,7 +59,7 @@ const CUTOFF_MOD_RANGE: f64 = 8000.0;
 // =============================================================================
 
 /// Oscillator waveform selection.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum Waveform {
     #[name = "Sine"]
     Sine,
@@ -88,62 +88,62 @@ enum EnvelopeStage {
 
 /// Parameter collection for the synthesizer.
 ///
-/// Uses declarative parameter definition with `#[derive(Params)]`.
+/// Uses declarative parameter definition with `#[derive(Parameters)]`.
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
-#[derive(Params)]
-pub struct SynthParams {
+#[derive(Parameters)]
+pub struct SynthParameters {
     // =========================================================================
     // Oscillator
     // =========================================================================
 
     /// Oscillator waveform selection
-    #[param(id = "waveform", name = "Waveform", group = "Oscillator")]
-    pub waveform: EnumParam<Waveform>,
+    #[parameter(id = "waveform", name = "Waveform", group = "Oscillator")]
+    pub waveform: EnumParameter<Waveform>,
 
     // =========================================================================
     // Envelope
     // =========================================================================
 
     /// Envelope attack time in milliseconds
-    #[param(id = "attack", name = "Attack", default = 5.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
-    pub attack: FloatParam,
+    #[parameter(id = "attack", name = "Attack", default = 5.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
+    pub attack: FloatParameter,
 
     /// Envelope decay time in milliseconds
-    #[param(id = "decay", name = "Decay", default = 50.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
-    pub decay: FloatParam,
+    #[parameter(id = "decay", name = "Decay", default = 50.0, range = 1.0..=2000.0, kind = "ms", group = "Envelope")]
+    pub decay: FloatParameter,
 
     /// Envelope sustain level (0-100%)
-    #[param(id = "sustain", name = "Sustain", default = 0.6, range = 0.0..=1.0, kind = "percent", group = "Envelope")]
-    pub sustain: FloatParam,
+    #[parameter(id = "sustain", name = "Sustain", default = 0.6, range = 0.0..=1.0, kind = "percent", group = "Envelope")]
+    pub sustain: FloatParameter,
 
     /// Envelope release time in milliseconds
-    #[param(id = "release", name = "Release", default = 30.0, range = 1.0..=5000.0, kind = "ms", group = "Envelope")]
-    pub release: FloatParam,
+    #[parameter(id = "release", name = "Release", default = 30.0, range = 1.0..=5000.0, kind = "ms", group = "Envelope")]
+    pub release: FloatParameter,
 
     // =========================================================================
     // Filter
     // =========================================================================
 
     /// Lowpass filter cutoff frequency (smoothed)
-    #[param(id = "cutoff", name = "Cutoff", default = 800.0, range = 20.0..=20000.0, kind = "hz", smoothing = "exp:5.0", group = "Filter")]
-    pub cutoff: FloatParam,
+    #[parameter(id = "cutoff", name = "Cutoff", default = 800.0, range = 20.0..=20000.0, kind = "hz", smoothing = "exp:5.0", group = "Filter")]
+    pub cutoff: FloatParameter,
 
     /// Filter resonance amount (smoothed)
-    #[param(id = "resonance", name = "Resonance", default = 0.0, range = 0.0..=0.95, kind = "percent", smoothing = "exp:5.0", group = "Filter")]
-    pub resonance: FloatParam,
+    #[parameter(id = "resonance", name = "Resonance", default = 0.0, range = 0.0..=0.95, kind = "percent", smoothing = "exp:5.0", group = "Filter")]
+    pub resonance: FloatParameter,
 
     // =========================================================================
     // Global Parameters
     // =========================================================================
 
     /// Transpose in semitones (±2 octaves)
-    #[param(id = "transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones", group = "Global")]
-    pub transpose: IntParam,
+    #[parameter(id = "transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones", group = "Global")]
+    pub transpose: IntParameter,
 
     /// Master output gain in dB
-    #[param(id = "gain", name = "Gain", default = -6.0, range = -60.0..=6.0, kind = "db", group = "Global")]
-    pub gain: FloatParam,
+    #[parameter(id = "gain", name = "Gain", default = -6.0, range = -60.0..=6.0, kind = "db", group = "Global")]
+    pub gain: FloatParameter,
 }
 
 // =============================================================================
@@ -241,7 +241,7 @@ impl Voice {
     /// 3. **Filter** - Apply resonant lowpass filter
     ///
     /// # Arguments
-    /// * `params` - Plugin parameters (envelope times, etc.)
+    /// * `parameters` - Plugin parameters (envelope times, etc.)
     /// * `waveform` - Selected oscillator waveform
     /// * `cutoff` - Filter cutoff frequency in Hz (smoothed)
     /// * `resonance` - Filter resonance 0.0-0.95 (smoothed)
@@ -254,7 +254,7 @@ impl Voice {
     #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
-        params: &SynthParams,
+        parameters: &SynthParameters,
         waveform: Waveform,
         cutoff: f64,
         resonance: f64,
@@ -313,10 +313,10 @@ impl Voice {
         //   0.0 |_/____________\___
         //        A  D    S    R
         //
-        let attack_samples = (params.attack.get() / 1000.0 * sample_rate).max(1.0);
-        let decay_samples = (params.decay.get() / 1000.0 * sample_rate).max(1.0);
-        let sustain_level = params.sustain.get();
-        let release_samples = (params.release.get() / 1000.0 * sample_rate).max(1.0);
+        let attack_samples = (parameters.attack.get() / 1000.0 * sample_rate).max(1.0);
+        let decay_samples = (parameters.decay.get() / 1000.0 * sample_rate).max(1.0);
+        let sustain_level = parameters.sustain.get();
+        let release_samples = (parameters.release.get() / 1000.0 * sample_rate).max(1.0);
 
         match self.envelope_stage {
             EnvelopeStage::Idle => {}
@@ -388,12 +388,12 @@ impl Voice {
 /// This struct holds the parameters before audio configuration is known.
 /// When the host calls setupProcessing(), it is transformed into a
 /// [`SynthProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 pub struct SynthPlugin {
     /// Plugin parameters
-    #[params]
-    params: SynthParams,
-    // No midi_cc_params field needed! Framework manages MIDI CC state.
+    #[parameters]
+    parameters: SynthParameters,
+    // No midi_cc_parameters field needed! Framework manages MIDI CC state.
 }
 
 impl Plugin for SynthPlugin {
@@ -401,12 +401,12 @@ impl Plugin for SynthPlugin {
     type Processor = SynthProcessor;
 
     fn prepare(mut self, config: AudioSetup) -> SynthProcessor {
-        // Set sample rate on params for smoothing calculations
-        self.params.set_sample_rate(config.sample_rate);
+        // Set sample rate on parameters for smoothing calculations
+        self.parameters.set_sample_rate(config.sample_rate);
 
         SynthProcessor {
-            params: self.params,
-            // No midi_cc_params to move! Framework manages it.
+            parameters: self.parameters,
+            // No midi_cc_parameters to move! Framework manages it.
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: config.sample_rate,
             time_counter: 0,
@@ -452,12 +452,12 @@ impl Plugin for SynthPlugin {
 /// This struct is created by [`SynthPlugin::prepare()`] with valid
 /// sample rate configuration. Manages 8 polyphonic voices with
 /// sample-accurate MIDI timing and oldest-note voice stealing.
-#[derive(HasParams)]
+#[derive(HasParameters)]
 pub struct SynthProcessor {
     /// Plugin parameters
-    #[params]
-    params: SynthParams,
-    // No midi_cc_params field needed! Framework manages MIDI CC state.
+    #[parameters]
+    parameters: SynthParameters,
+    // No midi_cc_parameters field needed! Framework manages MIDI CC state.
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -543,8 +543,8 @@ impl SynthProcessor {
         _context: &ProcessContext,
     ) {
         let num_samples = buffer.num_samples();
-        let waveform = self.params.waveform.get();
-        let gain = S::from_f64(self.params.gain.as_linear());
+        let waveform = self.parameters.waveform.get();
+        let gain = S::from_f64(self.parameters.gain.as_linear());
 
         let mut event_idx = 0;
 
@@ -609,13 +609,13 @@ impl SynthProcessor {
             // Filter Modulation
             // =================================================================
             // Mod wheel controls filter brightness by adding to base cutoff.
-            // - Cutoff param = base frequency (your starting point)
+            // - Cutoff parameter = base frequency (your starting point)
             // - Mod wheel adds up to +8000 Hz (opens filter for brightness)
             // - Clamped at 20kHz to stay below Nyquist frequency
-            let base_cutoff = self.params.cutoff.tick_smoothed();
+            let base_cutoff = self.parameters.cutoff.tick_smoothed();
             let cutoff_modulation = self.mod_wheel * CUTOFF_MOD_RANGE;
             let cutoff = (base_cutoff + cutoff_modulation).min(20000.0);
-            let resonance = self.params.resonance.tick_smoothed();
+            let resonance = self.parameters.resonance.tick_smoothed();
 
             // Render all voices
             let mut out_l = S::ZERO;
@@ -652,12 +652,12 @@ impl SynthProcessor {
                     let total_pitch_mod = self.pitch_bend + vibrato / PITCH_BEND_RANGE;
 
                     let sample = voice.process_sample::<S>(
-                        &self.params,
+                        &self.parameters,
                         waveform,
                         cutoff,
                         resonance,
                         total_pitch_mod,
-                        self.params.transpose.get() as i32,
+                        self.parameters.transpose.get() as i32,
                         self.sample_rate,
                     );
                     out_l = out_l + sample;
@@ -678,10 +678,10 @@ impl AudioProcessor for SynthProcessor {
     type Plugin = SynthPlugin;
 
     fn unprepare(self) -> SynthPlugin {
-        // Return params; voices and DSP state are discarded
+        // Return parameters; voices and DSP state are discarded
         // They'll be reallocated on next prepare()
-        // No midi_cc_params to move - framework manages it!
-        SynthPlugin { params: self.params }
+        // No midi_cc_parameters to move - framework manages it!
+        SynthPlugin { parameters: self.parameters }
     }
 
     fn process(
@@ -720,14 +720,14 @@ impl AudioProcessor for SynthProcessor {
         (5.0 * self.sample_rate) as u32
     }
 
-    // No midi_cc_params() method needed - framework manages MIDI CC state!
+    // No midi_cc_parameters() method needed - framework manages MIDI CC state!
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.params.load_state(data).map_err(PluginError::StateError)
+        self.parameters.load_state(data).map_err(PluginError::StateError)
     }
 }
 

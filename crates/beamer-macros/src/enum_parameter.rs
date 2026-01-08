@@ -1,13 +1,13 @@
-//! Derive macro for `EnumParamValue` trait.
+//! Derive macro for `EnumParameterValue` trait.
 //!
-//! This module implements the `#[derive(EnumParam)]` macro that generates
-//! the `EnumParamValue` trait implementation for enums, enabling them to
-//! be used with `EnumParam<E>` in parameter structs.
+//! This module implements the `#[derive(EnumParameter)]` macro that generates
+//! the `EnumParameterValue` trait implementation for enums, enabling them to
+//! be used with `EnumParameter<E>` in parameter structs.
 //!
 //! # Example
 //!
 //! ```ignore
-//! #[derive(Copy, Clone, PartialEq, EnumParam)]
+//! #[derive(Copy, Clone, PartialEq, EnumParameter)]
 //! pub enum FilterType {
 //!     #[name = "Low Pass"]
 //!     LowPass,
@@ -31,21 +31,21 @@ struct VariantInfo {
     is_default: bool,
 }
 
-/// Parse and generate EnumParamValue implementation for an enum.
-pub fn derive_enum_param_impl(input: DeriveInput) -> syn::Result<TokenStream> {
+/// Parse and generate EnumParameterValue implementation for an enum.
+pub fn derive_enum_parameter_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     // Ensure it's an enum
     let data_enum = match &input.data {
         Data::Enum(e) => e,
         Data::Struct(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(EnumParam)] only supports enums, not structs",
+                "#[derive(EnumParameter)] only supports enums, not structs",
             ))
         }
         Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(EnumParam)] only supports enums, not unions",
+                "#[derive(EnumParameter)] only supports enums, not unions",
             ))
         }
     };
@@ -59,13 +59,13 @@ pub fn derive_enum_param_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             Fields::Named(_) => {
                 return Err(syn::Error::new_spanned(
                     variant,
-                    "#[derive(EnumParam)] only supports unit variants (no fields)",
+                    "#[derive(EnumParameter)] only supports unit variants (no fields)",
                 ))
             }
             Fields::Unnamed(_) => {
                 return Err(syn::Error::new_spanned(
                     variant,
-                    "#[derive(EnumParam)] only supports unit variants (no tuple fields)",
+                    "#[derive(EnumParameter)] only supports unit variants (no tuple fields)",
                 ))
             }
         }
@@ -87,7 +87,7 @@ pub fn derive_enum_param_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     if variants.is_empty() {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[derive(EnumParam)] requires at least one variant",
+            "#[derive(EnumParameter)] requires at least one variant",
         ));
     }
 
@@ -102,7 +102,7 @@ pub fn derive_enum_param_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     if default_indices.len() > 1 {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[derive(EnumParam)] only one variant can be marked as #[default]",
+            "#[derive(EnumParameter)] only one variant can be marked as #[default]",
         ));
     }
 
@@ -151,7 +151,7 @@ pub fn derive_enum_param_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let default_ident = &variants[default_index].ident;
 
     Ok(quote! {
-        impl #impl_generics ::beamer::core::param_types::EnumParamValue for #enum_name #ty_generics #where_clause {
+        impl #impl_generics ::beamer::core::parameter_types::EnumParameterValue for #enum_name #ty_generics #where_clause {
             const COUNT: usize = #count;
             const DEFAULT_INDEX: usize = #default_index;
 

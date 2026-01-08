@@ -1,28 +1,28 @@
 //! Low-level parameter system for VST3 host communication.
 //!
-//! This module provides the [`Parameters`] trait for direct VST3 host communication.
+//! This module provides the [`Vst3Parameters`] trait for direct VST3 host communication.
 //! It exposes the raw normalized value interface that VST3 expects.
 //!
-//! # Choosing Between `Params` and `Parameters`
+//! # Choosing Between `Parameters` and `Vst3Parameters`
 //!
 //! Beamer provides two parameter traits that work together:
 //!
-//! - **[`Params`](crate::param_types::Params)** (recommended): High-level trait with
+//! - **[`Parameters`](crate::parameter_types::Parameters)** (recommended): High-level trait with
 //!   type-erased iteration, automatic state serialization, and support for parameter
-//!   types like `FloatParam`, `IntParam`, and `BoolParam`. Use `#[derive(Params)]`
+//!   types like `FloatParameter`, `IntParameter`, and `BoolParameter`. Use `#[derive(Parameters)]`
 //!   for automatic implementation.
 //!
-//! - **[`Parameters`]**: Low-level trait for direct VST3 host communication. Provides
+//! - **[`Vst3Parameters`]**: Low-level trait for direct VST3 host communication. Provides
 //!   raw access to normalized values and parameter metadata. Useful when you need
 //!   fine-grained control over parameter handling or are building custom parameter
 //!   systems.
 //!
-//! For most plugins, use `#[derive(Params)]` which automatically implements both traits.
-//! The `Params` trait builds on top of `Parameters` to provide a more ergonomic API.
+//! For most plugins, use `#[derive(Parameters)]` which automatically implements both traits.
+//! The `Parameters` trait builds on top of `Vst3Parameters` to provide a more ergonomic API.
 //!
 //! # Thread Safety
 //!
-//! The [`Parameters`] trait requires `Send + Sync` because parameters may be
+//! The [`Vst3Parameters`] trait requires `Send + Sync` because parameters may be
 //! accessed from multiple threads:
 //! - Audio thread: reads parameter values during processing
 //! - UI thread: displays and modifies parameter values
@@ -81,7 +81,7 @@ impl UnitInfo {
 
 /// Trait for querying VST3 unit hierarchy.
 ///
-/// Implemented automatically by `#[derive(Params)]` when nested groups are present.
+/// Implemented automatically by `#[derive(Parameters)]` when nested groups are present.
 /// Provides information about parameter groups for DAW display.
 ///
 /// Unit IDs are assigned dynamically at runtime to support deeply nested groups
@@ -235,12 +235,12 @@ impl ParamInfo {
     /// ```ignore
     /// const PARAM_BYPASS: u32 = 0;
     ///
-    /// struct MyParams {
+    /// struct MyParameters {
     ///     bypass: AtomicU64,
     ///     bypass_info: ParamInfo,
     /// }
     ///
-    /// impl MyParams {
+    /// impl MyParameters {
     ///     fn new() -> Self {
     ///         Self {
     ///             bypass: AtomicU64::new(0.0f64.to_bits()),
@@ -275,7 +275,7 @@ impl ParamInfo {
     }
 }
 
-/// Trait for plugin parameter collections.
+/// Low-level trait for plugin parameter collections (VST3 interface).
 ///
 /// Implement this trait to declare your plugin's parameters. The VST3 wrapper
 /// will use this to communicate parameter information and values to the host.
@@ -284,14 +284,14 @@ impl ParamInfo {
 ///
 /// ```ignore
 /// use std::sync::atomic::{AtomicU64, Ordering};
-/// use beamer_core::{Parameters, ParamInfo, ParamId, ParamValue};
+/// use beamer_core::{Vst3Parameters, ParamInfo, ParamId, ParamValue};
 ///
-/// pub struct MyParams {
+/// pub struct MyParameters {
 ///     gain: AtomicU64,
 ///     gain_info: ParamInfo,
 /// }
 ///
-/// impl Parameters for MyParams {
+/// impl Vst3Parameters for MyParameters {
 ///     fn count(&self) -> usize { 1 }
 ///
 ///     fn info(&self, index: usize) -> Option<&ParamInfo> {
@@ -318,7 +318,7 @@ impl ParamInfo {
 ///     // ... implement other methods
 /// }
 /// ```
-pub trait Parameters: Send + Sync {
+pub trait Vst3Parameters: Send + Sync {
     /// Returns the number of parameters.
     fn count(&self) -> usize;
 
@@ -377,11 +377,11 @@ pub trait Parameters: Send + Sync {
 
 /// Empty parameter collection for plugins with no parameters.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct NoParams;
+pub struct NoParameters;
 
-impl Units for NoParams {}
+impl Units for NoParameters {}
 
-impl Parameters for NoParams {
+impl Vst3Parameters for NoParameters {
     fn count(&self) -> usize {
         0
     }
@@ -413,16 +413,16 @@ impl Parameters for NoParams {
     }
 }
 
-impl crate::param_types::Params for NoParams {
+impl crate::parameter_types::Parameters for NoParameters {
     fn count(&self) -> usize {
         0
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = &dyn crate::param_types::ParamRef> + '_> {
+    fn iter(&self) -> Box<dyn Iterator<Item = &dyn crate::parameter_types::ParameterRef> + '_> {
         Box::new(std::iter::empty())
     }
 
-    fn by_id(&self, _id: ParamId) -> Option<&dyn crate::param_types::ParamRef> {
+    fn by_id(&self, _id: ParamId) -> Option<&dyn crate::parameter_types::ParameterRef> {
         None
     }
 }

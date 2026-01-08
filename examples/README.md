@@ -30,10 +30,10 @@ Simple stereo gain effect with sidechain ducking.
 
 **Demonstrates:**
 - Two-phase lifecycle: `Plugin` → `AudioProcessor` via `prepare()`
-- `#[derive(Params)]` with declarative attributes
-- `#[derive(HasParams)]` for params access boilerplate
+- `#[derive(Parameters)]` with declarative attributes
+- `#[derive(HasParameters)]` for parameters access boilerplate
 - `NoConfig` for plugins without sample-rate-dependent state
-- `FloatParam` with dB scaling
+- `FloatParameter` with dB scaling
 - Multi-bus audio (main + sidechain input)
 - Generic f32/f64 processing via `Sample` trait
 
@@ -65,7 +65,7 @@ Tempo-synced stereo delay with ping-pong mode.
 **Demonstrates:**
 - `AudioSetup` config for sample-rate-dependent initialization
 - `set_active()` for clearing delay buffers on reset
-- `EnumParam` for sync mode and stereo mode
+- `EnumParameter` for sync mode and stereo mode
 - Tempo sync using `ProcessContext.samples_per_beat()`
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
 - Ring buffer delay line implementation
@@ -106,7 +106,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - `set_active()` for resetting envelope state on activation
 - `kind = "db_log"` for logarithmic-feel threshold control
 - Linear parameter smoothing (`smoothing = "linear:50.0"`)
-- `EnumParam` for discrete ratio values
+- `EnumParameter` for discrete ratio values
 - Multi-bus audio (main + sidechain input)
 - dB-domain envelope processing
 
@@ -156,7 +156,7 @@ cargo xtask bundle compressor --release --install
 
 **Demonstrates:**
 - `AudioSetup` config for sample-rate-dependent filter calculations
-- `IntParam` for transpose (±2 octaves in semitones)
+- `IntParameter` for transpose (±2 octaves in semitones)
 - Flat parameter groups (`group = "..."`) - works in Cubase
 - `MidiCcConfig` for pitch bend/mod wheel via IMidiMapping (framework manages state)
 - Polyphonic aftertouch (PolyPressure) for per-note vibrato
@@ -216,9 +216,9 @@ MIDI instrument that transforms notes and CC messages.
 **Demonstrates:**
 - `AudioSetup` config for parameter smoothing
 - Nested parameter groups with `#[nested(group = "...")]`
-- `EnumParam` for discrete choices
-- `IntParam` for note/CC selection
-- `BoolParam` for enable toggles
+- `EnumParameter` for discrete choices
+- `IntParameter` for note/CC selection
+- `BoolParameter` for enable toggles
 - `process_midi()` for MIDI processing
 
 ```bash

@@ -1,17 +1,17 @@
 //! Beamer Gain - Example gain plugin demonstrating the Beamer framework.
 //!
 //! This plugin shows how to:
-//! 1. Use `#[derive(Params)]` macro for automatic trait implementations
-//! 2. Use `#[derive(HasParams)]` to eliminate params() boilerplate
+//! 1. Use `#[derive(Parameters)]` macro for automatic trait implementations
+//! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
 //! 3. Implement the two-phase Plugin → AudioProcessor lifecycle
 //! 4. Export using `Vst3Processor<T>` wrapper
 //! 5. Use multi-bus support for sidechain ducking
 //! 6. Access transport info via ProcessContext
-//! 7. Use the `FloatParam` type for cleaner parameter storage
+//! 7. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{HasParams, Params}; // Import the derive macros
+use beamer::{HasParameters, Parameters}; // Import the derive macros
 
 // =============================================================================
 // Plugin Configuration
@@ -39,26 +39,26 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain", COMPONENT_UID
 /// Parameter collection for the gain plugin.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
-/// attributes, and the `#[derive(Params)]` macro generates everything
+/// attributes, and the `#[derive(Parameters)]` macro generates everything
 /// including the `Default` implementation!
 ///
 /// The macro generates:
-/// - `Params` trait (count, iter, by_id, save_state, load_state)
-/// - `Parameters` trait (VST3 integration)
+/// - `Parameters` trait (count, iter, by_id, save_state, load_state)
+/// - `Vst3Parameters` trait (VST3 integration)
 /// - `Default` trait (from attribute values)
 /// - Compile-time hash collision detection
-#[derive(Params)]
-pub struct GainParams {
+#[derive(Parameters)]
+pub struct GainParameters {
     /// Gain parameter using declarative attribute syntax.
     /// - Default: 0 dB (unity gain)
     /// - Range: -60 dB to +12 dB
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParam,
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
 }
 
 // No manual `new()` or `Default` impl needed - the macro generates everything!
 
-impl GainParams {
+impl GainParameters {
     /// Get the gain as a linear multiplier for DSP calculations.
     ///
     /// Converts the dB value to a linear amplitude multiplier using the formula:
@@ -94,13 +94,13 @@ impl GainParams {
 /// When the host calls setupProcessing(), it is transformed into a
 /// [`GainProcessor`] via the [`Plugin::prepare()`] method.
 ///
-/// The `#[derive(HasParams)]` macro automatically implements `params()` and
-/// `params_mut()` by looking for the field marked with `#[params]`.
-#[derive(Default, HasParams)]
+/// The `#[derive(HasParameters)]` macro automatically implements `parameters()` and
+/// `parameters_mut()` by looking for the field marked with `#[parameters]`.
+#[derive(Default, HasParameters)]
 pub struct GainPlugin {
     /// Plugin parameters
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl Plugin for GainPlugin {
@@ -109,7 +109,7 @@ impl Plugin for GainPlugin {
 
     fn prepare(self, _config: NoConfig) -> GainProcessor {
         GainProcessor {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -139,13 +139,13 @@ impl Plugin for GainPlugin {
 /// This struct is created by [`GainPlugin::prepare()`] and contains
 /// everything needed for real-time audio processing.
 ///
-/// The `#[derive(HasParams)]` macro automatically implements `params()` and
-/// `params_mut()` by looking for the field marked with `#[params]`.
-#[derive(HasParams)]
+/// The `#[derive(HasParameters)]` macro automatically implements `parameters()` and
+/// `parameters_mut()` by looking for the field marked with `#[parameters]`.
+#[derive(HasParameters)]
 pub struct GainProcessor {
     /// Plugin parameters
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl GainProcessor {
@@ -160,7 +160,7 @@ impl GainProcessor {
         aux: &mut AuxiliaryBuffers<S>,
         context: &ProcessContext,
     ) {
-        let gain = S::from_f32(self.params.gain_linear());
+        let gain = S::from_f32(self.parameters.gain_linear());
 
         // Example: Access transport info from host
         // tempo is available when the DAW provides it (most do)
@@ -218,7 +218,7 @@ impl AudioProcessor for GainProcessor {
 
     fn unprepare(self) -> GainPlugin {
         GainPlugin {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -256,12 +256,12 @@ impl AudioProcessor for GainProcessor {
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
         // Delegate to the macro-generated save_state which uses string-based IDs
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
         // Delegate to the macro-generated load_state
-        self.params.load_state(data).map_err(PluginError::StateError)
+        self.parameters.load_state(data).map_err(PluginError::StateError)
     }
 }
 

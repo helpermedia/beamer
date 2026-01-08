@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
-use crate::params::{ParamFlags, ParamInfo, Parameters, UnitInfo, Units, ROOT_UNIT_ID};
+use crate::parameters::{ParamFlags, ParamInfo, Vst3Parameters, UnitInfo, Units, ROOT_UNIT_ID};
 use crate::types::{ParamId, ParamValue};
 
 // =============================================================================
@@ -21,7 +21,7 @@ use crate::types::{ParamId, ParamValue};
 /// Base parameter ID for MIDI CC emulation parameters.
 ///
 /// Uses a high value to avoid collision with user-defined parameters.
-/// The controller number (0-129) is added to get the final param ID.
+/// The controller number (0-129) is added to get the final parameter ID.
 ///
 /// - CC 0-127: Standard MIDI CCs
 /// - CC 128: Channel aftertouch (kAfterTouch)
@@ -54,7 +54,7 @@ pub struct MidiCcState {
     /// Current values (normalized 0.0-1.0, stored as f64 bits)
     values: [AtomicU64; MAX_CC_CONTROLLER],
     /// Pre-computed parameter info for enabled controllers
-    param_infos: Vec<CcParamInfo>,
+    parameter_infos: Vec<CcParamInfo>,
     /// Total enabled controller count
     enabled_count: usize,
 }
@@ -80,24 +80,24 @@ impl MidiCcState {
             AtomicU64::new(default.to_bits())
         });
 
-        // Copy enabled flags and build param infos
+        // Copy enabled flags and build parameter infos
         let enabled = *config.enabled_flags();
-        let mut param_infos = Vec::new();
+        let mut parameter_infos = Vec::new();
         let mut enabled_count = 0;
 
         for (i, &is_enabled) in enabled.iter().enumerate() {
             if is_enabled {
                 enabled_count += 1;
                 let controller = i as u8;
-                let info = Self::create_param_info(controller);
-                param_infos.push(CcParamInfo { controller, info });
+                let info = Self::create_parameter_info(controller);
+                parameter_infos.push(CcParamInfo { controller, info });
             }
         }
 
         Self {
             enabled,
             values,
-            param_infos,
+            parameter_infos,
             enabled_count,
         }
     }
@@ -185,7 +185,7 @@ impl MidiCcState {
 
     /// Iterate over enabled controller numbers.
     pub fn enabled_controllers(&self) -> impl Iterator<Item = u8> + '_ {
-        self.param_infos.iter().map(|info| info.controller)
+        self.parameter_infos.iter().map(|info| info.controller)
     }
 
     // =========================================================================
@@ -194,23 +194,23 @@ impl MidiCcState {
 
     /// Get parameter ID for a controller.
     #[inline]
-    pub const fn param_id(controller: u8) -> u32 {
+    pub const fn parameter_id(controller: u8) -> u32 {
         MIDI_CC_PARAM_BASE + controller as u32
     }
 
     /// Check if a parameter ID belongs to MIDI CC emulation.
     #[inline]
-    pub const fn is_midi_cc_param(param_id: u32) -> bool {
-        param_id >= MIDI_CC_PARAM_BASE && param_id < MIDI_CC_PARAM_BASE + MAX_CC_CONTROLLER as u32
+    pub const fn is_midi_cc_param(parameter_id: u32) -> bool {
+        parameter_id >= MIDI_CC_PARAM_BASE && parameter_id < MIDI_CC_PARAM_BASE + MAX_CC_CONTROLLER as u32
     }
 
     /// Extract controller number from a MIDI CC parameter ID.
     ///
-    /// Returns `None` if the param_id is not a MIDI CC parameter.
+    /// Returns `None` if the parameter_id is not a MIDI CC parameter.
     #[inline]
-    pub const fn param_id_to_controller(param_id: u32) -> Option<u8> {
-        if Self::is_midi_cc_param(param_id) {
-            Some((param_id - MIDI_CC_PARAM_BASE) as u8)
+    pub const fn parameter_id_to_controller(parameter_id: u32) -> Option<u8> {
+        if Self::is_midi_cc_param(parameter_id) {
+            Some((parameter_id - MIDI_CC_PARAM_BASE) as u8)
         } else {
             None
         }
@@ -220,8 +220,8 @@ impl MidiCcState {
     // Internal Methods
     // =========================================================================
 
-    fn create_param_info(controller: u8) -> ParamInfo {
-        let id = Self::param_id(controller);
+    fn create_parameter_info(controller: u8) -> ParamInfo {
+        let id = Self::parameter_id(controller);
 
         // Determine name based on controller
         let (name, short_name): (&'static str, &'static str) = match controller {
@@ -301,17 +301,17 @@ impl core::fmt::Debug for MidiCcState {
 // Parameters Trait Implementation (for VST3 integration)
 // =============================================================================
 
-impl Parameters for MidiCcState {
+impl Vst3Parameters for MidiCcState {
     fn count(&self) -> usize {
         self.enabled_count
     }
 
     fn info(&self, index: usize) -> Option<&ParamInfo> {
-        self.param_infos.get(index).map(|i| &i.info)
+        self.parameter_infos.get(index).map(|i| &i.info)
     }
 
     fn get_normalized(&self, id: ParamId) -> ParamValue {
-        if let Some(controller) = Self::param_id_to_controller(id) {
+        if let Some(controller) = Self::parameter_id_to_controller(id) {
             self.get_normalized_internal(controller)
         } else {
             0.0
@@ -319,13 +319,13 @@ impl Parameters for MidiCcState {
     }
 
     fn set_normalized(&self, id: ParamId, value: ParamValue) {
-        if let Some(controller) = Self::param_id_to_controller(id) {
+        if let Some(controller) = Self::parameter_id_to_controller(id) {
             self.set_normalized_internal(controller, value);
         }
     }
 
     fn normalized_to_string(&self, id: ParamId, normalized: ParamValue) -> String {
-        if let Some(controller) = Self::param_id_to_controller(id) {
+        if let Some(controller) = Self::parameter_id_to_controller(id) {
             if controller == controller::PITCH_BEND {
                 // Display pitch bend as bipolar semitones (assuming ±2 semitones default)
                 // Center (0.5 normalized) = 0 st, min (0.0) = -2 st, max (1.0) = +2 st
@@ -360,7 +360,7 @@ impl Parameters for MidiCcState {
 }
 
 // =============================================================================
-// Units Trait Implementation (no parameter grouping for hidden params)
+// Units Trait Implementation (no parameter grouping for hidden parameters)
 // =============================================================================
 
 impl Units for MidiCcState {
@@ -413,7 +413,7 @@ mod tests {
         let state = MidiCcState::from_config(&config);
 
         // Set pitch bend to max (1.0 normalized = +1.0 bipolar)
-        let pb_id = MidiCcState::param_id(controller::PITCH_BEND);
+        let pb_id = MidiCcState::parameter_id(controller::PITCH_BEND);
         state.set_normalized(pb_id, 1.0);
         assert!((state.pitch_bend() - 1.0).abs() < 0.01);
 
@@ -422,15 +422,15 @@ mod tests {
         assert!((state.pitch_bend() - (-1.0)).abs() < 0.01);
 
         // Set mod wheel
-        let mw_id = MidiCcState::param_id(1);
+        let mw_id = MidiCcState::parameter_id(1);
         state.set_normalized(mw_id, 0.75);
         assert!((state.mod_wheel() - 0.75).abs() < 0.01);
     }
 
     #[test]
-    fn test_param_id_helpers() {
-        assert_eq!(MidiCcState::param_id(1), MIDI_CC_PARAM_BASE + 1);
-        assert_eq!(MidiCcState::param_id(129), MIDI_CC_PARAM_BASE + 129);
+    fn test_parameter_id_helpers() {
+        assert_eq!(MidiCcState::parameter_id(1), MIDI_CC_PARAM_BASE + 1);
+        assert_eq!(MidiCcState::parameter_id(129), MIDI_CC_PARAM_BASE + 129);
 
         assert!(MidiCcState::is_midi_cc_param(MIDI_CC_PARAM_BASE));
         assert!(MidiCcState::is_midi_cc_param(MIDI_CC_PARAM_BASE + 129));
@@ -438,9 +438,9 @@ mod tests {
         assert!(!MidiCcState::is_midi_cc_param(MIDI_CC_PARAM_BASE + 200));
 
         assert_eq!(
-            MidiCcState::param_id_to_controller(MIDI_CC_PARAM_BASE + 1),
+            MidiCcState::parameter_id_to_controller(MIDI_CC_PARAM_BASE + 1),
             Some(1)
         );
-        assert_eq!(MidiCcState::param_id_to_controller(100), None);
+        assert_eq!(MidiCcState::parameter_id_to_controller(100), None);
     }
 }

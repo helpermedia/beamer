@@ -33,7 +33,7 @@
 //! use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig, vst3};
 //!
 //! // Define your plugin
-//! struct MyGain { params: MyParams }
+//! struct MyGain { parameters: MyParameters }
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
@@ -41,9 +41,9 @@
 //! }
 //!
 //! impl Plugin for MyGain {
-//!     type Params = MyParams;
-//!     fn params(&self) -> &Self::Params { &self.params }
-//!     fn create() -> Self { Self { params: MyParams::new() } }
+//!     type Parameters = MyParameters;
+//!     fn parameters(&self) -> &Self::Parameters { &self.parameters }
+//!     fn create() -> Self { Self { parameters: MyParameters::new() } }
 //! }
 //!
 //! // Configure and export

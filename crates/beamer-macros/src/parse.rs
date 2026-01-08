@@ -8,26 +8,26 @@ use syn::{Data, DeriveInput, Field, Fields};
 
 use beamer_utils::fnv1a_32;
 use crate::ir::{
-    FieldIR, NestedFieldIR, ParamAttrs, ParamDefault, ParamFieldIR, ParamKind, ParamType,
-    ParamsIR, RangeSpec, SmoothingSpec, SmoothingStyle,
+    FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParamFieldIR, ParamKind, ParamType,
+    ParametersIR, RangeSpec, SmoothingSpec, SmoothingStyle,
 };
 use crate::range_eval;
 
 /// Parse a `DeriveInput` into our intermediate representation.
-pub fn parse(input: DeriveInput) -> syn::Result<ParamsIR> {
+pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
     // Ensure it's a struct with named fields
     let data_struct = match &input.data {
         Data::Struct(s) => s,
         Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Params)] only supports structs, not enums",
+                "#[derive(Parameters)] only supports structs, not enums",
             ))
         }
         Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Params)] only supports structs, not unions",
+                "#[derive(Parameters)] only supports structs, not unions",
             ))
         }
     };
@@ -37,13 +37,13 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParamsIR> {
         Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Params)] only supports structs with named fields",
+                "#[derive(Parameters)] only supports structs with named fields",
             ))
         }
         Fields::Unit => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Params)] requires at least one field",
+                "#[derive(Parameters)] requires at least one field",
             ))
         }
     };
@@ -54,20 +54,20 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParamsIR> {
         if let Some(field_ir) = parse_field(field)? {
             parsed_fields.push(field_ir);
         }
-        // Fields without #[param] or #[nested] are silently ignored
+        // Fields without #[parameter] or #[nested] are silently ignored
     }
 
     if parsed_fields.is_empty() {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[derive(Params)] requires at least one #[param] or #[nested] field",
+            "#[derive(Parameters)] requires at least one #[parameter] or #[nested] field",
         ));
     }
 
     // Assign sequential unit IDs to nested fields
     assign_unit_ids(&mut parsed_fields);
 
-    Ok(ParamsIR {
+    Ok(ParametersIR {
         struct_name: input.ident.clone(),
         generics: input.generics.clone(),
         fields: parsed_fields,
@@ -77,10 +77,10 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParamsIR> {
 
 /// Parse a single field, returning None if it has no relevant attributes.
 fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
-    // Check for #[param] attribute
+    // Check for #[parameter] attribute
     for attr in &field.attrs {
-        if attr.path().is_ident("param") {
-            return parse_param_field(field, attr).map(|p| Some(FieldIR::Param(p)));
+        if attr.path().is_ident("parameter") {
+            return parse_parameter_field(field, attr).map(|p| Some(FieldIR::Parameter(p)));
         }
         if attr.path().is_ident("nested") {
             return parse_nested_field(field, attr).map(|n| Some(FieldIR::Nested(Box::new(n))));
@@ -91,12 +91,12 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
     if let Some(type_name) = extract_type_name(&field.ty) {
         if matches!(
             type_name.as_str(),
-            "FloatParam" | "IntParam" | "BoolParam" | "EnumParam"
+            "FloatParameter" | "IntParameter" | "BoolParameter" | "EnumParameter"
         ) {
             return Err(syn::Error::new_spanned(
                 field,
                 format!(
-                    "{} field is missing #[param(id = \"...\")] attribute",
+                    "{} field is missing #[parameter(id = \"...\")] attribute",
                     type_name
                 ),
             ));
@@ -106,12 +106,12 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
     Ok(None)
 }
 
-/// Parse a field with `#[param(...)]` attribute.
+/// Parse a field with `#[parameter(...)]` attribute.
 ///
 /// Supports both minimal and declarative styles:
-/// - Minimal: `#[param(id = "gain")]` (requires manual Default)
-/// - Declarative: `#[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]`
-fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamFieldIR> {
+/// - Minimal: `#[parameter(id = "gain")]` (requires manual Default)
+/// - Declarative: `#[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]`
+fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamFieldIR> {
     let field_name = field
         .ident
         .clone()
@@ -119,7 +119,7 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
 
     // Parse the attribute using syn 2.x API
     let mut string_id: Option<String> = None;
-    let mut attrs = ParamAttrs::default();
+    let mut attributes = ParameterAttributes::default();
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("id") {
@@ -128,18 +128,18 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
             Ok(())
         } else if meta.path.is_ident("name") {
             let value: syn::LitStr = meta.value()?.parse()?;
-            attrs.name = Some(value.value());
+            attributes.name = Some(value.value());
             Ok(())
         } else if meta.path.is_ident("default") {
-            attrs.default = Some(parse_default_value(&meta)?);
+            attributes.default = Some(parse_default_value(&meta)?);
             Ok(())
         } else if meta.path.is_ident("range") {
-            attrs.range = Some(parse_range_spec(&meta)?);
+            attributes.range = Some(parse_range_spec(&meta)?);
             Ok(())
         } else if meta.path.is_ident("kind") {
             let value: syn::LitStr = meta.value()?.parse()?;
             let kind_str = value.value();
-            attrs.kind = Some(ParamKind::from_str(&kind_str).ok_or_else(|| {
+            attributes.kind = Some(ParamKind::from_str(&kind_str).ok_or_else(|| {
                 syn::Error::new_spanned(
                     &value,
                     format!(
@@ -151,23 +151,23 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
             Ok(())
         } else if meta.path.is_ident("short_name") {
             let value: syn::LitStr = meta.value()?.parse()?;
-            attrs.short_name = Some(value.value());
+            attributes.short_name = Some(value.value());
             Ok(())
         } else if meta.path.is_ident("smoothing") {
-            attrs.smoothing = Some(parse_smoothing_spec(&meta)?);
+            attributes.smoothing = Some(parse_smoothing_spec(&meta)?);
             Ok(())
         } else if meta.path.is_ident("bypass") {
             // bypass can be `bypass` (flag) or `bypass = true`
             if meta.input.peek(syn::Token![=]) {
                 let value: syn::LitBool = meta.value()?.parse()?;
-                attrs.bypass = value.value();
+                attributes.bypass = value.value();
             } else {
-                attrs.bypass = true;
+                attributes.bypass = true;
             }
             Ok(())
         } else if meta.path.is_ident("group") {
             let value: syn::LitStr = meta.value()?.parse()?;
-            attrs.group = Some(value.value());
+            attributes.group = Some(value.value());
             Ok(())
         } else {
             Err(meta.error(
@@ -180,7 +180,7 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
         syn::Error::new_spanned(
             attr,
             format!(
-                "#[param] on field `{}` requires id attribute: #[param(id = \"...\")]",
+                "#[parameter] on field `{}` requires id attribute: #[parameter(id = \"...\")]",
                 field_name
             ),
         )
@@ -198,10 +198,10 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
     }
 
     // Determine parameter type
-    let param_type = extract_param_type(&field.ty).ok_or_else(|| {
+    let parameter_type = extract_parameter_type(&field.ty).ok_or_else(|| {
         syn::Error::new_spanned(
             &field.ty,
-            "#[param] can only be used on FloatParam, IntParam, BoolParam, or EnumParam fields",
+            "#[parameter] can only be used on FloatParameter, IntParameter, BoolParameter, or EnumParameter fields",
         )
     })?;
 
@@ -210,33 +210,33 @@ fn parse_param_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamF
 
     Ok(ParamFieldIR {
         field_name,
-        param_type,
+        parameter_type,
         string_id,
         hash_id,
         span: attr.path().segments[0].ident.span(),
-        attrs,
+        attributes,
     })
 }
 
 /// Parse a default value from `default = <literal>`.
-fn parse_default_value(meta: &syn::meta::ParseNestedMeta) -> syn::Result<ParamDefault> {
+fn parse_default_value(meta: &syn::meta::ParseNestedMeta) -> syn::Result<ParameterDefault> {
     let expr: syn::Expr = meta.value()?.parse()?;
     parse_default_expr(&expr)
 }
 
 /// Parse a default value expression.
-fn parse_default_expr(expr: &syn::Expr) -> syn::Result<ParamDefault> {
+fn parse_default_expr(expr: &syn::Expr) -> syn::Result<ParameterDefault> {
     match expr {
         syn::Expr::Lit(lit) => match &lit.lit {
             syn::Lit::Float(f) => {
                 let value: f64 = f.base10_parse()?;
-                Ok(ParamDefault::Float(value))
+                Ok(ParameterDefault::Float(value))
             }
             syn::Lit::Int(i) => {
                 let value: i64 = i.base10_parse()?;
-                Ok(ParamDefault::Int(value))
+                Ok(ParameterDefault::Int(value))
             }
-            syn::Lit::Bool(b) => Ok(ParamDefault::Bool(b.value())),
+            syn::Lit::Bool(b) => Ok(ParameterDefault::Bool(b.value())),
             _ => Err(syn::Error::new_spanned(
                 lit,
                 "default must be a float, int, or bool literal",
@@ -247,11 +247,11 @@ fn parse_default_expr(expr: &syn::Expr) -> syn::Result<ParamDefault> {
                 match &lit.lit {
                     syn::Lit::Float(f) => {
                         let value: f64 = f.base10_parse()?;
-                        Ok(ParamDefault::Float(-value))
+                        Ok(ParameterDefault::Float(-value))
                     }
                     syn::Lit::Int(i) => {
                         let value: i64 = i.base10_parse()?;
-                        Ok(ParamDefault::Int(-value))
+                        Ok(ParameterDefault::Int(-value))
                     }
                     _ => Err(syn::Error::new_spanned(
                         unary,
@@ -402,8 +402,8 @@ fn assign_unit_ids(fields: &mut [FieldIR]) {
 fn count_flat_groups(fields: &[FieldIR]) -> usize {
     let mut seen = std::collections::HashSet::new();
     for field in fields {
-        if let FieldIR::Param(p) = field {
-            if let Some(ref group) = p.attrs.group {
+        if let FieldIR::Parameter(p) = field {
+            if let Some(ref group) = p.attributes.group {
                 seen.insert(group.as_str());
             }
         }
@@ -412,13 +412,13 @@ fn count_flat_groups(fields: &[FieldIR]) -> usize {
 }
 
 /// Extract the parameter type from a type path.
-fn extract_param_type(ty: &syn::Type) -> Option<ParamType> {
+fn extract_parameter_type(ty: &syn::Type) -> Option<ParamType> {
     let type_name = extract_type_name(ty)?;
     match type_name.as_str() {
-        "FloatParam" => Some(ParamType::Float),
-        "IntParam" => Some(ParamType::Int),
-        "BoolParam" => Some(ParamType::Bool),
-        "EnumParam" => Some(ParamType::Enum),
+        "FloatParameter" => Some(ParamType::Float),
+        "IntParameter" => Some(ParamType::Int),
+        "BoolParameter" => Some(ParamType::Bool),
+        "EnumParameter" => Some(ParamType::Enum),
         _ => None,
     }
 }

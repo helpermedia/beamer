@@ -9,13 +9,13 @@ use proc_macro2::Span;
 // Declarative Attribute Types
 // =============================================================================
 
-/// Parsed declarative attributes from `#[param(...)]`.
+/// Parsed declarative attributes from `#[parameter(...)]`.
 #[derive(Debug, Clone, Default)]
-pub struct ParamAttrs {
+pub struct ParameterAttributes {
     /// Display name (e.g., "Gain")
     pub name: Option<String>,
     /// Default value
-    pub default: Option<ParamDefault>,
+    pub default: Option<ParameterDefault>,
     /// Value range
     pub range: Option<RangeSpec>,
     /// Parameter kind (db, hz, percent, etc.)
@@ -31,10 +31,10 @@ pub struct ParamAttrs {
     pub group: Option<String>,
 }
 
-impl ParamAttrs {
-    /// Check if all required attributes are present for a given param type.
-    pub fn has_required_for(&self, param_type: ParamType) -> bool {
-        match param_type {
+impl ParameterAttributes {
+    /// Check if all required attributes are present for a given parameter type.
+    pub fn has_required_for(&self, parameter_type: ParamType) -> bool {
+        match parameter_type {
             ParamType::Float => {
                 self.name.is_some()
                     && self.default.is_some()
@@ -53,7 +53,7 @@ impl ParamAttrs {
 
 /// Default value for a parameter.
 #[derive(Debug, Clone)]
-pub enum ParamDefault {
+pub enum ParameterDefault {
     Float(f64),
     Int(i64),
     Bool(bool),
@@ -160,8 +160,8 @@ impl SmoothingStyle {
 ///
 /// This captures all the information needed to generate the trait implementations.
 #[allow(dead_code)]
-pub struct ParamsIR {
-    /// The struct name (e.g., `GainParams`)
+pub struct ParametersIR {
+    /// The struct name (e.g., `GainParameters`)
     pub struct_name: syn::Ident,
     /// Generic parameters, if any
     pub generics: syn::Generics,
@@ -174,7 +174,7 @@ pub struct ParamsIR {
 /// A single field in the parameter struct.
 pub enum FieldIR {
     /// A direct parameter field (FloatParam, IntParam, BoolParam)
-    Param(ParamFieldIR),
+    Parameter(ParamFieldIR),
     /// A nested parameter struct (boxed to reduce enum size)
     Nested(Box<NestedFieldIR>),
 }
@@ -185,21 +185,21 @@ pub struct ParamFieldIR {
     /// Field name (e.g., `gain`)
     pub field_name: syn::Ident,
     /// Parameter type (Float, Int, Bool)
-    pub param_type: ParamType,
-    /// String ID from `#[param(id = "...")]`
+    pub parameter_type: ParamType,
+    /// String ID from `#[parameter(id = "...")]`
     pub string_id: String,
     /// FNV-1a hash of the string ID
     pub hash_id: u32,
     /// Span for error reporting
     pub span: Span,
     /// Declarative attributes (name, default, range, etc.)
-    pub attrs: ParamAttrs,
+    pub attributes: ParameterAttributes,
 }
 
 impl ParamFieldIR {
     /// Check if this parameter has all required declarative attributes.
-    pub fn has_declarative_attrs(&self) -> bool {
-        self.attrs.has_required_for(self.param_type)
+    pub fn has_declarative_attributes(&self) -> bool {
+        self.attributes.has_required_for(self.parameter_type)
     }
 
     /// Generate the const identifier name for this parameter's VST3 ID.
@@ -216,7 +216,7 @@ impl ParamFieldIR {
 pub struct NestedFieldIR {
     /// Field name (e.g., `output`)
     pub field_name: syn::Ident,
-    /// Field type (e.g., `OutputParams`)
+    /// Field type (e.g., `OutputParameters`)
     pub field_type: syn::Type,
     /// Group name from `#[nested(group = "...")]`
     pub group_name: String,
@@ -237,11 +237,11 @@ pub enum ParamType {
     Enum,
 }
 
-impl ParamsIR {
+impl ParametersIR {
     /// Iterate over all parameter fields (excluding nested).
-    pub fn param_fields(&self) -> impl Iterator<Item = &ParamFieldIR> {
+    pub fn parameter_fields(&self) -> impl Iterator<Item = &ParamFieldIR> {
         self.fields.iter().filter_map(|f| match f {
-            FieldIR::Param(p) => Some(p),
+            FieldIR::Parameter(p) => Some(p),
             FieldIR::Nested(_) => None,
         })
     }
@@ -249,14 +249,14 @@ impl ParamsIR {
     /// Iterate over all nested fields.
     pub fn nested_fields(&self) -> impl Iterator<Item = &NestedFieldIR> {
         self.fields.iter().filter_map(|f| match f {
-            FieldIR::Param(_) => None,
+            FieldIR::Parameter(_) => None,
             FieldIR::Nested(n) => Some(n.as_ref()),
         })
     }
 
     /// Count of direct parameter fields.
-    pub fn param_count(&self) -> usize {
-        self.param_fields().count()
+    pub fn parameter_count(&self) -> usize {
+        self.parameter_fields().count()
     }
 
     /// Check if there are any nested fields.
@@ -264,24 +264,24 @@ impl ParamsIR {
         self.nested_fields().next().is_some()
     }
 
-    /// Check if all param fields have complete declarative attributes.
+    /// Check if all parameter fields have complete declarative attributes.
     ///
     /// When true, the macro can generate a `Default` implementation.
     pub fn can_generate_default(&self) -> bool {
-        self.param_fields().all(|p| p.has_declarative_attrs())
+        self.parameter_fields().all(|p| p.has_declarative_attributes())
     }
 
     /// Check if any parameters have flat group attributes.
     pub fn has_flat_groups(&self) -> bool {
-        self.param_fields().any(|p| p.attrs.group.is_some())
+        self.parameter_fields().any(|p| p.attributes.group.is_some())
     }
 
     /// Get unique flat group names in order of first occurrence.
     pub fn flat_group_names(&self) -> Vec<&str> {
         let mut seen = std::collections::HashSet::new();
         let mut groups = Vec::new();
-        for param in self.param_fields() {
-            if let Some(ref group) = param.attrs.group {
+        for parameter in self.parameter_fields() {
+            if let Some(ref group) = parameter.attributes.group {
                 if seen.insert(group.as_str()) {
                     groups.push(group.as_str());
                 }

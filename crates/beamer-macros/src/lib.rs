@@ -1,6 +1,6 @@
 //! Derive macros for the Beamer VST3 framework.
 //!
-//! This crate provides the `#[derive(Params)]` macro for generating parameter
+//! This crate provides the `#[derive(Parameters)]` macro for generating parameter
 //! trait implementations automatically.
 //!
 //! # Declarative Parameter Definition
@@ -11,20 +11,20 @@
 //! ```ignore
 //! use beamer::prelude::*;
 //!
-//! #[derive(Params)]
-//! pub struct GainParams {
-//!     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-//!     pub gain: FloatParam,
+//! #[derive(Parameters)]
+//! pub struct GainParameters {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     pub gain: FloatParameter,
 //!
-//!     #[param(id = "bypass", bypass = true)]
-//!     pub bypass: BoolParam,
+//!     #[parameter(id = "bypass", bypass = true)]
+//!     pub bypass: BoolParameter,
 //! }
 //!
 //! // No manual Default impl needed - macro generates everything!
 //! ```
 //!
-//! The macro generates implementations for both `Params` (new system) and
-//! `Parameters` (VST3 integration) traits, plus `Default` when all required
+//! The macro generates implementations for both `Parameters` (high-level) and
+//! `Vst3Parameters` (VST3 integration) traits, plus `Default` when all required
 //! attributes are present.
 //!
 //! # Flat Visual Grouping
@@ -32,29 +32,29 @@
 //! Use `group = "..."` for visual grouping in the DAW without nested structs:
 //!
 //! ```ignore
-//! #[derive(Params)]
-//! pub struct SynthParams {
+//! #[derive(Parameters)]
+//! pub struct SynthParameters {
 //!     // Filter parameters - grouped visually in DAW
-//!     #[param(id = "cutoff", name = "Cutoff", group = "Filter", ...)]
-//!     pub cutoff: FloatParam,
+//!     #[parameter(id = "cutoff", name = "Cutoff", group = "Filter", ...)]
+//!     pub cutoff: FloatParameter,
 //!
-//!     #[param(id = "reso", name = "Resonance", group = "Filter", ...)]
-//!     pub resonance: FloatParam,
+//!     #[parameter(id = "reso", name = "Resonance", group = "Filter", ...)]
+//!     pub resonance: FloatParameter,
 //!
 //!     // Output parameters - different visual group
-//!     #[param(id = "gain", name = "Gain", group = "Output", ...)]
-//!     pub gain: FloatParam,
+//!     #[parameter(id = "gain", name = "Gain", group = "Output", ...)]
+//!     pub gain: FloatParameter,
 //! }
 //!
-//! // Access is flat: params.cutoff, params.resonance, params.gain
+//! // Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
 //! // But DAW shows them in collapsible "Filter" and "Output" groups
 //! ```
 
 use proc_macro::TokenStream;
 
 mod codegen;
-mod enum_param;
-mod has_params;
+mod enum_parameter;
+mod has_parameters;
 mod ir;
 mod parse;
 mod range_eval;
@@ -63,8 +63,8 @@ mod validate;
 /// Derive macro for implementing parameter traits.
 ///
 /// This macro generates:
-/// - `Params` trait implementation (count, iter, by_id, save_state, load_state)
-/// - `Parameters` trait implementation (VST3 integration)
+/// - `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
+/// - `Vst3Parameters` trait implementation (VST3 integration)
 /// - `Default` implementation (when declarative attributes are complete)
 /// - Compile-time hash collision detection
 ///
@@ -76,11 +76,11 @@ mod validate;
 /// ## Declarative (enables auto-generated Default)
 /// - `name = "..."` - Display name
 /// - `default = <value>` - Default value (float, int, or bool)
-/// - `range = start..=end` - Value range (for FloatParam/IntParam)
+/// - `range = start..=end` - Value range (for FloatParameter/IntParameter)
 /// - `kind = "..."` - Unit type: db, db_log, db_log_offset, hz, ms, seconds, percent, pan, ratio, linear, semitones
 /// - `short_name = "..."` - Short name for constrained UIs
 /// - `smoothing = "exp:5.0"` - Parameter smoothing (exp or linear)
-/// - `bypass` - Mark as bypass parameter (BoolParam only)
+/// - `bypass` - Mark as bypass parameter (BoolParameter only)
 /// - `group = "..."` - Visual grouping in DAW without nested struct
 ///
 /// ## Nested Groups
@@ -89,38 +89,38 @@ mod validate;
 /// # Example
 ///
 /// ```ignore
-/// #[derive(Params)]
-/// pub struct PluginParams {
-///     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-///     pub gain: FloatParam,
+/// #[derive(Parameters)]
+/// pub struct PluginParameters {
+///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+///     pub gain: FloatParameter,
 ///
-///     #[param(id = "freq", name = "Frequency", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
-///     pub frequency: FloatParam,
+///     #[parameter(id = "freq", name = "Frequency", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
+///     pub frequency: FloatParameter,
 ///
 ///     #[nested(group = "Output")]
-///     pub output: OutputParams,
+///     pub output: OutputParameters,
 /// }
 /// ```
-#[proc_macro_derive(Params, attributes(param, nested))]
-pub fn derive_params(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Parameters, attributes(parameter, nested))]
+pub fn derive_parameters(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
-    match derive_params_impl(input) {
+    match derive_parameters_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn derive_params_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ir = parse::parse(input)?;
     validate::validate(&ir)?;
     Ok(codegen::generate(&ir))
 }
 
-/// Derive macro for implementing `EnumParamValue` trait on enums.
+/// Derive macro for implementing `EnumParameterValue` trait on enums.
 ///
-/// This macro generates the `EnumParamValue` implementation that allows
-/// an enum to be used with `EnumParam<E>` in parameter structs.
+/// This macro generates the `EnumParameterValue` implementation that allows
+/// an enum to be used with `EnumParameter<E>` in parameter structs.
 ///
 /// # Requirements
 ///
@@ -138,9 +138,9 @@ fn derive_params_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::Token
 /// # Example
 ///
 /// ```ignore
-/// use beamer::EnumParam;
+/// use beamer::EnumParameter;
 ///
-/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// #[derive(Copy, Clone, PartialEq, EnumParameter)]
 /// pub enum FilterType {
 ///     #[name = "Low Pass"]
 ///     LowPass,
@@ -152,46 +152,46 @@ fn derive_params_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::Token
 ///     Notch,  // Uses "Notch" as display name
 /// }
 ///
-/// // Now FilterType can be used with EnumParam:
-/// #[derive(Params)]
-/// pub struct FilterParams {
-///     #[param(id = "filter_type")]
-///     pub filter_type: EnumParam<FilterType>,
+/// // Now FilterType can be used with EnumParameter:
+/// #[derive(Parameters)]
+/// pub struct FilterParameters {
+///     #[parameter(id = "filter_type")]
+///     pub filter_type: EnumParameter<FilterType>,
 /// }
 /// ```
-#[proc_macro_derive(EnumParam, attributes(name, default))]
-pub fn derive_enum_param(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(EnumParameter, attributes(name, default))]
+pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
-    match enum_param::derive_enum_param_impl(input) {
+    match enum_parameter::derive_enum_parameter_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-/// Derive macro for implementing the `HasParams` trait.
+/// Derive macro for implementing the `HasParameters` trait.
 ///
-/// This macro generates the `HasParams` implementation for structs that hold
+/// This macro generates the `HasParameters` implementation for structs that hold
 /// parameter collections. It eliminates the boilerplate of implementing
-/// `params()` and `params_mut()` on both Plugin and Processor types.
+/// `parameters()` and `parameters_mut()` on both Plugin and Processor types.
 ///
 /// # Usage
 ///
-/// Mark the field containing your parameters with `#[params]`:
+/// Mark the field containing your parameters with `#[parameters]`:
 ///
 /// ```ignore
 /// use beamer::prelude::*;
 ///
-/// #[derive(Default, HasParams)]
+/// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 /// }
 ///
-/// #[derive(HasParams)]
+/// #[derive(HasParameters)]
 /// pub struct GainProcessor {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 ///     // other processor-only fields...
 /// }
 /// ```
@@ -199,29 +199,29 @@ pub fn derive_enum_param(input: TokenStream) -> TokenStream {
 /// # Requirements
 ///
 /// - The struct must have named fields
-/// - Exactly one field must be marked with `#[params]`
-/// - The marked field's type must implement `Parameters`, `Units`, and `Params`
+/// - Exactly one field must be marked with `#[parameters]`
+/// - The marked field's type must implement `Vst3Parameters`, `Units`, and `Parameters`
 ///
 /// # What It Generates
 ///
 /// ```ignore
-/// impl HasParams for GainPlugin {
-///     type Params = GainParams;
+/// impl HasParameters for GainPlugin {
+///     type Parameters = GainParameters;
 ///
-///     fn params(&self) -> &Self::Params {
-///         &self.params
+///     fn parameters(&self) -> &Self::Parameters {
+///         &self.parameters
 ///     }
 ///
-///     fn params_mut(&mut self) -> &mut Self::Params {
-///         &mut self.params
+///     fn parameters_mut(&mut self) -> &mut Self::Parameters {
+///         &mut self.parameters
 ///     }
 /// }
 /// ```
-#[proc_macro_derive(HasParams, attributes(params))]
-pub fn derive_has_params(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(HasParameters, attributes(parameters))]
+pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
-    match has_params::derive_has_params_impl(input) {
+    match has_parameters::derive_has_parameters_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

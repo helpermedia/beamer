@@ -4,32 +4,32 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{FieldIR, ParamDefault, ParamFieldIR, ParamKind, ParamType, ParamsIR};
+use crate::ir::{FieldIR, ParameterDefault, ParamFieldIR, ParamKind, ParamType, ParametersIR};
 
 /// Validate the IR for semantic correctness.
-pub fn validate(ir: &ParamsIR) -> syn::Result<()> {
+pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
     check_unique_string_ids(ir)?;
     check_no_hash_collisions(ir)?;
-    validate_param_attributes(ir)?;
+    validate_parameter_attributes(ir)?;
     Ok(())
 }
 
 /// Check that all string IDs are unique.
-fn check_unique_string_ids(ir: &ParamsIR) -> syn::Result<()> {
+fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
     let mut seen: HashMap<&str, &syn::Ident> = HashMap::new();
 
     for field in &ir.fields {
-        if let FieldIR::Param(param) = field {
-            if let Some(first_field) = seen.get(param.string_id.as_str()) {
+        if let FieldIR::Parameter(parameter) = field {
+            if let Some(first_field) = seen.get(parameter.string_id.as_str()) {
                 return Err(syn::Error::new(
-                    param.span,
+                    parameter.span,
                     format!(
                         "Duplicate parameter id \"{}\": already used by field `{}`",
-                        param.string_id, first_field
+                        parameter.string_id, first_field
                     ),
                 ));
             }
-            seen.insert(&param.string_id, &param.field_name);
+            seen.insert(&parameter.string_id, &parameter.field_name);
         }
     }
 
@@ -37,23 +37,23 @@ fn check_unique_string_ids(ir: &ParamsIR) -> syn::Result<()> {
 }
 
 /// Check that no two parameter IDs hash to the same value.
-fn check_no_hash_collisions(ir: &ParamsIR) -> syn::Result<()> {
+fn check_no_hash_collisions(ir: &ParametersIR) -> syn::Result<()> {
     let mut seen: HashMap<u32, &str> = HashMap::new();
 
     for field in &ir.fields {
-        if let FieldIR::Param(param) = field {
-            if let Some(first_id) = seen.get(&param.hash_id) {
+        if let FieldIR::Parameter(parameter) = field {
+            if let Some(first_id) = seen.get(&parameter.hash_id) {
                 // Hash collision detected
                 return Err(syn::Error::new(
-                    param.span,
+                    parameter.span,
                     format!(
                         "Parameter ID hash collision: \"{}\" and \"{}\" both hash to 0x{:08x}. \
                          Rename one of these parameters to avoid the collision.",
-                        param.string_id, first_id, param.hash_id
+                        parameter.string_id, first_id, parameter.hash_id
                     ),
                 ));
             }
-            seen.insert(param.hash_id, &param.string_id);
+            seen.insert(parameter.hash_id, &parameter.string_id);
         }
     }
 
@@ -65,42 +65,42 @@ fn check_no_hash_collisions(ir: &ParamsIR) -> syn::Result<()> {
 // =============================================================================
 
 /// Validate declarative attributes on all parameters.
-fn validate_param_attributes(ir: &ParamsIR) -> syn::Result<()> {
+fn validate_parameter_attributes(ir: &ParametersIR) -> syn::Result<()> {
     for field in &ir.fields {
-        if let FieldIR::Param(param) = field {
-            validate_single_param(param)?;
+        if let FieldIR::Parameter(parameter) = field {
+            validate_single_param(parameter)?;
         }
     }
     Ok(())
 }
 
 /// Validate a single parameter's declarative attributes.
-fn validate_single_param(param: &ParamFieldIR) -> syn::Result<()> {
+fn validate_single_param(parameter: &ParamFieldIR) -> syn::Result<()> {
     // Validate range ordering
-    validate_range_ordering(param)?;
+    validate_range_ordering(parameter)?;
 
     // Validate default is within range
-    validate_default_in_range(param)?;
+    validate_default_in_range(parameter)?;
 
     // Validate smoothing time is positive
-    validate_smoothing_time(param)?;
+    validate_smoothing_time(parameter)?;
 
     // Validate kind/type consistency
-    validate_kind_type_consistency(param)?;
+    validate_kind_type_consistency(parameter)?;
 
     Ok(())
 }
 
 /// Validate that range start < end.
-fn validate_range_ordering(param: &ParamFieldIR) -> syn::Result<()> {
-    if let Some(range) = &param.attrs.range {
+fn validate_range_ordering(parameter: &ParamFieldIR) -> syn::Result<()> {
+    if let Some(range) = &parameter.attributes.range {
         if range.start >= range.end {
             return Err(syn::Error::new(
                 range.span,
                 format!(
                     "invalid range: start ({}) must be less than end ({})",
-                    format_number(range.start, param.param_type),
-                    format_number(range.end, param.param_type),
+                    format_number(range.start, parameter.parameter_type),
+                    format_number(range.end, parameter.parameter_type),
                 ),
             ));
         }
@@ -109,27 +109,27 @@ fn validate_range_ordering(param: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Validate that default value is within the specified range.
-fn validate_default_in_range(param: &ParamFieldIR) -> syn::Result<()> {
-    let (default_val, range) = match (&param.attrs.default, &param.attrs.range) {
+fn validate_default_in_range(parameter: &ParamFieldIR) -> syn::Result<()> {
+    let (default_val, range) = match (&parameter.attributes.default, &parameter.attributes.range) {
         (Some(d), Some(r)) => (d, r),
         _ => return Ok(()), // Can't validate without both
     };
 
     let default_f64 = match default_val {
-        ParamDefault::Float(v) => *v,
-        ParamDefault::Int(v) => *v as f64,
-        ParamDefault::Bool(_) => return Ok(()), // Bools don't have ranges
+        ParameterDefault::Float(v) => *v,
+        ParameterDefault::Int(v) => *v as f64,
+        ParameterDefault::Bool(_) => return Ok(()), // Bools don't have ranges
     };
 
     // Check if default is within range
     if default_f64 < range.start || default_f64 > range.end {
         return Err(syn::Error::new(
-            param.span,
+            parameter.span,
             format!(
                 "default value {} is outside range {}..={}",
-                format_number(default_f64, param.param_type),
-                format_number(range.start, param.param_type),
-                format_number(range.end, param.param_type),
+                format_number(default_f64, parameter.parameter_type),
+                format_number(range.start, parameter.parameter_type),
+                format_number(range.end, parameter.parameter_type),
             ),
         ));
     }
@@ -138,9 +138,9 @@ fn validate_default_in_range(param: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Format a number appropriately for the parameter type.
-/// FloatParam shows decimals, IntParam shows integers.
-fn format_number(value: f64, param_type: ParamType) -> String {
-    match param_type {
+/// FloatParameter shows decimals, IntParameter shows integers.
+fn format_number(value: f64, parameter_type: ParamType) -> String {
+    match parameter_type {
         ParamType::Float => {
             if value.fract() == 0.0 {
                 format!("{:.1}", value) // Show at least one decimal: 100.0
@@ -154,8 +154,8 @@ fn format_number(value: f64, param_type: ParamType) -> String {
 }
 
 /// Validate that smoothing time is positive.
-fn validate_smoothing_time(param: &ParamFieldIR) -> syn::Result<()> {
-    if let Some(smoothing) = &param.attrs.smoothing {
+fn validate_smoothing_time(parameter: &ParamFieldIR) -> syn::Result<()> {
+    if let Some(smoothing) = &parameter.attributes.smoothing {
         if smoothing.time_ms <= 0.0 {
             return Err(syn::Error::new(
                 smoothing.span,
@@ -170,42 +170,42 @@ fn validate_smoothing_time(param: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Validate that kind is appropriate for the parameter type.
-fn validate_kind_type_consistency(param: &ParamFieldIR) -> syn::Result<()> {
-    let kind = match param.attrs.kind {
+fn validate_kind_type_consistency(parameter: &ParamFieldIR) -> syn::Result<()> {
+    let kind = match parameter.attributes.kind {
         Some(k) => k,
         None => return Ok(()), // No kind specified, nothing to validate
     };
 
     // Check for mismatched kinds
-    match (param.param_type, kind) {
-        // Semitones is for IntParam
+    match (parameter.parameter_type, kind) {
+        // Semitones is for IntParameter
         (ParamType::Float, ParamKind::Semitones) => {
             return Err(syn::Error::new(
-                param.span,
-                "kind 'semitones' should be used with IntParam, not FloatParam",
+                parameter.span,
+                "kind 'semitones' should be used with IntParameter, not FloatParameter",
             ));
         }
-        // Float-specific kinds on IntParam
+        // Float-specific kinds on IntParameter
         (ParamType::Int, ParamKind::Db | ParamKind::Hz | ParamKind::Ms | ParamKind::Seconds | ParamKind::Percent | ParamKind::Pan | ParamKind::Ratio) => {
             return Err(syn::Error::new(
-                param.span,
+                parameter.span,
                 format!(
-                    "kind '{:?}' should be used with FloatParam, not IntParam",
+                    "kind '{:?}' should be used with FloatParameter, not IntParameter",
                     kind
                 ),
             ));
         }
         // Bool/Enum shouldn't have kinds (except bypass which is handled separately)
-        (ParamType::Bool, _) if !param.attrs.bypass => {
+        (ParamType::Bool, _) if !parameter.attributes.bypass => {
             return Err(syn::Error::new(
-                param.span,
-                "BoolParam should not have a 'kind' attribute",
+                parameter.span,
+                "BoolParameter should not have a 'kind' attribute",
             ));
         }
         (ParamType::Enum, _) => {
             return Err(syn::Error::new(
-                param.span,
-                "EnumParam should not have a 'kind' attribute",
+                parameter.span,
+                "EnumParameter should not have a 'kind' attribute",
             ));
         }
         _ => {}

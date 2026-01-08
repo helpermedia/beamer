@@ -1,22 +1,22 @@
 //! Code generation for the derive macro.
 //!
-//! This module generates the Rust code for the `Params` and `Parameters` trait
+//! This module generates the Rust code for the `Parameters` and `Vst3Parameters` trait
 //! implementations from the validated IR.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::ir::{
-    FieldIR, ParamDefault, ParamFieldIR, ParamKind, ParamsIR, SmoothingStyle,
+    FieldIR, ParameterDefault, ParamFieldIR, ParamKind, ParametersIR, SmoothingStyle,
 };
 
 /// Generate all code for the derive macro.
-pub fn generate(ir: &ParamsIR) -> TokenStream {
+pub fn generate(ir: &ParametersIR) -> TokenStream {
     let const_ids = generate_const_ids(ir);
     let unit_consts = generate_unit_consts(ir);
     let collision_check = generate_collision_check(ir);
     let units_impl = generate_units_impl(ir);
-    let params_impl = generate_params_impl(ir);
+    let vst3_parameters_impl = generate_vst3_parameters_impl(ir);
     let parameters_impl = generate_parameters_impl(ir);
     let set_unit_ids_impl = generate_set_unit_ids(ir);
     let default_impl = generate_default_impl(ir);
@@ -26,7 +26,7 @@ pub fn generate(ir: &ParamsIR) -> TokenStream {
         #unit_consts
         #collision_check
         #units_impl
-        #params_impl
+        #vst3_parameters_impl
         #parameters_impl
         #set_unit_ids_impl
         #default_impl
@@ -34,14 +34,14 @@ pub fn generate(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate const ID declarations for each parameter.
-fn generate_const_ids(ir: &ParamsIR) -> TokenStream {
+fn generate_const_ids(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
 
     let const_defs: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let const_name = param.const_name();
-            let hash = param.hash_id;
+        .parameter_fields()
+        .map(|parameter| {
+            let const_name = parameter.const_name();
+            let hash = parameter.hash_id;
             quote! {
                 const #const_name: u32 = #hash;
             }
@@ -60,7 +60,7 @@ fn generate_const_ids(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate unit ID constants for each nested field and flat group.
-fn generate_unit_consts(ir: &ParamsIR) -> TokenStream {
+fn generate_unit_consts(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
 
     // Generate constants for flat groups first (they get IDs 1, 2, 3, ...)
@@ -77,7 +77,7 @@ fn generate_unit_consts(ir: &ParamsIR) -> TokenStream {
             let unit_id = (idx + 1) as i32; // Start at 1 (0 is root)
             quote! {
                 /// Unit ID for the flat parameter group.
-                pub const #const_name: ::beamer::core::params::UnitId = #unit_id;
+                pub const #const_name: ::beamer::core::parameters::UnitId = #unit_id;
             }
         })
         .collect();
@@ -95,7 +95,7 @@ fn generate_unit_consts(ir: &ParamsIR) -> TokenStream {
             let unit_id = flat_group_count + (idx as i32) + 1;
             quote! {
                 /// Unit ID for the nested parameter group.
-                pub const #const_name: ::beamer::core::params::UnitId = #unit_id;
+                pub const #const_name: ::beamer::core::parameters::UnitId = #unit_id;
             }
         })
         .collect();
@@ -116,7 +116,7 @@ fn generate_unit_consts(ir: &ParamsIR) -> TokenStream {
 ///
 /// For structs with nested groups or flat groups, this generates unit discovery
 /// that includes both flat groups and deeply nested ones.
-fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
+fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -127,7 +127,7 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
     if !has_flat_groups && !has_nested {
         // No groups at all = use default Units impl (root only)
         return quote! {
-            impl #impl_generics ::beamer::core::params::Units for #struct_name #ty_generics #where_clause {}
+            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {}
         };
     }
 
@@ -139,7 +139,7 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
         .map(|(idx, group_name)| {
             let unit_id = (idx + 1) as i32;
             quote! {
-                #idx => Some(::beamer::core::params::UnitInfo {
+                #idx => Some(::beamer::core::parameters::UnitInfo {
                     id: #unit_id,
                     name: #group_name,
                     parent_id: 0, // All flat groups are children of root
@@ -151,9 +151,9 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
     if has_nested {
         // Flat groups + nested groups: combine static flat groups with dynamic nested collection
         quote! {
-            impl #impl_generics ::beamer::core::params::Units for #struct_name #ty_generics #where_clause {
+            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {
                 fn unit_count(&self) -> usize {
-                    use ::beamer::core::param_types::Params;
+                    use ::beamer::core::parameter_types::Parameters;
                     // Count = 1 (root) + flat groups + nested units recursively
                     let flat_count = #flat_group_count;
                     let mut units = Vec::new();
@@ -161,10 +161,10 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
                     1 + flat_count + units.len()
                 }
 
-                fn unit_info(&self, index: usize) -> Option<::beamer::core::params::UnitInfo> {
-                    use ::beamer::core::param_types::Params;
+                fn unit_info(&self, index: usize) -> Option<::beamer::core::parameters::UnitInfo> {
+                    use ::beamer::core::parameter_types::Parameters;
                     if index == 0 {
-                        return Some(::beamer::core::params::UnitInfo::root());
+                        return Some(::beamer::core::parameters::UnitInfo::root());
                     }
 
                     // Check flat groups first (indices 1..=flat_group_count)
@@ -187,14 +187,14 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
     } else {
         // Only flat groups, no nesting
         quote! {
-            impl #impl_generics ::beamer::core::params::Units for #struct_name #ty_generics #where_clause {
+            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {
                 fn unit_count(&self) -> usize {
                     1 + #flat_group_count // root + flat groups
                 }
 
-                fn unit_info(&self, index: usize) -> Option<::beamer::core::params::UnitInfo> {
+                fn unit_info(&self, index: usize) -> Option<::beamer::core::parameters::UnitInfo> {
                     if index == 0 {
-                        return Some(::beamer::core::params::UnitInfo::root());
+                        return Some(::beamer::core::parameters::UnitInfo::root());
                     }
 
                     let flat_idx = index - 1;
@@ -208,12 +208,12 @@ fn generate_units_impl(ir: &ParamsIR) -> TokenStream {
     }
 }
 
-/// Generate the `set_unit_ids()` method for initializing param unit IDs.
+/// Generate the `set_unit_ids()` method for initializing parameter unit IDs.
 ///
 /// This handles both flat groups (group="...") and nested groups (#[nested(...)]).
-/// For flat groups, it sets unit_id directly on the params based on their group.
+/// For flat groups, it sets unit_id directly on the parameters based on their group.
 /// For nested groups, it uses the recursive `assign_unit_ids` method.
-fn generate_set_unit_ids(ir: &ParamsIR) -> TokenStream {
+fn generate_set_unit_ids(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -240,12 +240,12 @@ fn generate_set_unit_ids(ir: &ParamsIR) -> TokenStream {
         .map(|(idx, name)| (*name, (idx + 1) as i32))
         .collect();
 
-    // Generate statements to set unit_id on params with flat groups
+    // Generate statements to set unit_id on parameters with flat groups
     let flat_group_assignments: Vec<TokenStream> = ir
-        .param_fields()
-        .filter_map(|param| {
-            param.attrs.group.as_ref().map(|group_name| {
-                let field = &param.field_name;
+        .parameter_fields()
+        .filter_map(|parameter| {
+            parameter.attributes.group.as_ref().map(|group_name| {
+                let field = &parameter.field_name;
                 let unit_id = group_to_unit_id.get(group_name.as_str()).copied().unwrap_or(0);
                 quote! {
                     self.#field.set_unit_id(#unit_id);
@@ -257,7 +257,7 @@ fn generate_set_unit_ids(ir: &ParamsIR) -> TokenStream {
     let flat_group_count = flat_groups.len() as i32;
     let nested_init = if has_nested {
         quote! {
-            use ::beamer::core::param_types::Params;
+            use ::beamer::core::parameter_types::Parameters;
             // Nested groups start after flat groups
             self.assign_unit_ids(#flat_group_count + 1, 0);
         }
@@ -278,8 +278,8 @@ fn generate_set_unit_ids(ir: &ParamsIR) -> TokenStream {
             /// # Example
             ///
             /// ```ignore
-            /// let mut params = SynthParams::default();
-            /// params.set_unit_ids();
+            /// let mut parameters = SynthParameters::default();
+            /// parameters.set_unit_ids();
             /// ```
             pub fn set_unit_ids(&mut self) {
                 // Set unit IDs for flat groups
@@ -292,19 +292,19 @@ fn generate_set_unit_ids(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate compile-time collision detection.
-fn generate_collision_check(ir: &ParamsIR) -> TokenStream {
-    let param_fields: Vec<_> = ir.param_fields().collect();
+fn generate_collision_check(ir: &ParametersIR) -> TokenStream {
+    let parameter_fields: Vec<_> = ir.parameter_fields().collect();
 
-    if param_fields.len() < 2 {
+    if parameter_fields.len() < 2 {
         // No collision possible with 0 or 1 parameters
         return quote! {};
     }
 
-    let id_pairs: Vec<TokenStream> = param_fields
+    let id_pairs: Vec<TokenStream> = parameter_fields
         .iter()
-        .map(|param| {
-            let id_str = &param.string_id;
-            let hash = param.hash_id;
+        .map(|parameter| {
+            let id_str = &parameter.string_id;
+            let hash = parameter.hash_id;
             quote! { (#id_str, #hash) }
         })
         .collect();
@@ -335,8 +335,8 @@ fn generate_collision_check(ir: &ParamsIR) -> TokenStream {
     }
 }
 
-/// Generate the `Params` trait implementation.
-fn generate_params_impl(ir: &ParamsIR) -> TokenStream {
+/// Generate the `Parameters` trait implementation.
+fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -351,20 +351,20 @@ fn generate_params_impl(ir: &ParamsIR) -> TokenStream {
     let reset_smoothing_impl = generate_reset_smoothing(ir);
 
     quote! {
-        impl #impl_generics ::beamer::core::param_types::Params for #struct_name #ty_generics #where_clause {
+        impl #impl_generics ::beamer::core::parameter_types::Parameters for #struct_name #ty_generics #where_clause {
             fn count(&self) -> usize {
                 #count_impl
             }
 
-            fn iter(&self) -> Box<dyn Iterator<Item = &dyn ::beamer::core::param_types::ParamRef> + '_> {
+            fn iter(&self) -> Box<dyn Iterator<Item = &dyn ::beamer::core::parameter_types::ParameterRef> + '_> {
                 #iter_impl
             }
 
-            fn by_id(&self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::param_types::ParamRef> {
+            fn by_id(&self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
                 #by_id_impl
             }
 
-            fn by_id_mut(&mut self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::param_types::ParamRef> {
+            fn by_id_mut(&mut self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
                 self.by_id(id)
             }
 
@@ -383,18 +383,18 @@ fn generate_params_impl(ir: &ParamsIR) -> TokenStream {
     }
 }
 
-/// Generate the `set_all_unit_ids()` method for the Params trait.
-fn generate_set_all_unit_ids(ir: &ParamsIR) -> TokenStream {
-    if ir.param_count() == 0 {
-        // No direct params = use default no-op
+/// Generate the `set_all_unit_ids()` method for the Parameters trait.
+fn generate_set_all_unit_ids(ir: &ParametersIR) -> TokenStream {
+    if ir.parameter_count() == 0 {
+        // No direct parameters = use default no-op
         return quote! {};
     }
 
-    // Generate statements to set unit_id on each direct param field
+    // Generate statements to set unit_id on each direct parameter field
     let assignments: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
             quote! {
                 self.#field.set_unit_id(unit_id);
             }
@@ -402,14 +402,14 @@ fn generate_set_all_unit_ids(ir: &ParamsIR) -> TokenStream {
         .collect();
 
     quote! {
-        fn set_all_unit_ids(&mut self, unit_id: ::beamer::core::params::UnitId) {
+        fn set_all_unit_ids(&mut self, unit_id: ::beamer::core::parameters::UnitId) {
             #(#assignments)*
         }
     }
 }
 
-/// Generate the nested group discovery methods for the Params trait.
-fn generate_nested_discovery(ir: &ParamsIR) -> TokenStream {
+/// Generate the nested group discovery methods for the Parameters trait.
+fn generate_nested_discovery(ir: &ParametersIR) -> TokenStream {
     if !ir.has_nested() {
         // No nested fields = use default implementations (return 0/None)
         return quote! {};
@@ -425,7 +425,7 @@ fn generate_nested_discovery(ir: &ParamsIR) -> TokenStream {
             let field = &nested.field_name;
             let name = &nested.group_name;
             quote! {
-                #idx => Some((#name, &self.#field as &dyn ::beamer::core::param_types::Params)),
+                #idx => Some((#name, &self.#field as &dyn ::beamer::core::parameter_types::Parameters)),
             }
         })
         .collect();
@@ -438,7 +438,7 @@ fn generate_nested_discovery(ir: &ParamsIR) -> TokenStream {
             let field = &nested.field_name;
             let name = &nested.group_name;
             quote! {
-                #idx => Some((#name, &mut self.#field as &mut dyn ::beamer::core::param_types::Params)),
+                #idx => Some((#name, &mut self.#field as &mut dyn ::beamer::core::parameter_types::Parameters)),
             }
         })
         .collect();
@@ -448,14 +448,14 @@ fn generate_nested_discovery(ir: &ParamsIR) -> TokenStream {
             #nested_count
         }
 
-        fn nested_group(&self, index: usize) -> Option<(&'static str, &dyn ::beamer::core::param_types::Params)> {
+        fn nested_group(&self, index: usize) -> Option<(&'static str, &dyn ::beamer::core::parameter_types::Parameters)> {
             match index {
                 #(#group_match_arms)*
                 _ => None,
             }
         }
 
-        fn nested_group_mut(&mut self, index: usize) -> Option<(&'static str, &mut dyn ::beamer::core::param_types::Params)> {
+        fn nested_group_mut(&mut self, index: usize) -> Option<(&'static str, &mut dyn ::beamer::core::parameter_types::Parameters)> {
             match index {
                 #(#group_mut_match_arms)*
                 _ => None,
@@ -465,34 +465,34 @@ fn generate_nested_discovery(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate the count() method body.
-fn generate_count(ir: &ParamsIR) -> TokenStream {
-    let param_count = ir.param_count();
+fn generate_count(ir: &ParametersIR) -> TokenStream {
+    let parameter_count = ir.parameter_count();
 
     if ir.has_nested() {
         let nested_counts: Vec<TokenStream> = ir
             .nested_fields()
             .map(|nested| {
                 let field = &nested.field_name;
-                // Use fully qualified syntax to disambiguate between Params::count and Parameters::count
-                quote! { ::beamer::core::param_types::Params::count(&self.#field) }
+                // Use fully qualified syntax to disambiguate between Parameters::count and Parameters::count
+                quote! { ::beamer::core::parameter_types::Parameters::count(&self.#field) }
             })
             .collect();
 
         quote! {
-            #param_count #(+ #nested_counts)*
+            #parameter_count #(+ #nested_counts)*
         }
     } else {
-        quote! { #param_count }
+        quote! { #parameter_count }
     }
 }
 
 /// Generate the iter() method body.
-fn generate_iter(ir: &ParamsIR) -> TokenStream {
-    let param_iters: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            quote! { &self.#field as &dyn ::beamer::core::param_types::ParamRef }
+fn generate_iter(ir: &ParametersIR) -> TokenStream {
+    let parameter_iters: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            quote! { &self.#field as &dyn ::beamer::core::parameter_types::ParameterRef }
         })
         .collect();
 
@@ -504,9 +504,9 @@ fn generate_iter(ir: &ParamsIR) -> TokenStream {
         })
         .collect();
 
-    if param_iters.is_empty() && nested_chains.is_empty() {
+    if parameter_iters.is_empty() && nested_chains.is_empty() {
         quote! { Box::new(::std::iter::empty()) }
-    } else if param_iters.is_empty() {
+    } else if parameter_iters.is_empty() {
         // Only nested fields
         let first_nested = &ir.nested_fields().next().unwrap().field_name;
         let rest_nested: Vec<TokenStream> = ir
@@ -523,7 +523,7 @@ fn generate_iter(ir: &ParamsIR) -> TokenStream {
     } else {
         quote! {
             Box::new(
-                [#(#param_iters),*].into_iter()
+                [#(#parameter_iters),*].into_iter()
                     #(#nested_chains)*
             )
         }
@@ -531,14 +531,14 @@ fn generate_iter(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate the by_id() method body.
-fn generate_by_id(ir: &ParamsIR) -> TokenStream {
+fn generate_by_id(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
 
     let match_arms: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            let const_name = param.const_name();
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let const_name = parameter.const_name();
             quote! {
                 #struct_name::#const_name => Some(&self.#field),
             }
@@ -550,8 +550,8 @@ fn generate_by_id(ir: &ParamsIR) -> TokenStream {
         .map(|nested| {
             let field = &nested.field_name;
             quote! {
-                if let Some(param) = self.#field.by_id(id) {
-                    return Some(param);
+                if let Some(parameter) = self.#field.by_id(id) {
+                    return Some(parameter);
                 }
             }
         })
@@ -577,13 +577,13 @@ fn generate_by_id(ir: &ParamsIR) -> TokenStream {
 /// This generates path-based serialization that supports nested groups.
 /// Paths like "filter/cutoff" disambiguate parameters with the same ID
 /// in different nested groups.
-fn generate_save_state(ir: &ParamsIR) -> TokenStream {
-    // Generate saves for direct params using string IDs with prefix
-    let param_saves: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            let id_str = &param.string_id;
+fn generate_save_state(ir: &ParametersIR) -> TokenStream {
+    // Generate saves for direct parameters using string IDs with prefix
+    let parameter_saves: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let id_str = &parameter.string_id;
             quote! {
                 // Build path: prefix + "/" + id (or just id if prefix is empty)
                 let path = if prefix.is_empty() {
@@ -617,13 +617,13 @@ fn generate_save_state(ir: &ParamsIR) -> TokenStream {
         })
         .collect();
 
-    let param_count = ir.param_count();
-    // Estimate capacity: ~20 bytes per param (path_len + avg 10 char path + 8 byte f64)
-    let estimated_capacity = param_count * 20;
+    let parameter_count = ir.parameter_count();
+    // Estimate capacity: ~20 bytes per parameter (path_len + avg 10 char path + 8 byte f64)
+    let estimated_capacity = parameter_count * 20;
 
     quote! {
         fn save_state_prefixed(&self, data: &mut Vec<u8>, prefix: &str) {
-            #(#param_saves)*
+            #(#parameter_saves)*
             #(#nested_saves)*
         }
 
@@ -639,13 +639,13 @@ fn generate_save_state(ir: &ParamsIR) -> TokenStream {
 ///
 /// This generates path-based deserialization that supports nested groups.
 /// Paths like "filter/cutoff" are split to route to the correct nested group.
-fn generate_load_state(ir: &ParamsIR) -> TokenStream {
-    // Generate match arms for direct param string IDs (no path prefix)
+fn generate_load_state(ir: &ParametersIR) -> TokenStream {
+    // Generate match arms for direct parameter string IDs (no path prefix)
     let direct_match_arms: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            let id_str = &param.string_id;
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let id_str = &parameter.string_id;
             quote! {
                 #id_str => {
                     self.#field.set_normalized(value.clamp(0.0, 1.0));
@@ -750,8 +750,8 @@ fn generate_load_state(ir: &ParamsIR) -> TokenStream {
     }
 }
 
-/// Generate the `Parameters` trait implementation.
-fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
+/// Generate the `Vst3Parameters` trait implementation.
+fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -762,10 +762,10 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
 
     // Generate get_normalized - match on ID
     let get_match_arms: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            let const_name = param.const_name();
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let const_name = parameter.const_name();
             quote! {
                 #struct_name::#const_name => self.#field.get_normalized(),
             }
@@ -774,10 +774,10 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
 
     // Generate set_normalized - match on ID
     let set_match_arms: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
-            let const_name = param.const_name();
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let const_name = parameter.const_name();
             quote! {
                 #struct_name::#const_name => self.#field.set_normalized(value),
             }
@@ -785,7 +785,7 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
         .collect();
 
     quote! {
-        impl #impl_generics ::beamer::core::params::Parameters for #struct_name #ty_generics #where_clause {
+        impl #impl_generics ::beamer::core::parameters::Vst3Parameters for #struct_name #ty_generics #where_clause {
             fn count(&self) -> usize {
                 #count_impl
             }
@@ -797,7 +797,7 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
                     #(#get_match_arms)*
                     _ => {
                         // Check nested or use default
-                        use ::beamer::core::param_types::Params;
+                        use ::beamer::core::parameter_types::Parameters;
                         self.by_id(id).map(|p| p.get_normalized()).unwrap_or(0.0)
                     }
                 }
@@ -808,31 +808,31 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
                     #(#set_match_arms)*
                     _ => {
                         // Check nested
-                        use ::beamer::core::param_types::Params;
-                        if let Some(param) = self.by_id(id) {
-                            param.set_normalized(value);
+                        use ::beamer::core::parameter_types::Parameters;
+                        if let Some(parameter) = self.by_id(id) {
+                            parameter.set_normalized(value);
                         }
                     }
                 }
             }
 
             fn normalized_to_string(&self, id: ::beamer::core::types::ParamId, normalized: ::beamer::core::types::ParamValue) -> String {
-                use ::beamer::core::param_types::Params;
+                use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.display_normalized(normalized)).unwrap_or_default()
             }
 
             fn string_to_normalized(&self, id: ::beamer::core::types::ParamId, string: &str) -> Option<::beamer::core::types::ParamValue> {
-                use ::beamer::core::param_types::Params;
+                use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).and_then(|p| p.parse(string))
             }
 
             fn normalized_to_plain(&self, id: ::beamer::core::types::ParamId, normalized: ::beamer::core::types::ParamValue) -> ::beamer::core::types::ParamValue {
-                use ::beamer::core::param_types::Params;
+                use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.normalized_to_plain(normalized)).unwrap_or(0.0)
             }
 
             fn plain_to_normalized(&self, id: ::beamer::core::types::ParamId, plain: ::beamer::core::types::ParamValue) -> ::beamer::core::types::ParamValue {
-                use ::beamer::core::param_types::Params;
+                use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.plain_to_normalized(plain)).unwrap_or(0.0)
             }
         }
@@ -840,22 +840,22 @@ fn generate_parameters_impl(ir: &ParamsIR) -> TokenStream {
 }
 
 /// Generate the info() method for the Parameters trait.
-fn generate_info(ir: &ParamsIR) -> TokenStream {
+fn generate_info(ir: &ParametersIR) -> TokenStream {
     // Generate match arms for direct parameters
-    let param_match_arms: Vec<TokenStream> = ir
-        .param_fields()
+    let parameter_match_arms: Vec<TokenStream> = ir
+        .parameter_fields()
         .enumerate()
-        .map(|(idx, param)| {
-            let field = &param.field_name;
+        .map(|(idx, parameter)| {
+            let field = &parameter.field_name;
             quote! {
                 #idx => Some(self.#field.info()),
             }
         })
         .collect();
 
-    let param_count = ir.param_count();
+    let parameter_count = ir.parameter_count();
 
-    // Handle nested params
+    // Handle nested parameters
     if ir.has_nested() {
         let nested_infos: Vec<TokenStream> = ir
             .nested_fields()
@@ -863,9 +863,9 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
                 let field = &nested.field_name;
                 // Use fully qualified syntax to disambiguate
                 quote! {
-                    let nested_count = ::beamer::core::param_types::Params::count(&self.#field);
+                    let nested_count = ::beamer::core::parameter_types::Parameters::count(&self.#field);
                     if adjusted_index < nested_count {
-                        return ::beamer::core::params::Parameters::info(&self.#field, adjusted_index);
+                        return ::beamer::core::parameters::Vst3Parameters::info(&self.#field, adjusted_index);
                     }
                     adjusted_index -= nested_count;
                 }
@@ -873,13 +873,13 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
             .collect();
 
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::params::ParamInfo> {
-                // First check direct params
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParamInfo> {
+                // First check direct parameters
                 match index {
-                    #(#param_match_arms)*
+                    #(#parameter_match_arms)*
                     _ => {
-                        // Adjust index for nested params
-                        let mut adjusted_index = index - #param_count;
+                        // Adjust index for nested parameters
+                        let mut adjusted_index = index - #parameter_count;
                         #(#nested_infos)*
                         None
                     }
@@ -888,9 +888,9 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
         }
     } else {
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::params::ParamInfo> {
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParamInfo> {
                 match index {
-                    #(#param_match_arms)*
+                    #(#parameter_match_arms)*
                     _ => None,
                 }
             }
@@ -898,13 +898,13 @@ fn generate_info(ir: &ParamsIR) -> TokenStream {
     }
 }
 
-/// Generate the `set_sample_rate()` method for the Params trait.
-fn generate_set_sample_rate(ir: &ParamsIR) -> TokenStream {
-    // Generate calls for direct param fields
-    let param_calls: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
+/// Generate the `set_sample_rate()` method for the Parameters trait.
+fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
+    // Generate calls for direct parameter fields
+    let parameter_calls: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
             quote! { self.#field.set_sample_rate(sample_rate); }
         })
         .collect();
@@ -918,26 +918,26 @@ fn generate_set_sample_rate(ir: &ParamsIR) -> TokenStream {
         })
         .collect();
 
-    if param_calls.is_empty() && nested_calls.is_empty() {
-        // No params = use default no-op
+    if parameter_calls.is_empty() && nested_calls.is_empty() {
+        // No parameters = use default no-op
         quote! {}
     } else {
         quote! {
             fn set_sample_rate(&mut self, sample_rate: f64) {
-                #(#param_calls)*
+                #(#parameter_calls)*
                 #(#nested_calls)*
             }
         }
     }
 }
 
-/// Generate the `reset_smoothing()` method for the Params trait.
-fn generate_reset_smoothing(ir: &ParamsIR) -> TokenStream {
-    // Generate calls for direct param fields
-    let param_calls: Vec<TokenStream> = ir
-        .param_fields()
-        .map(|param| {
-            let field = &param.field_name;
+/// Generate the `reset_smoothing()` method for the Parameters trait.
+fn generate_reset_smoothing(ir: &ParametersIR) -> TokenStream {
+    // Generate calls for direct parameter fields
+    let parameter_calls: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
             quote! { self.#field.reset_smoothing(); }
         })
         .collect();
@@ -951,13 +951,13 @@ fn generate_reset_smoothing(ir: &ParamsIR) -> TokenStream {
         })
         .collect();
 
-    if param_calls.is_empty() && nested_calls.is_empty() {
-        // No params = use default no-op
+    if parameter_calls.is_empty() && nested_calls.is_empty() {
+        // No parameters = use default no-op
         quote! {}
     } else {
         quote! {
             fn reset_smoothing(&mut self) {
-                #(#param_calls)*
+                #(#parameter_calls)*
                 #(#nested_calls)*
             }
         }
@@ -968,13 +968,13 @@ fn generate_reset_smoothing(ir: &ParamsIR) -> TokenStream {
 // Default Implementation Generation
 // =============================================================================
 
-/// Generate `Default` impl if all param fields have declarative attributes.
+/// Generate `Default` impl if all parameter fields have declarative attributes.
 ///
 /// This is the core of the declarative parameter system. When all parameters
 /// have the required attributes (name, default, range, etc.), the macro
 /// generates a complete `Default` implementation.
-fn generate_default_impl(ir: &ParamsIR) -> TokenStream {
-    // Only generate if all params have declarative attributes
+fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
+    // Only generate if all parameters have declarative attributes
     if !ir.can_generate_default() {
         return quote! {};
     }
@@ -987,7 +987,7 @@ fn generate_default_impl(ir: &ParamsIR) -> TokenStream {
         .fields
         .iter()
         .map(|field| match field {
-            FieldIR::Param(p) => generate_param_initializer(p, struct_name),
+            FieldIR::Parameter(p) => generate_parameter_initializer(p, struct_name),
             FieldIR::Nested(n) => {
                 let field = &n.field_name;
                 quote! { #field: Default::default() }
@@ -998,7 +998,7 @@ fn generate_default_impl(ir: &ParamsIR) -> TokenStream {
     // Add set_unit_ids() call if there are groups (flat or nested)
     let unit_id_init = if ir.has_nested() || ir.has_flat_groups() {
         quote! {
-            params.set_unit_ids();
+            parameters.set_unit_ids();
         }
     } else {
         quote! {}
@@ -1007,25 +1007,25 @@ fn generate_default_impl(ir: &ParamsIR) -> TokenStream {
     quote! {
         impl #impl_generics Default for #struct_name #ty_generics #where_clause {
             fn default() -> Self {
-                let mut params = Self {
+                let mut parameters = Self {
                     #(#field_inits),*
                 };
                 #unit_id_init
-                params
+                parameters
             }
         }
     }
 }
 
 /// Generate the initializer for a single parameter field.
-fn generate_param_initializer(param: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
-    let field = &param.field_name;
+fn generate_parameter_initializer(parameter: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
+    let field = &parameter.field_name;
 
     // Generate constructor call
-    let constructor = generate_constructor(param);
+    let constructor = generate_constructor(parameter);
 
     // Generate builder chain (with_id, with_short_name, with_smoother)
-    let builder_chain = generate_builder_chain(param, struct_name);
+    let builder_chain = generate_builder_chain(parameter, struct_name);
 
     quote! {
         #field: #constructor #builder_chain
@@ -1033,80 +1033,80 @@ fn generate_param_initializer(param: &ParamFieldIR, struct_name: &syn::Ident) ->
 }
 
 /// Generate the constructor call for a parameter.
-fn generate_constructor(param: &ParamFieldIR) -> TokenStream {
-    match param.param_type {
-        crate::ir::ParamType::Float => generate_float_constructor(param),
-        crate::ir::ParamType::Int => generate_int_constructor(param),
-        crate::ir::ParamType::Bool => generate_bool_constructor(param),
-        crate::ir::ParamType::Enum => generate_enum_constructor(param),
+fn generate_constructor(parameter: &ParamFieldIR) -> TokenStream {
+    match parameter.parameter_type {
+        crate::ir::ParamType::Float => generate_float_constructor(parameter),
+        crate::ir::ParamType::Int => generate_int_constructor(parameter),
+        crate::ir::ParamType::Bool => generate_bool_constructor(parameter),
+        crate::ir::ParamType::Enum => generate_enum_constructor(parameter),
     }
 }
 
-/// Generate constructor for FloatParam.
-fn generate_float_constructor(param: &ParamFieldIR) -> TokenStream {
-    let name = param.attrs.name.as_ref().expect("FloatParam requires name");
-    let default = match &param.attrs.default {
-        Some(ParamDefault::Float(v)) => *v,
-        Some(ParamDefault::Int(v)) => *v as f64,
+/// Generate constructor for FloatParameter.
+fn generate_float_constructor(parameter: &ParamFieldIR) -> TokenStream {
+    let name = parameter.attributes.name.as_ref().expect("FloatParameter requires name");
+    let default = match &parameter.attributes.default {
+        Some(ParameterDefault::Float(v)) => *v,
+        Some(ParameterDefault::Int(v)) => *v as f64,
         _ => 0.0,
     };
 
     // Get kind, defaulting to Linear
-    let kind = param.attrs.kind.unwrap_or(ParamKind::Linear);
+    let kind = parameter.attributes.kind.unwrap_or(ParamKind::Linear);
 
     // Handle special kinds with fixed ranges
     match kind {
         ParamKind::Percent => {
             return quote! {
-                ::beamer::core::param_types::FloatParam::percent(#name, #default)
+                ::beamer::core::parameter_types::FloatParameter::percent(#name, #default)
             };
         }
         ParamKind::Pan => {
             return quote! {
-                ::beamer::core::param_types::FloatParam::pan(#name, #default)
+                ::beamer::core::parameter_types::FloatParameter::pan(#name, #default)
             };
         }
         _ => {}
     }
 
     // Get range (required for non-fixed-range kinds)
-    let (start, end) = param
-        .attrs
+    let (start, end) = parameter
+        .attributes
         .range
         .as_ref()
         .map(|r| (r.start, r.end))
         .or_else(|| kind.fixed_range())
-        .expect("FloatParam requires range");
+        .expect("FloatParameter requires range");
 
     match kind {
         ParamKind::Db => quote! {
-            ::beamer::core::param_types::FloatParam::db(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::db(#name, #default, #start..=#end)
         },
         ParamKind::DbLog => quote! {
-            ::beamer::core::param_types::FloatParam::db_log(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::db_log(#name, #default, #start..=#end)
         },
         ParamKind::DbLogOffset => quote! {
-            ::beamer::core::param_types::FloatParam::db_log_offset(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::db_log_offset(#name, #default, #start..=#end)
         },
         ParamKind::Hz => quote! {
-            ::beamer::core::param_types::FloatParam::hz(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::hz(#name, #default, #start..=#end)
         },
         ParamKind::Ms => quote! {
-            ::beamer::core::param_types::FloatParam::ms(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::ms(#name, #default, #start..=#end)
         },
         ParamKind::Seconds => quote! {
-            ::beamer::core::param_types::FloatParam::seconds(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::seconds(#name, #default, #start..=#end)
         },
         ParamKind::Ratio => quote! {
-            ::beamer::core::param_types::FloatParam::ratio(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::ratio(#name, #default, #start..=#end)
         },
         ParamKind::Linear => quote! {
-            ::beamer::core::param_types::FloatParam::new(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
         },
         ParamKind::Semitones => {
             // Semitones is an int kind, shouldn't reach here
             quote! {
-                ::beamer::core::param_types::FloatParam::new(#name, #default, #start..=#end)
+                ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
             }
         }
         // Percent and Pan are handled by early returns above; this is unreachable
@@ -1114,63 +1114,63 @@ fn generate_float_constructor(param: &ParamFieldIR) -> TokenStream {
     }
 }
 
-/// Generate constructor for IntParam.
-fn generate_int_constructor(param: &ParamFieldIR) -> TokenStream {
-    let name = param.attrs.name.as_ref().expect("IntParam requires name");
-    let default = match &param.attrs.default {
-        Some(ParamDefault::Int(v)) => *v,
-        Some(ParamDefault::Float(v)) => *v as i64,
+/// Generate constructor for IntParameter.
+fn generate_int_constructor(parameter: &ParamFieldIR) -> TokenStream {
+    let name = parameter.attributes.name.as_ref().expect("IntParameter requires name");
+    let default = match &parameter.attributes.default {
+        Some(ParameterDefault::Int(v)) => *v,
+        Some(ParameterDefault::Float(v)) => *v as i64,
         _ => 0,
     };
 
-    let range = param.attrs.range.as_ref().expect("IntParam requires range");
+    let range = parameter.attributes.range.as_ref().expect("IntParameter requires range");
     let start = range.start as i64;
     let end = range.end as i64;
 
     // Check for semitones kind
-    if param.attrs.kind == Some(ParamKind::Semitones) {
+    if parameter.attributes.kind == Some(ParamKind::Semitones) {
         quote! {
-            ::beamer::core::param_types::IntParam::semitones(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::IntParameter::semitones(#name, #default, #start..=#end)
         }
     } else {
         quote! {
-            ::beamer::core::param_types::IntParam::new(#name, #default, #start..=#end)
+            ::beamer::core::parameter_types::IntParameter::new(#name, #default, #start..=#end)
         }
     }
 }
 
-/// Generate constructor for BoolParam.
-fn generate_bool_constructor(param: &ParamFieldIR) -> TokenStream {
+/// Generate constructor for BoolParameter.
+fn generate_bool_constructor(parameter: &ParamFieldIR) -> TokenStream {
     // Special case: bypass parameter
-    if param.attrs.bypass {
+    if parameter.attributes.bypass {
         return quote! {
-            ::beamer::core::param_types::BoolParam::bypass()
+            ::beamer::core::parameter_types::BoolParameter::bypass()
         };
     }
 
-    let name = param.attrs.name.as_ref().expect("BoolParam requires name");
-    let default = match &param.attrs.default {
-        Some(ParamDefault::Bool(v)) => *v,
+    let name = parameter.attributes.name.as_ref().expect("BoolParameter requires name");
+    let default = match &parameter.attributes.default {
+        Some(ParameterDefault::Bool(v)) => *v,
         _ => false,
     };
 
     quote! {
-        ::beamer::core::param_types::BoolParam::new(#name, #default)
+        ::beamer::core::parameter_types::BoolParameter::new(#name, #default)
     }
 }
 
-/// Generate constructor for EnumParam.
-fn generate_enum_constructor(param: &ParamFieldIR) -> TokenStream {
-    let name = param.attrs.name.as_ref().expect("EnumParam requires name");
+/// Generate constructor for EnumParameter.
+fn generate_enum_constructor(parameter: &ParamFieldIR) -> TokenStream {
+    let name = parameter.attributes.name.as_ref().expect("EnumParameter requires name");
 
     quote! {
-        ::beamer::core::param_types::EnumParam::new(#name)
+        ::beamer::core::parameter_types::EnumParameter::new(#name)
     }
 }
 
 /// Generate the builder method chain (.with_id(), .with_short_name(), .with_smoother()).
-fn generate_builder_chain(param: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
-    let const_name = param.const_name();
+fn generate_builder_chain(parameter: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
+    let const_name = parameter.const_name();
 
     // Always add .with_id()
     let with_id = quote! {
@@ -1178,13 +1178,13 @@ fn generate_builder_chain(param: &ParamFieldIR, struct_name: &syn::Ident) -> Tok
     };
 
     // Optional: .with_short_name()
-    let with_short_name = param.attrs.short_name.as_ref().map(|short| {
+    let with_short_name = parameter.attributes.short_name.as_ref().map(|short| {
         quote! { .with_short_name(#short) }
     });
 
     // Optional: .with_smoother() (only for FloatParam)
-    let with_smoother = if param.param_type == crate::ir::ParamType::Float {
-        param.attrs.smoothing.as_ref().map(|s| {
+    let with_smoother = if parameter.parameter_type == crate::ir::ParamType::Float {
+        parameter.attributes.smoothing.as_ref().map(|s| {
             let time_ms = s.time_ms;
             let style = match s.style {
                 SmoothingStyle::Exponential => {

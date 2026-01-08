@@ -27,7 +27,7 @@
 //!
 //! ```ignore
 //! fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
-//!     let gain = self.params.gain();
+//!     let gain = self.parameters.gain();
 //!     for (input, output) in buffer.zip_channels() {
 //!         for (i, o) in input.iter().zip(output.iter_mut()) {
 //!             *o = *i * gain;
@@ -36,11 +36,11 @@
 //! }
 //! ```
 //!
-//! # Example: Sidechain Compressor
+//! # Example: Block-Based Sidechain (RMS)
 //!
 //! ```ignore
 //! fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
-//!     // Analyze sidechain input
+//!     // Analyze sidechain input (block-level RMS)
 //!     let key_level = aux.sidechain()
 //!         .map(|sc| sc.rms(0))  // RMS of first channel
 //!         .unwrap_or(0.0);
@@ -51,6 +51,29 @@
 //!         for sample in output {
 //!             *sample *= reduction;
 //!         }
+//!     }
+//! }
+//! ```
+//!
+//! # Example: Sample-Accurate Sidechain Processing
+//!
+//! For sample-by-sample sidechain access (e.g., gates, duckers, lookahead compressors):
+//!
+//! ```ignore
+//! fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers) {
+//!     let sc = aux.sidechain();
+//!
+//!     for i in 0..buffer.num_samples() {
+//!         // Get sidechain sample (returns S::ZERO if disconnected)
+//!         let key = sc.as_ref()
+//!             .map(|s| s.sample(0, i).to_f64().abs())
+//!             .unwrap_or_else(|| buffer.input(0)[i].to_f64().abs());
+//!
+//!         // Compute per-sample gain reduction
+//!         let gain = self.envelope.process(key);
+//!
+//!         // Apply to output
+//!         buffer.output(0)[i] = buffer.input(0)[i] * Sample::from_f64(gain);
 //!     }
 //! }
 //! ```
@@ -333,7 +356,7 @@ impl<'a, S: Sample> Buffer<'a, S> {
 ///
 /// ```ignore
 /// if let Some(sidechain) = aux.sidechain() {
-///     let key_signal = sidechain.channel(0);
+///     let key_signal = sidechain.input(0);
 ///     // Use for compression keying, ducking, etc.
 /// }
 /// ```
@@ -563,16 +586,31 @@ impl<'a, S: Sample> AuxiliaryBuffers<'a, S> {
 ///
 /// `S` is the sample type, defaulting to `f32`.
 ///
-/// # Example
+/// # Example: Block-Based Analysis
 ///
 /// ```ignore
-/// if let Some(sidechain) = aux.sidechain() {
+/// if let Some(sc) = aux.sidechain() {
 ///     // Calculate RMS of sidechain for keying
-///     let rms = sidechain.rms(0);
+///     let rms = sc.rms(0);
 ///
 ///     // Or iterate over all channels
-///     for ch in sidechain.iter_channels() {
+///     for ch in sc.iter_inputs() {
 ///         // Process channel...
+///     }
+/// }
+/// ```
+///
+/// # Example: Sample-by-Sample Access
+///
+/// ```ignore
+/// if let Some(sc) = aux.sidechain() {
+///     for i in 0..buffer.num_samples() {
+///         // .sample() returns S::ZERO if channel/index missing
+///         let key_l = sc.sample(0, i).to_f64().abs();
+///         let key_r = sc.sample(1, i).to_f64().abs();
+///         let key = (key_l + key_r) * 0.5;
+///
+///         // Use for envelope follower, gate, ducker, etc.
 ///     }
 /// }
 /// ```
@@ -594,11 +632,12 @@ impl<'a, S: Sample> AuxInput<'a, S> {
         self.channels.len()
     }
 
-    /// Get a channel by index.
+    /// Get an input channel by index.
     ///
     /// Returns an empty slice if the channel doesn't exist.
+    /// Matches [`Buffer::input()`] naming for API consistency.
     #[inline]
-    pub fn channel(&self, index: usize) -> &[S] {
+    pub fn input(&self, index: usize) -> &[S] {
         self.channels
             .get(index)
             .and_then(|opt| opt.as_ref())
@@ -606,9 +645,31 @@ impl<'a, S: Sample> AuxInput<'a, S> {
             .unwrap_or(&[])
     }
 
-    /// Iterate over all channel slices.
+    /// Get a single sample from a channel.
+    ///
+    /// Returns [`S::ZERO`] if the channel or sample index doesn't exist.
+    /// This is a convenience method for sample-by-sample processing.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Instead of:
+    /// let sc = sidechain.input(0).get(i).copied().unwrap_or(S::ZERO);
+    ///
+    /// // Use:
+    /// let sc = sidechain.sample(0, i);
+    /// ```
     #[inline]
-    pub fn iter_channels(&self) -> impl Iterator<Item = &[S]> + '_ {
+    pub fn sample(&self, channel: usize, index: usize) -> S {
+        self.input(channel)
+            .get(index)
+            .copied()
+            .unwrap_or(S::ZERO)
+    }
+
+    /// Iterate over all input channels.
+    #[inline]
+    pub fn iter_inputs(&self) -> impl Iterator<Item = &[S]> + '_ {
         let n = self.num_samples;
         self.channels
             .iter()
@@ -623,7 +684,7 @@ impl<'a, S: Sample> AuxInput<'a, S> {
     ///
     /// Returns zero if the channel doesn't exist or is empty.
     pub fn rms(&self, channel: usize) -> S {
-        let ch = self.channel(channel);
+        let ch = self.input(channel);
         if ch.is_empty() {
             return S::ZERO;
         }
@@ -636,7 +697,7 @@ impl<'a, S: Sample> AuxInput<'a, S> {
     ///
     /// Returns zero if the channel doesn't exist or is empty.
     pub fn peak(&self, channel: usize) -> S {
-        self.channel(channel)
+        self.input(channel)
             .iter()
             .map(|&s| s.abs())
             .fold(S::ZERO, |a, b| a.max(b))
@@ -646,7 +707,7 @@ impl<'a, S: Sample> AuxInput<'a, S> {
     ///
     /// Returns zero if the channel doesn't exist or is empty.
     pub fn average(&self, channel: usize) -> S {
-        let ch = self.channel(channel);
+        let ch = self.input(channel);
         if ch.is_empty() {
             return S::ZERO;
         }
@@ -682,7 +743,7 @@ impl<'a, S: Sample> AuxInput<'a, S> {
 /// ```ignore
 /// if let Some(mut aux_out) = aux.output(0) {
 ///     // Write to aux output
-///     for sample in aux_out.channel(0) {
+///     for sample in aux_out.output(0) {
 ///         *sample = processed_signal;
 ///     }
 /// }
@@ -705,13 +766,15 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
         self.channels.len()
     }
 
-    /// Get a mutable channel by index.
+    /// Get a mutable output channel by index.
+    ///
+    /// Matches [`Buffer::output()`] naming for API consistency.
     ///
     /// # Panics
     ///
     /// Panics if the channel index is out of bounds.
     #[inline]
-    pub fn channel(&mut self, index: usize) -> &mut [S] {
+    pub fn output(&mut self, index: usize) -> &mut [S] {
         let n = self.num_samples;
         self.channels[index]
             .as_mut()
@@ -719,11 +782,11 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
             .expect("aux output channel out of bounds")
     }
 
-    /// Try to get a mutable channel by index.
+    /// Try to get a mutable output channel by index.
     ///
     /// Returns `None` if the channel doesn't exist.
     #[inline]
-    pub fn channel_checked(&mut self, index: usize) -> Option<&mut [S]> {
+    pub fn output_checked(&mut self, index: usize) -> Option<&mut [S]> {
         let n = self.num_samples;
         self.channels
             .get_mut(index)
@@ -731,9 +794,9 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
             .map(|ch| &mut ch[..n])
     }
 
-    /// Iterate over all channel slices mutably.
+    /// Iterate over all output channels mutably.
     #[inline]
-    pub fn iter_channels(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'data, S> {
+    pub fn iter_outputs(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'data, S> {
         let n = self.num_samples;
         self.channels
             .iter_mut()

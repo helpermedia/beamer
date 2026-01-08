@@ -27,9 +27,9 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
-    BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParams,
+    BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParameters,
     MidiBuffer, MidiCcState, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
-    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Parameters, Plugin,
+    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Vst3Parameters, Plugin,
     ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx, Transport, MAX_BUSES,
     MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
     MAX_SYSEX_SIZE,
@@ -671,10 +671,10 @@ enum PluginState<P: Plugin> {
 /// use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig};
 ///
 /// #[derive(Default)]
-/// struct MyPlugin { params: MyParams }
+/// struct MyPlugin { parameters: MyParameters }
 /// impl Plugin for MyPlugin { /* ... */ }
 ///
-/// struct MyProcessor { params: MyParams, sample_rate: f64 }
+/// struct MyProcessor { parameters: MyParameters, sample_rate: f64 }
 /// impl AudioProcessor for MyProcessor { /* ... */ }
 ///
 /// static CONFIG: PluginConfig = PluginConfig::new("MyPlugin", MY_UID);
@@ -926,13 +926,13 @@ where
     /// # Safety
     /// Must only be called when no mutable reference exists.
     #[inline]
-    unsafe fn params(&self) -> &P::Params {
+    unsafe fn parameters(&self) -> &P::Parameters {
         match &*self.state.get() {
-            PluginState::Unprepared { plugin, .. } => plugin.params(),
+            PluginState::Unprepared { plugin, .. } => plugin.parameters(),
             PluginState::Prepared { processor, .. } => {
-                // SAFETY: Trait bounds guarantee P::Processor::Params == P::Params.
+                // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
                 // Pointer cast through *const _ lets compiler verify type equality.
-                &*(processor.params() as *const _)
+                &*(processor.parameters() as *const _)
             }
         }
     }
@@ -944,13 +944,13 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     #[allow(clippy::mut_from_ref)]
-    unsafe fn params_mut(&self) -> &mut P::Params {
+    unsafe fn parameters_mut(&self) -> &mut P::Parameters {
         match &mut *self.state.get() {
-            PluginState::Unprepared { plugin, .. } => plugin.params_mut(),
+            PluginState::Unprepared { plugin, .. } => plugin.parameters_mut(),
             PluginState::Prepared { processor, .. } => {
-                // SAFETY: Trait bounds guarantee P::Processor::Params == P::Params.
+                // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
                 // Pointer cast through *mut _ lets compiler verify type equality.
-                &mut *(processor.params_mut() as *mut _)
+                &mut *(processor.parameters_mut() as *mut _)
             }
         }
     }
@@ -1604,12 +1604,12 @@ where
                 match processor.load_state(&buffer) {
                     Ok(()) => {
                         // Apply current sample rate and reset smoothers
-                        use beamer_core::param_types::Params;
+                        use beamer_core::parameter_types::Parameters;
                         let sample_rate = *self.sample_rate.get();
                         if sample_rate > 0.0 {
-                            processor.params_mut().set_sample_rate(sample_rate);
+                            processor.parameters_mut().set_sample_rate(sample_rate);
                         }
-                        processor.params_mut().reset_smoothing();
+                        processor.parameters_mut().reset_smoothing();
                         kResultOk
                     }
                     Err(_) => kResultFalse,
@@ -1808,9 +1808,9 @@ where
                 // Apply any pending state that was set before preparation
                 if let Some(data) = pending {
                     let _ = processor.load_state(&data);
-                    // Update params sample rate after loading
-                    use beamer_core::Params;
-                    processor.params_mut().set_sample_rate(setup.sampleRate);
+                    // Update parameters sample rate after loading
+                    use beamer_core::Parameters;
+                    processor.parameters_mut().set_sample_rate(setup.sampleRate);
                 }
 
                 // Pre-allocate buffer storage based on bus config
@@ -1899,13 +1899,13 @@ where
         }
 
         // 1. Handle incoming parameter changes from host
-        if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
-            let params = self.params();
-            let param_count = param_changes.getParameterCount();
+        if let Some(parameter_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
+            let parameters = self.parameters();
+            let parameter_count = parameter_changes.getParameterCount();
 
-            for i in 0..param_count {
-                if let Some(queue) = ComRef::from_raw(param_changes.getParameterData(i)) {
-                    let param_id = queue.getParameterId();
+            for i in 0..parameter_count {
+                if let Some(queue) = ComRef::from_raw(parameter_changes.getParameterData(i)) {
+                    let parameter_id = queue.getParameterId();
                     let point_count = queue.getPointCount();
 
                     if point_count > 0 {
@@ -1915,7 +1915,7 @@ where
                         if queue.getPoint(point_count - 1, &mut sample_offset, &mut value)
                             == kResultTrue
                         {
-                            params.set_normalized(param_id, value);
+                            parameters.set_normalized(parameter_id, value);
                         }
                     }
                 }
@@ -1943,16 +1943,16 @@ where
         // This handles the VST3 IMidiMapping flow where DAWs send CC/pitch bend
         // as parameter changes instead of raw MIDI events.
         // Uses framework-owned MidiCcState.
-        if let Some(param_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
+        if let Some(parameter_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
             if let Some(cc_state) = self.midi_cc_state.as_ref() {
-                let param_count = param_changes.getParameterCount();
+                let parameter_count = parameter_changes.getParameterCount();
 
-                for i in 0..param_count {
-                    if let Some(queue) = ComRef::from_raw(param_changes.getParameterData(i)) {
-                        let param_id = queue.getParameterId();
+                for i in 0..parameter_count {
+                    if let Some(queue) = ComRef::from_raw(parameter_changes.getParameterData(i)) {
+                        let parameter_id = queue.getParameterId();
 
                         // Check if this is a MIDI CC parameter
-                        if let Some(controller) = MidiCcState::param_id_to_controller(param_id) {
+                        if let Some(controller) = MidiCcState::parameter_id_to_controller(parameter_id) {
                             if cc_state.has_controller(controller) {
                                 let point_count = queue.getPointCount();
 
@@ -1962,7 +1962,7 @@ where
                                     let mut value: f64 = 0.0;
 
                                     if queue.getPoint(j, &mut sample_offset, &mut value) == kResultOk {
-                                        let midi_event = convert_cc_param_to_midi(
+                                        let midi_event = convert_cc_parameter_to_midi(
                                             controller,
                                             value as f32,
                                             sample_offset as u32,
@@ -2145,49 +2145,49 @@ where
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        let user_params = self.params().count();
+        let user_parameters = self.parameters().count();
         // MIDI CC state is framework-owned, always available
-        let cc_params = self
+        let cc_parameters = self
             .midi_cc_state
             .as_ref()
             .map(|s| s.enabled_count())
             .unwrap_or(0);
-        (user_params + cc_params) as i32
+        (user_parameters + cc_parameters) as i32
     }
 
-    unsafe fn getParameterInfo(&self, param_index: i32, info: *mut ParameterInfo) -> tresult {
+    unsafe fn getParameterInfo(&self, parameter_index: i32, info: *mut ParameterInfo) -> tresult {
         if info.is_null() {
             return kInvalidArgument;
         }
 
-        let params = self.params();
-        let user_param_count = params.count();
+        let parameters = self.parameters();
+        let user_parameter_count = parameters.count();
 
         // User-defined parameters first
-        if (param_index as usize) < user_param_count {
-            if let Some(param_info) = params.info(param_index as usize) {
+        if (parameter_index as usize) < user_parameter_count {
+            if let Some(parameter_info) = parameters.info(parameter_index as usize) {
                 let info = &mut *info;
-                info.id = param_info.id;
-                copy_wstring(param_info.name, &mut info.title);
-                copy_wstring(param_info.short_name, &mut info.shortTitle);
-                copy_wstring(param_info.units, &mut info.units);
-                info.stepCount = param_info.step_count;
-                info.defaultNormalizedValue = param_info.default_normalized;
-                info.unitId = param_info.unit_id;
+                info.id = parameter_info.id;
+                copy_wstring(parameter_info.name, &mut info.title);
+                copy_wstring(parameter_info.short_name, &mut info.shortTitle);
+                copy_wstring(parameter_info.units, &mut info.units);
+                info.stepCount = parameter_info.step_count;
+                info.defaultNormalizedValue = parameter_info.default_normalized;
+                info.unitId = parameter_info.unit_id;
                 info.flags = {
                     let mut flags = 0;
-                    if param_info.flags.can_automate {
+                    if parameter_info.flags.can_automate {
                         flags |= ParameterInfo_::ParameterFlags_::kCanAutomate;
                     }
-                    if param_info.flags.is_bypass {
+                    if parameter_info.flags.is_bypass {
                         flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
                     }
                     // List parameters (enums) - display as dropdown with text labels
-                    if param_info.flags.is_list {
+                    if parameter_info.flags.is_list {
                         flags |= ParameterInfo_::ParameterFlags_::kIsList;
                     }
                     // Hidden parameters (MIDI CC emulation)
-                    if param_info.flags.is_hidden {
+                    if parameter_info.flags.is_hidden {
                         flags |= ParameterInfo_::ParameterFlags_::kIsHidden;
                     }
                     flags
@@ -2199,16 +2199,16 @@ where
 
         // Hidden MIDI CC parameters (framework-owned state)
         if let Some(cc_state) = self.midi_cc_state.as_ref() {
-            let cc_index = (param_index as usize) - user_param_count;
-            if let Some(param_info) = cc_state.info(cc_index) {
+            let cc_index = (parameter_index as usize) - user_parameter_count;
+            if let Some(parameter_info) = cc_state.info(cc_index) {
                 let info = &mut *info;
-                info.id = param_info.id;
-                copy_wstring(param_info.name, &mut info.title);
-                copy_wstring(param_info.short_name, &mut info.shortTitle);
-                copy_wstring(param_info.units, &mut info.units);
-                info.stepCount = param_info.step_count;
-                info.defaultNormalizedValue = param_info.default_normalized;
-                info.unitId = param_info.unit_id;
+                info.id = parameter_info.id;
+                copy_wstring(parameter_info.name, &mut info.title);
+                copy_wstring(parameter_info.short_name, &mut info.shortTitle);
+                copy_wstring(parameter_info.units, &mut info.units);
+                info.stepCount = parameter_info.step_count;
+                info.defaultNormalizedValue = parameter_info.default_normalized;
+                info.unitId = parameter_info.unit_id;
                 // Hidden + automatable
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
                     | ParameterInfo_::ParameterFlags_::kIsHidden;
@@ -2229,8 +2229,8 @@ where
             return kInvalidArgument;
         }
 
-        let params = self.params();
-        let display = params.normalized_to_string(id, value_normalized);
+        let parameters = self.parameters();
+        let display = parameters.normalized_to_string(id, value_normalized);
         copy_wstring(&display, &mut *string);
         kResultOk
     }
@@ -2247,8 +2247,8 @@ where
 
         let len = len_wstring(string as *const TChar);
         if let Ok(s) = String::from_utf16(slice::from_raw_parts(string as *const u16, len)) {
-            let params = self.params();
-            if let Some(value) = params.string_to_normalized(id, &s) {
+            let parameters = self.parameters();
+            if let Some(value) = parameters.string_to_normalized(id, &s) {
                 *value_normalized = value;
                 return kResultOk;
             }
@@ -2257,11 +2257,11 @@ where
     }
 
     unsafe fn normalizedParamToPlain(&self, id: u32, value_normalized: f64) -> f64 {
-        self.params().normalized_to_plain(id, value_normalized)
+        self.parameters().normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
-        self.params().plain_to_normalized(id, plain_value)
+        self.parameters().plain_to_normalized(id, plain_value)
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
@@ -2272,7 +2272,7 @@ where
             }
         }
 
-        self.params().get_normalized(id)
+        self.parameters().get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
@@ -2284,7 +2284,7 @@ where
             }
         }
 
-        self.params().set_normalized(id, value);
+        self.parameters().set_normalized(id, value);
         kResultOk
     }
 
@@ -2319,8 +2319,8 @@ where
     P::Config: BuildConfig,
 {
     unsafe fn getUnitCount(&self) -> i32 {
-        use beamer_core::params::Units;
-        self.params().unit_count() as i32
+        use beamer_core::parameters::Units;
+        self.parameters().unit_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2328,10 +2328,10 @@ where
             return kInvalidArgument;
         }
 
-        use beamer_core::params::Units;
-        let params = self.params();
+        use beamer_core::parameters::Units;
+        let parameters = self.parameters();
 
-        if let Some(unit_info) = params.unit_info(unit_index as usize) {
+        if let Some(unit_info) = parameters.unit_info(unit_index as usize) {
             let info = &mut *info;
             info.id = unit_info.id;
             info.parentUnitId = unit_info.parent_id;
@@ -2435,16 +2435,16 @@ where
 
         // 1. First check plugin's custom mappings (only available in unprepared state)
         if let Some(plugin) = self.try_plugin() {
-            if let Some(param_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
-                *id = param_id;
+            if let Some(parameter_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
+                *id = parameter_id;
                 return kResultOk;
             }
         }
 
-        // 2. Check framework-owned MIDI CC state (omni channel - ignore channel param)
+        // 2. Check framework-owned MIDI CC state (omni channel - ignore channel parameter)
         if let Some(cc_state) = self.midi_cc_state.as_ref() {
             if cc_state.has_controller(controller) {
-                *id = MidiCcState::param_id(controller);
+                *id = MidiCcState::parameter_id(controller);
                 return kResultOk;
             }
         }
@@ -2523,7 +2523,7 @@ where
         let map = slice::from_raw_parts_mut(list_ref.map, assignments.len());
         for (i, a) in assignments.iter().enumerate() {
             map[i] = Midi1ControllerParamIDAssignment {
-                pId: a.assignment.param_id,
+                pId: a.assignment.parameter_id,
                 busIndex: a.assignment.bus_index,
                 channel: a.assignment.channel,
                 controller: a.controller as i16,
@@ -2571,7 +2571,7 @@ where
         let map = slice::from_raw_parts_mut(list_ref.map, assignments.len());
         for (i, a) in assignments.iter().enumerate() {
             map[i] = Midi2ControllerParamIDAssignment {
-                pId: a.assignment.param_id,
+                pId: a.assignment.parameter_id,
                 busIndex: a.assignment.bus_index,
                 channel: a.assignment.channel,
                 controller: Midi2Controller {
@@ -2923,7 +2923,7 @@ fn channel_count_to_speaker_arrangement(channel_count: u32) -> SpeakerArrangemen
 /// - 0-127: Standard MIDI CC (ControlChange)
 /// - 128: Channel Aftertouch (ChannelPressure)
 /// - 129: Pitch Bend (PitchBend)
-fn convert_cc_param_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent {
+fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent {
     match controller {
         LEGACY_CC_PITCH_BEND => {
             // Pitch bend: 0.0-1.0 normalized → -1.0 to 1.0

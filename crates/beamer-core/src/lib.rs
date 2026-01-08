@@ -33,10 +33,10 @@ pub mod error;
 pub mod midi;
 pub mod midi_cc_config;
 pub mod midi_cc_state;
-pub mod param_format;
-pub mod param_range;
-pub mod param_types;
-pub mod params;
+pub mod parameter_format;
+pub mod parameter_range;
+pub mod parameter_types;
+pub mod parameters;
 pub mod plugin;
 pub mod process_context;
 pub mod sample;
@@ -74,15 +74,15 @@ pub use midi::{
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_KEYSWITCH_TITLE_SIZE,
     MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
-pub use param_format::Formatter;
-pub use param_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-pub use param_types::{BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, ParamRef, Params};
+pub use parameter_format::Formatter;
+pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
+pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
-pub use params::{NoParams, ParamFlags, ParamInfo, Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
+pub use parameters::{NoParameters, ParamFlags, ParamInfo, Vst3Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AudioProcessor, AudioSetup, BusInfo, BusLayout, BusType, FullAudioSetup, HasParams,
+    AudioProcessor, AudioSetup, BusInfo, BusLayout, BusType, FullAudioSetup, HasParameters,
     Midi1Assignment, Midi2Assignment, MidiControllerAssignment, NoConfig, Plugin, ProcessorConfig,
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};

@@ -19,49 +19,49 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::midi_cc_config::MidiCcConfig;
-use crate::params::Parameters;
+use crate::parameters::Vst3Parameters;
 use crate::process_context::ProcessContext;
 
 // =============================================================================
-// HasParams Trait (Shared Parameter Access)
+// HasParameters Trait (Shared Parameter Access)
 // =============================================================================
 
 /// Trait for types that hold parameters.
 ///
 /// This trait provides a common interface for parameter access, shared between
 /// [`Plugin`] (unprepared state) and [`AudioProcessor`] (prepared state).
-/// Both traits require `HasParams` as a supertrait.
+/// Both traits require `HasParameters` as a supertrait.
 ///
 /// # Derive Macro
 ///
-/// Use `#[derive(HasParams)]` to automatically implement this trait for structs
-/// with a `#[params]` field annotation:
+/// Use `#[derive(HasParameters)]` to automatically implement this trait for structs
+/// with a `#[parameters]` field annotation:
 ///
 /// ```ignore
-/// #[derive(Default, HasParams)]
+/// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 /// }
 ///
-/// #[derive(HasParams)]
+/// #[derive(HasParameters)]
 /// pub struct GainProcessor {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 /// }
 /// ```
 ///
-/// This eliminates the boilerplate of implementing `params()` and `params_mut()`
+/// This eliminates the boilerplate of implementing `parameters()` and `parameters_mut()`
 /// on both your Plugin and Processor types.
-pub trait HasParams: Send + 'static {
+pub trait HasParameters: Send + 'static {
     /// The parameter collection type.
-    type Params: Parameters + crate::params::Units + crate::param_types::Params;
+    type Parameters: Vst3Parameters + crate::parameters::Units + crate::parameter_types::Parameters;
 
     /// Returns a reference to the parameters.
-    fn params(&self) -> &Self::Params;
+    fn parameters(&self) -> &Self::Parameters;
 
     /// Returns a mutable reference to the parameters.
-    fn params_mut(&mut self) -> &mut Self::Params;
+    fn parameters_mut(&mut self) -> &mut Self::Parameters;
 }
 
 // =============================================================================
@@ -92,7 +92,7 @@ pub trait ProcessorConfig: Clone + Send + 'static {}
 ///     type Config = NoConfig;
 ///     // ...
 ///     fn prepare(self, _: NoConfig) -> GainProcessor {
-///         GainProcessor { params: self.params }
+///         GainProcessor { parameters: self.parameters }
 ///     }
 /// }
 /// ```
@@ -114,7 +114,7 @@ impl ProcessorConfig for NoConfig {}
 ///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
 ///         DelayProcessor {
-///             params: self.params,
+///             parameters: self.parameters,
 ///             sample_rate: config.sample_rate,  // Real value from start!
 ///             buffer: vec![0.0; buffer_size],   // Correct allocation!
 ///         }
@@ -144,7 +144,7 @@ impl ProcessorConfig for AudioSetup {}
 ///     fn prepare(self, config: FullAudioSetup) -> SurroundProcessor {
 ///         let channel_count = config.layout.main_output_channels();
 ///         SurroundProcessor {
-///             params: self.params,
+///             parameters: self.parameters,
 ///             sample_rate: config.sample_rate,
 ///             per_channel_state: vec![ChannelState::new(); channel_count],
 ///         }
@@ -292,7 +292,7 @@ impl BusInfo {
 /// # Lifecycle
 ///
 /// ```text
-/// Plugin::default() -> Plugin (unprepared, holds params)
+/// Plugin::default() -> Plugin (unprepared, holds parameters)
 ///                      |
 ///                      v  Plugin::prepare(config)
 ///                      |
@@ -302,7 +302,7 @@ impl BusInfo {
 ///                      v  AudioProcessor::unprepare()
 ///                      |
 ///                      v
-///                 Plugin (unprepared, params preserved)
+///                 Plugin (unprepared, parameters preserved)
 /// ```
 ///
 /// # Thread Safety
@@ -314,17 +314,17 @@ impl BusInfo {
 /// - No syscalls
 /// - No unbounded loops
 ///
-/// # Note on HasParams
+/// # Note on HasParameters
 ///
-/// The `AudioProcessor` trait requires [`HasParams`] as a supertrait, which provides
-/// the `params()` and `params_mut()` methods. Use `#[derive(HasParams)]` with a
-/// `#[params]` field annotation to implement this automatically.
-pub trait AudioProcessor: HasParams {
+/// The `AudioProcessor` trait requires [`HasParameters`] as a supertrait, which provides
+/// the `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
+/// `#[parameters]` field annotation to implement this automatically.
+pub trait AudioProcessor: HasParameters {
     /// The unprepared plugin type that created this processor.
     ///
     /// Used by [`AudioProcessor::unprepare()`] to return to the unprepared state.
-    /// The Params type must match the plugin's Params type.
-    type Plugin: Plugin<Processor = Self, Params = Self::Params>;
+    /// The Parameters type must match the plugin's Parameters type.
+    type Plugin: Plugin<Processor = Self, Parameters = Self::Parameters>;
 
     /// Process an audio buffer with transport context.
     ///
@@ -347,7 +347,7 @@ pub trait AudioProcessor: HasParams {
     ///
     /// ```ignore
     /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    ///     let gain = self.params.gain();
+    ///     let gain = self.parameters.gain();
     ///     for (input, output) in buffer.zip_channels() {
     ///         for (i, o) in input.iter().zip(output.iter_mut()) {
     ///             *o = *i * gain;
@@ -406,7 +406,7 @@ pub trait AudioProcessor: HasParams {
     ///
     ///     fn unprepare(self) -> DelayPlugin {
     ///         DelayPlugin {
-    ///             params: self.params,
+    ///             parameters: self.parameters,
     ///             // DSP state (delay_lines, etc.) is discarded
     ///         }
     ///     }
@@ -416,8 +416,8 @@ pub trait AudioProcessor: HasParams {
     where
         Self: Sized;
 
-    // Note: `params()` and `params_mut()` are provided by the `HasParams` supertrait.
-    // Use `#[derive(HasParams)]` with a `#[params]` field annotation to implement them.
+    // Note: `parameters()` and `parameters_mut()` are provided by the `HasParameters` supertrait.
+    // Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation to implement them.
 
     // =========================================================================
     // Activation State
@@ -549,7 +549,7 @@ pub trait AudioProcessor: HasParams {
     ///     aux: &mut AuxiliaryBuffers<f64>,
     ///     context: &ProcessContext,
     /// ) {
-    ///     let gain = self.params.gain_linear() as f64;
+    ///     let gain = self.parameters.gain_linear() as f64;
     ///     for (input, output) in buffer.zip_channels() {
     ///         for (i, o) in input.iter().zip(output.iter_mut()) {
     ///             *o = *i * gain;
@@ -691,7 +691,7 @@ pub trait AudioProcessor: HasParams {
 /// # Two-Phase Lifecycle
 ///
 /// ```text
-/// Plugin::default() -> Plugin (unprepared, holds params)
+/// Plugin::default() -> Plugin (unprepared, holds parameters)
 ///                      |
 ///                      v  Plugin::prepare(config)
 ///                      |
@@ -701,16 +701,16 @@ pub trait AudioProcessor: HasParams {
 ///                      v  AudioProcessor::unprepare()
 ///                      |
 ///                      v
-///                 Plugin (unprepared, params preserved)
+///                 Plugin (unprepared, parameters preserved)
 /// ```
 ///
 /// # Example: Simple Gain (NoConfig)
 ///
 /// ```ignore
-/// #[derive(Default, HasParams)]
+/// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 /// }
 ///
 /// impl Plugin for GainPlugin {
@@ -718,21 +718,21 @@ pub trait AudioProcessor: HasParams {
 ///     type Processor = GainProcessor;
 ///
 ///     fn prepare(self, _: NoConfig) -> GainProcessor {
-///         GainProcessor { params: self.params }
+///         GainProcessor { parameters: self.parameters }
 ///     }
 /// }
 ///
-/// #[derive(HasParams)]
+/// #[derive(HasParameters)]
 /// pub struct GainProcessor {
-///     #[params]
-///     params: GainParams,
+///     #[parameters]
+///     parameters: GainParameters,
 /// }
 ///
 /// impl AudioProcessor for GainProcessor {
 ///     type Plugin = GainPlugin;
 ///
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-///         let gain = self.params.gain_linear();
+///         let gain = self.parameters.gain_linear();
 ///         for (input, output) in buffer.zip_channels() {
 ///             for (i, o) in input.iter().zip(output.iter_mut()) {
 ///                 *o = *i * gain;
@@ -741,7 +741,7 @@ pub trait AudioProcessor: HasParams {
 ///     }
 ///
 ///     fn unprepare(self) -> GainPlugin {
-///         GainPlugin { params: self.params }
+///         GainPlugin { parameters: self.parameters }
 ///     }
 /// }
 /// ```
@@ -749,10 +749,10 @@ pub trait AudioProcessor: HasParams {
 /// # Example: Delay (AudioSetup)
 ///
 /// ```ignore
-/// #[derive(Default, HasParams)]
+/// #[derive(Default, HasParameters)]
 /// pub struct DelayPlugin {
-///     #[params]
-///     params: DelayParams,
+///     #[parameters]
+///     parameters: DelayParameters,
 /// }
 ///
 /// impl Plugin for DelayPlugin {
@@ -762,7 +762,7 @@ pub trait AudioProcessor: HasParams {
 ///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
 ///         DelayProcessor {
-///             params: self.params,
+///             parameters: self.parameters,
 ///             sample_rate: config.sample_rate,  // Real value from start!
 ///             buffer: vec![0.0; buffer_size],   // Correct allocation!
 ///         }
@@ -770,12 +770,12 @@ pub trait AudioProcessor: HasParams {
 /// }
 /// ```
 ///
-/// # Note on HasParams
+/// # Note on HasParameters
 ///
-/// The `Plugin` trait requires [`HasParams`] as a supertrait, which provides the
-/// `params()` and `params_mut()` methods. Use `#[derive(HasParams)]` with a
-/// `#[params]` field annotation to implement this automatically.
-pub trait Plugin: HasParams + Default {
+/// The `Plugin` trait requires [`HasParameters`] as a supertrait, which provides the
+/// `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
+/// `#[parameters]` field annotation to implement this automatically.
+pub trait Plugin: HasParameters + Default {
     /// The configuration type this plugin needs to prepare.
     ///
     /// - [`NoConfig`]: For plugins that don't need sample rate (simple gain)
@@ -784,7 +784,7 @@ pub trait Plugin: HasParams + Default {
     type Config: ProcessorConfig;
 
     /// The prepared processor type created by [`Plugin::prepare()`].
-    type Processor: AudioProcessor<Plugin = Self, Params = Self::Params>;
+    type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
 
     /// Transform this plugin into a prepared processor.
     ///
@@ -871,7 +871,7 @@ pub trait Plugin: HasParams + Default {
     /// * `cc` - MIDI CC number (0-127)
     ///
     /// # Returns
-    /// `Some(param_id)` if this CC is mapped to a parameter, `None` otherwise.
+    /// `Some(parameter_id)` if this CC is mapped to a parameter, `None` otherwise.
     ///
     /// # Example
     /// ```ignore
@@ -1145,7 +1145,7 @@ pub trait Plugin: HasParams + Default {
 #[derive(Debug, Clone, Copy)]
 pub struct MidiControllerAssignment {
     /// Parameter ID this controller maps to.
-    pub param_id: u32,
+    pub parameter_id: u32,
     /// MIDI bus index.
     pub bus_index: i32,
     /// MIDI channel (0-15).
@@ -1157,7 +1157,7 @@ pub struct MidiControllerAssignment {
 /// Maps a MIDI 1.0 Control Change to a parameter.
 #[derive(Debug, Clone, Copy)]
 pub struct Midi1Assignment {
-    /// Base assignment info (param_id, bus, channel).
+    /// Base assignment info (parameter_id, bus, channel).
     pub assignment: MidiControllerAssignment,
     /// CC number (0-127).
     pub controller: u8,
@@ -1165,10 +1165,10 @@ pub struct Midi1Assignment {
 
 impl Midi1Assignment {
     /// Create a new MIDI 1.0 CC assignment.
-    pub const fn new(param_id: u32, bus_index: i32, channel: u8, controller: u8) -> Self {
+    pub const fn new(parameter_id: u32, bus_index: i32, channel: u8, controller: u8) -> Self {
         Self {
             assignment: MidiControllerAssignment {
-                param_id,
+                parameter_id,
                 bus_index,
                 channel,
             },
@@ -1177,8 +1177,8 @@ impl Midi1Assignment {
     }
 
     /// Create an assignment for the default bus and all channels.
-    pub const fn simple(param_id: u32, controller: u8) -> Self {
-        Self::new(param_id, 0, 0, controller)
+    pub const fn simple(parameter_id: u32, controller: u8) -> Self {
+        Self::new(parameter_id, 0, 0, controller)
     }
 }
 
@@ -1187,7 +1187,7 @@ impl Midi1Assignment {
 /// Maps a MIDI 2.0 Registered/Assignable Controller to a parameter.
 #[derive(Debug, Clone, Copy)]
 pub struct Midi2Assignment {
-    /// Base assignment info (param_id, bus, channel).
+    /// Base assignment info (parameter_id, bus, channel).
     pub assignment: MidiControllerAssignment,
     /// MIDI 2.0 controller identifier.
     pub controller: Midi2Controller,
@@ -1196,14 +1196,14 @@ pub struct Midi2Assignment {
 impl Midi2Assignment {
     /// Create a new MIDI 2.0 controller assignment.
     pub const fn new(
-        param_id: u32,
+        parameter_id: u32,
         bus_index: i32,
         channel: u8,
         controller: Midi2Controller,
     ) -> Self {
         Self {
             assignment: MidiControllerAssignment {
-                param_id,
+                parameter_id,
                 bus_index,
                 channel,
             },
@@ -1212,7 +1212,7 @@ impl Midi2Assignment {
     }
 
     /// Create an assignment for the default bus and all channels.
-    pub const fn simple(param_id: u32, controller: Midi2Controller) -> Self {
-        Self::new(param_id, 0, 0, controller)
+    pub const fn simple(parameter_id: u32, controller: Midi2Controller) -> Self {
+        Self::new(parameter_id, 0, 0, controller)
     }
 }

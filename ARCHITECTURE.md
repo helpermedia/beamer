@@ -88,7 +88,7 @@ beamer/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
 │   ├── beamer-vst3/         # VST3 wrapper implementation
-│   ├── beamer-macros/       # Proc macros (#[derive(Params)], #[derive(HasParams)])
+│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(HasParameters)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
@@ -104,9 +104,9 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`HasParams`, `Plugin`, `AudioProcessor`), buffer types, MIDI types |
+| `beamer-core` | Platform-agnostic traits (`HasParameters`, `Plugin`, `AudioProcessor`), buffer types, MIDI types |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
-| `beamer-macros` | `#[derive(Params)]`, `#[derive(HasParams)]`, `#[derive(EnumParam)]` proc macros |
+| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParam)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
 
@@ -185,7 +185,7 @@ impl Plugin for MyPlugin {
 
 | Trait | State | Responsibilities |
 |-------|-------|------------------|
-| `HasParams` | Both | Parameter access (`params()`, `params_mut()`) - supertrait of Plugin and AudioProcessor |
+| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`) - supertrait of Plugin and AudioProcessor |
 | `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
 | `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` |
 

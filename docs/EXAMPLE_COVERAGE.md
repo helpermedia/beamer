@@ -21,20 +21,20 @@
 
 | Feature Category | Feature | Gain | Delay | Synth | MIDI Transform | Compressor | Notes |
 |-----------------|---------|------|-------|-------|----------------|------------|-------|
-| **Parameters** | FloatParam | ✅ | ✅ | ✅ | ✅ | 🚧 | Core parameter type |
-| | IntParam | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synth), note/CC numbers (midi-transform) |
-| | BoolParam | ❌ | ❌ | ❌ | ✅ | 🚧 | Enable toggles, bypass, soft knee |
-| | EnumParam | ❌ | ✅ | ✅ | ✅ | 🚧 | Waveform, sync, ratio |
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | 🚧 | Core parameter type |
+| | IntParameter | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synth), note/CC numbers (midi-transform) |
+| | BoolParameter | ❌ | ❌ | ❌ | ✅ | 🚧 | Enable toggles, bypass, soft knee |
+| | EnumParameter | ❌ | ✅ | ✅ | ✅ | 🚧 | Waveform, sync, ratio |
 | **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
 | | Linear | ❌ | ❌ | ❌ | ❌ | 🚧 | Attack/release smoothing |
 | **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | 🚧 | Default mapping |
 | | PowerMapper | ❌ | ❌ | ❌ | ❌ | 🚧 | Threshold (db_log) |
 | | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | Available but not used |
-| **Organization** | Units (param groups) | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
+| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
 | | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ❌ | Synth uses 4 groups (works in Cubase) |
 | | Custom Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | bypass attribute | ❌ | ❌ | ❌ | ✅ | 🚧 | Special bypass param marker |
+| | bypass attribute | ❌ | ❌ | ❌ | ✅ | 🚧 | Special bypass parameter marker |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f64 |
 | | tail_samples | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
@@ -108,7 +108,7 @@
    - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
    - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synth (**works in Cubase, verified with screenshot**)
    - Custom `Formatter` - Parameter display formatting
-   - 🚧 Linear smoothing - Implemented in compressor (attack/release params), needs DAW testing
+   - 🚧 Linear smoothing - Implemented in compressor (attack/release parameters), needs DAW testing
    - ✅ ~~`bypass` attribute~~ - Tested in midi-transform; also in compressor (needs DAW testing)
 
 6. **MIDI - Message Types**
@@ -170,7 +170,7 @@
 - External sidechain input for ducking/pumping
 - Gain reduction metering (could be exposed as output parameter)
 - RMS envelope follower with smoothing
-- Soft/hard knee using BoolParam or EnumParam
+- Soft/hard knee using BoolParameter or EnumParam
 
 **Files to create:**
 - `examples/compressor/src/lib.rs`
@@ -477,7 +477,7 @@ The midi-transform example may seem "odd" as it's a somewhat contrived MIDI proc
 
 #### 1. **IntParam** ⚠️ CRITICAL
 ```rust
-#[param(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
+#[parameter(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
 pub transpose: IntParam,
 ```
 **Used for:** Transpose amount, note numbers (0-127), CC numbers (0-127)
@@ -485,10 +485,10 @@ pub transpose: IntParam,
 
 #### 2. **BoolParam** ⚠️ CRITICAL
 ```rust
-#[param(id = "note_enabled", name = "Enabled", default = true)]
+#[parameter(id = "note_enabled", name = "Enabled", default = true)]
 pub enabled: BoolParam,
 
-#[param(id = "bypass", bypass)]
+#[parameter(id = "bypass", bypass)]
 pub bypass: BoolParam,
 ```
 **Used for:** Enable/disable toggles, bypass parameter
@@ -497,16 +497,16 @@ pub bypass: BoolParam,
 #### 3. **Nested Parameter Groups** ⚠️ QUESTIONABLE VALUE
 ```rust
 #[nested(group = "Note Transform")]
-pub note: NoteTransformParams,
+pub note: NoteTransformParameters,
 
 #[nested(group = "CC Transform")]
-pub cc: CcTransformParams,
+pub cc: CcTransformParameters,
 ```
 **Demonstrates:** Hierarchical parameter organization (`#[nested]` attribute)
 - ❌ Not used in: gain, delay, synth
 
 **⚠️ Reality Check:** While the framework implements VST3 `IUnitInfo` for parameter grouping, it's unclear if DAWs actually display these groups. The practical value may be limited to:
-- Rust code organization (`params.filter.cutoff` vs `params.cutoff`)
+- Rust code organization (`parameters.filter.cutoff` vs `parameters.cutoff`)
 - State serialization path-based IDs (`"filter/cutoff"`)
 - Reusable parameter structs (same struct in multiple groups)
 
@@ -531,7 +531,7 @@ MidiEventKind::PolyPressure(poly) => {
 
 #### 5. **Special `bypass` Attribute**
 ```rust
-#[param(id = "bypass", bypass)]
+#[parameter(id = "bypass", bypass)]
 pub bypass: BoolParam,
 ```
 **Marks parameter as the official bypass parameter**
@@ -549,8 +549,8 @@ fn process(&mut self, buffer: &mut Buffer, ...) {
 ### Coverage Summary
 
 **If midi-transform is removed, we lose test coverage for:**
-- ✅ IntParam - **Now also tested in synth** (transpose parameter)
-- ✅ BoolParam - **Still unique to midi-transform** (would lose coverage)
+- ✅ IntParameter - **Now also tested in synth** (transpose parameter)
+- ✅ BoolParameter - **Still unique to midi-transform** (would lose coverage)
 - ⚠️ Nested parameter groups (`#[nested]`) - **Still unique to midi-transform** (Rust-only organization)
 - ✅ PolyPressure - **Now also tested in synth** (per-note vibrato control)
 - ✅ `bypass` attribute - **Still unique to midi-transform** (would lose coverage)
@@ -584,15 +584,15 @@ Accept that it's a contrived example but serves an important testing purpose:
 
 **Before removing midi-transform, ensure these features are tested elsewhere:**
 
-- [x] IntParam - ✅ **Added to synth** (transpose parameter)
-- [ ] BoolParam - Add to another example (compressor, eq)
+- [x] IntParameter - ✅ **Added to synth** (transpose parameter)
+- [ ] BoolParameter - Add to another example (compressor, eq)
 - [ ] Nested parameter groups - Add to another example (eq with bands)
 - [x] PolyPressure - ✅ **Added to synth** (per-note vibrato control)
 - [ ] `bypass` attribute - Add to any effect example
 - [ ] Update coverage matrix after migration
 - [ ] Update ARCHITECTURE.md and examples README
 
-**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParam and PolyPressure are now tested in synth. However, we would still lose BoolParam, nested groups, and bypass attribute coverage.
+**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParameter and PolyPressure are now tested in synth. However, we would still lose BoolParam, nested groups, and bypass attribute coverage.
 
 ---
 
@@ -689,7 +689,7 @@ This matches the industry standard - even JUCE has the same limitations. The VST
 - **Verdict:** Consider deprecating/removing
 
 **Nested groups (`#[nested]`):**
-- ✅ Rust code organization (`params.filter.cutoff`)
+- ✅ Rust code organization (`parameters.filter.cutoff`)
 - ✅ Reusable parameter structs
 - ✅ Path-based state serialization prevents ID collisions
 - ❌ No visual grouping in DAW
@@ -713,7 +713,7 @@ This matches the industry standard - even JUCE has the same limitations. The VST
    Beamer supports VST3 units for parameter organization:
 
    **Code Organization (Always Works):**
-   - `#[nested]` creates separate structs (params.filter.cutoff)
+   - `#[nested]` creates separate structs (parameters.filter.cutoff)
    - Reusable parameter groups
    - Path-based state serialization
 

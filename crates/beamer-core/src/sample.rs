@@ -19,7 +19,7 @@ use std::ops::{Add, Div, Mul, Sub};
 ///
 /// ```ignore
 /// fn process_generic<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
-///     let gain = S::from_f32(self.params.gain_linear());
+///     let gain = S::from_f32(self.parameters.gain_linear());
 ///     for (input, output) in buffer.zip_channels() {
 ///         for (i, o) in input.iter().zip(output.iter_mut()) {
 ///             *o = *i * gain;

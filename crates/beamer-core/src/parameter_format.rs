@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use beamer_core::param_format::Formatter;
+//! use beamer_core::parameter_format::Formatter;
 //!
 //! let db_formatter = Formatter::Decibel { precision: 1 };
 //! assert_eq!(db_formatter.format(1.0), "0.0 dB");  // 1.0 linear = 0 dB
@@ -42,7 +42,7 @@ pub enum Formatter {
 
     /// Direct decibel formatter where input is already in dB.
     ///
-    /// Used by `FloatParam::db()` where the plain value is stored as dB.
+    /// Used by `FloatParameter::db()` where the plain value is stored as dB.
     /// Display: "+12.0 dB", "-60.0 dB"
     DecibelDirect {
         /// Number of decimal places.

@@ -12,7 +12,7 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 **No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
-**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Params)]` and Beamer generates VST3 integration, state persistence, and DAW automation. Use `#[derive(HasParams)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
+**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates VST3 integration, state persistence, and DAW automation. Use `#[derive(HasParameters)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
 
 **Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools—HTML, CSS, JavaScript—while your audio code stays in safe Rust. Each team does what they do best.
 
@@ -22,21 +22,21 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 ```rust
 use beamer::prelude::*;
-use beamer::{HasParams, Params};
+use beamer::{HasParameters, Parameters};
 
 // Declarative parameters - macro generates Default, VST3 integration, state persistence
-#[derive(Params)]
-struct GainParams {
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+#[derive(Parameters)]
+struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParam,
 }
 
 // Plugin (unprepared state) - holds parameters before audio config is known
-// HasParams derive eliminates params()/params_mut() boilerplate
-#[derive(Default, HasParams)]
+// HasParameters derive eliminates parameters()/parameters_mut() boilerplate
+#[derive(Default, HasParameters)]
 struct GainPlugin {
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl Plugin for GainPlugin {
@@ -44,26 +44,26 @@ impl Plugin for GainPlugin {
     type Processor = GainProcessor;
 
     fn prepare(self, _config: NoConfig) -> GainProcessor {
-        GainProcessor { params: self.params }
+        GainProcessor { parameters: self.parameters }
     }
 }
 
 // Processor (prepared state) - ready for audio processing
-#[derive(HasParams)]
+#[derive(HasParameters)]
 struct GainProcessor {
-    #[params]
-    params: GainParams,
+    #[parameters]
+    parameters: GainParameters,
 }
 
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
 
     fn unprepare(self) -> GainPlugin {
-        GainPlugin { params: self.params }
+        GainPlugin { parameters: self.parameters }
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.params.gain.as_linear() as f32;
+        let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -78,7 +78,7 @@ impl AudioProcessor for GainProcessor {
 Beamer uses a type-safe two-phase initialization that eliminates placeholder values:
 
 ```text
-Plugin::default() → Plugin (unprepared, holds params)
+Plugin::default() → Plugin (unprepared, holds parameters)
                          │
                          ▼  prepare(config)
                          │
@@ -86,7 +86,7 @@ Plugin::default() → Plugin (unprepared, holds params)
                          │
                          ▼  unprepare()
                          │
-                    Plugin (params preserved)
+                    Plugin (parameters preserved)
 ```
 
 **Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
@@ -103,7 +103,7 @@ Plugin::default() → Plugin (unprepared, holds params)
 
 | Example | Description |
 |---------|-------------|
-| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain with sidechain ducking. Demonstrates `#[derive(Params)]`, dB scaling, and multi-bus audio. |
+| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain with sidechain ducking. Demonstrates `#[derive(Parameters)]`, dB scaling, and multi-bus audio. |
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParam`, tempo sync via `ProcessContext`, and parameter smoothing. |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
 
@@ -132,7 +132,7 @@ Beamer provides comprehensive MIDI support:
 
 ## Parameter Attributes
 
-The `#[param(...)]` attribute supports:
+The `#[parameter(...)]` attribute supports:
 
 | Attribute | Description |
 |-----------|-------------|
@@ -143,26 +143,26 @@ The `#[param(...)]` attribute supports:
 | `kind = "..."` | Unit type: `db`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones` |
 | `group = "..."` | Visual grouping in DAW (flat access, grouped display) |
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) |
-| `bypass` | Mark as bypass parameter (BoolParam only) |
+| `bypass` | Mark as bypass parameter (BoolParameter only) |
 
 ### Visual Grouping
 
 Use `group = "..."` for flat parameter access with DAW grouping:
 
 ```rust
-#[derive(Params)]
-struct SynthParams {
-    #[param(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
+#[derive(Parameters)]
+struct SynthParameters {
+    #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
     cutoff: FloatParam,
 
-    #[param(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
+    #[parameter(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
     resonance: FloatParam,
 
-    #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
     gain: FloatParam,
 }
 
-// Access: params.cutoff, params.resonance, params.gain (flat)
+// Access: parameters.cutoff, parameters.resonance, parameters.gain (flat)
 // DAW shows collapsible "Filter" and "Output" groups
 ```
 
@@ -200,7 +200,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-macros` | Derive macros (`#[derive(Params)]`, `#[derive(HasParams)]`, `#[derive(EnumParam)]`) |
+| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParam)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

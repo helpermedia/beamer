@@ -39,7 +39,7 @@
 ///
 /// # Collision Handling
 ///
-/// The derive macro (`#[derive(Params)]`) performs compile-time collision
+/// The derive macro (`#[derive(Parameters)]`) performs compile-time collision
 /// detection across all parameter IDs in a struct. If two different string
 /// IDs produce the same hash, the macro will emit a compilation error with
 /// the colliding identifiers.

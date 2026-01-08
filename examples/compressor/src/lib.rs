@@ -19,7 +19,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, HasParams, Params};
+use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration
@@ -44,7 +44,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor", COMPONE
 /// Compression ratio selection.
 ///
 /// Discrete ratio values for predictable compression behavior.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum Ratio {
     /// 2:1 - Gentle compression
     #[name = "2:1"]
@@ -82,28 +82,28 @@ impl Ratio {
 // =============================================================================
 
 /// Parameter collection for the compressor plugin.
-#[derive(Params)]
-pub struct CompressorParams {
+#[derive(Parameters)]
+pub struct CompressorParameters {
     // =========================================================================
     // Compression Controls
     // =========================================================================
 
     /// Threshold level in dB.
-    #[param(
+    #[parameter(
         id = "threshold",
         name = "Threshold",
         default = 0.0,
         range = -60.0..=0.0,
         kind = "db_log"
     )]
-    pub threshold: FloatParam,
+    pub threshold: FloatParameter,
 
     /// Compression ratio (discrete steps).
-    #[param(id = "ratio", name = "Ratio")]
-    pub ratio: EnumParam<Ratio>,
+    #[parameter(id = "ratio", name = "Ratio")]
+    pub ratio: EnumParameter<Ratio>,
 
     /// Attack time in milliseconds.
-    #[param(
+    #[parameter(
         id = "attack",
         name = "Attack",
         default = 10.0,
@@ -111,10 +111,10 @@ pub struct CompressorParams {
         kind = "ms",
         smoothing = "linear:50.0"
     )]
-    pub attack: FloatParam,
+    pub attack: FloatParameter,
 
     /// Release time in milliseconds.
-    #[param(
+    #[parameter(
         id = "release",
         name = "Release",
         default = 100.0,
@@ -122,45 +122,45 @@ pub struct CompressorParams {
         kind = "ms",
         smoothing = "linear:50.0"
     )]
-    pub release: FloatParam,
+    pub release: FloatParameter,
 
     /// Knee mode: soft (true) or hard (false).
-    #[param(id = "knee", name = "Soft Knee", default = true)]
-    pub soft_knee: BoolParam,
+    #[parameter(id = "knee", name = "Soft Knee", default = true)]
+    pub soft_knee: BoolParameter,
 
     // =========================================================================
     // Gain Controls
     // =========================================================================
 
     /// Auto makeup gain toggle.
-    #[param(id = "auto_makeup", name = "Auto Makeup", default = false)]
-    pub auto_makeup: BoolParam,
+    #[parameter(id = "auto_makeup", name = "Auto Makeup", default = false)]
+    pub auto_makeup: BoolParameter,
 
     /// Manual makeup gain in dB.
-    #[param(
+    #[parameter(
         id = "makeup",
         name = "Makeup Gain",
         default = 0.0,
         range = 0.0..=24.0,
         kind = "db"
     )]
-    pub makeup_gain: FloatParam,
+    pub makeup_gain: FloatParameter,
 
     // =========================================================================
     // Bypass
     // =========================================================================
 
     /// Global bypass with smooth crossfade.
-    #[param(id = "bypass", bypass)]
-    pub bypass: BoolParam,
+    #[parameter(id = "bypass", bypass)]
+    pub bypass: BoolParameter,
 
     // =========================================================================
     // Sidechain
     // =========================================================================
 
     /// Use sidechain input for detection signal.
-    #[param(id = "sidechain", name = "Sidechain", default = false)]
-    pub use_sidechain: BoolParam,
+    #[parameter(id = "sidechain", name = "Sidechain", default = false)]
+    pub use_sidechain: BoolParameter,
 }
 
 // =============================================================================
@@ -234,11 +234,11 @@ const DC_OFFSET: f64 = 1e-25;
 /// This struct holds the parameters before audio configuration is known.
 /// When the host calls setupProcessing(), it is transformed into a
 /// [`CompressorProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 pub struct CompressorPlugin {
     /// Plugin parameters
-    #[params]
-    params: CompressorParams,
+    #[parameters]
+    parameters: CompressorParameters,
 }
 
 impl Plugin for CompressorPlugin {
@@ -246,14 +246,14 @@ impl Plugin for CompressorPlugin {
     type Processor = CompressorProcessor;
 
     fn prepare(mut self, config: AudioSetup) -> CompressorProcessor {
-        // Set sample rate on params for smoothing calculations
-        self.params.set_sample_rate(config.sample_rate);
+        // Set sample rate on parameters for smoothing calculations
+        self.parameters.set_sample_rate(config.sample_rate);
 
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (config.sample_rate * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
-            params: self.params,
+            parameters: self.parameters,
             bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
             state: CompressionState {
                 env_db: DC_OFFSET,
@@ -288,11 +288,11 @@ impl Plugin for CompressorPlugin {
 ///
 /// This struct is created by [`CompressorPlugin::prepare()`] with valid
 /// sample rate configuration. All DSP state is properly initialized.
-#[derive(HasParams)]
+#[derive(HasParameters)]
 pub struct CompressorProcessor {
     /// Plugin parameters
-    #[params]
-    params: CompressorParams,
+    #[parameters]
+    parameters: CompressorParameters,
 
     /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
@@ -327,7 +327,7 @@ impl CompressorProcessor {
         process_compression_inner(
             buffer,
             aux,
-            &mut self.params,
+            &mut self.parameters,
             &mut self.state,
             self.sample_rate,
         );
@@ -344,7 +344,7 @@ impl CompressorProcessor {
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
-    params: &mut CompressorParams,
+    parameters: &mut CompressorParameters,
     state: &mut CompressionState,
     sample_rate: f64,
 ) {
@@ -356,22 +356,22 @@ fn process_compression_inner<S: Sample>(
     }
 
     // Get parameter values
-    let threshold_db = params.threshold.get();
-    let ratio = params.ratio.get().to_value();
-    let knee_width = if params.soft_knee.get() {
+    let threshold_db = parameters.threshold.get();
+    let ratio = parameters.ratio.get().to_value();
+    let knee_width = if parameters.soft_knee.get() {
         SOFT_KNEE_WIDTH_DB
     } else {
         0.0
     };
 
-    let manual_makeup_db = params.makeup_gain.get();
+    let manual_makeup_db = parameters.makeup_gain.get();
 
     // Only use sidechain when explicitly enabled by parameter and buffer exists
-    let use_sidechain = params.use_sidechain.get() && aux.sidechain().is_some();
+    let use_sidechain = parameters.use_sidechain.get() && aux.sidechain().is_some();
 
     // Pre-calculate envelope coefficients from smoothed attack/release values
-    let attack_ms = params.attack.smoothed();
-    let release_ms = params.release.smoothed();
+    let attack_ms = parameters.attack.smoothed();
+    let release_ms = parameters.release.smoothed();
     let attack_coeff = time_to_coeff(attack_ms, sample_rate);
     let release_coeff = time_to_coeff(release_ms, sample_rate);
 
@@ -386,13 +386,9 @@ fn process_compression_inner<S: Sample>(
         let detect_linked = if use_sidechain {
             // Use sidechain input for detection
             if let Some(sc) = aux.sidechain() {
-                let sc_l = if sc.num_channels() > 0 {
-                    sc.channel(0)[sample_idx].to_f64().abs()
-                } else {
-                    0.0
-                };
+                let sc_l = sc.sample(0, sample_idx).to_f64().abs();
                 let sc_r = if sc.num_channels() > 1 {
-                    sc.channel(1)[sample_idx].to_f64().abs()
+                    sc.sample(1, sample_idx).to_f64().abs()
                 } else {
                     sc_l
                 };
@@ -452,7 +448,7 @@ fn process_compression_inner<S: Sample>(
         // Update smoothed average gain reduction
         state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
 
-        let auto_makeup_db = if params.auto_makeup.get() {
+        let auto_makeup_db = if parameters.auto_makeup.get() {
             -state.average_gr_db
         } else {
             0.0
@@ -474,10 +470,10 @@ impl AudioProcessor for CompressorProcessor {
     type Plugin = CompressorPlugin;
 
     fn unprepare(self) -> CompressorPlugin {
-        // Return just the params; DSP state is discarded
+        // Return just the parameters; DSP state is discarded
         // It'll be reallocated on next prepare()
         CompressorPlugin {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -500,7 +496,7 @@ impl AudioProcessor for CompressorProcessor {
         aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
-        let is_bypassed = self.params.bypass.get();
+        let is_bypassed = self.parameters.bypass.get();
 
         // Split API: begin() returns what action to take
         match self.bypass_handler.begin(is_bypassed) {
@@ -534,7 +530,7 @@ impl AudioProcessor for CompressorProcessor {
         aux: &mut AuxiliaryBuffers<f64>,
         _context: &ProcessContext,
     ) {
-        let is_bypassed = self.params.bypass.get();
+        let is_bypassed = self.parameters.bypass.get();
 
         // Split API: same pattern for f64 processing
         match self.bypass_handler.begin(is_bypassed) {
@@ -556,11 +552,11 @@ impl AudioProcessor for CompressorProcessor {
     // =========================================================================
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.params.load_state(data).map_err(PluginError::StateError)
+        self.parameters.load_state(data).map_err(PluginError::StateError)
     }
 }
 

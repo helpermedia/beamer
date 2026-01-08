@@ -23,7 +23,7 @@
 //!
 //! impl AudioProcessor for MyPlugin {
 //!     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
-//!         let is_bypassed = self.params.bypass.get();
+//!         let is_bypassed = self.parameters.bypass.get();
 //!
 //!         match self.bypass_handler.begin(is_bypassed) {
 //!             BypassAction::Passthrough => {

@@ -3,9 +3,9 @@
 //! This plugin showcases the Beamer parameter system and MIDI event handling:
 //! - **Nested parameter groups** with `#[nested(group = "...")]`
 //! - **EnumParam** for discrete choices (transform modes)
-//! - **IntParam** for note/CC number selection
-//! - **BoolParam** for enable toggles
-//! - **FloatParam** for velocity/value scaling
+//! - **IntParameter** for note/CC number selection
+//! - **BoolParameter** for enable toggles
+//! - **FloatParameter** for velocity/value scaling
 //! - **Two-phase Plugin → AudioProcessor lifecycle**
 //! - **Clean MIDI event modification** with the `with()` method
 //!
@@ -43,7 +43,7 @@
 
 use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
-use beamer::{EnumParam, HasParams, Params};
+use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration
@@ -67,8 +67,8 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform", COM
 
 /// Note transformation mode.
 ///
-/// Demonstrates `#[derive(EnumParam)]` with custom display names.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+/// Demonstrates `#[derive(EnumParameter)]` with custom display names.
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum NoteTransformMode {
     /// Pass notes through with optional velocity scaling
     #[default]
@@ -92,7 +92,7 @@ pub enum NoteTransformMode {
 }
 
 /// CC transformation mode.
-#[derive(Copy, Clone, PartialEq, EnumParam)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum CcTransformMode {
     /// Pass CC through unchanged
     #[default]
@@ -120,58 +120,58 @@ pub enum CcTransformMode {
 ///
 /// This is a nested parameter group that appears as "Note Transform" in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
-#[derive(Params)]
-pub struct NoteTransformParams {
+#[derive(Parameters)]
+pub struct NoteTransformParameters {
     /// Enable note transformation
-    #[param(id = "note_enabled", name = "Enabled", default = true)]
-    pub enabled: BoolParam,
+    #[parameter(id = "note_enabled", name = "Enabled", default = true)]
+    pub enabled: BoolParameter,
 
     /// Transformation mode
-    #[param(id = "note_mode", name = "Mode")]
-    pub mode: EnumParam<NoteTransformMode>,
+    #[parameter(id = "note_mode", name = "Mode")]
+    pub mode: EnumParameter<NoteTransformMode>,
 
     /// Transpose amount in semitones (-24 to +24)
-    #[param(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
-    pub transpose: IntParam,
+    #[parameter(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
+    pub transpose: IntParameter,
 
     /// Input note for remap mode (0-127)
-    #[param(id = "note_input", name = "Input Note", default = 60, range = 0..=127)]
-    pub input_note: IntParam,
+    #[parameter(id = "note_input", name = "Input Note", default = 60, range = 0..=127)]
+    pub input_note: IntParameter,
 
     /// Output note for remap mode (0-127)
-    #[param(id = "note_output", name = "Output Note", default = 60, range = 0..=127)]
-    pub output_note: IntParam,
+    #[parameter(id = "note_output", name = "Output Note", default = 60, range = 0..=127)]
+    pub output_note: IntParameter,
 
     /// Velocity scale (0.0 to 2.0, where 1.0 = 100%)
-    #[param(id = "note_velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
-    pub velocity_scale: FloatParam,
+    #[parameter(id = "note_velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
+    pub velocity_scale: FloatParameter,
 }
 
 /// CC transformation parameters.
 ///
 /// This is a nested parameter group that appears as "CC Transform" in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
-#[derive(Params)]
-pub struct CcTransformParams {
+#[derive(Parameters)]
+pub struct CcTransformParameters {
     /// Enable CC transformation
-    #[param(id = "cc_enabled", name = "Enabled", default = true)]
-    pub enabled: BoolParam,
+    #[parameter(id = "cc_enabled", name = "Enabled", default = true)]
+    pub enabled: BoolParameter,
 
     /// Transformation mode
-    #[param(id = "cc_mode", name = "Mode")]
-    pub mode: EnumParam<CcTransformMode>,
+    #[parameter(id = "cc_mode", name = "Mode")]
+    pub mode: EnumParameter<CcTransformMode>,
 
     /// Input CC number (0-127) - Default: Mod wheel (CC 1)
-    #[param(id = "cc_input", name = "Input CC", default = 1, range = 0..=127)]
-    pub input_cc: IntParam,
+    #[parameter(id = "cc_input", name = "Input CC", default = 1, range = 0..=127)]
+    pub input_cc: IntParameter,
 
     /// Output CC number (0-127) - Default: Expression (CC 11)
-    #[param(id = "cc_output", name = "Output CC", default = 11, range = 0..=127)]
-    pub output_cc: IntParam,
+    #[parameter(id = "cc_output", name = "Output CC", default = 11, range = 0..=127)]
+    pub output_cc: IntParameter,
 
     /// Value scale (0.0 to 2.0, where 1.0 = 100%)
-    #[param(id = "cc_scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
-    pub value_scale: FloatParam,
+    #[parameter(id = "cc_scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
+    pub value_scale: FloatParameter,
 }
 
 // =============================================================================
@@ -183,19 +183,19 @@ pub struct CcTransformParams {
 /// Demonstrates the `#[nested(group = "...")]` attribute for creating
 /// hierarchical parameter organization in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
-#[derive(Params)]
-pub struct MidiTransformParams {
+#[derive(Parameters)]
+pub struct MidiTransformParameters {
     /// Global bypass - uses the special `bypass` attribute
-    #[param(id = "bypass", bypass)]
-    pub bypass: BoolParam,
+    #[parameter(id = "bypass", bypass)]
+    pub bypass: BoolParameter,
 
     /// Note transformation parameters (nested group)
     #[nested(group = "Note Transform")]
-    pub note: NoteTransformParams,
+    pub note: NoteTransformParameters,
 
     /// CC transformation parameters (nested group)
     #[nested(group = "CC Transform")]
-    pub cc: CcTransformParams,
+    pub cc: CcTransformParameters,
 }
 
 // =============================================================================
@@ -207,10 +207,10 @@ pub struct MidiTransformParams {
 /// This struct holds the parameters before audio configuration is known.
 /// When the host calls setupProcessing(), it is transformed into a
 /// [`MidiTransformProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParams)]
+#[derive(Default, HasParameters)]
 pub struct MidiTransformPlugin {
-    #[params]
-    params: MidiTransformParams,
+    #[parameters]
+    parameters: MidiTransformParameters,
 }
 
 impl Plugin for MidiTransformPlugin {
@@ -218,10 +218,10 @@ impl Plugin for MidiTransformPlugin {
     type Processor = MidiTransformProcessor;
 
     fn prepare(mut self, config: AudioSetup) -> MidiTransformProcessor {
-        self.params.set_sample_rate(config.sample_rate);
+        self.parameters.set_sample_rate(config.sample_rate);
 
         MidiTransformProcessor {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -237,10 +237,10 @@ impl Plugin for MidiTransformPlugin {
 /// MIDI transformer processor, ready for audio/MIDI processing.
 ///
 /// Transforms MIDI notes and CC messages based on parameter settings.
-#[derive(HasParams)]
+#[derive(HasParameters)]
 pub struct MidiTransformProcessor {
-    #[params]
-    params: MidiTransformParams,
+    #[parameters]
+    parameters: MidiTransformParameters,
 }
 
 impl MidiTransformProcessor {
@@ -264,15 +264,15 @@ impl MidiTransformProcessor {
     /// * `Some(pitch)` - Transformed pitch within valid MIDI range
     /// * `None` - Pitch out of range (note should be filtered)
     fn transform_pitch(&self, pitch: u8) -> Option<u8> {
-        if !self.params.note.enabled.get() {
+        if !self.parameters.note.enabled.get() {
             return Some(pitch);
         }
 
-        let new_pitch = match self.params.note.mode.get() {
+        let new_pitch = match self.parameters.note.mode.get() {
             NoteTransformMode::Through => pitch as i16,
 
             NoteTransformMode::Transpose => {
-                pitch as i16 + self.params.note.transpose.get() as i16
+                pitch as i16 + self.parameters.note.transpose.get() as i16
             }
 
             NoteTransformMode::OctaveUp => pitch as i16 + 12,
@@ -280,8 +280,8 @@ impl MidiTransformProcessor {
             NoteTransformMode::OctaveDown => pitch as i16 - 12,
 
             NoteTransformMode::Remap => {
-                if pitch == self.params.note.input_note.get() as u8 {
-                    self.params.note.output_note.get() as i16
+                if pitch == self.parameters.note.input_note.get() as u8 {
+                    self.parameters.note.output_note.get() as i16
                 } else {
                     pitch as i16
                 }
@@ -312,11 +312,11 @@ impl MidiTransformProcessor {
     /// # Returns
     /// Scaled velocity, clamped to 0.0-1.0
     fn transform_velocity(&self, velocity: f32) -> f32 {
-        if !self.params.note.enabled.get() {
+        if !self.parameters.note.enabled.get() {
             return velocity;
         }
 
-        let scale = self.params.note.velocity_scale.get() as f32;
+        let scale = self.parameters.note.velocity_scale.get() as f32;
         (velocity * scale).clamp(0.0, 1.0)
     }
 
@@ -332,17 +332,17 @@ impl MidiTransformProcessor {
     /// * `Some(cc)` - Output CC number (possibly remapped)
     /// * `None` - CC should be filtered (not currently used)
     fn transform_cc_number(&self, cc: u8) -> Option<u8> {
-        if !self.params.cc.enabled.get() {
+        if !self.parameters.cc.enabled.get() {
             return Some(cc);
         }
 
-        match self.params.cc.mode.get() {
+        match self.parameters.cc.mode.get() {
             CcTransformMode::Through | CcTransformMode::Scale | CcTransformMode::Invert => {
                 Some(cc)
             }
             CcTransformMode::Remap | CcTransformMode::RemapAndScale => {
-                if cc == self.params.cc.input_cc.get() as u8 {
-                    Some(self.params.cc.output_cc.get() as u8)
+                if cc == self.parameters.cc.input_cc.get() as u8 {
+                    Some(self.parameters.cc.output_cc.get() as u8)
                 } else {
                     Some(cc)
                 }
@@ -369,18 +369,18 @@ impl MidiTransformProcessor {
     /// # Returns
     /// Transformed CC value, clamped to 0.0-1.0
     fn transform_cc_value(&self, cc: u8, value: f32) -> f32 {
-        if !self.params.cc.enabled.get() {
+        if !self.parameters.cc.enabled.get() {
             return value;
         }
 
         // Only transform if this is the targeted CC (for remap modes)
         // or if we're in a mode that affects all CCs
-        let should_transform = match self.params.cc.mode.get() {
+        let should_transform = match self.parameters.cc.mode.get() {
             CcTransformMode::Through => false,
             CcTransformMode::Scale | CcTransformMode::Invert => true,
             CcTransformMode::Remap => false, // Remap only changes number, not value
             CcTransformMode::RemapAndScale => {
-                cc == self.params.cc.input_cc.get() as u8
+                cc == self.parameters.cc.input_cc.get() as u8
             }
         };
 
@@ -388,9 +388,9 @@ impl MidiTransformProcessor {
             return value;
         }
 
-        match self.params.cc.mode.get() {
+        match self.parameters.cc.mode.get() {
             CcTransformMode::Scale | CcTransformMode::RemapAndScale => {
-                let scale = self.params.cc.value_scale.get() as f32;
+                let scale = self.parameters.cc.value_scale.get() as f32;
                 (value * scale).clamp(0.0, 1.0)
             }
             CcTransformMode::Invert => {
@@ -406,7 +406,7 @@ impl AudioProcessor for MidiTransformProcessor {
 
     fn unprepare(self) -> MidiTransformPlugin {
         MidiTransformPlugin {
-            params: self.params,
+            parameters: self.parameters,
         }
     }
 
@@ -422,7 +422,7 @@ impl AudioProcessor for MidiTransformProcessor {
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         // If bypassed, pass everything through unchanged
-        if self.params.bypass.get() {
+        if self.parameters.bypass.get() {
             for event in input {
                 output.push(event.clone());
             }
@@ -493,11 +493,11 @@ impl AudioProcessor for MidiTransformProcessor {
     }
 
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.params.save_state())
+        Ok(self.parameters.save_state())
     }
 
     fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.params
+        self.parameters
             .load_state(data)
             .map_err(PluginError::StateError)
     }

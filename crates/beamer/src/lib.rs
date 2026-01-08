@@ -22,7 +22,7 @@
 //! use beamer::vst3_impl::{Vst3Processor, vst3};
 //!
 //! // Define your plugin
-//! struct MyGain { params: MyParams }
+//! struct MyGain { parameters: MyParameters }
 //!
 //! impl AudioProcessor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
@@ -32,9 +32,9 @@
 //! }
 //!
 //! impl Plugin for MyGain {
-//!     type Params = MyParams;
-//!     fn params(&self) -> &Self::Params { &self.params }
-//!     fn create() -> Self { Self { params: MyParams::new() } }
+//!     type Parameters = MyParameters;
+//!     fn parameters(&self) -> &Self::Parameters { &self.parameters }
+//!     fn create() -> Self { Self { parameters: MyParameters::new() } }
 //! }
 //!
 //! // Export
@@ -48,11 +48,11 @@ pub use beamer_vst3 as vst3_impl;
 
 // Re-export derive macros when feature is enabled
 #[cfg(feature = "derive")]
-pub use beamer_macros::Params;
+pub use beamer_macros::Parameters;
 #[cfg(feature = "derive")]
-pub use beamer_macros::EnumParam;
+pub use beamer_macros::EnumParameter;
 #[cfg(feature = "derive")]
-pub use beamer_macros::HasParams;
+pub use beamer_macros::HasParameters;
 
 /// Prelude module for convenient imports.
 ///
@@ -70,17 +70,17 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        AudioProcessor, EditorDelegate, HasParams, Parameters, Plugin,
+        AudioProcessor, EditorDelegate, HasParameters, Plugin,
         // Processor configuration types
         ProcessorConfig, NoConfig, AudioSetup, FullAudioSetup, BusLayout,
         // Bus configuration
         BusInfo, BusType,
         // Editor types
         EditorConstraints, NoEditor,
-        // Parameter types (legacy)
-        NoParams, ParamFlags, ParamInfo,
-        // New parameter types (Phase 1)
-        BoolParam, EnumParam, EnumParamValue, FloatParam, IntParam, Formatter, ParamRef, Params,
+        // Parameter metadata
+        NoParameters, ParamFlags, ParamInfo,
+        // Parameter types
+        BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, ParameterRef, Parameters,
         // MIDI CC configuration (framework manages runtime state)
         MidiCcConfig,
         // Parameter smoothing
@@ -105,9 +105,9 @@ pub mod prelude {
 
     // Derive macros for parameters (when feature enabled)
     #[cfg(feature = "derive")]
-    pub use beamer_macros::Params as DeriveParams;
+    pub use beamer_macros::Parameters as DeriveParameters;
     #[cfg(feature = "derive")]
-    pub use beamer_macros::EnumParam as DeriveEnumParam;
+    pub use beamer_macros::EnumParameter as DeriveEnumParameter;
     #[cfg(feature = "derive")]
-    pub use beamer_macros::HasParams as DeriveHasParams;
+    pub use beamer_macros::HasParameters as DeriveHasParameters;
 }

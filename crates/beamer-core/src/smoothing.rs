@@ -5,12 +5,12 @@
 //!
 //! # Usage
 //!
-//! Smoothers are typically used via [`FloatParam::with_smoother()`](crate::FloatParam::with_smoother),
+//! Smoothers are typically used via [`FloatParameter::with_smoother()`](crate::FloatParameter::with_smoother),
 //! but can also be used standalone for custom modulation.
 //!
 //! ```ignore
-//! // Via FloatParam (recommended)
-//! let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
+//! // Via FloatParameter (recommended)
+//! let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
 //!     .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms
 //!
 //! // Standalone usage
@@ -24,7 +24,7 @@
 //! # Thread Safety
 //!
 //! `Smoother` requires `&mut self` for advancing state and is intended for
-//! single-threaded audio processing only. The parent `FloatParam` uses atomic
+//! single-threaded audio processing only. The parent `FloatParameter` uses atomic
 //! storage for thread-safe parameter access from UI/host threads.
 
 /// Threshold for snapping to target value to avoid denormals and finish smoothing.
@@ -60,7 +60,7 @@ pub enum SmoothingStyle {
 /// A parameter value smoother.
 ///
 /// Can be used standalone for custom modulation, or integrated
-/// into [`FloatParam`](crate::FloatParam) via `.with_smoother()`.
+/// into [`FloatParameter`](crate::FloatParameter) via `.with_smoother()`.
 ///
 /// # Thread Safety
 ///

@@ -4,7 +4,7 @@ Core abstractions for the Beamer VST3 framework.
 
 This crate provides platform-agnostic traits and types for building VST3 audio plugins in Rust:
 
-- **Plugin traits**: `Plugin`, `AudioProcessor`, `HasParams`, `Parameters`
+- **Plugin traits**: `Plugin`, `AudioProcessor`, `HasParameters`, `Parameters`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
 - **Parameter types**: `FloatParam`, `IntParam`, `BoolParam`, `EnumParam` with smoothing

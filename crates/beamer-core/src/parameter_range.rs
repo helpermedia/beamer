@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use beamer_core::param_range::{RangeMapper, LinearMapper, LogMapper, PowerMapper};
+//! use beamer_core::parameter_range::{RangeMapper, LinearMapper, LogMapper, PowerMapper};
 //!
 //! // Linear mapping for most parameters
 //! let linear = LinearMapper::new(0.0..=100.0);

@@ -1,49 +1,49 @@
 //! High-level parameter types with encapsulated atomic storage.
 //!
 //! This module provides the recommended way to define plugin parameters. It includes
-//! parameter types ([`FloatParam`], [`IntParam`], [`BoolParam`], [`EnumParam`]) that
+//! parameter types ([`FloatParameter`], [`IntParameter`], [`BoolParameter`], [`EnumParameter`]) that
 //! encapsulate atomic storage, range mapping, and value formatting.
 //!
-//! # The `Params` Trait (Recommended)
+//! # The `Parameters` Trait (Recommended)
 //!
-//! The [`Params`] trait is the preferred way to define parameters. Use `#[derive(Params)]`
+//! The [`Parameters`] trait is the preferred way to define parameters. Use `#[derive(Parameters)]`
 //! for automatic implementation:
 //!
 //! ```ignore
 //! use beamer::prelude::*;
 //!
-//! #[derive(Params)]
-//! pub struct MyParams {
-//!     #[param(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-//!     pub gain: FloatParam,
+//! #[derive(Parameters)]
+//! pub struct MyParameters {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     pub gain: FloatParameter,
 //!
-//!     #[param(id = "attack", name = "Attack", default = 10.0, range = 0.1..=100.0, kind = "ms")]
-//!     pub attack: FloatParam,
+//!     #[parameter(id = "attack", name = "Attack", default = 10.0, range = 0.1..=100.0, kind = "ms")]
+//!     pub attack: FloatParameter,
 //! }
 //! ```
 //!
-//! The derive macro generates implementations for both `Params` and
-//! [`Parameters`](crate::params::Parameters) traits. See [`crate::params`] for details
+//! The derive macro generates implementations for both `Parameters` and
+//! [`Vst3Parameters`](crate::parameters::Vst3Parameters) traits. See [`crate::parameters`] for details
 //! on the relationship between these traits.
 //!
 //! # Parameter Types
 //!
-//! - [`FloatParam`] - Continuous float values with range mapping and smoothing
-//! - [`IntParam`] - Discrete integer values
-//! - [`BoolParam`] - Toggle/boolean values
-//! - [`EnumParam`] - Discrete enum choices (use with `#[derive(EnumParam)]`)
+//! - [`FloatParameter`] - Continuous float values with range mapping and smoothing
+//! - [`IntParameter`] - Discrete integer values
+//! - [`BoolParameter`] - Toggle/boolean values
+//! - [`EnumParameter`] - Discrete enum choices (use with `#[derive(EnumParameter)]`)
 
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-use crate::param_format::Formatter;
-use crate::param_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-use crate::params::{ParamFlags, ParamInfo};
+use crate::parameter_format::Formatter;
+use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
+use crate::parameters::{ParamFlags, ParamInfo};
 use crate::smoothing::{Smoother, SmoothingStyle};
 use crate::types::{ParamId, ParamValue};
 
 // =============================================================================
-// ParamRef Trait - Type-erased parameter access
+// ParameterRef Trait - Type-erased parameter access
 // =============================================================================
 
 /// Trait for type-erased parameter access at runtime.
@@ -53,7 +53,7 @@ use crate::types::{ParamId, ParamValue};
 ///
 /// All implementations must be thread-safe (`Send + Sync`) for
 /// concurrent access from audio, UI, and host threads.
-pub trait ParamRef: Send + Sync {
+pub trait ParameterRef: Send + Sync {
     /// Get the parameter's unique ID.
     fn id(&self) -> ParamId;
 
@@ -113,13 +113,13 @@ pub trait ParamRef: Send + Sync {
 
     /// Get the full ParamInfo for this parameter.
     ///
-    /// This is used by the `#[derive(Params)]` macro to generate the
-    /// `Parameters::info()` implementation.
+    /// This is used by the `#[derive(Parameters)]` macro to generate the
+    /// `Vst3Parameters::info()` implementation.
     fn info(&self) -> &ParamInfo;
 }
 
 // =============================================================================
-// Params Trait - Parameter collection
+// Parameters Trait - Parameter collection
 // =============================================================================
 
 /// Trait for parameter collections.
@@ -131,20 +131,20 @@ pub trait ParamRef: Send + Sync {
 /// # Example
 ///
 /// ```ignore
-/// use beamer_core::param_types::{FloatParam, Params, ParamRef};
+/// use beamer_core::parameter_types::{FloatParameter, Parameters, ParameterRef};
 ///
-/// struct MyParams {
-///     gain: FloatParam,
+/// struct MyParameters {
+///     gain: FloatParameter,
 /// }
 ///
-/// impl Params for MyParams {
+/// impl Parameters for MyParameters {
 ///     fn count(&self) -> usize { 1 }
 ///
-///     fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParamRef> + '_> {
-///         Box::new(std::iter::once(&self.gain as &dyn ParamRef))
+///     fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+///         Box::new(std::iter::once(&self.gain as &dyn ParameterRef))
 ///     }
 ///
-///     fn by_id(&self, id: u32) -> Option<&dyn ParamRef> {
+///     fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
 ///         match id {
 ///             0 => Some(&self.gain),
 ///             _ => None,
@@ -152,21 +152,21 @@ pub trait ParamRef: Send + Sync {
 ///     }
 /// }
 /// ```
-pub trait Params: Send + Sync + crate::params::Units {
+pub trait Parameters: Send + Sync + crate::parameters::Units {
     /// Returns the total number of parameters.
     fn count(&self) -> usize;
 
     /// Iterate over all parameters (type-erased).
-    fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParamRef> + '_>;
+    fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_>;
 
     /// Get a parameter by its ID.
-    fn by_id(&self, id: ParamId) -> Option<&dyn ParamRef>;
+    fn by_id(&self, id: ParamId) -> Option<&dyn ParameterRef>;
 
     /// Get a mutable reference to a parameter by its ID.
     ///
-    /// Note: This returns `&dyn ParamRef` (not `&mut`) because atomic
+    /// Note: This returns `&dyn ParameterRef` (not `&mut`) because atomic
     /// parameters can be modified through shared references.
-    fn by_id_mut(&mut self, id: ParamId) -> Option<&dyn ParamRef> {
+    fn by_id_mut(&mut self, id: ParamId) -> Option<&dyn ParameterRef> {
         self.by_id(id)
     }
 
@@ -174,8 +174,8 @@ pub trait Params: Send + Sync + crate::params::Units {
     ///
     /// Called by parent structs when initializing nested parameter groups.
     /// The default implementation does nothing (for flat parameter structs).
-    fn set_all_unit_ids(&mut self, _unit_id: crate::params::UnitId) {
-        // Default: no-op (macro generates override for param-containing structs)
+    fn set_all_unit_ids(&mut self, _unit_id: crate::parameters::UnitId) {
+        // Default: no-op (macro generates override for parameter-containing structs)
     }
 
     // =========================================================================
@@ -184,7 +184,7 @@ pub trait Params: Send + Sync + crate::params::Units {
 
     /// Number of direct nested parameter groups in this struct.
     ///
-    /// Default is 0 (no nested groups). The `#[derive(Params)]` macro
+    /// Default is 0 (no nested groups). The `#[derive(Parameters)]` macro
     /// generates an override for structs with `#[nested]` fields.
     fn nested_count(&self) -> usize {
         0
@@ -192,17 +192,17 @@ pub trait Params: Send + Sync + crate::params::Units {
 
     /// Get information about a nested group by index.
     ///
-    /// Returns the group name and a reference to the nested Params.
+    /// Returns the group name and a reference to the nested Parameters.
     /// Default returns None (no nested groups).
-    fn nested_group(&self, _index: usize) -> Option<(&'static str, &dyn Params)> {
+    fn nested_group(&self, _index: usize) -> Option<(&'static str, &dyn Parameters)> {
         None
     }
 
     /// Get mutable access to a nested group by index.
     ///
-    /// Returns the group name and a mutable reference to the nested Params.
+    /// Returns the group name and a mutable reference to the nested Parameters.
     /// Default returns None (no nested groups).
-    fn nested_group_mut(&mut self, _index: usize) -> Option<(&'static str, &mut dyn Params)> {
+    fn nested_group_mut(&mut self, _index: usize) -> Option<(&'static str, &mut dyn Parameters)> {
         None
     }
 
@@ -235,7 +235,7 @@ pub trait Params: Send + Sync + crate::params::Units {
                 let unit_id = next_id;
                 next_id += 1;
 
-                // Set unit ID on all direct params in this nested group
+                // Set unit ID on all direct parameters in this nested group
                 nested.set_all_unit_ids(unit_id);
 
                 // Recurse into this nested group's nested groups
@@ -263,7 +263,7 @@ pub trait Params: Send + Sync + crate::params::Units {
     /// The next available unit ID after all units are collected.
     fn collect_units(
         &self,
-        units: &mut Vec<crate::params::UnitInfo>,
+        units: &mut Vec<crate::parameters::UnitInfo>,
         start_id: i32,
         parent_id: i32,
     ) -> i32 {
@@ -274,7 +274,7 @@ pub trait Params: Send + Sync + crate::params::Units {
                 let unit_id = next_id;
                 next_id += 1;
 
-                units.push(crate::params::UnitInfo::new(unit_id, name, parent_id));
+                units.push(crate::parameters::UnitInfo::new(unit_id, name, parent_id));
 
                 // Recurse into nested groups
                 next_id = nested.collect_units(units, next_id, unit_id);
@@ -309,9 +309,9 @@ pub trait Params: Send + Sync + crate::params::Units {
     fn save_state_prefixed(&self, data: &mut Vec<u8>, prefix: &str) {
         // Default implementation for flat parameter structs (no nesting)
         // The macro generates an override for structs with nested groups
-        for param in self.iter() {
+        for parameter in self.iter() {
             // For default impl, use numeric ID as string
-            let id_str = param.id().to_string();
+            let id_str = parameter.id().to_string();
             let path = if prefix.is_empty() {
                 id_str
             } else {
@@ -321,7 +321,7 @@ pub trait Params: Send + Sync + crate::params::Units {
             let path_bytes = path.as_bytes();
             data.push(path_bytes.len() as u8);
             data.extend_from_slice(path_bytes);
-            data.extend_from_slice(&param.get_normalized().to_le_bytes());
+            data.extend_from_slice(&parameter.get_normalized().to_le_bytes());
         }
     }
 
@@ -352,8 +352,8 @@ pub trait Params: Send + Sync + crate::params::Units {
         // Default implementation for flat structs (no nesting)
         // Try to parse as numeric ID
         if let Ok(id) = path.parse::<u32>() {
-            if let Some(param) = self.by_id_mut(id) {
-                param.set_normalized(value.clamp(0.0, 1.0));
+            if let Some(parameter) = self.by_id_mut(id) {
+                parameter.set_normalized(value.clamp(0.0, 1.0));
                 return true;
             }
         }
@@ -399,8 +399,8 @@ pub trait Params: Send + Sync + crate::params::Units {
             // Try to set parameter by path
             // Default implementation uses numeric ID parsing
             if let Ok(id) = path.parse::<u32>() {
-                if let Some(param) = self.by_id_mut(id) {
-                    param.set_normalized(value.clamp(0.0, 1.0));
+                if let Some(parameter) = self.by_id_mut(id) {
+                    parameter.set_normalized(value.clamp(0.0, 1.0));
                 }
             }
         }
@@ -425,13 +425,13 @@ pub trait Params: Send + Sync + crate::params::Units {
     /// ```ignore
     /// impl AudioProcessor for MyPlugin {
     ///     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-    ///         self.params.set_sample_rate(sample_rate);
+    ///         self.parameters.set_sample_rate(sample_rate);
     ///     }
     /// }
     /// ```
     fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // Default no-op. The #[derive(Params)] macro generates an override
-        // that calls set_sample_rate on each param field.
+        // Default no-op. The #[derive(Parameters)] macro generates an override
+        // that calls set_sample_rate on each parameter field.
     }
 
     /// Reset all smoothers to their current values (no ramp).
@@ -439,34 +439,34 @@ pub trait Params: Send + Sync + crate::params::Units {
     /// Called automatically by the framework after loading state to avoid
     /// ramps to loaded values. You typically don't need to call this directly.
     fn reset_smoothing(&mut self) {
-        // Default no-op. The #[derive(Params)] macro generates an override
-        // that calls reset_smoothing on each param field.
+        // Default no-op. The #[derive(Parameters)] macro generates an override
+        // that calls reset_smoothing on each parameter field.
     }
 }
 
 // =============================================================================
-// FloatParam - Float parameter with atomic storage
+// FloatParameter - Float parameter with atomic storage
 // =============================================================================
 
 /// Float parameter with atomic storage and automatic formatting.
 ///
 /// # Specialized Constructors
 ///
-/// - [`FloatParam::new`]: Generic float parameter
-/// - [`FloatParam::db`]: Decibel parameter with dB formatting
-/// - [`FloatParam::hz`]: Frequency parameter with logarithmic mapping
-/// - [`FloatParam::ms`]: Milliseconds parameter
-/// - [`FloatParam::seconds`]: Seconds parameter
-/// - [`FloatParam::percent`]: Percentage parameter (0-100%)
-/// - [`FloatParam::pan`]: Pan parameter (L-C-R)
-/// - [`FloatParam::ratio`]: Compressor ratio parameter
+/// - [`FloatParameter::new`]: Generic float parameter
+/// - [`FloatParameter::db`]: Decibel parameter with dB formatting
+/// - [`FloatParameter::hz`]: Frequency parameter with logarithmic mapping
+/// - [`FloatParameter::ms`]: Milliseconds parameter
+/// - [`FloatParameter::seconds`]: Seconds parameter
+/// - [`FloatParameter::percent`]: Percentage parameter (0-100%)
+/// - [`FloatParameter::pan`]: Pan parameter (L-C-R)
+/// - [`FloatParameter::ratio`]: Compressor ratio parameter
 ///
 /// # Example
 ///
 /// ```ignore
-/// // Create parameter - ID is set separately via with_id() or #[derive(Params)]
-/// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0).with_id(0);
-/// let freq = FloatParam::hz("Frequency", 440.0, 20.0..=20000.0).with_id(1);
+/// // Create parameter - ID is set separately via with_id() or #[derive(Parameters)]
+/// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_id(0);
+/// let freq = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0).with_id(1);
 ///
 /// // Read/write plain values
 /// let current_gain = gain.get(); // Returns linear value
@@ -475,7 +475,7 @@ pub trait Params: Send + Sync + crate::params::Units {
 /// // For DSP: get linear amplitude
 /// let amplitude = gain.as_linear();
 /// ```
-pub struct FloatParam {
+pub struct FloatParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
     info: ParamInfo,
     /// Atomic storage for normalized value (0.0-1.0)
@@ -490,11 +490,11 @@ pub struct FloatParam {
     is_db: bool,
 }
 
-impl FloatParam {
+impl FloatParameter {
     /// Create a generic float parameter with linear mapping.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -514,7 +514,7 @@ impl FloatParam {
                 default_normalized,
                 step_count: 0,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -531,10 +531,10 @@ impl FloatParam {
     ///
     /// - [`get`](Self::get) returns the dB value (for display, host automation)
     /// - [`as_linear`](Self::as_linear) returns linear amplitude (for DSP)
-    /// - [`normalized_to_plain`](ParamRef::normalized_to_plain) returns dB (matches `units`)
+    /// - [`normalized_to_plain`](ParameterRef::normalized_to_plain) returns dB (matches `units`)
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -545,7 +545,7 @@ impl FloatParam {
     /// # Example
     ///
     /// ```ignore
-    /// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0).with_id(0);
+    /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_id(0);
     ///
     /// // For DSP: use as_linear() to get amplitude multiplier
     /// let amplitude = gain.as_linear(); // 0 dB → 1.0, -6 dB → ~0.5
@@ -569,7 +569,7 @@ impl FloatParam {
                 default_normalized,
                 step_count: 0,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -586,7 +586,7 @@ impl FloatParam {
     /// precision near 0 dB is important.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -598,7 +598,7 @@ impl FloatParam {
     ///
     /// ```ignore
     /// // Threshold parameter: -60 to 0 dB with more resolution near 0 dB
-    /// let threshold = FloatParam::db_log("Threshold", -20.0, -60.0..=0.0);
+    /// let threshold = FloatParameter::db_log("Threshold", -20.0, -60.0..=0.0);
     /// ```
     pub fn db_log(name: &'static str, default_db: f64, range_db: RangeInclusive<f64>) -> Self {
         let min_db = *range_db.start();
@@ -614,7 +614,7 @@ impl FloatParam {
                 default_normalized,
                 step_count: 0,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -630,7 +630,7 @@ impl FloatParam {
     /// offsetting to positive space. Provides geometric mean at midpoint.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -642,7 +642,7 @@ impl FloatParam {
     ///
     /// ```ignore
     /// // Threshold parameter with true logarithmic behavior
-    /// let threshold = FloatParam::db_log_offset("Threshold", -20.0, -60.0..=0.0);
+    /// let threshold = FloatParameter::db_log_offset("Threshold", -20.0, -60.0..=0.0);
     /// ```
     pub fn db_log_offset(
         name: &'static str,
@@ -662,7 +662,7 @@ impl FloatParam {
                 default_normalized,
                 step_count: 0,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -678,7 +678,7 @@ impl FloatParam {
     /// across the frequency range.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -689,7 +689,7 @@ impl FloatParam {
     /// # Example
     ///
     /// ```ignore
-    /// let freq = FloatParam::hz("Frequency", 440.0, 20.0..=20000.0).with_id(0);
+    /// let freq = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0).with_id(0);
     /// ```
     pub fn hz(name: &'static str, default_hz: f64, range_hz: RangeInclusive<f64>) -> Self {
         let mapper = LogMapper::new(range_hz.clone());
@@ -704,7 +704,7 @@ impl FloatParam {
                 default_normalized,
                 step_count: 0,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -717,7 +717,7 @@ impl FloatParam {
     /// Create a milliseconds parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -725,16 +725,16 @@ impl FloatParam {
     /// * `default_ms` - Default value in milliseconds
     /// * `range_ms` - Valid range in milliseconds (inclusive)
     pub fn ms(name: &'static str, default_ms: f64, range_ms: RangeInclusive<f64>) -> Self {
-        let mut param = Self::new(name, default_ms, range_ms);
-        param.info.units = "ms";
-        param.formatter = Formatter::Milliseconds { precision: 1 };
-        param
+        let mut parameter = Self::new(name, default_ms, range_ms);
+        parameter.info.units = "ms";
+        parameter.formatter = Formatter::Milliseconds { precision: 1 };
+        parameter
     }
 
     /// Create a seconds parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -742,10 +742,10 @@ impl FloatParam {
     /// * `default_s` - Default value in seconds
     /// * `range_s` - Valid range in seconds (inclusive)
     pub fn seconds(name: &'static str, default_s: f64, range_s: RangeInclusive<f64>) -> Self {
-        let mut param = Self::new(name, default_s, range_s);
-        param.info.units = "s";
-        param.formatter = Formatter::Seconds { precision: 2 };
-        param
+        let mut parameter = Self::new(name, default_s, range_s);
+        parameter.info.units = "s";
+        parameter.formatter = Formatter::Seconds { precision: 2 };
+        parameter
     }
 
     /// Create a percentage parameter.
@@ -753,17 +753,17 @@ impl FloatParam {
     /// The value is stored as 0.0-1.0 internally but displayed as 0%-100%.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
     /// * `name` - Display name
     /// * `default_pct` - Default value as 0.0-1.0 (not 0-100)
     pub fn percent(name: &'static str, default_pct: f64) -> Self {
-        let mut param = Self::new(name, default_pct, 0.0..=1.0);
-        param.info.units = "%";
-        param.formatter = Formatter::Percent { precision: 0 };
-        param
+        let mut parameter = Self::new(name, default_pct, 0.0..=1.0);
+        parameter.info.units = "%";
+        parameter.formatter = Formatter::Percent { precision: 0 };
+        parameter
     }
 
     /// Create a pan parameter.
@@ -772,16 +772,16 @@ impl FloatParam {
     /// Display: "L50", "C", "R50"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
     /// * `name` - Display name
     /// * `default` - Default value (-1.0 to +1.0, typically 0.0)
     pub fn pan(name: &'static str, default: f64) -> Self {
-        let mut param = Self::new(name, default, -1.0..=1.0);
-        param.formatter = Formatter::Pan;
-        param
+        let mut parameter = Self::new(name, default, -1.0..=1.0);
+        parameter.formatter = Formatter::Pan;
+        parameter
     }
 
     /// Create a ratio parameter for compressors.
@@ -789,7 +789,7 @@ impl FloatParam {
     /// Display: "4.0:1", "∞:1"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -797,23 +797,23 @@ impl FloatParam {
     /// * `default` - Default ratio value
     /// * `range` - Valid ratio range (inclusive)
     pub fn ratio(name: &'static str, default: f64, range: RangeInclusive<f64>) -> Self {
-        let mut param = Self::new(name, default, range);
-        param.formatter = Formatter::Ratio { precision: 1 };
-        param
+        let mut parameter = Self::new(name, default, range);
+        parameter.formatter = Formatter::Ratio { precision: 1 };
+        parameter
     }
 
     // === Builder methods ===
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Params)]` macro to assign
+    /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID. For manual usage, you can pass
     /// any unique u32 value.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0).with_id(0x050c5d1f);
+    /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_id(0x050c5d1f);
     /// ```
     pub fn with_id(mut self, id: ParamId) -> Self {
         self.info.id = id;
@@ -828,14 +828,14 @@ impl FloatParam {
 
     /// Set the unit ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Params)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::params::UnitId) -> Self {
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
+    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
         self.info.unit_id = unit_id;
         self
     }
 
     /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::params::UnitId) {
+    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
         self.info.unit_id = unit_id;
     }
 
@@ -888,7 +888,7 @@ impl FloatParam {
     /// # Example
     ///
     /// ```ignore
-    /// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0);
+    /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
     ///
     /// // get() returns dB value for display
     /// assert_eq!(gain.get(), 0.0); // 0 dB
@@ -913,7 +913,7 @@ impl FloatParam {
     /// # Example
     ///
     /// ```ignore
-    /// let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
+    /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
     ///     .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms
     /// ```
     pub fn with_smoother(mut self, style: SmoothingStyle) -> Self {
@@ -1035,7 +1035,7 @@ impl FloatParam {
     }
 }
 
-impl ParamRef for FloatParam {
+impl ParameterRef for FloatParameter {
     fn id(&self) -> ParamId {
         self.info.id
     }
@@ -1104,30 +1104,30 @@ impl ParamRef for FloatParam {
     }
 }
 
-// FloatParam is automatically Send + Sync because:
+// FloatParameter is automatically Send + Sync because:
 // - AtomicU64 is Send + Sync
 // - Box<dyn RangeMapper> is Send + Sync (RangeMapper: Send + Sync)
 // - All other fields (&'static str, f64, Formatter, ParamFlags) are Send + Sync
 // No unsafe impl needed - the compiler verifies this automatically.
 
 // =============================================================================
-// IntParam - Integer parameter with atomic storage
+// IntParameter - Integer parameter with atomic storage
 // =============================================================================
 
 /// Integer parameter with atomic storage.
 ///
 /// # Specialized Constructors
 ///
-/// - [`IntParam::new`]: Generic integer parameter
-/// - [`IntParam::semitones`]: Semitones parameter for pitch shifting
+/// - [`IntParameter::new`]: Generic integer parameter
+/// - [`IntParameter::semitones`]: Semitones parameter for pitch shifting
 ///
 /// # Example
 ///
 /// ```ignore
-/// let octave = IntParam::semitones("Octave", 0, -24..=24).with_id(0);
+/// let octave = IntParameter::semitones("Octave", 0, -24..=24).with_id(0);
 /// println!("Current: {} semitones", octave.get());
 /// ```
-pub struct IntParam {
+pub struct IntParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
     info: ParamInfo,
     /// Atomic storage for the integer value
@@ -1140,11 +1140,11 @@ pub struct IntParam {
     formatter: Formatter,
 }
 
-impl IntParam {
+impl IntParameter {
     /// Create a generic integer parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -1179,7 +1179,7 @@ impl IntParam {
                 default_normalized,
                 step_count,
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicI64::new(default.clamp(min, max)),
             min,
@@ -1193,7 +1193,7 @@ impl IntParam {
     /// Display: "+12 st", "-7 st", "0 st"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -1201,17 +1201,17 @@ impl IntParam {
     /// * `default` - Default value in semitones
     /// * `range` - Valid range in semitones (inclusive)
     pub fn semitones(name: &'static str, default: i64, range: RangeInclusive<i64>) -> Self {
-        let mut param = Self::new(name, default, range);
-        param.info.units = "st";
-        param.formatter = Formatter::Semitones;
-        param
+        let mut parameter = Self::new(name, default, range);
+        parameter.info.units = "st";
+        parameter.formatter = Formatter::Semitones;
+        parameter
     }
 
     // === Builder methods ===
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Params)]` macro to assign
+    /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParamId) -> Self {
         self.info.id = id;
@@ -1226,14 +1226,14 @@ impl IntParam {
 
     /// Set the unit ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Params)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::params::UnitId) -> Self {
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
+    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
         self.info.unit_id = unit_id;
         self
     }
 
     /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::params::UnitId) {
+    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
         self.info.unit_id = unit_id;
     }
 
@@ -1277,26 +1277,26 @@ impl IntParam {
             .store(value.clamp(self.min, self.max), Ordering::Relaxed);
     }
 
-    // === Smoothing compatibility (no-ops for IntParam) ===
+    // === Smoothing compatibility (no-ops for IntParameter) ===
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Integer parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: IntParam doesn't support smoothing
+        // No-op: IntParameter doesn't support smoothing
     }
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Integer parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn reset_smoothing(&mut self) {
-        // No-op: IntParam doesn't support smoothing
+        // No-op: IntParameter doesn't support smoothing
     }
 }
 
-impl ParamRef for IntParam {
+impl ParameterRef for IntParameter {
     fn id(&self) -> ParamId {
         self.info.id
     }
@@ -1370,27 +1370,27 @@ impl ParamRef for IntParam {
 }
 
 // =============================================================================
-// BoolParam - Boolean parameter
+// BoolParameter - Boolean parameter
 // =============================================================================
 
 /// Boolean parameter (toggle).
 ///
 /// # Specialized Constructors
 ///
-/// - [`BoolParam::new`]: Generic boolean parameter
-/// - [`BoolParam::bypass`]: Bypass parameter with VST3 flags
+/// - [`BoolParameter::new`]: Generic boolean parameter
+/// - [`BoolParameter::bypass`]: Bypass parameter with VST3 flags
 ///
 /// # Example
 ///
 /// ```ignore
-/// let enabled = BoolParam::new("Enabled", true).with_id(0);
-/// let bypass = BoolParam::bypass().with_id(1);
+/// let enabled = BoolParameter::new("Enabled", true).with_id(0);
+/// let bypass = BoolParameter::bypass().with_id(1);
 ///
 /// if enabled.get() && !bypass.get() {
 ///     // Process audio
 /// }
 /// ```
-pub struct BoolParam {
+pub struct BoolParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
     info: ParamInfo,
     /// Atomic storage for the boolean value
@@ -1399,11 +1399,11 @@ pub struct BoolParam {
     formatter: Formatter,
 }
 
-impl BoolParam {
+impl BoolParameter {
     /// Create a generic boolean parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -1419,7 +1419,7 @@ impl BoolParam {
                 default_normalized: if default { 1.0 } else { 0.0 },
                 step_count: 1, // Toggle
                 flags: ParamFlags::default(),
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicBool::new(default),
             formatter: Formatter::Boolean,
@@ -1435,7 +1435,7 @@ impl BoolParam {
     /// - Marked with `is_bypass = true` flag for VST3
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     pub fn bypass() -> Self {
         Self {
             info: ParamInfo {
@@ -1452,7 +1452,7 @@ impl BoolParam {
                     is_list: false,
                     is_hidden: false,
                 },
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicBool::new(false),
             formatter: Formatter::Boolean,
@@ -1463,7 +1463,7 @@ impl BoolParam {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Params)]` macro to assign
+    /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParamId) -> Self {
         self.info.id = id;
@@ -1478,14 +1478,14 @@ impl BoolParam {
 
     /// Set the unit ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Params)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::params::UnitId) -> Self {
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
+    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
         self.info.unit_id = unit_id;
         self
     }
 
     /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::params::UnitId) {
+    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
         self.info.unit_id = unit_id;
     }
 
@@ -1528,26 +1528,26 @@ impl BoolParam {
         self.value.store(value, Ordering::Relaxed);
     }
 
-    // === Smoothing compatibility (no-ops for BoolParam) ===
+    // === Smoothing compatibility (no-ops for BoolParameter) ===
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Boolean parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: BoolParam doesn't support smoothing
+        // No-op: BoolParameter doesn't support smoothing
     }
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Boolean parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn reset_smoothing(&mut self) {
-        // No-op: BoolParam doesn't support smoothing
+        // No-op: BoolParameter doesn't support smoothing
     }
 }
 
-impl ParamRef for BoolParam {
+impl ParameterRef for BoolParameter {
     fn id(&self) -> ParamId {
         self.info.id
     }
@@ -1618,20 +1618,20 @@ impl ParamRef for BoolParam {
 }
 
 // =============================================================================
-// EnumParamValue Trait - For enums used as parameter values
+// EnumParameterValue Trait - For enums used as parameter values
 // =============================================================================
 
 /// Trait for enums that can be used as parameter values.
 ///
-/// This trait is implemented by `#[derive(EnumParam)]` and provides the
+/// This trait is implemented by `#[derive(EnumParameter)]` and provides the
 /// interface for converting between enum variants and indices.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use beamer::EnumParam;
+/// use beamer::EnumParameter;
 ///
-/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// #[derive(Copy, Clone, PartialEq, EnumParameter)]
 /// pub enum FilterType {
 ///     #[name = "Low Pass"]
 ///     LowPass,
@@ -1641,7 +1641,7 @@ impl ParamRef for BoolParam {
 ///     BandPass,  // Uses "BandPass" as display name
 /// }
 /// ```
-pub trait EnumParamValue: Copy + Clone + PartialEq + Send + Sync + 'static {
+pub trait EnumParameterValue: Copy + Clone + PartialEq + Send + Sync + 'static {
     /// Number of variants in the enum.
     const COUNT: usize;
 
@@ -1665,7 +1665,7 @@ pub trait EnumParamValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 }
 
 // =============================================================================
-// EnumParam - Enum parameter with atomic storage
+// EnumParameter - Enum parameter with atomic storage
 // =============================================================================
 
 /// Enum parameter for discrete choices (filter types, waveforms, etc.).
@@ -1674,9 +1674,9 @@ pub trait EnumParamValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 ///
 /// ```ignore
 /// use beamer::prelude::*;
-/// use beamer::EnumParam;
+/// use beamer::EnumParameter;
 ///
-/// #[derive(Copy, Clone, PartialEq, EnumParam)]
+/// #[derive(Copy, Clone, PartialEq, EnumParameter)]
 /// pub enum FilterType {
 ///     #[name = "Low Pass"]
 ///     LowPass,
@@ -1685,30 +1685,30 @@ pub trait EnumParamValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 ///     HighPass,
 /// }
 ///
-/// #[derive(Params)]
-/// pub struct FilterParams {
-///     #[param(id = "filter_type")]
-///     pub filter_type: EnumParam<FilterType>,
+/// #[derive(Parameters)]
+/// pub struct FilterParameters {
+///     #[parameter(id = "filter_type")]
+///     pub filter_type: EnumParameter<FilterType>,
 /// }
 ///
-/// impl Default for FilterParams {
+/// impl Default for FilterParameters {
 ///     fn default() -> Self {
 ///         Self {
 ///             // Uses HighPass as default (from #[default] attribute)
-///             filter_type: EnumParam::new("Filter Type"),
+///             filter_type: EnumParameter::new("Filter Type"),
 ///         }
 ///     }
 /// }
 ///
 /// // In DSP code:
 /// fn process(&self) {
-///     match self.params.filter_type.get() {
+///     match self.parameters.filter_type.get() {
 ///         FilterType::LowPass => { /* ... */ }
 ///         FilterType::HighPass => { /* ... */ }
 ///     }
 /// }
 /// ```
-pub struct EnumParam<E: EnumParamValue> {
+pub struct EnumParameter<E: EnumParameterValue> {
     /// Parameter metadata (id, name, units, flags, etc.)
     info: ParamInfo,
     /// Atomic storage for the variant index
@@ -1717,14 +1717,14 @@ pub struct EnumParam<E: EnumParamValue> {
     _marker: std::marker::PhantomData<E>,
 }
 
-impl<E: EnumParamValue> EnumParam<E> {
+impl<E: EnumParameterValue> EnumParameter<E> {
     /// Create a new enum parameter using the trait's default value.
     ///
     /// The default value is determined by the `#[default]` attribute on the enum,
     /// or the first variant if no default is specified.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Params)]` macro.
+    /// or the `#[derive(Parameters)]` macro.
     ///
     /// # Arguments
     ///
@@ -1733,7 +1733,7 @@ impl<E: EnumParamValue> EnumParam<E> {
     /// # Example
     ///
     /// ```ignore
-    /// let filter_type = EnumParam::new("Filter Type")
+    /// let filter_type = EnumParameter::new("Filter Type")
     ///     .with_id(hash);
     /// ```
     pub fn new(name: &'static str) -> Self {
@@ -1752,7 +1752,7 @@ impl<E: EnumParamValue> EnumParam<E> {
     /// # Example
     ///
     /// ```ignore
-    /// let filter_type = EnumParam::with_value("Filter Type", FilterType::LowPass)
+    /// let filter_type = EnumParameter::with_value("Filter Type", FilterType::LowPass)
     ///     .with_id(hash);
     /// ```
     pub fn with_value(name: &'static str, default: E) -> Self {
@@ -1767,12 +1767,12 @@ impl<E: EnumParamValue> EnumParam<E> {
                 units: "",
                 default_normalized,
                 step_count: (E::COUNT.saturating_sub(1)) as i32,
-                // EnumParam is always a list (dropdown), even with only 2 choices
+                // EnumParameter is always a list (dropdown), even with only 2 choices
                 flags: ParamFlags {
                     is_list: true,
                     ..ParamFlags::default()
                 },
-                unit_id: crate::params::ROOT_UNIT_ID,
+                unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: std::sync::atomic::AtomicUsize::new(default_index),
             _marker: std::marker::PhantomData,
@@ -1783,7 +1783,7 @@ impl<E: EnumParamValue> EnumParam<E> {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Params)]` macro to assign
+    /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParamId) -> Self {
         self.info.id = id;
@@ -1798,14 +1798,14 @@ impl<E: EnumParamValue> EnumParam<E> {
 
     /// Set the unit ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Params)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::params::UnitId) -> Self {
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
+    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
         self.info.unit_id = unit_id;
         self
     }
 
     /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::params::UnitId) {
+    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
         self.info.unit_id = unit_id;
     }
 
@@ -1855,26 +1855,26 @@ impl<E: EnumParamValue> EnumParam<E> {
         self.value.store(value.to_index(), Ordering::Relaxed);
     }
 
-    // === Smoothing compatibility (no-ops for EnumParam) ===
+    // === Smoothing compatibility (no-ops for EnumParameter) ===
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Enum parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: EnumParam doesn't support smoothing
+        // No-op: EnumParameter doesn't support smoothing
     }
 
-    /// No-op for compatibility with the `#[derive(Params)]` macro.
+    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
     ///
     /// Enum parameters don't support smoothing, so this does nothing.
     #[inline]
     pub fn reset_smoothing(&mut self) {
-        // No-op: EnumParam doesn't support smoothing
+        // No-op: EnumParameter doesn't support smoothing
     }
 }
 
-impl<E: EnumParamValue> ParamRef for EnumParam<E> {
+impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
     fn id(&self) -> ParamId {
         self.info.id
     }
@@ -1955,9 +1955,9 @@ impl<E: EnumParamValue> ParamRef for EnumParam<E> {
     }
 }
 
-// EnumParam<E> is Send + Sync because:
+// EnumParameter<E> is Send + Sync because:
 // - AtomicUsize is Send + Sync
-// - PhantomData<E> is Send + Sync when E: Send + Sync (required by EnumParamValue trait bounds)
+// - PhantomData<E> is Send + Sync when E: Send + Sync (required by EnumParameterValue trait bounds)
 // - ParamInfo is Send + Sync
 // No unsafe impl needed - the compiler verifies this automatically.
 
