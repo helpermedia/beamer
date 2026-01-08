@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "beamer"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer-core",
  "beamer-macros",
@@ -13,14 +13,14 @@ dependencies = [
 
 [[package]]
 name = "beamer-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer-utils",
 ]
 
 [[package]]
 name = "beamer-macros"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer-utils",
  "proc-macro2",
@@ -30,11 +30,11 @@ dependencies = [
 
 [[package]]
 name = "beamer-utils"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "beamer-vst3"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer-core",
  "com-scrape-types",
@@ -50,7 +50,7 @@ checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "compressor"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer",
  "vst3",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "delay"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer",
  "vst3",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "gain"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer",
  "vst3",
@@ -80,7 +80,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "midi-transform"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer",
  "vst3",
@@ -88,27 +88,27 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.104"
+version = "1.0.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9695f8df41bb4f3d222c95a67532365f569318332d03d5f3f67f37b20e6ebdf0"
+checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.42"
+version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a338cc41d27e6cc6dce6cefc13a0729dfbb81c262b1f519331575dd80ef3067f"
+checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
 ]
 
 [[package]]
 name = "syn"
-version = "2.0.112"
+version = "2.0.114"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21f182278bf2d2bcb3c88b1b08a37df029d71ce3d3ae26168e3c653b213b99d4"
+checksum = "d4d107df263a3013ef9b1879b0df87d706ff80f65a86ea879bd9c31f9b307c2a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "synth"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "beamer",
  "vst3",

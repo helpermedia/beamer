@@ -15,7 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/helpermedia/beamer"
@@ -30,11 +30,11 @@ quote = "1"
 proc-macro2 = "1"
 
 # Internal crates
-beamer-utils = { version = "0.1.5", path = "crates/beamer-utils" }
-beamer-core = { version = "0.1.5", path = "crates/beamer-core" }
-beamer-vst3 = { version = "0.1.5", path = "crates/beamer-vst3" }
-beamer-macros = { version = "0.1.5", path = "crates/beamer-macros" }
-beamer = { version = "0.1.5", path = "crates/beamer" }
+beamer-utils = { version = "0.1.6", path = "crates/beamer-utils" }
+beamer-core = { version = "0.1.6", path = "crates/beamer-core" }
+beamer-vst3 = { version = "0.1.6", path = "crates/beamer-vst3" }
+beamer-macros = { version = "0.1.6", path = "crates/beamer-macros" }
+beamer = { version = "0.1.6", path = "crates/beamer" }
 
 [profile.release]
 lto = true
