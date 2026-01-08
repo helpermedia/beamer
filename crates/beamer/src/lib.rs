@@ -1,9 +1,9 @@
 //! # Beamer
 //!
-//! VST3 Framework for Rust.
+//! Audio Plugin Framework for Rust.
 //!
-//! Beamer is a framework for building VST3 audio plugins with WebView-based GUIs.
-//! It provides safe Rust abstractions over the VST3 SDK.
+//! Beamer is a framework for building audio plugins with WebView-based GUIs.
+//! It provides safe Rust abstractions that work with multiple plugin formats.
 //!
 //! ## Architecture
 //!
@@ -85,8 +85,8 @@ pub mod prelude {
         MidiCcConfig,
         // Parameter smoothing
         Smoother, SmoothingStyle,
-        // VST3 Unit system (parameter groups)
-        UnitId, UnitInfo, Units, ROOT_UNIT_ID,
+        // Parameter group system
+        GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID,
         // Range mapping
         LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper,
         // Error types

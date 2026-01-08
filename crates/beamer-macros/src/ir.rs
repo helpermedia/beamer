@@ -202,12 +202,12 @@ impl ParameterFieldIR {
         self.attributes.has_required_for(self.parameter_type)
     }
 
-    /// Generate the const identifier name for this parameter's VST3 ID.
+    /// Generate the const identifier name for this parameter's ID.
     ///
-    /// E.g., `gain` -> `PARAM_GAIN_VST3_ID`
+    /// E.g., `gain` -> `PARAM_GAIN_ID`
     pub fn const_name(&self) -> syn::Ident {
         let name = self.field_name.to_string().to_uppercase();
-        syn::Ident::new(&format!("PARAM_{}_VST3_ID", name), self.span)
+        syn::Ident::new(&format!("PARAM_{}_ID", name), self.span)
     }
 }
 
@@ -220,10 +220,10 @@ pub struct NestedFieldIR {
     pub field_type: syn::Type,
     /// Group name from `#[nested(group = "...")]`
     pub group_name: String,
-    /// Assigned unit ID (1-indexed, root is 0)
-    pub unit_id: i32,
-    /// Parent unit ID (0 for top-level, parent's unit_id for nested-within-nested)
-    pub parent_unit_id: i32,
+    /// Assigned group ID (1-indexed, root is 0)
+    pub group_id: i32,
+    /// Parent group ID (0 for top-level, parent's group_id for nested-within-nested)
+    pub parent_group_id: i32,
     /// Span for error reporting
     pub span: Span,
 }

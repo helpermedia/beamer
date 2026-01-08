@@ -29,7 +29,7 @@ use beamer_core::{
     AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParameters,
     MidiBuffer, MidiCcState, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
-    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, Vst3Parameters, Plugin,
+    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin,
     ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx, Transport, MAX_BUSES,
     MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
     MAX_SYSEX_SIZE,
@@ -2173,7 +2173,7 @@ where
                 copy_wstring(parameter_info.units, &mut info.units);
                 info.stepCount = parameter_info.step_count;
                 info.defaultNormalizedValue = parameter_info.default_normalized;
-                info.unitId = parameter_info.unit_id;
+                info.unitId = parameter_info.group_id;
                 info.flags = {
                     let mut flags = 0;
                     if parameter_info.flags.can_automate {
@@ -2208,7 +2208,7 @@ where
                 copy_wstring(parameter_info.units, &mut info.units);
                 info.stepCount = parameter_info.step_count;
                 info.defaultNormalizedValue = parameter_info.default_normalized;
-                info.unitId = parameter_info.unit_id;
+                info.unitId = parameter_info.group_id;
                 // Hidden + automatable
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
                     | ParameterInfo_::ParameterFlags_::kIsHidden;
@@ -2319,8 +2319,8 @@ where
     P::Config: BuildConfig,
 {
     unsafe fn getUnitCount(&self) -> i32 {
-        use beamer_core::parameters::Units;
-        self.parameters().unit_count() as i32
+        use beamer_core::parameter_groups::ParameterGroups;
+        self.parameters().group_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2328,15 +2328,15 @@ where
             return kInvalidArgument;
         }
 
-        use beamer_core::parameters::Units;
+        use beamer_core::parameter_groups::ParameterGroups;
         let parameters = self.parameters();
 
-        if let Some(unit_info) = parameters.unit_info(unit_index as usize) {
+        if let Some(group_info) = parameters.group_info(unit_index as usize) {
             let info = &mut *info;
-            info.id = unit_info.id;
-            info.parentUnitId = unit_info.parent_id;
+            info.id = group_info.id;
+            info.parentUnitId = group_info.parent_id;
             info.programListId = kNoProgramListId;
-            copy_wstring(unit_info.name, &mut info.name);
+            copy_wstring(group_info.name, &mut info.name);
             kResultOk
         } else {
             kInvalidArgument

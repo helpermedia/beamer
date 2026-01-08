@@ -64,8 +64,8 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
         ));
     }
 
-    // Assign sequential unit IDs to nested fields
-    assign_unit_ids(&mut parsed_fields);
+    // Assign sequential group IDs to nested fields
+    assign_group_ids(&mut parsed_fields);
 
     Ok(ParametersIR {
         struct_name: input.ident.clone(),
@@ -372,28 +372,28 @@ fn parse_nested_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Neste
         field_name,
         field_type: field.ty.clone(),
         group_name,
-        unit_id: 0,         // Assigned later by assign_unit_ids()
-        parent_unit_id: 0,  // Assigned later by assign_unit_ids()
+        group_id: 0,         // Assigned later by assign_group_ids()
+        parent_group_id: 0,  // Assigned later by assign_group_ids()
         span: attr.path().segments[0].ident.span(),
     })
 }
 
-/// Assign sequential unit IDs to nested fields.
+/// Assign sequential group IDs to nested fields.
 ///
-/// Unit 0 is reserved for root. Flat groups (via `group = "..."`) get IDs 1, 2, 3, ...
+/// Group 0 is reserved for root. Flat groups (via `group = "..."`) get IDs 1, 2, 3, ...
 /// Nested groups get IDs starting after flat groups.
-fn assign_unit_ids(fields: &mut [FieldIR]) {
+fn assign_group_ids(fields: &mut [FieldIR]) {
     // Count flat groups first - they get IDs 1, 2, 3, ...
     let flat_group_count = count_flat_groups(fields);
 
     // Nested groups start after flat groups
-    let mut next_unit_id: i32 = flat_group_count as i32 + 1;
+    let mut next_group_id: i32 = flat_group_count as i32 + 1;
 
     for field in fields {
         if let FieldIR::Nested(nested) = field {
-            nested.unit_id = next_unit_id;
-            nested.parent_unit_id = 0; // All top-level for now (recursive nesting is future work)
-            next_unit_id += 1;
+            nested.group_id = next_group_id;
+            nested.parent_group_id = 0; // All top-level for now (recursive nesting is future work)
+            next_group_id += 1;
         }
     }
 }

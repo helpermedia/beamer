@@ -19,7 +19,8 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::midi_cc_config::MidiCcConfig;
-use crate::parameters::Vst3Parameters;
+use crate::parameter_groups::ParameterGroups;
+use crate::parameter_store::ParameterStore;
 use crate::process_context::ProcessContext;
 
 // =============================================================================
@@ -55,7 +56,7 @@ use crate::process_context::ProcessContext;
 /// on both your Plugin and Processor types.
 pub trait HasParameters: Send + 'static {
     /// The parameter collection type.
-    type Parameters: Vst3Parameters + crate::parameters::Units + crate::parameter_types::Parameters;
+    type Parameters: ParameterStore + ParameterGroups + crate::parameter_types::Parameters;
 
     /// Returns a reference to the parameters.
     fn parameters(&self) -> &Self::Parameters;

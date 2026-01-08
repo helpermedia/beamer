@@ -1,6 +1,6 @@
 //! Code generation for the derive macro.
 //!
-//! This module generates the Rust code for the `Parameters` and `Vst3Parameters` trait
+//! This module generates the Rust code for the `Parameters` and `ParameterStore` trait
 //! implementations from the validated IR.
 
 use proc_macro2::TokenStream;
@@ -13,12 +13,12 @@ use crate::ir::{
 /// Generate all code for the derive macro.
 pub fn generate(ir: &ParametersIR) -> TokenStream {
     let const_ids = generate_const_ids(ir);
-    let unit_consts = generate_unit_consts(ir);
+    let unit_consts = generate_group_consts(ir);
     let collision_check = generate_collision_check(ir);
-    let units_impl = generate_units_impl(ir);
-    let vst3_parameters_impl = generate_vst3_parameters_impl(ir);
+    let units_impl = generate_groups_impl(ir);
+    let vst3_parameters_impl = generate_parameter_store_impl(ir);
     let parameters_impl = generate_parameters_impl(ir);
-    let set_unit_ids_impl = generate_set_unit_ids(ir);
+    let set_group_ids_impl = generate_set_group_ids(ir);
     let default_impl = generate_default_impl(ir);
 
     quote! {
@@ -28,7 +28,7 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
         #units_impl
         #vst3_parameters_impl
         #parameters_impl
-        #set_unit_ids_impl
+        #set_group_ids_impl
         #default_impl
     }
 }
@@ -59,8 +59,8 @@ fn generate_const_ids(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate unit ID constants for each nested field and flat group.
-fn generate_unit_consts(ir: &ParametersIR) -> TokenStream {
+/// Generate group ID constants for each nested field and flat group.
+fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
 
     // Generate constants for flat groups first (they get IDs 1, 2, 3, ...)
@@ -69,15 +69,15 @@ fn generate_unit_consts(ir: &ParametersIR) -> TokenStream {
         .iter()
         .enumerate()
         .map(|(idx, group_name)| {
-            // Convert group name to uppercase const name (e.g., "Filter" -> "UNIT_GROUP_FILTER")
+            // Convert group name to uppercase const name (e.g., "Filter" -> "PARAM_GROUP_FILTER")
             let const_name = syn::Ident::new(
-                &format!("UNIT_GROUP_{}", group_name.to_uppercase().replace(' ', "_")),
+                &format!("PARAM_GROUP_{}", group_name.to_uppercase().replace(' ', "_")),
                 proc_macro2::Span::call_site(),
             );
-            let unit_id = (idx + 1) as i32; // Start at 1 (0 is root)
+            let group_id = (idx + 1) as i32; // Start at 1 (0 is root)
             quote! {
-                /// Unit ID for the flat parameter group.
-                pub const #const_name: ::beamer::core::parameters::UnitId = #unit_id;
+                /// Group ID for the flat parameter group.
+                pub const #const_name: ::beamer::core::parameter_groups::GroupId = #group_id;
             }
         })
         .collect();
@@ -89,13 +89,13 @@ fn generate_unit_consts(ir: &ParametersIR) -> TokenStream {
         .enumerate()
         .map(|(idx, nested)| {
             let const_name = syn::Ident::new(
-                &format!("UNIT_{}", nested.field_name.to_string().to_uppercase()),
+                &format!("GROUP_{}", nested.field_name.to_string().to_uppercase()),
                 nested.span,
             );
-            let unit_id = flat_group_count + (idx as i32) + 1;
+            let group_id = flat_group_count + (idx as i32) + 1;
             quote! {
-                /// Unit ID for the nested parameter group.
-                pub const #const_name: ::beamer::core::parameters::UnitId = #unit_id;
+                /// Group ID for the nested parameter group.
+                pub const #const_name: ::beamer::core::parameter_groups::GroupId = #group_id;
             }
         })
         .collect();
@@ -112,11 +112,11 @@ fn generate_unit_consts(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate the `Units` trait implementation.
+/// Generate the `ParameterGroups` trait implementation.
 ///
 /// For structs with nested groups or flat groups, this generates unit discovery
 /// that includes both flat groups and deeply nested ones.
-fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_groups_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -125,22 +125,22 @@ fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
     let has_nested = ir.has_nested();
 
     if !has_flat_groups && !has_nested {
-        // No groups at all = use default Units impl (root only)
+        // No groups at all = use default ParameterGroups impl (root only)
         return quote! {
-            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {}
+            impl #impl_generics ::beamer::core::parameter_groups::ParameterGroups for #struct_name #ty_generics #where_clause {}
         };
     }
 
-    // Generate flat group UnitInfo entries
+    // Generate flat group GroupInfo entries
     let flat_group_count = flat_groups.len();
-    let flat_unit_infos: Vec<TokenStream> = flat_groups
+    let flat_group_infos: Vec<TokenStream> = flat_groups
         .iter()
         .enumerate()
         .map(|(idx, group_name)| {
-            let unit_id = (idx + 1) as i32;
+            let group_id = (idx + 1) as i32;
             quote! {
-                #idx => Some(::beamer::core::parameters::UnitInfo {
-                    id: #unit_id,
+                #idx => Some(::beamer::core::parameter_groups::GroupInfo {
+                    id: #group_id,
                     name: #group_name,
                     parent_id: 0, // All flat groups are children of root
                 }),
@@ -151,34 +151,34 @@ fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
     if has_nested {
         // Flat groups + nested groups: combine static flat groups with dynamic nested collection
         quote! {
-            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {
-                fn unit_count(&self) -> usize {
+            impl #impl_generics ::beamer::core::parameter_groups::ParameterGroups for #struct_name #ty_generics #where_clause {
+                fn group_count(&self) -> usize {
                     use ::beamer::core::parameter_types::Parameters;
                     // Count = 1 (root) + flat groups + nested units recursively
                     let flat_count = #flat_group_count;
                     let mut units = Vec::new();
-                    self.collect_units(&mut units, (flat_count + 1) as i32, 0);
+                    self.collect_groups(&mut units, (flat_count + 1) as i32, 0);
                     1 + flat_count + units.len()
                 }
 
-                fn unit_info(&self, index: usize) -> Option<::beamer::core::parameters::UnitInfo> {
+                fn group_info(&self, index: usize) -> Option<::beamer::core::parameter_groups::GroupInfo> {
                     use ::beamer::core::parameter_types::Parameters;
                     if index == 0 {
-                        return Some(::beamer::core::parameters::UnitInfo::root());
+                        return Some(::beamer::core::parameter_groups::GroupInfo::root());
                     }
 
                     // Check flat groups first (indices 1..=flat_group_count)
                     let flat_idx = index - 1;
                     if flat_idx < #flat_group_count {
                         return match flat_idx {
-                            #(#flat_unit_infos)*
+                            #(#flat_group_infos)*
                             _ => None,
                         };
                     }
 
                     // Then check nested groups
                     let mut units = Vec::new();
-                    self.collect_units(&mut units, (#flat_group_count + 1) as i32, 0);
+                    self.collect_groups(&mut units, (#flat_group_count + 1) as i32, 0);
                     let nested_idx = index - 1 - #flat_group_count;
                     units.get(nested_idx).cloned()
                 }
@@ -187,19 +187,19 @@ fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
     } else {
         // Only flat groups, no nesting
         quote! {
-            impl #impl_generics ::beamer::core::parameters::Units for #struct_name #ty_generics #where_clause {
-                fn unit_count(&self) -> usize {
+            impl #impl_generics ::beamer::core::parameter_groups::ParameterGroups for #struct_name #ty_generics #where_clause {
+                fn group_count(&self) -> usize {
                     1 + #flat_group_count // root + flat groups
                 }
 
-                fn unit_info(&self, index: usize) -> Option<::beamer::core::parameters::UnitInfo> {
+                fn group_info(&self, index: usize) -> Option<::beamer::core::parameter_groups::GroupInfo> {
                     if index == 0 {
-                        return Some(::beamer::core::parameters::UnitInfo::root());
+                        return Some(::beamer::core::parameter_groups::GroupInfo::root());
                     }
 
                     let flat_idx = index - 1;
                     match flat_idx {
-                        #(#flat_unit_infos)*
+                        #(#flat_group_infos)*
                         _ => None,
                     }
                 }
@@ -208,12 +208,12 @@ fn generate_units_impl(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate the `set_unit_ids()` method for initializing parameter unit IDs.
+/// Generate the `set_group_ids()` method for initializing parameter group IDs.
 ///
 /// This handles both flat groups (group="...") and nested groups (#[nested(...)]).
-/// For flat groups, it sets unit_id directly on the parameters based on their group.
-/// For nested groups, it uses the recursive `assign_unit_ids` method.
-fn generate_set_unit_ids(ir: &ParametersIR) -> TokenStream {
+/// For flat groups, it sets group_id directly on the parameters based on their group.
+/// For nested groups, it uses the recursive `assign_group_ids` method.
+fn generate_set_group_ids(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -222,33 +222,33 @@ fn generate_set_unit_ids(ir: &ParametersIR) -> TokenStream {
     let has_nested = ir.has_nested();
 
     if !has_flat_groups && !has_nested {
-        // No groups at all = no-op set_unit_ids
+        // No groups at all = no-op set_group_ids
         return quote! {
             impl #impl_generics #struct_name #ty_generics #where_clause {
-                /// Initialize unit IDs for parameters.
+                /// Initialize group IDs for parameters.
                 ///
                 /// No groups in this struct, so this is a no-op.
-                pub fn set_unit_ids(&mut self) {}
+                pub fn set_group_ids(&mut self) {}
             }
         };
     }
 
-    // Build a map of group name -> unit ID
-    let group_to_unit_id: std::collections::HashMap<&str, i32> = flat_groups
+    // Build a map of group name -> group ID
+    let group_to_group_id: std::collections::HashMap<&str, i32> = flat_groups
         .iter()
         .enumerate()
         .map(|(idx, name)| (*name, (idx + 1) as i32))
         .collect();
 
-    // Generate statements to set unit_id on parameters with flat groups
+    // Generate statements to set group_id on parameters with flat groups
     let flat_group_assignments: Vec<TokenStream> = ir
         .parameter_fields()
         .filter_map(|parameter| {
             parameter.attributes.group.as_ref().map(|group_name| {
                 let field = &parameter.field_name;
-                let unit_id = group_to_unit_id.get(group_name.as_str()).copied().unwrap_or(0);
+                let group_id = group_to_group_id.get(group_name.as_str()).copied().unwrap_or(0);
                 quote! {
-                    self.#field.set_unit_id(#unit_id);
+                    self.#field.set_group_id(#group_id);
                 }
             })
         })
@@ -259,7 +259,7 @@ fn generate_set_unit_ids(ir: &ParametersIR) -> TokenStream {
         quote! {
             use ::beamer::core::parameter_types::Parameters;
             // Nested groups start after flat groups
-            self.assign_unit_ids(#flat_group_count + 1, 0);
+            self.assign_group_ids(#flat_group_count + 1, 0);
         }
     } else {
         quote! {}
@@ -267,22 +267,22 @@ fn generate_set_unit_ids(ir: &ParametersIR) -> TokenStream {
 
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
-            /// Initialize unit IDs for all parameters.
+            /// Initialize group IDs for all parameters.
             ///
-            /// This method assigns unit IDs to parameters with `group` attributes
-            /// and recursively assigns unit IDs to nested parameter groups.
-            /// Unit IDs are assigned sequentially starting from 1 (0 is reserved for root).
+            /// This method assigns group IDs to parameters with `group` attributes
+            /// and recursively assigns group IDs to nested parameter groups.
+            /// Group IDs are assigned sequentially starting from 1 (0 is reserved for root).
             ///
-            /// Call this once after construction to set up VST3 unit hierarchy.
+            /// Call this once after construction to set up the group hierarchy.
             ///
             /// # Example
             ///
             /// ```ignore
             /// let mut parameters = SynthParameters::default();
-            /// parameters.set_unit_ids();
+            /// parameters.set_group_ids();
             /// ```
-            pub fn set_unit_ids(&mut self) {
-                // Set unit IDs for flat groups
+            pub fn set_group_ids(&mut self) {
+                // Set group IDs for flat groups
                 #(#flat_group_assignments)*
                 // Initialize nested groups
                 #nested_init
@@ -345,7 +345,7 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let by_id_impl = generate_by_id(ir);
     let save_state_impl = generate_save_state(ir);
     let load_state_impl = generate_load_state(ir);
-    let set_all_unit_ids_impl = generate_set_all_unit_ids(ir);
+    let set_all_group_ids_impl = generate_set_all_group_ids(ir);
     let nested_discovery_impl = generate_nested_discovery(ir);
     let set_sample_rate_impl = generate_set_sample_rate(ir);
     let reset_smoothing_impl = generate_reset_smoothing(ir);
@@ -368,7 +368,7 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
                 self.by_id(id)
             }
 
-            #set_all_unit_ids_impl
+            #set_all_group_ids_impl
 
             #nested_discovery_impl
 
@@ -383,26 +383,26 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate the `set_all_unit_ids()` method for the Parameters trait.
-fn generate_set_all_unit_ids(ir: &ParametersIR) -> TokenStream {
+/// Generate the `set_all_group_ids()` method for the Parameters trait.
+fn generate_set_all_group_ids(ir: &ParametersIR) -> TokenStream {
     if ir.parameter_count() == 0 {
         // No direct parameters = use default no-op
         return quote! {};
     }
 
-    // Generate statements to set unit_id on each direct parameter field
+    // Generate statements to set group_id on each direct parameter field
     let assignments: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
             let field = &parameter.field_name;
             quote! {
-                self.#field.set_unit_id(unit_id);
+                self.#field.set_group_id(group_id);
             }
         })
         .collect();
 
     quote! {
-        fn set_all_unit_ids(&mut self, unit_id: ::beamer::core::parameters::UnitId) {
+        fn set_all_group_ids(&mut self, group_id: ::beamer::core::parameter_groups::GroupId) {
             #(#assignments)*
         }
     }
@@ -750,8 +750,8 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate the `Vst3Parameters` trait implementation.
-fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
+/// Generate the `ParameterStore` trait implementation.
+fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -785,7 +785,7 @@ fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
         .collect();
 
     quote! {
-        impl #impl_generics ::beamer::core::parameters::Vst3Parameters for #struct_name #ty_generics #where_clause {
+        impl #impl_generics ::beamer::core::parameter_store::ParameterStore for #struct_name #ty_generics #where_clause {
             fn count(&self) -> usize {
                 #count_impl
             }
@@ -865,7 +865,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
                 quote! {
                     let nested_count = ::beamer::core::parameter_types::Parameters::count(&self.#field);
                     if adjusted_index < nested_count {
-                        return ::beamer::core::parameters::Vst3Parameters::info(&self.#field, adjusted_index);
+                        return ::beamer::core::parameter_store::ParameterStore::info(&self.#field, adjusted_index);
                     }
                     adjusted_index -= nested_count;
                 }
@@ -873,7 +873,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
             .collect();
 
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParameterInfo> {
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameter_info::ParameterInfo> {
                 // First check direct parameters
                 match index {
                     #(#parameter_match_arms)*
@@ -888,7 +888,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
         }
     } else {
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParameterInfo> {
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameter_info::ParameterInfo> {
                 match index {
                     #(#parameter_match_arms)*
                     _ => None,
@@ -995,10 +995,10 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
         })
         .collect();
 
-    // Add set_unit_ids() call if there are groups (flat or nested)
-    let unit_id_init = if ir.has_nested() || ir.has_flat_groups() {
+    // Add set_group_ids() call if there are groups (flat or nested)
+    let group_id_init = if ir.has_nested() || ir.has_flat_groups() {
         quote! {
-            parameters.set_unit_ids();
+            parameters.set_group_ids();
         }
     } else {
         quote! {}
@@ -1010,7 +1010,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
                 let mut parameters = Self {
                     #(#field_inits),*
                 };
-                #unit_id_init
+                #group_id_init
                 parameters
             }
         }

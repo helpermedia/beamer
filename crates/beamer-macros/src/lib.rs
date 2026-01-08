@@ -1,4 +1,4 @@
-//! Derive macros for the Beamer VST3 framework.
+//! Derive macros for the Beamer audio plugin framework.
 //!
 //! This crate provides the `#[derive(Parameters)]` macro for generating parameter
 //! trait implementations automatically.
@@ -24,7 +24,7 @@
 //! ```
 //!
 //! The macro generates implementations for both `Parameters` (high-level) and
-//! `Vst3Parameters` (VST3 integration) traits, plus `Default` when all required
+//! `ParameterStore` (host integration) traits, plus `Default` when all required
 //! attributes are present.
 //!
 //! # Flat Visual Grouping
@@ -64,14 +64,14 @@ mod validate;
 ///
 /// This macro generates:
 /// - `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
-/// - `Vst3Parameters` trait implementation (VST3 integration)
+/// - `ParameterStore` trait implementation (host integration)
 /// - `Default` implementation (when declarative attributes are complete)
 /// - Compile-time hash collision detection
 ///
 /// # Attributes
 ///
 /// ## Required
-/// - `id = "..."` - String ID that gets hashed to u32 for VST3.
+/// - `id = "..."` - String ID that gets hashed to u32.
 ///
 /// ## Declarative (enables auto-generated Default)
 /// - `name = "..."` - Display name
@@ -200,7 +200,7 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 ///
 /// - The struct must have named fields
 /// - Exactly one field must be marked with `#[parameters]`
-/// - The marked field's type must implement `Vst3Parameters`, `Units`, and `Parameters`
+/// - The marked field's type must implement `ParameterStore`, `ParameterGroups`, and `Parameters`
 ///
 /// # What It Generates
 ///

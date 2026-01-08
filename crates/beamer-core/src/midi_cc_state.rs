@@ -11,7 +11,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
-use crate::parameters::{ParameterFlags, ParameterInfo, Vst3Parameters, UnitInfo, Units, ROOT_UNIT_ID};
+use crate::parameter_groups::{GroupInfo, ParameterGroups, ROOT_GROUP_ID};
+use crate::parameter_info::{ParameterFlags, ParameterInfo};
+use crate::parameter_store::ParameterStore;
 use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
@@ -256,7 +258,7 @@ impl MidiCcState {
                 is_list: false,
                 is_hidden: true, // Hidden from DAW parameter list
             },
-            unit_id: ROOT_UNIT_ID,
+            group_id: ROOT_GROUP_ID,
         }
     }
 
@@ -301,7 +303,7 @@ impl core::fmt::Debug for MidiCcState {
 // Parameters Trait Implementation (for VST3 integration)
 // =============================================================================
 
-impl Vst3Parameters for MidiCcState {
+impl ParameterStore for MidiCcState {
     fn count(&self) -> usize {
         self.enabled_count
     }
@@ -360,17 +362,17 @@ impl Vst3Parameters for MidiCcState {
 }
 
 // =============================================================================
-// Units Trait Implementation (no parameter grouping for hidden parameters)
+// ParameterGroups Trait Implementation (no parameter grouping for hidden parameters)
 // =============================================================================
 
-impl Units for MidiCcState {
-    fn unit_count(&self) -> usize {
-        1 // Only root unit
+impl ParameterGroups for MidiCcState {
+    fn group_count(&self) -> usize {
+        1 // Only root group
     }
 
-    fn unit_info(&self, index: usize) -> Option<UnitInfo> {
+    fn group_info(&self, index: usize) -> Option<GroupInfo> {
         if index == 0 {
-            Some(UnitInfo::root())
+            Some(GroupInfo::root())
         } else {
             None
         }

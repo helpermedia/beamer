@@ -44,7 +44,7 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain", COMPONENT_UID
 ///
 /// The macro generates:
 /// - `Parameters` trait (count, iter, by_id, save_state, load_state)
-/// - `Vst3Parameters` trait (VST3 integration)
+/// - `ParameterStore` trait (host integration)
 /// - `Default` trait (from attribute values)
 /// - Compile-time hash collision detection
 #[derive(Parameters)]

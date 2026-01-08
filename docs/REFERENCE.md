@@ -212,17 +212,17 @@ pub struct GainParameters {
 
 The `#[derive(Parameters)]` macro generates:
 - `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
-- `Parameters` trait implementation (VST3 integration)
-- `Units` trait implementation (parameter groups)
+- `ParameterStore` trait implementation (host integration)
+- `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present)
-- Compile-time FNV-1a hash constants: `PARAM_GAIN_VST3_ID`, `PARAM_BYPASS_VST3_ID`
+- Compile-time FNV-1a hash constants: `PARAM_GAIN_ID`, `PARAM_BYPASS_ID`
 - Compile-time collision detection for duplicate IDs
 
 #### Declarative Attributes
 
 | Attribute | Description | Required |
 |-----------|-------------|----------|
-| `id = "..."` | String ID (hashed to u32 for VST3) | Yes |
+| `id = "..."` | String ID (hashed to u32) | Yes |
 | `name = "..."` | Display name in DAW | For Default |
 | `default = <value>` | Default value (float, int, or bool) | For Default |
 | `range = start..=end` | Value range | For FloatParameter/IntParameter |
@@ -485,7 +485,7 @@ pub struct EnvelopeParameters {
 }
 ```
 
-With declarative attributes, `set_unit_ids()` is called automatically in the generated `Default` implementation.
+With declarative attributes, `set_group_ids()` is called automatically in the generated `Default` implementation.
 
 #### State Serialization Format
 
@@ -534,7 +534,7 @@ pub struct ParameterInfo {
     pub default_normalized: f64,
     pub step_count: i32,
     pub flags: ParameterFlags,
-    pub unit_id: UnitId,  // VST3 parameter group (0 = root)
+    pub group_id: GroupId,  // Parameter group (0 = root)
 }
 
 pub struct ParameterFlags {

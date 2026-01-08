@@ -23,8 +23,8 @@
 //! ```
 //!
 //! The derive macro generates implementations for both `Parameters` and
-//! [`Vst3Parameters`](crate::parameters::Vst3Parameters) traits. See [`crate::parameters`] for details
-//! on the relationship between these traits.
+//! [`ParameterStore`](crate::parameter_store::ParameterStore) traits. See [`crate::parameter_store`]
+//! for details on the relationship between these traits.
 //!
 //! # Parameter Types
 //!
@@ -37,8 +37,9 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use crate::parameter_format::Formatter;
+use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
+use crate::parameter_info::{ParameterFlags, ParameterInfo};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-use crate::parameters::{ParameterFlags, ParameterInfo};
 use crate::smoothing::{Smoother, SmoothingStyle};
 use crate::types::{ParameterId, ParameterValue};
 
@@ -114,7 +115,7 @@ pub trait ParameterRef: Send + Sync {
     /// Get the full ParameterInfo for this parameter.
     ///
     /// This is used by the `#[derive(Parameters)]` macro to generate the
-    /// `Vst3Parameters::info()` implementation.
+    /// `ParameterStore::info()` implementation.
     fn info(&self) -> &ParameterInfo;
 }
 
@@ -152,7 +153,7 @@ pub trait ParameterRef: Send + Sync {
 ///     }
 /// }
 /// ```
-pub trait Parameters: Send + Sync + crate::parameters::Units {
+pub trait Parameters: Send + Sync + ParameterGroups {
     /// Returns the total number of parameters.
     fn count(&self) -> usize;
 
@@ -170,16 +171,16 @@ pub trait Parameters: Send + Sync + crate::parameters::Units {
         self.by_id(id)
     }
 
-    /// Set unit ID for all direct parameters in this collection.
+    /// Set group ID for all direct parameters in this collection.
     ///
     /// Called by parent structs when initializing nested parameter groups.
     /// The default implementation does nothing (for flat parameter structs).
-    fn set_all_unit_ids(&mut self, _unit_id: crate::parameters::UnitId) {
+    fn set_all_group_ids(&mut self, _group_id: GroupId) {
         // Default: no-op (macro generates override for parameter-containing structs)
     }
 
     // =========================================================================
-    // Nested Group Discovery (for recursive unit ID assignment)
+    // Nested Group Discovery (for recursive group ID assignment)
     // =========================================================================
 
     /// Number of direct nested parameter groups in this struct.
@@ -206,64 +207,64 @@ pub trait Parameters: Send + Sync + crate::parameters::Units {
         None
     }
 
-    /// Recursively assign unit IDs to all nested groups.
+    /// Recursively assign group IDs to all nested groups.
     ///
     /// This method traverses the nested group hierarchy and assigns
-    /// sequential unit IDs, properly setting parent relationships for
+    /// sequential group IDs, properly setting parent relationships for
     /// deeply nested groups.
     ///
     /// # Arguments
     ///
-    /// * `start_id` - The first unit ID to assign (typically 1, since 0 is root)
-    /// * `parent_id` - The parent unit ID for this level's nested groups
+    /// * `start_id` - The first group ID to assign (typically 1, since 0 is root)
+    /// * `parent_id` - The parent group ID for this level's nested groups
     ///
     /// # Returns
     ///
-    /// The next available unit ID after all assignments.
+    /// The next available group ID after all assignments.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // Called by set_unit_ids() on the top-level struct:
-    /// let next_id = self.assign_unit_ids(1, 0);
+    /// // Called by set_group_ids() on the top-level struct:
+    /// let next_id = self.assign_group_ids(1, 0);
     /// ```
-    fn assign_unit_ids(&mut self, start_id: i32, _parent_id: i32) -> i32 {
+    fn assign_group_ids(&mut self, start_id: i32, _parent_id: i32) -> i32 {
         let mut next_id = start_id;
 
         for i in 0..self.nested_count() {
             if let Some((_, nested)) = self.nested_group_mut(i) {
-                let unit_id = next_id;
+                let group_id = next_id;
                 next_id += 1;
 
-                // Set unit ID on all direct parameters in this nested group
-                nested.set_all_unit_ids(unit_id);
+                // Set group ID on all direct parameters in this nested group
+                nested.set_all_group_ids(group_id);
 
                 // Recurse into this nested group's nested groups
-                // The current unit_id becomes the parent for nested groups
-                next_id = nested.assign_unit_ids(next_id, unit_id);
+                // The current group_id becomes the parent for nested groups
+                next_id = nested.assign_group_ids(next_id, group_id);
             }
         }
 
         next_id
     }
 
-    /// Collect all unit infos from nested groups recursively.
+    /// Collect all group infos from nested groups recursively.
     ///
-    /// This is used by the `Units` trait implementation to build the
-    /// complete list of units for the DAW.
+    /// This is used by the `ParameterGroups` trait implementation to build the
+    /// complete list of groups for the DAW.
     ///
     /// # Arguments
     ///
-    /// * `units` - Vector to append UnitInfo entries to
-    /// * `start_id` - The first unit ID for this level
-    /// * `parent_id` - The parent unit ID for this level's groups
+    /// * `groups` - Vector to append GroupInfo entries to
+    /// * `start_id` - The first group ID for this level
+    /// * `parent_id` - The parent group ID for this level's groups
     ///
     /// # Returns
     ///
-    /// The next available unit ID after all units are collected.
-    fn collect_units(
+    /// The next available group ID after all groups are collected.
+    fn collect_groups(
         &self,
-        units: &mut Vec<crate::parameters::UnitInfo>,
+        groups: &mut Vec<GroupInfo>,
         start_id: i32,
         parent_id: i32,
     ) -> i32 {
@@ -271,13 +272,13 @@ pub trait Parameters: Send + Sync + crate::parameters::Units {
 
         for i in 0..self.nested_count() {
             if let Some((name, nested)) = self.nested_group(i) {
-                let unit_id = next_id;
+                let group_id = next_id;
                 next_id += 1;
 
-                units.push(crate::parameters::UnitInfo::new(unit_id, name, parent_id));
+                groups.push(GroupInfo::new(group_id, name, parent_id));
 
                 // Recurse into nested groups
-                next_id = nested.collect_units(units, next_id, unit_id);
+                next_id = nested.collect_groups(groups, next_id, group_id);
             }
         }
 
@@ -514,7 +515,7 @@ impl FloatParameter {
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -569,7 +570,7 @@ impl FloatParameter {
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -614,7 +615,7 @@ impl FloatParameter {
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -662,7 +663,7 @@ impl FloatParameter {
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -704,7 +705,7 @@ impl FloatParameter {
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
@@ -826,17 +827,17 @@ impl FloatParameter {
         self
     }
 
-    /// Set the unit ID (parameter group) for this parameter.
+    /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
-        self.info.unit_id = unit_id;
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    pub fn with_group(mut self, group_id: GroupId) -> Self {
+        self.info.group_id = group_id;
         self
     }
 
-    /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
-        self.info.unit_id = unit_id;
+    /// Set the group ID in-place (for runtime assignment by parent structs).
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.info.group_id = group_id;
     }
 
     /// Make the parameter read-only (display only, not automatable).
@@ -859,7 +860,7 @@ impl FloatParameter {
 
     /// Get mutable access to the parameter metadata.
     ///
-    /// Used for runtime modification of parameter properties like unit_id.
+    /// Used for runtime modification of parameter properties like group_id.
     pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
@@ -1179,7 +1180,7 @@ impl IntParameter {
                 default_normalized,
                 step_count,
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicI64::new(default.clamp(min, max)),
             min,
@@ -1224,17 +1225,17 @@ impl IntParameter {
         self
     }
 
-    /// Set the unit ID (parameter group) for this parameter.
+    /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
-        self.info.unit_id = unit_id;
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    pub fn with_group(mut self, group_id: GroupId) -> Self {
+        self.info.group_id = group_id;
         self
     }
 
-    /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
-        self.info.unit_id = unit_id;
+    /// Set the group ID in-place (for runtime assignment by parent structs).
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.info.group_id = group_id;
     }
 
     /// Make the parameter read-only.
@@ -1257,7 +1258,7 @@ impl IntParameter {
 
     /// Get mutable access to the parameter metadata.
     ///
-    /// Used for runtime modification of parameter properties like unit_id.
+    /// Used for runtime modification of parameter properties like group_id.
     pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
@@ -1419,7 +1420,7 @@ impl BoolParameter {
                 default_normalized: if default { 1.0 } else { 0.0 },
                 step_count: 1, // Toggle
                 flags: ParameterFlags::default(),
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicBool::new(default),
             formatter: Formatter::Boolean,
@@ -1452,7 +1453,7 @@ impl BoolParameter {
                     is_list: false,
                     is_hidden: false,
                 },
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: AtomicBool::new(false),
             formatter: Formatter::Boolean,
@@ -1476,17 +1477,17 @@ impl BoolParameter {
         self
     }
 
-    /// Set the unit ID (parameter group) for this parameter.
+    /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
-        self.info.unit_id = unit_id;
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    pub fn with_group(mut self, group_id: GroupId) -> Self {
+        self.info.group_id = group_id;
         self
     }
 
-    /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
-        self.info.unit_id = unit_id;
+    /// Set the group ID in-place (for runtime assignment by parent structs).
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.info.group_id = group_id;
     }
 
     /// Make the parameter read-only.
@@ -1509,7 +1510,7 @@ impl BoolParameter {
 
     /// Get mutable access to the parameter metadata.
     ///
-    /// Used for runtime modification of parameter properties like unit_id.
+    /// Used for runtime modification of parameter properties like group_id.
     pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
@@ -1772,7 +1773,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
                     is_list: true,
                     ..ParameterFlags::default()
                 },
-                unit_id: crate::parameters::ROOT_UNIT_ID,
+                group_id: ROOT_GROUP_ID,
             },
             value: std::sync::atomic::AtomicUsize::new(default_index),
             _marker: std::marker::PhantomData,
@@ -1796,17 +1797,17 @@ impl<E: EnumParameterValue> EnumParameter<E> {
         self
     }
 
-    /// Set the unit ID (parameter group) for this parameter.
+    /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to VST3 units.
-    pub fn with_unit(mut self, unit_id: crate::parameters::UnitId) -> Self {
-        self.info.unit_id = unit_id;
+    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    pub fn with_group(mut self, group_id: GroupId) -> Self {
+        self.info.group_id = group_id;
         self
     }
 
-    /// Set the unit ID in-place (for runtime assignment by parent structs).
-    pub fn set_unit_id(&mut self, unit_id: crate::parameters::UnitId) {
-        self.info.unit_id = unit_id;
+    /// Set the group ID in-place (for runtime assignment by parent structs).
+    pub fn set_group_id(&mut self, group_id: GroupId) {
+        self.info.group_id = group_id;
     }
 
     /// Make the parameter read-only.
@@ -1829,7 +1830,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
 
     /// Get mutable access to the parameter metadata.
     ///
-    /// Used for runtime modification of parameter properties like unit_id.
+    /// Used for runtime modification of parameter properties like group_id.
     pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }

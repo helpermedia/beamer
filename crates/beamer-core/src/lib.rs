@@ -1,6 +1,6 @@
 //! # beamer-core
 //!
-//! Core abstractions for the Beamer VST3 WebView framework.
+//! Core abstractions for the Beamer audio plugin framework.
 //!
 //! This crate provides platform-agnostic and format-agnostic traits that define
 //! the interface for audio plugins. It has no external dependencies, making it
@@ -34,9 +34,11 @@ pub mod midi;
 pub mod midi_cc_config;
 pub mod midi_cc_state;
 pub mod parameter_format;
+pub mod parameter_groups;
+pub mod parameter_info;
 pub mod parameter_range;
+pub mod parameter_store;
 pub mod parameter_types;
-pub mod parameters;
 pub mod plugin;
 pub mod process_context;
 pub mod sample;
@@ -76,9 +78,11 @@ pub use midi::{
 };
 pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
+pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
+pub use parameter_info::{ParameterFlags, ParameterInfo};
+pub use parameter_store::{NoParameters, ParameterStore};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
-pub use parameters::{NoParameters, ParameterFlags, ParameterInfo, Vst3Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
