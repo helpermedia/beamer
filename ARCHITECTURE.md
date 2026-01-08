@@ -189,6 +189,51 @@ impl Plugin for MyPlugin {
 | `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
 | `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` |
 
+### Parameter Ownership
+
+Parameters are **owned** by both `Plugin` and `AudioProcessor`, moving between them during state transitions:
+
+```
+Plugin                          AudioProcessor
+┌─────────────────────┐        ┌─────────────────────┐
+│ parameters ─────────┼──────► │ parameters          │
+└─────────────────────┘        └─────────────────────┘
+       prepare() moves              unprepare() moves
+       parameters →                 ← parameters back
+```
+
+This is the **type-state pattern**—a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File`, builder APIs, and session types.
+
+**Why ownership instead of shared references?**
+
+1. **Zero overhead** — Direct field access: `self.parameters.gain.get()`
+2. **No synchronization** — Owned data needs no Arc, Mutex, or atomics for internal access
+3. **Clear lifecycle** — Parameters exist exactly where they're used
+4. **Smoother mutation** — Smoothers advance state each sample; ownership makes this natural
+
+**The `HasParameters` trait:**
+
+Both `Plugin` and `AudioProcessor` implement `HasParameters` because the host needs parameter access in both states:
+- Before `prepare()`: Host queries parameter info, user adjusts values
+- After `prepare()`: Host automates parameters during playback
+
+The `#[derive(HasParameters)]` macro generates accessor methods for any struct with a `#[parameters]` field:
+
+```rust
+#[derive(Default, HasParameters)]
+pub struct MyPlugin {
+    #[parameters]
+    parameters: MyParameters,
+}
+
+#[derive(HasParameters)]
+pub struct MyProcessor {
+    #[parameters]
+    parameters: MyParameters,
+    // ... DSP state fields
+}
+```
+
 ---
 
 ## Operational Guarantees
