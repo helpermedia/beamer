@@ -8,7 +8,7 @@ use syn::{Data, DeriveInput, Field, Fields};
 
 use beamer_utils::fnv1a_32;
 use crate::ir::{
-    FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParamFieldIR, ParamKind, ParamType,
+    FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType,
     ParametersIR, RangeSpec, SmoothingSpec, SmoothingStyle,
 };
 use crate::range_eval;
@@ -111,7 +111,7 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
 /// Supports both minimal and declarative styles:
 /// - Minimal: `#[parameter(id = "gain")]` (requires manual Default)
 /// - Declarative: `#[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]`
-fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParamFieldIR> {
+fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<ParameterFieldIR> {
     let field_name = field
         .ident
         .clone()
@@ -139,7 +139,7 @@ fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Pa
         } else if meta.path.is_ident("kind") {
             let value: syn::LitStr = meta.value()?.parse()?;
             let kind_str = value.value();
-            attributes.kind = Some(ParamKind::from_str(&kind_str).ok_or_else(|| {
+            attributes.kind = Some(ParameterKind::from_str(&kind_str).ok_or_else(|| {
                 syn::Error::new_spanned(
                     &value,
                     format!(
@@ -208,7 +208,7 @@ fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Pa
     // Compute hash
     let hash_id = fnv1a_32(&string_id);
 
-    Ok(ParamFieldIR {
+    Ok(ParameterFieldIR {
         field_name,
         parameter_type,
         string_id,
@@ -412,21 +412,21 @@ fn count_flat_groups(fields: &[FieldIR]) -> usize {
 }
 
 /// Extract the parameter type from a type path.
-fn extract_parameter_type(ty: &syn::Type) -> Option<ParamType> {
+fn extract_parameter_type(ty: &syn::Type) -> Option<ParameterType> {
     let type_name = extract_type_name(ty)?;
     match type_name.as_str() {
-        "FloatParameter" => Some(ParamType::Float),
-        "IntParameter" => Some(ParamType::Int),
-        "BoolParameter" => Some(ParamType::Bool),
-        "EnumParameter" => Some(ParamType::Enum),
+        "FloatParameter" => Some(ParameterType::Float),
+        "IntParameter" => Some(ParameterType::Int),
+        "BoolParameter" => Some(ParameterType::Bool),
+        "EnumParameter" => Some(ParameterType::Enum),
         _ => None,
     }
 }
 
-/// Extract the simple type name from a type (e.g., `FloatParam` from `beamer::FloatParam`).
+/// Extract the simple type name from a type (e.g., `FloatParameter` from `beamer::FloatParameter`).
 fn extract_type_name(ty: &syn::Type) -> Option<String> {
     if let syn::Type::Path(type_path) = ty {
-        // Get the last segment of the path (e.g., `FloatParam` from `beamer::FloatParam`)
+        // Get the last segment of the path (e.g., `FloatParameter` from `beamer::FloatParameter`)
         if let Some(segment) = type_path.path.segments.last() {
             return Some(segment.ident.to_string());
         }

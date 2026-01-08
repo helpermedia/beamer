@@ -7,7 +7,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::ir::{
-    FieldIR, ParameterDefault, ParamFieldIR, ParamKind, ParametersIR, SmoothingStyle,
+    FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ParametersIR, SmoothingStyle,
 };
 
 /// Generate all code for the derive macro.
@@ -360,11 +360,11 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
                 #iter_impl
             }
 
-            fn by_id(&self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
+            fn by_id(&self, id: ::beamer::core::types::ParameterId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
                 #by_id_impl
             }
 
-            fn by_id_mut(&mut self, id: ::beamer::core::types::ParamId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
+            fn by_id_mut(&mut self, id: ::beamer::core::types::ParameterId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
                 self.by_id(id)
             }
 
@@ -792,7 +792,7 @@ fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
 
             #info_impl
 
-            fn get_normalized(&self, id: ::beamer::core::types::ParamId) -> ::beamer::core::types::ParamValue {
+            fn get_normalized(&self, id: ::beamer::core::types::ParameterId) -> ::beamer::core::types::ParameterValue {
                 match id {
                     #(#get_match_arms)*
                     _ => {
@@ -803,7 +803,7 @@ fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
                 }
             }
 
-            fn set_normalized(&self, id: ::beamer::core::types::ParamId, value: ::beamer::core::types::ParamValue) {
+            fn set_normalized(&self, id: ::beamer::core::types::ParameterId, value: ::beamer::core::types::ParameterValue) {
                 match id {
                     #(#set_match_arms)*
                     _ => {
@@ -816,22 +816,22 @@ fn generate_vst3_parameters_impl(ir: &ParametersIR) -> TokenStream {
                 }
             }
 
-            fn normalized_to_string(&self, id: ::beamer::core::types::ParamId, normalized: ::beamer::core::types::ParamValue) -> String {
+            fn normalized_to_string(&self, id: ::beamer::core::types::ParameterId, normalized: ::beamer::core::types::ParameterValue) -> String {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.display_normalized(normalized)).unwrap_or_default()
             }
 
-            fn string_to_normalized(&self, id: ::beamer::core::types::ParamId, string: &str) -> Option<::beamer::core::types::ParamValue> {
+            fn string_to_normalized(&self, id: ::beamer::core::types::ParameterId, string: &str) -> Option<::beamer::core::types::ParameterValue> {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).and_then(|p| p.parse(string))
             }
 
-            fn normalized_to_plain(&self, id: ::beamer::core::types::ParamId, normalized: ::beamer::core::types::ParamValue) -> ::beamer::core::types::ParamValue {
+            fn normalized_to_plain(&self, id: ::beamer::core::types::ParameterId, normalized: ::beamer::core::types::ParameterValue) -> ::beamer::core::types::ParameterValue {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.normalized_to_plain(normalized)).unwrap_or(0.0)
             }
 
-            fn plain_to_normalized(&self, id: ::beamer::core::types::ParamId, plain: ::beamer::core::types::ParamValue) -> ::beamer::core::types::ParamValue {
+            fn plain_to_normalized(&self, id: ::beamer::core::types::ParameterId, plain: ::beamer::core::types::ParameterValue) -> ::beamer::core::types::ParameterValue {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.plain_to_normalized(plain)).unwrap_or(0.0)
             }
@@ -873,7 +873,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
             .collect();
 
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParamInfo> {
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParameterInfo> {
                 // First check direct parameters
                 match index {
                     #(#parameter_match_arms)*
@@ -888,7 +888,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
         }
     } else {
         quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParamInfo> {
+            fn info(&self, index: usize) -> Option<&::beamer::core::parameters::ParameterInfo> {
                 match index {
                     #(#parameter_match_arms)*
                     _ => None,
@@ -1018,7 +1018,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the initializer for a single parameter field.
-fn generate_parameter_initializer(parameter: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
+fn generate_parameter_initializer(parameter: &ParameterFieldIR, struct_name: &syn::Ident) -> TokenStream {
     let field = &parameter.field_name;
 
     // Generate constructor call
@@ -1033,17 +1033,17 @@ fn generate_parameter_initializer(parameter: &ParamFieldIR, struct_name: &syn::I
 }
 
 /// Generate the constructor call for a parameter.
-fn generate_constructor(parameter: &ParamFieldIR) -> TokenStream {
+fn generate_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     match parameter.parameter_type {
-        crate::ir::ParamType::Float => generate_float_constructor(parameter),
-        crate::ir::ParamType::Int => generate_int_constructor(parameter),
-        crate::ir::ParamType::Bool => generate_bool_constructor(parameter),
-        crate::ir::ParamType::Enum => generate_enum_constructor(parameter),
+        crate::ir::ParameterType::Float => generate_float_constructor(parameter),
+        crate::ir::ParameterType::Int => generate_int_constructor(parameter),
+        crate::ir::ParameterType::Bool => generate_bool_constructor(parameter),
+        crate::ir::ParameterType::Enum => generate_enum_constructor(parameter),
     }
 }
 
 /// Generate constructor for FloatParameter.
-fn generate_float_constructor(parameter: &ParamFieldIR) -> TokenStream {
+fn generate_float_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     let name = parameter.attributes.name.as_ref().expect("FloatParameter requires name");
     let default = match &parameter.attributes.default {
         Some(ParameterDefault::Float(v)) => *v,
@@ -1052,16 +1052,16 @@ fn generate_float_constructor(parameter: &ParamFieldIR) -> TokenStream {
     };
 
     // Get kind, defaulting to Linear
-    let kind = parameter.attributes.kind.unwrap_or(ParamKind::Linear);
+    let kind = parameter.attributes.kind.unwrap_or(ParameterKind::Linear);
 
     // Handle special kinds with fixed ranges
     match kind {
-        ParamKind::Percent => {
+        ParameterKind::Percent => {
             return quote! {
                 ::beamer::core::parameter_types::FloatParameter::percent(#name, #default)
             };
         }
-        ParamKind::Pan => {
+        ParameterKind::Pan => {
             return quote! {
                 ::beamer::core::parameter_types::FloatParameter::pan(#name, #default)
             };
@@ -1079,43 +1079,43 @@ fn generate_float_constructor(parameter: &ParamFieldIR) -> TokenStream {
         .expect("FloatParameter requires range");
 
     match kind {
-        ParamKind::Db => quote! {
+        ParameterKind::Db => quote! {
             ::beamer::core::parameter_types::FloatParameter::db(#name, #default, #start..=#end)
         },
-        ParamKind::DbLog => quote! {
+        ParameterKind::DbLog => quote! {
             ::beamer::core::parameter_types::FloatParameter::db_log(#name, #default, #start..=#end)
         },
-        ParamKind::DbLogOffset => quote! {
+        ParameterKind::DbLogOffset => quote! {
             ::beamer::core::parameter_types::FloatParameter::db_log_offset(#name, #default, #start..=#end)
         },
-        ParamKind::Hz => quote! {
+        ParameterKind::Hz => quote! {
             ::beamer::core::parameter_types::FloatParameter::hz(#name, #default, #start..=#end)
         },
-        ParamKind::Ms => quote! {
+        ParameterKind::Ms => quote! {
             ::beamer::core::parameter_types::FloatParameter::ms(#name, #default, #start..=#end)
         },
-        ParamKind::Seconds => quote! {
+        ParameterKind::Seconds => quote! {
             ::beamer::core::parameter_types::FloatParameter::seconds(#name, #default, #start..=#end)
         },
-        ParamKind::Ratio => quote! {
+        ParameterKind::Ratio => quote! {
             ::beamer::core::parameter_types::FloatParameter::ratio(#name, #default, #start..=#end)
         },
-        ParamKind::Linear => quote! {
+        ParameterKind::Linear => quote! {
             ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
         },
-        ParamKind::Semitones => {
+        ParameterKind::Semitones => {
             // Semitones is an int kind, shouldn't reach here
             quote! {
                 ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
             }
         }
         // Percent and Pan are handled by early returns above; this is unreachable
-        ParamKind::Percent | ParamKind::Pan => unreachable!("handled by early return"),
+        ParameterKind::Percent | ParameterKind::Pan => unreachable!("handled by early return"),
     }
 }
 
 /// Generate constructor for IntParameter.
-fn generate_int_constructor(parameter: &ParamFieldIR) -> TokenStream {
+fn generate_int_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     let name = parameter.attributes.name.as_ref().expect("IntParameter requires name");
     let default = match &parameter.attributes.default {
         Some(ParameterDefault::Int(v)) => *v,
@@ -1128,7 +1128,7 @@ fn generate_int_constructor(parameter: &ParamFieldIR) -> TokenStream {
     let end = range.end as i64;
 
     // Check for semitones kind
-    if parameter.attributes.kind == Some(ParamKind::Semitones) {
+    if parameter.attributes.kind == Some(ParameterKind::Semitones) {
         quote! {
             ::beamer::core::parameter_types::IntParameter::semitones(#name, #default, #start..=#end)
         }
@@ -1140,7 +1140,7 @@ fn generate_int_constructor(parameter: &ParamFieldIR) -> TokenStream {
 }
 
 /// Generate constructor for BoolParameter.
-fn generate_bool_constructor(parameter: &ParamFieldIR) -> TokenStream {
+fn generate_bool_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     // Special case: bypass parameter
     if parameter.attributes.bypass {
         return quote! {
@@ -1160,7 +1160,7 @@ fn generate_bool_constructor(parameter: &ParamFieldIR) -> TokenStream {
 }
 
 /// Generate constructor for EnumParameter.
-fn generate_enum_constructor(parameter: &ParamFieldIR) -> TokenStream {
+fn generate_enum_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     let name = parameter.attributes.name.as_ref().expect("EnumParameter requires name");
 
     quote! {
@@ -1169,7 +1169,7 @@ fn generate_enum_constructor(parameter: &ParamFieldIR) -> TokenStream {
 }
 
 /// Generate the builder method chain (.with_id(), .with_short_name(), .with_smoother()).
-fn generate_builder_chain(parameter: &ParamFieldIR, struct_name: &syn::Ident) -> TokenStream {
+fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident) -> TokenStream {
     let const_name = parameter.const_name();
 
     // Always add .with_id()
@@ -1182,8 +1182,8 @@ fn generate_builder_chain(parameter: &ParamFieldIR, struct_name: &syn::Ident) ->
         quote! { .with_short_name(#short) }
     });
 
-    // Optional: .with_smoother() (only for FloatParam)
-    let with_smoother = if parameter.parameter_type == crate::ir::ParamType::Float {
+    // Optional: .with_smoother() (only for FloatParameter)
+    let with_smoother = if parameter.parameter_type == crate::ir::ParameterType::Float {
         parameter.attributes.smoothing.as_ref().map(|s| {
             let time_ms = s.time_ms;
             let style = match s.style {

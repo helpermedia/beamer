@@ -2,7 +2,7 @@
 //!
 //! This plugin showcases the Beamer parameter system and MIDI event handling:
 //! - **Nested parameter groups** with `#[nested(group = "...")]`
-//! - **EnumParam** for discrete choices (transform modes)
+//! - **EnumParameter** for discrete choices (transform modes)
 //! - **IntParameter** for note/CC number selection
 //! - **BoolParameter** for enable toggles
 //! - **FloatParameter** for velocity/value scaling

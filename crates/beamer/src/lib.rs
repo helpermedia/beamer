@@ -78,7 +78,7 @@ pub mod prelude {
         // Editor types
         EditorConstraints, NoEditor,
         // Parameter metadata
-        NoParameters, ParamFlags, ParamInfo,
+        NoParameters, ParameterFlags, ParameterInfo,
         // Parameter types
         BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, ParameterRef, Parameters,
         // MIDI CC configuration (framework manages runtime state)

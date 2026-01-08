@@ -7,7 +7,7 @@ This crate provides platform-agnostic traits and types for building VST3 audio p
 - **Plugin traits**: `Plugin`, `AudioProcessor`, `HasParameters`, `Parameters`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
-- **Parameter types**: `FloatParam`, `IntParam`, `BoolParam`, `EnumParam` with smoothing
+- **Parameter types**: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter` with smoothing
 - **Transport info**: DAW tempo, time signature, and position data
 
 ## Usage

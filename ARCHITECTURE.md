@@ -106,7 +106,7 @@ beamer/
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`HasParameters`, `Plugin`, `AudioProcessor`), buffer types, MIDI types |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
-| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParam)]` proc macros |
+| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
 

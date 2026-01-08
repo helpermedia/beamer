@@ -201,10 +201,10 @@ use beamer::Parameters;
 #[derive(Parameters)]
 pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParam,
+    pub gain: FloatParameter,
 
     #[parameter(id = "bypass", bypass)]
-    pub bypass: BoolParam,
+    pub bypass: BoolParameter,
 }
 
 // No manual new() or Default impl needed - macro generates everything!
@@ -225,7 +225,7 @@ The `#[derive(Parameters)]` macro generates:
 | `id = "..."` | String ID (hashed to u32 for VST3) | Yes |
 | `name = "..."` | Display name in DAW | For Default |
 | `default = <value>` | Default value (float, int, or bool) | For Default |
-| `range = start..=end` | Value range | For FloatParam/IntParameter |
+| `range = start..=end` | Value range | For FloatParameter/IntParameter |
 | `kind = "..."` | Unit type (see below) | Optional |
 | `group = "..."` | Visual grouping without nested struct | Optional |
 | `short_name = "..."` | Short name for constrained UIs | Optional |
@@ -237,42 +237,42 @@ The `#[derive(Parameters)]` macro generates:
 - `db_log` — Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
 - `db_log_offset` — True logarithmic mapping for dB ranges (geometric mean at midpoint)
 
-Supported field types: `FloatParam`, `IntParam`, `BoolParam`, `EnumParam<E>`
+Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter<E>`
 
 #### Parameter Types
 
-**FloatParam** — Continuous floating-point parameter:
+**FloatParameter** — Continuous floating-point parameter:
 
 ```rust
 // Linear range
-let freq = FloatParam::new("Frequency", 1000.0, 20.0..=20000.0);
+let freq = FloatParameter::new("Frequency", 1000.0, 20.0..=20000.0);
 
 // Decibel range (stores dB, use as_linear() for DSP)
-let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0);
+let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
 
 // In DSP code:
 let amplitude = gain.as_linear();  // 0 dB → 1.0, -6 dB → ~0.5
 let db_value = gain.get();         // Returns dB for display
 ```
 
-**IntParam** — Integer parameter:
+**IntParameter** — Integer parameter:
 
 ```rust
-let voices = IntParam::new("Voices", 8, 1..=64);
+let voices = IntParameter::new("Voices", 8, 1..=64);
 ```
 
-**BoolParam** — Toggle parameter:
+**BoolParameter** — Toggle parameter:
 
 ```rust
-let bypass = BoolParam::new("Bypass", false);
+let bypass = BoolParameter::new("Bypass", false);
 ```
 
-**EnumParam** — Discrete choice parameter:
+**EnumParameter** — Discrete choice parameter:
 
 ```rust
-use beamer::EnumParameter as DeriveEnumParam;
+use beamer::EnumParameter as DeriveEnumParameter;
 
-#[derive(Copy, Clone, PartialEq, DeriveEnumParam)]
+#[derive(Copy, Clone, PartialEq, DeriveEnumParameter)]
 pub enum FilterType {
     #[name = "Low Pass"]
     LowPass,
@@ -287,14 +287,14 @@ pub enum FilterType {
 #[derive(Parameters)]
 pub struct FilterParameters {
     #[parameter(id = "filter_type")]
-    pub filter_type: EnumParam<FilterType>,
+    pub filter_type: EnumParameter<FilterType>,
 }
 
 impl Default for FilterParameters {
     fn default() -> Self {
         Self {
             // Uses HighPass (from #[default]) as the default value
-            filter_type: EnumParam::new("Filter Type"),
+            filter_type: EnumParameter::new("Filter Type"),
         }
     }
 }
@@ -308,7 +308,7 @@ match self.parameters.filter_type.get() {
 }
 ```
 
-The `#[derive(EnumParam)]` macro generates the `EnumParamValue` trait implementation.
+The `#[derive(EnumParameter)]` macro generates the `EnumParameterValue` trait implementation.
 
 | Attribute | Purpose |
 |-----------|---------|
@@ -319,8 +319,8 @@ EnumParameter constructors:
 
 | Constructor | Purpose |
 |-------------|---------|
-| `EnumParam::new(name)` | Uses `#[default]` variant or first |
-| `EnumParam::with_value(name, variant)` | Explicit default override |
+| `EnumParameter::new(name)` | Uses `#[default]` variant or first |
+| `EnumParameter::with_value(name, variant)` | Explicit default override |
 
 #### Parameter Smoothing
 
@@ -328,7 +328,7 @@ Avoid zipper noise during automation by adding smoothing to parameters:
 
 ```rust
 // Add smoother during parameter creation
-let gain = FloatParam::db("Gain", 0.0, -60.0..=12.0)
+let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
     .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms time constant
 ```
 
@@ -425,13 +425,13 @@ Use `group = "..."` for visual grouping in the DAW without nested structs:
 #[derive(Parameters)]
 pub struct SynthParameters {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
-    pub cutoff: FloatParam,
+    pub cutoff: FloatParameter,
 
     #[parameter(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
-    pub resonance: FloatParam,
+    pub resonance: FloatParameter,
 
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
-    pub gain: FloatParam,
+    pub gain: FloatParameter,
 }
 
 // Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
@@ -457,7 +457,7 @@ Use `#[nested]` to organize parameters into separate structs with VST3 units:
 #[derive(Parameters)]
 pub struct SynthParameters {
     #[parameter(id = "master", name = "Master", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub master: FloatParam,
+    pub master: FloatParameter,
 
     #[nested(group = "Filter")]
     pub filter: FilterParameters,
@@ -469,19 +469,19 @@ pub struct SynthParameters {
 #[derive(Parameters)]
 pub struct FilterParameters {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz")]
-    pub cutoff: FloatParam,
+    pub cutoff: FloatParameter,
 
     #[parameter(id = "resonance", name = "Resonance", default = 0.5, range = 0.0..=1.0)]
-    pub resonance: FloatParam,
+    pub resonance: FloatParameter,
 }
 
 #[derive(Parameters)]
 pub struct EnvelopeParameters {
     #[parameter(id = "attack", name = "Attack", default = 10.0, range = 0.1..=1000.0, kind = "ms")]
-    pub attack: FloatParam,
+    pub attack: FloatParameter,
 
     #[parameter(id = "release", name = "Release", default = 100.0, range = 0.1..=5000.0, kind = "ms")]
-    pub release: FloatParam,
+    pub release: FloatParameter,
 }
 ```
 
@@ -517,27 +517,27 @@ For manual control, implement `Parameters` directly:
 ```rust
 pub trait Parameters: Send + Sync {
     fn count(&self) -> usize;
-    fn info(&self, index: usize) -> Option<&ParamInfo>;
-    fn get_normalized(&self, id: ParamId) -> ParamValue;
-    fn set_normalized(&self, id: ParamId, value: ParamValue);
-    fn normalized_to_string(&self, id: ParamId, normalized: ParamValue) -> String;
-    fn string_to_normalized(&self, id: ParamId, string: &str) -> Option<ParamValue>;
-    fn normalized_to_plain(&self, id: ParamId, normalized: ParamValue) -> ParamValue;
-    fn plain_to_normalized(&self, id: ParamId, plain: ParamValue) -> ParamValue;
+    fn info(&self, index: usize) -> Option<&ParameterInfo>;
+    fn get_normalized(&self, id: ParameterId) -> ParameterValue;
+    fn set_normalized(&self, id: ParameterId, value: ParameterValue);
+    fn normalized_to_string(&self, id: ParameterId, normalized: ParameterValue) -> String;
+    fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue>;
+    fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue;
+    fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue;
 }
 
-pub struct ParamInfo {
-    pub id: ParamId,
+pub struct ParameterInfo {
+    pub id: ParameterId,
     pub name: &'static str,
     pub short_name: &'static str,
     pub units: &'static str,
     pub default_normalized: f64,
     pub step_count: i32,
-    pub flags: ParamFlags,
+    pub flags: ParameterFlags,
     pub unit_id: UnitId,  // VST3 parameter group (0 = root)
 }
 
-pub struct ParamFlags {
+pub struct ParameterFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
     pub is_bypass: bool,   // Maps to VST3 kIsBypass (see §3.2)
@@ -545,15 +545,21 @@ pub struct ParamFlags {
     pub is_hidden: bool,   // Hide from DAW parameter list (used by MIDI CC emulation)
 }
 
-impl ParamInfo {
+impl ParameterInfo {
     /// Convenience constructor for bypass parameters.
-    pub const fn bypass(id: ParamId) -> Self;
+    pub const fn bypass(id: ParameterId) -> Self;
 }
 ```
 
 ### 1.4 Buffer Types
 
-Beamer uses a two-buffer architecture for multi-bus support with stack allocation for real-time safety.
+Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
+
+**Design Goals:**
+- Stack-allocated for real-time safety (no heap allocations in `process()`)
+- Clear separation between input (read-only) and output (mutable) channels
+- Support for both mono, stereo, and surround processing
+- Generic over sample type (`f32` or `f64`)
 
 #### Main Buffer
 
@@ -624,6 +630,15 @@ The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't
 
 ### 1.5 ProcessContext and Transport
 
+The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size, and detailed DAW transport state for tempo-synced effects, sequencers, and time-based processing.
+
+**What you can do:**
+- Sync delays/LFOs to host tempo
+- Implement bar/beat-synced effects
+- Display timecode in your UI
+- Detect loop regions for seamless looping
+- Handle SMPTE for post-production
+
 ```rust
 #[derive(Copy, Clone, Debug)]
 pub struct ProcessContext {
@@ -686,6 +701,12 @@ pub enum FrameRate {
 
 ### 1.6 Sample Trait (f32/f64)
 
+The `Sample` trait lets you write DSP code once and support both `f32` and `f64` processing. This is the recommended pattern for plugins that want to offer native double-precision support.
+
+**Why?** Some DAWs can process audio at 64-bit precision to reduce accumulation of rounding errors in complex processing chains. Plugins that support this can provide better quality in those hosts.
+
+**The Sample Trait:**
+
 ```rust
 pub trait Sample:
     Copy + Default + Send + Sync + 'static
@@ -709,10 +730,11 @@ pub trait Sample:
 }
 ```
 
-**Write DSP once:**
+**Pattern: Write generic DSP code once**
 
 ```rust
-impl MyPlugin {
+impl MyProcessor {
+    // Generic processing - works for both f32 and f64
     fn process_generic<S: Sample>(
         &mut self,
         buffer: &mut Buffer<S>,
@@ -727,7 +749,38 @@ impl MyPlugin {
         }
     }
 }
+
+// Delegate from both AudioProcessor methods
+impl AudioProcessor for MyProcessor {
+    type Plugin = MyPlugin;
+
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+        self.process_generic(buffer, aux, context);
+    }
+
+    fn supports_double_precision(&self) -> bool {
+        true
+    }
+
+    fn process_f64(&mut self, buffer: &mut Buffer<f64>, aux: &mut AuxiliaryBuffers<f64>, context: &ProcessContext) {
+        // Same code - just different sample type!
+        self.process_generic(buffer, aux, context);
+    }
+
+    // ... other methods
+}
 ```
+
+**When to use f64:**
+- Reverbs, delays, or effects with long feedback paths (reduces error accumulation)
+- Precision EQs or filters
+- Scientific/mastering tools
+- Any plugin where rounding errors matter over long processing chains
+
+**When f32 is fine:**
+- Simple gain/pan/saturation
+- Most dynamics processors
+- Synthesizers (often limited by oscillator precision anyway)
 
 ### 1.7 Soft Bypass
 
@@ -1113,7 +1166,7 @@ For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 **IMidiMapping** — CC to parameter:
 
 ```rust
-fn midi_cc_to_param(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
+fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
     match cc {
         cc::MOD_WHEEL => Some(PARAM_VIBRATO),
         cc::EXPRESSION => Some(PARAM_VOLUME),
@@ -1295,16 +1348,7 @@ MyPlugin.vst3/
 │       └── MyPlugin.so
 ```
 
-### 3.2 Critical Requirements
-
-| Requirement | Details |
-|-------------|---------|
-| **PFactoryInfo.flags** | Must be `16` (kUnicode). Other values cause plugin to not appear in DAW. |
-| **Entry points** | Must be lowercase: `bundleEntry`, `bundleExit` |
-| **Mach-O patching** | Not needed. DAWs load cdylib fine. |
-| **Code signing** | Not needed for local development. |
-
-### 3.3 Build System
+### 3.2 Build System
 
 ```bash
 cargo xtask bundle gain --release
@@ -1320,7 +1364,7 @@ crate-type = ["cdylib"]
 lto = true
 ```
 
-### 3.4 Install Locations
+### 3.3 Install Locations
 
 | Platform | Location |
 |----------|----------|
@@ -1328,7 +1372,7 @@ lto = true
 | Windows | `C:\Program Files\Common Files\VST3\` |
 | Linux | `~/.vst3/` |
 
-### 3.5 Plugin Categories
+### 3.4 Plugin Categories
 
 ```rust
 // Audio effect
@@ -1401,7 +1445,7 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 │  │    invoke(cmd, args) → Promise                      │    │
 │  │    on(event, callback)                              │    │
 │  │    emit(event, data)                                │    │
-│  │    getParameter(id) → ParamState                        │    │
+│  │    getParameter(id) → ParameterState                        │    │
 │  │  }                                                  │    │
 │  └─────────────────────────────────────────────────────┘    │
 │              │                         ▲                    │
@@ -1425,7 +1469,7 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 
 **Request (JS → Rust):**
 ```json
-{ "id": 1, "cmd": "setParameter", "args": { "paramId": 0, "value": 0.75 } }
+{ "id": 1, "cmd": "setParameter", "args": { "parameterId": 0, "value": 0.75 } }
 ```
 
 **Response (Rust → JS):**
@@ -1435,18 +1479,18 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 
 **Event (Rust → JS):**
 ```json
-{ "event": "parameterChanged", "data": { "paramId": 0, "value": 0.75 } }
+{ "event": "parameterChanged", "data": { "parameterId": 0, "value": 0.75 } }
 ```
 
 #### JavaScript API
 
 ```javascript
 // Invoke a Rust command
-const result = await window.__PLUGIN__.invoke('getParameterValue', { paramId: 0 });
+const result = await window.__PLUGIN__.invoke('getParameterValue', { parameterId: 0 });
 
 // Listen for events
 window.__PLUGIN__.on('parameterChanged', (data) => {
-    console.log(`Parameter ${data.paramId} = ${data.value}`);
+    console.log(`Parameter ${data.parameterId} = ${data.value}`);
 });
 
 // Parameter state helper with automation support
@@ -1520,7 +1564,7 @@ use beamer::{HasParameters, Parameters};
 #[derive(Parameters)]
 pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParam,
+    pub gain: FloatParameter,
 }
 
 impl GainParameters {

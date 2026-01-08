@@ -38,9 +38,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use crate::parameter_format::Formatter;
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-use crate::parameters::{ParamFlags, ParamInfo};
+use crate::parameters::{ParameterFlags, ParameterInfo};
 use crate::smoothing::{Smoother, SmoothingStyle};
-use crate::types::{ParamId, ParamValue};
+use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
 // ParameterRef Trait - Type-erased parameter access
@@ -55,7 +55,7 @@ use crate::types::{ParamId, ParamValue};
 /// concurrent access from audio, UI, and host threads.
 pub trait ParameterRef: Send + Sync {
     /// Get the parameter's unique ID.
-    fn id(&self) -> ParamId;
+    fn id(&self) -> ParameterId;
 
     /// Get the parameter's display name.
     fn name(&self) -> &'static str;
@@ -67,10 +67,10 @@ pub trait ParameterRef: Send + Sync {
     fn units(&self) -> &'static str;
 
     /// Get the parameter flags.
-    fn flags(&self) -> &ParamFlags;
+    fn flags(&self) -> &ParameterFlags;
 
     /// Get the default normalized value.
-    fn default_normalized(&self) -> ParamValue;
+    fn default_normalized(&self) -> ParameterValue;
 
     /// Get the step count (0 = continuous, 1 = toggle, >1 = discrete).
     fn step_count(&self) -> i32;
@@ -78,19 +78,19 @@ pub trait ParameterRef: Send + Sync {
     /// Get the current normalized value (0.0-1.0).
     ///
     /// This is lock-free and safe to call from the audio thread.
-    fn get_normalized(&self) -> ParamValue;
+    fn get_normalized(&self) -> ParameterValue;
 
     /// Set the normalized value (0.0-1.0).
     ///
     /// This is lock-free and safe to call from any thread.
     /// Values are clamped to [0.0, 1.0].
-    fn set_normalized(&self, value: ParamValue);
+    fn set_normalized(&self, value: ParameterValue);
 
     /// Get the current plain value in natural units.
-    fn get_plain(&self) -> ParamValue;
+    fn get_plain(&self) -> ParameterValue;
 
     /// Set the plain value in natural units.
-    fn set_plain(&self, value: ParamValue);
+    fn set_plain(&self, value: ParameterValue);
 
     /// Format the current value for display.
     fn display(&self) -> String {
@@ -98,24 +98,24 @@ pub trait ParameterRef: Send + Sync {
     }
 
     /// Format a normalized value for display.
-    fn display_normalized(&self, normalized: ParamValue) -> String;
+    fn display_normalized(&self, normalized: ParameterValue) -> String;
 
     /// Parse a display string to a normalized value.
     ///
     /// Returns `None` if parsing fails.
-    fn parse(&self, s: &str) -> Option<ParamValue>;
+    fn parse(&self, s: &str) -> Option<ParameterValue>;
 
     /// Convert a normalized value to a plain value.
-    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue;
+    fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue;
 
     /// Convert a plain value to a normalized value.
-    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue;
+    fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue;
 
-    /// Get the full ParamInfo for this parameter.
+    /// Get the full ParameterInfo for this parameter.
     ///
     /// This is used by the `#[derive(Parameters)]` macro to generate the
     /// `Vst3Parameters::info()` implementation.
-    fn info(&self) -> &ParamInfo;
+    fn info(&self) -> &ParameterInfo;
 }
 
 // =============================================================================
@@ -160,13 +160,13 @@ pub trait Parameters: Send + Sync + crate::parameters::Units {
     fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_>;
 
     /// Get a parameter by its ID.
-    fn by_id(&self, id: ParamId) -> Option<&dyn ParameterRef>;
+    fn by_id(&self, id: ParameterId) -> Option<&dyn ParameterRef>;
 
     /// Get a mutable reference to a parameter by its ID.
     ///
     /// Note: This returns `&dyn ParameterRef` (not `&mut`) because atomic
     /// parameters can be modified through shared references.
-    fn by_id_mut(&mut self, id: ParamId) -> Option<&dyn ParameterRef> {
+    fn by_id_mut(&mut self, id: ParameterId) -> Option<&dyn ParameterRef> {
         self.by_id(id)
     }
 
@@ -477,7 +477,7 @@ pub trait Parameters: Send + Sync + crate::parameters::Units {
 /// ```
 pub struct FloatParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
-    info: ParamInfo,
+    info: ParameterInfo,
     /// Atomic storage for normalized value (0.0-1.0)
     value: AtomicU64,
     /// Range mapper for normalized ↔ plain value conversion
@@ -506,14 +506,14 @@ impl FloatParameter {
         let default_normalized = mapper.normalize(default);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0, // Set via with_id() or macro
                 name,
                 short_name: name,
                 units: "",
                 default_normalized,
                 step_count: 0,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
@@ -561,14 +561,14 @@ impl FloatParameter {
         let default_normalized = mapper.normalize(default_db);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "dB",
                 default_normalized,
                 step_count: 0,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
@@ -606,14 +606,14 @@ impl FloatParameter {
         let default_normalized = mapper.normalize(default_db);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "dB",
                 default_normalized,
                 step_count: 0,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
@@ -654,14 +654,14 @@ impl FloatParameter {
         let default_normalized = mapper.normalize(default_db);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "dB",
                 default_normalized,
                 step_count: 0,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
@@ -696,14 +696,14 @@ impl FloatParameter {
         let default_normalized = mapper.normalize(default_hz);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "Hz",
                 default_normalized,
                 step_count: 0,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicU64::new(default_normalized.to_bits()),
@@ -815,7 +815,7 @@ impl FloatParameter {
     /// ```ignore
     /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_id(0x050c5d1f);
     /// ```
-    pub fn with_id(mut self, id: ParamId) -> Self {
+    pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
@@ -853,14 +853,14 @@ impl FloatParameter {
     }
 
     /// Get the parameter metadata.
-    pub fn info(&self) -> &ParamInfo {
+    pub fn info(&self) -> &ParameterInfo {
         &self.info
     }
 
     /// Get mutable access to the parameter metadata.
     ///
     /// Used for runtime modification of parameter properties like unit_id.
-    pub fn info_mut(&mut self) -> &mut ParamInfo {
+    pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
 
@@ -1036,7 +1036,7 @@ impl FloatParameter {
 }
 
 impl ParameterRef for FloatParameter {
-    fn id(&self) -> ParamId {
+    fn id(&self) -> ParameterId {
         self.info.id
     }
 
@@ -1052,11 +1052,11 @@ impl ParameterRef for FloatParameter {
         self.info.units
     }
 
-    fn flags(&self) -> &ParamFlags {
+    fn flags(&self) -> &ParameterFlags {
         &self.info.flags
     }
 
-    fn default_normalized(&self) -> ParamValue {
+    fn default_normalized(&self) -> ParameterValue {
         self.info.default_normalized
     }
 
@@ -1064,42 +1064,42 @@ impl ParameterRef for FloatParameter {
         self.info.step_count
     }
 
-    fn get_normalized(&self) -> ParamValue {
+    fn get_normalized(&self) -> ParameterValue {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
 
-    fn set_normalized(&self, value: ParamValue) {
+    fn set_normalized(&self, value: ParameterValue) {
         self.value
             .store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    fn get_plain(&self) -> ParamValue {
+    fn get_plain(&self) -> ParameterValue {
         self.get()
     }
 
-    fn set_plain(&self, value: ParamValue) {
+    fn set_plain(&self, value: ParameterValue) {
         self.set(value);
     }
 
-    fn display_normalized(&self, normalized: ParamValue) -> String {
+    fn display_normalized(&self, normalized: ParameterValue) -> String {
         let plain = self.range.denormalize(normalized);
         self.formatter.format(plain)
     }
 
-    fn parse(&self, s: &str) -> Option<ParamValue> {
+    fn parse(&self, s: &str) -> Option<ParameterValue> {
         let plain = self.formatter.parse(s)?;
         Some(self.range.normalize(plain))
     }
 
-    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue {
+    fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
         self.range.denormalize(normalized)
     }
 
-    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue {
+    fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
         self.range.normalize(plain)
     }
 
-    fn info(&self) -> &ParamInfo {
+    fn info(&self) -> &ParameterInfo {
         &self.info
     }
 }
@@ -1107,7 +1107,7 @@ impl ParameterRef for FloatParameter {
 // FloatParameter is automatically Send + Sync because:
 // - AtomicU64 is Send + Sync
 // - Box<dyn RangeMapper> is Send + Sync (RangeMapper: Send + Sync)
-// - All other fields (&'static str, f64, Formatter, ParamFlags) are Send + Sync
+// - All other fields (&'static str, f64, Formatter, ParameterFlags) are Send + Sync
 // No unsafe impl needed - the compiler verifies this automatically.
 
 // =============================================================================
@@ -1129,7 +1129,7 @@ impl ParameterRef for FloatParameter {
 /// ```
 pub struct IntParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
-    info: ParamInfo,
+    info: ParameterInfo,
     /// Atomic storage for the integer value
     value: AtomicI64,
     /// Minimum value
@@ -1171,14 +1171,14 @@ impl IntParameter {
         };
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "",
                 default_normalized,
                 step_count,
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicI64::new(default.clamp(min, max)),
@@ -1213,7 +1213,7 @@ impl IntParameter {
     ///
     /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
-    pub fn with_id(mut self, id: ParamId) -> Self {
+    pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
@@ -1251,14 +1251,14 @@ impl IntParameter {
     }
 
     /// Get the parameter metadata.
-    pub fn info(&self) -> &ParamInfo {
+    pub fn info(&self) -> &ParameterInfo {
         &self.info
     }
 
     /// Get mutable access to the parameter metadata.
     ///
     /// Used for runtime modification of parameter properties like unit_id.
-    pub fn info_mut(&mut self) -> &mut ParamInfo {
+    pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
 
@@ -1297,7 +1297,7 @@ impl IntParameter {
 }
 
 impl ParameterRef for IntParameter {
-    fn id(&self) -> ParamId {
+    fn id(&self) -> ParameterId {
         self.info.id
     }
 
@@ -1313,11 +1313,11 @@ impl ParameterRef for IntParameter {
         self.info.units
     }
 
-    fn flags(&self) -> &ParamFlags {
+    fn flags(&self) -> &ParameterFlags {
         &self.info.flags
     }
 
-    fn default_normalized(&self) -> ParamValue {
+    fn default_normalized(&self) -> ParameterValue {
         self.info.default_normalized
     }
 
@@ -1325,46 +1325,46 @@ impl ParameterRef for IntParameter {
         self.info.step_count
     }
 
-    fn get_normalized(&self) -> ParamValue {
+    fn get_normalized(&self) -> ParameterValue {
         self.plain_to_normalized(self.get() as f64)
     }
 
-    fn set_normalized(&self, value: ParamValue) {
+    fn set_normalized(&self, value: ParameterValue) {
         let plain = self.normalized_to_plain(value).round() as i64;
         self.set(plain);
     }
 
-    fn get_plain(&self) -> ParamValue {
+    fn get_plain(&self) -> ParameterValue {
         self.get() as f64
     }
 
-    fn set_plain(&self, value: ParamValue) {
+    fn set_plain(&self, value: ParameterValue) {
         self.set(value.round() as i64);
     }
 
-    fn display_normalized(&self, normalized: ParamValue) -> String {
+    fn display_normalized(&self, normalized: ParameterValue) -> String {
         let plain = self.normalized_to_plain(normalized).round();
         self.formatter.format(plain)
     }
 
-    fn parse(&self, s: &str) -> Option<ParamValue> {
+    fn parse(&self, s: &str) -> Option<ParameterValue> {
         let plain = self.formatter.parse(s)?;
         Some(self.plain_to_normalized(plain))
     }
 
-    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue {
+    fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
         let normalized = normalized.clamp(0.0, 1.0);
         (self.min as f64) + normalized * ((self.max - self.min) as f64)
     }
 
-    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue {
+    fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
         if self.max == self.min {
             return 0.5;
         }
         ((plain - self.min as f64) / (self.max - self.min) as f64).clamp(0.0, 1.0)
     }
 
-    fn info(&self) -> &ParamInfo {
+    fn info(&self) -> &ParameterInfo {
         &self.info
     }
 }
@@ -1392,7 +1392,7 @@ impl ParameterRef for IntParameter {
 /// ```
 pub struct BoolParameter {
     /// Parameter metadata (id, name, units, flags, etc.)
-    info: ParamInfo,
+    info: ParameterInfo,
     /// Atomic storage for the boolean value
     value: AtomicBool,
     /// Formatter for display string conversion
@@ -1411,14 +1411,14 @@ impl BoolParameter {
     /// * `default` - Default value
     pub fn new(name: &'static str, default: bool) -> Self {
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
                 units: "",
                 default_normalized: if default { 1.0 } else { 0.0 },
                 step_count: 1, // Toggle
-                flags: ParamFlags::default(),
+                flags: ParameterFlags::default(),
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
             value: AtomicBool::new(default),
@@ -1438,14 +1438,14 @@ impl BoolParameter {
     /// or the `#[derive(Parameters)]` macro.
     pub fn bypass() -> Self {
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name: "Bypass",
                 short_name: "Byp",
                 units: "",
                 default_normalized: 0.0,
                 step_count: 1,
-                flags: ParamFlags {
+                flags: ParameterFlags {
                     can_automate: true,
                     is_readonly: false,
                     is_bypass: true,
@@ -1465,7 +1465,7 @@ impl BoolParameter {
     ///
     /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
-    pub fn with_id(mut self, id: ParamId) -> Self {
+    pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
@@ -1503,14 +1503,14 @@ impl BoolParameter {
     }
 
     /// Get the parameter metadata.
-    pub fn info(&self) -> &ParamInfo {
+    pub fn info(&self) -> &ParameterInfo {
         &self.info
     }
 
     /// Get mutable access to the parameter metadata.
     ///
     /// Used for runtime modification of parameter properties like unit_id.
-    pub fn info_mut(&mut self) -> &mut ParamInfo {
+    pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
 
@@ -1548,7 +1548,7 @@ impl BoolParameter {
 }
 
 impl ParameterRef for BoolParameter {
-    fn id(&self) -> ParamId {
+    fn id(&self) -> ParameterId {
         self.info.id
     }
 
@@ -1564,11 +1564,11 @@ impl ParameterRef for BoolParameter {
         self.info.units
     }
 
-    fn flags(&self) -> &ParamFlags {
+    fn flags(&self) -> &ParameterFlags {
         &self.info.flags
     }
 
-    fn default_normalized(&self) -> ParamValue {
+    fn default_normalized(&self) -> ParameterValue {
         self.info.default_normalized
     }
 
@@ -1576,7 +1576,7 @@ impl ParameterRef for BoolParameter {
         self.info.step_count
     }
 
-    fn get_normalized(&self) -> ParamValue {
+    fn get_normalized(&self) -> ParameterValue {
         if self.get() {
             1.0
         } else {
@@ -1584,35 +1584,35 @@ impl ParameterRef for BoolParameter {
         }
     }
 
-    fn set_normalized(&self, value: ParamValue) {
+    fn set_normalized(&self, value: ParameterValue) {
         self.set(value > 0.5);
     }
 
-    fn get_plain(&self) -> ParamValue {
+    fn get_plain(&self) -> ParameterValue {
         self.get_normalized()
     }
 
-    fn set_plain(&self, value: ParamValue) {
+    fn set_plain(&self, value: ParameterValue) {
         self.set_normalized(value);
     }
 
-    fn display_normalized(&self, normalized: ParamValue) -> String {
+    fn display_normalized(&self, normalized: ParameterValue) -> String {
         self.formatter.format(normalized)
     }
 
-    fn parse(&self, s: &str) -> Option<ParamValue> {
+    fn parse(&self, s: &str) -> Option<ParameterValue> {
         self.formatter.parse(s)
     }
 
-    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue {
+    fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
         normalized
     }
 
-    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue {
+    fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
         plain
     }
 
-    fn info(&self) -> &ParamInfo {
+    fn info(&self) -> &ParameterInfo {
         &self.info
     }
 }
@@ -1710,7 +1710,7 @@ pub trait EnumParameterValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 /// ```
 pub struct EnumParameter<E: EnumParameterValue> {
     /// Parameter metadata (id, name, units, flags, etc.)
-    info: ParamInfo,
+    info: ParameterInfo,
     /// Atomic storage for the variant index
     value: std::sync::atomic::AtomicUsize,
     /// Phantom data for the enum type
@@ -1760,7 +1760,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
         let default_normalized = index_to_normalized(default_index, E::COUNT);
 
         Self {
-            info: ParamInfo {
+            info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
@@ -1768,9 +1768,9 @@ impl<E: EnumParameterValue> EnumParameter<E> {
                 default_normalized,
                 step_count: (E::COUNT.saturating_sub(1)) as i32,
                 // EnumParameter is always a list (dropdown), even with only 2 choices
-                flags: ParamFlags {
+                flags: ParameterFlags {
                     is_list: true,
-                    ..ParamFlags::default()
+                    ..ParameterFlags::default()
                 },
                 unit_id: crate::parameters::ROOT_UNIT_ID,
             },
@@ -1785,7 +1785,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     ///
     /// This is typically called by the `#[derive(Parameters)]` macro to assign
     /// the FNV-1a hash of the string ID.
-    pub fn with_id(mut self, id: ParamId) -> Self {
+    pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
@@ -1823,14 +1823,14 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     }
 
     /// Get the parameter metadata.
-    pub fn info(&self) -> &ParamInfo {
+    pub fn info(&self) -> &ParameterInfo {
         &self.info
     }
 
     /// Get mutable access to the parameter metadata.
     ///
     /// Used for runtime modification of parameter properties like unit_id.
-    pub fn info_mut(&mut self) -> &mut ParamInfo {
+    pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
     }
 
@@ -1875,7 +1875,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
 }
 
 impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
-    fn id(&self) -> ParamId {
+    fn id(&self) -> ParameterId {
         self.info.id
     }
 
@@ -1891,11 +1891,11 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
         self.info.units
     }
 
-    fn flags(&self) -> &ParamFlags {
+    fn flags(&self) -> &ParameterFlags {
         &self.info.flags
     }
 
-    fn default_normalized(&self) -> ParamValue {
+    fn default_normalized(&self) -> ParameterValue {
         self.info.default_normalized
     }
 
@@ -1903,31 +1903,31 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
         self.info.step_count
     }
 
-    fn get_normalized(&self) -> ParamValue {
+    fn get_normalized(&self) -> ParameterValue {
         let index = self.value.load(Ordering::Relaxed);
         index_to_normalized(index, E::COUNT)
     }
 
-    fn set_normalized(&self, value: ParamValue) {
+    fn set_normalized(&self, value: ParameterValue) {
         let index = normalized_to_index(value, E::COUNT);
         self.value.store(index, Ordering::Relaxed);
     }
 
-    fn get_plain(&self) -> ParamValue {
+    fn get_plain(&self) -> ParameterValue {
         self.value.load(Ordering::Relaxed) as f64
     }
 
-    fn set_plain(&self, value: ParamValue) {
+    fn set_plain(&self, value: ParameterValue) {
         let index = (value.round() as usize).min(E::COUNT.saturating_sub(1));
         self.value.store(index, Ordering::Relaxed);
     }
 
-    fn display_normalized(&self, normalized: ParamValue) -> String {
+    fn display_normalized(&self, normalized: ParameterValue) -> String {
         let index = normalized_to_index(normalized, E::COUNT);
         E::name(index).to_string()
     }
 
-    fn parse(&self, s: &str) -> Option<ParamValue> {
+    fn parse(&self, s: &str) -> Option<ParameterValue> {
         // Try to match variant name (case-insensitive)
         let s_lower = s.to_lowercase();
         for (i, name) in E::names().iter().enumerate() {
@@ -1942,15 +1942,15 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
             .map(|i| self.plain_to_normalized(i as f64))
     }
 
-    fn normalized_to_plain(&self, normalized: ParamValue) -> ParamValue {
+    fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
         normalized_to_index(normalized, E::COUNT) as f64
     }
 
-    fn plain_to_normalized(&self, plain: ParamValue) -> ParamValue {
+    fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
         index_to_normalized(plain.round() as usize, E::COUNT)
     }
 
-    fn info(&self) -> &ParamInfo {
+    fn info(&self) -> &ParameterInfo {
         &self.info
     }
 }
@@ -1958,7 +1958,7 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
 // EnumParameter<E> is Send + Sync because:
 // - AtomicUsize is Send + Sync
 // - PhantomData<E> is Send + Sync when E: Send + Sync (required by EnumParameterValue trait bounds)
-// - ParamInfo is Send + Sync
+// - ParameterInfo is Send + Sync
 // No unsafe impl needed - the compiler verifies this automatically.
 
 // =============================================================================

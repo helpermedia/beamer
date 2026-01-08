@@ -30,7 +30,7 @@
 //!
 //! Use atomic types (e.g., `AtomicU64` with `to_bits`/`from_bits`) for lock-free access.
 
-use crate::types::{ParamId, ParamValue};
+use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
 // VST3 Unit System (Parameter Grouping)
@@ -123,7 +123,7 @@ pub trait Units {
 
 /// Flags controlling parameter behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParamFlags {
+pub struct ParameterFlags {
     /// Parameter can be automated by the host.
     pub can_automate: bool,
     /// Parameter is read-only (display only).
@@ -131,14 +131,14 @@ pub struct ParamFlags {
     /// Parameter is the bypass switch.
     pub is_bypass: bool,
     /// Parameter should be displayed as a dropdown list (for enums).
-    /// When true, host shows text labels from getParamStringByValue().
+    /// When true, host shows text labels from getParameterStringByValue().
     pub is_list: bool,
     /// Parameter is hidden from the DAW's parameter list.
     /// Used for internal parameters like MIDI CC emulation.
     pub is_hidden: bool,
 }
 
-impl Default for ParamFlags {
+impl Default for ParameterFlags {
     fn default() -> Self {
         Self {
             can_automate: true,
@@ -152,9 +152,9 @@ impl Default for ParamFlags {
 
 /// Metadata describing a single parameter.
 #[derive(Debug, Clone)]
-pub struct ParamInfo {
+pub struct ParameterInfo {
     /// Unique parameter identifier.
-    pub id: ParamId,
+    pub id: ParameterId,
     /// Full parameter name (e.g., "Master Volume").
     pub name: &'static str,
     /// Short parameter name for constrained UIs (e.g., "Vol").
@@ -162,18 +162,18 @@ pub struct ParamInfo {
     /// Unit label (e.g., "dB", "%", "Hz").
     pub units: &'static str,
     /// Default value in normalized form (0.0 to 1.0).
-    pub default_normalized: ParamValue,
+    pub default_normalized: ParameterValue,
     /// Number of discrete steps. 0 = continuous, 1 = toggle, >1 = discrete.
     pub step_count: i32,
     /// Behavioral flags.
-    pub flags: ParamFlags,
+    pub flags: ParameterFlags,
     /// VST3 Unit ID (parameter group). ROOT_UNIT_ID (0) for ungrouped parameters.
     pub unit_id: UnitId,
 }
 
-impl ParamInfo {
+impl ParameterInfo {
     /// Create a new continuous parameter with default flags.
-    pub const fn new(id: ParamId, name: &'static str) -> Self {
+    pub const fn new(id: ParameterId, name: &'static str) -> Self {
         Self {
             id,
             name,
@@ -181,7 +181,7 @@ impl ParamInfo {
             units: "",
             default_normalized: 0.5,
             step_count: 0,
-            flags: ParamFlags {
+            flags: ParameterFlags {
                 can_automate: true,
                 is_readonly: false,
                 is_bypass: false,
@@ -205,7 +205,7 @@ impl ParamInfo {
     }
 
     /// Set the default normalized value.
-    pub const fn with_default(mut self, default: ParamValue) -> Self {
+    pub const fn with_default(mut self, default: ParameterValue) -> Self {
         self.default_normalized = default;
         self
     }
@@ -217,7 +217,7 @@ impl ParamInfo {
     }
 
     /// Set parameter flags.
-    pub const fn with_flags(mut self, flags: ParamFlags) -> Self {
+    pub const fn with_flags(mut self, flags: ParameterFlags) -> Self {
         self.flags = flags;
         self
     }
@@ -237,19 +237,19 @@ impl ParamInfo {
     ///
     /// struct MyParameters {
     ///     bypass: AtomicU64,
-    ///     bypass_info: ParamInfo,
+    ///     bypass_info: ParameterInfo,
     /// }
     ///
     /// impl MyParameters {
     ///     fn new() -> Self {
     ///         Self {
     ///             bypass: AtomicU64::new(0.0f64.to_bits()),
-    ///             bypass_info: ParamInfo::bypass(PARAM_BYPASS),
+    ///             bypass_info: ParameterInfo::bypass(PARAM_BYPASS),
     ///         }
     ///     }
     /// }
     /// ```
-    pub const fn bypass(id: ParamId) -> Self {
+    pub const fn bypass(id: ParameterId) -> Self {
         Self {
             id,
             name: "Bypass",
@@ -257,7 +257,7 @@ impl ParamInfo {
             units: "",
             default_normalized: 0.0,
             step_count: 1,
-            flags: ParamFlags {
+            flags: ParameterFlags {
                 can_automate: true,
                 is_readonly: false,
                 is_bypass: true,
@@ -284,31 +284,31 @@ impl ParamInfo {
 ///
 /// ```ignore
 /// use std::sync::atomic::{AtomicU64, Ordering};
-/// use beamer_core::{Vst3Parameters, ParamInfo, ParamId, ParamValue};
+/// use beamer_core::{Vst3Parameters, ParameterInfo, ParameterId, ParameterValue};
 ///
 /// pub struct MyParameters {
 ///     gain: AtomicU64,
-///     gain_info: ParamInfo,
+///     gain_info: ParameterInfo,
 /// }
 ///
 /// impl Vst3Parameters for MyParameters {
 ///     fn count(&self) -> usize { 1 }
 ///
-///     fn info(&self, index: usize) -> Option<&ParamInfo> {
+///     fn info(&self, index: usize) -> Option<&ParameterInfo> {
 ///         match index {
 ///             0 => Some(&self.gain_info),
 ///             _ => None,
 ///         }
 ///     }
 ///
-///     fn get_normalized(&self, id: ParamId) -> ParamValue {
+///     fn get_normalized(&self, id: ParameterId) -> ParameterValue {
 ///         match id {
 ///             0 => f64::from_bits(self.gain.load(Ordering::Relaxed)),
 ///             _ => 0.0,
 ///         }
 ///     }
 ///
-///     fn set_normalized(&self, id: ParamId, value: ParamValue) {
+///     fn set_normalized(&self, id: ParameterId, value: ParameterValue) {
 ///         match id {
 ///             0 => self.gain.store(value.to_bits(), Ordering::Relaxed),
 ///             _ => {}
@@ -325,45 +325,45 @@ pub trait Vst3Parameters: Send + Sync {
     /// Returns parameter info by index (0 to count-1).
     ///
     /// Returns `None` if index is out of bounds.
-    fn info(&self, index: usize) -> Option<&ParamInfo>;
+    fn info(&self, index: usize) -> Option<&ParameterInfo>;
 
     /// Gets the current normalized value (0.0 to 1.0) for a parameter.
     ///
     /// This must be lock-free and safe to call from the audio thread.
-    fn get_normalized(&self, id: ParamId) -> ParamValue;
+    fn get_normalized(&self, id: ParameterId) -> ParameterValue;
 
     /// Sets the normalized value (0.0 to 1.0) for a parameter.
     ///
     /// This must be lock-free and safe to call from the audio thread.
     /// Implementations should clamp the value to [0.0, 1.0].
-    fn set_normalized(&self, id: ParamId, value: ParamValue);
+    fn set_normalized(&self, id: ParameterId, value: ParameterValue);
 
     /// Converts a normalized value to a display string.
     ///
     /// Used by the host to display parameter values in automation lanes,
     /// tooltips, etc.
-    fn normalized_to_string(&self, id: ParamId, normalized: ParamValue) -> String;
+    fn normalized_to_string(&self, id: ParameterId, normalized: ParameterValue) -> String;
 
     /// Parses a display string to a normalized value.
     ///
     /// Used when the user types a value directly. Returns `None` if
     /// the string cannot be parsed.
-    fn string_to_normalized(&self, id: ParamId, string: &str) -> Option<ParamValue>;
+    fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue>;
 
     /// Converts a normalized value (0.0-1.0) to a plain/real value.
     ///
     /// For example, a frequency parameter might map 0.0-1.0 to 20-20000 Hz.
-    fn normalized_to_plain(&self, id: ParamId, normalized: ParamValue) -> ParamValue;
+    fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue;
 
     /// Converts a plain/real value to a normalized value (0.0-1.0).
     ///
     /// Inverse of `normalized_to_plain`.
-    fn plain_to_normalized(&self, id: ParamId, plain: ParamValue) -> ParamValue;
+    fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue;
 
     /// Find parameter info by ID.
     ///
     /// Default implementation searches linearly through all parameters.
-    fn info_by_id(&self, id: ParamId) -> Option<&ParamInfo> {
+    fn info_by_id(&self, id: ParameterId) -> Option<&ParameterInfo> {
         (0..self.count()).find_map(|i| {
             let info = self.info(i)?;
             if info.id == id {
@@ -386,29 +386,29 @@ impl Vst3Parameters for NoParameters {
         0
     }
 
-    fn info(&self, _index: usize) -> Option<&ParamInfo> {
+    fn info(&self, _index: usize) -> Option<&ParameterInfo> {
         None
     }
 
-    fn get_normalized(&self, _id: ParamId) -> ParamValue {
+    fn get_normalized(&self, _id: ParameterId) -> ParameterValue {
         0.0
     }
 
-    fn set_normalized(&self, _id: ParamId, _value: ParamValue) {}
+    fn set_normalized(&self, _id: ParameterId, _value: ParameterValue) {}
 
-    fn normalized_to_string(&self, _id: ParamId, _normalized: ParamValue) -> String {
+    fn normalized_to_string(&self, _id: ParameterId, _normalized: ParameterValue) -> String {
         String::new()
     }
 
-    fn string_to_normalized(&self, _id: ParamId, _string: &str) -> Option<ParamValue> {
+    fn string_to_normalized(&self, _id: ParameterId, _string: &str) -> Option<ParameterValue> {
         None
     }
 
-    fn normalized_to_plain(&self, _id: ParamId, normalized: ParamValue) -> ParamValue {
+    fn normalized_to_plain(&self, _id: ParameterId, normalized: ParameterValue) -> ParameterValue {
         normalized
     }
 
-    fn plain_to_normalized(&self, _id: ParamId, plain: ParamValue) -> ParamValue {
+    fn plain_to_normalized(&self, _id: ParameterId, plain: ParameterValue) -> ParameterValue {
         plain
     }
 }
@@ -422,7 +422,7 @@ impl crate::parameter_types::Parameters for NoParameters {
         Box::new(std::iter::empty())
     }
 
-    fn by_id(&self, _id: ParamId) -> Option<&dyn crate::parameter_types::ParameterRef> {
+    fn by_id(&self, _id: ParameterId) -> Option<&dyn crate::parameter_types::ParameterRef> {
         None
     }
 }

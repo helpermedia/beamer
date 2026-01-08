@@ -6,7 +6,7 @@ This crate provides procedural macros that generate boilerplate code for plugins
 
 - **`#[derive(Parameters)]`**: Generates parameter traits, VST3 integration, state persistence, and `Default` implementation
 - **`#[derive(HasParameters)]`**: Generates `parameters()` and `parameters_mut()` accessors for Plugin and AudioProcessor types
-- **`#[derive(EnumParam)]`**: Generates enum parameter variants with display names
+- **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
 - **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`
 - **Compile-time validation**: ID collision detection and hash generation
 
@@ -21,7 +21,7 @@ use beamer::{HasParameters, Parameters};
 #[derive(Parameters)]
 struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    gain: FloatParam,
+    gain: FloatParameter,
 }
 
 #[derive(Default, HasParameters)]

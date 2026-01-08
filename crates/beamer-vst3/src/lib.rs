@@ -29,7 +29,7 @@
 //! 2. Use `export_vst3!` macro to generate entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::{Plugin, AudioProcessor, Buffer, Parameters, ParamInfo};
+//! use beamer_core::{Plugin, AudioProcessor, Buffer, Parameters, ParameterInfo};
 //! use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig, vst3};
 //!
 //! // Define your plugin

@@ -52,10 +52,10 @@ beamer-webview/
 ## References
 
 - [REFERENCE.md §4](./REFERENCE.md#4-future-phases) — WebView API details
-- [VST3 IPlugView](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical+Documentation/VST+Module+Architecture/IPlugView.html)
+- [VST3 IPlugView](https://steinbergmedia.github.io/vst3_doc/base/classSteinberg_1_1IPlugView.html)
 - [vstwebview](https://github.com/rdaum/vstwebview)
 
 ## Status
 
 **Current**: Planning
-**Next**: Phase 2A — [WEBVIEW_PHASE1.md](./WEBVIEW_PHASE1.md)
+**Next**: Phase 2A — [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)

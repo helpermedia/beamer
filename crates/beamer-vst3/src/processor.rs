@@ -2266,7 +2266,7 @@ where
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
         // Check if this is a MIDI CC parameter
-        if MidiCcState::is_midi_cc_param(id) {
+        if MidiCcState::is_midi_cc_parameter(id) {
             if let Some(cc_state) = self.midi_cc_state.as_ref() {
                 return cc_state.get_normalized(id);
             }
@@ -2277,7 +2277,7 @@ where
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
         // Check if this is a MIDI CC parameter
-        if MidiCcState::is_midi_cc_param(id) {
+        if MidiCcState::is_midi_cc_parameter(id) {
             if let Some(cc_state) = self.midi_cc_state.as_ref() {
                 cc_state.set_normalized(id, value);
                 return kResultOk;
@@ -2435,7 +2435,7 @@ where
 
         // 1. First check plugin's custom mappings (only available in unprepared state)
         if let Some(plugin) = self.try_plugin() {
-            if let Some(parameter_id) = plugin.midi_cc_to_param(bus_index, channel, controller) {
+            if let Some(parameter_id) = plugin.midi_cc_to_parameter(bus_index, channel, controller) {
                 *id = parameter_id;
                 return kResultOk;
             }

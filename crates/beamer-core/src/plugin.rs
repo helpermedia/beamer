@@ -875,7 +875,7 @@ pub trait Plugin: HasParameters + Default {
     ///
     /// # Example
     /// ```ignore
-    /// fn midi_cc_to_param(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
+    /// fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
     ///     match cc {
     ///         cc::MOD_WHEEL => Some(PARAM_VIBRATO_DEPTH),
     ///         cc::EXPRESSION => Some(PARAM_VOLUME),
@@ -883,7 +883,7 @@ pub trait Plugin: HasParameters + Default {
     ///     }
     /// }
     /// ```
-    fn midi_cc_to_param(&self, bus_index: i32, channel: i16, cc: u8) -> Option<u32> {
+    fn midi_cc_to_parameter(&self, bus_index: i32, channel: i16, cc: u8) -> Option<u32> {
         let _ = (bus_index, channel, cc);
         None
     }
@@ -959,7 +959,7 @@ pub trait Plugin: HasParameters + Default {
     /// Get all MIDI 1.0 CC assignments for bulk query.
     ///
     /// Override to provide mappings for DAW queries. This is more efficient
-    /// than individual `midi_cc_to_param` queries when there are many mappings.
+    /// than individual `midi_cc_to_parameter` queries when there are many mappings.
     ///
     /// Default returns empty slice (no mappings).
     fn midi1_assignments(&self) -> &[Midi1Assignment] {

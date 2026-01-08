@@ -19,7 +19,7 @@ pub struct ParameterAttributes {
     /// Value range
     pub range: Option<RangeSpec>,
     /// Parameter kind (db, hz, percent, etc.)
-    pub kind: Option<ParamKind>,
+    pub kind: Option<ParameterKind>,
     /// Short name for constrained UIs
     pub short_name: Option<String>,
     /// Smoothing configuration
@@ -33,20 +33,20 @@ pub struct ParameterAttributes {
 
 impl ParameterAttributes {
     /// Check if all required attributes are present for a given parameter type.
-    pub fn has_required_for(&self, parameter_type: ParamType) -> bool {
+    pub fn has_required_for(&self, parameter_type: ParameterType) -> bool {
         match parameter_type {
-            ParamType::Float => {
+            ParameterType::Float => {
                 self.name.is_some()
                     && self.default.is_some()
                     && (self.range.is_some() || self.kind.as_ref().is_some_and(|k| k.has_fixed_range()))
             }
-            ParamType::Int => {
+            ParameterType::Int => {
                 self.name.is_some() && self.default.is_some() && self.range.is_some()
             }
-            ParamType::Bool => {
+            ParameterType::Bool => {
                 self.bypass || (self.name.is_some() && self.default.is_some())
             }
-            ParamType::Enum => self.name.is_some(),
+            ParameterType::Enum => self.name.is_some(),
         }
     }
 }
@@ -72,7 +72,7 @@ pub struct RangeSpec {
 
 /// Parameter kind that determines the constructor and formatting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamKind {
+pub enum ParameterKind {
     // Float kinds
     Db,
     DbLog,
@@ -89,35 +89,35 @@ pub enum ParamKind {
     Semitones,
 }
 
-impl ParamKind {
+impl ParameterKind {
     /// Parse a kind from a string.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "db" => Some(ParamKind::Db),
-            "db_log" => Some(ParamKind::DbLog),
-            "db_log_offset" => Some(ParamKind::DbLogOffset),
-            "hz" => Some(ParamKind::Hz),
-            "ms" => Some(ParamKind::Ms),
-            "seconds" => Some(ParamKind::Seconds),
-            "percent" => Some(ParamKind::Percent),
-            "pan" => Some(ParamKind::Pan),
-            "ratio" => Some(ParamKind::Ratio),
-            "linear" => Some(ParamKind::Linear),
-            "semitones" => Some(ParamKind::Semitones),
+            "db" => Some(ParameterKind::Db),
+            "db_log" => Some(ParameterKind::DbLog),
+            "db_log_offset" => Some(ParameterKind::DbLogOffset),
+            "hz" => Some(ParameterKind::Hz),
+            "ms" => Some(ParameterKind::Ms),
+            "seconds" => Some(ParameterKind::Seconds),
+            "percent" => Some(ParameterKind::Percent),
+            "pan" => Some(ParameterKind::Pan),
+            "ratio" => Some(ParameterKind::Ratio),
+            "linear" => Some(ParameterKind::Linear),
+            "semitones" => Some(ParameterKind::Semitones),
             _ => None,
         }
     }
 
     /// Check if this kind has a fixed range (doesn't require explicit range attribute).
     pub fn has_fixed_range(&self) -> bool {
-        matches!(self, ParamKind::Percent | ParamKind::Pan)
+        matches!(self, ParameterKind::Percent | ParameterKind::Pan)
     }
 
     /// Get the fixed range for kinds that have one.
     pub fn fixed_range(&self) -> Option<(f64, f64)> {
         match self {
-            ParamKind::Percent => Some((0.0, 1.0)),
-            ParamKind::Pan => Some((-1.0, 1.0)),
+            ParameterKind::Percent => Some((0.0, 1.0)),
+            ParameterKind::Pan => Some((-1.0, 1.0)),
             _ => None,
         }
     }
@@ -173,19 +173,19 @@ pub struct ParametersIR {
 
 /// A single field in the parameter struct.
 pub enum FieldIR {
-    /// A direct parameter field (FloatParam, IntParam, BoolParam)
-    Parameter(ParamFieldIR),
+    /// A direct parameter field (FloatParameter, IntParameter, BoolParameter)
+    Parameter(ParameterFieldIR),
     /// A nested parameter struct (boxed to reduce enum size)
     Nested(Box<NestedFieldIR>),
 }
 
 /// A direct parameter field.
 #[allow(dead_code)]
-pub struct ParamFieldIR {
+pub struct ParameterFieldIR {
     /// Field name (e.g., `gain`)
     pub field_name: syn::Ident,
     /// Parameter type (Float, Int, Bool)
-    pub parameter_type: ParamType,
+    pub parameter_type: ParameterType,
     /// String ID from `#[parameter(id = "...")]`
     pub string_id: String,
     /// FNV-1a hash of the string ID
@@ -196,7 +196,7 @@ pub struct ParamFieldIR {
     pub attributes: ParameterAttributes,
 }
 
-impl ParamFieldIR {
+impl ParameterFieldIR {
     /// Check if this parameter has all required declarative attributes.
     pub fn has_declarative_attributes(&self) -> bool {
         self.attributes.has_required_for(self.parameter_type)
@@ -230,7 +230,7 @@ pub struct NestedFieldIR {
 
 /// The type of a parameter field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamType {
+pub enum ParameterType {
     Float,
     Int,
     Bool,
@@ -239,7 +239,7 @@ pub enum ParamType {
 
 impl ParametersIR {
     /// Iterate over all parameter fields (excluding nested).
-    pub fn parameter_fields(&self) -> impl Iterator<Item = &ParamFieldIR> {
+    pub fn parameter_fields(&self) -> impl Iterator<Item = &ParameterFieldIR> {
         self.fields.iter().filter_map(|f| match f {
             FieldIR::Parameter(p) => Some(p),
             FieldIR::Nested(_) => None,

@@ -28,7 +28,7 @@ use beamer::{HasParameters, Parameters};
 #[derive(Parameters)]
 struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    gain: FloatParam,
+    gain: FloatParameter,
 }
 
 // Plugin (unprepared state) - holds parameters before audio config is known
@@ -104,7 +104,7 @@ Plugin::default() → Plugin (unprepared, holds parameters)
 | Example | Description |
 |---------|-------------|
 | **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain with sidechain ducking. Demonstrates `#[derive(Parameters)]`, dB scaling, and multi-bus audio. |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParam`, tempo sync via `ProcessContext`, and parameter smoothing. |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, and parameter smoothing. |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
 
 ### Instruments
@@ -153,13 +153,13 @@ Use `group = "..."` for flat parameter access with DAW grouping:
 #[derive(Parameters)]
 struct SynthParameters {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
-    cutoff: FloatParam,
+    cutoff: FloatParameter,
 
     #[parameter(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
-    resonance: FloatParam,
+    resonance: FloatParameter,
 
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
-    gain: FloatParam,
+    gain: FloatParameter,
 }
 
 // Access: parameters.cutoff, parameters.resonance, parameters.gain (flat)
@@ -200,7 +200,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParam)]`) |
+| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{FieldIR, ParameterDefault, ParamFieldIR, ParamKind, ParamType, ParametersIR};
+use crate::ir::{FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType, ParametersIR};
 
 /// Validate the IR for semantic correctness.
 pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
@@ -68,14 +68,14 @@ fn check_no_hash_collisions(ir: &ParametersIR) -> syn::Result<()> {
 fn validate_parameter_attributes(ir: &ParametersIR) -> syn::Result<()> {
     for field in &ir.fields {
         if let FieldIR::Parameter(parameter) = field {
-            validate_single_param(parameter)?;
+            validate_single_parameter(parameter)?;
         }
     }
     Ok(())
 }
 
 /// Validate a single parameter's declarative attributes.
-fn validate_single_param(parameter: &ParamFieldIR) -> syn::Result<()> {
+fn validate_single_parameter(parameter: &ParameterFieldIR) -> syn::Result<()> {
     // Validate range ordering
     validate_range_ordering(parameter)?;
 
@@ -92,7 +92,7 @@ fn validate_single_param(parameter: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Validate that range start < end.
-fn validate_range_ordering(parameter: &ParamFieldIR) -> syn::Result<()> {
+fn validate_range_ordering(parameter: &ParameterFieldIR) -> syn::Result<()> {
     if let Some(range) = &parameter.attributes.range {
         if range.start >= range.end {
             return Err(syn::Error::new(
@@ -109,7 +109,7 @@ fn validate_range_ordering(parameter: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Validate that default value is within the specified range.
-fn validate_default_in_range(parameter: &ParamFieldIR) -> syn::Result<()> {
+fn validate_default_in_range(parameter: &ParameterFieldIR) -> syn::Result<()> {
     let (default_val, range) = match (&parameter.attributes.default, &parameter.attributes.range) {
         (Some(d), Some(r)) => (d, r),
         _ => return Ok(()), // Can't validate without both
@@ -139,22 +139,22 @@ fn validate_default_in_range(parameter: &ParamFieldIR) -> syn::Result<()> {
 
 /// Format a number appropriately for the parameter type.
 /// FloatParameter shows decimals, IntParameter shows integers.
-fn format_number(value: f64, parameter_type: ParamType) -> String {
+fn format_number(value: f64, parameter_type: ParameterType) -> String {
     match parameter_type {
-        ParamType::Float => {
+        ParameterType::Float => {
             if value.fract() == 0.0 {
                 format!("{:.1}", value) // Show at least one decimal: 100.0
             } else {
                 format!("{}", value)
             }
         }
-        ParamType::Int => format!("{}", value as i64),
+        ParameterType::Int => format!("{}", value as i64),
         _ => format!("{}", value),
     }
 }
 
 /// Validate that smoothing time is positive.
-fn validate_smoothing_time(parameter: &ParamFieldIR) -> syn::Result<()> {
+fn validate_smoothing_time(parameter: &ParameterFieldIR) -> syn::Result<()> {
     if let Some(smoothing) = &parameter.attributes.smoothing {
         if smoothing.time_ms <= 0.0 {
             return Err(syn::Error::new(
@@ -170,7 +170,7 @@ fn validate_smoothing_time(parameter: &ParamFieldIR) -> syn::Result<()> {
 }
 
 /// Validate that kind is appropriate for the parameter type.
-fn validate_kind_type_consistency(parameter: &ParamFieldIR) -> syn::Result<()> {
+fn validate_kind_type_consistency(parameter: &ParameterFieldIR) -> syn::Result<()> {
     let kind = match parameter.attributes.kind {
         Some(k) => k,
         None => return Ok(()), // No kind specified, nothing to validate
@@ -179,14 +179,14 @@ fn validate_kind_type_consistency(parameter: &ParamFieldIR) -> syn::Result<()> {
     // Check for mismatched kinds
     match (parameter.parameter_type, kind) {
         // Semitones is for IntParameter
-        (ParamType::Float, ParamKind::Semitones) => {
+        (ParameterType::Float, ParameterKind::Semitones) => {
             return Err(syn::Error::new(
                 parameter.span,
                 "kind 'semitones' should be used with IntParameter, not FloatParameter",
             ));
         }
         // Float-specific kinds on IntParameter
-        (ParamType::Int, ParamKind::Db | ParamKind::Hz | ParamKind::Ms | ParamKind::Seconds | ParamKind::Percent | ParamKind::Pan | ParamKind::Ratio) => {
+        (ParameterType::Int, ParameterKind::Db | ParameterKind::Hz | ParameterKind::Ms | ParameterKind::Seconds | ParameterKind::Percent | ParameterKind::Pan | ParameterKind::Ratio) => {
             return Err(syn::Error::new(
                 parameter.span,
                 format!(
@@ -196,13 +196,13 @@ fn validate_kind_type_consistency(parameter: &ParamFieldIR) -> syn::Result<()> {
             ));
         }
         // Bool/Enum shouldn't have kinds (except bypass which is handled separately)
-        (ParamType::Bool, _) if !parameter.attributes.bypass => {
+        (ParameterType::Bool, _) if !parameter.attributes.bypass => {
             return Err(syn::Error::new(
                 parameter.span,
                 "BoolParameter should not have a 'kind' attribute",
             ));
         }
-        (ParamType::Enum, _) => {
+        (ParameterType::Enum, _) => {
             return Err(syn::Error::new(
                 parameter.span,
                 "EnumParameter should not have a 'kind' attribute",

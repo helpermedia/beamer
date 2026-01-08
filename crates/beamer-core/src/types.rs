@@ -101,7 +101,7 @@ impl Rect {
 }
 
 /// Parameter identifier.
-pub type ParamId = u32;
+pub type ParameterId = u32;
 
 /// Parameter value (normalized 0.0 to 1.0).
-pub type ParamValue = f64;
+pub type ParameterValue = f64;

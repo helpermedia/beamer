@@ -6,7 +6,7 @@
 //! 3. Build an ADSR envelope generator
 //! 4. Create naive waveform oscillators (sine, saw, square, triangle)
 //! 5. Implement a simple one-pole lowpass filter with resonance
-//! 6. Use `EnumParam` for waveform selection
+//! 6. Use `EnumParameter` for waveform selection
 //! 7. Use `IntParameter` for transpose (±2 octaves)
 //! 8. Use flat parameter groups (`group = "..."`)
 //! 9. Apply parameter smoothing for filter cutoff/resonance

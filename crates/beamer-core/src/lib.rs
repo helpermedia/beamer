@@ -20,7 +20,7 @@
 //! - [`Buffer`] - Main audio I/O buffer
 //! - [`AuxiliaryBuffers`] - Sidechain and aux bus access
 //! - [`BusInfo`] - Audio bus configuration
-//! - [`ParamInfo`] - Parameter metadata
+//! - [`ParameterInfo`] - Parameter metadata
 //! - [`PluginError`] - Error types
 //! - [`MidiEvent`] - MIDI event types
 //! - [`Transport`] - DAW transport/timing state
@@ -78,7 +78,7 @@ pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
-pub use parameters::{NoParameters, ParamFlags, ParamInfo, Vst3Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
+pub use parameters::{NoParameters, ParameterFlags, ParameterInfo, Vst3Parameters, UnitId, UnitInfo, Units, ROOT_UNIT_ID};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
@@ -87,4 +87,4 @@ pub use plugin::{
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
-pub use types::{ParamId, ParamValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
+pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};

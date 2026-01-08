@@ -83,8 +83,8 @@
 ### High Priority (Core Functionality)
 
 1. **Parameter Types**
-   - ✅ ~~`IntParam`~~ - Tested in midi-transform
-   - ✅ ~~`BoolParam`~~ - Tested in midi-transform
+   - ✅ ~~`IntParameter`~~ - Tested in midi-transform
+   - ✅ ~~`BoolParameter`~~ - Tested in midi-transform
    - `LogMapper` - Logarithmic parameter scaling
 
 2. **Bypass Handling**
@@ -132,7 +132,7 @@
 
 9. **MIDI - Learning & Mapping**
    - MIDI Learn (`on_midi_learn`, `on_midi1_learn`, `on_midi2_learn`)
-   - MIDI Mapping (`midi_cc_to_param`, assignments)
+   - MIDI Mapping (`midi_cc_to_parameter`, assignments)
 
 10. **Orchestral Features**
     - Keyswitch Controller - Articulation switching
@@ -156,8 +156,8 @@
 **Goal:** Test bypass, LogMapper, and advanced bus features
 
 **Features to test:**
-- ✅ `IntParam` - Ratio (2:1, 4:1, 8:1, 10:1, 20:1) - *Also tested in midi-transform*
-- ✅ `BoolParam` - Auto-makeup gain on/off, Knee type (hard/soft) - *Also tested in midi-transform*
+- ✅ `IntParameter` - Ratio (2:1, 4:1, 8:1, 10:1, 20:1) - *Also tested in midi-transform*
+- ✅ `BoolParameter` - Auto-makeup gain on/off, Knee type (hard/soft) - *Also tested in midi-transform*
 - ✅ `BypassHandler` - Smooth bypass with equal-power crossfade - **NEW**
 - ✅ `bypass_ramp_samples()` - Proper bypass reporting - **NEW**
 - ✅ Sidechain input - External sidechain - *Also tested in gain*
@@ -170,7 +170,7 @@
 - External sidechain input for ducking/pumping
 - Gain reduction metering (could be exposed as output parameter)
 - RMS envelope follower with smoothing
-- Soft/hard knee using BoolParameter or EnumParam
+- Soft/hard knee using BoolParameter or EnumParameter
 
 **Files to create:**
 - `examples/compressor/src/lib.rs`
@@ -186,10 +186,10 @@
 - ✅ Custom `Formatter` - Frequency display (e.g., "1.2k", "440 Hz")
 - ✅ Mono bus option - Mono in/out for certain use cases
 - ✅ `LogMapper` - Frequency parameters with logarithmic mapping
-- ✅ `IntParam` - Filter type selection (bell, shelf, notch)
+- ✅ `IntParameter` - Filter type selection (bell, shelf, notch)
 
 **Implementation notes:**
-- 3-band parametric EQ (low shelf, mid bell, high shelf)
+- 3-band parameteretric EQ (low shelf, mid bell, high shelf)
 - Each band: frequency, gain, Q factor
 - Organize parameters into units: Low Band, Mid Band, High Band
 - Custom frequency formatter: "20 Hz", "1.5k", "10k"
@@ -206,7 +206,7 @@
 
 **Features to test:**
 - ✅ `latency_samples()` - Report lookahead buffer size
-- ✅ `BoolParam` - True peak mode on/off
+- ✅ `BoolParameter` - True peak mode on/off
 - ✅ Delay buffer - Lookahead implementation
 - ✅ Advanced smoothing - Gain reduction smoothing
 
@@ -275,7 +275,7 @@
 - ✅ `RpnTracker` - RPN/NRPN message assembly
 - ✅ 14-bit CC utilities - High-res parameter control
 - ✅ MIDI Learn - `on_midi_learn()`, `on_midi1_learn()`
-- ✅ MIDI Mapping - `midi_cc_to_param()`, `midi1_assignments()`
+- ✅ MIDI Mapping - `midi_cc_to_parameter()`, `midi1_assignments()`
 - ✅ `PolyPressure` - Per-note aftertouch
 - ✅ `ChannelPressure` - Channel aftertouch
 - ✅ `SysEx` - Custom device messages
@@ -348,28 +348,28 @@
 #### **gain** (Current)
 **Could add:**
 - ✅ `BypassHandler` - Add smooth bypass instead of just gain control
-- ✅ `BoolParam` - Add "Invert Phase" toggle
-- ✅ `IntParam` - Add "Oversampling" (1x, 2x, 4x, 8x) selector
+- ✅ `BoolParameter` - Add "Invert Phase" toggle
+- ✅ `IntParameter` - Add "Oversampling" (1x, 2x, 4x, 8x) selector
 - ✅ Units - Group "Input" and "Output" parameters
 
 #### **delay** (Current)
 **Could add:**
-- ✅ `BoolParam` - Add "Freeze" mode (infinite feedback)
-- ✅ `IntParam` - Add "Tap Count" for multi-tap delay
+- ✅ `BoolParameter` - Add "Freeze" mode (infinite feedback)
+- ✅ `IntParameter` - Add "Tap Count" for multi-tap delay
 - ✅ `BypassHandler` - Add smooth bypass
 - ✅ `latency_samples()` - Report minimum delay time as latency
 
 #### **synth** (Current)
 **Recently added:**
-- ✅ `IntParam` - Transpose parameter (±2 octaves, -24 to +24 semitones)
+- ✅ `IntParameter` - Transpose parameter (±2 octaves, -24 to +24 semitones)
 - ✅ Flat parameter groups - "Oscillator", "Envelope", "Filter", "Global" groups (works in Cubase)
 - ✅ `PolyPressure` - Per-note aftertouch → vibrato depth (polyphonic expression)
 - ✅ `ChannelPressure` - Channel aftertouch → vibrato depth (global expression)
 - ✅ Mod wheel - Controls both vibrato depth AND filter cutoff modulation
 
 **Could still add:**
-- ❌ `BoolParam` - Add "Legato Mode" toggle
-- ❌ "Voice Count" parameter (1-16 voices) using IntParam
+- ❌ `BoolParameter` - Add "Legato Mode" toggle
+- ❌ "Voice Count" parameter (1-16 voices) using IntParameter
 
 #### **midi-transform** (Current)
 **Could add:**
@@ -412,11 +412,11 @@
 
 - **Phase 1 (Current):** Core parameter types, basic MIDI, audio processing
   - Target: 60% feature coverage
-  - Focus: FloatParam, EnumParam, basic MIDI, f32/f64
+  - Focus: FloatParameter, EnumParameter, basic MIDI, f32/f64
 
 - **Phase 2 (Next):** Advanced parameters, bypass, buses
   - Target: 80% feature coverage
-  - Focus: IntParam, BoolParam, BypassHandler, Units, multi-bus
+  - Focus: IntParameter, BoolParameter, BypassHandler, Units, multi-bus
 
 - **Phase 3 (Future):** MPE, advanced MIDI, GUI
   - Target: 95% feature coverage
@@ -431,13 +431,13 @@
 ## Implementation Checklist
 
 ### Phase 1: Core Coverage (Current)
-- [x] gain - FloatParam, f32/f64, multi-bus, transport
-- [x] delay - EnumParam, smoothing, tempo sync, tail_samples
+- [x] gain - FloatParameter, f32/f64, multi-bus, transport
+- [x] delay - EnumParameter, smoothing, tempo sync, tail_samples
 - [x] synth - MIDI basics, MidiCcConfig, polyphony
 - [x] midi-transform - MIDI pass-through, CC transformation
 
 ### Phase 2: Advanced Parameters & Processing
-- [x] compressor - BoolParam, EnumParam, BypassHandler, PowerMapper, linear smoothing, set_active (implemented, needs DAW testing)
+- [x] compressor - BoolParameter, EnumParameter, BypassHandler, PowerMapper, linear smoothing, set_active (implemented, needs DAW testing)
 - [ ] eq - Units system, custom Formatter, mono buses
 - [ ] limiter - latency_samples, lookahead processing
 
@@ -475,21 +475,21 @@ The midi-transform example may seem "odd" as it's a somewhat contrived MIDI proc
 
 ### Unique Features Only in midi-transform
 
-#### 1. **IntParam** ⚠️ CRITICAL
+#### 1. **IntParameter** ⚠️ CRITICAL
 ```rust
 #[parameter(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
-pub transpose: IntParam,
+pub transpose: IntParameter,
 ```
 **Used for:** Transpose amount, note numbers (0-127), CC numbers (0-127)
 - ❌ Not used in: gain, delay, synth
 
-#### 2. **BoolParam** ⚠️ CRITICAL
+#### 2. **BoolParameter** ⚠️ CRITICAL
 ```rust
 #[parameter(id = "note_enabled", name = "Enabled", default = true)]
-pub enabled: BoolParam,
+pub enabled: BoolParameter,
 
 #[parameter(id = "bypass", bypass)]
-pub bypass: BoolParam,
+pub bypass: BoolParameter,
 ```
 **Used for:** Enable/disable toggles, bypass parameter
 - ❌ Not used in: gain, delay, synth
@@ -532,7 +532,7 @@ MidiEventKind::PolyPressure(poly) => {
 #### 5. **Special `bypass` Attribute**
 ```rust
 #[parameter(id = "bypass", bypass)]
-pub bypass: BoolParam,
+pub bypass: BoolParameter,
 ```
 **Marks parameter as the official bypass parameter**
 - ❌ Not used in: gain, delay, synth
@@ -563,12 +563,12 @@ Make midi-transform more useful while preserving features:
 - Add MIDI channel filtering
 - Add velocity curve remapping
 - Add MIDI event logging/display
-- Keep all IntParam, BoolParam, nested group usage
+- Keep all IntParameter, BoolParameter, nested group usage
 
 #### Option 2: Move Features to Compressor
 Migrate unique features to the planned **compressor** example:
-- Use `IntParam` for ratio selection (2:1, 4:1, 8:1, 10:1, 20:1)
-- Use `BoolParam` for auto-makeup gain, hard/soft knee toggle
+- Use `IntParameter` for ratio selection (2:1, 4:1, 8:1, 10:1, 20:1)
+- Use `BoolParameter` for auto-makeup gain, hard/soft knee toggle
 - Use nested groups: "Input", "Compression", "Output" sections
 - Use `bypass` attribute for compressor bypass
 - **Then** remove midi-transform
@@ -592,7 +592,7 @@ Accept that it's a contrived example but serves an important testing purpose:
 - [ ] Update coverage matrix after migration
 - [ ] Update ARCHITECTURE.md and examples README
 
-**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParameter and PolyPressure are now tested in synth. However, we would still lose BoolParam, nested groups, and bypass attribute coverage.
+**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParameter and PolyPressure are now tested in synth. However, we would still lose BoolParameter, nested groups, and bypass attribute coverage.
 
 ---
 

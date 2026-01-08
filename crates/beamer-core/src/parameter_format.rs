@@ -347,7 +347,7 @@ impl Formatter {
         }
     }
 
-    /// Get the unit string for this formatter (for ParamInfo).
+    /// Get the unit string for this formatter (for ParameterInfo).
     pub fn units(&self) -> &'static str {
         match self {
             Formatter::Float { .. } => "",
