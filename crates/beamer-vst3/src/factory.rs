@@ -5,11 +5,12 @@
 use std::ffi::c_void;
 use std::marker::PhantomData;
 
+use beamer_core::PluginConfig;
 use vst3::com_scrape_types::MakeHeader;
 use vst3::{Class, ComWrapper, Steinberg::*};
 
 use crate::util::{copy_cstring, copy_wstring};
-use crate::wrapper::PluginConfig;
+use crate::wrapper::Vst3Config;
 
 /// VST3 Plugin Factory.
 ///
@@ -17,22 +18,24 @@ use crate::wrapper::PluginConfig;
 /// (IComponent + IEditController in one object).
 pub struct Factory<C> {
     config: &'static PluginConfig,
+    vst3_config: &'static Vst3Config,
     _marker: PhantomData<C>,
 }
 
 impl<C> Factory<C> {
     /// Create a new factory with the given configuration.
-    pub const fn new(config: &'static PluginConfig) -> Self {
+    pub const fn new(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
         Self {
             config,
+            vst3_config,
             _marker: PhantomData,
         }
     }
 }
 
-/// Trait implemented by component types that can be constructed from a [`PluginConfig`].
+/// Trait implemented by component types that can be constructed from plugin configs.
 pub trait ComponentFactory: Class {
-    fn create(config: &'static PluginConfig) -> Self;
+    fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self;
 }
 
 impl<C> Class for Factory<C>
@@ -63,7 +66,7 @@ where
     }
 
     unsafe fn countClasses(&self) -> i32 {
-        if self.config.has_controller() {
+        if self.vst3_config.has_controller() {
             2
         } else {
             1
@@ -78,15 +81,15 @@ where
         match index {
             0 => {
                 let info = &mut *info;
-                info.cid = self.config.component_uid;
+                info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
                 copy_cstring(self.config.name, &mut info.name);
                 kResultOk
             }
-            1 if self.config.has_controller() => {
+            1 if self.vst3_config.has_controller() => {
                 let info = &mut *info;
-                info.cid = self.config.controller_uid.unwrap();
+                info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);
                 copy_cstring(self.config.name, &mut info.name);
@@ -109,8 +112,8 @@ where
         let requested_cid = &*(cid as *const TUID);
 
         // Check if request matches component or controller UID
-        if *requested_cid != self.config.component_uid {
-            if let Some(controller_uid) = self.config.controller_uid {
+        if *requested_cid != self.vst3_config.component_uid {
+            if let Some(controller_uid) = self.vst3_config.controller_uid {
                 if *requested_cid != controller_uid {
                     return kInvalidArgument;
                 }
@@ -120,7 +123,7 @@ where
         }
 
         // Create component and query requested interface
-        let component = ComWrapper::new(C::create(self.config));
+        let component = ComWrapper::new(C::create(self.config, self.vst3_config));
         let unknown = component.as_com_ref::<FUnknown>().unwrap();
         let ptr = unknown.as_ptr();
         ((*(*ptr).vtbl).queryInterface)(ptr, iid as *const TUID, obj)
@@ -140,7 +143,7 @@ where
         match index {
             0 => {
                 let info = &mut *info;
-                info.cid = self.config.component_uid;
+                info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
                 copy_cstring(self.config.name, &mut info.name);
@@ -151,9 +154,9 @@ where
                 copy_cstring("VST 3.8.0", &mut info.sdkVersion);
                 kResultOk
             }
-            1 if self.config.has_controller() => {
+            1 if self.vst3_config.has_controller() => {
                 let info = &mut *info;
-                info.cid = self.config.controller_uid.unwrap();
+                info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);
                 copy_cstring(self.config.name, &mut info.name);
@@ -182,7 +185,7 @@ where
         match index {
             0 => {
                 let info = &mut *info;
-                info.cid = self.config.component_uid;
+                info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
                 copy_wstring(self.config.name, &mut info.name);
@@ -193,9 +196,9 @@ where
                 copy_wstring("VST 3.8.0", &mut info.sdkVersion);
                 kResultOk
             }
-            1 if self.config.has_controller() => {
+            1 if self.vst3_config.has_controller() => {
                 let info = &mut *info;
-                info.cid = self.config.controller_uid.unwrap();
+                info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);
                 copy_wstring(self.config.name, &mut info.name);

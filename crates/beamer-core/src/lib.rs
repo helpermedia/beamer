@@ -28,6 +28,7 @@
 
 pub mod buffer;
 pub mod bypass;
+pub mod config;
 pub mod editor;
 pub mod error;
 pub mod midi;
@@ -47,6 +48,7 @@ pub mod types;
 
 // Re-exports for convenience
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
+pub use config::PluginConfig;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};

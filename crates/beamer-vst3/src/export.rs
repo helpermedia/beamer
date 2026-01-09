@@ -11,18 +11,23 @@
 /// # Example
 ///
 /// ```rust,ignore
-/// use beamer_vst3::{export_vst3, GainComponent, PluginConfig};
+/// use beamer_core::PluginConfig;
+/// use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor, vst3};
 ///
-/// static CONFIG: PluginConfig = PluginConfig::new(
-///     "My Plugin",
+/// // Shared plugin configuration
+/// static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+///     .with_vendor("My Company");
+///
+/// // VST3-specific configuration
+/// static VST3_CONFIG: Vst3Config = Vst3Config::new(
 ///     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
 /// );
 ///
-/// export_vst3!(CONFIG, GainComponent);
+/// export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
 /// ```
 #[macro_export]
 macro_rules! export_vst3 {
-    ($config:expr, $component:ty) => {
+    ($config:expr, $vst3_config:expr, $component:ty) => {
         // Platform-specific entry points
 
         #[cfg(target_os = "windows")]
@@ -68,7 +73,7 @@ macro_rules! export_vst3 {
             use vst3::ComWrapper;
             use $crate::Factory;
 
-            let factory = Factory::<$component>::new(&$config);
+            let factory = Factory::<$component>::new(&$config, &$vst3_config);
             let wrapper = ComWrapper::new(factory);
 
             wrapper

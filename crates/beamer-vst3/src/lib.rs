@@ -29,31 +29,22 @@
 //! 2. Use `export_vst3!` macro to generate entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::{Plugin, AudioProcessor, Buffer, Parameters, ParameterInfo};
-//! use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig, vst3};
+//! use beamer_core::{Plugin, AudioProcessor, Buffer, PluginConfig};
+//! use beamer_vst3::{export_vst3, Vst3Processor, Vst3Config, vst3};
 //!
 //! // Define your plugin
 //! struct MyGain { parameters: MyParameters }
 //!
-//! impl AudioProcessor for MyGain {
-//!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut Buffer) { /* DSP here */ }
-//! }
+//! // Shared plugin config
+//! static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+//!     .with_vendor("My Company");
 //!
-//! impl Plugin for MyGain {
-//!     type Parameters = MyParameters;
-//!     fn parameters(&self) -> &Self::Parameters { &self.parameters }
-//!     fn create() -> Self { Self { parameters: MyParameters::new() } }
-//! }
-//!
-//! // Configure and export
-//! static CONFIG: PluginConfig = PluginConfig::new(
-//!     "My Plugin",
+//! // VST3-specific config
+//! static VST3_CONFIG: Vst3Config = Vst3Config::new(
 //!     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
-//! )
-//! .with_vendor("My Company");
+//! );
 //!
-//! export_vst3!(CONFIG, Vst3Processor<MyGain>);
+//! export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyGain>);
 //! ```
 
 #![allow(non_upper_case_globals)]
@@ -69,7 +60,10 @@ pub mod wrapper;
 // Re-exports
 pub use factory::Factory;
 pub use processor::Vst3Processor;
-pub use wrapper::PluginConfig;
+pub use wrapper::Vst3Config;
+
+// Re-export shared PluginConfig from beamer-core
+pub use beamer_core::PluginConfig;
 
 // Re-export vst3 crate for use in macros and UIDs
 pub use vst3;

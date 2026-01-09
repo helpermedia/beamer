@@ -35,9 +35,11 @@ use beamer_core::{
     MAX_SYSEX_SIZE,
 };
 
+use beamer_core::PluginConfig;
+
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
-use crate::wrapper::PluginConfig;
+use crate::wrapper::Vst3Config;
 
 // VST3 event type constants
 const K_NOTE_ON_EVENT: u16 = 0;
@@ -689,8 +691,8 @@ enum PluginState<P: Plugin> {
 pub struct Vst3Processor<P: Plugin> {
     /// The plugin state machine (Unprepared or Prepared)
     state: UnsafeCell<PluginState<P>>,
-    /// Plugin configuration reference
-    config: &'static PluginConfig,
+    /// VST3-specific configuration reference
+    vst3_config: &'static Vst3Config,
     /// Current sample rate
     sample_rate: UnsafeCell<f64>,
     /// Maximum block size
@@ -739,7 +741,7 @@ where
     ///
     /// The wrapper starts in the Unprepared state with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
-    pub fn new(config: &'static PluginConfig) -> Self {
+    pub fn new(_config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
         let plugin = P::default();
 
         // Create MidiCcState from plugin's config (framework-managed)
@@ -750,15 +752,15 @@ where
                 plugin,
                 pending_state: None,
             }),
-            config,
+            vst3_config,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
             midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
-                config.sysex_slots,
-                config.sysex_buffer_size,
+                vst3_config.sysex_slots,
+                vst3_config.sysex_buffer_size,
             )),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
@@ -1383,8 +1385,8 @@ impl<P: Plugin + 'static> ComponentFactory for Vst3Processor<P>
 where
     P::Config: BuildConfig,
 {
-    fn create(config: &'static PluginConfig) -> Self {
-        Self::new(config)
+    fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
+        Self::new(config, vst3_config)
     }
 }
 
@@ -1440,7 +1442,7 @@ where
         }
 
         // For combined component, return the controller UID if set, otherwise kNotImplemented
-        if let Some(controller) = self.config.controller_uid {
+        if let Some(controller) = self.vst3_config.controller_uid {
             *class_id = controller;
             kResultOk
         } else {

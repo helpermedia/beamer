@@ -100,8 +100,11 @@ pub mod prelude {
         FrameRate, ProcessContext, Transport,
     };
 
+    // Shared plugin configuration (format-agnostic)
+    pub use beamer_core::PluginConfig;
+
     // VST3 implementation
-    pub use beamer_vst3::{export_vst3, PluginConfig, Vst3Processor};
+    pub use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
 
     // Derive macros for parameters (when feature enabled)
     #[cfg(feature = "derive")]
