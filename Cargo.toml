@@ -3,6 +3,7 @@ members = [
     "crates/beamer-utils",
     "crates/beamer-core",
     "crates/beamer-vst3",
+    "crates/beamer-au",
     "crates/beamer-macros",
     "crates/beamer",
     "examples/gain",
@@ -33,6 +34,7 @@ proc-macro2 = "1"
 beamer-utils = { version = "0.1.6", path = "crates/beamer-utils" }
 beamer-core = { version = "0.1.6", path = "crates/beamer-core" }
 beamer-vst3 = { version = "0.1.6", path = "crates/beamer-vst3" }
+beamer-au = { version = "0.1.6", path = "crates/beamer-au" }
 beamer-macros = { version = "0.1.6", path = "crates/beamer-macros" }
 beamer = { version = "0.1.6", path = "crates/beamer" }
 

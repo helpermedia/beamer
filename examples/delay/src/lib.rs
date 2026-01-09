@@ -15,6 +15,9 @@ use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
+#[cfg(target_os = "macos")]
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
@@ -23,13 +26,25 @@ use beamer::{EnumParameter, HasParameters, Parameters};
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xA7B8C9D0, 0xE1F2A3B4, 0xC5D6E7F8, 0x09101112);
 
-/// Static plugin configuration
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay", COMPONENT_UID)
+/// Shared plugin configuration (format-agnostic metadata)
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_sub_categories("Fx|Delay");
+
+/// VST3-specific configuration
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+
+/// AU-specific configuration
+/// Uses manufacturer code "Demo" and subtype "dlay" for identification
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Demo"),
+    fourcc!(b"dlay"),
+);
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -430,4 +445,11 @@ impl AudioProcessor for DelayProcessor {
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<DelayPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<DelayPlugin>);
+
+// =============================================================================
+// Audio Unit Export
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, DelayPlugin);

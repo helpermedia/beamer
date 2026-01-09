@@ -20,6 +20,9 @@ use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
+#[cfg(target_os = "macos")]
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
@@ -28,13 +31,27 @@ use beamer::{EnumParameter, HasParameters, Parameters};
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xB3A2C1D0, 0xE4F5A6B7, 0xC8D9E0F1, 0x12233445);
 
-/// Static plugin configuration
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth", COMPONENT_UID)
+/// Shared plugin configuration (format-agnostic metadata)
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
+    .with_category("Instrument")
     .with_sub_categories("Instrument|Synth");
+
+/// VST3-specific configuration
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+
+/// AU-specific configuration
+/// Uses manufacturer code "Demo" and subtype "synt" for identification
+/// MusicDevice type indicates this is an instrument/synthesizer
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::MusicDevice,
+    fourcc!(b"Demo"),
+    fourcc!(b"synt"),
+);
 
 /// Number of polyphonic voices
 const NUM_VOICES: usize = 8;
@@ -735,4 +752,11 @@ impl AudioProcessor for SynthProcessor {
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<SynthPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<SynthPlugin>);
+
+// =============================================================================
+// Audio Unit Export
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, SynthPlugin);

@@ -11,3 +11,6 @@ crate-type = ["cdylib"]
 [dependencies]
 beamer = { workspace = true }
 vst3 = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+beamer-au = { workspace = true }

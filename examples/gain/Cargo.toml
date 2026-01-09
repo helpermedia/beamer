@@ -10,4 +10,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 beamer = { workspace = true }
+beamer-au = { workspace = true }
 vst3 = { workspace = true }

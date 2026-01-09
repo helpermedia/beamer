@@ -1,0 +1,328 @@
+//! Type-erased AU plugin instance trait.
+//!
+//! This module provides the `AuPluginInstance` trait which enables a single
+//! Objective-C class (`BeamerAudioUnit`) to work with any plugin through
+//! dynamic dispatch.
+//!
+//! # Why Type Erasure?
+//!
+//! `objc2::declare_class!` generates a single concrete Objective-C class at
+//! compile time. Rust generics don't translate to Objective-C - we cannot have
+//! `BeamerAudioUnit<GainPlugin>` and `BeamerAudioUnit<DelayPlugin>` as separate
+//! ObjC classes.
+//!
+//! The solution is type erasure: we define a trait that captures all the
+//! operations we need, then use `Box<dyn AuPluginInstance>` to store any
+//! plugin implementation.
+
+use crate::bus_config::CachedBusConfig;
+use crate::error::{AuError, AuResult};
+use beamer_core::{MidiEvent, ParameterStore, ProcessContext};
+
+/// Type-erased interface for AU plugin instances.
+///
+/// This trait enables a single ObjC class (`BeamerAudioUnit`) to work with
+/// any `Plugin` implementation through dynamic dispatch.
+///
+/// # Implementation
+///
+/// This trait is implemented by `AuProcessor<P>` for any `P: Plugin`.
+/// Plugin authors don't implement this directly - they implement the
+/// `beamer_core::Plugin` trait instead.
+pub trait AuPluginInstance: Send + 'static {
+    /// Allocate render resources (prepare for audio processing).
+    ///
+    /// Called when AU host calls `allocateRenderResourcesAndReturnError:`.
+    /// This triggers the Plugin → AudioProcessor transition.
+    ///
+    /// # Arguments
+    /// * `sample_rate` - The sample rate in Hz
+    /// * `max_frames` - Maximum number of frames per render call
+    /// * `bus_config` - The cached bus configuration from the host
+    fn allocate_render_resources(
+        &mut self,
+        sample_rate: f64,
+        max_frames: u32,
+        bus_config: &CachedBusConfig,
+    ) -> AuResult<()>;
+
+    /// Deallocate render resources (return to unprepared state).
+    ///
+    /// Called when AU host calls `deallocateRenderResources`.
+    /// This triggers the AudioProcessor → Plugin transition.
+    fn deallocate_render_resources(&mut self);
+
+    /// Check if currently in prepared state (render resources allocated).
+    fn is_prepared(&self) -> bool;
+
+    /// Get the current sample rate (only valid when prepared).
+    fn sample_rate(&self) -> Option<f64>;
+
+    /// Get the maximum frame count (only valid when prepared).
+    fn max_frames(&self) -> Option<u32>;
+
+    /// Get parameter store for building AUParameterTree.
+    ///
+    /// Returns a reference to the parameter store which provides:
+    /// - Parameter count and metadata
+    /// - Normalized value get/set
+    /// - Value formatting
+    ///
+    /// # Errors
+    /// Returns an error if the plugin is in an invalid state (transitioning).
+    fn parameter_store(&self) -> Result<&dyn ParameterStore, AuError>;
+
+    /// Get mutable parameter store for setting values from host.
+    ///
+    /// # Errors
+    /// Returns an error if the plugin is in an invalid state (transitioning).
+    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, AuError>;
+
+    /// Save plugin state to bytes.
+    ///
+    /// Uses the same format as VST3 for cross-format compatibility.
+    /// Called by AU host for preset saving.
+    fn save_state(&self) -> Vec<u8>;
+
+    /// Load plugin state from bytes.
+    ///
+    /// Uses the same format as VST3 for cross-format compatibility.
+    /// Called by AU host for preset loading.
+    fn load_state(&mut self, data: &[u8]) -> AuResult<()>;
+
+    /// Reset DSP state (clear delay lines, reset filters, etc.).
+    ///
+    /// Called when the transport stops/starts or when the plugin is
+    /// activated/deactivated.
+    fn reset(&mut self);
+
+    /// Get the tail length in samples.
+    ///
+    /// Returns the number of samples the plugin will continue to output
+    /// after input has stopped (e.g., reverb/delay tail).
+    fn tail_samples(&self) -> u32;
+
+    /// Get the processing latency in samples.
+    ///
+    /// Returns the latency introduced by the plugin's processing.
+    /// Used by the host for delay compensation.
+    fn latency_samples(&self) -> u32;
+
+    /// Process audio (f32).
+    ///
+    /// Only valid when prepared. Returns error if not in prepared state.
+    ///
+    /// # Arguments
+    /// * `inputs` - Slice of input channel slices
+    /// * `outputs` - Slice of mutable output channel slices
+    /// * `num_samples` - Number of samples to process
+    fn process(
+        &mut self,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+        num_samples: usize,
+    ) -> AuResult<()>;
+
+    /// Process audio with full process context.
+    ///
+    /// This is the primary processing method that includes transport, timing,
+    /// and other contextual information. Plugins should prefer implementing this
+    /// over the basic `process` method.
+    ///
+    /// # Arguments
+    /// * `inputs` - Slice of input channel slices
+    /// * `outputs` - Slice of mutable output channel slices
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_context(
+        &mut self,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: delegate to basic process without context
+        self.process(inputs, outputs, context.num_samples)
+    }
+
+    /// Process audio (f64).
+    ///
+    /// Only valid when prepared. Returns error if not in prepared state.
+    ///
+    /// # Arguments
+    /// * `inputs` - Slice of input channel slices
+    /// * `outputs` - Slice of mutable output channel slices
+    /// * `num_samples` - Number of samples to process
+    fn process_f64(
+        &mut self,
+        _inputs: &[&[f64]],
+        _outputs: &mut [&mut [f64]],
+        _num_samples: usize,
+    ) -> AuResult<()> {
+        // Default: not supported (plugin only supports f32)
+        Err(AuError::InvalidState(
+            "f64 processing not supported".to_string(),
+        ))
+    }
+
+    /// Process audio with full process context (f64).
+    ///
+    /// This is the f64 equivalent of process_with_context.
+    ///
+    /// # Arguments
+    /// * `inputs` - Slice of input channel slices
+    /// * `outputs` - Slice of mutable output channel slices
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_context_f64(
+        &mut self,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: delegate to basic f64 process without context
+        self.process_f64(inputs, outputs, context.num_samples)
+    }
+
+    /// Process audio with auxiliary buses (f32).
+    ///
+    /// This method provides access to auxiliary input/output buses (e.g., sidechain inputs).
+    /// Plugins that don't use auxiliary buses can rely on the default implementation which
+    /// delegates to `process_with_context`.
+    ///
+    /// # Arguments
+    /// * `inputs` - Main bus input channel slices
+    /// * `outputs` - Main bus output channel slices
+    /// * `aux_inputs` - Auxiliary input buses (each bus is a slice of channel slices)
+    /// * `aux_outputs` - Auxiliary output buses (each bus is a slice of channel slices)
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_aux(
+        &mut self,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+        _aux_inputs: &[Vec<&[f32]>],
+        _aux_outputs: &mut [Vec<&mut [f32]>],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: ignore aux buses and delegate to basic process_with_context
+        self.process_with_context(inputs, outputs, context)
+    }
+
+    /// Process audio with auxiliary buses (f64).
+    ///
+    /// This is the f64 equivalent of process_with_aux.
+    ///
+    /// # Arguments
+    /// * `inputs` - Main bus input channel slices
+    /// * `outputs` - Main bus output channel slices
+    /// * `aux_inputs` - Auxiliary input buses (each bus is a slice of channel slices)
+    /// * `aux_outputs` - Auxiliary output buses (each bus is a slice of channel slices)
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_aux_f64(
+        &mut self,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+        _aux_inputs: &[Vec<&[f64]>],
+        _aux_outputs: &mut [Vec<&mut [f64]>],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: ignore aux buses and delegate to basic process_with_context_f64
+        self.process_with_context_f64(inputs, outputs, context)
+    }
+
+    /// Process audio with auxiliary buses and MIDI (f32).
+    ///
+    /// This is the primary processing method for instruments and MIDI effects.
+    /// Provides access to MIDI events for the current buffer.
+    ///
+    /// # Arguments
+    /// * `inputs` - Main bus input channel slices
+    /// * `outputs` - Main bus output channel slices
+    /// * `aux_inputs` - Auxiliary input buses
+    /// * `aux_outputs` - Auxiliary output buses
+    /// * `midi_events` - MIDI events for this buffer (sorted by sample offset)
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_midi(
+        &mut self,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+        aux_inputs: &[Vec<&[f32]>],
+        aux_outputs: &mut [Vec<&mut [f32]>],
+        _midi_events: &[MidiEvent],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: ignore MIDI and delegate to process_with_aux
+        self.process_with_aux(inputs, outputs, aux_inputs, aux_outputs, context)
+    }
+
+    /// Process audio with auxiliary buses and MIDI (f64).
+    ///
+    /// This is the f64 equivalent of process_with_midi.
+    ///
+    /// # Arguments
+    /// * `inputs` - Main bus input channel slices
+    /// * `outputs` - Main bus output channel slices
+    /// * `aux_inputs` - Auxiliary input buses
+    /// * `aux_outputs` - Auxiliary output buses
+    /// * `midi_events` - MIDI events for this buffer (sorted by sample offset)
+    /// * `context` - Processing context with transport, sample rate, timing, etc.
+    fn process_with_midi_f64(
+        &mut self,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+        aux_inputs: &[Vec<&[f64]>],
+        aux_outputs: &mut [Vec<&mut [f64]>],
+        _midi_events: &[MidiEvent],
+        context: &ProcessContext,
+    ) -> AuResult<()> {
+        // Default: ignore MIDI and delegate to process_with_aux_f64
+        self.process_with_aux_f64(inputs, outputs, aux_inputs, aux_outputs, context)
+    }
+
+    /// Apply parameter events from host automation.
+    ///
+    /// This method is called before processing audio to apply sample-accurate
+    /// parameter changes from the host. The default implementation does nothing.
+    ///
+    /// # Arguments
+    /// * `immediate` - Immediate parameter value changes
+    /// * `ramps` - Ramped parameter changes for smooth automation
+    fn apply_parameter_events(
+        &mut self,
+        _immediate: &[crate::render::AuParameterEvent],
+        _ramps: &[crate::render::AuParameterRampEvent],
+    ) -> AuResult<()> {
+        // Default: do nothing
+        Ok(())
+    }
+
+    /// Get reference to MIDI CC state (if configured).
+    ///
+    /// Returns `None` if the plugin didn't configure MIDI CC tracking via
+    /// `PluginConfig::midi_cc_config()`. When `Some`, the state contains
+    /// current values for all enabled MIDI controllers (CC, pitch bend, aftertouch).
+    ///
+    /// The framework automatically updates this state from incoming MIDI events
+    /// and passes it to `ProcessContext` so plugins can query values via
+    /// `context.midi_cc()`.
+    fn midi_cc_state(&self) -> Option<&beamer_core::MidiCcState> {
+        None // Default implementation
+    }
+
+    /// Process MIDI events (input → output transformation).
+    ///
+    /// This method allows plugins to process, transform, or generate MIDI events.
+    /// The default implementation passes through all input events unchanged.
+    ///
+    /// # Arguments
+    /// * `input` - Input MIDI events for this buffer
+    /// * `output` - Output MIDI buffer to write events to
+    ///
+    /// # Examples
+    /// - MIDI effects: Transpose notes, change velocities, add effects
+    /// - Instruments: Generate note-off events for voice management
+    /// - Arpeggiators: Transform held notes into patterns
+    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::midi::MidiBuffer) {
+        // Default: pass through all events
+        for event in input {
+            output.push(event.clone());
+        }
+    }
+}

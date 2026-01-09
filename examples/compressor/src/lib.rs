@@ -21,6 +21,9 @@ use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
+#[cfg(target_os = "macos")]
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
@@ -29,13 +32,25 @@ use beamer::{EnumParameter, HasParameters, Parameters};
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xB1C2D3E4, 0xF5061728, 0x394A5B6C, 0x7D8E9F00);
 
-/// Static plugin configuration
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor", COMPONENT_UID)
+/// Shared plugin configuration (format-agnostic metadata)
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_sub_categories("Fx|Dynamics");
+
+/// VST3-specific configuration
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+
+/// AU-specific configuration
+/// Uses manufacturer code "Demo" and subtype "comp" for identification
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Demo"),
+    fourcc!(b"comp"),
+);
 
 // =============================================================================
 // Compression Ratio Enum
@@ -564,4 +579,11 @@ impl AudioProcessor for CompressorProcessor {
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<CompressorPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<CompressorPlugin>);
+
+// =============================================================================
+// Audio Unit Export
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, CompressorPlugin);

@@ -1,0 +1,26 @@
+[package]
+name = "beamer-au"
+version = "0.1.6"
+edition = "2021"
+description = "Audio Unit (AUv3) support for Beamer audio plugin framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/helpermedia/beamer"
+keywords = ["audio", "plugin", "au", "audiounit", "music"]
+categories = ["multimedia::audio"]
+
+[features]
+default = []
+sysex-heap-fallback = []
+
+[dependencies]
+beamer-core = { path = "../beamer-core" }
+log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSArray", "NSDictionary", "NSData"] }
+block2 = "0.6"
+
+# Note: objc2-audio-toolbox may not have all AU bindings.
+# We may need to use raw objc2 declarations or contribute bindings upstream.
+# For now, we'll stub what's needed.

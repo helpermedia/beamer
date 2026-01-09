@@ -13,6 +13,9 @@ use beamer::prelude::*;
 use beamer::vst3_impl::vst3;
 use beamer::{HasParameters, Parameters}; // Import the derive macros
 
+#[cfg(target_os = "macos")]
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
@@ -21,16 +24,28 @@ use beamer::{HasParameters, Parameters}; // Import the derive macros
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xDCDDB4BA, 0x2D6A4EC3, 0xA526D3E7, 0x244FAAE3);
 
-/// Static plugin configuration
-/// Note: No .with_controller() - this is a simple plugin without custom GUI.
-/// The host will use its generic parameter UI. For plugins with WebView GUI,
-/// you would add .with_controller(CONTROLLER_UID).with_editor()
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain", COMPONENT_UID)
+/// Shared plugin configuration (format-agnostic metadata)
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_sub_categories("Fx|Dynamics");
+
+/// VST3-specific configuration
+/// Note: No .with_controller() - this is a simple plugin without custom GUI.
+/// The host will use its generic parameter UI. For plugins with WebView GUI,
+/// you would add .with_controller(CONTROLLER_UID)
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+
+/// AU-specific configuration
+/// Uses manufacturer code "Demo" and subtype "gain" for identification
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Demo"),
+    fourcc!(b"gain"),
+);
 
 // =============================================================================
 // Parameters
@@ -270,4 +285,11 @@ impl AudioProcessor for GainProcessor {
 // =============================================================================
 
 // Export VST3 entry points using the generic wrapper
-export_vst3!(CONFIG, Vst3Processor<GainPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+
+// =============================================================================
+// Audio Unit Export
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, GainPlugin);

@@ -11,8 +11,9 @@ This document provides detailed API documentation for Beamer. For high-level arc
 1. [Core API](#1-core-api)
 2. [MIDI Reference](#2-midi-reference)
 3. [VST3 Integration](#3-vst3-integration)
-4. [Future Phases](#4-future-phases)
-5. [Appendices](#appendices)
+4. [Audio Unit Integration](#4-audio-unit-integration)
+5. [Future Phases](#5-future-phases)
+6. [Appendices](#appendices)
 
 ---
 
@@ -1384,9 +1385,331 @@ PluginConfig::new("My Synth", UID).with_category("Instrument")
 
 ---
 
-## 4. Future Phases
+## 4. Audio Unit Integration
 
-### 4.1 Phase 2: WebView Integration
+Beamer supports Audio Unit v3 plugins on macOS through the `beamer-au` crate. Audio Units share the same core traits (`Plugin`, `AudioProcessor`, `Parameters`) as VST3, allowing you to target both formats from a single codebase.
+
+### 4.1 Architecture Overview
+
+The `beamer-au` crate provides a native Rust implementation using `objc2` bindings to Apple's AudioToolbox framework. Unlike wrapper-based approaches, this directly integrates with `AUAudioUnit` and translates AU calls to Beamer's core traits.
+
+```
+┌─────────────────────────────────────────────┐
+│   AU Host (Logic, GarageBand, Reaper)       │
+├─────────────────────────────────────────────┤
+│         AUAudioUnit (Objective-C)           │
+├─────────────────────────────────────────────┤
+│           beamer-au (Rust wrapper)          │
+│   Translates AU → Plugin/AudioProcessor     │
+├─────────────────────────────────────────────┤
+│              beamer-core traits             │
+│   Plugin, AudioProcessor, Parameters        │
+└─────────────────────────────────────────────┘
+```
+
+**Key Features (Full VST3 Parity):**
+- Native AUv3 support (macOS 10.11+)
+- Full parameter automation via `AUParameterTree`
+- Parameter automation with smoother interpolation (buffer-quantized, matches VST3)
+- MIDI input (legacy MIDI 1.0 and MIDI 2.0 UMP, 1024 event buffer)
+- MIDI output via `scheduleMIDIEventBlock` (instruments/MIDI effects only)
+- MIDI CC state tracking (`MidiCcState` for mod wheel, pitch bend, etc.)
+- SysEx output via pre-allocated `SysExOutputPool`
+- Sidechain/auxiliary buses with real bus layout forwarding
+- Full state persistence (processor `save_state`/`load_state` + deferred loading)
+- f32/f64 processing with pre-allocated conversion buffers
+- Transport information (tempo, beat position, playback state)
+- Real-time safe: no heap allocation in render path
+
+### 4.2 Configuration
+
+Audio Unit plugins require two configuration objects: the shared `PluginConfig` (from `beamer-core`) and the AU-specific `AuConfig`.
+
+```rust
+use beamer_core::PluginConfig;
+use beamer_au::{AuConfig, ComponentType, fourcc};
+
+// Shared configuration (format-agnostic metadata)
+pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+    .with_vendor("My Company")
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_sub_categories("Fx|Dynamics");
+
+// AU-specific configuration
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,      // Effect, MusicEffect, or Generator
+    fourcc!(b"Myco"),           // Manufacturer code (4 chars)
+    fourcc!(b"mypg"),           // Subtype code (4 chars, unique)
+);
+```
+
+#### Component Types
+
+| Type | Description | Use For |
+|------|-------------|---------|
+| `ComponentType::Effect` | Standard audio effect | EQ, compressor, reverb |
+| `ComponentType::MusicEffect` | Musical effects receiving MIDI | Arpeggiator, harmonizer |
+| `ComponentType::Generator` | Instrument/synthesizer | Synths, samplers, drums |
+
+#### FourCC Codes
+
+Audio Units use FourCharCode identifiers:
+
+```rust
+// Using the fourcc! macro
+fourcc!(b"Demo")  // Compile-time constant
+
+// Or at runtime
+FourCharCode::from_bytes(*b"Demo")
+FourCharCode::from_str("Demo")
+```
+
+**Best Practices:**
+- Manufacturer code: Use your company/product abbreviation
+- Subtype code: Unique identifier for this specific plugin
+- Avoid conflicts: Check [Apple's registry](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
+- Use lowercase for effects, MixedCase for instruments (convention)
+
+### 4.3 Export Macro
+
+The `export_au!` macro creates the necessary entry points for Audio Unit discovery and instantiation:
+
+```rust
+use beamer::prelude::*;
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
+#[cfg(target_os = "macos")]
+use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+
+// Shared config
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
+    .with_vendor("Beamer Framework")
+    .with_version(env!("CARGO_PKG_VERSION"));
+
+// AU config
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Demo"),
+    fourcc!(b"gain"),
+);
+
+// Export for macOS only
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, MyPlugin);
+```
+
+**Multi-Format Export:**
+
+```rust
+// Export both VST3 and AU from the same plugin
+#[cfg(not(target_os = "macos"))]
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, MyPlugin);
+```
+
+### 4.4 Bundle Structure
+
+Audio Unit plugins are App Extensions with `.component` extension:
+
+```
+MyPlugin.component/
+├── Contents/
+│   ├── Info.plist              # Metadata and AudioComponents
+│   ├── MacOS/
+│   │   └── MyPlugin            # Rust binary (universal or arch-specific)
+│   ├── PkgInfo
+│   └── Resources/
+│       └── (assets, if any)
+```
+
+**Info.plist AudioComponents:**
+
+```xml
+<key>AudioComponents</key>
+<array>
+    <dict>
+        <key>type</key>
+        <string>aufx</string>              <!-- Effect -->
+        <key>subtype</key>
+        <string>gain</string>              <!-- Your subtype code -->
+        <key>manufacturer</key>
+        <string>Demo</string>              <!-- Your manufacturer code -->
+        <key>name</key>
+        <string>Beamer Gain</string>
+        <key>version</key>
+        <integer>65536</integer>           <!-- 1.0.0 = 0x00010000 -->
+        <key>factoryFunction</key>
+        <string>BeamerAudioUnitFactory</string>
+    </dict>
+</array>
+```
+
+**Component Type Codes:**
+
+| ComponentType | Type Code | Description |
+|--------------|-----------|-------------|
+| `Effect` | `aufx` | Audio effect |
+| `MusicEffect` | `aumf` | Musical effect (receives MIDI) |
+| `Generator` | `aumu` | Instrument/generator |
+
+### 4.5 Build System
+
+Use `cargo xtask` to build and bundle Audio Unit plugins:
+
+```bash
+# Build AU bundle
+cargo xtask bundle my-plugin --au --release
+
+# Build and install to system location
+cargo xtask bundle my-plugin --au --release --install
+
+# Build both VST3 and AU
+cargo xtask bundle my-plugin --vst3 --au --release --install
+```
+
+**Install Location:**
+
+Audio Unit plugins are installed to:
+```
+~/Library/Audio/Plug-Ins/Components/
+```
+
+**Code Signing:**
+
+macOS requires code signing for plugins to load:
+
+```bash
+# Ad-hoc signing (development)
+codesign --force --deep --sign - MyPlugin.component
+
+# Developer ID signing (distribution)
+codesign --force --deep --sign "Developer ID Application: Your Name" MyPlugin.component
+```
+
+The `xtask` tool automatically performs ad-hoc signing during bundling.
+
+### 4.6 Current Status
+
+**Production Ready:**
+- ✅ Audio effects (all bus configurations)
+- ✅ Instruments/generators (MIDI input + output)
+- ✅ MIDI effects (MIDI input + output)
+- ✅ Sidechain/auxiliary buses
+- ✅ Parameter automation (full KVO integration)
+- ✅ State persistence (save/load presets)
+- ✅ f32 and f64 processing
+- ✅ Transport information (tempo, beat, playback state)
+
+**Limitations:**
+- No custom UI (uses host generic parameter UI)
+- MIDI output only for instruments/MIDI effects (not audio effects)
+- macOS only (AUv3 is Apple-exclusive)
+- No AUv2 legacy support (v3 only)
+
+**Tested Hosts:**
+- Logic Pro (parameter automation, state persistence)
+- Reaper (basic functionality verified)
+
+**Not Yet Tested:**
+- GarageBand
+- MainStage
+- Ableton Live (AU support varies)
+
+### 4.7 Example: Multi-Format Plugin
+
+```rust
+use beamer::prelude::*;
+use beamer::{HasParameters, Parameters};
+
+// Shared configuration
+pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
+    .with_vendor("My Company")
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_sub_categories("Fx|Dynamics");
+
+// VST3 configuration
+#[cfg(not(target_os = "macos"))]
+use beamer_vst3::{Vst3Config, vst3};
+#[cfg(not(target_os = "macos"))]
+const COMPONENT_UID: vst3::Steinberg::TUID =
+    vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
+#[cfg(not(target_os = "macos"))]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+
+// AU configuration (macOS only)
+#[cfg(target_os = "macos")]
+use beamer_au::{AuConfig, ComponentType, fourcc};
+#[cfg(target_os = "macos")]
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Myco"),
+    fourcc!(b"gain"),
+);
+
+// Plugin implementation (format-agnostic)
+#[derive(Parameters)]
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
+}
+
+#[derive(Default, HasParameters)]
+pub struct GainPlugin {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Plugin for GainPlugin {
+    type Config = NoConfig;
+    type Processor = GainProcessor;
+    fn prepare(self, _config: NoConfig) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl AudioProcessor for GainProcessor {
+    type Plugin = GainPlugin;
+    fn unprepare(self) -> GainPlugin {
+        GainPlugin { parameters: self.parameters }
+    }
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
+        let gain = self.parameters.gain.as_linear() as f32;
+        for (input, output) in buffer.zip_channels() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                *o = *i * gain;
+            }
+        }
+    }
+    fn save_state(&self) -> PluginResult<Vec<u8>> {
+        Ok(self.parameters.save_state())
+    }
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
+        self.parameters.load_state(data).map_err(PluginError::StateError)
+    }
+}
+
+// Format-specific exports
+#[cfg(not(target_os = "macos"))]
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+
+#[cfg(target_os = "macos")]
+export_au!(CONFIG, AU_CONFIG, GainPlugin);
+```
+
+---
+
+## 5. Future Phases
+
+### 5.1 Phase 2: WebView Integration
 
 Add platform-native WebView embedding to plugin windows.
 
@@ -1431,7 +1754,7 @@ pub enum ResourceSource {
 }
 ```
 
-### 4.2 Phase 3: IPC & Parameter Binding
+### 5.2 Phase 3: IPC & Parameter Binding
 
 Tauri-style bidirectional communication between Rust and JavaScript.
 
@@ -1513,21 +1836,54 @@ gain.endEdit();
 | `performEdit` | Set value during gesture |
 | `endEdit` | End automation gesture |
 
-### 4.3 Phase 4: Developer Experience
+### 5.3 Phase 4: Developer Experience
 
 - Hot reload: Detect dev server, auto-refresh on file changes
 - CLI tooling: `cargo beamer new`, `cargo beamer dev`
 - Documentation generation from plugin metadata
 
-### 4.4 Phase 5: Examples & Polish
+### 5.4 Phase 5: Examples & Polish
 
 - Real-world examples (EQ, compressor, synth)
 - Performance profiling and optimization
 - Cross-DAW validation (Cubase, Ableton, Logic, REAPER, Bitwig)
 
+### 5.5 Core API Enhancements
+
+#### Sample-Accurate Parameter Automation
+
+**Current Behavior:** Both VST3 and AU wrappers apply parameter changes at the start of each audio buffer, using the last value in the automation queue. The existing `Smoother` infrastructure then interpolates to avoid zipper noise.
+
+**Limitation:** This approach is buffer-quantized rather than sample-accurate. For most plugins this is imperceptible, but edge cases exist:
+- Ultra-fast LFO modulation of parameters
+- Sample-accurate gate/trigger parameters
+- Precision timing for transient designers
+
+**Planned Enhancement:** Add dynamic ramp support to `beamer_core::Smoother`:
+
+```rust
+// New API (proposed)
+impl Smoother {
+    /// Set target with explicit ramp duration in samples.
+    /// Overrides the default smoothing time for this transition only.
+    pub fn set_target_with_samples(&mut self, target: f64, ramp_samples: u32);
+}
+
+// Usage in parameter handling
+for event in &events.ramps {
+    if let Some(param) = parameters.by_id(event.param_id) {
+        param.set_normalized_with_ramp(event.end_value, event.ramp_duration_samples);
+    }
+}
+```
+
+**Alternative:** Sub-block processing that splits the buffer at parameter event boundaries. Higher overhead but provides true sample-accuracy.
+
+**Priority:** Low — current behavior matches industry standard (VST3 SDK reference implementation uses same approach) and covers 99%+ of use cases.
+
 ---
 
-## Appendices
+## 6. Appendices
 
 ### A. Quick Reference
 
