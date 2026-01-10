@@ -83,6 +83,6 @@
  * @return AudioComponentPlugInInterface* for the AU framework.
  */
 __attribute__((visibility("default")))
-void* BeamerAudioUnitFactory(const AudioComponentDescription* desc);
+void* BeamerAudioUnitFactoryImpl(const AudioComponentDescription* desc);
 
 #endif // BEAMER_AU_WRAPPER_H

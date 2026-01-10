@@ -18,11 +18,6 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=CoreAudio");
 
-        // Export BeamerAudioUnitFactory symbol for AUv2 .component bundles.
-        // This is required because macOS AU hosts look up this symbol by name
-        // (specified in Info.plist's factoryFunction key).
-        println!("cargo:rustc-cdylib-link-arg=-Wl,-exported_symbol,_BeamerAudioUnitFactory");
-
         // Rerun if ObjC files change
         println!("cargo:rerun-if-changed=objc/BeamerAuWrapper.m");
         println!("cargo:rerun-if-changed=objc/BeamerAuBridge.h");

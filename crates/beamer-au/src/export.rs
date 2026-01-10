@@ -109,15 +109,22 @@ macro_rules! export_au {
             __beamer_au_do_register();
         }
 
-        // Force the linker to include the ObjC wrapper and factory function.
-        #[link(name = "beamer_au_objc", kind = "static")]
-        extern "C" {
-            fn BeamerAudioUnitFactory(desc: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        // Re-export BeamerAudioUnitFactory with #[no_mangle] to ensure the
+        // linker keeps it visible for AU hosts to call. This Rust wrapper
+        // delegates to the ObjC implementation (BeamerAudioUnitFactoryImpl)
+        // in the static library.
+        #[no_mangle]
+        #[doc(hidden)]
+        pub unsafe extern "C" fn BeamerAudioUnitFactory(
+            desc: *const std::ffi::c_void,
+        ) -> *mut std::ffi::c_void {
+            #[link(name = "beamer_au_objc", kind = "static")]
+            extern "C" {
+                fn BeamerAudioUnitFactoryImpl(
+                    desc: *const std::ffi::c_void,
+                ) -> *mut std::ffi::c_void;
+            }
+            BeamerAudioUnitFactoryImpl(desc)
         }
-
-        #[used]
-        static __BEAMER_AU_FACTORY_REF: unsafe extern "C" fn(
-            *const std::ffi::c_void,
-        ) -> *mut std::ffi::c_void = BeamerAudioUnitFactory;
     };
 }

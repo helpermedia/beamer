@@ -942,6 +942,7 @@ typedef struct BeamerAuPlugInInstance {
 
 /// Open callback - creates a new BeamerAuWrapper instance.
 static OSStatus BeamerAuOpen(void* self, AudioComponentInstance component) {
+    (void)component;
     BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)self;
 
     NSError* error = nil;
@@ -968,6 +969,7 @@ static OSStatus BeamerAuClose(void* self) {
 /// When NULL is returned, the AU framework uses the modern AUAudioUnit
 /// methods (parameterTree, internalRenderBlock, etc.) instead of v2 selectors.
 static AudioComponentMethod BeamerAuLookup(SInt16 selector) {
+    (void)selector;
     return NULL;
 }
 
@@ -987,7 +989,7 @@ static void BeamerAuRegisterSubclass(const AudioComponentDescription* desc) {
 /// This function is specified in Info.plist's factoryFunction key.
 /// Returns an AudioComponentPlugInInterface that wraps our AUAudioUnit subclass.
 __attribute__((visibility("default")))
-void* BeamerAudioUnitFactory(const AudioComponentDescription* desc) {
+void* BeamerAudioUnitFactoryImpl(const AudioComponentDescription* desc) {
     // Register subclass on first call (Rust factory should be ready by now)
     BeamerAuRegisterSubclass(desc);
 
