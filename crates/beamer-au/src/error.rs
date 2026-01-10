@@ -1,48 +1,11 @@
 //! AU error types.
+//!
+//! This module re-exports `PluginError` and `PluginResult` from `beamer_core`
+//! for consistency across plugin formats. It also provides AU-specific OS status
+//! code constants and conversion utilities.
 
-use std::fmt;
-
-/// Error type for AU operations.
-#[derive(Debug)]
-pub enum AuError {
-    /// Invalid configuration (e.g., invalid sample rate, channel count).
-    InvalidConfiguration(String),
-
-    /// Resource allocation failed (e.g., buffer allocation).
-    AllocationFailed(String),
-
-    /// Audio processing error.
-    ProcessingError(String),
-
-    /// State serialization/deserialization error.
-    StateError(String),
-
-    /// Plugin not in expected state (e.g., processing before prepare).
-    InvalidState(String),
-
-    /// Objective-C runtime error.
-    #[cfg(target_os = "macos")]
-    ObjcError(String),
-}
-
-impl fmt::Display for AuError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidConfiguration(msg) => write!(f, "Invalid configuration: {}", msg),
-            Self::AllocationFailed(msg) => write!(f, "Allocation failed: {}", msg),
-            Self::ProcessingError(msg) => write!(f, "Processing error: {}", msg),
-            Self::StateError(msg) => write!(f, "State error: {}", msg),
-            Self::InvalidState(msg) => write!(f, "Invalid state: {}", msg),
-            #[cfg(target_os = "macos")]
-            Self::ObjcError(msg) => write!(f, "Objective-C error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for AuError {}
-
-/// Result type alias for AU operations.
-pub type AuResult<T> = Result<T, AuError>;
+// Re-export core error types for use throughout beamer-au
+pub use beamer_core::{PluginError, PluginResult};
 
 // OSStatus error codes commonly used in Audio Unit
 #[cfg(target_os = "macos")]

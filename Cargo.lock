@@ -16,10 +16,8 @@ name = "beamer-au"
 version = "0.1.6"
 dependencies = [
  "beamer-core",
- "block2",
+ "cc",
  "log",
- "objc2",
- "objc2-foundation",
 ]
 
 [[package]]
@@ -54,18 +52,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitflags"
-version = "2.10.0"
+name = "cc"
+version = "1.2.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
-
-[[package]]
-name = "block2"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
+checksum = "cd4932aefd12402b36c60956a4fe0035421f544799057659ff86f923657aada3"
 dependencies = [
- "objc2",
+ "find-msvc-tools",
+ "shlex",
 ]
 
 [[package]]
@@ -93,14 +86,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dispatch2"
-version = "0.3.0"
+name = "find-msvc-tools"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89a09f22a6c6069a18470eb92d2298acf25463f14256d24778e1230d789a2aec"
-dependencies = [
- "bitflags",
- "objc2",
-]
+checksum = "f449e6c6c08c865631d4890cfacf252b3d396c9bcc83adb6623cdb02a8336c41"
 
 [[package]]
 name = "gain"
@@ -110,12 +99,6 @@ dependencies = [
  "beamer-au",
  "vst3",
 ]
-
-[[package]]
-name = "libc"
-version = "0.2.180"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
 
 [[package]]
 name = "log"
@@ -130,45 +113,6 @@ dependencies = [
  "beamer",
  "beamer-au",
  "vst3",
-]
-
-[[package]]
-name = "objc2"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c2599ce0ec54857b29ce62166b0ed9b4f6f1a70ccc9a71165b6154caca8c05"
-dependencies = [
- "objc2-encode",
-]
-
-[[package]]
-name = "objc2-core-foundation"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
-dependencies = [
- "bitflags",
- "dispatch2",
- "objc2",
-]
-
-[[package]]
-name = "objc2-encode"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
-
-[[package]]
-name = "objc2-foundation"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
-dependencies = [
- "bitflags",
- "block2",
- "libc",
- "objc2",
- "objc2-core-foundation",
 ]
 
 [[package]]
@@ -188,6 +132,12 @@ checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "syn"

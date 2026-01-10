@@ -6,10 +6,10 @@
 //! into macOS Audio Unit (AUv3) components. It handles all the AU-specific details like:
 //!
 //! - Audio component registration and factory management
-//! - AUAudioUnit subclass implementation via objc2
+//! - Native Objective-C AUAudioUnit subclass with C-ABI bridge to Rust
 //! - Parameter tree mapping with bidirectional KVO callbacks
 //! - Render block creation with zero-allocation audio processing
-//! - MIDI input extraction (both MIDI 1.0 and MIDI 2.0 UMP formats)
+//! - MIDI input/output extraction (both MIDI 1.0 and MIDI 2.0 UMP formats)
 //! - Transport state extraction (playback, recording, cycling)
 //! - Auxiliary bus support (sidechain inputs/outputs)
 //! - State persistence (preset save/load)
@@ -24,9 +24,9 @@
 //!
 //! ## Architecture
 //!
-//! Uses **type erasure** to work around objc2's `declare_class!` limitation.
-//! A single Objective-C class (`BeamerAudioUnit`) works with any plugin through
-//! dynamic dispatch on the `AuPluginInstance` trait.
+//! Uses a **hybrid Objective-C/Rust architecture**:
+//! - **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
+//! - **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
 //!
 //! ```text
 //! User Plugin (implements beamer_core::Plugin)
@@ -35,7 +35,9 @@
 //!        ↓
 //! Box<dyn AuPluginInstance> (type erasure)
 //!        ↓
-//! BeamerAudioUnit (ObjC class via declare_class!)
+//! C-ABI bridge (src/bridge.rs ↔ objc/BeamerAuBridge.h)
+//!        ↓
+//! BeamerAuWrapper (native ObjC AUAudioUnit subclass)
 //!        ↓
 //! AU host (Logic Pro, GarageBand, etc.)
 //! ```
@@ -88,7 +90,7 @@ pub mod error;
 
 // Re-exports
 pub use config::{AuConfig, ComponentType, FourCharCode};
-pub use error::{AuError, AuResult};
+pub use error::{PluginError, PluginResult};
 
 // Re-export shared PluginConfig from beamer-core
 pub use beamer_core::PluginConfig;
@@ -98,7 +100,7 @@ pub use beamer_core::PluginConfig;
 // =============================================================================
 
 #[cfg(target_os = "macos")]
-pub mod audio_unit;
+pub mod bridge;
 #[cfg(target_os = "macos")]
 pub mod buffer_storage;
 #[cfg(target_os = "macos")]
@@ -114,13 +116,9 @@ pub mod factory;
 #[cfg(target_os = "macos")]
 pub mod instance;
 #[cfg(target_os = "macos")]
-pub mod ivar_arc;
-#[cfg(target_os = "macos")]
 pub mod lifecycle;
 #[cfg(target_os = "macos")]
 pub mod midi;
-#[cfg(target_os = "macos")]
-pub mod parameters;
 #[cfg(target_os = "macos")]
 pub mod processor;
 #[cfg(target_os = "macos")]
@@ -132,18 +130,21 @@ mod transport; // Keep private for now
 
 // Re-exports for macOS-only modules
 #[cfg(target_os = "macos")]
-pub use audio_unit::{create_audio_unit_instance, BeamerAudioUnit};
-#[cfg(target_os = "macos")]
 pub use bus_config::{BusInfo, BusType, CachedBusConfig};
 #[cfg(target_os = "macos")]
 pub use error_helpers::{DEFAULT_CHANNEL_COUNT, DEFAULT_MAX_FRAMES, DEFAULT_SAMPLE_RATE};
 #[cfg(target_os = "macos")]
 pub use instance::AuPluginInstance;
 #[cfg(target_os = "macos")]
-pub use ivar_arc::{IvarArc, IvarCell};
-#[cfg(target_os = "macos")]
 pub use processor::AuProcessor;
 #[cfg(target_os = "macos")]
 pub use render::{AuParameterEvent, AuParameterRampEvent, ParameterEventBuffer};
 #[cfg(target_os = "macos")]
 pub use sysex_pool::SysExOutputPool;
+
+// C-ABI bridge exports for hybrid AU architecture
+#[cfg(target_os = "macos")]
+pub use bridge::{
+    BeamerAuBusConfig, BeamerAuBusInfo, BeamerAuBusType, BeamerAuInstanceHandle,
+    BeamerAuParameterInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
+};

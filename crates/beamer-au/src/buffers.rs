@@ -32,8 +32,6 @@ use std::ffi::c_void;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use objc2::encode::{Encode, Encoding, RefEncode};
-
 // Static flag to ensure interleaved audio warning only logs once per session
 static INTERLEAVED_WARNING_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -52,23 +50,6 @@ pub struct AudioBuffer {
     pub data: *mut c_void,
 }
 
-// SAFETY: AudioBuffer has a well-defined memory layout
-unsafe impl Encode for AudioBuffer {
-    const ENCODING: Encoding = Encoding::Struct(
-        "AudioBuffer",
-        &[
-            Encoding::UInt,                     // number_channels
-            Encoding::UInt,                     // data_byte_size
-            Encoding::Pointer(&Encoding::Void), // data
-        ],
-    );
-}
-
-// SAFETY: AudioBuffer is a C-compatible struct with defined layout
-unsafe impl RefEncode for AudioBuffer {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&<Self as Encode>::ENCODING);
-}
-
 /// Core Audio AudioBufferList structure.
 ///
 /// Contains a variable number of AudioBuffer structures.
@@ -81,22 +62,6 @@ pub struct AudioBufferList {
     /// First buffer (actual array continues beyond this).
     /// Use `buffer_at()` for safe access.
     pub buffers: [AudioBuffer; 1],
-}
-
-// SAFETY: AudioBufferList has a well-defined memory layout
-unsafe impl Encode for AudioBufferList {
-    const ENCODING: Encoding = Encoding::Struct(
-        "AudioBufferList",
-        &[
-            Encoding::UInt,                                         // number_buffers
-            Encoding::Array(1, &<AudioBuffer as Encode>::ENCODING), // buffers
-        ],
-    );
-}
-
-// SAFETY: AudioBufferList is a C-compatible struct with defined layout
-unsafe impl RefEncode for AudioBufferList {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&<Self as Encode>::ENCODING);
 }
 
 impl AudioBufferList {

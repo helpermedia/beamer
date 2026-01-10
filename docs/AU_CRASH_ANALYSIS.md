@@ -219,8 +219,112 @@ unsafe {
 - `crates/beamer-au/src/factory.rs` - AU component registration
 - `crates/beamer-au/src/export.rs` - Entry point macros
 
+## Investigation Results (January 2026)
+
+### Tests Performed
+
+We performed extensive testing to isolate the crash cause:
+
+#### 1. Diagnostic Code Added
+Added runtime inspection of class metadata before returning from factory:
+```
+=== AU CLASS DIAGNOSTICS ===
+Class pointer: 0xa08c243c0
+Class name: BeamerAudioUnit
+Superclass: AUAudioUnit
+internalRenderBlock method: 0x8000000104b7f61a
+internalRenderBlock IMP: 0x1170e4ecc
+internalRenderBlock encoding: @?@:
+allocateRenderResourcesAndReturnError: method: 0x8000000104b7d9aa
+allocateRenderResourcesAndReturnError: IMP: 0x1170e4f9c
+...
+Instance created at: 0x104b82c30
+Instance responds to internalRenderBlock: true
+Factory returning now...
+```
+
+**Finding**: All method implementations (IMPs) are valid, non-null pointers. Method encodings are correct (`@?@:` for block-returning methods).
+
+#### 2. Used objc2-audio-toolbox Proper Bindings
+Replaced manual `extern_class!` declaration with proper `AUAudioUnit` from `objc2-audio-toolbox` crate.
+
+**Finding**: Same crash. Using official framework bindings doesn't help.
+
+#### 3. Minimal Class Test (Critical Finding)
+Created a completely minimal AUAudioUnit subclass with:
+- NO instance variables (ivars)
+- NO method overrides
+- ONLY relies on superclass
+
+```rust
+define_class!(
+    #[unsafe(super(AUAudioUnit))]
+    #[name = "MinimalBeamerAU"]
+    pub struct MinimalBeamerAU;
+    // INTENTIONALLY NO METHOD IMPLEMENTATIONS
+);
+```
+
+**Finding**: **STILL CRASHES**. Even a minimal subclass with absolutely no customization crashes in `APComponent::newInstance + 628`.
+
+### Conclusions from Testing
+
+1. **Not our method implementations**: The minimal class with no overrides crashes
+2. **Not our ivars**: The minimal class has no ivars and still crashes
+3. **Not incorrect AUAudioUnit declaration**: Using objc2-audio-toolbox's proper binding doesn't help
+4. **Not method encoding issues**: All IMPs are valid, encodings are correct
+
+**Root Cause**: The issue is fundamental to how `objc2`'s `define_class!` macro generates class metadata. Something in the generated class structure is incompatible with what Apple's `AudioToolboxCore` framework expects.
+
+### Related Issues
+
+- [objc2 Issue #606](https://github.com/madsmtm/objc2/issues/606): Similar crash reports with delegate classes using `declare_class!`
+- The objc2 documentation notes fundamental safety concerns: "Fundamentally cannot be made safe, since you're calling into unknown Objective-C classes"
+
+## Recommended Path Forward
+
+Given that even a minimal objc2 subclass crashes, the options are:
+
+### 1. Hybrid Architecture (Recommended)
+
+Write the `AUAudioUnit` subclass in **Objective-C or Swift**, then bridge to Rust only for DSP:
+
+```
+┌──────────────────────────────────────┐
+│  Objective-C/Swift AU Wrapper        │
+│  (AUAudioUnit subclass)              │
+│  - inputBusses/outputBusses          │
+│  - internalRenderBlock               │
+│  - parameterTree                     │
+└───────────────┬──────────────────────┘
+                │ C-ABI calls
+                ▼
+┌──────────────────────────────────────┐
+│  Rust DSP Core                       │
+│  - beamer-core traits                │
+│  - Audio processing                  │
+│  - Parameter handling                │
+└──────────────────────────────────────┘
+```
+
+This approach:
+- Guarantees ABI compatibility with macOS
+- Keeps all DSP in Rust for performance and safety
+- Is the pattern used by [SwiftRustAudioExample](https://github.com/cornedriesprong/SwiftRustAudioExample)
+
+### 2. File an Issue with objc2
+
+Report this issue to the objc2 maintainers at [github.com/madsmtm/objc2](https://github.com/madsmtm/objc2) with:
+- The minimal reproduction case
+- The crash stack trace
+- The finding that even empty subclasses crash
+
+### 3. Try the Older objc Crate
+
+The predecessor `objc` crate uses different class declaration mechanics and might work. However, this would require significant refactoring and the crate is less actively maintained.
+
 ## Conclusion
 
 This appears to be a fundamental incompatibility between objc2's `define_class!` and Apple's AUAudioUnit class. The crash occurs in Apple's code after we return a valid instance, suggesting the class metadata itself is somehow malformed or incompatible with what AudioToolbox expects.
 
-The most reliable path forward is the hybrid architecture approach, where Objective-C handles the AU wrapper and Rust handles the DSP. This guarantees ABI compatibility while still allowing the core audio processing to be written in Rust.
+**The hybrid architecture approach is the recommended path forward** - it guarantees compatibility while still allowing the core audio processing to be written in Rust. This is also the approach used by other successful Rust audio plugin projects.

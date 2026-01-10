@@ -1,48 +1,36 @@
-//! Render block creation for Audio Unit.
+//! Render block implementation for Audio Unit.
 //!
-//! This module provides the render block that AU hosts call for audio processing.
-//! The render block is created once during `allocateRenderResources` and captures
-//! a reference to the plugin instance.
+//! This module provides the `RenderBlock` type that handles audio processing for AU plugins.
+//! The render block is created during `allocateRenderResources` and called by the native
+//! Objective-C wrapper via C-ABI (`beamer_au_render`).
 //!
-//! # Objective-C Block Handling
+//! # Architecture
 //!
-//! Audio Unit v3 uses Objective-C blocks for callbacks. Blocks are similar to function
-//! pointers but include a capture context and have a more complex memory layout.
+//! In the hybrid ObjC/Rust AU architecture:
+//! - Native Objective-C (`BeamerAuWrapper.m`) creates the ObjC render block
+//! - The ObjC render block calls `beamer_au_render()` via C-ABI
+//! - `beamer_au_render()` delegates to `RenderBlock::process()`
 //!
-//! ## Current Approach: Direct Transmute
+//! # Objective-C Block Callbacks
 //!
-//! This implementation uses `std::mem::transmute` to cast block pointers to function
-//! pointers. This works because:
+//! For calling AU host callbacks (musical context, transport state, pull input),
+//! we use `std::mem::transmute` to cast block pointers to function pointers.
+//! This works because:
 //! - Objective-C blocks have a function pointer at a known offset
 //! - The first parameter is always the block pointer itself
 //! - AU hosts guarantee block validity during render callbacks
 //! - We never store blocks beyond the render callback
 //!
-//! ## Safety Considerations
-//!
-//! The transmute approach requires careful adherence to invariants:
-//! 1. **Signature matching**: Function signatures must exactly match Apple's AU API
-//! 2. **Lifetime**: Blocks are only valid during the render callback
-//! 3. **Threading**: Blocks must only be called from the render thread
-//! 4. **Host contract**: We rely on AU hosts following Apple's API contract
-//!
-//! ## Alternative: block2 Crate
-//!
-//! A safer approach would use the `block2` crate for proper Objective-C block handling.
-//! This would eliminate transmutes but adds a dependency and complexity.
-//!
-//! ## Block Types Used
+//! ## Block Types Called
 //!
 //! 1. **AUHostMusicalContextBlock** (transport.rs): Query tempo, time signature, position
 //! 2. **AUHostTransportStateBlock** (render.rs): Query play/stop/record state
 //! 3. **AURenderPullInputBlock** (render.rs): Pull audio from auxiliary buses
+//! 4. **AUScheduleMIDIEventBlock** (render.rs): Send MIDI output to host
 
 use std::cell::UnsafeCell;
-use std::ffi::{c_void, CStr};
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-
-use block2::{ManualBlockEncoding, RcBlock};
-use objc2::encode::{Encode, Encoding, RefEncode};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::{AudioBuffer, AudioBufferList};
@@ -64,21 +52,26 @@ use beamer_core::{
 ///
 /// # Field Usage
 ///
-/// - `sample_offset`: **Currently unused**. The current implementation applies all
-///   parameter changes at the start of the buffer rather than at the exact sample
-///   position. This matches VST3 behavior and is acceptable because:
+/// - `sample_offset`: **Placeholder for future sample-accurate automation**. The current
+///   implementation applies all parameter changes at the start of the buffer rather than
+///   at the exact sample position. This matches VST3 behavior and is acceptable because:
 ///   - Parameter smoothers interpolate across the buffer anyway
 ///   - True sample-accurate automation would require sub-block processing
 ///   - Most plugins don't require sub-sample precision for parameter changes
+///     This field is preserved for API completeness with AU's `AURenderEventParameter` and
+///     to enable future sample-accurate automation without breaking changes.
 ///
 /// - `parameter_address`: Used to look up the target parameter by ID.
 ///
 /// - `value`: Used to set the parameter's normalized value (0.0-1.0).
 #[derive(Clone, Debug)]
 pub struct AuParameterEvent {
-    /// Sample offset within the current buffer.
-    /// Note: Currently unused; events are applied at buffer start.
-    /// See processor.rs apply_parameter_events() for design rationale.
+    /// Sample offset within the current buffer (placeholder for future sample-accurate automation).
+    ///
+    /// Currently unused: events are applied at buffer start. Preserved for API completeness
+    /// with AU's `AURenderEventParameter.event_sample_time` and to enable future sample-accurate
+    /// automation without breaking changes. See `processor.rs::apply_parameter_events()`.
+    #[allow(dead_code)]
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
@@ -90,19 +83,20 @@ pub struct AuParameterEvent {
 ///
 /// # Field Usage
 ///
-/// - `sample_offset`: **Currently unused**. Ramps are applied at buffer start.
-///   See `AuParameterEvent` documentation for rationale.
+/// - `sample_offset`: **Placeholder for future sample-accurate automation**. Ramps are
+///   currently applied at buffer start. See `AuParameterEvent` documentation for rationale.
 ///
 /// - `parameter_address`: Used to look up the target parameter by ID.
 ///
-/// - `start_value`: **Currently unused**. The implementation sets the end value
-///   directly, letting the parameter's configured smoother handle interpolation.
+/// - `start_value`: **Placeholder for future host-controlled ramping**. The implementation
+///   sets the end value directly, letting the parameter's configured smoother handle
+///   interpolation. Preserved for API completeness with AU's `AURenderEventParameterRamp`.
 ///
 /// - `end_value`: Used to set the parameter's target normalized value.
 ///
-/// - `duration_samples`: **Currently unused**. beamer_core's Smoother uses a fixed
-///   time constant configured at parameter construction (via `SmoothingStyle`).
-///   There is no API for dynamic per-event ramp duration configuration.
+/// - `duration_samples`: **Placeholder for future host-controlled ramping**. beamer_core's
+///   Smoother uses a fixed time constant configured at parameter construction (via
+///   `SmoothingStyle`). There is no API for dynamic per-event ramp duration configuration.
 ///   This matches VST3 behavior, which also doesn't use host-provided ramp info.
 ///
 /// # Design Rationale
@@ -114,20 +108,34 @@ pub struct AuParameterEvent {
 ///
 /// For most musical parameters, the configured smoother time (e.g., 5ms exponential)
 /// provides smooth transitions regardless of the DAW's intended ramp duration.
+///
+/// The unused fields are preserved for:
+/// - API completeness with AU's `AURenderEventParameterRamp` event structure
+/// - Future implementation of sample-accurate automation or host-controlled ramping
+/// - Avoiding breaking changes if these features are added later
 #[derive(Clone, Debug)]
 pub struct AuParameterRampEvent {
-    /// Sample offset where ramp starts.
-    /// Note: Currently unused; see design rationale above.
+    /// Sample offset where ramp starts (placeholder for future sample-accurate automation).
+    ///
+    /// Currently unused: ramps are applied at buffer start. Preserved for API completeness
+    /// with AU's `AURenderEventParameterRamp.event_sample_time`.
+    #[allow(dead_code)]
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
-    /// Value at start of ramp.
-    /// Note: Currently unused; we set end_value directly.
+    /// Value at start of ramp (placeholder for future host-controlled ramping).
+    ///
+    /// Currently unused: we set `end_value` directly and let the smoother interpolate.
+    /// Preserved for API completeness with AU's `AURenderEventParameterRamp.value`.
+    #[allow(dead_code)]
     pub start_value: f32,
     /// Value at end of ramp (used as target for parameter smoother)
     pub end_value: f32,
-    /// Duration of ramp in samples.
-    /// Note: Currently unused; smoother uses fixed time constant.
+    /// Duration of ramp in samples (placeholder for future host-controlled ramping).
+    ///
+    /// Currently unused: smoother uses fixed time constant from `SmoothingStyle`.
+    /// Preserved for API completeness with AU's `AURenderEventParameterRamp.ramp_duration_sample_frames`.
+    #[allow(dead_code)]
     pub duration_samples: u32,
 }
 
@@ -339,39 +347,6 @@ pub union AURenderEvent {
     // Note: midi_events_list omitted for now
 }
 
-// SAFETY: AURenderEvent is a C union with well-defined memory layout.
-// We encode it as a union with the largest variant (ParameterRamp) for size.
-// This is safe because:
-// - The union is always passed as *const AURenderEvent (pointer)
-// - objc2 only needs the encoding for type signature, not runtime validation
-// - AU hosts provide these pointers, and we only read through the discriminator
-unsafe impl Encode for AURenderEvent {
-    const ENCODING: Encoding = Encoding::Union(
-        "AURenderEvent",
-        &[
-            // Use a simple encoding - the actual union layout is complex but
-            // for pointer types objc2 only needs to know it's a union
-            Encoding::Struct(
-                "AURenderEventParameterRamp",
-                &[
-                    Encoding::Pointer(&Encoding::Union("AURenderEvent", &[])), // next
-                    Encoding::LongLong,                                        // event_sample_time
-                    Encoding::Char,                                            // event_type
-                    Encoding::Array(3, &Encoding::Char),                       // reserved
-                    Encoding::ULongLong,                                       // parameter_address
-                    Encoding::Float,                                           // value
-                    Encoding::Float,                                           // end_value
-                    Encoding::UInt,                                            // ramp_duration
-                ],
-            ),
-        ],
-    );
-}
-
-unsafe impl RefEncode for AURenderEvent {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&<Self as Encode>::ENCODING);
-}
-
 /// SMPTE time structure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -385,28 +360,6 @@ pub struct SMPTETime {
     pub minutes: i16,
     pub seconds: i16,
     pub frames: i16,
-}
-
-// SAFETY: SMPTETime has a well-defined C memory layout
-unsafe impl Encode for SMPTETime {
-    const ENCODING: Encoding = Encoding::Struct(
-        "SMPTETime",
-        &[
-            Encoding::Short, // subframes
-            Encoding::Short, // subframe_divisor
-            Encoding::UInt,  // counter
-            Encoding::UInt,  // smpte_type
-            Encoding::UInt,  // flags
-            Encoding::Short, // hours
-            Encoding::Short, // minutes
-            Encoding::Short, // seconds
-            Encoding::Short, // frames
-        ],
-    );
-}
-
-unsafe impl RefEncode for SMPTETime {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&<Self as Encode>::ENCODING);
 }
 
 /// Audio timestamp structure from Core Audio.
@@ -427,115 +380,6 @@ pub struct AudioTimeStamp {
     pub flags: u32,
     /// Reserved
     pub reserved: u32,
-}
-
-// SAFETY: AudioTimeStamp has a well-defined C memory layout
-unsafe impl Encode for AudioTimeStamp {
-    const ENCODING: Encoding = Encoding::Struct(
-        "AudioTimeStamp",
-        &[
-            Encoding::Double,                // sample_time
-            Encoding::ULongLong,             // host_time
-            Encoding::Double,                // rate_scalar
-            Encoding::ULongLong,             // word_clock_time
-            <SMPTETime as Encode>::ENCODING, // smpte_time
-            Encoding::UInt,                  // flags
-            Encoding::UInt,                  // reserved
-        ],
-    );
-}
-
-unsafe impl RefEncode for AudioTimeStamp {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&<Self as Encode>::ENCODING);
-}
-
-/// The function signature for AU render blocks.
-///
-/// This matches Apple's `AURenderBlock` typedef:
-/// ```c
-/// typedef AUAudioUnitStatus (^AURenderBlock)(
-///     AudioUnitRenderActionFlags *actionFlags,
-///     const AudioTimeStamp *timestamp,
-///     AUAudioFrameCount frameCount,
-///     NSInteger outputBusNumber,
-///     AudioBufferList *outputData,
-///     const AURenderEvent *realtimeEventListHead,
-///     AURenderPullInputBlock pullInputBlock
-/// );
-/// ```
-///
-/// # Thread Safety
-///
-/// The actual thread safety comes from what the closure captures, not
-/// from this type alias. Our `create_objc_render_block` captures an
-/// `Arc<dyn RenderBlockTrait>` where `RenderBlockTrait: Send + Sync`,
-/// so the resulting block is thread-safe for AU's multi-threaded usage.
-pub type AuRenderBlockFn = dyn Fn(
-    *mut u32,              // actionFlags
-    *const AudioTimeStamp, // timestamp
-    u32,                   // frameCount (AUAudioFrameCount)
-    isize,                 // outputBusNumber (NSInteger)
-    *mut AudioBufferList,  // outputData
-    *const AURenderEvent,  // realtimeEventListHead
-    *const c_void,         // pullInputBlock
-) -> i32;
-
-/// Manual block encoding for AURenderBlock.
-///
-/// Apple's Audio Unit framework requires blocks with proper type encoding metadata.
-/// This struct provides the encoding via the `ManualBlockEncoding` trait, allowing
-/// us to use `RcBlock::with_encoding` instead of plain `RcBlock::new`.
-///
-/// # Encoding Format
-///
-/// The encoding string follows Apple's `@encode` directive format:
-/// - Return type (i = int32/OSStatus)
-/// - Total frame size in bytes (64 on 64-bit)
-/// - Each argument with type encoding and byte offset
-///
-/// For AURenderBlock on 64-bit:
-/// - @?0  : block pointer (self) at offset 0
-/// - ^I8  : *mut u32 (actionFlags) at offset 8
-/// - ^{AudioTimeStamp}16 : *const AudioTimeStamp at offset 16
-/// - I24  : u32 (frameCount) at offset 24
-/// - q32  : isize/NSInteger (outputBusNumber) at offset 32
-/// - ^{AudioBufferList}40 : *mut AudioBufferList at offset 40
-/// - ^{AURenderEvent}48 : *const AURenderEvent at offset 48
-/// - @?56 : block (pullInputBlock) at offset 56
-pub struct AuRenderBlockEncoding;
-
-// SAFETY: The encoding string matches Apple's AURenderBlock typedef exactly.
-// The Arguments and Return types match the AuRenderBlockFn signature.
-unsafe impl ManualBlockEncoding for AuRenderBlockEncoding {
-    type Arguments = (
-        *mut u32,
-        *const AudioTimeStamp,
-        u32,
-        isize,
-        *mut AudioBufferList,
-        *const AURenderEvent,
-        *const c_void,
-    );
-    type Return = i32;
-
-    // Encoding for: i32 (^AURenderBlock)(*mut u32, *const AudioTimeStamp, u32, isize,
-    //                                     *mut AudioBufferList, *const AURenderEvent, *const c_void)
-    //
-    // On 64-bit macOS (the only platform AU runs on):
-    // - i      : return type (int32/OSStatus)
-    // - 64     : total argument frame size
-    // - @?0    : block self pointer at offset 0 (8 bytes)
-    // - ^I8    : pointer to uint32 at offset 8 (8 bytes)
-    // - ^{AudioTimeStamp=dQdQ{SMPTETime=ssIIIsssss}II}16 : pointer to struct at offset 16 (8 bytes)
-    // - I24    : uint32 at offset 24 (4 bytes, padded to 8)
-    // - q32    : int64 (NSInteger) at offset 32 (8 bytes)
-    // - ^{AudioBufferList=I[1{AudioBuffer=II^v}]}40 : pointer to struct at offset 40 (8 bytes)
-    // - ^{AURenderEvent=}48 : pointer to union at offset 48 (8 bytes)
-    // - @?56   : block (pullInputBlock) at offset 56 (8 bytes)
-    //
-    // Using simplified struct names since the runtime only checks pointer types.
-    const ENCODING_CSTR: &'static CStr =
-        c"i64@?0^I8^{AudioTimeStamp}16I24q32^{AudioBufferList}40^{AURenderEvent}48@?56";
 }
 
 /// Audio Unit render action flags.
@@ -729,6 +573,12 @@ fn allocate_audio_buffer_list(
 // MIDI Extraction
 // =============================================================================
 
+/// Maximum number of events to process per buffer to prevent infinite loops.
+///
+/// This limit protects against corrupted event lists that form cycles.
+/// 4096 events per buffer is generous - typical buffers have < 100 events.
+const MAX_EVENTS_PER_BUFFER: usize = 4096;
+
 /// Extract MIDI events from AU render event linked list.
 ///
 /// Iterates through the event list and converts MIDI events to beamer format.
@@ -738,8 +588,10 @@ fn allocate_audio_buffer_list(
 /// The `event_list` pointer must be valid or null.
 pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut MidiBuffer) {
     let mut event_ptr = event_list;
+    let mut iterations = 0;
 
-    while !event_ptr.is_null() {
+    while !event_ptr.is_null() && iterations < MAX_EVENTS_PER_BUFFER {
+        iterations += 1;
         let event = &*event_ptr;
         let event_type = event.head.event_type;
 
@@ -816,6 +668,13 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
         }
 
         event_ptr = event.head.next;
+    }
+
+    if iterations >= MAX_EVENTS_PER_BUFFER {
+        log::warn!(
+            "MIDI event list exceeded maximum iterations ({}), possible corruption",
+            MAX_EVENTS_PER_BUFFER
+        );
     }
 }
 
@@ -953,7 +812,10 @@ pub unsafe fn extract_parameter_events(
     buffer.clear();
 
     let mut event_ptr = event_list;
-    while !event_ptr.is_null() {
+    let mut iterations = 0;
+
+    while !event_ptr.is_null() && iterations < MAX_EVENTS_PER_BUFFER {
+        iterations += 1;
         let event = &*event_ptr;
         let event_type = event.head.event_type;
 
@@ -984,6 +846,13 @@ pub unsafe fn extract_parameter_events(
         }
 
         event_ptr = event.head.next;
+    }
+
+    if iterations >= MAX_EVENTS_PER_BUFFER {
+        log::warn!(
+            "Parameter event list exceeded maximum iterations ({}), possible corruption",
+            MAX_EVENTS_PER_BUFFER
+        );
     }
 }
 
@@ -1077,6 +946,56 @@ pub struct RenderBlock<S: Sample> {
 // where AU guarantees single-threaded access.
 unsafe impl<S: Sample> Send for RenderBlock<S> {}
 unsafe impl<S: Sample> Sync for RenderBlock<S> {}
+
+// =============================================================================
+// Sample Type Dispatch Macro
+// =============================================================================
+
+/// Dispatch to f32 or f64 plugin method based on sample type S.
+///
+/// This macro eliminates the repeated TypeId check + transmute pattern used when
+/// calling plugin methods. The pattern is necessary because:
+/// - RenderBlock is generic over S (f32 or f64)
+/// - Plugin trait has separate methods for each type (e.g., process_with_context vs process_with_context_f64)
+/// - We need runtime dispatch to call the correct method
+///
+/// # Usage
+///
+/// ```ignore
+/// dispatch_sample_type!(S,
+///     f32 => { plugin.process_with_context(inputs_f32, outputs_f32, context) },
+///     f64 => { plugin.process_with_context_f64(inputs_f64, outputs_f64, context) }
+/// )
+/// ```
+///
+/// # Safety
+///
+/// The macro relies on these invariants:
+/// - S is either f32 or f64 (enforced by Sample trait being sealed)
+/// - TypeId check guarantees type match before any transmute occurs in caller code
+/// - Returns error OSStatus if S is neither type (should never happen)
+///
+/// The caller is responsible for ensuring that any transmutes performed within
+/// the f32/f64 blocks are safe. The TypeId check performed by this macro
+/// guarantees that the type parameter S matches the branch being executed.
+macro_rules! dispatch_sample_type {
+    ($sample_type:ty, f32 => $f32_expr:expr, f64 => $f64_expr:expr) => {
+        if std::any::TypeId::of::<$sample_type>() == std::any::TypeId::of::<f32>() {
+            match $f32_expr {
+                Ok(()) => os_status::NO_ERR,
+                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
+            }
+        } else if std::any::TypeId::of::<$sample_type>() == std::any::TypeId::of::<f64>() {
+            match $f64_expr {
+                Ok(()) => os_status::NO_ERR,
+                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
+            }
+        } else {
+            // Should never happen - Sample trait is sealed to f32/f64 only
+            os_status::K_AUDIO_UNIT_ERR_RENDER
+        }
+    };
+}
 
 impl<S: Sample> RenderBlock<S> {
     /// Create a new render block.
@@ -1741,13 +1660,10 @@ impl<S: Sample> RenderBlock<S> {
         result
     }
 
-    /// Call the plugin's process method with the appropriate sample type.
+    /// Call the plugin's process method with auxiliary buses and MIDI.
     ///
-    /// This method dispatches to either process_with_context (f32) or
-    /// process_with_context_f64 (f64) based on the sample type S.
-    ///
-    /// NOTE: Currently unused in favor of call_plugin_process_with_midi,
-    /// but kept for potential future use with plugins that don't need aux buses.
+    /// This method dispatches to either process_with_midi (f32) or
+    /// process_with_midi_f64 (f64) based on the sample type S.
     ///
     /// # Safety Pattern: TypeId Check + Transmute
     ///
@@ -1756,7 +1672,7 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// 1. **Why this pattern is needed:**
     ///    - The RenderBlock is generic over sample type S (f32 or f64)
-    ///    - The plugin trait has separate methods for f32 and f64 (process_with_context vs process_with_context_f64)
+    ///    - The plugin trait has separate methods for f32 and f64 (process_with_midi vs process_with_midi_f64)
     ///    - We need to dispatch to the correct method based on the actual type at runtime
     ///    - Generic dispatch alone can't choose between different method names
     ///
@@ -1767,10 +1683,10 @@ impl<S: Sample> RenderBlock<S> {
     ///    - The TypeId check ensures we only transmute when types actually match
     ///
     /// 3. **What could go wrong:**
-    ///    - If S is neither f32 nor f64 → we return error (last else branch)
-    ///    - If TypeId check fails but transmute happens anyway → undefined behavior (crash likely)
-    ///    - If buffer layout doesn't match expected type → memory corruption
-    ///    - If Sample trait is implemented for non-f32/f64 types → potential transmute mismatch
+    ///    - If S is neither f32 nor f64 -> we return error (last else branch)
+    ///    - If TypeId check fails but transmute happens anyway -> undefined behavior (crash likely)
+    ///    - If buffer layout doesn't match expected type -> memory corruption
+    ///    - If Sample trait is implemented for non-f32/f64 types -> potential transmute mismatch
     ///
     /// 4. **Why this is safe in practice:**
     ///    - Sample trait is sealed and only implemented for f32 and f64
@@ -1791,74 +1707,13 @@ impl<S: Sample> RenderBlock<S> {
     ///    - We only transmute when TypeId proves the types match
     ///    - The underlying audio buffer data is already in the correct format (host-provided)
     ///    - We never transmute the actual sample data, only the slice references
-    #[inline]
-    #[allow(dead_code)]
-    fn call_plugin_process(
-        &self,
-        plugin: &mut Box<dyn AuPluginInstance>,
-        inputs: &[&[S]],
-        outputs: &mut [&mut [S]],
-        context: &ProcessContext,
-    ) -> i32 {
-        // Dispatch based on sample type using TypeId check + transmute pattern
-        if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f32>() {
-            // SAFETY: TypeId check guarantees S is f32.
-            // Transmuting &[&[S]] to &[&[f32]] is safe because:
-            // - The memory layout is identical (slice of slice pointers)
-            // - The underlying audio data is already f32 (host-provided)
-            // - We're only changing the type, not the data or layout
-            let inputs_f32: &[&[f32]] = unsafe { std::mem::transmute(inputs) };
-            let outputs_f32: &mut [&mut [f32]] = unsafe { std::mem::transmute(outputs) };
-            match plugin.process_with_context(inputs_f32, outputs_f32, context) {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
-            }
-        } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f64>() {
-            // SAFETY: TypeId check guarantees S is f64.
-            // Transmuting &[&[S]] to &[&[f64]] is safe because:
-            // - The memory layout is identical (slice of slice pointers)
-            // - The underlying audio data is already f64 (host-provided)
-            // - We're only changing the type, not the data or layout
-            let inputs_f64: &[&[f64]] = unsafe { std::mem::transmute(inputs) };
-            let outputs_f64: &mut [&mut [f64]] = unsafe { std::mem::transmute(outputs) };
-            match plugin.process_with_context_f64(inputs_f64, outputs_f64, context) {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
-            }
-        } else {
-            // Should never happen - Sample trait is sealed to f32/f64 only
-            // If this branch executes, it indicates a serious bug (new Sample impl without updating this code)
-            os_status::K_AUDIO_UNIT_ERR_RENDER
-        }
-    }
-
-    /// Call the plugin's process method with auxiliary buses and MIDI.
     ///
-    /// This method dispatches to either process_with_midi (f32) or
-    /// process_with_midi_f64 (f64) based on the sample type S.
-    ///
-    /// # Safety Pattern: TypeId Check + Transmute (with Auxiliary Buses)
-    ///
-    /// This function uses the same TypeId-based dispatch pattern as `call_plugin_process`,
-    /// but handles more complex types including auxiliary bus arrays.
-    ///
-    /// **Key differences from call_plugin_process:**
+    /// **Auxiliary bus transmutes:**
     /// - Transmutes `&[Vec<&[S]>]` to `&[Vec<&[f32]>]` or `&[Vec<&[f64]>]`
     /// - Each aux bus is a Vec of channel slices
-    /// - Memory layout: outer slice → Vec → inner slice → sample data
-    ///
-    /// **Why the aux bus transmute is safe:**
     /// - Vec<&[S]> and Vec<&[f32]> have identical memory layout
     /// - Vec stores pointer + length + capacity (no type-specific data)
     /// - The slice references point to host-provided audio buffers in the correct format
-    /// - We only transmute the container types, not the actual sample data
-    ///
-    /// **Additional invariants for aux buses:**
-    /// - Aux bus buffer arrays are created with the correct sample type S
-    /// - Host fills buffers via pull_input_block with the format we specified
-    /// - Buffer layouts match the format descriptor (f32 or f64)
-    ///
-    /// See `call_plugin_process` documentation for full safety analysis of the TypeId + transmute pattern.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn call_plugin_process_with_midi(
@@ -1871,56 +1726,41 @@ impl<S: Sample> RenderBlock<S> {
         midi_events: &[MidiEvent],
         context: &ProcessContext,
     ) -> i32 {
-        // Dispatch based on sample type using TypeId check + transmute pattern
-        if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f32>() {
-            // SAFETY: TypeId check guarantees S is f32.
-            // All transmutes are safe because:
-            // - Memory layouts are identical (see documentation above)
-            // - Underlying audio data is already f32 (host-provided)
-            // - We're only changing type parameters, not data or layout
-            let inputs_f32: &[&[f32]] = unsafe { std::mem::transmute(inputs) };
-            let outputs_f32: &mut [&mut [f32]] = unsafe { std::mem::transmute(outputs) };
-            let aux_inputs_f32: &[Vec<&[f32]>] = unsafe { std::mem::transmute(aux_inputs) };
-            let aux_outputs_f32: &mut [Vec<&mut [f32]>] =
-                unsafe { std::mem::transmute(aux_outputs) };
-            match plugin.process_with_midi(
-                inputs_f32,
-                outputs_f32,
-                aux_inputs_f32,
-                aux_outputs_f32,
-                midi_events,
-                context,
-            ) {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
+        // SAFETY: The dispatch_sample_type! macro performs the TypeId check, guaranteeing
+        // that S matches f32 or f64 before the respective branch executes. The transmutes
+        // are safe because buffer slice layouts are identical regardless of sample type.
+        dispatch_sample_type!(S,
+            f32 => {
+                let inputs_f32: &[&[f32]] = unsafe { std::mem::transmute(inputs) };
+                let outputs_f32: &mut [&mut [f32]] = unsafe { std::mem::transmute(outputs) };
+                let aux_inputs_f32: &[Vec<&[f32]>] = unsafe { std::mem::transmute(aux_inputs) };
+                let aux_outputs_f32: &mut [Vec<&mut [f32]>] =
+                    unsafe { std::mem::transmute(aux_outputs) };
+                plugin.process_with_midi(
+                    inputs_f32,
+                    outputs_f32,
+                    aux_inputs_f32,
+                    aux_outputs_f32,
+                    midi_events,
+                    context,
+                )
+            },
+            f64 => {
+                let inputs_f64: &[&[f64]] = unsafe { std::mem::transmute(inputs) };
+                let outputs_f64: &mut [&mut [f64]] = unsafe { std::mem::transmute(outputs) };
+                let aux_inputs_f64: &[Vec<&[f64]>] = unsafe { std::mem::transmute(aux_inputs) };
+                let aux_outputs_f64: &mut [Vec<&mut [f64]>] =
+                    unsafe { std::mem::transmute(aux_outputs) };
+                plugin.process_with_midi_f64(
+                    inputs_f64,
+                    outputs_f64,
+                    aux_inputs_f64,
+                    aux_outputs_f64,
+                    midi_events,
+                    context,
+                )
             }
-        } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f64>() {
-            // SAFETY: TypeId check guarantees S is f64.
-            // All transmutes are safe because:
-            // - Memory layouts are identical (see documentation above)
-            // - Underlying audio data is already f64 (host-provided)
-            // - We're only changing type parameters, not data or layout
-            let inputs_f64: &[&[f64]] = unsafe { std::mem::transmute(inputs) };
-            let outputs_f64: &mut [&mut [f64]] = unsafe { std::mem::transmute(outputs) };
-            let aux_inputs_f64: &[Vec<&[f64]>] = unsafe { std::mem::transmute(aux_inputs) };
-            let aux_outputs_f64: &mut [Vec<&mut [f64]>] =
-                unsafe { std::mem::transmute(aux_outputs) };
-            match plugin.process_with_midi_f64(
-                inputs_f64,
-                outputs_f64,
-                aux_inputs_f64,
-                aux_outputs_f64,
-                midi_events,
-                context,
-            ) {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
-            }
-        } else {
-            // Should never happen - Sample trait is sealed to f32/f64 only
-            // If this branch executes, it indicates a serious bug (new Sample impl without updating this code)
-            os_status::K_AUDIO_UNIT_ERR_RENDER
-        }
+        )
     }
 }
 
@@ -2020,93 +1860,4 @@ pub fn create_render_block_f64(
         max_frames,
         sample_rate,
     ))
-}
-
-/// Create a no-op Objective-C render block.
-///
-/// This returns a block that does nothing when invoked, useful when
-/// `internalRenderBlock` is called before `allocateRenderResources`.
-/// AU hosts may query this property during validation and introspect
-/// the block's type encoding metadata.
-///
-/// # Important
-///
-/// This block MUST use `with_encoding` to provide proper type metadata.
-/// AU hosts (especially auval) validate block type signatures during
-/// instantiation. Without proper encoding, the host may crash or reject
-/// the plugin during `AudioComponentInstanceNew`.
-pub fn create_noop_render_block() -> RcBlock<AuRenderBlockFn> {
-    // Use with_encoding to provide proper type metadata that AU hosts expect.
-    // This is critical for AU validation during instantiation - without proper
-    // encoding metadata, hosts may crash when introspecting the block type.
-    RcBlock::with_encoding::<_, _, _, AuRenderBlockEncoding>(
-        |_action_flags: *mut u32,
-         _timestamp: *const AudioTimeStamp,
-         _frame_count: u32,
-         _output_bus_number: isize,
-         _output_data: *mut AudioBufferList,
-         _event_list: *const AURenderEvent,
-         _pull_input_block: *const c_void|
-         -> i32 {
-            // No-op: return success without processing
-            0 // noErr
-        },
-    )
-}
-
-/// Create an Objective-C block for AU render callback.
-///
-/// This function creates a proper Objective-C block using block2 that wraps
-/// a Rust render block implementing `RenderBlockTrait`. The block can be
-/// returned from `internalRenderBlock` and called by AU hosts during audio
-/// processing.
-///
-/// # Arguments
-///
-/// * `render_block` - Arc to the Rust render block (type-erased for f32/f64 support)
-///
-/// # Returns
-///
-/// An `RcBlock<AuRenderBlockFn>` that captures the render block and forwards
-/// calls to its `process()` method. The block has the correct signature for
-/// Apple's AURenderBlock typedef.
-///
-/// # Block Lifetime Safety
-///
-/// - `RcBlock` uses Objective-C reference counting (retains/releases)
-/// - Captured `Arc` ensures render block outlives all block invocations
-/// - When the block is released, the Arc is dropped (decrementing refcount)
-///
-/// # Real-Time Safety
-///
-/// The block invocation is just a function call through the closure - no
-/// allocations occur during audio processing. All render work happens in
-/// the pre-allocated `RenderBlock` storage.
-pub fn create_objc_render_block(
-    render_block: Arc<dyn RenderBlockTrait>,
-) -> RcBlock<AuRenderBlockFn> {
-    // Use with_encoding to provide proper type metadata that Apple's AU framework expects.
-    // Plain RcBlock::new doesn't include type encoding, which causes crashes when AU
-    // tries to validate or invoke the block.
-    RcBlock::with_encoding::<_, _, _, AuRenderBlockEncoding>(
-        move |action_flags: *mut u32,
-              timestamp: *const AudioTimeStamp,
-              frame_count: u32,
-              output_bus_number: isize,
-              output_data: *mut AudioBufferList,
-              event_list: *const AURenderEvent,
-              pull_input_block: *const c_void|
-              -> i32 {
-            // Forward to the captured render block's process method
-            render_block.process(
-                action_flags,
-                timestamp,
-                frame_count,
-                output_bus_number as i32,
-                output_data,
-                event_list,
-                pull_input_block,
-            )
-        },
-    )
 }

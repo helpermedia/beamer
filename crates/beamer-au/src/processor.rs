@@ -29,7 +29,7 @@
 //! via the render callback (currently placeholder).
 
 use crate::bus_config::CachedBusConfig;
-use crate::error::{AuError, AuResult};
+use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
 use crate::lifecycle::{AuState, BuildAuConfig};
 use beamer_core::{
@@ -186,10 +186,10 @@ where
         sample_rate: f64,
         max_frames: u32,
         bus_config: &CachedBusConfig,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         self.state
             .prepare(sample_rate, max_frames, bus_config)
-            .map_err(AuError::AllocationFailed)
+            .map_err(PluginError::InitializationFailed)
     }
 
     fn deallocate_render_resources(&mut self) {
@@ -208,19 +208,19 @@ where
         self.state.max_frames()
     }
 
-    fn parameter_store(&self) -> Result<&dyn ParameterStore, AuError> {
+    fn parameter_store(&self) -> Result<&dyn ParameterStore, PluginError> {
         match &self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters()),
-            AuState::Transitioning => Err(AuError::InvalidState("transitioning".to_string())),
+            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
         }
     }
 
-    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, AuError> {
+    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError> {
         match &mut self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters_mut()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters_mut()),
-            AuState::Transitioning => Err(AuError::InvalidState("transitioning".to_string())),
+            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
         }
     }
 
@@ -238,7 +238,7 @@ where
         }
     }
 
-    fn load_state(&mut self, data: &[u8]) -> AuResult<()> {
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
         match &mut self.state {
             AuState::Unprepared { pending_state, .. } => {
                 // Defer loading until prepare() is called
@@ -249,12 +249,12 @@ where
                 // Load state immediately and reset smoothing
                 processor
                     .load_state(data)
-                    .map_err(|e| AuError::StateError(e.to_string()))?;
+                    .map_err(|e| PluginError::StateError(e.to_string()))?;
                 use beamer_core::parameter_types::Parameters;
                 processor.parameters_mut().reset_smoothing();
                 Ok(())
             }
-            AuState::Transitioning => Err(AuError::InvalidState("transitioning".to_string())),
+            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
         }
     }
 
@@ -286,7 +286,7 @@ where
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
         num_samples: usize,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Get processor and sample_rate from prepared state
         let (processor, sample_rate) = match &mut self.state {
             AuState::Prepared {
@@ -295,10 +295,10 @@ where
                 ..
             } => (processor, *sample_rate),
             AuState::Unprepared { .. } => {
-                return Err(AuError::InvalidState("not prepared".to_string()))
+                return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
             AuState::Transitioning => {
-                return Err(AuError::InvalidState("transitioning".to_string()))
+                return Err(PluginError::ProcessingError("transitioning".to_string()))
             }
         };
 
@@ -327,7 +327,7 @@ where
         inputs: &[&[f64]],
         outputs: &mut [&mut [f64]],
         num_samples: usize,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Get processor, sample_rate, and conversion_buffers from prepared state
         let (processor, sample_rate, conversion_buffers) = match &mut self.state {
             AuState::Prepared {
@@ -337,10 +337,10 @@ where
                 ..
             } => (processor, *sample_rate, conversion_buffers),
             AuState::Unprepared { .. } => {
-                return Err(AuError::InvalidState("not prepared".to_string()))
+                return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
             AuState::Transitioning => {
-                return Err(AuError::InvalidState("transitioning".to_string()))
+                return Err(PluginError::ProcessingError("transitioning".to_string()))
             }
         };
 
@@ -411,15 +411,15 @@ where
         inputs: &[&[f64]],
         outputs: &mut [&mut [f64]],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
         let (processor, conversion_buffers) = match &mut self.state {
             AuState::Prepared { processor, conversion_buffers, .. } => (processor, conversion_buffers),
             AuState::Unprepared { .. } => {
-                return Err(AuError::InvalidState("not prepared".to_string()))
+                return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
             AuState::Transitioning => {
-                return Err(AuError::InvalidState("transitioning".to_string()))
+                return Err(PluginError::ProcessingError("transitioning".to_string()))
             }
         };
 
@@ -488,15 +488,15 @@ where
         aux_inputs: &[Vec<&[f32]>],
         aux_outputs: &mut [Vec<&mut [f32]>],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Get processor from prepared state
         let processor = match &mut self.state {
             AuState::Prepared { processor, .. } => processor,
             AuState::Unprepared { .. } => {
-                return Err(AuError::InvalidState("not prepared".to_string()))
+                return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
             AuState::Transitioning => {
-                return Err(AuError::InvalidState("transitioning".to_string()))
+                return Err(PluginError::ProcessingError("transitioning".to_string()))
             }
         };
 
@@ -527,15 +527,15 @@ where
         aux_inputs: &[Vec<&[f64]>],
         aux_outputs: &mut [Vec<&mut [f64]>],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
         let (processor, conversion_buffers) = match &mut self.state {
             AuState::Prepared { processor, conversion_buffers, .. } => (processor, conversion_buffers),
             AuState::Unprepared { .. } => {
-                return Err(AuError::InvalidState("not prepared".to_string()))
+                return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
             AuState::Transitioning => {
-                return Err(AuError::InvalidState("transitioning".to_string()))
+                return Err(PluginError::ProcessingError("transitioning".to_string()))
             }
         };
 
@@ -640,7 +640,7 @@ where
         &mut self,
         immediate: &[crate::render::AuParameterEvent],
         ramps: &[crate::render::AuParameterRampEvent],
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Only apply if in prepared state
         let processor = match &mut self.state {
             AuState::Prepared { processor, .. } => processor,

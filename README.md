@@ -1,8 +1,8 @@
 # BEAMER
 
-A Rust framework for building VST3 audio plugins.
+A Rust framework for building VST3 and Audio Unit (AUv3) audio plugins.
 
-Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. It bridges VST3's C++ COM interfaces with safe Rust abstractions.
+Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms) and AUv3 (macOS).
 
 ## Why Beamer?
 
@@ -170,11 +170,12 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Features
 
+- **Multi-format** - VST3 (all platforms) and AUv3 (macOS) from a single codebase
 - **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
-- **Format-agnostic core** - Plugin logic is independent of VST3 specifics
+- **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
 - **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
-- **Complete MIDI support** - All VST3 SDK 3.8.0 MIDI features including MPE, Note Expression, and MIDI 2.0
+- **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore
 - **WebView GUI** (planned) - Modern web-based plugin interfaces
@@ -200,6 +201,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
+| `beamer-au` | AUv3 wrapper (macOS) - hybrid ObjC/Rust architecture |
 | `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
@@ -212,11 +214,17 @@ cargo build
 # Build release
 cargo build --release
 
-# Build, bundle, and install to user VST3 folder (macOS)
-cargo xtask bundle gain --release --install
+# Bundle VST3 plugin
+cargo xtask bundle gain --vst3 --release
 
-# Or just bundle (output: target/release/BeamerGain.vst3)
-cargo xtask bundle gain --release
+# Bundle Audio Unit plugin (macOS only)
+cargo xtask bundle gain --au --release
+
+# Bundle both formats and install to system plugin folders
+cargo xtask bundle gain --vst3 --au --release --install
+
+# Validate AU plugin (macOS)
+auval -v aufx gain Bemr
 ```
 
 ## License

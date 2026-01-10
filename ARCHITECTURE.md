@@ -72,7 +72,9 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 └────────────────────────────────┴────────────────────────────────┘
 ```
 
-### Audio Unit Architecture
+### Audio Unit Architecture (Hybrid ObjC/Rust)
+
+The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runtime compatibility, with all DSP in Rust via C-ABI bridge.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -84,21 +86,23 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 │                                │                                │
 │    Audio Thread                │         Main Thread            │
 │    ┌──────────────┐            │         ┌──────────────────┐   │
-│    │              │            │         │                  │   │
-│    │ Render Block │◄───────────┼────────►│ BeamerAudioUnit  │   │
-│    │  (closure)   │   Arc<>    │         │  (ObjC class)    │   │
-│    │              │   refs     │         └────────┬─────────┘   │
-│    └──────────────┘            │                  │             │
-│           ▲                    │                  │ NSView      │
-│           │                    │         ┌────────▼─────────┐   │
-│           │ calls              │         │                  │   │
-│    ┌──────┴───────┐            │         │  WebView Window  │   │
-│    │ AuProcessor  │            │         │   (WKWebView)    │   │
-│    │  (DSP code)  │            │         │                  │   │
+│    │              │            │         │  BeamerAuWrapper │   │
+│    │ Render Block │◄───────────┼────────►│  (Native ObjC)   │   │
+│    │  (ObjC block)│   C-ABI    │         │                  │   │
+│    │              │   calls    │         └────────┬─────────┘   │
+│    └──────┬───────┘            │                  │             │
+│           │                    │                  │ NSView      │
+│           │ beamer_au_render() │         ┌────────▼─────────┐   │
+│    ┌──────▼───────┐            │         │                  │   │
+│    │ bridge.rs    │            │         │  WebView Window  │   │
+│    │ RenderBlock  │            │         │   (WKWebView)    │   │
+│    │ AuProcessor  │            │         │                  │   │
 │    └──────────────┘            │         └──────────────────┘   │
 │                                │                                │
 └────────────────────────────────┴────────────────────────────────┘
 ```
+
+**Why Hybrid?** Native Objective-C integrates naturally with Apple's frameworks, provides better debuggability with Apple's tools, and avoids the complexity of Rust FFI bindings for `AUAudioUnit` subclassing. The hybrid approach guarantees Apple compatibility while keeping all audio processing in Rust.
 
 ### Unified Core
 
@@ -118,9 +122,9 @@ Both formats share the same core traits and processing logic:
          │   beamer-vst3      │  │    beamer-au         │
          │                    │  │                      │
          │ • Vst3Processor<P> │  │ • AuProcessor<P>     │
-         │ • COM interfaces   │  │ • ObjC bridge        │
-         │ • VST3 MIDI        │  │ • UMP MIDI           │
-         │ • Factory          │  │ • Parameter tree     │
+         │ • COM interfaces   │  │ • C-ABI bridge       │
+         │ • VST3 MIDI        │  │ • Native ObjC wrapper│
+         │ • Factory          │  │ • UMP MIDI           │
          └────────────────────┘  └──────────────────────┘
 ```
 
@@ -164,7 +168,7 @@ beamer/
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`HasParameters`, `Plugin`, `AudioProcessor`), buffer types, MIDI types, shared `PluginConfig` |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
-| `beamer-au` | Audio Unit (v3) integration via objc2, Objective-C bridge, `AuConfig` (macOS only) |
+| `beamer-au` | Audio Unit (v3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
 | `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
@@ -439,17 +443,24 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 
 ### Audio Unit Implementation
 
-**Architecture**: Objective-C based
-- `BeamerAudioUnit` ObjC class (subclass of `AUAudioUnit`)
+**Architecture**: Hybrid Objective-C/Rust
+- `BeamerAuWrapper` native ObjC class (subclass of `AUAudioUnit`)
+- C-ABI bridge layer (`BeamerAuBridge.h` ↔ `bridge.rs`) with ~30 functions
 - Uses type erasure (`AuPluginInstance` trait) for generic plugin support
-- Render blocks (closures) for audio processing
+- Render blocks call into Rust via `beamer_au_render()`
 - Full feature parity with VST3 wrapper
 
-**Key Files** (~5,500 lines, split across 19 files):
-- [audio_unit.rs](crates/beamer-au/src/audio_unit.rs) - ObjC class (~650 lines)
+**Key Files** (~6,500 lines total):
+
+*Objective-C Layer:*
+- [objc/BeamerAuWrapper.m](crates/beamer-au/objc/BeamerAuWrapper.m) - Native AUAudioUnit subclass (~700 lines)
+- [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations (~400 lines)
+- [build.rs](crates/beamer-au/build.rs) - ObjC compilation via `cc` crate
+
+*Rust Layer:*
+- [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations (~1,100 lines)
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion (~650 lines)
-- [render.rs](crates/beamer-au/src/render.rs) - Render block + parameter events (~1,300 lines)
-- [parameters.rs](crates/beamer-au/src/parameters.rs) - Parameter tree (~260 lines)
+- [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + parameter events (~1,300 lines)
 - [midi.rs](crates/beamer-au/src/midi.rs) - MIDI conversion (~350 lines)
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare (~350 lines)
 - [sysex_pool.rs](crates/beamer-au/src/sysex_pool.rs) - SysEx output pool (~120 lines)
@@ -482,9 +493,9 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | Feature | VST3 | Audio Unit |
 |---------|------|------------|
 | **Platform** | Windows, macOS, Linux | macOS only |
-| **API Style** | COM (C++ style) | Objective-C |
-| **Language** | Rust + vst3-sys | Rust + objc2 |
-| **Code Size** | ~3,800 lines (1 file) | ~5,500 lines (19 files) |
+| **API Style** | COM (C++ style) | Hybrid ObjC/Rust via C-ABI |
+| **Language** | Rust + vst3-sys | ObjC + Rust + cc crate |
+| **Code Size** | ~3,800 lines (1 file) | ~6,500 lines (ObjC + Rust) |
 | **MIDI Format** | VST3 Event union | UMP MIDI 1.0/2.0 |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
@@ -497,7 +508,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **State Format** | Binary blob | NSDictionary |
 | **Processor State** | ✓ | ✓ |
 | **Bundle Type** | `.vst3` | `.component` |
-| **Registration** | `GetPluginFactory()` | Module initializer |
+| **Registration** | `GetPluginFactory()` | ObjC factory + module init |
 | **Feature Parity** | Reference | ✓ Full parity |
 
 ### Code Reuse Statistics
@@ -667,6 +678,5 @@ Plugin Load (creates Plugin in Unprepared state)
 | [JUCE](https://juce.com) | C++ plugin framework reference |
 | [nih-plug](https://github.com/robbert-vdh/nih-plug) | Rust plugin framework reference |
 | [Coupler](https://github.com/coupler-rs/coupler) | VST3 Rust bindings (dependency) |
-| [objc2](https://github.com/madsmtm/objc2) | Rust Objective-C bindings (dependency for AU) |
 | [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) | VST3 specification and reference |
 | [Apple AUv3](https://developer.apple.com/documentation/audiotoolbox/audio_unit_v3_plug-ins) | Audio Unit v3 specification |

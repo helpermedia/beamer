@@ -12,15 +12,13 @@ categories = ["multimedia::audio"]
 default = []
 sysex-heap-fallback = []
 
+[build-dependencies]
+cc = "1.0"
+
 [dependencies]
 beamer-core = { path = "../beamer-core" }
 log = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSArray", "NSDictionary", "NSData"] }
-block2 = "0.6"
-
-# Note: objc2-audio-toolbox may not have all AU bindings.
-# We may need to use raw objc2 declarations or contribute bindings upstream.
-# For now, we'll stub what's needed.
+# Note: The hybrid ObjC/Rust AU architecture uses native Objective-C (BeamerAuWrapper.m)
+# for AUAudioUnit subclassing, with a C-ABI bridge to Rust. This avoids the need for
+# objc2/block2 crates which had issues with AUAudioUnit subclassing.

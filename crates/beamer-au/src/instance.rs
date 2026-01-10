@@ -1,27 +1,26 @@
 //! Type-erased AU plugin instance trait.
 //!
-//! This module provides the `AuPluginInstance` trait which enables a single
-//! Objective-C class (`BeamerAudioUnit`) to work with any plugin through
-//! dynamic dispatch.
+//! This module provides the `AuPluginInstance` trait which enables the native
+//! Objective-C wrapper (`BeamerAuWrapper`) to work with any plugin through
+//! dynamic dispatch via the C-ABI bridge.
 //!
 //! # Why Type Erasure?
 //!
-//! `objc2::declare_class!` generates a single concrete Objective-C class at
-//! compile time. Rust generics don't translate to Objective-C - we cannot have
-//! `BeamerAudioUnit<GainPlugin>` and `BeamerAudioUnit<DelayPlugin>` as separate
-//! ObjC classes.
+//! Rust generics don't translate to Objective-C. The Objective-C wrapper
+//! (`BeamerAuWrapper.m`) is a single concrete class that works with all
+//! plugins through dynamic dispatch.
 //!
 //! The solution is type erasure: we define a trait that captures all the
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
 //! plugin implementation.
 
 use crate::bus_config::CachedBusConfig;
-use crate::error::{AuError, AuResult};
+use crate::error::{PluginError, PluginResult};
 use beamer_core::{MidiEvent, ParameterStore, ProcessContext};
 
 /// Type-erased interface for AU plugin instances.
 ///
-/// This trait enables a single ObjC class (`BeamerAudioUnit`) to work with
+/// This trait enables the ObjC wrapper (`BeamerAuWrapper`) to work with
 /// any `Plugin` implementation through dynamic dispatch.
 ///
 /// # Implementation
@@ -44,7 +43,7 @@ pub trait AuPluginInstance: Send + 'static {
         sample_rate: f64,
         max_frames: u32,
         bus_config: &CachedBusConfig,
-    ) -> AuResult<()>;
+    ) -> PluginResult<()>;
 
     /// Deallocate render resources (return to unprepared state).
     ///
@@ -70,13 +69,13 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// # Errors
     /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn parameter_store(&self) -> Result<&dyn ParameterStore, AuError>;
+    fn parameter_store(&self) -> Result<&dyn ParameterStore, PluginError>;
 
     /// Get mutable parameter store for setting values from host.
     ///
     /// # Errors
     /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, AuError>;
+    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError>;
 
     /// Save plugin state to bytes.
     ///
@@ -88,7 +87,7 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// Uses the same format as VST3 for cross-format compatibility.
     /// Called by AU host for preset loading.
-    fn load_state(&mut self, data: &[u8]) -> AuResult<()>;
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()>;
 
     /// Reset DSP state (clear delay lines, reset filters, etc.).
     ///
@@ -121,7 +120,7 @@ pub trait AuPluginInstance: Send + 'static {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
         num_samples: usize,
-    ) -> AuResult<()>;
+    ) -> PluginResult<()>;
 
     /// Process audio with full process context.
     ///
@@ -138,7 +137,7 @@ pub trait AuPluginInstance: Send + 'static {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: delegate to basic process without context
         self.process(inputs, outputs, context.num_samples)
     }
@@ -156,9 +155,9 @@ pub trait AuPluginInstance: Send + 'static {
         _inputs: &[&[f64]],
         _outputs: &mut [&mut [f64]],
         _num_samples: usize,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: not supported (plugin only supports f32)
-        Err(AuError::InvalidState(
+        Err(PluginError::ProcessingError(
             "f64 processing not supported".to_string(),
         ))
     }
@@ -176,7 +175,7 @@ pub trait AuPluginInstance: Send + 'static {
         inputs: &[&[f64]],
         outputs: &mut [&mut [f64]],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: delegate to basic f64 process without context
         self.process_f64(inputs, outputs, context.num_samples)
     }
@@ -200,7 +199,7 @@ pub trait AuPluginInstance: Send + 'static {
         _aux_inputs: &[Vec<&[f32]>],
         _aux_outputs: &mut [Vec<&mut [f32]>],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: ignore aux buses and delegate to basic process_with_context
         self.process_with_context(inputs, outputs, context)
     }
@@ -222,7 +221,7 @@ pub trait AuPluginInstance: Send + 'static {
         _aux_inputs: &[Vec<&[f64]>],
         _aux_outputs: &mut [Vec<&mut [f64]>],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: ignore aux buses and delegate to basic process_with_context_f64
         self.process_with_context_f64(inputs, outputs, context)
     }
@@ -247,7 +246,7 @@ pub trait AuPluginInstance: Send + 'static {
         aux_outputs: &mut [Vec<&mut [f32]>],
         _midi_events: &[MidiEvent],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: ignore MIDI and delegate to process_with_aux
         self.process_with_aux(inputs, outputs, aux_inputs, aux_outputs, context)
     }
@@ -271,7 +270,7 @@ pub trait AuPluginInstance: Send + 'static {
         aux_outputs: &mut [Vec<&mut [f64]>],
         _midi_events: &[MidiEvent],
         context: &ProcessContext,
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: ignore MIDI and delegate to process_with_aux_f64
         self.process_with_aux_f64(inputs, outputs, aux_inputs, aux_outputs, context)
     }
@@ -288,7 +287,7 @@ pub trait AuPluginInstance: Send + 'static {
         &mut self,
         _immediate: &[crate::render::AuParameterEvent],
         _ramps: &[crate::render::AuParameterRampEvent],
-    ) -> AuResult<()> {
+    ) -> PluginResult<()> {
         // Default: do nothing
         Ok(())
     }

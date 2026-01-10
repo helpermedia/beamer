@@ -1391,20 +1391,52 @@ Beamer supports Audio Unit v3 plugins on macOS through the `beamer-au` crate. Au
 
 ### 4.1 Architecture Overview
 
-The `beamer-au` crate provides a native Rust implementation using `objc2` bindings to Apple's AudioToolbox framework. Unlike wrapper-based approaches, this directly integrates with `AUAudioUnit` and translates AU calls to Beamer's core traits.
+The `beamer-au` crate uses a **hybrid Objective-C/Rust architecture**:
+- **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
+- **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
+
+This approach was chosen for several reasons:
+- **Runtime compatibility**: `AUAudioUnit` subclassing requires Objective-C runtime metadata that Rust FFI bindings struggle to generate correctly
+- **Simplicity**: Native ObjC integrates naturally with Apple frameworks without abstraction layers
+- **Debuggability**: Apple's tools (Instruments, lldb, auval) work better with native ObjC code
+- **Fewer dependencies**: No need for objc2, block2, or related crates
+
+The hybrid architecture guarantees Apple compatibility while keeping all audio processing in Rust.
 
 ```
 ┌─────────────────────────────────────────────┐
 │   AU Host (Logic, GarageBand, Reaper)       │
 ├─────────────────────────────────────────────┤
-│         AUAudioUnit (Objective-C)           │
+│      BeamerAuWrapper (Native Objective-C)   │
+│      objc/BeamerAuWrapper.m                 │
 ├─────────────────────────────────────────────┤
-│           beamer-au (Rust wrapper)          │
-│   Translates AU → Plugin/AudioProcessor     │
+│           C-ABI Bridge Layer                │
+│   objc/BeamerAuBridge.h ↔ src/bridge.rs     │
+├─────────────────────────────────────────────┤
+│           beamer-au (Rust)                  │
+│   AuProcessor, RenderBlock, factory        │
 ├─────────────────────────────────────────────┤
 │              beamer-core traits             │
 │   Plugin, AudioProcessor, Parameters        │
 └─────────────────────────────────────────────┘
+```
+
+#### File Structure
+
+```
+crates/beamer-au/
+├── build.rs                    # Compiles Objective-C via cc crate
+├── objc/
+│   ├── BeamerAuBridge.h        # C-ABI function declarations
+│   ├── BeamerAuWrapper.h       # ObjC class interface
+│   └── BeamerAuWrapper.m       # Native AUAudioUnit subclass (~700 lines)
+└── src/
+    ├── bridge.rs               # C-ABI implementations (~1100 lines)
+    ├── factory.rs              # Plugin factory registration
+    ├── processor.rs            # AuProcessor<P> wrapper
+    ├── render.rs               # RenderBlock audio processing
+    ├── instance.rs             # AuPluginInstance trait
+    └── ...
 ```
 
 **Key Features (Full VST3 Parity):**
@@ -1591,9 +1623,95 @@ codesign --force --deep --sign "Developer ID Application: Your Name" MyPlugin.co
 
 The `xtask` tool automatically performs ad-hoc signing during bundling.
 
-### 4.6 Current Status
+### 4.6 C-ABI Bridge Interface
 
-**Production Ready:**
+The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between Objective-C and Rust:
+
+#### Instance Lifecycle
+
+```c
+// Create/destroy plugin instances
+BeamerAuInstanceHandle beamer_au_create_instance(void);
+void beamer_au_destroy_instance(BeamerAuInstanceHandle instance);
+```
+
+#### Render Resources
+
+```c
+// Allocate/deallocate for audio processing
+int32_t beamer_au_allocate_render_resources(
+    BeamerAuInstanceHandle instance,
+    double sample_rate,
+    uint32_t max_frames,
+    BeamerAuSampleFormat sample_format,
+    const BeamerAuBusConfig* bus_config
+);
+void beamer_au_deallocate_render_resources(BeamerAuInstanceHandle instance);
+```
+
+#### Audio Rendering
+
+```c
+// Main render callback (real-time thread)
+int32_t beamer_au_render(
+    BeamerAuInstanceHandle instance,
+    uint32_t* action_flags,
+    const AudioTimeStamp* timestamp,
+    uint32_t frame_count,
+    int32_t output_bus_number,
+    AudioBufferList* output_data,
+    const AURenderEvent* events,
+    void* pull_input_block,
+    void* musical_context_block,
+    void* transport_state_block,
+    void* schedule_midi_block
+);
+```
+
+#### Parameters
+
+```c
+// Query and modify parameters
+uint32_t beamer_au_get_parameter_count(BeamerAuInstanceHandle instance);
+bool beamer_au_get_parameter_info(BeamerAuInstanceHandle instance, uint32_t index, BeamerAuParameterInfo* out_info);
+float beamer_au_get_parameter_value(BeamerAuInstanceHandle instance, uint32_t param_id);
+void beamer_au_set_parameter_value(BeamerAuInstanceHandle instance, uint32_t param_id, float value);
+```
+
+#### State Persistence
+
+```c
+// Save/load plugin state
+uint32_t beamer_au_get_state_size(BeamerAuInstanceHandle instance);
+uint32_t beamer_au_get_state(BeamerAuInstanceHandle instance, uint8_t* buffer, uint32_t size);
+int32_t beamer_au_set_state(BeamerAuInstanceHandle instance, const uint8_t* buffer, uint32_t size);
+```
+
+#### Bus Configuration
+
+```c
+// Query bus layout
+uint32_t beamer_au_get_input_bus_count(BeamerAuInstanceHandle instance);
+uint32_t beamer_au_get_output_bus_count(BeamerAuInstanceHandle instance);
+uint32_t beamer_au_get_input_bus_channel_count(BeamerAuInstanceHandle instance, uint32_t bus_index);
+uint32_t beamer_au_get_output_bus_channel_count(BeamerAuInstanceHandle instance, uint32_t bus_index);
+```
+
+#### MIDI Support
+
+```c
+// Check MIDI capabilities
+bool beamer_au_accepts_midi(BeamerAuInstanceHandle instance);
+bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
+```
+
+### 4.7 Current Status
+
+**Implementation Status: In Progress**
+
+The hybrid Objective-C/Rust architecture is implemented and builds successfully. Runtime testing is in progress.
+
+**Implemented (VST3 Parity):**
 - ✅ Audio effects (all bus configurations)
 - ✅ Instruments/generators (MIDI input + output)
 - ✅ MIDI effects (MIDI input + output)
@@ -1602,6 +1720,19 @@ The `xtask` tool automatically performs ad-hoc signing during bundling.
 - ✅ State persistence (save/load presets)
 - ✅ f32 and f64 processing
 - ✅ Transport information (tempo, beat, playback state)
+- ✅ Real-time safe render path (no allocations, panic catching)
+- ✅ Thread-safe parameter access (RwLock for render block)
+
+**Architecture Features:**
+- Native Objective-C `AUAudioUnit` subclass (guaranteed Apple compatibility)
+- C-ABI bridge with ~30 functions for ObjC ↔ Rust communication
+- Pre-allocated buffers for audio processing
+- Weak/strong self pattern in parameter callbacks (prevents use-after-free)
+- Comprehensive null pointer validation
+
+**Known Issue (In Progress):**
+- Factory registration timing: The Rust module initializer may not execute before the ObjC factory is called
+- See `docs/AU_HYBRID_TODO.md` for investigation tasks and proposed fixes
 
 **Limitations:**
 - No custom UI (uses host generic parameter UI)
@@ -1609,16 +1740,19 @@ The `xtask` tool automatically performs ad-hoc signing during bundling.
 - macOS only (AUv3 is Apple-exclusive)
 - No AUv2 legacy support (v3 only)
 
-**Tested Hosts:**
-- Logic Pro (parameter automation, state persistence)
-- Reaper (basic functionality verified)
+**Validation Commands:**
+```bash
+# Build and install AU
+cargo xtask bundle gain --au --release --install
 
-**Not Yet Tested:**
-- GarageBand
-- MainStage
-- Ableton Live (AU support varies)
+# Validate with Apple's auval tool
+auval -v aufx gain Bemr
 
-### 4.7 Example: Multi-Format Plugin
+# Check installed location
+ls ~/Library/Audio/Plug-Ins/Components/
+```
+
+### 4.8 Example: Multi-Format Plugin
 
 ```rust
 use beamer::prelude::*;
