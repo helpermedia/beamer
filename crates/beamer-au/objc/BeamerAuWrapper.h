@@ -35,6 +35,10 @@
  * - **Real-time Safety**: The render block never allocates memory or acquires
  *   locks. All buffers are pre-allocated in Rust during allocateRenderResources.
  *
+ * - **Sample Formats**: The AU wrapper accepts both float32 and float64 stream
+ *   formats. Native vs converted float64 processing is reported by
+ *   `beamer_au_get_float64_support()` in `BeamerAuBridge.h`.
+ *
  * - **KVO Compliance**: Bus arrays and parameter tree are cached and return
  *   the same instance each time, as required by Apple's AU documentation.
  *

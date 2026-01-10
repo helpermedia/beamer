@@ -103,6 +103,18 @@ pub enum BeamerAuSampleFormat {
     Float64 = 1,
 }
 
+/// Float64 processing support level.
+///
+/// The AU wrapper accepts float64 stream formats either natively (when the
+/// prepared processor supports it) or via internal conversion.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeamerAuFloat64Support {
+    NotSupported = 0,
+    ViaConversion = 1,
+    Native = 2,
+}
+
 /// Parameter metadata for building AUParameterTree (matches BeamerAuParameterInfo in header).
 #[repr(C)]
 pub struct BeamerAuParameterInfo {
@@ -1198,25 +1210,36 @@ pub extern "C" fn beamer_au_get_tail_samples(instance: BeamerAuInstanceHandle) -
     result.unwrap_or(0)
 }
 
-/// Check if the plugin supports 64-bit (double precision) processing.
+/// Get float64 processing support level.
 ///
-/// # Safety
-///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function returns `false`)
-/// - `instance` must not have been destroyed
-/// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread
+/// Returns:
+/// - `NotSupported` when `instance` is null.
+/// - `Native` when the prepared processor reports native f64 processing.
+/// - `ViaConversion` otherwise (float64 streams are accepted via conversion).
 #[no_mangle]
-pub extern "C" fn beamer_au_supports_double_precision(instance: BeamerAuInstanceHandle) -> bool {
+pub extern "C" fn beamer_au_get_float64_support(
+    instance: BeamerAuInstanceHandle,
+) -> BeamerAuFloat64Support {
     if instance.is_null() {
-        return false;
+        return BeamerAuFloat64Support::NotSupported;
     }
 
-    // Currently all beamer plugins support f64 via automatic conversion
-    // A more sophisticated check could query plugin capabilities
-    let _ = instance;
-    true
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let handle = &*instance;
+
+        let plugin = match handle.plugin.lock() {
+            Ok(guard) => guard,
+            Err(_) => return BeamerAuFloat64Support::NotSupported,
+        };
+
+        if plugin.supports_native_double_precision() {
+            BeamerAuFloat64Support::Native
+        } else {
+            BeamerAuFloat64Support::ViaConversion
+        }
+    }));
+
+    result.unwrap_or(BeamerAuFloat64Support::NotSupported)
 }
 
 // =============================================================================
@@ -1574,6 +1597,14 @@ mod tests {
     fn test_beamer_au_sample_format() {
         assert_eq!(BeamerAuSampleFormat::Float32 as i32, 0);
         assert_eq!(BeamerAuSampleFormat::Float64 as i32, 1);
+    }
+
+    #[test]
+    fn test_beamer_au_float64_support_enum() {
+        assert_eq!(BeamerAuFloat64Support::NotSupported as i32, 0);
+        assert_eq!(BeamerAuFloat64Support::ViaConversion as i32, 1);
+        assert_eq!(BeamerAuFloat64Support::Native as i32, 2);
+        assert_eq!(beamer_au_get_float64_support(ptr::null_mut()), BeamerAuFloat64Support::NotSupported);
     }
 
     #[test]

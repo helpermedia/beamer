@@ -294,6 +294,13 @@ where
             .unwrap_or(0)
     }
 
+    fn supports_native_double_precision(&self) -> bool {
+        self.state
+            .processor()
+            .map(|p| p.supports_double_precision())
+            .unwrap_or(false)
+    }
+
     fn declared_input_bus_count(&self) -> usize {
         match &self.state {
             AuState::Unprepared { plugin, .. } => plugin.input_bus_count(),

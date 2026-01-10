@@ -107,6 +107,12 @@ pub trait AuPluginInstance: Send + 'static {
     /// Used by the host for delay compensation.
     fn latency_samples(&self) -> u32;
 
+    /// Returns whether the processor can process f64 audio natively.
+    ///
+    /// Note: The AU wrapper may still accept float64 stream formats and convert
+    /// internally even if this returns false.
+    fn supports_native_double_precision(&self) -> bool;
+
     // =========================================================================
     // Bus Configuration (static, known before prepare)
     // =========================================================================

@@ -129,8 +129,11 @@ typedef struct {
  * Sample format enumeration for audio processing.
  *
  * AU hosts may request either 32-bit or 64-bit floating point processing.
- * The Rust side handles both formats, with automatic conversion when the
- * plugin doesn't natively support f64.
+ * The Rust side handles both formats. When a plugin doesn't support native f64
+ * processing, Beamer will convert f64<->f32 internally.
+ *
+ * To query whether float64 is supported natively vs via conversion, use
+ * beamer_au_get_float64_support().
  */
 typedef enum {
     /// 32-bit floating point samples (standard)
@@ -624,17 +627,30 @@ uint32_t beamer_au_get_latency_samples(BeamerAuInstanceHandle _Nullable instance
 uint32_t beamer_au_get_tail_samples(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Check if the plugin supports 64-bit (double precision) processing.
+ * Float64 processing support level.
  *
- * If true, the plugin can process f64 audio natively.
- * If false, the Rust wrapper will convert f64<->f32 automatically.
+ * Beamer supports float64 streams in AU either:
+ * - natively (the processor implements f64 processing), or
+ * - via internal conversion (f64<->f32 around the f32 processing path).
+ */
+typedef enum BeamerAuFloat64Support {
+    /// Float64 is not supported.
+    BeamerAuFloat64SupportNotSupported = 0,
+    /// Float64 is supported via internal conversion (always available).
+    BeamerAuFloat64SupportViaConversion = 1,
+    /// Float64 is supported natively by the processor.
+    BeamerAuFloat64SupportNative = 2,
+} BeamerAuFloat64Support;
+
+/**
+ * Get float64 processing support level.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return true if native f64 processing is supported.
+ * @return Float64 support level.
  */
-bool beamer_au_supports_double_precision(BeamerAuInstanceHandle _Nullable instance);
+BeamerAuFloat64Support beamer_au_get_float64_support(BeamerAuInstanceHandle _Nullable instance);
 
 // =============================================================================
 // MARK: - Plugin Metadata
