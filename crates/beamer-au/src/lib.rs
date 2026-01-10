@@ -121,6 +121,8 @@ pub mod lifecycle;
 #[cfg(target_os = "macos")]
 pub mod midi;
 #[cfg(target_os = "macos")]
+mod objc_block;
+#[cfg(target_os = "macos")]
 pub mod processor;
 #[cfg(target_os = "macos")]
 pub mod render;

@@ -15,6 +15,8 @@
 use beamer_core::Transport;
 use std::ffi::c_void;
 
+use crate::objc_block;
+
 /// Extract transport information from AU's host musical context.
 ///
 /// Queries the AU host for tempo, time signature, position, and playback state.
@@ -123,7 +125,8 @@ pub unsafe fn extract_transport_from_au(
     // Alternative approach:
     // - Use the `block2` crate for proper Objective-C block handling (adds dependency)
     // - This would eliminate the transmute but requires understanding block2's API
-    let block_fn: MusicalContextBlockFn = std::mem::transmute(musical_context_block);
+    let invoke = objc_block::invoke_ptr(musical_context_block);
+    let block_fn: MusicalContextBlockFn = std::mem::transmute(invoke);
 
     let result = block_fn(
         musical_context_block,

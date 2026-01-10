@@ -273,6 +273,16 @@ impl MidiBuffer {
         self.events.iter()
     }
 
+    /// Sort events by sample offset (ascending).
+    ///
+    /// AU render event lists are typically ordered by `event_sample_time`, but
+    /// the bridge does not rely on that invariant. Sorting here is allocation-free
+    /// and enables efficient sub-block processing for sample-accurate timing.
+    #[inline]
+    pub fn sort_by_sample_offset(&mut self) {
+        self.events.sort_by_key(|e| e.sample_offset);
+    }
+
     /// Check if the buffer overflowed (reached capacity).
     #[inline]
     pub fn has_overflowed(&self) -> bool {

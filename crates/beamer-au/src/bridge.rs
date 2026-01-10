@@ -41,7 +41,7 @@ use crate::error::os_status;
 use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
-    create_render_block_f32, create_render_block_f64, AudioTimeStamp, AURenderEvent,
+    create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     RenderBlockTrait,
 };
 // ParameterStore trait is used via plugin.parameter_store() which returns a dyn ParameterStore
@@ -1309,64 +1309,142 @@ pub extern "C" fn beamer_au_get_vendor(
 ///
 /// # Safety
 ///
-/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_get_input_bus_count(_instance: BeamerAuInstanceHandle) -> u32 {
-    // Default to 1 input bus (main)
-    // Could be enhanced to query plugin configuration
-    1
+pub extern "C" fn beamer_au_get_input_bus_count(instance: BeamerAuInstanceHandle) -> u32 {
+    if instance.is_null() {
+        return 0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let handle = &*instance;
+
+        // If resources are allocated, the host-provided bus config is the source of truth.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            return cfg.input_bus_count.min(MAX_BUSES) as u32;
+        }
+
+        let plugin = match handle.plugin.lock() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        plugin.declared_input_bus_count().min(MAX_BUSES) as u32
+    }));
+
+    result.unwrap_or(0)
 }
 
 /// Get the number of output buses the plugin supports.
 ///
 /// # Safety
 ///
-/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_get_output_bus_count(_instance: BeamerAuInstanceHandle) -> u32 {
-    // Default to 1 output bus (main)
-    // Could be enhanced to query plugin configuration
-    1
+pub extern "C" fn beamer_au_get_output_bus_count(instance: BeamerAuInstanceHandle) -> u32 {
+    if instance.is_null() {
+        return 0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let handle = &*instance;
+
+        // If resources are allocated, the host-provided bus config is the source of truth.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            return cfg.output_bus_count.min(MAX_BUSES) as u32;
+        }
+
+        let plugin = match handle.plugin.lock() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        plugin.declared_output_bus_count().min(MAX_BUSES) as u32
+    }));
+
+    result.unwrap_or(0)
 }
 
 /// Get the default channel count for an input bus.
 ///
 /// # Safety
 ///
-/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_get_input_bus_channel_count(
-    _instance: BeamerAuInstanceHandle,
+    instance: BeamerAuInstanceHandle,
     bus_index: u32,
 ) -> u32 {
-    // Default to stereo for main bus
-    if bus_index == 0 {
-        2
-    } else {
-        0
+    if instance.is_null() {
+        return 0;
     }
+
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let handle = &*instance;
+
+        // If resources are allocated, report the host-negotiated channel counts.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            return cfg
+                .input_bus_info(bus_index as usize)
+                .map(|b| b.channel_count as u32)
+                .unwrap_or(0);
+        }
+
+        let plugin = match handle.plugin.lock() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        plugin
+            .declared_input_bus_info(bus_index as usize)
+            .map(|b| b.channel_count)
+            .unwrap_or(0)
+    }));
+
+    result.unwrap_or(0)
 }
 
 /// Get the default channel count for an output bus.
 ///
 /// # Safety
 ///
-/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_get_output_bus_channel_count(
-    _instance: BeamerAuInstanceHandle,
+    instance: BeamerAuInstanceHandle,
     bus_index: u32,
 ) -> u32 {
-    // Default to stereo for main bus
-    if bus_index == 0 {
-        2
-    } else {
-        0
+    if instance.is_null() {
+        return 0;
     }
+
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let handle = &*instance;
+
+        // If resources are allocated, report the host-negotiated channel counts.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            return cfg
+                .output_bus_info(bus_index as usize)
+                .map(|b| b.channel_count as u32)
+                .unwrap_or(0);
+        }
+
+        let plugin = match handle.plugin.lock() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        plugin
+            .declared_output_bus_info(bus_index as usize)
+            .map(|b| b.channel_count)
+            .unwrap_or(0)
+    }));
+
+    result.unwrap_or(0)
 }
 
 /// Check if a proposed channel configuration is valid.
@@ -1395,8 +1473,7 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
         };
 
         // Validate channel counts are within bounds
-        if main_input_channels > MAX_CHANNELS as u32 || main_output_channels > MAX_CHANNELS as u32
-        {
+        if main_input_channels > MAX_CHANNELS as u32 || main_output_channels > MAX_CHANNELS as u32 {
             return false;
         }
 
@@ -1561,10 +1638,7 @@ mod tests {
         assert_eq!(beamer_au_get_parameter_value(ptr::null_mut(), 0), 0.0);
         beamer_au_set_parameter_value(ptr::null_mut(), 0, 0.5);
         assert_eq!(beamer_au_get_state_size(ptr::null_mut()), 0);
-        assert_eq!(
-            beamer_au_get_state(ptr::null_mut(), ptr::null_mut(), 0),
-            0
-        );
+        assert_eq!(beamer_au_get_state(ptr::null_mut(), ptr::null_mut(), 0), 0);
         assert_eq!(
             beamer_au_set_state(ptr::null_mut(), ptr::null(), 0),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER

@@ -107,6 +107,26 @@ pub trait AuPluginInstance: Send + 'static {
     /// Used by the host for delay compensation.
     fn latency_samples(&self) -> u32;
 
+    // =========================================================================
+    // Bus Configuration (static, known before prepare)
+    // =========================================================================
+
+    /// Returns the number of audio input buses the plugin declares.
+    ///
+    /// This is used during AU bus array creation (before allocate/render).
+    fn declared_input_bus_count(&self) -> usize;
+
+    /// Returns the number of audio output buses the plugin declares.
+    ///
+    /// This is used during AU bus array creation (before allocate/render).
+    fn declared_output_bus_count(&self) -> usize;
+
+    /// Returns information about an input bus the plugin declares.
+    fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo>;
+
+    /// Returns information about an output bus the plugin declares.
+    fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo>;
+
     /// Process audio (f32).
     ///
     /// Only valid when prepared. Returns error if not in prepared state.

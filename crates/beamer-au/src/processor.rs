@@ -55,7 +55,7 @@ impl ConversionBuffers {
     pub(crate) fn allocate(
         input_channels: usize,
         output_channels: usize,
-        aux_input_configs: &[(usize, usize)],  // Vec of (bus_channels, max_frames)
+        aux_input_configs: &[(usize, usize)], // Vec of (bus_channels, max_frames)
         aux_output_configs: &[(usize, usize)],
         max_frames: usize,
     ) -> Self {
@@ -69,21 +69,13 @@ impl ConversionBuffers {
         // Allocate aux input buffers
         let aux_input_f32 = aux_input_configs
             .iter()
-            .map(|(channels, _)| {
-                (0..*channels)
-                    .map(|_| vec![0.0f32; max_frames])
-                    .collect()
-            })
+            .map(|(channels, _)| (0..*channels).map(|_| vec![0.0f32; max_frames]).collect())
             .collect();
 
         // Allocate aux output buffers
         let aux_output_f32 = aux_output_configs
             .iter()
-            .map(|(channels, _)| {
-                (0..*channels)
-                    .map(|_| vec![0.0f32; max_frames])
-                    .collect()
-            })
+            .map(|(channels, _)| (0..*channels).map(|_| vec![0.0f32; max_frames]).collect())
             .collect();
 
         Self {
@@ -117,7 +109,12 @@ impl ConversionBuffers {
     }
 
     /// Get mutable aux input buffer for bus/channel
-    pub(crate) fn aux_input_slice_mut(&mut self, bus: usize, channel: usize, len: usize) -> Option<&mut [f32]> {
+    pub(crate) fn aux_input_slice_mut(
+        &mut self,
+        bus: usize,
+        channel: usize,
+        len: usize,
+    ) -> Option<&mut [f32]> {
         self.aux_input_f32
             .get_mut(bus)
             .and_then(|b| b.get_mut(channel))
@@ -126,7 +123,12 @@ impl ConversionBuffers {
 
     /// Get mutable aux output buffer for bus/channel
     #[allow(dead_code)]
-    pub(crate) fn aux_output_slice_mut(&mut self, bus: usize, channel: usize, len: usize) -> Option<&mut [f32]> {
+    pub(crate) fn aux_output_slice_mut(
+        &mut self,
+        bus: usize,
+        channel: usize,
+        len: usize,
+    ) -> Option<&mut [f32]> {
         self.aux_output_f32
             .get_mut(bus)
             .and_then(|b| b.get_mut(channel))
@@ -134,7 +136,12 @@ impl ConversionBuffers {
     }
 
     /// Get aux output buffer for reading back
-    pub(crate) fn aux_output_slice(&self, bus: usize, channel: usize, len: usize) -> Option<&[f32]> {
+    pub(crate) fn aux_output_slice(
+        &self,
+        bus: usize,
+        channel: usize,
+        len: usize,
+    ) -> Option<&[f32]> {
         self.aux_output_f32
             .get(bus)
             .and_then(|b| b.get(channel))
@@ -212,7 +219,9 @@ where
         match &self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters()),
-            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
+            AuState::Transitioning => {
+                Err(PluginError::ProcessingError("transitioning".to_string()))
+            }
         }
     }
 
@@ -220,7 +229,9 @@ where
         match &mut self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters_mut()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters_mut()),
-            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
+            AuState::Transitioning => {
+                Err(PluginError::ProcessingError("transitioning".to_string()))
+            }
         }
     }
 
@@ -254,7 +265,9 @@ where
                 processor.parameters_mut().reset_smoothing();
                 Ok(())
             }
-            AuState::Transitioning => Err(PluginError::ProcessingError("transitioning".to_string())),
+            AuState::Transitioning => {
+                Err(PluginError::ProcessingError("transitioning".to_string()))
+            }
         }
     }
 
@@ -279,6 +292,35 @@ where
             .processor()
             .map(|p| p.latency_samples())
             .unwrap_or(0)
+    }
+
+    fn declared_input_bus_count(&self) -> usize {
+        match &self.state {
+            AuState::Unprepared { plugin, .. } => plugin.input_bus_count(),
+            // Deterministic fallback that doesn't disrupt the prepared processor.
+            _ => P::default().input_bus_count(),
+        }
+    }
+
+    fn declared_output_bus_count(&self) -> usize {
+        match &self.state {
+            AuState::Unprepared { plugin, .. } => plugin.output_bus_count(),
+            _ => P::default().output_bus_count(),
+        }
+    }
+
+    fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
+        match &self.state {
+            AuState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
+            _ => P::default().input_bus_info(index),
+        }
+    }
+
+    fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
+        match &self.state {
+            AuState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
+            _ => P::default().output_bus_info(index),
+        }
     }
 
     fn process(
@@ -414,7 +456,11 @@ where
     ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
         let (processor, conversion_buffers) = match &mut self.state {
-            AuState::Prepared { processor, conversion_buffers, .. } => (processor, conversion_buffers),
+            AuState::Prepared {
+                processor,
+                conversion_buffers,
+                ..
+            } => (processor, conversion_buffers),
             AuState::Unprepared { .. } => {
                 return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
@@ -436,9 +482,9 @@ where
             processor.process_f64(&mut buffer, &mut aux, context);
         } else {
             // Convert f64 → f32 using pre-allocated buffers, process, convert back
-            let conversion = conversion_buffers
-                .as_mut()
-                .expect("conversion_buffers should be allocated when processor doesn't support f64");
+            let conversion = conversion_buffers.as_mut().expect(
+                "conversion_buffers should be allocated when processor doesn't support f64",
+            );
 
             // Convert f64 → f32 using pre-allocated input buffers
             for (ch_idx, input_ch) in inputs.iter().enumerate() {
@@ -530,7 +576,11 @@ where
     ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
         let (processor, conversion_buffers) = match &mut self.state {
-            AuState::Prepared { processor, conversion_buffers, .. } => (processor, conversion_buffers),
+            AuState::Prepared {
+                processor,
+                conversion_buffers,
+                ..
+            } => (processor, conversion_buffers),
             AuState::Unprepared { .. } => {
                 return Err(PluginError::ProcessingError("not prepared".to_string()))
             }
@@ -557,9 +607,9 @@ where
             processor.process_f64(&mut buffer, &mut aux, context);
         } else {
             // Convert f64 → f32 using pre-allocated buffers, process, convert back
-            let conversion = conversion_buffers
-                .as_mut()
-                .expect("conversion_buffers should be allocated when processor doesn't support f64");
+            let conversion = conversion_buffers.as_mut().expect(
+                "conversion_buffers should be allocated when processor doesn't support f64",
+            );
 
             // Convert main inputs f64 → f32
             for (ch_idx, input_ch) in inputs.iter().enumerate() {
@@ -573,7 +623,8 @@ where
             // Convert aux inputs f64 → f32
             for (bus_idx, bus) in aux_inputs.iter().enumerate() {
                 for (ch_idx, ch) in bus.iter().enumerate() {
-                    if let Some(buf) = conversion.aux_input_slice_mut(bus_idx, ch_idx, num_samples) {
+                    if let Some(buf) = conversion.aux_input_slice_mut(bus_idx, ch_idx, num_samples)
+                    {
                         for (i, &sample) in ch.iter().take(num_samples).enumerate() {
                             buf[i] = sample as f32;
                         }
@@ -582,21 +633,25 @@ where
             }
 
             // Build f32 slices for processing
-            let input_f32_slices: Vec<&[f32]> = conversion.input_f32
+            let input_f32_slices: Vec<&[f32]> = conversion
+                .input_f32
                 .iter()
                 .map(|v| &v[..num_samples])
                 .collect();
-            let mut output_f32_slices: Vec<&mut [f32]> = conversion.output_f32
+            let mut output_f32_slices: Vec<&mut [f32]> = conversion
+                .output_f32
                 .iter_mut()
                 .map(|v| &mut v[..num_samples])
                 .collect();
 
             // Build aux f32 slices
-            let aux_input_f32_slices: Vec<Vec<&[f32]>> = conversion.aux_input_f32
+            let aux_input_f32_slices: Vec<Vec<&[f32]>> = conversion
+                .aux_input_f32
                 .iter()
                 .map(|bus| bus.iter().map(|ch| &ch[..num_samples]).collect())
                 .collect();
-            let mut aux_output_f32_slices: Vec<Vec<&mut [f32]>> = conversion.aux_output_f32
+            let mut aux_output_f32_slices: Vec<Vec<&mut [f32]>> = conversion
+                .aux_output_f32
                 .iter_mut()
                 .map(|bus| bus.iter_mut().map(|ch| &mut ch[..num_samples]).collect())
                 .collect();
@@ -607,7 +662,9 @@ where
             let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
 
             let aux_input_iter = aux_input_f32_slices.iter().map(|bus| bus.iter().copied());
-            let aux_output_iter = aux_output_f32_slices.iter_mut().map(|bus| bus.iter_mut().map(|s| &mut **s));
+            let aux_output_iter = aux_output_f32_slices
+                .iter_mut()
+                .map(|bus| bus.iter_mut().map(|s| &mut **s));
             let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
 
             processor.process(&mut buffer, &mut aux, context);

@@ -30,6 +30,7 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
+use std::slice;
 use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
@@ -38,11 +39,13 @@ use crate::bus_config::{MAX_BUSES, MAX_CHANNELS};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;
 use crate::midi::MidiBuffer;
+use crate::objc_block;
 use crate::sysex_pool::SysExOutputPool;
 use crate::transport::extract_transport_from_au;
 use beamer_core::{
     ControlChange, MidiEvent, MidiEventKind, NoteOff, NoteOn, PitchBend, ProcessContext, Sample,
 };
+
 
 // =============================================================================
 // Parameter Events
@@ -50,28 +53,15 @@ use beamer_core::{
 
 /// Immediate parameter value change from host automation.
 ///
-/// # Field Usage
-///
-/// - `sample_offset`: **Placeholder for future sample-accurate automation**. The current
-///   implementation applies all parameter changes at the start of the buffer rather than
-///   at the exact sample position. This matches VST3 behavior and is acceptable because:
-///   - Parameter smoothers interpolate across the buffer anyway
-///   - True sample-accurate automation would require sub-block processing
-///   - Most plugins don't require sub-sample precision for parameter changes
-///     This field is preserved for API completeness with AU's `AURenderEventParameter` and
-///     to enable future sample-accurate automation without breaking changes.
+/// These events are applied sample-accurately by splitting the render call into
+/// sub-blocks at event boundaries and applying changes at the start of each sub-block.
 ///
 /// - `parameter_address`: Used to look up the target parameter by ID.
 ///
 /// - `value`: Used to set the parameter's normalized value (0.0-1.0).
 #[derive(Clone, Debug)]
 pub struct AuParameterEvent {
-    /// Sample offset within the current buffer (placeholder for future sample-accurate automation).
-    ///
-    /// Currently unused: events are applied at buffer start. Preserved for API completeness
-    /// with AU's `AURenderEventParameter.event_sample_time` and to enable future sample-accurate
-    /// automation without breaking changes. See `processor.rs::apply_parameter_events()`.
-    #[allow(dead_code)]
+    /// Sample offset within the current buffer.
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
@@ -83,14 +73,14 @@ pub struct AuParameterEvent {
 ///
 /// # Field Usage
 ///
-/// - `sample_offset`: **Placeholder for future sample-accurate automation**. Ramps are
-///   currently applied at buffer start. See `AuParameterEvent` documentation for rationale.
+/// - `sample_offset`: Sample offset where the ramp starts. Like immediate events, ramps are
+///   applied sample-accurately by sub-block processing.
 ///
 /// - `parameter_address`: Used to look up the target parameter by ID.
 ///
-/// - `start_value`: **Placeholder for future host-controlled ramping**. The implementation
-///   sets the end value directly, letting the parameter's configured smoother handle
-///   interpolation. Preserved for API completeness with AU's `AURenderEventParameterRamp`.
+/// - `start_value`: Preserved for API completeness with AU's `AURenderEventParameterRamp`.
+///   The current implementation applies the ramp as a value change at `sample_offset` and
+///   relies on the parameter's smoother (if any) for interpolation.
 ///
 /// - `end_value`: Used to set the parameter's target normalized value.
 ///
@@ -104,22 +94,18 @@ pub struct AuParameterEvent {
 /// The current "set end value, let smoother interpolate" approach is intentional:
 /// 1. **VST3 parity**: beamer-vst3 uses the same approach
 /// 2. **Consistent behavior**: Plugin smoothers provide predictable transitions
-/// 3. **Simplicity**: Avoids complex sub-block processing
+/// 3. **Clear responsibility split**: The host chooses *when* a change starts; the plugin
+///    chooses *how* it smooths within its own model
 ///
 /// For most musical parameters, the configured smoother time (e.g., 5ms exponential)
 /// provides smooth transitions regardless of the DAW's intended ramp duration.
 ///
-/// The unused fields are preserved for:
-/// - API completeness with AU's `AURenderEventParameterRamp` event structure
-/// - Future implementation of sample-accurate automation or host-controlled ramping
-/// - Avoiding breaking changes if these features are added later
+/// The unused fields are preserved for API completeness with AU's
+/// `AURenderEventParameterRamp` event structure and potential future support for
+/// host-controlled ramp durations.
 #[derive(Clone, Debug)]
 pub struct AuParameterRampEvent {
-    /// Sample offset where ramp starts (placeholder for future sample-accurate automation).
-    ///
-    /// Currently unused: ramps are applied at buffer start. Preserved for API completeness
-    /// with AU's `AURenderEventParameterRamp.event_sample_time`.
-    #[allow(dead_code)]
+    /// Sample offset where ramp starts.
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
@@ -502,6 +488,7 @@ impl AUHostTransportStateFlags {
 /// }
 /// ```
 type AURenderPullInputBlock = unsafe extern "C" fn(
+    block: *const c_void,
     action_flags: *mut u32,
     timestamp: *const AudioTimeStamp,
     frame_count: u32,
@@ -765,7 +752,10 @@ fn parse_midi1_to_beamer(
 /// - Pitch bend is converted: -1.0 to 1.0 (beamer format) → 0.0-1.0 (MidiCcState format)
 /// - Channel pressure is normalized: 0.0-1.0 (already normalized in beamer)
 /// - Uses atomic operations internally for thread safety (MidiCcState takes `&self`)
-fn update_midi_cc_state(midi_buffer: &crate::midi::MidiBuffer, cc_state: &beamer_core::MidiCcState) {
+fn update_midi_cc_state(
+    midi_buffer: &crate::midi::MidiBuffer,
+    cc_state: &beamer_core::MidiCcState,
+) {
     use beamer_core::midi_cc_config::controller;
     use beamer_core::ParameterStore;
 
@@ -1117,7 +1107,8 @@ impl<S: Sample> RenderBlock<S> {
         // - We only call from within render callback, never store the pointer
         // - midi_bytes points to our pre-allocated pool which outlives this call
         unsafe {
-            let block_fn: AUScheduleMIDIEventBlockFn = std::mem::transmute(block);
+            let invoke = objc_block::invoke_ptr(block);
+            let block_fn: AUScheduleMIDIEventBlockFn = std::mem::transmute(invoke);
             block_fn(
                 block,
                 sample_offset as i64,
@@ -1161,7 +1152,11 @@ impl<S: Sample> RenderBlock<S> {
     /// # Returns
     ///
     /// The number of events that could not be sent (0 if all sent or no events).
-    fn output_all_midi_events(&self, midi_output: &MidiBuffer, sysex_pool: &SysExOutputPool) -> usize {
+    fn output_all_midi_events(
+        &self,
+        midi_output: &MidiBuffer,
+        sysex_pool: &SysExOutputPool,
+    ) -> usize {
         if midi_output.is_empty() {
             return 0;
         }
@@ -1342,6 +1337,10 @@ impl<S: Sample> RenderBlock<S> {
             extract_midi_events(event_list, midi_buffer);
         }
 
+        // Ensure events are ordered by sample offset so we can slice them efficiently
+        // during sub-block processing (sample-accurate automation).
+        midi_buffer.sort_by_sample_offset();
+
         // Update MIDI CC state from incoming events
         // This allows plugins to query current CC values via context.midi_cc()
         if let Some(cc_state) = plugin_guard.midi_cc_state() {
@@ -1363,6 +1362,10 @@ impl<S: Sample> RenderBlock<S> {
             extract_parameter_events(event_list, parameter_events);
         }
 
+        // Sort by sample offset to enable sample-accurate application via sub-block processing.
+        parameter_events.immediate.sort_by_key(|e| e.sample_offset);
+        parameter_events.ramps.sort_by_key(|e| e.sample_offset);
+
         // Extract transport info from AU host
         // SAFETY: timestamp and transport_state_block are valid for this render call
         let transport = unsafe {
@@ -1378,12 +1381,12 @@ impl<S: Sample> RenderBlock<S> {
                     // Define the function signature that matches Apple's AUHostTransportStateBlock.
                     // The first parameter is the block pointer itself (Objective-C block convention).
                     type TransportStateBlockFn = unsafe extern "C" fn(
-                        *const c_void,  // Block pointer itself (Objective-C convention)
-                        *mut u32,       // outTransportStateFlags (AUHostTransportStateFlags)
-                        *mut f64,       // outCurrentSamplePosition
-                        *mut f64,       // outCycleStartBeatPosition
-                        *mut f64,       // outCycleEndBeatPosition
-                    ) -> bool;          // Returns true if successful
+                        *const c_void, // Block pointer itself (Objective-C convention)
+                        *mut u32,      // outTransportStateFlags (AUHostTransportStateFlags)
+                        *mut f64,      // outCurrentSamplePosition
+                        *mut f64,      // outCycleStartBeatPosition
+                        *mut f64,      // outCycleEndBeatPosition
+                    ) -> bool; // Returns true if successful
 
                     let mut flags: u32 = 0;
                     let mut current_sample_pos: f64 = 0.0;
@@ -1422,7 +1425,8 @@ impl<S: Sample> RenderBlock<S> {
                     //
                     // Alternative approach:
                     // - Use `block2` crate for proper Objective-C block handling (adds dependency)
-                    let block_fn: TransportStateBlockFn = std::mem::transmute(block);
+                    let invoke = objc_block::invoke_ptr(block);
+                    let block_fn: TransportStateBlockFn = std::mem::transmute(invoke);
 
                     // Call the block to retrieve transport state
                     let success = block_fn(
@@ -1509,9 +1513,8 @@ impl<S: Sample> RenderBlock<S> {
                     //
                     // Alternative approach:
                     // - Use `block2` crate for proper Objective-C block handling (adds dependency)
-                    let pull_fn = std::mem::transmute::<*const c_void, AURenderPullInputBlock>(
-                        _pull_input_block,
-                    );
+                    let invoke = objc_block::invoke_ptr(_pull_input_block);
+                    let pull_fn: AURenderPullInputBlock = std::mem::transmute(invoke);
 
                     // Use stack-based array to avoid heap allocation in render path
                     // This is real-time safe since MAX_BUSES is a compile-time constant
@@ -1531,6 +1534,7 @@ impl<S: Sample> RenderBlock<S> {
 
                         // Call the pull input block to get audio from this aux bus
                         let status = pull_fn(
+                            _pull_input_block,
                             _action_flags,
                             _timestamp,
                             frame_count,
@@ -1552,52 +1556,189 @@ impl<S: Sample> RenderBlock<S> {
             }
         }
 
-        // Build slices from collected pointers
-        // SAFETY: Pointers collected above are valid for this render call.
-        // The storage methods ensure proper non-overlapping slice construction.
+        // Build slices from collected pointers.
+        // NOTE: these helper methods currently allocate Vecs, but only once per render call.
+        // We avoid per-sub-block allocations by converting to raw pointer lists once and
+        // rebuilding slice views for each sub-block.
         let input_refs = unsafe { storage.input_slices(num_samples) };
         let mut output_refs = unsafe { storage.output_slices(num_samples) };
         let aux_input_refs = unsafe { storage.aux_input_slices(num_samples) };
         let mut aux_output_refs = unsafe { storage.aux_output_slices(num_samples) };
 
-        // Apply parameter events from host automation
-        // This updates parameter values before audio processing for sample-accurate automation
-        // If parameter application fails, continue with audio processing anyway
-        // (parameters may already be at correct values from previous calls)
-        let _ = plugin_guard.apply_parameter_events(
-            &parameter_events.immediate,
-            &parameter_events.ramps,
-        );
+        let input_ptrs: Vec<*const S> = input_refs.iter().map(|s| s.as_ptr()).collect();
+        let output_ptrs: Vec<*mut S> = output_refs.iter_mut().map(|s| s.as_mut_ptr()).collect();
+        let aux_input_ptrs: Vec<Vec<*const S>> = aux_input_refs
+            .iter()
+            .map(|bus| bus.iter().map(|ch| ch.as_ptr()).collect())
+            .collect();
+        let aux_output_ptrs: Vec<Vec<*mut S>> = aux_output_refs
+            .iter_mut()
+            .map(|bus| bus.iter_mut().map(|ch| ch.as_mut_ptr()).collect())
+            .collect();
 
-        // Build ProcessContext with transport and timing information
-        // Include MIDI CC state if configured by the plugin
-        //
+        // Release the full-buffer slice views so we can safely create sub-slices
+        // for each sub-block from raw pointers.
+        drop(input_refs);
+        drop(output_refs);
+        drop(aux_input_refs);
+        drop(aux_output_refs);
+
+        // Pre-allocate per-sub-block slice containers (no per-boundary allocations).
+        let mut segment_inputs: Vec<&[S]> = Vec::with_capacity(input_ptrs.len());
+        let mut segment_outputs: Vec<&mut [S]> = Vec::with_capacity(output_ptrs.len());
+        let mut segment_aux_inputs: Vec<Vec<&[S]>> = aux_input_ptrs
+            .iter()
+            .map(|bus| Vec::with_capacity(bus.len()))
+            .collect();
+        let mut segment_aux_outputs: Vec<Vec<&mut [S]>> = aux_output_ptrs
+            .iter()
+            .map(|bus| Vec::with_capacity(bus.len()))
+            .collect();
+
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
-        // This is safe because:
-        // 1. MidiCcState uses atomics internally (Sync), so concurrent read access is safe
-        // 2. plugin_guard is locked for the entire render call, preventing deallocation
-        // 3. The plugin won't be dropped or reallocated during this scope
-        // 4. We never mutate the MidiCcState through the plugin_guard during process()
+        // MidiCcState uses atomics internally, and we only read it.
         let cc_state_ptr: Option<*const beamer_core::MidiCcState> =
             plugin_guard.midi_cc_state().map(|cc| cc as *const _);
 
-        let context = if let Some(cc_ptr) = cc_state_ptr {
-            let cc_state = unsafe { &*cc_ptr };
-            ProcessContext::with_midi_cc(self.sample_rate, num_samples, transport, cc_state)
-        } else {
-            ProcessContext::new(self.sample_rate, num_samples, transport)
-        };
+        // Sample-accurate automation via sub-block processing.
+        // We split at parameter event boundaries and apply changes exactly at the start of each sub-block.
+        let mut result = os_status::NO_ERR;
 
-        // Call plugin's process method with aux buses and MIDI (dispatches to f32 or f64)
-        let result = self.call_plugin_process_with_midi(
-            &mut plugin_guard,
-            &input_refs,
-            &mut output_refs,
-            &aux_input_refs,
-            &mut aux_output_refs,
-            midi_buffer.as_slice(),
-            &context,
-        );
+        let immediate = &parameter_events.immediate;
+        let ramps = &parameter_events.ramps;
+        let midi_events_all = midi_buffer.as_slice();
+
+        let mut imm_idx: usize = 0;
+        let mut ramp_idx: usize = 0;
+        let mut midi_idx: usize = 0;
+
+        // Scratch MIDI buffer for sub-block processing (reused, no per-boundary allocations).
+        let mut segment_midi: Vec<MidiEvent> = Vec::with_capacity(midi_events_all.len());
+
+        let mut block_start: usize = 0;
+        while block_start < num_samples {
+            // Collect all parameter events scheduled at or before this boundary.
+            let imm_apply_start = imm_idx;
+            while imm_idx < immediate.len()
+                && immediate[imm_idx].sample_offset as usize <= block_start
+            {
+                imm_idx += 1;
+            }
+            let ramp_apply_start = ramp_idx;
+            while ramp_idx < ramps.len() && ramps[ramp_idx].sample_offset as usize <= block_start {
+                ramp_idx += 1;
+            }
+
+            // Determine next boundary.
+            let mut next_boundary = num_samples;
+            if imm_idx < immediate.len() {
+                next_boundary = next_boundary.min(immediate[imm_idx].sample_offset as usize);
+            }
+            if ramp_idx < ramps.len() {
+                next_boundary = next_boundary.min(ramps[ramp_idx].sample_offset as usize);
+            }
+            if next_boundary < block_start {
+                next_boundary = block_start;
+            }
+
+            let block_len = next_boundary.saturating_sub(block_start);
+            if block_len == 0 {
+                // Guard against malformed event lists with duplicate/unsorted offsets.
+                // Advance by 1 sample to prevent an infinite loop.
+                block_start += 1;
+                continue;
+            }
+
+            // Apply parameter changes scheduled at this boundary.
+            // If application fails, continue processing (parameters may already be correct).
+            let _ = plugin_guard.apply_parameter_events(
+                &immediate[imm_apply_start..imm_idx],
+                &ramps[ramp_apply_start..ramp_idx],
+            );
+
+            // Build main bus slices for this sub-block.
+            segment_inputs.clear();
+            for &ptr in &input_ptrs {
+                // SAFETY: ptr is valid for the render call; block_start+block_len is within num_samples.
+                let ch = unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) };
+                segment_inputs.push(ch);
+            }
+
+            segment_outputs.clear();
+            for &ptr in &output_ptrs {
+                // SAFETY: ptr is valid for the render call; block_start+block_len is within num_samples.
+                let ch = unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) };
+                segment_outputs.push(ch);
+            }
+
+            // Build aux bus slices for this sub-block.
+            for (bus_idx, bus_ptrs) in aux_input_ptrs.iter().enumerate() {
+                let bus = &mut segment_aux_inputs[bus_idx];
+                bus.clear();
+                for &ptr in bus_ptrs {
+                    let ch = unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) };
+                    bus.push(ch);
+                }
+            }
+            for (bus_idx, bus_ptrs) in aux_output_ptrs.iter().enumerate() {
+                let bus = &mut segment_aux_outputs[bus_idx];
+                bus.clear();
+                for &ptr in bus_ptrs {
+                    let ch = unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) };
+                    bus.push(ch);
+                }
+            }
+
+            // Slice and rebase MIDI events for this sub-block.
+            // MIDI offsets passed to the plugin must be relative to the start of the current block.
+            segment_midi.clear();
+
+            while midi_idx < midi_events_all.len()
+                && (midi_events_all[midi_idx].sample_offset as usize) < block_start
+            {
+                midi_idx += 1;
+            }
+            let mut midi_scan = midi_idx;
+            while midi_scan < midi_events_all.len()
+                && (midi_events_all[midi_scan].sample_offset as usize) < (block_start + block_len)
+            {
+                let mut ev = midi_events_all[midi_scan].clone();
+                ev.sample_offset = ev.sample_offset.saturating_sub(block_start as u32);
+                segment_midi.push(ev);
+                midi_scan += 1;
+            }
+            midi_idx = midi_scan;
+
+            // Adjust transport sample position for this sub-block.
+            let mut seg_transport = transport;
+            if let Some(t) = seg_transport.project_time_samples {
+                seg_transport.project_time_samples = Some(t + block_start as i64);
+            }
+
+            let context = if let Some(cc_ptr) = cc_state_ptr {
+                let cc_state = unsafe { &*cc_ptr };
+                ProcessContext::with_midi_cc(self.sample_rate, block_len, seg_transport, cc_state)
+            } else {
+                ProcessContext::new(self.sample_rate, block_len, seg_transport)
+            };
+
+            let block_status = self.call_plugin_process_with_midi(
+                &mut plugin_guard,
+                &segment_inputs,
+                &mut segment_outputs,
+                &segment_aux_inputs,
+                &mut segment_aux_outputs,
+                &segment_midi,
+                &context,
+            );
+
+            if block_status != os_status::NO_ERR {
+                result = block_status;
+                break;
+            }
+
+            block_start = next_boundary;
+        }
 
         // Handle MIDI output via scheduleMIDIEventBlock (if available)
         //
