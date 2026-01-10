@@ -1,8 +1,8 @@
 # beamer-au
 
-Audio Unit v3 implementation layer for the Beamer framework (macOS only).
+Audio Unit implementation layer for the Beamer framework (macOS only).
 
-This crate provides native AUv3 support using a **hybrid Objective-C/Rust architecture**. A native `AUAudioUnit` subclass handles Apple runtime compatibility, while all DSP and plugin logic remains in Rust via a C-ABI bridge.
+This crate uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles for simple distribution, with a modern v3 `AUAudioUnit` implementation internally. A native Objective-C `AUAudioUnit` subclass handles Apple runtime compatibility, while all DSP and plugin logic remains in Rust via a C-ABI bridge.
 
 - **Hybrid architecture**: Native ObjC `AUAudioUnit` subclass + Rust DSP via C-ABI bridge
 - **Full AU lifecycle**: allocate/deallocate render resources, parameter tree, state persistence
@@ -23,7 +23,7 @@ Use `beamer-au` directly only if you're:
 
 ## Platform Requirements
 
-- **macOS 10.11+** (AUv3 minimum requirement)
+- **macOS 10.11+** (AUAudioUnit API minimum)
 - **Apple Silicon and Intel** supported
 
 Audio Units are macOS-exclusive. This crate will not compile on other platforms.
@@ -46,7 +46,50 @@ Audio Unit plugins share the same `Plugin` and `AudioProcessor` traits as VST3, 
 ### Limitations
 
 - No custom UI (uses host generic parameter UI)
-- No AUv2 legacy support (v3 only)
+
+## Architecture
+
+Beamer AU uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles with a modern v3 `AUAudioUnit` implementation internally.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  AUv2 .component bundle                                         │
+│  - Simple distribution (no app extension required)              │
+│  - Works with ad-hoc code signing                               │
+│  - Compatible with all AU hosts                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  BeamerAudioUnitFactory (minimal v2 shim)                       │
+│  - Lookup() returns NULL to defer to v3 API                     │
+│  - dispatch_once subclass registration                          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  BeamerAuWrapper : AUAudioUnit (full v3 implementation)         │
+│  - internalRenderBlock for audio processing                     │
+│  - parameterTree with KVO callbacks                             │
+│  - inputBusses/outputBusses for I/O                             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Rust Plugin (via C-ABI bridge)                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why this approach?**
+
+- **Simple distribution**: `.component` bundles just copy to `/Library/Audio/Plug-Ins/Components/`
+- **No special signing**: Works without Apple Developer Program membership
+- **Modern API**: Uses v3 `AUAudioUnit` for parameters, buses, rendering—not legacy v2 callbacks
+- **Wide compatibility**: Loads in all DAWs that support Audio Units
+
+The AUv2 factory is intentionally minimal—it exists only to bootstrap the v3 `AUAudioUnit` subclass. All actual audio processing uses the modern v3 API.
+
+For Mac App Store distribution, AUv3 App Extensions (`.appex` bundles) would be required, which need proper Apple Developer signing and a container app
 
 ## Documentation
 

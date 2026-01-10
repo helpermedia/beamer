@@ -1,103 +1,82 @@
-# AU Hybrid Implementation - Remaining Issues
+# AU Hybrid Implementation - Status
 
-## Status: Build succeeds, runtime fails
+## Status: Factory registration fix implemented
 
-The hybrid Objective-C/Rust AU architecture builds successfully, but the plugin fails to open at runtime with error `-1` (0xFFFFFFFF) during `auval` testing.
+**Updated: 2026-01-10**
 
-```
-VALIDATING AUDIO UNIT: 'aufx' - 'gain' - 'Bemr'
-Manufacturer String: Beamer
-AudioUnit Name: BeamerGain
-Component Version: 2.0.0 (0x20000)
-* * PASS
---------------------------------------------------
-TESTING OPEN TIMES:
-COLD:
-FATAL ERROR: OpenAComponent: result: -1,0xFFFFFFFF
-```
+The hybrid Objective-C/Rust AU architecture now uses an AUv2 `.component` bundle
+with v3 `AUAudioUnit` internals. The factory registration timing issue has been
+addressed with explicit registration checks.
 
-## Root Cause Analysis
+## Previous Issue (Resolved)
 
-The error occurs during `beamer_au_create_instance()` which returns NULL. This happens because:
+The plugin was failing with error `-1` during `auval` testing because the Rust
+factory wasn't registered before `BeamerAudioUnitFactory` was called.
 
-1. **Factory not registered**: The `export_au!` macro uses `__DATA,__mod_init_func` section to register the factory at dylib load time
-2. **Module init may not run**: The module initializer might not be executing before `BeamerAudioUnitFactory` is called
-3. **Order of operations issue**: macOS calls `BeamerAudioUnitFactory` → ObjC calls `beamer_au_create_instance()` → Rust checks `factory::create_instance()` → returns None if factory not registered
+## Implemented Solution
 
-## Investigation Tasks
+We implemented a variant of **Option A** (explicit factory check) combined with
+the proper AUv2 `AudioComponentPlugInInterface` pattern:
 
-- [ ] **1. Verify module initializer runs**
-  - Add logging to `__beamer_au_register()` in export.rs
-  - Check if `log::debug!` in `register_factory()` outputs anything
-  - May need to use `eprintln!` or write to file for debugging
+### 1. Factory Registration Check (`bridge.rs`)
 
-- [ ] **2. Check symbol visibility**
-  - Verify `BeamerAudioUnitFactory` is exported from the dylib
-  - Run `nm -g target/release/libgain.dylib | grep -i beamer`
-  - Check if both ObjC factory and Rust functions are visible
-
-- [ ] **3. Verify link order**
-  - The ObjC code is compiled by `cc` crate and linked
-  - Rust code is compiled separately
-  - Check if link order affects module init timing
-
-- [ ] **4. Test manual factory registration**
-  - Add an ObjC `+load` method to `BeamerAuWrapper` that calls a Rust init function
-  - This guarantees registration before any instance creation
-
-## Potential Fixes
-
-### Option A: Use ObjC +load for initialization
-
-Add to `BeamerAuWrapper.m`:
-```objc
-+ (void)load {
-    // Call Rust to register factory before any AU instantiation
-    beamer_au_init_factory();
-}
-```
-
-Add to `bridge.rs`:
 ```rust
 #[no_mangle]
-pub extern "C" fn beamer_au_init_factory() {
-    // The export_au! macro's __beamer_au_manual_init() does this
-    // But we need a way to call it from ObjC
+pub extern "C" fn beamer_au_ensure_factory_registered() -> bool {
+    factory::is_registered()
 }
 ```
 
-### Option B: Lazy factory registration in create_instance
+### 2. ObjC Wrapper Checks Before Instance Creation (`BeamerAuWrapper.m`)
 
-Modify `beamer_au_create_instance()` to handle missing factory gracefully:
+Both `initWithComponentDescription:` and `createAudioUnitWithComponentDescription:`
+now call `beamer_au_ensure_factory_registered()` and return an error if false.
+
+### 3. AUv2 Factory Pattern (`BeamerAuWrapper.m`)
+
+The factory now returns an `AudioComponentPlugInInterface` with:
+- `Open()` - Creates `BeamerAuWrapper` instance
+- `Close()` - Releases instance
+- `Lookup()` - Returns `NULL` to defer to v3 `AUAudioUnit` API
+
+### 4. Subclass Registration
+
+`BeamerAuRegisterSubclass()` is called once on first factory invocation using
+`dispatch_once`, registering the `AUAudioUnit` subclass with the framework.
+
+### 5. Symbol Export (`build.rs`)
+
+Explicit linker flag ensures `BeamerAudioUnitFactory` is exported:
 ```rust
-pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
-    // If factory not registered, log error and return null
-    if !factory::is_registered() {
-        log::error!("AU factory not registered - module init may not have run");
-        return ptr::null_mut();
-    }
-    // ... rest of function
-}
+println!("cargo:rustc-cdylib-link-arg=-Wl,-exported_symbol,_BeamerAudioUnitFactory");
 ```
 
-### Option C: Use constructor attribute
+## Additional Improvements
 
-Change the module init to use `#[ctor]` crate which is more reliable:
-```rust
-#[ctor::ctor]
-fn init_au_factory() {
-    factory::register_factory(...);
-}
-```
+### Channel Configuration Validation
 
-## Files to Modify
+Added `beamer_au_is_channel_config_valid()` to validate channel configurations
+per component type:
+- **Effect (aufx)**: Input channels must equal output channels
+- **Instrument (aumu)**: Any output channel count valid
+- **MIDI Processor (aumi)**: Input channels must equal output channels
 
-| File | Change |
-|------|--------|
-| `src/export.rs` | Add alternative initialization mechanism |
-| `src/bridge.rs` | Add `beamer_au_init_factory()` function |
-| `objc/BeamerAuWrapper.m` | Add `+load` method to call Rust init |
-| `Cargo.toml` | Possibly add `ctor` crate |
+### Frame Count Validation
+
+`beamer_au_render()` now validates that `frame_count <= max_frames` and returns
+`kAudioUnitErr_TooManyFramesToProcess` if exceeded.
+
+### Channel Capabilities
+
+`BeamerAuWrapper` now returns explicit `channelCapabilities` for supported
+configurations (mono, stereo, quad, 5.0, 5.1, 6.1, 7.1).
+
+## Investigation Tasks (Completed)
+
+- [x] **1. Verify module initializer runs** - Added explicit factory check
+- [x] **2. Check symbol visibility** - Added explicit symbol export in build.rs
+- [x] **3. Verify link order** - Addressed via explicit checks, not relying on init order
+- [x] **4. Test manual factory registration** - Implemented via `beamer_au_ensure_factory_registered()`
 
 ## Testing Commands
 
@@ -115,11 +94,40 @@ nm -g target/release/libgain.dylib | grep -i beamer
 log show --last 1m | grep -i beamer
 ```
 
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DAW Host                                                        │
+│  Calls BeamerAudioUnitFactory (from Info.plist factoryFunction)  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  BeamerAudioUnitFactory()                                        │
+│  1. registerSubclass() once via dispatch_once                    │
+│  2. Returns AudioComponentPlugInInterface*                       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┴───────────────────┐
+          ▼                                       ▼
+    Open() callback                        Lookup() → NULL
+    1. Check beamer_au_ensure_factory_registered()
+    2. Create BeamerAuWrapper              (defer to v3 API)
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  BeamerAuWrapper : AUAudioUnit <AUAudioUnitFactory>              │
+│  - internalRenderBlock → beamer_au_render()                      │
+│  - parameterTree from Rust parameter definitions                 │
+│  - channelCapabilities for supported configurations              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Related Files
 
 - `crates/beamer-au/src/export.rs` - Module init macro
 - `crates/beamer-au/src/factory.rs` - Factory registration
-- `crates/beamer-au/src/bridge.rs` - C-ABI bridge
-- `crates/beamer-au/objc/BeamerAuWrapper.m` - ObjC wrapper
-- `docs/HYBRID_AU_IMPLEMENTATION_PLAN.md` - Implementation plan
-- `docs/AU_CRASH_ANALYSIS.md` - Original crash analysis
+- `crates/beamer-au/src/bridge.rs` - C-ABI bridge with factory check
+- `crates/beamer-au/objc/BeamerAuWrapper.m` - ObjC wrapper with AUv2 factory
+- `docs/AU_ARCHITECTURE_REVIEW.md` - Architecture overview

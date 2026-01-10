@@ -191,6 +191,39 @@ typedef enum {
 } BeamerAuParameterFlags;
 
 // =============================================================================
+// MARK: - Factory Registration
+// =============================================================================
+
+/**
+ * Check if the plugin factory is registered.
+ *
+ * This function verifies that the Rust plugin factory has been registered
+ * (via the `export_au!` macro's static initializer). The factory is
+ * automatically registered when the .component bundle binary loads.
+ *
+ * Called by BeamerAuWrapper's initialization methods before creating plugin
+ * instances to ensure the factory is ready.
+ *
+ * The function is idempotent - calling it multiple times is safe.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @return true if the factory is registered and ready, false if registration
+ *         has not occurred (which indicates the plugin's `export_au!` macro
+ *         was not invoked or the static initializer did not run).
+ */
+bool beamer_au_ensure_factory_registered(void);
+
+/**
+ * Fill in an AudioComponentDescription from the registered AU config.
+ *
+ * This is used by +load to register the AUAudioUnit subclass with the framework.
+ *
+ * @param desc Pointer to AudioComponentDescription to fill in.
+ */
+void beamer_au_get_component_description(AudioComponentDescription* desc);
+
+// =============================================================================
 // MARK: - Instance Lifecycle
 // =============================================================================
 
@@ -697,6 +730,28 @@ uint32_t beamer_au_get_input_bus_channel_count(
 uint32_t beamer_au_get_output_bus_channel_count(
     BeamerAuInstanceHandle _Nullable instance,
     uint32_t bus_index
+);
+
+/**
+ * Check if a proposed channel configuration is valid.
+ *
+ * This is used by shouldChangeToFormat:forBus: to validate that a proposed
+ * format change would result in a valid overall configuration. For example,
+ * an effect plugin with [-1,-1] capability requires input channels to equal
+ * output channels on the main bus.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance               Handle to the plugin instance.
+ * @param main_input_channels    Proposed number of channels for main input bus.
+ * @param main_output_channels   Proposed number of channels for main output bus.
+ *
+ * @return true if the channel configuration is valid, false otherwise.
+ */
+bool beamer_au_is_channel_config_valid(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t main_input_channels,
+    uint32_t main_output_channels
 );
 
 // =============================================================================

@@ -1544,7 +1544,7 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 
 ### 4.4 Bundle Structure
 
-Audio Unit plugins are App Extensions with `.component` extension:
+Audio Unit plugins are `.component` bundles (AUv2 packaging with v3 internals):
 
 ```
 MyPlugin.component/

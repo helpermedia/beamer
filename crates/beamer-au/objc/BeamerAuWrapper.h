@@ -1,9 +1,6 @@
 // BeamerAuWrapper.h
 // Native Objective-C AUAudioUnit subclass header for the Beamer AU framework.
 //
-// This header declares the public interface for BeamerAuWrapper and the
-// BeamerAudioUnitFactory function that macOS calls to instantiate the AU.
-//
 // Copyright (c) 2026 Helpermedia. All rights reserved.
 
 #ifndef BEAMER_AU_WRAPPER_H
@@ -23,6 +20,13 @@
  * All audio processing, parameter handling, and state management are delegated
  * to Rust via the C-ABI bridge functions declared in BeamerAuBridge.h.
  *
+ * ## Architecture
+ *
+ * Beamer uses AUv2 .component bundles with v3 AUAudioUnit internally:
+ * - BeamerAudioUnitFactory() is the v2 entry point (in Info.plist)
+ * - registerSubclass() registers this class with the AU framework
+ * - Lookup() returns NULL, so the framework uses AUAudioUnit API
+ *
  * ## Design Philosophy
  *
  * - **Minimal Objective-C**: The wrapper does minimal work; all heavy lifting
@@ -36,12 +40,13 @@
  *
  * ## Lifecycle
  *
- * 1. **Instantiation**: Factory function creates the instance via alloc/init
- * 2. **Bus Setup**: Input/output bus arrays are configured from Rust plugin config
- * 3. **Parameter Tree**: Built from Rust parameter definitions
- * 4. **Render Resources**: Host calls allocateRenderResourcesAndReturnError:
- * 5. **Processing**: Host calls internalRenderBlock for each audio buffer
- * 6. **Cleanup**: Host calls deallocateRenderResources, then dealloc
+ * 1. **Factory**: Host calls BeamerAudioUnitFactory (registers subclass once)
+ * 2. **Open**: Framework creates BeamerAuWrapper via registered subclass
+ * 3. **Bus Setup**: Input/output bus arrays configured from Rust plugin config
+ * 4. **Parameter Tree**: Built from Rust parameter definitions
+ * 5. **Render Resources**: Host calls allocateRenderResourcesAndReturnError:
+ * 6. **Processing**: Host calls internalRenderBlock for each audio buffer
+ * 7. **Cleanup**: Host calls deallocateRenderResources, then dealloc
  *
  * ## Thread Safety
  *
@@ -51,51 +56,33 @@
  * - Parameter get/set: Any thread (uses atomics in Rust)
  * - State save/load: Main thread only
  */
-@interface BeamerAuWrapper : AUAudioUnit
+@interface BeamerAuWrapper : AUAudioUnit <AUAudioUnitFactory>
 
 // No public methods beyond what AUAudioUnit provides.
 // All customization happens through the standard AUAudioUnit interface.
 
+// AUAudioUnitFactory protocol method (for future AUv3 App Extension support)
+- (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)desc
+                                                            error:(NSError **)error;
+
 @end
 
 // =============================================================================
-// MARK: - Factory Function
+// MARK: - AUv2 Factory Function
 // =============================================================================
 
 /**
- * Audio Unit factory function called by macOS to create plugin instances.
+ * AUv2 factory function - entry point for .component bundles.
  *
- * This is the entry point that macOS uses when instantiating the AU.
- * The function name must match the `factoryFunction` key in Info.plist.
+ * This function is specified in Info.plist's factoryFunction key.
+ * It registers the AUAudioUnit subclass on first call, then returns
+ * an AudioComponentPlugInInterface with Lookup() returning NULL to
+ * delegate all operations to the AUAudioUnit API.
  *
- * ## Info.plist Configuration
- *
- * ```xml
- * <key>AudioComponents</key>
- * <array>
- *     <dict>
- *         <key>factoryFunction</key>
- *         <string>BeamerAudioUnitFactory</string>
- *         <!-- Other AU configuration keys... -->
- *     </dict>
- * </array>
- * ```
- *
- * ## Thread Safety
- *
- * Called from the main thread by the Audio Unit framework.
- *
- * ## Memory Management
- *
- * - Returns a retained (+1) pointer using __bridge_retained
- * - The Audio Unit framework takes ownership and will release it
- * - On failure, returns NULL
- *
- * @param desc Pointer to AudioComponentDescription identifying which AU to create.
- *             This contains the type (aufx, aumu, aumi), subtype, and manufacturer.
- *
- * @return Retained pointer to the new AUAudioUnit instance, or NULL on failure.
+ * @param desc The component description from Info.plist.
+ * @return AudioComponentPlugInInterface* for the AU framework.
  */
+__attribute__((visibility("default")))
 void* BeamerAudioUnitFactory(const AudioComponentDescription* desc);
 
 #endif // BEAMER_AU_WRAPPER_H

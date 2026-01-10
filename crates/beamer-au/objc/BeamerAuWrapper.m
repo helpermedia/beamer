@@ -92,6 +92,16 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
                                      options:(AudioComponentInstantiationOptions)options
                                        error:(NSError**)outError {
+    // Ensure the Rust factory is registered before creating instances
+    if (!beamer_au_ensure_factory_registered()) {
+        if (outError != NULL) {
+            *outError = [NSError errorWithDomain:NSOSStatusErrorDomain
+                                            code:kAudioUnitErr_FailedInitialization
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Failed to register Rust plugin factory"}];
+        }
+        return nil;
+    }
+
     self = [super initWithComponentDescription:componentDescription
                                        options:options
                                          error:outError];
@@ -141,6 +151,36 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     self.maximumFramesToRender = kDefaultMaxFrames;
 
     return self;
+}
+
+// -----------------------------------------------------------------------------
+// MARK: AUAudioUnitFactory Protocol
+// -----------------------------------------------------------------------------
+
+/// Create a new Audio Unit instance (AUAudioUnitFactory protocol).
+///
+/// This method is called by the AU host to create instances of the audio unit.
+/// It returns a new BeamerAuWrapper configured with the given component description.
+///
+/// @param desc The component description specifying type, subtype, manufacturer.
+/// @param error Output parameter for error information if creation fails.
+/// @return A new AUAudioUnit instance, or nil on failure.
+- (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)desc
+                                                            error:(NSError **)error {
+    // Ensure the Rust factory is registered before creating instances
+    if (!beamer_au_ensure_factory_registered()) {
+        if (error) {
+            *error = [NSError errorWithDomain:NSOSStatusErrorDomain
+                                         code:kAudioUnitErr_FailedInitialization
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Failed to register plugin factory"}];
+        }
+        return nil;
+    }
+
+    // Create and return a new instance
+    return [[BeamerAuWrapper alloc] initWithComponentDescription:desc
+                                                         options:0
+                                                           error:error];
 }
 
 /// Clean up the Rust plugin instance.
@@ -335,17 +375,35 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 /// Called by the host before audio processing begins.
 /// Extracts format info from buses and notifies Rust.
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError**)outError {
-    // Call super first (required by Apple)
-    if (![super allocateRenderResourcesAndReturnError:outError]) {
-        return NO;
-    }
-
     if (_rustInstance == NULL) {
         if (outError != NULL) {
             *outError = [NSError errorWithDomain:NSOSStatusErrorDomain
                                             code:kAudioUnitErr_Uninitialized
                                         userInfo:@{NSLocalizedDescriptionKey: @"Rust instance not initialized"}];
         }
+        return NO;
+    }
+
+    // Build bus configuration from current bus arrays BEFORE calling super
+    // This allows us to validate the configuration and reject early
+    [self buildBusConfig];
+
+    // Validate channel configuration before allocating any resources
+    // For effect plugins (aufx), input channels must equal output channels
+    uint32_t mainInputChannels = (_busConfig.input_bus_count > 0) ? _busConfig.input_buses[0].channel_count : 0;
+    uint32_t mainOutputChannels = (_busConfig.output_bus_count > 0) ? _busConfig.output_buses[0].channel_count : 0;
+
+    if (!beamer_au_is_channel_config_valid(_rustInstance, mainInputChannels, mainOutputChannels)) {
+        if (outError != NULL) {
+            *outError = [NSError errorWithDomain:NSOSStatusErrorDomain
+                                            code:kAudioUnitErr_FormatNotSupported
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Channel configuration not supported"}];
+        }
+        return NO;
+    }
+
+    // Call super after validation passes (required by Apple)
+    if (![super allocateRenderResourcesAndReturnError:outError]) {
         return NO;
     }
 
@@ -368,9 +426,6 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     }
 
     _maxFrames = self.maximumFramesToRender;
-
-    // Build bus configuration from current bus arrays
-    [self buildBusConfig];
 
     // Allocate render resources in Rust
     OSStatus result = beamer_au_allocate_render_resources(
@@ -795,20 +850,72 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     return YES;
 }
 
+/// Return the supported channel configurations.
+///
+/// For effect plugins with [-1,-1] capability (any matching channels),
+/// we return explicit pairs to help hosts understand valid configurations.
+/// Each pair is [inputChannels, outputChannels] as NSNumber objects.
+- (NSArray<NSNumber*>*)channelCapabilities {
+    // Return explicit supported configurations
+    // For effect plugins: pairs where input == output
+    // Common channel counts: 1 (mono), 2 (stereo), 4 (quad), 5 (5.0), 6 (5.1), 7 (6.1), 8 (7.1)
+    return @[
+        @1, @1,     // Mono
+        @2, @2,     // Stereo
+        @4, @4,     // Quad
+        @5, @5,     // 5.0
+        @6, @6,     // 5.1
+        @7, @7,     // 6.1
+        @8, @8      // 7.1
+    ];
+}
+
 /// Called when the host wants to change the format for a bus.
 /// Return YES to accept the format change.
+///
+/// For format changes, we accept if the proposed channel count exists in any
+/// of our supported configurations for that bus direction. The final validation
+/// of the complete configuration happens during allocateRenderResources.
 - (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {
     // Reject formats with too many channels
     if (format.channelCount > BEAMER_AU_MAX_CHANNELS) {
         return NO;
     }
 
-    // Accept any valid floating-point format.
-    // The Rust side handles f32/f64 conversion if needed.
-    if (format.commonFormat == AVAudioPCMFormatFloat32 ||
-        format.commonFormat == AVAudioPCMFormatFloat64) {
+    // Reject non-floating-point formats
+    if (format.commonFormat != AVAudioPCMFormatFloat32 &&
+        format.commonFormat != AVAudioPCMFormatFloat64) {
+        return NO;
+    }
+
+    // Check which bus this is
+    BOOL isMainInputBus = (_inputBusArray.count > 0 && _inputBusArray[0] == bus);
+    BOOL isMainOutputBus = (_outputBusArray.count > 0 && _outputBusArray[0] == bus);
+
+    if (!isMainInputBus && !isMainOutputBus) {
+        // Auxiliary bus - accept any valid format
         return YES;
     }
+
+    // Check if the proposed channel count exists in any supported configuration
+    uint32_t proposedChannels = (uint32_t)format.channelCount;
+    NSArray<NSNumber*>* caps = [self channelCapabilities];
+
+    for (NSUInteger i = 0; i + 1 < caps.count; i += 2) {
+        if (isMainInputBus) {
+            // Check if this input channel count is supported
+            if (caps[i].unsignedIntValue == proposedChannels) {
+                return YES;
+            }
+        } else {
+            // Check if this output channel count is supported
+            if (caps[i + 1].unsignedIntValue == proposedChannels) {
+                return YES;
+            }
+        }
+    }
+
+    // Channel count not in any supported configuration
     return NO;
 }
 
@@ -819,48 +926,80 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     }
 }
 
-
 @end
 
 // =============================================================================
-// MARK: - Factory Function
+// MARK: - AUv2 Factory Interface
 // =============================================================================
 
-/// Audio Unit factory function called by macOS to create plugin instances.
-///
-/// This is the entry point that macOS uses when instantiating the AU.
-/// The function name must match the `factoryFunction` key in Info.plist.
-///
-/// Thread Safety: Called from main thread by Audio Unit framework.
-///
-/// @param desc Pointer to AudioComponentDescription identifying which AU to create.
-/// @return Retained pointer to the new AUAudioUnit instance, or NULL on failure.
-///
-/// Memory Management:
-/// - Returns a retained (+1) pointer using __bridge_retained
-/// - The Audio Unit framework takes ownership and will release it
-void* BeamerAudioUnitFactory(const AudioComponentDescription* desc) {
-    @autoreleasepool {
-        // Validate input
-        if (desc == NULL) {
-            NSLog(@"BeamerAudioUnitFactory: NULL component description");
-            return NULL;
-        }
+/// Instance data for the v2 plugin interface.
+/// Stores the v2 interface vtable and the AUAudioUnit instance.
+typedef struct BeamerAuPlugInInstance {
+    AudioComponentPlugInInterface interface;
+    AudioComponentDescription desc;
+    BeamerAuWrapper* auInstance;
+} BeamerAuPlugInInstance;
 
-        // Create the Audio Unit instance
-        NSError* error = nil;
-        BeamerAuWrapper* audioUnit = [[BeamerAuWrapper alloc]
-            initWithComponentDescription:*desc
-                                 options:kAudioComponentInstantiation_LoadOutOfProcess
-                                   error:&error];
+/// Open callback - creates a new BeamerAuWrapper instance.
+static OSStatus BeamerAuOpen(void* self, AudioComponentInstance component) {
+    BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)self;
 
-        if (audioUnit == nil) {
-            NSLog(@"BeamerAudioUnitFactory: Failed to create AU instance: %@",
-                  error.localizedDescription);
-            return NULL;
-        }
-
-        // Return retained pointer (ownership transfers to caller)
-        return (__bridge_retained void*)audioUnit;
+    NSError* error = nil;
+    instance->auInstance = [[BeamerAuWrapper alloc] initWithComponentDescription:instance->desc
+                                                                         options:0
+                                                                           error:&error];
+    if (error || !instance->auInstance) {
+        NSLog(@"BeamerAuOpen: Failed to create AU instance: %@", error);
+        return kAudioUnitErr_FailedInitialization;
     }
+
+    return noErr;
+}
+
+/// Close callback - releases the BeamerAuWrapper instance.
+static OSStatus BeamerAuClose(void* self) {
+    BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)self;
+    instance->auInstance = nil;
+    free(instance);
+    return noErr;
+}
+
+/// Lookup callback - returns NULL to defer to AUAudioUnit v3 API.
+/// When NULL is returned, the AU framework uses the modern AUAudioUnit
+/// methods (parameterTree, internalRenderBlock, etc.) instead of v2 selectors.
+static AudioComponentMethod BeamerAuLookup(SInt16 selector) {
+    return NULL;
+}
+
+/// Register the AUAudioUnit subclass with the framework.
+/// Called once on first factory invocation.
+static void BeamerAuRegisterSubclass(const AudioComponentDescription* desc) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [BeamerAuWrapper registerSubclass:[BeamerAuWrapper class]
+                    asComponentDescription:*desc
+                                      name:@"BeamerAuWrapper"
+                                   version:0x00020000];
+    });
+}
+
+/// AUv2 factory function - entry point for .component bundles.
+/// This function is specified in Info.plist's factoryFunction key.
+/// Returns an AudioComponentPlugInInterface that wraps our AUAudioUnit subclass.
+__attribute__((visibility("default")))
+void* BeamerAudioUnitFactory(const AudioComponentDescription* desc) {
+    // Register subclass on first call (Rust factory should be ready by now)
+    BeamerAuRegisterSubclass(desc);
+
+    BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)malloc(sizeof(BeamerAuPlugInInstance));
+    if (!instance) return NULL;
+
+    instance->interface.Open = BeamerAuOpen;
+    instance->interface.Close = BeamerAuClose;
+    instance->interface.Lookup = BeamerAuLookup;
+    instance->interface.reserved = NULL;
+    instance->desc = *desc;
+    instance->auInstance = nil;
+
+    return &instance->interface;
 }

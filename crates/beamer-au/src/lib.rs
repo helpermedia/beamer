@@ -1,9 +1,10 @@
 //! # beamer-au
 //!
-//! Audio Unit (AUv3) implementation layer for the Beamer framework.
+//! Audio Unit implementation layer for the Beamer framework.
 //!
-//! This crate provides the Audio Unit interface implementations that wrap `beamer-core` traits
-//! into macOS Audio Unit (AUv3) components. It handles all the AU-specific details like:
+//! This crate uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles for simple
+//! distribution, with a modern v3 `AUAudioUnit` implementation internally. It handles all the
+//! AU-specific details like:
 //!
 //! - Audio component registration and factory management
 //! - Native Objective-C AUAudioUnit subclass with C-ABI bridge to Rust

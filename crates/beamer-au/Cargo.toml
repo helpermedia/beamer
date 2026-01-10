@@ -2,8 +2,8 @@
 name = "beamer-au"
 version = "0.1.6"
 edition = "2021"
-description = "Audio Unit (AUv3) support for Beamer audio plugin framework"
-license = "MIT OR Apache-2.0"
+description = "Audio Unit support for Beamer audio plugin framework (hybrid v2/v3 architecture)"
+license = "MIT"
 repository = "https://github.com/helpermedia/beamer"
 keywords = ["audio", "plugin", "au", "audiounit", "music"]
 categories = ["multimedia::audio"]

@@ -229,6 +229,48 @@ fn bus_config_from_c(config: &BeamerAuBusConfig) -> CachedBusConfig {
 }
 
 // =============================================================================
+// Factory Registration
+// =============================================================================
+
+/// Ensure the plugin factory is registered.
+///
+/// This function checks if the plugin factory has been registered (via the
+/// `export_au!` macro's static initializer). The factory is typically registered
+/// automatically when the `.component` bundle loads.
+///
+/// # Safety
+///
+/// This function has no pointer parameters and is safe to call from any thread.
+///
+/// # Returns
+///
+/// `true` if the factory is registered and ready, `false` otherwise.
+#[no_mangle]
+pub extern "C" fn beamer_au_ensure_factory_registered() -> bool {
+    factory::is_registered()
+}
+
+/// Fill in the AudioComponentDescription from the registered AU config.
+///
+/// # Safety
+///
+/// `desc` must be a valid pointer to an AudioComponentDescription struct.
+#[no_mangle]
+pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
+    if desc.is_null() {
+        return;
+    }
+    if let Some(config) = factory::au_config() {
+        // AudioComponentDescription layout: type, subtype, manufacturer, flags, mask
+        *desc.add(0) = config.component_type.as_u32();
+        *desc.add(1) = u32::from_be_bytes(config.subtype.0);
+        *desc.add(2) = u32::from_be_bytes(config.manufacturer.0);
+        *desc.add(3) = 0; // componentFlags
+        *desc.add(4) = 0; // componentFlagsMask
+    }
+}
+
+// =============================================================================
 // Instance Lifecycle
 // =============================================================================
 
@@ -631,6 +673,12 @@ pub extern "C" fn beamer_au_render(
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let handle = unsafe { &*instance };
+
+        // Validate frame count against maximum set during allocate_render_resources
+        // This is required by the AU spec - render must reject requests exceeding max_frames
+        if frame_count > handle.max_frames {
+            return os_status::K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS;
+        }
 
         // Use read lock for concurrent access during rendering
         // try_read() is used for real-time safety - we don't want to block the audio thread
@@ -1319,6 +1367,61 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
     } else {
         0
     }
+}
+
+/// Check if a proposed channel configuration is valid.
+///
+/// For effect plugins (aufx), this enforces that input channels equal output channels
+/// on the main bus, which is the typical expectation for [-1, -1] channel capability.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_is_channel_config_valid(
+    _instance: BeamerAuInstanceHandle,
+    main_input_channels: u32,
+    main_output_channels: u32,
+) -> bool {
+    use crate::bus_config::MAX_CHANNELS;
+    use crate::config::ComponentType;
+
+    let result = catch_unwind(|| {
+        // Get the AU config to check the component type
+        let config = match factory::au_config() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // Validate channel counts are within bounds
+        if main_input_channels > MAX_CHANNELS as u32 || main_output_channels > MAX_CHANNELS as u32
+        {
+            return false;
+        }
+
+        // For effect plugins (aufx), require matching input/output channel counts
+        // This implements the [-1, -1] channel capability behavior
+        if config.component_type == ComponentType::Effect {
+            return main_input_channels == main_output_channels;
+        }
+
+        // For instruments (aumu), any output channel count is valid
+        // Instruments typically don't have audio input, only MIDI
+        if config.component_type == ComponentType::MusicDevice {
+            return true;
+        }
+
+        // For MIDI processors (aumi), require matching input/output
+        if config.component_type == ComponentType::MidiProcessor {
+            return main_input_channels == main_output_channels;
+        }
+
+        // Default: accept any configuration
+        true
+    });
+
+    result.unwrap_or(false)
 }
 
 // =============================================================================

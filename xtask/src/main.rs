@@ -41,7 +41,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Formats:");
     eprintln!("  --vst3    Build VST3 bundle (default if no format specified)");
-    eprintln!("  --au      Build Audio Unit bundle (.component)");
+    eprintln!("  --au      Build Audio Unit bundle (AUv3 App Extension: .app with .appex)");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --release    Build in release mode");
@@ -167,16 +167,22 @@ fn bundle_au(
     install: bool,
     workspace_root: &Path,
 ) -> Result<(), String> {
-    // Create bundle name (convert to CamelCase and add .component)
+    // Create AUv2 .component bundle structure:
+    // BeamerGain.component/
+    // ├── Contents/
+    // │   ├── Info.plist       ← Contains factoryFunction key
+    // │   ├── MacOS/
+    // │   │   └── BeamerGain   ← The plugin dylib
+    // │   ├── Resources/
+    // │   └── PkgInfo
+
     let bundle_name = to_au_bundle_name(package);
     let bundle_dir = target_dir.join(&bundle_name);
-
-    // Create bundle directory structure
     let contents_dir = bundle_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
 
-    println!("Creating AU bundle at {}...", bundle_dir.display());
+    println!("Creating AU component bundle at {}...", bundle_dir.display());
 
     // Clean up existing bundle
     if bundle_dir.exists() {
@@ -185,24 +191,31 @@ fn bundle_au(
 
     // Create directories
     fs::create_dir_all(&macos_dir).map_err(|e| format!("Failed to create MacOS dir: {}", e))?;
-    fs::create_dir_all(&resources_dir)
-        .map_err(|e| format!("Failed to create Resources dir: {}", e))?;
+    fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
     // Copy dylib
-    let plugin_binary = macos_dir.join(bundle_name.trim_end_matches(".component"));
-    fs::copy(dylib_path, &plugin_binary)
+    let executable_name = bundle_name.trim_end_matches(".component");
+    let binary_path = macos_dir.join(executable_name);
+    fs::copy(dylib_path, &binary_path)
         .map_err(|e| format!("Failed to copy dylib: {}", e))?;
 
-    // Auto-detect component type and subtype from plugin source
-    let (component_type, detected_subtype) = detect_au_component_info(package, workspace_root);
+    // Auto-detect component type, manufacturer, and subtype from plugin source
+    let (component_type, detected_manufacturer, detected_subtype) = detect_au_component_info(package, workspace_root);
     println!(
-        "Detected AU component type: {} (subtype: {})",
+        "Detected AU: {} (manufacturer: {}, subtype: {})",
         component_type,
-        detected_subtype.as_deref().unwrap_or("auto-generated")
+        detected_manufacturer.as_deref().unwrap_or("Bemr"),
+        detected_subtype.as_deref().unwrap_or("auto")
     );
 
-    // Create Info.plist with AudioComponents
-    let info_plist = create_au_info_plist(package, &bundle_name, &component_type, detected_subtype.as_deref());
+    // Create Info.plist with factoryFunction
+    let info_plist = create_au_info_plist(
+        package,
+        executable_name,
+        &component_type,
+        detected_manufacturer.as_deref(),
+        detected_subtype.as_deref(),
+    );
     fs::write(contents_dir.join("Info.plist"), info_plist)
         .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
 
@@ -210,17 +223,16 @@ fn bundle_au(
     fs::write(contents_dir.join("PkgInfo"), "BNDL????")
         .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
 
-    println!("AU bundle created: {}", bundle_dir.display());
+    println!("AU component bundle created: {}", bundle_dir.display());
 
-    // Ad-hoc code sign (required for modern macOS)
-    println!("Code signing...");
+    // Ad-hoc code sign
     let sign_status = Command::new("codesign")
-        .args(["--force", "--deep", "--sign", "-", bundle_dir.to_str().unwrap()])
+        .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
         .status();
 
     match sign_status {
         Ok(status) if status.success() => println!("Code signing successful"),
-        Ok(_) => println!("Warning: Code signing failed (plugin may not load)"),
+        Ok(_) => println!("Warning: Code signing failed"),
         Err(e) => println!("Warning: Could not run codesign: {}", e),
     }
 
@@ -232,13 +244,13 @@ fn bundle_au(
     Ok(())
 }
 
-/// Detect AU component type and subtype from plugin source code.
+/// Detect AU component type, manufacturer, and subtype from plugin source code.
 ///
 /// Parses the plugin's lib.rs file looking for the `AuConfig::new()` declaration
 /// to extract the ComponentType and fourcc codes.
 ///
-/// Returns (component_type_code, subtype_code_option)
-fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>) {
+/// Returns (component_type_code, manufacturer_option, subtype_option)
+fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>) {
     // Try to find the lib.rs for this package
     let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
 
@@ -257,30 +269,31 @@ fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Op
             "aufx".to_string()
         };
 
-        // Try to detect subtype from fourcc!(b"xxxx") pattern
-        // Look for the second fourcc! call in AuConfig::new (subtype is third argument)
-        // Pattern: AuConfig::new(..., fourcc!(b"manu"), fourcc!(b"subt"))
-        let subtype = detect_au_subtype(&content);
+        // Detect manufacturer and subtype from fourcc!(b"xxxx") patterns
+        // Pattern: AuConfig::new(type, fourcc!(b"manu"), fourcc!(b"subt"))
+        let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
 
-        (component_type, subtype)
+        (component_type, manufacturer, subtype)
     } else {
         // Default to effect if we can't read the file
-        ("aufx".to_string(), None)
+        ("aufx".to_string(), None, None)
     }
 }
 
-/// Extract the AU subtype (fourcc code) from plugin source code.
+/// Extract AU fourcc codes (manufacturer and subtype) from plugin source code.
 ///
-/// Looks for the pattern `fourcc!(b"xxxx")` which appears as the third
-/// argument in `AuConfig::new(ComponentType::..., fourcc!(b"manu"), fourcc!(b"subt"))`.
-fn detect_au_subtype(content: &str) -> Option<String> {
+/// Looks for the pattern `fourcc!(b"xxxx")` which appears in
+/// `AuConfig::new(ComponentType::..., fourcc!(b"manu"), fourcc!(b"subt"))`.
+///
+/// Returns (manufacturer, subtype) as Options.
+fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
     // Find all fourcc!(b"xxxx") patterns
     let mut fourcc_codes: Vec<String> = Vec::new();
 
     let mut remaining = content;
     while let Some(start) = remaining.find("fourcc!(b\"") {
         let after_prefix = &remaining[start + 10..]; // Skip "fourcc!(b\""
-        if let Some(end) = after_prefix.find("\"") {
+        if let Some(end) = after_prefix.find('"') {
             let code = &after_prefix[..end];
             if code.len() == 4 && code.is_ascii() {
                 fourcc_codes.push(code.to_string());
@@ -290,9 +303,12 @@ fn detect_au_subtype(content: &str) -> Option<String> {
         remaining = &remaining[start + 10..];
     }
 
-    // The subtype is typically the second fourcc! (first is manufacturer)
-    // In AuConfig::new(type, manufacturer, subtype)
-    fourcc_codes.get(1).cloned()
+    // In AuConfig::new(type, manufacturer, subtype):
+    // - First fourcc! is manufacturer
+    // - Second fourcc! is subtype
+    let manufacturer = fourcc_codes.first().cloned();
+    let subtype = fourcc_codes.get(1).cloned();
+    (manufacturer, subtype)
 }
 
 fn get_workspace_root() -> Result<PathBuf, String> {
@@ -328,9 +344,9 @@ fn to_vst3_bundle_name(package: &str) -> String {
     format!("Beamer{}.vst3", name)
 }
 
+/// Returns component bundle name for AUv2
+/// e.g., "gain" -> "BeamerGain.component"
 fn to_au_bundle_name(package: &str) -> String {
-    // Convert package name to CamelCase bundle name with Beamer prefix
-    // e.g., "gain" -> "BeamerGain.component"
     let name: String = package
         .split('-')
         .map(|part| {
@@ -377,32 +393,19 @@ fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
     )
 }
 
+/// Create Info.plist for AUv2 .component bundle with factoryFunction
 fn create_au_info_plist(
     package: &str,
-    bundle_name: &str,
+    executable_name: &str,
     component_type: &str,
+    detected_manufacturer: Option<&str>,
     detected_subtype: Option<&str>,
 ) -> String {
-    let executable_name = bundle_name.trim_end_matches(".component");
-
-    // Use detected subtype if available, otherwise generate from package name
-    let subtype = if let Some(detected) = detected_subtype {
-        detected.to_string()
-    } else {
-        // Generate 4-char codes from package name
-        // subtype: first 4 chars of package, lowercase
-        let generated: String = package
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .take(4)
-            .collect::<String>()
-            .to_lowercase();
-        if generated.len() < 4 {
-            format!("{:_<4}", generated)
-        } else {
-            generated
-        }
-    };
+    let manufacturer = detected_manufacturer.unwrap_or("Bemr");
+    let subtype = detected_subtype.map(|s| s.to_string()).unwrap_or_else(|| {
+        let gen: String = package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
+        if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
+    });
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -427,6 +430,8 @@ fn create_au_info_plist(
     <string>0.2.0</string>
     <key>CFBundleShortVersionString</key>
     <string>0.2.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
     <key>AudioComponents</key>
     <array>
         <dict>
@@ -435,15 +440,15 @@ fn create_au_info_plist(
             <key>description</key>
             <string>{executable} Audio Unit</string>
             <key>manufacturer</key>
-            <string>Bemr</string>
+            <string>{manufacturer}</string>
             <key>type</key>
             <string>{component_type}</string>
             <key>subtype</key>
             <string>{subtype}</string>
-            <key>version</key>
-            <integer>131072</integer>
             <key>factoryFunction</key>
             <string>BeamerAudioUnitFactory</string>
+            <key>version</key>
+            <integer>131072</integer>
             <key>sandboxSafe</key>
             <true/>
         </dict>
@@ -453,6 +458,7 @@ fn create_au_info_plist(
 "#,
         executable = executable_name,
         package = package,
+        manufacturer = manufacturer,
         component_type = component_type,
         subtype = subtype
     )
@@ -530,6 +536,20 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 
         if ty.is_dir() {
             copy_dir_all(&src_path, &dst_path)?;
+        } else if ty.is_symlink() {
+            // Preserve symlinks (important for AUv3 container app binary)
+            #[cfg(unix)]
+            {
+                let target = fs::read_link(&src_path)
+                    .map_err(|e| format!("Failed to read symlink: {}", e))?;
+                std::os::unix::fs::symlink(&target, &dst_path)
+                    .map_err(|e| format!("Failed to create symlink: {}", e))?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::copy(&src_path, &dst_path)
+                    .map_err(|e| format!("Failed to copy file: {}", e))?;
+            }
         } else {
             fs::copy(&src_path, &dst_path)
                 .map_err(|e| format!("Failed to copy file: {}", e))?;

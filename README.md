@@ -1,8 +1,8 @@
 # BEAMER
 
-A Rust framework for building VST3 and Audio Unit (AUv3) audio plugins.
+A Rust framework for building VST3 and Audio Unit (AU) audio plugins.
 
-Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms) and AUv3 (macOS).
+Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms) and AU (macOS).
 
 ## Why Beamer?
 
@@ -170,7 +170,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Features
 
-- **Multi-format** - VST3 (all platforms) and AUv3 (macOS) from a single codebase
+- **Multi-format** - VST3 (all platforms) and AU (macOS, hybrid v2/v3 architecture; AUv3 app extensions planned)
 - **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
@@ -201,7 +201,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-au` | AUv3 wrapper (macOS) - hybrid ObjC/Rust architecture |
+| `beamer-au` | AU wrapper (macOS) - hybrid v2 bundle / v3 API architecture |
 | `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
