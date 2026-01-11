@@ -55,7 +55,6 @@ use beamer_core::{
 static LOG_FILE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 static LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LOG_DETAIL_COUNT: AtomicUsize = AtomicUsize::new(0);
-static WARMUP_RENDERS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn log_line(msg: &str) {
     // Limit to first 1024 log lines to reduce impact on RT thread.
@@ -1111,6 +1110,12 @@ pub struct RenderBlock<S: Sample> {
     ///
     /// Effects (`aufx`) typically don't receive this block from hosts.
     schedule_midi_event_block: Option<*const c_void>,
+    /// Per-instance warmup counter to silence initial renders.
+    ///
+    /// The first few render calls may contain garbage from host-provided buffers.
+    /// This counter ensures each RenderBlock instance independently silences its
+    /// first 4 renders, even after channel config changes that recreate the instance.
+    warmup_count: AtomicUsize,
 }
 
 // SAFETY: The raw pointers are only used within a single render call
@@ -1232,6 +1237,7 @@ impl<S: Sample> RenderBlock<S> {
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::new()),
             schedule_midi_event_block,
+            warmup_count: AtomicUsize::new(0),
         }
     }
 
@@ -1697,7 +1703,7 @@ impl<S: Sample> RenderBlock<S> {
 
             // Silence the first few renders entirely to avoid any host-provided garbage making it
             // to the outputs. We already zeroed the host buffers above, so just return early.
-            let warmup_idx = WARMUP_RENDERS.fetch_add(1, Ordering::Relaxed);
+            let warmup_idx = self.warmup_count.fetch_add(1, Ordering::Relaxed);
             if warmup_idx < 4 {
                 log_line(&format!("warmup render idx={} outputs zeroed", warmup_idx));
                 return os_status::NO_ERR;
