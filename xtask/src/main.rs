@@ -450,7 +450,7 @@ fn create_au_info_plist(
             <key>version</key>
             <integer>131072</integer>
             <key>sandboxSafe</key>
-            <true/>
+            <false/>
         </dict>
     </array>
 </dict>

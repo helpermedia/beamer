@@ -30,8 +30,11 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::slice;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::{AudioBuffer, AudioBufferList};
@@ -45,6 +48,41 @@ use crate::transport::extract_transport_from_au;
 use beamer_core::{
     ControlChange, MidiEvent, MidiEventKind, NoteOff, NoteOn, PitchBend, ProcessContext, Sample,
 };
+
+// Debug log file (non-RT friendly; use only for diagnostics).
+// Enabled when BEAMER_AU_LOG is set (non-"0") or BEAMER_AU_LOG_FILE is provided.
+// Stored as Mutex<Option<...>> so we can retry opening after initial failure.
+static LOG_FILE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
+static LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LOG_DETAIL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WARMUP_RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn log_line(msg: &str) {
+    // Limit to first 1024 log lines to reduce impact on RT thread.
+    if LOG_COUNT.fetch_add(1, Ordering::Relaxed) >= 1024 {
+        return;
+    }
+    let file_mutex = LOG_FILE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(mut opt_file) = file_mutex.lock() {
+        if opt_file.is_none() {
+            // Prefer explicit override, otherwise always log to /tmp/beamer_au.log.
+            let path = std::env::var("BEAMER_AU_LOG_FILE").ok().unwrap_or_else(|| "/tmp/beamer_au.log".to_string());
+
+            if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+                *opt_file = Some(file);
+            }
+
+            if opt_file.is_none() {
+                return;
+            }
+        }
+
+        if let Some(file) = opt_file.as_mut() {
+            let _ = writeln!(file, "{}", msg);
+        }
+    }
+}
 
 
 // =============================================================================
@@ -1465,6 +1503,15 @@ impl<S: Sample> RenderBlock<S> {
             return os_status::K_AUDIO_UNIT_ERR_UNINITIALIZED;
         }
 
+        log_line(&format!(
+            "render entry frame_count={} output_bus={} pull_block_null={} prepared={} sample_rate={}",
+            frame_count,
+            _output_bus_number,
+            _pull_input_block.is_null(),
+            plugin_guard.is_prepared(),
+            self.sample_rate
+        ));
+
         let num_samples = frame_count as usize;
 
         // Use pre-allocated storage instead of Vec allocations
@@ -1623,15 +1670,48 @@ impl<S: Sample> RenderBlock<S> {
 
         // Collect pointers from AudioBufferList
         // SAFETY: output_data is valid for the duration of this render call
+        let mut main_pull_status = "no_main_input";
+        let mut main_pull_code: i32 = 0;
+        let mut aux_pull_attempts: usize = 0;
+        let mut aux_pull_successes: usize = 0;
+
         unsafe {
             // Collect output pointers first (unchanged)
             storage.collect_outputs(output_data, num_samples);
 
+            // Zero host-provided output buffers up front to avoid any residual garbage the host
+            // might leave before we write. This keeps initial renders clean without extra copies.
+            if !output_data.is_null() {
+                let list = &mut *output_data;
+                for i in 0..list.number_buffers {
+                    let buf = list.buffer_at_mut(i);
+                    if !buf.data.is_null() && buf.data_byte_size > 0 {
+                        let bytes = std::slice::from_raw_parts_mut(
+                            buf.data as *mut u8,
+                            buf.data_byte_size as usize,
+                        );
+                        bytes.fill(0);
+                    }
+                }
+            }
+
+            // Silence the first few renders entirely to avoid any host-provided garbage making it
+            // to the outputs. We already zeroed the host buffers above, so just return early.
+            let warmup_idx = WARMUP_RENDERS.fetch_add(1, Ordering::Relaxed);
+            if warmup_idx < 4 {
+                log_line(&format!("warmup render idx={} outputs zeroed", warmup_idx));
+                return os_status::NO_ERR;
+            }
+
             // Pull main input (bus 0) using pullInputBlock if available.
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
             if let Some(main_buffer_list) = &mut *self.main_input_buffer_list.get() {
+                main_pull_status = "no_block";
+
                 // Prepare buffer for pull with current frame count.
                 main_buffer_list.prepare_for_pull(frame_count);
+                // Pre-clear to avoid stale data if host returns success but doesn't write.
+                main_buffer_list.clear(frame_count);
 
                 let pull_succeeded = if !_pull_input_block.is_null() {
                     // Cast block to function pointer
@@ -1647,10 +1727,38 @@ impl<S: Sample> RenderBlock<S> {
                         0, // Bus 0 = main input
                         main_buffer_list.as_mut_ptr(),
                     );
+                    main_pull_code = status;
+                    main_pull_status = if status == os_status::NO_ERR {
+                        "ok"
+                    } else {
+                        "err"
+                    };
                     status == os_status::NO_ERR
                 } else {
+                    main_pull_code = os_status::NO_ERR;
                     false
                 };
+
+                // One-time detail logging for first few renders: record data pointer origin.
+                if LOG_DETAIL_COUNT.fetch_add(1, Ordering::Relaxed) < 8 {
+                    let mut details = String::from("pull main buffers: ");
+                    let num_bufs = main_buffer_list.buffer_list.number_buffers;
+                    for i in 0..num_bufs {
+                        let buf = main_buffer_list.buffer_list.buffer_at(i);
+                        let ptr = buf.data as usize;
+                        let owned_start = main_buffer_list.sample_data.as_ptr() as usize;
+                        let owned_end = owned_start + main_buffer_list.sample_data.len();
+                        let origin = if buf.data.is_null() {
+                            "null"
+                        } else if ptr >= owned_start && ptr < owned_end {
+                            "owned"
+                        } else {
+                            "host"
+                        };
+                        details.push_str(&format!("[{} size={} ptr={:?}] ", origin, buf.data_byte_size, buf.data));
+                    }
+                    log_line(&details);
+                }
 
                 if !pull_succeeded {
                     // Clear buffer on pull failure
@@ -1716,6 +1824,7 @@ impl<S: Sample> RenderBlock<S> {
                     // Pull audio from each auxiliary input bus (bus index starts at 1)
                     for (aux_idx, buffer_list) in aux_buffer_lists.iter_mut().enumerate() {
                         let bus_number = (aux_idx + 1) as isize; // Bus 0 is main, 1+ are aux
+                        aux_pull_attempts += 1;
 
                         // Reset buffer data pointers to null before calling pull
                         // The host will fill them in
@@ -1736,6 +1845,7 @@ impl<S: Sample> RenderBlock<S> {
 
                         // If pull succeeded, store pointer for collection
                         if status == os_status::NO_ERR {
+                            aux_pull_successes += 1;
                             buffer_list_ptrs[aux_idx] = &**buffer_list as *const AudioBufferList;
                         }
                         // If pull failed, leave as null (already initialized to null)
@@ -1746,7 +1856,74 @@ impl<S: Sample> RenderBlock<S> {
                     storage.collect_aux_inputs(&buffer_list_ptrs[..aux_input_count], num_samples);
                 }
             }
+
+            // If host provided null output buffers (AUv2 in-place expectation), fall back to in-place.
+            if storage.output_channel_count() == 0 {
+                if !storage.main_inputs.is_empty() {
+                    // Map outputs to inputs (true in-place processing expected by AUv2 hosts)
+                    for &ptr in &storage.main_inputs {
+                        storage.main_outputs.push(ptr as *mut S);
+                    }
+                } else if !output_data.is_null() {
+                    // No inputs to map; zero any non-null output buffers to avoid garbage
+                    let list = &mut *output_data;
+                    for i in 0..list.number_buffers {
+                        let buf = list.buffer_at_mut(i);
+                        if !buf.data.is_null() && buf.data_byte_size > 0 {
+                            let bytes = std::slice::from_raw_parts_mut(
+                                buf.data as *mut u8,
+                                buf.data_byte_size as usize,
+                            );
+                            bytes.fill(0);
+                        }
+                    }
+                }
+            }
+
+            // One-time detail logging for outputs to see null/host pointers
+            if LOG_DETAIL_COUNT.fetch_add(1, Ordering::Relaxed) < 8 {
+                if !output_data.is_null() {
+                    let list = &*output_data;
+                    let mut details = format!("outputs: num_buffers={} collected={} ", list.number_buffers, storage.output_channel_count());
+                    for i in 0..list.number_buffers {
+                        let buf = list.buffer_at(i);
+                        let origin = if buf.data.is_null() { "null" } else { "host" };
+                        details.push_str(&format!("[{} size={} ptr={:?}] ", origin, buf.data_byte_size, buf.data));
+                    }
+                    log_line(&details);
+                }
+            }
+
+            // Always clear collected outputs to avoid residual garbage before DSP writes.
+            for &out_ptr in &storage.main_outputs {
+                let bytes = std::slice::from_raw_parts_mut(
+                    out_ptr as *mut u8,
+                    num_samples * std::mem::size_of::<S>(),
+                );
+                bytes.fill(0);
+            }
         }
+
+        let main_inputs = storage.input_channel_count();
+        let main_outputs = storage.output_channel_count();
+        let aux_buses = storage.aux_input_bus_count();
+        let aux_input_channels: usize = storage
+            .aux_inputs
+            .iter()
+            .map(|bus| bus.len())
+            .sum();
+
+        log_line(&format!(
+            "render collect main_pull_status={} status_code={} inputs={} outputs={} aux_buses={} aux_attempts={} aux_successes={} aux_input_channels={}",
+            main_pull_status,
+            main_pull_code,
+            main_inputs,
+            main_outputs,
+            aux_buses,
+            aux_pull_attempts,
+            aux_pull_successes,
+            aux_input_channels
+        ));
 
         // Build slices from collected pointers.
         // NOTE: these helper methods currently allocate Vecs, but only once per render call.

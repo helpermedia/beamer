@@ -17,6 +17,8 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
+#include <stdio.h>
+#include <unistd.h>
 
 #include "BeamerAuBridge.h"
 
@@ -29,6 +31,59 @@ static const double kDefaultSampleRate = 44100.0;
 
 /// Default maximum frames per render call
 static const AUAudioFrameCount kDefaultMaxFrames = 4096;
+
+static FILE* BeamerObjCLogFile(void) {
+    static dispatch_once_t onceToken;
+    static FILE* file = NULL;
+    dispatch_once(&onceToken, ^{
+        const char* path = getenv("BEAMER_AU_LOG_FILE");
+        if (path == NULL || path[0] == '\0') {
+            path = "/tmp/beamer_au.log";
+        }
+
+        FILE* f = fopen(path, "a");
+        if (f) {
+            file = f;
+        }
+    });
+    return file;
+}
+
+static void BeamerObjCLog(const char* msg) {
+    FILE* f = BeamerObjCLogFile();
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fflush(f);
+    }
+}
+
+static BOOL BeamerLoggingEnabled(void) {
+    static dispatch_once_t onceToken;
+    static BOOL enabled = NO;
+    dispatch_once(&onceToken, ^{
+        NSDictionary* env = [[NSProcessInfo processInfo] environment];
+        NSString* flag = env[@"BEAMER_AU_LOG"];
+        if (flag != nil) {
+            enabled = ![flag isEqualToString:@"0"];
+        } else {
+            NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+            enabled = [defaults boolForKey:@"BEAMER_AU_LOG"];
+            if (!enabled) {
+                CFPropertyListRef val = CFPreferencesCopyAppValue(CFSTR("BEAMER_AU_LOG"), CFSTR("com.helpermedia.beamer"));
+                if (val && CFGetTypeID(val) == CFBooleanGetTypeID()) {
+                    enabled = CFBooleanGetValue((CFBooleanRef)val);
+                }
+                if (val) CFRelease(val);
+            }
+        }
+
+        // Propagate to process env so Rust side sees it via std::env
+        if (enabled) {
+            setenv("BEAMER_AU_LOG", "1", 1);
+        }
+    });
+    return enabled;
+}
 
 // =============================================================================
 // MARK: - BeamerAuWrapper Interface
@@ -92,6 +147,8 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
                                      options:(AudioComponentInstantiationOptions)options
                                        error:(NSError**)outError {
+        BeamerObjCLog("objc init entry");
+        NSLog(@"BeamerAU initWithComponentDescription options=%lu", (unsigned long)options);
     // Ensure the Rust factory is registered before creating instances
     if (!beamer_au_ensure_factory_registered()) {
         if (outError != NULL) {
@@ -130,8 +187,12 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
                                             code:kAudioUnitErr_FailedInitialization
                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to create Rust plugin instance"}];
         }
+        BeamerObjCLog("objc init rust instance null");
+        NSLog(@"BeamerAU init failed to create Rust instance");
         return nil;
     }
+
+    BeamerObjCLog("objc init rust instance ok");
 
     // Mark instance as valid now that it's created
     _instanceValid = YES;
@@ -141,15 +202,20 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
         _instanceValid = NO;
         beamer_au_destroy_instance(_rustInstance);
         _rustInstance = NULL;
+        NSLog(@"BeamerAU init failed bus setup");
+        BeamerObjCLog("objc init bus setup failed");
         return nil;
     }
 
     // Build the parameter tree from Rust parameter info
     [self buildParameterTree];
+    BeamerObjCLog("objc init parameter tree built");
 
     // Set default maximum frames
     self.maximumFramesToRender = kDefaultMaxFrames;
 
+    NSLog(@"BeamerAU init completed");
+    BeamerObjCLog("objc init completed");
     return self;
 }
 
@@ -375,6 +441,8 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 /// Called by the host before audio processing begins.
 /// Extracts format info from buses and notifies Rust.
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError**)outError {
+    BeamerObjCLog("objc allocate entry");
+    NSLog(@"BeamerAU allocateRenderResources entry");
     if (_rustInstance == NULL) {
         if (outError != NULL) {
             *outError = [NSError errorWithDomain:NSOSStatusErrorDomain
@@ -387,6 +455,15 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     // Build bus configuration from current bus arrays BEFORE calling super
     // This allows us to validate the configuration and reject early
     [self buildBusConfig];
+
+    NSLog(@"BeamerAU allocateRenderResources bus_config inputs=%u outputs=%u", _busConfig.input_bus_count, _busConfig.output_bus_count);
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "objc allocate bus_config in=%u out=%u", _busConfig.input_bus_count, _busConfig.output_bus_count);
+        BeamerObjCLog(buf);
+    }
+
+    (void)BeamerLoggingEnabled();
 
     // Validate channel configuration before allocating any resources
     // For effect plugins (aufx), input channels must equal output channels
@@ -404,8 +481,11 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 
     // Call super after validation passes (required by Apple)
     if (![super allocateRenderResourcesAndReturnError:outError]) {
+        BeamerObjCLog("objc allocate super failed");
         return NO;
     }
+
+    BeamerObjCLog("objc allocate super ok");
 
     // Get format info from the first output bus (or input if no outputs)
     AVAudioFormat* format = nil;
@@ -443,10 +523,18 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to allocate Rust render resources"}];
         }
         [super deallocateRenderResources];
+        NSLog(@"BeamerAU allocateRenderResources rust allocation failed: %d", (int)result);
+        BeamerObjCLog("objc allocate rust failed");
         return NO;
     }
 
     _resourcesAllocated = YES;
+    NSLog(@"BeamerAU allocateRenderResources success sr=%.2f maxFrames=%u format=%d", _sampleRate, _maxFrames, _sampleFormat);
+    {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "objc allocate success sr=%.2f max=%u fmt=%d", _sampleRate, _maxFrames, _sampleFormat);
+        BeamerObjCLog(buf);
+    }
     return YES;
 }
 
@@ -454,12 +542,16 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 ///
 /// Called by the host when audio processing is stopping.
 - (void)deallocateRenderResources {
+    BeamerObjCLog("objc deallocate entry");
     if (_rustInstance != NULL && _resourcesAllocated) {
+        (void)BeamerLoggingEnabled();
         beamer_au_deallocate_render_resources(_rustInstance);
         _resourcesAllocated = NO;
+        BeamerObjCLog("objc deallocate rust resources");
     }
 
     [super deallocateRenderResources];
+    BeamerObjCLog("objc deallocate super done");
 }
 
 // -----------------------------------------------------------------------------
@@ -477,6 +569,11 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 /// - No Objective-C messaging
 /// - Fast execution (sub-millisecond)
 - (AUInternalRenderBlock)internalRenderBlock {
+    (void)BeamerLoggingEnabled();
+
+    NSLog(@"BeamerAU internalRenderBlock created");
+    BeamerObjCLog("objc internalRenderBlock created");
+
     // Capture all needed values at block creation time.
     // This avoids accessing self from inside the render block, which would:
     // 1. Cause a race condition (host blocks can change while rendering)

@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
+use crate::render::log_line;
 use crate::bus_config::{BusInfo, BusType, CachedBusConfig, MAX_BUSES};
 use crate::error::os_status;
 use crate::factory;
@@ -303,6 +304,7 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
 #[no_mangle]
 pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
     let result = catch_unwind(|| {
+        log_line("ffi create_instance");
         // Use the factory to create a new plugin instance
         let plugin = factory::create_instance()?;
 
@@ -320,7 +322,14 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
 
     match result {
         Ok(Some(ptr)) => ptr,
-        Ok(None) | Err(_) => ptr::null_mut(),
+        Ok(None) => {
+            log_line("ffi create_instance failed (None)");
+            ptr::null_mut()
+        }
+        Err(_) => {
+            log_line("ffi create_instance panic");
+            ptr::null_mut()
+        }
     }
 }
 
@@ -378,27 +387,27 @@ pub extern "C" fn beamer_au_allocate_render_resources(
     sample_format: BeamerAuSampleFormat,
     bus_config: *const BeamerAuBusConfig,
 ) -> i32 {
+    log_line("ffi allocate_render_resources entry");
+
     if instance.is_null() || bus_config.is_null() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
     }
 
     // Validate sample_rate before any unsafe operations
     if sample_rate <= 0.0 || sample_rate > MAX_SAMPLE_RATE || !sample_rate.is_finite() {
-        log::error!(
-            "Invalid sample rate: {} (must be > 0 and <= {})",
-            sample_rate,
-            MAX_SAMPLE_RATE
-        );
+        log_line(&format!(
+            "ffi allocate_render_resources invalid sample_rate={} (max {})",
+            sample_rate, MAX_SAMPLE_RATE
+        ));
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
     // Validate max_frames before any unsafe operations
     if max_frames == 0 || max_frames > MAX_FRAMES_PER_RENDER {
-        log::error!(
-            "Invalid max_frames: {} (must be > 0 and <= {})",
-            max_frames,
-            MAX_FRAMES_PER_RENDER
-        );
+        log_line(&format!(
+            "ffi allocate_render_resources invalid max_frames={} (max {})",
+            max_frames, MAX_FRAMES_PER_RENDER
+        ));
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
@@ -408,6 +417,11 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         let c_bus_config = &*bus_config;
         (c_bus_config.input_bus_count, c_bus_config.output_bus_count)
     };
+
+    log_line(&format!(
+        "ffi allocate_render_resources config in_buses={} out_buses={} sr={} max_frames={} format={:?}",
+        input_bus_count, output_bus_count, sample_rate, max_frames, sample_format
+    ));
 
     if input_bus_count as usize > MAX_BUSES {
         log::error!(
@@ -441,7 +455,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
 
         // Validate bus configuration
         if let Err(e) = rust_bus_config.validate() {
-            log::error!("Bus config validation failed: {}", e);
+            log_line(&format!("ffi allocate_render_resources bus config invalid: {}", e));
             return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
         }
 
@@ -455,7 +469,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             if let Err(e) =
                 plugin.allocate_render_resources(sample_rate, max_frames, &rust_bus_config)
             {
-                log::error!("Failed to allocate render resources: {}", e);
+                log_line(&format!("ffi allocate_render_resources plugin error: {}", e));
                 return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
             }
         }
@@ -499,7 +513,10 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         os_status::NO_ERR
     }));
 
-    result.unwrap_or(os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
+    result.unwrap_or_else(|_| {
+        log_line("ffi allocate_render_resources panic");
+        os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT
+    })
 }
 
 /// Deallocate render resources.
@@ -673,6 +690,8 @@ pub extern "C" fn beamer_au_render(
     _transport_state_block: *const c_void,
     _schedule_midi_block: *const c_void,
 ) -> i32 {
+    log_line("render entry ffi");
+
     // Validate instance handle
     if instance.is_null() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
@@ -1345,7 +1364,9 @@ pub extern "C" fn beamer_au_get_input_bus_count(instance: BeamerAuInstanceHandle
 
         // If resources are allocated, the host-provided bus config is the source of truth.
         if let Some(cfg) = handle.bus_config.as_ref() {
-            return cfg.input_bus_count.min(MAX_BUSES) as u32;
+            let count = cfg.input_bus_count.min(MAX_BUSES) as u32;
+            log_line(&format!("ffi get_input_bus_count -> {} (configured)", count));
+            return count;
         }
 
         let plugin = match handle.plugin.lock() {
@@ -1353,7 +1374,9 @@ pub extern "C" fn beamer_au_get_input_bus_count(instance: BeamerAuInstanceHandle
             Err(_) => return 0,
         };
 
-        plugin.declared_input_bus_count().min(MAX_BUSES) as u32
+        let count = plugin.declared_input_bus_count().min(MAX_BUSES) as u32;
+        log_line(&format!("ffi get_input_bus_count -> {} (declared)", count));
+        count
     }));
 
     result.unwrap_or(0)
@@ -1376,7 +1399,9 @@ pub extern "C" fn beamer_au_get_output_bus_count(instance: BeamerAuInstanceHandl
 
         // If resources are allocated, the host-provided bus config is the source of truth.
         if let Some(cfg) = handle.bus_config.as_ref() {
-            return cfg.output_bus_count.min(MAX_BUSES) as u32;
+            let count = cfg.output_bus_count.min(MAX_BUSES) as u32;
+            log_line(&format!("ffi get_output_bus_count -> {} (configured)", count));
+            return count;
         }
 
         let plugin = match handle.plugin.lock() {
@@ -1384,7 +1409,9 @@ pub extern "C" fn beamer_au_get_output_bus_count(instance: BeamerAuInstanceHandl
             Err(_) => return 0,
         };
 
-        plugin.declared_output_bus_count().min(MAX_BUSES) as u32
+        let count = plugin.declared_output_bus_count().min(MAX_BUSES) as u32;
+        log_line(&format!("ffi get_output_bus_count -> {} (declared)", count));
+        count
     }));
 
     result.unwrap_or(0)
@@ -1410,10 +1437,12 @@ pub extern "C" fn beamer_au_get_input_bus_channel_count(
 
         // If resources are allocated, report the host-negotiated channel counts.
         if let Some(cfg) = handle.bus_config.as_ref() {
-            return cfg
+            let ch = cfg
                 .input_bus_info(bus_index as usize)
                 .map(|b| b.channel_count as u32)
                 .unwrap_or(0);
+            log_line(&format!("ffi get_input_bus_channel_count bus={} -> {} (configured)", bus_index, ch));
+            return ch;
         }
 
         let plugin = match handle.plugin.lock() {
@@ -1421,10 +1450,12 @@ pub extern "C" fn beamer_au_get_input_bus_channel_count(
             Err(_) => return 0,
         };
 
-        plugin
+        let ch = plugin
             .declared_input_bus_info(bus_index as usize)
             .map(|b| b.channel_count)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        log_line(&format!("ffi get_input_bus_channel_count bus={} -> {} (declared)", bus_index, ch));
+        ch
     }));
 
     result.unwrap_or(0)
@@ -1450,10 +1481,12 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
 
         // If resources are allocated, report the host-negotiated channel counts.
         if let Some(cfg) = handle.bus_config.as_ref() {
-            return cfg
+            let ch = cfg
                 .output_bus_info(bus_index as usize)
                 .map(|b| b.channel_count as u32)
                 .unwrap_or(0);
+            log_line(&format!("ffi get_output_bus_channel_count bus={} -> {} (configured)", bus_index, ch));
+            return ch;
         }
 
         let plugin = match handle.plugin.lock() {
@@ -1461,10 +1494,12 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
             Err(_) => return 0,
         };
 
-        plugin
+        let ch = plugin
             .declared_output_bus_info(bus_index as usize)
             .map(|b| b.channel_count)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        log_line(&format!("ffi get_output_bus_channel_count bus={} -> {} (declared)", bus_index, ch));
+        ch
     }));
 
     result.unwrap_or(0)
