@@ -432,6 +432,13 @@ fn create_au_info_plist(
     <string>0.2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.AudioUnit</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>BeamerAuWrapper</string>
+    </dict>
     <key>AudioComponents</key>
     <array>
         <dict>
@@ -451,6 +458,10 @@ fn create_au_info_plist(
             <integer>131072</integer>
             <key>sandboxSafe</key>
             <false/>
+            <key>tags</key>
+            <array>
+                <string>Audiounit</string>
+            </array>
         </dict>
     </array>
 </dict>

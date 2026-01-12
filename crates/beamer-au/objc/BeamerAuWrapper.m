@@ -126,15 +126,33 @@ static BOOL BeamerLoggingEnabled(void) {
 
     /// Cached bus configuration (used for render resource allocation).
     BeamerAuBusConfig _busConfig;
+
+    /// Unique instance ID for debugging
+    NSUInteger _instanceId;
 }
 
++ (NSUInteger)nextInstanceId;
+
 @end
+
+// Global instance counter for tracking instances
+static NSUInteger BeamerAuInstanceCounter = 0;
 
 // =============================================================================
 // MARK: - BeamerAuWrapper Implementation
 // =============================================================================
 
 @implementation BeamerAuWrapper
+
+// -----------------------------------------------------------------------------
+// MARK: Instance Tracking
+// -----------------------------------------------------------------------------
+
++ (NSUInteger)nextInstanceId {
+    @synchronized([BeamerAuWrapper class]) {
+        return ++BeamerAuInstanceCounter;
+    }
+}
 
 // -----------------------------------------------------------------------------
 // MARK: Initialization
@@ -147,8 +165,25 @@ static BOOL BeamerLoggingEnabled(void) {
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
                                      options:(AudioComponentInstantiationOptions)options
                                        error:(NSError**)outError {
-        BeamerObjCLog("objc init entry");
-        NSLog(@"BeamerAU initWithComponentDescription options=%lu", (unsigned long)options);
+    // Assign instance ID early for logging
+    NSUInteger instanceId = [[self class] nextInstanceId];
+
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "[#%lu] objc init entry options=%lu type='%.4s' subtype='%.4s' mfr='%.4s'",
+                 (unsigned long)instanceId,
+                 (unsigned long)options,
+                 (char*)&componentDescription.componentType,
+                 (char*)&componentDescription.componentSubType,
+                 (char*)&componentDescription.componentManufacturer);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] init: options=%lu type=%.4s subtype=%.4s mfr=%.4s",
+              (unsigned long)instanceId,
+              (unsigned long)options,
+              (char*)&componentDescription.componentType,
+              (char*)&componentDescription.componentSubType,
+              (char*)&componentDescription.componentManufacturer);
+    }
     // Ensure the Rust factory is registered before creating instances
     if (!beamer_au_ensure_factory_registered()) {
         if (outError != NULL) {
@@ -159,14 +194,47 @@ static BOOL BeamerLoggingEnabled(void) {
         return nil;
     }
 
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc calling super init with options=%lu", (unsigned long)instanceId, (unsigned long)options);
+        BeamerObjCLog(buf);
+    }
+
     self = [super initWithComponentDescription:componentDescription
                                        options:options
                                          error:outError];
+
+    {
+        char buf[256];
+        BOOL hasError = (outError != NULL && *outError != nil);
+        snprintf(buf, sizeof(buf), "[#%lu] objc super init returned: self=%s error=%s",
+                 (unsigned long)instanceId,
+                 (self != nil) ? "OK" : "NIL",
+                 hasError ? "SET" : "nil");
+        BeamerObjCLog(buf);
+        if (hasError && outError != NULL) {
+            NSLog(@"[BeamerAU #%lu] super init error: %@", (unsigned long)instanceId, *outError);
+        }
+    }
+
     if (self == nil) {
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[#%lu] objc init FAILED: super init returned nil", (unsigned long)instanceId);
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU #%lu] init FAILED: super init returned nil", (unsigned long)instanceId);
+        }
         return nil;
     }
 
+    // Clear any error from super init if it succeeded
+    // This ensures we start with a clean slate for our own initialization
+    if (outError != NULL) {
+        *outError = nil;
+    }
+
     // Initialize instance variables
+    _instanceId = instanceId;
     _rustInstance = NULL;
     _instanceLock = [[NSLock alloc] init];
     _instanceValid = NO;
@@ -187,12 +255,20 @@ static BOOL BeamerLoggingEnabled(void) {
                                             code:kAudioUnitErr_FailedInitialization
                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to create Rust plugin instance"}];
         }
-        BeamerObjCLog("objc init rust instance null");
-        NSLog(@"BeamerAU init failed to create Rust instance");
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[#%lu] objc init rust instance null", (unsigned long)_instanceId);
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU #%lu] init failed to create Rust instance", (unsigned long)_instanceId);
+        }
         return nil;
     }
 
-    BeamerObjCLog("objc init rust instance ok");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc init rust instance ok", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 
     // Mark instance as valid now that it's created
     _instanceValid = YES;
@@ -202,20 +278,43 @@ static BOOL BeamerLoggingEnabled(void) {
         _instanceValid = NO;
         beamer_au_destroy_instance(_rustInstance);
         _rustInstance = NULL;
-        NSLog(@"BeamerAU init failed bus setup");
-        BeamerObjCLog("objc init bus setup failed");
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[#%lu] objc init bus setup failed", (unsigned long)_instanceId);
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU #%lu] init failed bus setup", (unsigned long)_instanceId);
+        }
         return nil;
     }
 
-    // Build the parameter tree from Rust parameter info
-    [self buildParameterTree];
-    BeamerObjCLog("objc init parameter tree built");
+    // NOTE: Parameter tree is now built lazily on first access (see parameterTree getter).
+    // This makes init faster and helps diagnose if Logic is rejecting due to init duration.
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc init parameter tree deferred to lazy getter", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 
-    // Set default maximum frames
-    self.maximumFramesToRender = kDefaultMaxFrames;
+    // NOTE: Do NOT set maximumFramesToRender here during init.
+    // The host will set it, or we'll use the value provided during allocateRenderResources.
+    // Setting it here causes Logic Pro to immediately destroy the instance.
 
-    NSLog(@"BeamerAU init completed");
-    BeamerObjCLog("objc init completed");
+    {
+        char buf[256];
+        BOOL hasError = (outError != NULL && *outError != nil);
+        snprintf(buf, sizeof(buf), "[#%lu] objc init completed: paramTree deferred, outError=%s",
+                 (unsigned long)_instanceId,
+                 hasError ? "SET (ERROR!)" : "nil (success)");
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] init completed: paramTree deferred, outError=%s",
+              (unsigned long)_instanceId,
+              hasError ? "SET" : "nil");
+
+        // If outError is set, log the error details
+        if (hasError) {
+            NSLog(@"[BeamerAU #%lu] ERROR ON SUCCESS: %@", (unsigned long)_instanceId, *outError);
+        }
+    }
     return self;
 }
 
@@ -233,6 +332,20 @@ static BOOL BeamerLoggingEnabled(void) {
 /// @return A new AUAudioUnit instance, or nil on failure.
 - (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)desc
                                                             error:(NSError **)error {
+    (void)BeamerLoggingEnabled();
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "objc FACTORY createAudioUnit type='%.4s' subtype='%.4s' mfr='%.4s'",
+                 (char*)&desc.componentType,
+                 (char*)&desc.componentSubType,
+                 (char*)&desc.componentManufacturer);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU FACTORY] createAudioUnit: type=%.4s subtype=%.4s mfr=%.4s",
+              (char*)&desc.componentType,
+              (char*)&desc.componentSubType,
+              (char*)&desc.componentManufacturer);
+    }
+
     // Ensure the Rust factory is registered before creating instances
     if (!beamer_au_ensure_factory_registered()) {
         if (error) {
@@ -251,6 +364,13 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Clean up the Rust plugin instance.
 - (void)dealloc {
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc dealloc entry", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] dealloc", (unsigned long)_instanceId);
+    }
+
     // Acquire lock to ensure no callbacks are in-flight before destroying instance.
     // This prevents use-after-free where a callback could be executing Rust code
     // while we destroy the Rust instance.
@@ -265,14 +385,30 @@ static BOOL BeamerLoggingEnabled(void) {
         if (_resourcesAllocated) {
             beamer_au_deallocate_render_resources(_rustInstance);
             _resourcesAllocated = NO;
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "[#%lu] objc dealloc: deallocated render resources", (unsigned long)_instanceId);
+                BeamerObjCLog(buf);
+            }
         }
 
         // Destroy the Rust instance
         beamer_au_destroy_instance(_rustInstance);
         _rustInstance = NULL;
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[#%lu] objc dealloc: destroyed rust instance", (unsigned long)_instanceId);
+            BeamerObjCLog(buf);
+        }
     }
 
     [_instanceLock unlock];
+
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc dealloc complete", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -423,12 +559,22 @@ static BOOL BeamerLoggingEnabled(void) {
 /// Return the cached input bus array.
 /// Must return the same instance each time for KVO compliance.
 - (AUAudioUnitBusArray*)inputBusses {
+    (void)BeamerLoggingEnabled();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "[#%lu] objc inputBusses getter: count=%lu", (unsigned long)_instanceId, (unsigned long)_inputBusArray.count);
+    BeamerObjCLog(buf);
+    NSLog(@"[BeamerAU #%lu] inputBusses getter", (unsigned long)_instanceId);
     return _inputBusArray;
 }
 
 /// Return the cached output bus array.
 /// Must return the same instance each time for KVO compliance.
 - (AUAudioUnitBusArray*)outputBusses {
+    (void)BeamerLoggingEnabled();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "[#%lu] objc outputBusses getter: count=%lu", (unsigned long)_instanceId, (unsigned long)_outputBusArray.count);
+    BeamerObjCLog(buf);
+    NSLog(@"[BeamerAU #%lu] outputBusses getter", (unsigned long)_instanceId);
     return _outputBusArray;
 }
 
@@ -441,8 +587,12 @@ static BOOL BeamerLoggingEnabled(void) {
 /// Called by the host before audio processing begins.
 /// Extracts format info from buses and notifies Rust.
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError**)outError {
-    BeamerObjCLog("objc allocate entry");
-    NSLog(@"BeamerAU allocateRenderResources entry");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc allocate entry", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] allocateRenderResources entry", (unsigned long)_instanceId);
+    }
     if (_rustInstance == NULL) {
         if (outError != NULL) {
             *outError = [NSError errorWithDomain:NSOSStatusErrorDomain
@@ -456,11 +606,11 @@ static BOOL BeamerLoggingEnabled(void) {
     // This allows us to validate the configuration and reject early
     [self buildBusConfig];
 
-    NSLog(@"BeamerAU allocateRenderResources bus_config inputs=%u outputs=%u", _busConfig.input_bus_count, _busConfig.output_bus_count);
     {
         char buf[128];
-        snprintf(buf, sizeof(buf), "objc allocate bus_config in=%u out=%u", _busConfig.input_bus_count, _busConfig.output_bus_count);
+        snprintf(buf, sizeof(buf), "[#%lu] objc allocate bus_config in=%u out=%u", (unsigned long)_instanceId, _busConfig.input_bus_count, _busConfig.output_bus_count);
         BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] allocateRenderResources bus_config inputs=%u outputs=%u", (unsigned long)_instanceId, _busConfig.input_bus_count, _busConfig.output_bus_count);
     }
 
     (void)BeamerLoggingEnabled();
@@ -481,11 +631,17 @@ static BOOL BeamerLoggingEnabled(void) {
 
     // Call super after validation passes (required by Apple)
     if (![super allocateRenderResourcesAndReturnError:outError]) {
-        BeamerObjCLog("objc allocate super failed");
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc allocate super failed", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
         return NO;
     }
 
-    BeamerObjCLog("objc allocate super ok");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc allocate super ok", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 
     // Get format info from the first output bus (or input if no outputs)
     AVAudioFormat* format = nil;
@@ -505,7 +661,11 @@ static BOOL BeamerLoggingEnabled(void) {
         _sampleFormat = BeamerAuSampleFormatFloat32;
     }
 
+    // Get maximum frames from host, or use default if not set
     _maxFrames = self.maximumFramesToRender;
+    if (_maxFrames == 0) {
+        _maxFrames = kDefaultMaxFrames;
+    }
 
     // Allocate render resources in Rust
     OSStatus result = beamer_au_allocate_render_resources(
@@ -523,17 +683,21 @@ static BOOL BeamerLoggingEnabled(void) {
                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to allocate Rust render resources"}];
         }
         [super deallocateRenderResources];
-        NSLog(@"BeamerAU allocateRenderResources rust allocation failed: %d", (int)result);
-        BeamerObjCLog("objc allocate rust failed");
+        {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "[#%lu] objc allocate rust failed: %d", (unsigned long)_instanceId, (int)result);
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU #%lu] allocateRenderResources rust allocation failed: %d", (unsigned long)_instanceId, (int)result);
+        }
         return NO;
     }
 
     _resourcesAllocated = YES;
-    NSLog(@"BeamerAU allocateRenderResources success sr=%.2f maxFrames=%u format=%d", _sampleRate, _maxFrames, _sampleFormat);
     {
         char buf[160];
-        snprintf(buf, sizeof(buf), "objc allocate success sr=%.2f max=%u fmt=%d", _sampleRate, _maxFrames, _sampleFormat);
+        snprintf(buf, sizeof(buf), "[#%lu] objc allocate success sr=%.2f max=%u fmt=%d", (unsigned long)_instanceId, _sampleRate, _maxFrames, _sampleFormat);
         BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] allocateRenderResources success sr=%.2f maxFrames=%u format=%d", (unsigned long)_instanceId, _sampleRate, _maxFrames, _sampleFormat);
     }
     return YES;
 }
@@ -542,16 +706,30 @@ static BOOL BeamerLoggingEnabled(void) {
 ///
 /// Called by the host when audio processing is stopping.
 - (void)deallocateRenderResources {
-    BeamerObjCLog("objc deallocate entry");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc deallocate entry", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] deallocateRenderResources", (unsigned long)_instanceId);
+    }
+
     if (_rustInstance != NULL && _resourcesAllocated) {
         (void)BeamerLoggingEnabled();
         beamer_au_deallocate_render_resources(_rustInstance);
         _resourcesAllocated = NO;
-        BeamerObjCLog("objc deallocate rust resources");
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[#%lu] objc deallocate rust resources", (unsigned long)_instanceId);
+            BeamerObjCLog(buf);
+        }
     }
 
     [super deallocateRenderResources];
-    BeamerObjCLog("objc deallocate super done");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc deallocate super done", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -571,8 +749,12 @@ static BOOL BeamerLoggingEnabled(void) {
 - (AUInternalRenderBlock)internalRenderBlock {
     (void)BeamerLoggingEnabled();
 
-    NSLog(@"BeamerAU internalRenderBlock created");
-    BeamerObjCLog("objc internalRenderBlock created");
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc internalRenderBlock created", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] internalRenderBlock created", (unsigned long)_instanceId);
+    }
 
     // Capture all needed values at block creation time.
     // This avoids accessing self from inside the render block, which would:
@@ -621,24 +803,66 @@ static BOOL BeamerLoggingEnabled(void) {
 // MARK: Parameters
 // -----------------------------------------------------------------------------
 
-/// Return the cached parameter tree.
+/// Return the parameter tree, building it lazily on first access.
 /// Must return the same instance each time for KVO compliance.
 - (AUParameterTree*)parameterTree {
+    // Log every time Logic Pro queries the parameter tree
+    (void)BeamerLoggingEnabled();
+
+    // Lazy initialization: build parameter tree on first access
+    if (_parameterTree == nil) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc parameterTree getter: FIRST ACCESS, building tree now", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] parameterTree getter: first access, building now", (unsigned long)_instanceId);
+
+        [self buildParameterTree];
+    }
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[#%lu] objc parameterTree getter called: tree=%p allParams=%lu",
+             (unsigned long)_instanceId,
+             (__bridge void*)_parameterTree,
+             _parameterTree ? (unsigned long)_parameterTree.allParameters.count : 0);
+    BeamerObjCLog(buf);
+    NSLog(@"[BeamerAU #%lu] parameterTree getter: %p with %lu params",
+          (unsigned long)_instanceId,
+          (__bridge void*)_parameterTree,
+          _parameterTree ? (unsigned long)_parameterTree.allParameters.count : 0);
     return _parameterTree;
 }
 
 /// Build the parameter tree from Rust parameter info.
 - (void)buildParameterTree {
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree entry", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
+
     if (_rustInstance == NULL) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree: rust instance NULL, skipping", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
         _parameterTree = nil;
         return;
     }
 
     // Query parameter count from Rust
     uint32_t paramCount = beamer_au_get_parameter_count(_rustInstance);
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree: paramCount=%u", (unsigned long)_instanceId, paramCount);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] buildParameterTree: paramCount=%u", (unsigned long)_instanceId, paramCount);
+    }
+
     if (paramCount == 0) {
         // Create empty parameter tree
         _parameterTree = [AUParameterTree createTreeWithChildren:@[]];
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree: empty tree created", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
         return;
     }
 
@@ -685,9 +909,22 @@ static BOOL BeamerLoggingEnabled(void) {
 
     // Create the parameter tree
     _parameterTree = [AUParameterTree createTreeWithChildren:parameters];
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree: tree created %p with %u params",
+                 (unsigned long)_instanceId, (__bridge void*)_parameterTree, paramCount);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] buildParameterTree: tree created %p with %u params",
+              (unsigned long)_instanceId, (__bridge void*)_parameterTree, paramCount);
+    }
 
     // Set up parameter callbacks
     [self setupParameterCallbacks];
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc buildParameterTree: callbacks setup complete", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
 }
 
 /// Set up parameter value provider and observer callbacks.
@@ -853,6 +1090,13 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Return the full state dictionary for preset saving.
 - (NSDictionary<NSString*, id>*)fullState {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc fullState getter called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] fullState getter", (unsigned long)_instanceId);
+    }
+
     NSMutableDictionary* state = [[super fullState] mutableCopy];
     if (state == nil) {
         state = [[NSMutableDictionary alloc] init];
@@ -881,6 +1125,13 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Set the full state dictionary for preset loading.
 - (void)setFullState:(NSDictionary<NSString*, id>*)fullState {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc setFullState called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] setFullState", (unsigned long)_instanceId);
+    }
+
     // Call super first to handle standard AU state
     [super setFullState:fullState];
 
@@ -915,6 +1166,12 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Return the processing latency in seconds.
 - (NSTimeInterval)latency {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc latency getter called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
+
     if (_rustInstance == NULL || _sampleRate <= 0.0) {
         return 0.0;
     }
@@ -925,6 +1182,12 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Return the tail time in seconds.
 - (NSTimeInterval)tailTime {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc tailTime getter called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
+
     if (_rustInstance == NULL || _sampleRate <= 0.0) {
         return 0.0;
     }
@@ -938,12 +1201,22 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Return whether the plugin supports MPE (MIDI Polyphonic Expression).
 - (BOOL)supportsMPE {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc supportsMPE getter called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
     // TODO: Query from Rust plugin config
     return NO;
 }
 
 /// Return whether the AU provides user presets.
 - (BOOL)supportsUserPresets {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc supportsUserPresets getter called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+    }
     return YES;
 }
 
@@ -953,6 +1226,12 @@ static BOOL BeamerLoggingEnabled(void) {
 /// we return explicit pairs to help hosts understand valid configurations.
 /// Each pair is [inputChannels, outputChannels] as NSNumber objects.
 - (NSArray<NSNumber*>*)channelCapabilities {
+    (void)BeamerLoggingEnabled();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "[#%lu] objc channelCapabilities getter called", (unsigned long)_instanceId);
+    BeamerObjCLog(buf);
+    NSLog(@"[BeamerAU #%lu] channelCapabilities getter", (unsigned long)_instanceId);
+
     // Return explicit supported configurations
     // For effect plugins: pairs where input == output
     // Common channel counts: 1 (mono), 2 (stereo), 4 (quad), 5 (5.0), 6 (5.1), 7 (6.1), 8 (7.1)
@@ -974,6 +1253,17 @@ static BOOL BeamerLoggingEnabled(void) {
 /// of our supported configurations for that bus direction. The final validation
 /// of the complete configuration happens during allocateRenderResources.
 - (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc shouldChangeToFormat: ch=%u sr=%.0f bus=%s",
+                 (unsigned long)_instanceId,
+                 (unsigned)format.channelCount,
+                 format.sampleRate,
+                 bus.name.UTF8String ?: "unknown");
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] shouldChangeToFormat: channels=%u sr=%.0f bus=%@",
+              (unsigned long)_instanceId, (unsigned)format.channelCount, format.sampleRate, bus.name);
+    }
     // Reject formats with too many channels
     if (format.channelCount > BEAMER_AU_MAX_CHANNELS) {
         return NO;
@@ -1018,9 +1308,64 @@ static BOOL BeamerLoggingEnabled(void) {
 
 /// Reset the plugin's DSP state (clear delay lines, filter states, etc.).
 - (void)reset {
+    if (BeamerLoggingEnabled()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "[#%lu] objc reset called", (unsigned long)_instanceId);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] reset", (unsigned long)_instanceId);
+    }
+
     if (_rustInstance != NULL) {
         beamer_au_reset(_rustInstance);
     }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: Additional Property Overrides for Logging
+// -----------------------------------------------------------------------------
+
+/// Override to log when Logic queries component description
+- (AudioComponentDescription)componentDescription {
+    AudioComponentDescription desc = [super componentDescription];
+    if (BeamerLoggingEnabled()) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc componentDescription getter called: type='%.4s' subtype='%.4s' mfr='%.4s'",
+                 (unsigned long)_instanceId,
+                 (char*)&desc.componentType,
+                 (char*)&desc.componentSubType,
+                 (char*)&desc.componentManufacturer);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] componentDescription getter", (unsigned long)_instanceId);
+    }
+    return desc;
+}
+
+/// Override to log when Logic queries manufacturer name
+- (NSString*)manufacturerName {
+    NSString* name = [super manufacturerName];
+    if (BeamerLoggingEnabled()) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc manufacturerName getter called: %s",
+                 (unsigned long)_instanceId,
+                 name ? [name UTF8String] : "nil");
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] manufacturerName getter: %@", (unsigned long)_instanceId, name);
+    }
+    return name;
+}
+
+/// Override to log when Logic queries audio unit name
+- (NSString*)audioUnitName {
+    NSString* name = [super audioUnitName];
+    if (BeamerLoggingEnabled()) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[#%lu] objc audioUnitName getter called: %s",
+                 (unsigned long)_instanceId,
+                 name ? [name UTF8String] : "nil");
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU #%lu] audioUnitName getter: %@", (unsigned long)_instanceId, name);
+    }
+    return name;
 }
 
 @end
@@ -1037,26 +1382,52 @@ typedef struct BeamerAuPlugInInstance {
     BeamerAuWrapper* auInstance;
 } BeamerAuPlugInInstance;
 
-/// Open callback - creates a new BeamerAuWrapper instance.
+/// Open callback - creates AUAudioUnit instance with comprehensive logging.
+/// This version creates the instance to see what Logic queries on it.
 static OSStatus BeamerAuOpen(void* self, AudioComponentInstance component) {
-    (void)component;
     BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)self;
 
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "v2 BeamerAuOpen called component=%p - WILL create instance for logging", (void*)component);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU] v2 BeamerAuOpen called");
+    }
+
+    // Create instance with v3 flags to see what Logic queries
+    const AudioComponentInstantiationOptions options = 0x80000002;
     NSError* error = nil;
     instance->auInstance = [[BeamerAuWrapper alloc] initWithComponentDescription:instance->desc
-                                                                         options:0
+                                                                         options:options
                                                                            error:&error];
     if (error || !instance->auInstance) {
         NSLog(@"BeamerAuOpen: Failed to create AU instance: %@", error);
         return kAudioUnitErr_FailedInitialization;
     }
 
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "v2 BeamerAuOpen success - created instance=%p - NOW WAITING TO SEE WHAT LOGIC QUERIES",
+                 (__bridge void*)instance->auInstance);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU] v2 BeamerAuOpen success, instance=%p", (__bridge void*)instance->auInstance);
+    }
+
     return noErr;
 }
 
-/// Close callback - releases the BeamerAuWrapper instance.
+/// Close callback - releases the AUAudioUnit instance and cleans up.
 static OSStatus BeamerAuClose(void* self) {
     BeamerAuPlugInInstance* instance = (BeamerAuPlugInInstance*)self;
+
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "v2 BeamerAuClose called - releasing instance=%p", (__bridge void*)instance->auInstance);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU] v2 BeamerAuClose called, instance=%p", (__bridge void*)instance->auInstance);
+    }
+
+    // Release the AUAudioUnit instance
     instance->auInstance = nil;
     free(instance);
     return noErr;
@@ -1066,6 +1437,12 @@ static OSStatus BeamerAuClose(void* self) {
 /// When NULL is returned, the AU framework uses the modern AUAudioUnit
 /// methods (parameterTree, internalRenderBlock, etc.) instead of v2 selectors.
 static AudioComponentMethod BeamerAuLookup(SInt16 selector) {
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "v2 BeamerAuLookup called selector=%d returning NULL (use v3 API)", (int)selector);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU] v2 BeamerAuLookup called selector=%d", (int)selector);
+    }
     (void)selector;
     return NULL;
 }
@@ -1075,10 +1452,27 @@ static AudioComponentMethod BeamerAuLookup(SInt16 selector) {
 static void BeamerAuRegisterSubclass(const AudioComponentDescription* desc) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "v3 Registering AUAudioUnit subclass type='%.4s' subtype='%.4s' mfr='%.4s'",
+                     (char*)&desc->componentType,
+                     (char*)&desc->componentSubType,
+                     (char*)&desc->componentManufacturer);
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU] v3 Registering AUAudioUnit subclass");
+        }
+
         [BeamerAuWrapper registerSubclass:[BeamerAuWrapper class]
                     asComponentDescription:*desc
                                       name:@"BeamerAuWrapper"
                                    version:0x00020000];
+
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "v3 AUAudioUnit subclass registered successfully");
+            BeamerObjCLog(buf);
+            NSLog(@"[BeamerAU] v3 Subclass registration complete");
+        }
     });
 }
 
@@ -1087,6 +1481,16 @@ static void BeamerAuRegisterSubclass(const AudioComponentDescription* desc) {
 /// Returns an AudioComponentPlugInInterface that wraps our AUAudioUnit subclass.
 __attribute__((visibility("default")))
 void* BeamerAudioUnitFactoryImpl(const AudioComponentDescription* desc) {
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "v2 BeamerAudioUnitFactory called type='%.4s' subtype='%.4s' mfr='%.4s'",
+                 (char*)&desc->componentType,
+                 (char*)&desc->componentSubType,
+                 (char*)&desc->componentManufacturer);
+        BeamerObjCLog(buf);
+        NSLog(@"[BeamerAU] v2 BeamerAudioUnitFactory called");
+    }
+
     // Register subclass on first call (Rust factory should be ready by now)
     BeamerAuRegisterSubclass(desc);
 
@@ -1099,6 +1503,12 @@ void* BeamerAudioUnitFactoryImpl(const AudioComponentDescription* desc) {
     instance->interface.reserved = NULL;
     instance->desc = *desc;
     instance->auInstance = nil;
+
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "v2 BeamerAudioUnitFactory returning interface=%p", (void*)&instance->interface);
+        BeamerObjCLog(buf);
+    }
 
     return &instance->interface;
 }
