@@ -1,12 +1,14 @@
 [package]
 name = "beamer-au"
-version = "0.1.6"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Audio Unit support for Beamer audio plugin framework (hybrid v2/v3 architecture)"
-license = "MIT"
+license.workspace = true
 repository = "https://github.com/helpermedia/beamer"
 keywords = ["audio", "plugin", "au", "audiounit", "music"]
 categories = ["multimedia::audio"]
+# This tells cargo to propagate native library dependencies to downstream crates
+links = "beamer_au_native"
 
 [features]
 default = []

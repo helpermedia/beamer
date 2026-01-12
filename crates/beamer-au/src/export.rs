@@ -90,7 +90,7 @@ macro_rules! export_au {
         }
 
         // Static initializer using ctor crate pattern.
-        // This runs when the .component bundle binary loads.
+        // This runs when the .component/.appex bundle binary loads.
         #[used]
         #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
         static __BEAMER_AU_INIT: extern "C" fn() = {
@@ -107,24 +107,6 @@ macro_rules! export_au {
         #[doc(hidden)]
         pub fn __beamer_au_manual_init() {
             __beamer_au_do_register();
-        }
-
-        // Re-export BeamerAudioUnitFactory with #[no_mangle] to ensure the
-        // linker keeps it visible for AU hosts to call. This Rust wrapper
-        // delegates to the ObjC implementation (BeamerAudioUnitFactoryImpl)
-        // in the static library.
-        #[no_mangle]
-        #[doc(hidden)]
-        pub unsafe extern "C" fn BeamerAudioUnitFactory(
-            desc: *const std::ffi::c_void,
-        ) -> *mut std::ffi::c_void {
-            #[link(name = "beamer_au_objc", kind = "static")]
-            extern "C" {
-                fn BeamerAudioUnitFactoryImpl(
-                    desc: *const std::ffi::c_void,
-                ) -> *mut std::ffi::c_void;
-            }
-            BeamerAudioUnitFactoryImpl(desc)
         }
     };
 }

@@ -6,6 +6,50 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Configuration for creating appex Info.plist
+struct AppexPlistConfig<'a> {
+    package: &'a str,
+    executable_name: &'a str,
+    component_type: &'a str,
+    manufacturer: Option<&'a str>,
+    subtype: Option<&'a str>,
+    framework_bundle_id: &'a str,
+    version_string: &'a str,
+    version_int: u32,
+}
+
+/// Read version from workspace Cargo.toml and convert to Apple's version integer format
+fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> {
+    let cargo_toml_path = workspace_root.join("Cargo.toml");
+    let cargo_toml = fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
+
+    // Parse version from workspace.package.version
+    let version = cargo_toml
+        .lines()
+        .skip_while(|line| !line.contains("[workspace.package]"))
+        .skip(1)
+        .find(|line| line.trim().starts_with("version"))
+        .and_then(|line| line.split('=').nth(1))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .ok_or("Could not find version in Cargo.toml")?;
+
+    // Parse version into major.minor.patch
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() < 3 {
+        return Err(format!("Invalid version format: {}", version));
+    }
+
+    let major: u32 = parts[0].parse().map_err(|_| "Invalid major version")?;
+    let minor: u32 = parts[1].parse().map_err(|_| "Invalid minor version")?;
+    let patch: u32 = parts[2].parse().map_err(|_| "Invalid patch version")?;
+
+    // Convert to Apple's version format: (major << 16) | (minor << 8) | patch
+    let version_int = (major << 16) | (minor << 8) | patch;
+
+    Ok((version, version_int))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -53,6 +97,97 @@ fn print_usage() {
     eprintln!("  cargo xtask bundle gain --vst3 --au --release --install");
 }
 
+fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Result<PathBuf, String> {
+    println!("Building universal binary (x86_64 + arm64)...");
+
+    let profile = if release { "release" } else { "debug" };
+    let lib_name = package.replace('-', "_");
+    let dylib_name = format!("lib{}.dylib", lib_name);
+
+    // Build for x86_64
+    println!("Building for x86_64...");
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("-p")
+        .arg(package)
+        .arg("--target")
+        .arg("x86_64-apple-darwin")
+        .current_dir(workspace_root);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    let status = cmd.status().map_err(|e| format!("Failed to build for x86_64: {}", e))?;
+    if !status.success() {
+        return Err("Build for x86_64 failed".to_string());
+    }
+
+    // Build for arm64
+    println!("Building for arm64...");
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("-p")
+        .arg(package)
+        .arg("--target")
+        .arg("aarch64-apple-darwin")
+        .current_dir(workspace_root);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    let status = cmd.status().map_err(|e| format!("Failed to build for arm64: {}", e))?;
+    if !status.success() {
+        return Err("Build for arm64 failed".to_string());
+    }
+
+    // Paths to the built binaries
+    let x86_64_path = workspace_root
+        .join("target")
+        .join("x86_64-apple-darwin")
+        .join(profile)
+        .join(&dylib_name);
+
+    let arm64_path = workspace_root
+        .join("target")
+        .join("aarch64-apple-darwin")
+        .join(profile)
+        .join(&dylib_name);
+
+    // Output path for universal binary
+    let universal_path = workspace_root
+        .join("target")
+        .join(profile)
+        .join(&dylib_name);
+
+    // Create target directory if it doesn't exist
+    if let Some(parent) = universal_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create target dir: {}", e))?;
+    }
+
+    // Combine using lipo
+    println!("Creating universal binary with lipo...");
+    let status = Command::new("lipo")
+        .args([
+            "-create",
+            x86_64_path.to_str().unwrap(),
+            arm64_path.to_str().unwrap(),
+            "-output",
+            universal_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run lipo: {}", e))?;
+
+    if !status.success() {
+        return Err("lipo failed to create universal binary".to_string());
+    }
+
+    println!("Universal binary created at: {}", universal_path.display());
+
+    Ok(universal_path)
+}
+
 fn bundle(
     package: &str,
     release: bool,
@@ -65,37 +200,46 @@ fn bundle(
     // Get workspace root
     let workspace_root = get_workspace_root()?;
 
-    // Build the plugin
-    println!("Building...");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("-p")
-        .arg(package)
-        .current_dir(&workspace_root);
-
-    if release {
-        cmd.arg("--release");
-    }
-
-    let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
-    if !status.success() {
-        return Err("Build failed".to_string());
-    }
+    // For macOS AU, build universal binary (x86_64 + arm64)
+    let universal = build_au && cfg!(target_os = "macos");
 
     // Determine paths
     let profile = if release { "release" } else { "debug" };
     let target_dir = workspace_root.join("target").join(profile);
 
-    // Convert package name to library name (replace hyphens with underscores)
-    let lib_name = package.replace('-', "_");
+    let dylib_path = if universal {
+        build_universal(package, release, &workspace_root)?
+    } else {
+        // Build the plugin for current architecture
+        println!("Building...");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build")
+            .arg("-p")
+            .arg(package)
+            .current_dir(&workspace_root);
 
-    // Find the dylib
-    let dylib_name = format!("lib{}.dylib", lib_name);
-    let dylib_path = target_dir.join(&dylib_name);
+        if release {
+            cmd.arg("--release");
+        }
 
-    if !dylib_path.exists() {
-        return Err(format!("Built library not found: {}", dylib_path.display()));
-    }
+        let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
+        if !status.success() {
+            return Err("Build failed".to_string());
+        }
+
+        // Convert package name to library name (replace hyphens with underscores)
+        let lib_name = package.replace('-', "_");
+
+        // Find the dylib
+        let dylib_name = format!("lib{}.dylib", lib_name);
+        let dylib_path = target_dir.join(&dylib_name);
+
+        if !dylib_path.exists() {
+            return Err(format!("Built library not found: {}", dylib_path.display()));
+        }
+
+        dylib_path
+    };
 
     // Build requested formats
     if build_vst3 {
@@ -167,37 +311,175 @@ fn bundle_au(
     install: bool,
     workspace_root: &Path,
 ) -> Result<(), String> {
-    // Create AUv2 .component bundle structure:
-    // BeamerGain.component/
+    // Create AUv3 .app bundle structure with .appex extension:
+    // BeamerGain.app/                         # Container app
     // ├── Contents/
-    // │   ├── Info.plist       ← Contains factoryFunction key
+    // │   ├── Info.plist                      # Minimal app plist (LSUIElement=true)
     // │   ├── MacOS/
-    // │   │   └── BeamerGain   ← The plugin dylib
+    // │   │   └── BeamerGain                  # Symlink to appex binary
+    // │   ├── PlugIns/
+    // │   │   └── BeamerGain.appex/           # The actual AU extension
+    // │   │       ├── Contents/
+    // │   │       │   ├── Info.plist          # NSExtension + AudioComponents
+    // │   │       │   ├── MacOS/
+    // │   │       │   │   └── BeamerGain      # Plugin dylib
+    // │   │       │   └── Resources/
     // │   ├── Resources/
-    // │   └── PkgInfo
+    // │   └── PkgInfo                         # "APPL????"
+
+    // Get version from Cargo.toml
+    let (version_string, version_int) = get_version_info(workspace_root)?;
 
     let bundle_name = to_au_bundle_name(package);
     let bundle_dir = target_dir.join(&bundle_name);
     let contents_dir = bundle_dir.join("Contents");
-    let macos_dir = contents_dir.join("MacOS");
-    let resources_dir = contents_dir.join("Resources");
+    let app_resources_dir = contents_dir.join("Resources");
+    let plugins_dir = contents_dir.join("PlugIns");
 
-    println!("Creating AU component bundle at {}...", bundle_dir.display());
+    println!("Creating AUv3 app extension bundle at {}...", bundle_dir.display());
 
     // Clean up existing bundle
     if bundle_dir.exists() {
         fs::remove_dir_all(&bundle_dir).map_err(|e| format!("Failed to remove old bundle: {}", e))?;
     }
 
-    // Create directories
-    fs::create_dir_all(&macos_dir).map_err(|e| format!("Failed to create MacOS dir: {}", e))?;
-    fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
+    // Create app directories
+    let app_macos_dir = contents_dir.join("MacOS");
+    let frameworks_dir = contents_dir.join("Frameworks");
+    fs::create_dir_all(&app_macos_dir).map_err(|e| format!("Failed to create app MacOS dir: {}", e))?;
+    fs::create_dir_all(&app_resources_dir).map_err(|e| format!("Failed to create app Resources dir: {}", e))?;
+    fs::create_dir_all(&plugins_dir).map_err(|e| format!("Failed to create PlugIns dir: {}", e))?;
+    fs::create_dir_all(&frameworks_dir).map_err(|e| format!("Failed to create Frameworks dir: {}", e))?;
 
-    // Copy dylib
-    let executable_name = bundle_name.trim_end_matches(".component");
-    let binary_path = macos_dir.join(executable_name);
-    fs::copy(dylib_path, &binary_path)
-        .map_err(|e| format!("Failed to copy dylib: {}", e))?;
+    // Create the .appex bundle structure
+    let executable_name = bundle_name.trim_end_matches(".app");
+    let appex_name = format!("{}.appex", executable_name);
+    let appex_dir = plugins_dir.join(&appex_name);
+    let appex_contents_dir = appex_dir.join("Contents");
+    let appex_macos_dir = appex_contents_dir.join("MacOS");
+    let appex_resources_dir = appex_contents_dir.join("Resources");
+
+    fs::create_dir_all(&appex_macos_dir).map_err(|e| format!("Failed to create appex MacOS dir: {}", e))?;
+    fs::create_dir_all(&appex_resources_dir).map_err(|e| format!("Failed to create appex Resources dir: {}", e))?;
+
+    // Create framework bundle for in-process AU loading on macOS.
+    // Structure: Frameworks/PluginNameAU.framework/PluginNameAU (dylib)
+    let framework_name = format!("{}AU", executable_name);
+    let framework_bundle_id = format!("com.beamer.{}.framework", package);
+    let framework_dir = frameworks_dir.join(format!("{}.framework", framework_name));
+    fs::create_dir_all(&framework_dir).map_err(|e| format!("Failed to create framework dir: {}", e))?;
+
+    // Copy dylib to framework
+    let framework_binary = framework_dir.join(&framework_name);
+    fs::copy(dylib_path, &framework_binary)
+        .map_err(|e| format!("Failed to copy dylib to framework: {}", e))?;
+
+    // Fix dylib install name to use @rpath
+    let _ = Command::new("install_name_tool")
+        .args(["-id", &format!("@rpath/{}.framework/{}", framework_name, framework_name),
+               framework_binary.to_str().unwrap()])
+        .status();
+
+    // Create framework Info.plist
+    let framework_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>{framework_name}</string>
+    <key>CFBundleIdentifier</key>
+    <string>{bundle_id}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{framework_name}</string>
+    <key>CFBundlePackageType</key>
+    <string>FMWK</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+</dict>
+</plist>
+"#, framework_name = framework_name, bundle_id = framework_bundle_id);
+    fs::write(framework_dir.join("Info.plist"), framework_plist)
+        .map_err(|e| format!("Failed to write framework Info.plist: {}", e))?;
+
+    println!("Created framework: {}.framework", framework_name);
+
+    // Build appex executable - thin wrapper that links the framework
+    let appex_binary_path = appex_macos_dir.join(executable_name);
+    let appex_main_path = workspace_root.join("crates/beamer-au/objc/appex_main.m");
+
+    println!("Building appex executable (universal binary)...");
+
+    // Build for x86_64
+    let appex_x86_64_path = bundle_dir.join(format!("{}_x86_64", executable_name));
+    let clang_status = Command::new("clang")
+        .args([
+            "-arch", "x86_64",
+            "-fobjc-arc",
+            "-fmodules",
+            "-framework", "Foundation",
+            "-framework", "AudioToolbox",
+            "-framework", "AVFoundation",
+            "-framework", "CoreAudio",
+            "-F", frameworks_dir.to_str().unwrap(),
+            "-framework", &framework_name,
+            "-Wl,-rpath,@executable_path/../../../../Frameworks",
+            "-o", appex_x86_64_path.to_str().unwrap(),
+            appex_main_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run clang for x86_64: {}", e))?;
+
+    if !clang_status.success() {
+        return Err("Failed to build appex for x86_64".to_string());
+    }
+
+    // Build for arm64
+    let appex_arm64_path = bundle_dir.join(format!("{}_arm64", executable_name));
+    let clang_status = Command::new("clang")
+        .args([
+            "-arch", "arm64",
+            "-fobjc-arc",
+            "-fmodules",
+            "-framework", "Foundation",
+            "-framework", "AudioToolbox",
+            "-framework", "AVFoundation",
+            "-framework", "CoreAudio",
+            "-F", frameworks_dir.to_str().unwrap(),
+            "-framework", &framework_name,
+            "-Wl,-rpath,@executable_path/../../../../Frameworks",
+            "-o", appex_arm64_path.to_str().unwrap(),
+            appex_main_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run clang for arm64: {}", e))?;
+
+    if !clang_status.success() {
+        return Err("Failed to build appex for arm64".to_string());
+    }
+
+    // Combine with lipo
+    let lipo_status = Command::new("lipo")
+        .args([
+            "-create",
+            appex_x86_64_path.to_str().unwrap(),
+            appex_arm64_path.to_str().unwrap(),
+            "-output",
+            appex_binary_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run lipo for appex: {}", e))?;
+
+    if !lipo_status.success() {
+        return Err("Failed to create universal appex binary".to_string());
+    }
+
+    // Clean up intermediate binaries
+    let _ = fs::remove_file(&appex_x86_64_path);
+    let _ = fs::remove_file(&appex_arm64_path);
+
+    println!("Appex executable built (universal)");
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
     let (component_type, detected_manufacturer, detected_subtype) = detect_au_component_info(package, workspace_root);
@@ -208,32 +490,131 @@ fn bundle_au(
         detected_subtype.as_deref().unwrap_or("auto")
     );
 
-    // Create Info.plist with factoryFunction
-    let info_plist = create_au_info_plist(
+    // Create appex Info.plist with NSExtension (out-of-process/XPC mode)
+    let appex_info_plist = create_appex_info_plist(&AppexPlistConfig {
         package,
         executable_name,
-        &component_type,
-        detected_manufacturer.as_deref(),
-        detected_subtype.as_deref(),
-    );
-    fs::write(contents_dir.join("Info.plist"), info_plist)
-        .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
+        component_type: &component_type,
+        manufacturer: detected_manufacturer.as_deref(),
+        subtype: detected_subtype.as_deref(),
+        framework_bundle_id: &framework_bundle_id,
+        version_string: &version_string,
+        version_int,
+    });
+    fs::write(appex_contents_dir.join("Info.plist"), appex_info_plist)
+        .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
 
-    // Create PkgInfo
-    fs::write(contents_dir.join("PkgInfo"), "BNDL????")
+    // Create container app Info.plist
+    let app_info_plist = create_app_info_plist(package, executable_name);
+    fs::write(contents_dir.join("Info.plist"), app_info_plist)
+        .map_err(|e| format!("Failed to write app Info.plist: {}", e))?;
+
+    // Create PkgInfo for app
+    fs::write(contents_dir.join("PkgInfo"), "APPL????")
         .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
 
-    println!("AU component bundle created: {}", bundle_dir.display());
+    // Build host app executable from C stub (universal binary).
+    // This is a minimal stub that triggers pluginkit registration when launched.
+    // The app is marked LSBackgroundOnly so it exits immediately after registration.
+    println!("Building host app executable (universal)...");
 
-    // Ad-hoc code sign
-    let sign_status = Command::new("codesign")
+    let stub_main_path = workspace_root.join("crates/beamer-au/objc/stub_main.c");
+    let host_x86_64_path = bundle_dir.join(format!("{}_x86_64", executable_name));
+    let host_arm64_path = bundle_dir.join(format!("{}_arm64", executable_name));
+    let host_binary_dst = app_macos_dir.join(executable_name);
+
+    // Build for x86_64
+    let clang_status = Command::new("clang")
+        .args([
+            "-arch", "x86_64",
+            "-framework", "Foundation",
+            "-o", host_x86_64_path.to_str().unwrap(),
+            stub_main_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run clang for x86_64: {}", e))?;
+
+    if !clang_status.success() {
+        return Err("Failed to build host app for x86_64".to_string());
+    }
+
+    // Build for arm64
+    let clang_status = Command::new("clang")
+        .args([
+            "-arch", "arm64",
+            "-framework", "Foundation",
+            "-o", host_arm64_path.to_str().unwrap(),
+            stub_main_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run clang for arm64: {}", e))?;
+
+    if !clang_status.success() {
+        return Err("Failed to build host app for arm64".to_string());
+    }
+
+    // Combine with lipo
+    let lipo_status = Command::new("lipo")
+        .args([
+            "-create",
+            host_x86_64_path.to_str().unwrap(),
+            host_arm64_path.to_str().unwrap(),
+            "-output",
+            host_binary_dst.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run lipo for host app: {}", e))?;
+
+    if !lipo_status.success() {
+        return Err("Failed to create universal host app binary".to_string());
+    }
+
+    // Clean up intermediate binaries
+    let _ = fs::remove_file(&host_x86_64_path);
+    let _ = fs::remove_file(&host_arm64_path);
+
+    println!("Host app built (universal)");
+
+    println!("AUv3 app extension bundle created: {}", bundle_dir.display());
+
+    // Code sign framework first, then appex, then container app
+    println!("Code signing framework...");
+    let framework_sign_status = Command::new("codesign")
+        .args(["--force", "--sign", "-", framework_dir.to_str().unwrap()])
+        .status();
+
+    match framework_sign_status {
+        Ok(status) if status.success() => println!("Framework code signing successful"),
+        Ok(_) => println!("Warning: Framework code signing failed"),
+        Err(e) => println!("Warning: Could not run codesign on framework: {}", e),
+    }
+
+    println!("Code signing appex...");
+    let entitlements_path = workspace_root.join("crates/beamer-au/resources/appex.entitlements");
+    let appex_sign_status = Command::new("codesign")
+        .args([
+            "--force",
+            "--sign", "-",
+            "--entitlements", entitlements_path.to_str().unwrap(),
+            appex_dir.to_str().unwrap()
+        ])
+        .status();
+
+    match appex_sign_status {
+        Ok(status) if status.success() => println!("Appex code signing successful"),
+        Ok(_) => println!("Warning: Appex code signing failed"),
+        Err(e) => println!("Warning: Could not run codesign on appex: {}", e),
+    }
+
+    println!("Code signing container app...");
+    let app_sign_status = Command::new("codesign")
         .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
         .status();
 
-    match sign_status {
-        Ok(status) if status.success() => println!("Code signing successful"),
-        Ok(_) => println!("Warning: Code signing failed"),
-        Err(e) => println!("Warning: Could not run codesign: {}", e),
+    match app_sign_status {
+        Ok(status) if status.success() => println!("Container app code signing successful"),
+        Ok(_) => println!("Warning: Container app code signing failed"),
+        Err(e) => println!("Warning: Could not run codesign on app: {}", e),
     }
 
     // Install if requested
@@ -344,8 +725,8 @@ fn to_vst3_bundle_name(package: &str) -> String {
     format!("Beamer{}.vst3", name)
 }
 
-/// Returns component bundle name for AUv2
-/// e.g., "gain" -> "BeamerGain.component"
+/// Returns app bundle name for AUv3
+/// e.g., "gain" -> "BeamerGain.app"
 fn to_au_bundle_name(package: &str) -> String {
     let name: String = package
         .split('-')
@@ -357,7 +738,7 @@ fn to_au_bundle_name(package: &str) -> String {
             }
         })
         .collect();
-    format!("Beamer{}.component", name)
+    format!("Beamer{}.app", name)
 }
 
 fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
@@ -393,17 +774,48 @@ fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
     )
 }
 
-/// Create Info.plist for AUv2 .component bundle with factoryFunction
-fn create_au_info_plist(
-    package: &str,
-    executable_name: &str,
-    component_type: &str,
-    detected_manufacturer: Option<&str>,
-    detected_subtype: Option<&str>,
-) -> String {
-    let manufacturer = detected_manufacturer.unwrap_or("Bemr");
-    let subtype = detected_subtype.map(|s| s.to_string()).unwrap_or_else(|| {
-        let gen: String = package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
+/// Create Info.plist for container app (stub executable that triggers pluginkit registration)
+fn create_app_info_plist(package: &str, executable_name: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleExecutable</key>
+    <string>{executable}</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.beamer.{package}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{executable}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>0.2.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.2.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+</dict>
+</plist>
+"#,
+        executable = executable_name,
+        package = package
+    )
+}
+
+/// Create Info.plist for appex with NSExtension
+fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
+    let manufacturer = config.manufacturer.unwrap_or("Bemr");
+    let subtype = config.subtype.map(|s| s.to_string()).unwrap_or_else(|| {
+        let gen: String = config.package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
         if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
     });
 
@@ -423,13 +835,13 @@ fn create_au_info_plist(
     <key>CFBundleName</key>
     <string>{executable}</string>
     <key>CFBundlePackageType</key>
-    <string>BNDL</string>
+    <string>XPC!</string>
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleVersion</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13</string>
     <key>NSExtension</key>
@@ -437,41 +849,47 @@ fn create_au_info_plist(
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.AudioUnit</string>
         <key>NSExtensionPrincipalClass</key>
-        <string>BeamerAuWrapper</string>
-    </dict>
-    <key>AudioComponents</key>
-    <array>
+        <string>BeamerAuExtension</string>
+        <key>NSExtensionAttributes</key>
         <dict>
-            <key>name</key>
-            <string>Beamer: {executable}</string>
-            <key>description</key>
-            <string>{executable} Audio Unit</string>
-            <key>manufacturer</key>
-            <string>{manufacturer}</string>
-            <key>type</key>
-            <string>{component_type}</string>
-            <key>subtype</key>
-            <string>{subtype}</string>
-            <key>factoryFunction</key>
-            <string>BeamerAudioUnitFactory</string>
-            <key>version</key>
-            <integer>131072</integer>
-            <key>sandboxSafe</key>
-            <false/>
-            <key>tags</key>
+            <key>AudioComponents</key>
             <array>
-                <string>Audiounit</string>
+                <dict>
+                    <key>type</key>
+                    <string>{component_type}</string>
+                    <key>subtype</key>
+                    <string>{subtype}</string>
+                    <key>manufacturer</key>
+                    <string>{manufacturer}</string>
+                    <key>name</key>
+                    <string>Beamer: {executable}</string>
+                    <key>sandboxSafe</key>
+                    <true/>
+                    <key>tags</key>
+                    <array>
+                        <string>Effects</string>
+                    </array>
+                    <key>version</key>
+                    <integer>{version_int}</integer>
+                    <key>description</key>
+                    <string>{executable} Audio Unit</string>
+                </dict>
             </array>
+            <key>AudioComponentBundle</key>
+            <string>{framework_bundle_id}</string>
         </dict>
-    </array>
+    </dict>
 </dict>
 </plist>
 "#,
-        executable = executable_name,
-        package = package,
+        executable = config.executable_name,
+        package = config.package,
         manufacturer = manufacturer,
-        component_type = component_type,
-        subtype = subtype
+        component_type = config.component_type,
+        subtype = subtype,
+        framework_bundle_id = config.framework_bundle_id,
+        version = config.version_string,
+        version_int = config.version_int
     )
 }
 
@@ -502,14 +920,13 @@ fn install_vst3(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
 
 fn install_au(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-    let au_dir = PathBuf::from(home)
-        .join("Library")
-        .join("Audio")
-        .join("Plug-Ins")
-        .join("Components");
 
-    // Create Components directory if needed
-    fs::create_dir_all(&au_dir).map_err(|e| format!("Failed to create Components dir: {}", e))?;
+    // AUv3 app extensions must be installed as apps (not in Components folder).
+    // The system discovers them when the containing app is launched.
+    let au_dir = PathBuf::from(&home).join("Applications");
+
+    // Create Applications directory if needed
+    fs::create_dir_all(&au_dir).map_err(|e| format!("Failed to create Applications dir: {}", e))?;
 
     let dest = au_dir.join(bundle_name);
 
@@ -521,14 +938,31 @@ fn install_au(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
     // Copy bundle
     copy_dir_all(bundle_dir, &dest)?;
 
-    println!("AU installed to: {}", dest.display());
+    println!("AUv3 app extension installed to: {}", dest.display());
 
-    // Refresh AU cache
-    println!("Refreshing Audio Unit cache...");
+    // Launch the app briefly to trigger pluginkit registration.
+    // AUv3 extensions are registered when their containing app is first launched.
+    println!("Registering Audio Unit extension...");
+    let _ = Command::new("open")
+        .arg(&dest)
+        .status();
+
+    // Give the system a moment to register the extension
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Terminate the background app (it has LSBackgroundOnly so it won't show UI)
+    let executable_name = bundle_name.trim_end_matches(".app");
+    let _ = Command::new("killall")
+        .arg(executable_name)
+        .status();
+
+    // Also refresh AU cache
     let _ = Command::new("killall")
         .arg("-9")
         .arg("AudioComponentRegistrar")
         .status();
+
+    println!("Audio Unit registered successfully");
 
     Ok(())
 }
