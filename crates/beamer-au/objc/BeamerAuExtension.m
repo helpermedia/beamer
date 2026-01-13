@@ -70,7 +70,6 @@ void* BeamerAuExtensionFactory(const AudioComponentDescription* desc) {
                                                                              options:0
                                                                                error:&error];
     if (error) {
-        NSLog(@"BeamerAuExtensionFactory: Error creating AU: %@", error);
         return NULL;
     }
 
