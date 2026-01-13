@@ -927,6 +927,11 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         return NO;
     }
 
+    // Reject interleaved formats - our render code expects non-interleaved (one buffer per channel)
+    if (format.isInterleaved) {
+        return NO;
+    }
+
     // Check which bus this is
     BOOL isMainInputBus = (_inputBusArray.count > 0 && _inputBusArray[0] == bus);
     BOOL isMainOutputBus = (_outputBusArray.count > 0 && _outputBusArray[0] == bus);

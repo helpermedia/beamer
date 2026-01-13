@@ -1631,37 +1631,31 @@ impl<S: Sample> RenderBlock<S> {
         // Collect pointers from AudioBufferList
         // SAFETY: output_data is valid for the duration of this render call
         unsafe {
-            // Collect output pointers first (unchanged)
-            storage.collect_outputs(output_data, num_samples);
-
-            // Zero host-provided output buffers up front to avoid any residual garbage the host
-            // might leave before we write. This keeps initial renders clean without extra copies.
-            if !output_data.is_null() {
-                let list = &mut *output_data;
-                for i in 0..list.number_buffers {
-                    let buf = list.buffer_at_mut(i);
-                    if !buf.data.is_null() && buf.data_byte_size > 0 {
-                        let bytes = std::slice::from_raw_parts_mut(
-                            buf.data as *mut u8,
-                            buf.data_byte_size as usize,
-                        );
-                        bytes.fill(0);
-                    }
-                }
-            }
-
             // Silence the first few renders entirely to avoid any host-provided garbage making it
-            // to the outputs. We already zeroed the host buffers above, so just return early.
+            // to the outputs.
             let warmup_idx = self.warmup_count.fetch_add(1, Ordering::Relaxed);
             if warmup_idx < 4 {
+                // Zero output buffers during warmup
+                if !output_data.is_null() {
+                    let list = &mut *output_data;
+                    for i in 0..list.number_buffers {
+                        let buf = list.buffer_at_mut(i);
+                        if !buf.data.is_null() && buf.data_byte_size > 0 {
+                            let bytes = std::slice::from_raw_parts_mut(
+                                buf.data as *mut u8,
+                                buf.data_byte_size as usize,
+                            );
+                            bytes.fill(0);
+                        }
+                    }
+                }
                 return os_status::NO_ERR;
             }
 
-            // Pull main input (bus 0) using pullInputBlock if available.
+            // Pull main input (bus 0) FIRST using pullInputBlock if available.
+            // We need input pointers before we can handle in-place processing.
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
             if let Some(main_buffer_list) = &mut *self.main_input_buffer_list.get() {
-
-
                 // Prepare buffer for pull with current frame count.
                 main_buffer_list.prepare_for_pull(frame_count);
                 // Pre-clear to avoid stale data if host returns success but doesn't write.
@@ -1692,10 +1686,59 @@ impl<S: Sample> RenderBlock<S> {
                     main_buffer_list.clear(frame_count);
                 }
 
-                // Always collect inputs from our buffer (zeroed if pull failed)
+                // Collect inputs from our buffer (zeroed if pull failed)
                 storage.collect_inputs(main_buffer_list.as_ptr(), num_samples);
+
+                // Handle in-place processing: if output buffers have null data pointers,
+                // fill them with input buffer pointers (like Apple's FilterDemo does).
+                // This must happen AFTER pulling input but BEFORE collecting outputs.
+                if !output_data.is_null() {
+                    let out_list = &mut *output_data;
+                    let in_list = &*main_buffer_list.as_ptr();
+
+                    // Check if ANY output buffer has null data (in-place processing expected)
+                    let mut needs_in_place = false;
+                    for i in 0..out_list.number_buffers {
+                        if out_list.buffer_at(i).data.is_null() {
+                            needs_in_place = true;
+                            break;
+                        }
+                    }
+
+                    // If in-place processing is needed, fill null output pointers with input pointers
+                    if needs_in_place {
+                        let num_to_fill = out_list.number_buffers.min(in_list.number_buffers);
+                        for i in 0..num_to_fill {
+                            let out_buf = out_list.buffer_at_mut(i);
+                            if out_buf.data.is_null() {
+                                let in_buf = in_list.buffer_at(i);
+                                out_buf.data = in_buf.data;
+                                out_buf.data_byte_size = in_buf.data_byte_size;
+                            }
+                        }
+                    }
+                }
             }
             // If no main_input_buffer_list, this is an instrument with no inputs
+
+            // Now collect output pointers (after in-place fixup)
+            storage.collect_outputs(output_data, num_samples);
+
+            // Zero host-provided output buffers up front to avoid any residual garbage the host
+            // might leave before we write. This keeps initial renders clean without extra copies.
+            if !output_data.is_null() {
+                let list = &mut *output_data;
+                for i in 0..list.number_buffers {
+                    let buf = list.buffer_at_mut(i);
+                    if !buf.data.is_null() && buf.data_byte_size > 0 {
+                        let bytes = std::slice::from_raw_parts_mut(
+                            buf.data as *mut u8,
+                            buf.data_byte_size as usize,
+                        );
+                        bytes.fill(0);
+                    }
+                }
+            }
 
             // Pull auxiliary bus inputs if available
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
@@ -1784,27 +1827,12 @@ impl<S: Sample> RenderBlock<S> {
                 }
             }
 
-            // If host provided null output buffers (AUv2 in-place expectation), fall back to in-place.
-            if storage.output_channel_count() == 0 {
-                if !storage.main_inputs.is_empty() {
-                    // Map outputs to inputs (true in-place processing expected by AUv2 hosts)
-                    for &ptr in &storage.main_inputs {
-                        storage.main_outputs.push(ptr as *mut S);
-                    }
-                } else if !output_data.is_null() {
-                    // No inputs to map; zero any non-null output buffers to avoid garbage
-                    let list = &mut *output_data;
-                    for i in 0..list.number_buffers {
-                        let buf = list.buffer_at_mut(i);
-                        if !buf.data.is_null() && buf.data_byte_size > 0 {
-                            let bytes = std::slice::from_raw_parts_mut(
-                                buf.data as *mut u8,
-                                buf.data_byte_size as usize,
-                            );
-                            bytes.fill(0);
-                        }
-                    }
-                }
+            // Fallback for instruments (no inputs): if we still have no output channels collected,
+            // the host provided null output buffers but there were no input buffers to use.
+            // In this case, we can't process audio (instruments would need their own output buffers).
+            if storage.output_channel_count() == 0 && storage.main_inputs.is_empty() {
+                // No inputs and no outputs collected - return silence
+                return os_status::NO_ERR;
             }
 
             // Always clear collected outputs to avoid residual garbage before DSP writes.
