@@ -538,8 +538,13 @@ impl OwnedAudioBufferList {
 
     /// Prepare buffer for pullInputBlock with current frame count.
     ///
-    /// Call this before each pullInputBlock call. Sets data pointers to our
-    /// owned memory and data_byte_size to match the current frame count.
+    /// Call this before each pullInputBlock call. Resets all buffer fields to our
+    /// owned memory and expected format.
+    ///
+    /// This is critical because the host's pullInputBlock may have modified our
+    /// buffer structure in the previous render call (replacing pointers or even
+    /// modifying number_channels). We must fully reset to our expected non-interleaved
+    /// format before each pull.
     ///
     /// # Arguments
     /// * `frame_count` - Current render frame count (NOT max_frames)
@@ -552,6 +557,11 @@ impl OwnedAudioBufferList {
             for i in 0..num_buffers {
                 let buffer = self.buffer_list.buffers.as_mut_ptr().add(i);
                 let offset = i * max_bytes_per_channel;
+                // Reset ALL buffer fields to ensure non-interleaved format:
+                // - number_channels = 1 (one channel per buffer)
+                // - data = our owned sample memory
+                // - data_byte_size = current frame count * sample size
+                (*buffer).number_channels = 1;
                 (*buffer).data = self.sample_data.as_mut_ptr().add(offset) as *mut c_void;
                 (*buffer).data_byte_size = current_byte_size as u32;
             }

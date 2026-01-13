@@ -285,6 +285,11 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         return nil;
     }
 
+    // Set maximum channel count - this tells hosts what formats we can accept.
+    // Without this, hosts may not offer format changes beyond the default.
+    // Apple's FilterDemo sets this to 8 for flexibility.
+    bus.maximumChannelCount = BEAMER_AU_MAX_CHANNELS;
+
     // Set bus name based on direction and index
     if (isInput) {
         bus.name = (index == 0) ? @"Main Input" : [NSString stringWithFormat:@"Aux Input %u", index];
@@ -891,31 +896,31 @@ static NSUInteger BeamerAuInstanceCounter = 0;
 
 /// Return the supported channel configurations.
 ///
-/// For effect plugins with [-1,-1] capability (any matching channels),
-/// we return explicit pairs to help hosts understand valid configurations.
-/// Each pair is [inputChannels, outputChannels] as NSNumber objects.
+/// Returns nil to indicate we support any configuration where input channels
+/// equal output channels. This is the standard behavior for effect plugins.
+///
+/// The actual format validation happens in shouldChangeToFormat:forBus: and
+/// allocateRenderResourcesAndReturnError: where we validate that the final
+/// configuration is consistent.
+///
+/// Note: Previously we returned explicit pairs but this caused compatibility
+/// issues with some hosts (Logic Pro). Returning nil delegates to the default
+/// AU framework behavior which is more compatible.
 - (NSArray<NSNumber*>*)channelCapabilities {
-    // Return explicit supported configurations
-    // For effect plugins: pairs where input == output
-    // Common channel counts: 1 (mono), 2 (stereo), 4 (quad), 5 (5.0), 6 (5.1), 7 (6.1), 8 (7.1)
-    return @[
-        @1, @1,     // Mono
-        @2, @2,     // Stereo
-        @4, @4,     // Quad
-        @5, @5,     // 5.0
-        @6, @6,     // 5.1
-        @7, @7,     // 6.1
-        @8, @8      // 7.1
-    ];
+    // Return nil to indicate "any matching channels" support.
+    // This is equivalent to returning [-1, -1] in AU v2 terminology.
+    return nil;
 }
 
 /// Called when the host wants to change the format for a bus.
 /// Return YES to accept the format change.
 ///
-/// For format changes, we accept if the proposed channel count exists in any
-/// of our supported configurations for that bus direction. The final validation
-/// of the complete configuration happens during allocateRenderResources.
+/// We accept any non-interleaved floating-point format within our channel limits.
+/// The final validation of the complete configuration (input channels must match
+/// output channels for effect plugins) happens during allocateRenderResources.
 - (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {
+    (void)bus; // Unused, we apply the same rules to all buses
+
     // Reject formats with too many channels
     if (format.channelCount > BEAMER_AU_MAX_CHANNELS) {
         return NO;
@@ -932,35 +937,9 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         return NO;
     }
 
-    // Check which bus this is
-    BOOL isMainInputBus = (_inputBusArray.count > 0 && _inputBusArray[0] == bus);
-    BOOL isMainOutputBus = (_outputBusArray.count > 0 && _outputBusArray[0] == bus);
-
-    if (!isMainInputBus && !isMainOutputBus) {
-        // Auxiliary bus - accept any valid format
-        return YES;
-    }
-
-    // Check if the proposed channel count exists in any supported configuration
-    uint32_t proposedChannels = (uint32_t)format.channelCount;
-    NSArray<NSNumber*>* caps = [self channelCapabilities];
-
-    for (NSUInteger i = 0; i + 1 < caps.count; i += 2) {
-        if (isMainInputBus) {
-            // Check if this input channel count is supported
-            if (caps[i].unsignedIntValue == proposedChannels) {
-                return YES;
-            }
-        } else {
-            // Check if this output channel count is supported
-            if (caps[i + 1].unsignedIntValue == proposedChannels) {
-                return YES;
-            }
-        }
-    }
-
-    // Channel count not in any supported configuration
-    return NO;
+    // Accept any valid non-interleaved floating-point format.
+    // The final input==output validation happens in allocateRenderResourcesAndReturnError.
+    return YES;
 }
 
 /// Reset the plugin's DSP state (clear delay lines, filter states, etc.).
@@ -968,6 +947,18 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     if (_rustInstance != NULL) {
         beamer_au_reset(_rustInstance);
     }
+}
+
+/// Indicate that this audio unit can process in place.
+///
+/// In-place processing means the audio unit can transform input to output
+/// using the same buffer (when the host provides null output buffer pointers,
+/// we use the input buffers for output).
+///
+/// This is important for Logic Pro and other hosts that optimize memory by
+/// using in-place processing when possible.
+- (BOOL)canProcessInPlace {
+    return YES;
 }
 
 @end
