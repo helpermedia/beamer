@@ -912,35 +912,10 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     return nil;
 }
 
-/// Called when the host wants to change the format for a bus.
-/// Return YES to accept the format change.
-///
-/// We accept any non-interleaved floating-point format within our channel limits.
-/// The final validation of the complete configuration (input channels must match
-/// output channels for effect plugins) happens during allocateRenderResources.
-- (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {
-    (void)bus; // Unused, we apply the same rules to all buses
-
-    // Reject formats with too many channels
-    if (format.channelCount > BEAMER_AU_MAX_CHANNELS) {
-        return NO;
-    }
-
-    // Reject non-floating-point formats
-    if (format.commonFormat != AVAudioPCMFormatFloat32 &&
-        format.commonFormat != AVAudioPCMFormatFloat64) {
-        return NO;
-    }
-
-    // Reject interleaved formats - our render code expects non-interleaved (one buffer per channel)
-    if (format.isInterleaved) {
-        return NO;
-    }
-
-    // Accept any valid non-interleaved floating-point format.
-    // The final input==output validation happens in allocateRenderResourcesAndReturnError.
-    return YES;
-}
+// Note: We intentionally do NOT override shouldChangeToFormat:forBus:
+// The default AUAudioUnit implementation handles format negotiation.
+// Our validation happens in allocateRenderResourcesAndReturnError where
+// we reject mismatched channel configurations for effect plugins.
 
 /// Reset the plugin's DSP state (clear delay lines, filter states, etc.).
 - (void)reset {
