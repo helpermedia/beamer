@@ -60,6 +60,9 @@ mod tests {
         );
 
         let err = PluginError::ProcessingError("test".to_string());
-        assert_eq!(plugin_error_to_os_status(&err), os_status::K_AUDIO_UNIT_ERR_RENDER);
+        assert_eq!(
+            plugin_error_to_os_status(&err),
+            os_status::K_AUDIO_UNIT_ERR_RENDER
+        );
     }
 }

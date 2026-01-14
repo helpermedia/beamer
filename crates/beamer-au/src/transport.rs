@@ -86,14 +86,14 @@ pub unsafe fn extract_transport_from_au(
     // Define the function signature that matches Apple's AUHostMusicalContextBlock.
     // The first parameter is the block pointer itself (Objective-C block convention).
     type MusicalContextBlockFn = unsafe extern "C" fn(
-        *const c_void,  // Block pointer itself (implicit in Objective-C blocks)
-        *mut f64,       // outCurrentTempo
-        *mut f64,       // outTimeSignatureNumerator
-        *mut isize,     // outTimeSignatureDenominator (NSInteger)
-        *mut f64,       // outCurrentBeatPosition
-        *mut isize,     // outSampleOffsetToNextBeat (NSInteger)
-        *mut f64,       // outCurrentMeasureDownbeatPosition
-    ) -> i32;           // OSStatus (0 = success)
+        *const c_void, // Block pointer itself (implicit in Objective-C blocks)
+        *mut f64,      // outCurrentTempo
+        *mut f64,      // outTimeSignatureNumerator
+        *mut isize,    // outTimeSignatureDenominator (NSInteger)
+        *mut f64,      // outCurrentBeatPosition
+        *mut isize,    // outSampleOffsetToNextBeat (NSInteger)
+        *mut f64,      // outCurrentMeasureDownbeatPosition
+    ) -> i32; // OSStatus (0 = success)
 
     // SAFETY: This transmute is required because Rust doesn't have native Objective-C block support.
     //

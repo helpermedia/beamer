@@ -1142,6 +1142,76 @@ impl<S: Sample> RenderBlock<S> {
         self.output_midi_to_host(sysex_data, sample_offset)
     }
 
+    /// Encode a MIDI event to bytes for transmission.
+    ///
+    /// Returns `Some([bytes])` for standard MIDI 1.0 messages that can be sent via
+    /// `scheduleMIDIEventBlock`. Returns `None` for SysEx (which requires separate handling)
+    /// and unsupported event types (MPE/expression data, DAW metadata).
+    ///
+    /// # MIDI 1.0 Status Bytes
+    ///
+    /// - 0x80: Note Off
+    /// - 0x90: Note On
+    /// - 0xA0: Polyphonic Key Pressure (Aftertouch)
+    /// - 0xB0: Control Change
+    /// - 0xC0: Program Change
+    /// - 0xD0: Channel Pressure (Aftertouch)
+    /// - 0xE0: Pitch Bend Change
+    ///
+    /// All status bytes are OR'd with the channel (0x00-0x0F) to create the final status byte.
+    fn encode_midi_event(event: &MidiEventKind) -> Option<[u8; 3]> {
+        match event {
+            MidiEventKind::NoteOn(note) => Some([
+                0x90 | (note.channel & 0x0F),
+                note.pitch & 0x7F,
+                ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
+            ]),
+            MidiEventKind::NoteOff(note) => Some([
+                0x80 | (note.channel & 0x0F),
+                note.pitch & 0x7F,
+                ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
+            ]),
+            MidiEventKind::ControlChange(cc) => Some([
+                0xB0 | (cc.channel & 0x0F),
+                cc.controller & 0x7F,
+                ((cc.value * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
+            ]),
+            MidiEventKind::PitchBend(pb) => {
+                // Convert -1.0..1.0 to 0..16383 (14-bit)
+                let raw = (((pb.value + 1.0) * 8192.0).clamp(0.0, 16383.0) as u16) & 0x3FFF;
+                let lsb = (raw & 0x7F) as u8;
+                let msb = ((raw >> 7) & 0x7F) as u8;
+                Some([0xE0 | (pb.channel & 0x0F), lsb, msb])
+            }
+            MidiEventKind::PolyPressure(pp) => Some([
+                0xA0 | (pp.channel & 0x0F),
+                pp.pitch & 0x7F,
+                ((pp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
+            ]),
+            MidiEventKind::ChannelPressure(cp) => Some([
+                0xD0 | (cp.channel & 0x0F),
+                ((cp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
+                0, // Unused third byte (2-byte message)
+            ]),
+            MidiEventKind::ProgramChange(pc) => Some([
+                0xC0 | (pc.channel & 0x0F),
+                pc.program & 0x7F,
+                0, // Unused third byte (2-byte message)
+            ]),
+            // SysEx requires separate handling via output_sysex_to_host
+            MidiEventKind::SysEx(_) => None,
+            // The following event types don't have standard MIDI 1.0 wire encodings
+            // and cannot be output via AU's scheduleMIDIEventBlock:
+            // - NoteExpressionValue/Int/Text: MPE/MIDI 2.0 per-note expressions
+            // - ChordInfo/ScaleInfo: DAW-specific metadata (not MIDI messages)
+            MidiEventKind::NoteExpressionValue(_)
+            | MidiEventKind::NoteExpressionInt(_)
+            | MidiEventKind::NoteExpressionText(_)
+            | MidiEventKind::ChordInfo(_)
+            | MidiEventKind::ScaleInfo(_) => None,
+        }
+    }
+
     /// Output all MIDI events from the output buffer to the host.
     ///
     /// This function iterates through the MIDI output buffer and sends each event
@@ -1179,71 +1249,6 @@ impl<S: Sample> RenderBlock<S> {
             let sample_offset = event.sample_offset;
 
             match &event.event {
-                MidiEventKind::NoteOn(note) => {
-                    let bytes = [
-                        0x90 | (note.channel & 0x0F),
-                        note.pitch & 0x7F,
-                        ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                    ];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::NoteOff(note) => {
-                    let bytes = [
-                        0x80 | (note.channel & 0x0F),
-                        note.pitch & 0x7F,
-                        ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                    ];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::ControlChange(cc) => {
-                    let bytes = [
-                        0xB0 | (cc.channel & 0x0F),
-                        cc.controller & 0x7F,
-                        ((cc.value * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                    ];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::PitchBend(pb) => {
-                    // Convert -1.0..1.0 to 0..16383 (14-bit)
-                    let raw = (((pb.value + 1.0) * 8192.0).clamp(0.0, 16383.0) as u16) & 0x3FFF;
-                    let lsb = (raw & 0x7F) as u8;
-                    let msb = ((raw >> 7) & 0x7F) as u8;
-                    let bytes = [0xE0 | (pb.channel & 0x0F), lsb, msb];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::PolyPressure(pp) => {
-                    let bytes = [
-                        0xA0 | (pp.channel & 0x0F),
-                        pp.pitch & 0x7F,
-                        ((pp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                    ];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::ChannelPressure(cp) => {
-                    let bytes = [
-                        0xD0 | (cp.channel & 0x0F),
-                        ((cp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                    ];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
-                MidiEventKind::ProgramChange(pc) => {
-                    let bytes = [0xC0 | (pc.channel & 0x0F), pc.program & 0x7F];
-                    if !self.output_midi_to_host(&bytes, sample_offset) {
-                        dropped += 1;
-                    }
-                }
                 MidiEventKind::SysEx(sysex) => {
                     // SysEx data was allocated to the pool; use it if available
                     // The pool stores SysEx in order, so we track the slot index
@@ -1259,19 +1264,22 @@ impl<S: Sample> RenderBlock<S> {
                         dropped += 1;
                     }
                 }
-                // The following event types don't have standard MIDI 1.0 wire encodings
-                // and cannot be output via AU's scheduleMIDIEventBlock:
-                // - NoteExpressionValue/Int/Text: MPE/MIDI 2.0 per-note expressions
-                // - ChordInfo/ScaleInfo: DAW-specific metadata (not MIDI messages)
-                MidiEventKind::NoteExpressionValue(_)
-                | MidiEventKind::NoteExpressionInt(_)
-                | MidiEventKind::NoteExpressionText(_)
-                | MidiEventKind::ChordInfo(_)
-                | MidiEventKind::ScaleInfo(_) => {
-                    // These event types are not standard MIDI 1.0 messages and cannot
-                    // be output via AU's scheduleMIDIEventBlock. They are internal
-                    // beamer events for MPE/expression data and DAW metadata.
-                    // Silently skip them (not counted as dropped since they're unsupported).
+                other => {
+                    // Try to encode as standard MIDI 1.0 message
+                    if let Some(bytes) = Self::encode_midi_event(other) {
+                        // Determine actual message length (some messages are 2 bytes)
+                        let len = match other {
+                            MidiEventKind::ProgramChange(_) | MidiEventKind::ChannelPressure(_) => {
+                                2
+                            }
+                            _ => 3,
+                        };
+                        if !self.output_midi_to_host(&bytes[..len], sample_offset) {
+                            dropped += 1;
+                        }
+                    }
+                    // Note: unsupported events (MPE/expression, DAW metadata) are silently
+                    // skipped and not counted as dropped since they have no MIDI 1.0 encoding
                 }
             }
         }
@@ -1497,27 +1505,6 @@ impl<S: Sample> RenderBlock<S> {
             if !input_data.is_null() {
                 let in_list = &*input_data;
 
-                // Debug: log storage capacity and input buffer info (once)
-                static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if count < 3 {
-                    use std::io::Write;
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/beamer_au_debug.log")
-                    {
-                        let _ = writeln!(file, "[RUST render {}] storage.main_inputs.capacity={} storage.main_outputs.capacity={}",
-                                         count + 1, storage.main_inputs.capacity(), storage.main_outputs.capacity());
-                        let _ = writeln!(file, "[RUST render {}] input_data.number_buffers={}", count + 1, in_list.number_buffers);
-                        for i in 0..in_list.number_buffers {
-                            let buf = in_list.buffer_at(i);
-                            let _ = writeln!(file, "[RUST render {}]   buffer[{}]: number_channels={} data={:?} byte_size={}",
-                                             count + 1, i, buf.number_channels, buf.data, buf.data_byte_size);
-                        }
-                    }
-                }
-
                 // Collect inputs from the ObjC-provided buffer
                 storage.collect_inputs(input_data, num_samples);
 
@@ -1553,21 +1540,6 @@ impl<S: Sample> RenderBlock<S> {
 
             // Now collect output pointers (after in-place fixup)
             storage.collect_outputs(output_data, num_samples);
-
-            // Debug: log collected channel counts
-            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let count2 = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if count2 < 3 {
-                use std::io::Write;
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/beamer_au_debug.log")
-                {
-                    let _ = writeln!(file, "[RUST collect {}] main_inputs.len={} main_outputs.len={}",
-                                     count2 + 1, storage.main_inputs.len(), storage.main_outputs.len());
-                }
-            }
 
             // Note: We do NOT zero output buffers here because:
             // 1. For in-place processing, output now points to input data which we need
@@ -1629,7 +1601,6 @@ impl<S: Sample> RenderBlock<S> {
                     for (aux_idx, buffer_list) in aux_buffer_lists.iter_mut().enumerate() {
                         let bus_number = (aux_idx + 1) as isize; // Bus 0 is main, 1+ are aux
 
-
                         // Reset buffer data pointers to null before calling pull
                         // The host will fill them in
                         for i in 0..buffer_list.number_buffers {
@@ -1649,7 +1620,6 @@ impl<S: Sample> RenderBlock<S> {
 
                         // If pull succeeded, store pointer for collection
                         if status == os_status::NO_ERR {
-
                             buffer_list_ptrs[aux_idx] = &**buffer_list as *const AudioBufferList;
                         }
                         // If pull failed, leave as null (already initialized to null)
@@ -1682,11 +1652,7 @@ impl<S: Sample> RenderBlock<S> {
         let _main_inputs = storage.input_channel_count();
         let _main_outputs = storage.output_channel_count();
         let _aux_buses = storage.aux_input_bus_count();
-        let _aux_input_channels: usize = storage
-            .aux_inputs
-            .iter()
-            .map(|bus| bus.len())
-            .sum();
+        let _aux_input_channels: usize = storage.aux_inputs.iter().map(|bus| bus.len()).sum();
 
         // Build slices from collected pointers.
         // NOTE: these helper methods currently allocate Vecs, but only once per render call.

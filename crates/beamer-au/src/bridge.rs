@@ -49,6 +49,53 @@ use crate::render::{
 use beamer_core::ParameterStore;
 
 // =============================================================================
+// Macros
+// =============================================================================
+
+/// Safely execute code with an instance handle, handling null checks and panics.
+///
+/// This macro reduces boilerplate in C-ABI functions by handling:
+/// - Null pointer checks
+/// - Panic unwinding to prevent panics from crossing the FFI boundary
+/// - Safe dereferencing of the instance pointer
+///
+/// # Usage
+///
+/// ```ignore
+/// with_instance!(instance, default_value, |handle| {
+///     // Your code here, with `handle` as &BeamerInstanceHandle
+/// })
+/// ```
+macro_rules! with_instance {
+    ($instance:expr, $default:expr, |$handle:ident| $body:expr) => {{
+        if $instance.is_null() {
+            return $default;
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let $handle = &*$instance;
+            $body
+        }))
+        .unwrap_or($default)
+    }};
+}
+
+/// Variant of `with_instance!` for functions that return `()`.
+///
+/// Uses `let _ =` to discard the result instead of `.unwrap_or(())`,
+/// which avoids clippy's `unused_unit` warning.
+macro_rules! with_instance_void {
+    ($instance:expr, |$handle:ident| $body:expr) => {{
+        if $instance.is_null() {
+            return;
+        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let $handle = &*$instance;
+            $body
+        }));
+    }};
+}
+
+// =============================================================================
 // Constants (must match BeamerAuBridge.h)
 // =============================================================================
 
@@ -195,6 +242,19 @@ pub type BeamerAuInstanceHandle = *mut BeamerInstanceHandle;
 // Helper Functions
 // =============================================================================
 
+/// Lock the plugin instance, returning an error status if the lock fails.
+///
+/// This is a convenience wrapper around `handle.plugin.lock()` that handles
+/// the common error case where the mutex is poisoned.
+fn lock_plugin(
+    handle: &BeamerInstanceHandle,
+) -> Result<std::sync::MutexGuard<'_, Box<dyn AuPluginInstance>>, i32> {
+    handle
+        .plugin
+        .lock()
+        .map_err(|_| os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
+}
+
 /// Copy a Rust string into a fixed-size C char array.
 fn copy_str_to_char_array(s: &str, dest: &mut [c_char]) {
     let bytes = s.as_bytes();
@@ -234,22 +294,6 @@ fn convert_bus_info_array(c_buses: &[BeamerAuBusInfo; MAX_BUSES], count: u32) ->
 
 /// Convert BeamerAuBusConfig to CachedBusConfig.
 fn bus_config_from_c(config: &BeamerAuBusConfig) -> CachedBusConfig {
-    // Debug: log raw C struct values - single line to guarantee all values appear together
-    {
-        use std::io::Write;
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/beamer_au_debug.log")
-        {
-            let _ = writeln!(file, "[RUST] sizeof_config={} sizeof_info={} in[0]={} out[0]={}",
-                             std::mem::size_of::<BeamerAuBusConfig>(),
-                             std::mem::size_of::<BeamerAuBusInfo>(),
-                             config.input_buses[0].channel_count,
-                             config.output_buses[0].channel_count);
-        }
-    }
-
     let input_buses = convert_bus_info_array(&config.input_buses, config.input_bus_count);
     let output_buses = convert_bus_info_array(&config.output_buses, config.output_bus_count);
 
@@ -283,7 +327,9 @@ extern "C" {
 pub extern "C" fn beamer_au_ensure_factory_registered() -> bool {
     // Call the force_link function to ensure the ObjC code is linked.
     // This is needed for APPEX where the principal class must be in the binary.
-    unsafe { beamer_au_appex_force_link(); }
+    unsafe {
+        beamer_au_appex_force_link();
+    }
     factory::is_registered()
 }
 
@@ -345,12 +391,8 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
 
     match result {
         Ok(Some(ptr)) => ptr,
-        Ok(None) => {
-            ptr::null_mut()
-        }
-        Err(_) => {
-            ptr::null_mut()
-        }
+        Ok(None) => ptr::null_mut(),
+        Err(_) => ptr::null_mut(),
     }
 }
 
@@ -408,7 +450,6 @@ pub extern "C" fn beamer_au_allocate_render_resources(
     sample_format: BeamerAuSampleFormat,
     bus_config: *const BeamerAuBusConfig,
 ) -> i32 {
-
     if instance.is_null() || bus_config.is_null() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
     }
@@ -467,9 +508,9 @@ pub extern "C" fn beamer_au_allocate_render_resources(
 
         // Allocate resources on the plugin
         {
-            let mut plugin = match handle.plugin.lock() {
+            let mut plugin = match lock_plugin(handle) {
                 Ok(guard) => guard,
-                Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+                Err(status) => return status,
             };
 
             if let Err(_e) =
@@ -518,9 +559,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         os_status::NO_ERR
     }));
 
-    result.unwrap_or({
-        os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT
-    })
+    result.unwrap_or(os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
 }
 
 /// Deallocate render resources.
@@ -636,22 +675,14 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_is_prepared(instance: BeamerAuInstanceHandle) -> bool {
-    if instance.is_null() {
-        return false;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return false,
         };
 
         plugin.is_prepared()
-    }));
-
-    result.unwrap_or(false)
+    })
 }
 
 // =============================================================================
@@ -695,7 +726,6 @@ pub extern "C" fn beamer_au_render(
     _transport_state_block: *const c_void,
     _schedule_midi_block: *const c_void,
 ) -> i32 {
-
     // Validate instance handle
     if instance.is_null() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
@@ -761,17 +791,11 @@ pub extern "C" fn beamer_au_render(
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
-    if instance.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        if let Ok(mut plugin) = handle.plugin.lock() {
+    with_instance_void!(instance, |handle| {
+        if let Ok(mut plugin) = lock_plugin(handle) {
             plugin.reset();
         }
-    }));
+    })
 }
 
 // =============================================================================
@@ -789,14 +813,8 @@ pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
@@ -805,9 +823,7 @@ pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle
             Ok(store) => store.count() as u32,
             Err(_) => 0,
         }
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Get information about a parameter by index.
@@ -827,14 +843,12 @@ pub extern "C" fn beamer_au_get_parameter_info(
     index: u32,
     out_info: *mut BeamerAuParameterInfo,
 ) -> bool {
-    if instance.is_null() || out_info.is_null() {
+    if out_info.is_null() {
         return false;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return false,
         };
@@ -850,6 +864,7 @@ pub extern "C" fn beamer_au_get_parameter_info(
         };
 
         // Fill output struct
+        // SAFETY: out_info was validated as non-null above
         let out = &mut *out_info;
         out.id = param_info.id;
         copy_str_to_char_array(param_info.name, &mut out.name);
@@ -873,9 +888,7 @@ pub extern "C" fn beamer_au_get_parameter_info(
         };
 
         true
-    }));
-
-    result.unwrap_or(false)
+    })
 }
 
 /// Get a parameter's current normalized value.
@@ -892,14 +905,8 @@ pub extern "C" fn beamer_au_get_parameter_value(
     instance: BeamerAuInstanceHandle,
     param_id: u32,
 ) -> f32 {
-    if instance.is_null() {
-        return 0.0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0.0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0.0,
         };
@@ -908,9 +915,7 @@ pub extern "C" fn beamer_au_get_parameter_value(
             Ok(store) => store.get_normalized(param_id) as f32,
             Err(_) => 0.0,
         }
-    }));
-
-    result.unwrap_or(0.0)
+    })
 }
 
 /// Set a parameter's normalized value.
@@ -928,14 +933,8 @@ pub extern "C" fn beamer_au_set_parameter_value(
     param_id: u32,
     value: f32,
 ) {
-    if instance.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance_void!(instance, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return,
         };
@@ -943,7 +942,7 @@ pub extern "C" fn beamer_au_set_parameter_value(
         if let Ok(store) = plugin.parameter_store() {
             store.set_normalized(param_id, value as f64);
         }
-    }));
+    })
 }
 
 /// Format a parameter value as a display string.
@@ -967,14 +966,12 @@ pub extern "C" fn beamer_au_format_parameter_value(
     out_buffer: *mut c_char,
     buffer_len: u32,
 ) -> u32 {
-    if instance.is_null() || out_buffer.is_null() || buffer_len == 0 {
+    if out_buffer.is_null() || buffer_len == 0 {
         return 0;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
@@ -985,6 +982,7 @@ pub extern "C" fn beamer_au_format_parameter_value(
         };
 
         // Copy to buffer
+        // SAFETY: out_buffer and buffer_len were validated above
         let bytes = string.as_bytes();
         let copy_len = bytes.len().min(buffer_len as usize - 1);
 
@@ -992,9 +990,7 @@ pub extern "C" fn beamer_au_format_parameter_value(
         *out_buffer.add(copy_len) = 0; // Null terminator
 
         copy_len as u32
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Parse a display string to a normalized value.
@@ -1017,19 +1013,18 @@ pub extern "C" fn beamer_au_parse_parameter_value(
     string: *const c_char,
     out_value: *mut f32,
 ) -> bool {
-    if instance.is_null() || string.is_null() || out_value.is_null() {
+    if string.is_null() || out_value.is_null() {
         return false;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
+    with_instance!(instance, false, |handle| {
+        // SAFETY: string was validated as non-null above
         let rust_string = match CStr::from_ptr(string).to_str() {
             Ok(s) => s,
             Err(_) => return false,
         };
 
-        let plugin = match handle.plugin.lock() {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return false,
         };
@@ -1037,6 +1032,7 @@ pub extern "C" fn beamer_au_parse_parameter_value(
         match plugin.parameter_store() {
             Ok(store) => match store.string_to_normalized(param_id, rust_string) {
                 Some(value) => {
+                    // SAFETY: out_value was validated as non-null above
                     *out_value = value as f32;
                     true
                 }
@@ -1044,9 +1040,7 @@ pub extern "C" fn beamer_au_parse_parameter_value(
             },
             Err(_) => false,
         }
-    }));
-
-    result.unwrap_or(false)
+    })
 }
 
 // =============================================================================
@@ -1064,22 +1058,14 @@ pub extern "C" fn beamer_au_parse_parameter_value(
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_get_state_size(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
 
         plugin.save_state().len() as u32
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Serialize the plugin state to a buffer.
@@ -1099,14 +1085,12 @@ pub extern "C" fn beamer_au_get_state(
     buffer: *mut u8,
     size: u32,
 ) -> u32 {
-    if instance.is_null() || buffer.is_null() {
+    if buffer.is_null() {
         return 0;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
@@ -1115,13 +1099,12 @@ pub extern "C" fn beamer_au_get_state(
         let copy_len = state.len().min(size as usize);
 
         if copy_len > 0 {
+            // SAFETY: buffer was validated as non-null above, and copy_len <= size
             ptr::copy_nonoverlapping(state.as_ptr(), buffer, copy_len);
         }
 
         copy_len as u32
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Restore plugin state from a buffer.
@@ -1142,22 +1125,21 @@ pub extern "C" fn beamer_au_set_state(
     buffer: *const u8,
     size: u32,
 ) -> i32 {
-    if instance.is_null() || (buffer.is_null() && size > 0) {
+    if buffer.is_null() && size > 0 {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
+    with_instance!(instance, os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER, |handle| {
+        // SAFETY: buffer is validated above (either non-null or size is 0)
         let state_slice = if size > 0 {
             std::slice::from_raw_parts(buffer, size as usize)
         } else {
             &[]
         };
 
-        let mut plugin = match handle.plugin.lock() {
+        let mut plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
-            Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+            Err(status) => return status,
         };
 
         match plugin.load_state(state_slice) {
@@ -1167,9 +1149,7 @@ pub extern "C" fn beamer_au_set_state(
                 os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE
             }
         }
-    }));
-
-    result.unwrap_or(os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
+    })
 }
 
 // =============================================================================
@@ -1187,22 +1167,14 @@ pub extern "C" fn beamer_au_set_state(
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_get_latency_samples(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
 
         plugin.latency_samples()
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Get the plugin's tail time in samples.
@@ -1216,22 +1188,14 @@ pub extern "C" fn beamer_au_get_latency_samples(instance: BeamerAuInstanceHandle
 /// - Thread safety: Safe to call from any thread; uses mutex for synchronization
 #[no_mangle]
 pub extern "C" fn beamer_au_get_tail_samples(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
 
         plugin.tail_samples()
-    }));
-
-    result.unwrap_or(0)
+    })
 }
 
 /// Get float64 processing support level.
@@ -1244,14 +1208,8 @@ pub extern "C" fn beamer_au_get_tail_samples(instance: BeamerAuInstanceHandle) -
 pub extern "C" fn beamer_au_get_float64_support(
     instance: BeamerAuInstanceHandle,
 ) -> BeamerAuFloat64Support {
-    if instance.is_null() {
-        return BeamerAuFloat64Support::NotSupported;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        let plugin = match handle.plugin.lock() {
+    with_instance!(instance, BeamerAuFloat64Support::NotSupported, |handle| {
+        let plugin = match lock_plugin(handle) {
             Ok(guard) => guard,
             Err(_) => return BeamerAuFloat64Support::NotSupported,
         };
@@ -1261,9 +1219,7 @@ pub extern "C" fn beamer_au_get_float64_support(
         } else {
             BeamerAuFloat64Support::ViaConversion
         }
-    }));
-
-    result.unwrap_or(BeamerAuFloat64Support::NotSupported)
+    })
 }
 
 // =============================================================================
@@ -1352,6 +1308,71 @@ pub extern "C" fn beamer_au_get_vendor(
 // Bus Queries
 // =============================================================================
 
+/// Bus direction for queries (input or output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusDirection {
+    Input,
+    Output,
+}
+
+/// Internal helper: Get the number of buses for a given direction.
+///
+/// This function consolidates the logic for both input and output bus count queries.
+fn get_bus_count_impl(instance: BeamerAuInstanceHandle, direction: BusDirection) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        // If resources are allocated, the host-provided bus config is the source of truth.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            let count = match direction {
+                BusDirection::Input => cfg.input_bus_count,
+                BusDirection::Output => cfg.output_bus_count,
+            };
+            return count.min(MAX_BUSES) as u32;
+        }
+
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        let count = match direction {
+            BusDirection::Input => plugin.declared_input_bus_count(),
+            BusDirection::Output => plugin.declared_output_bus_count(),
+        };
+        count.min(MAX_BUSES) as u32
+    })
+}
+
+/// Internal helper: Get the channel count for a bus at the given index and direction.
+///
+/// This function consolidates the logic for both input and output bus channel count queries.
+fn get_bus_channel_count_impl(
+    instance: BeamerAuInstanceHandle,
+    bus_index: u32,
+    direction: BusDirection,
+) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        // If resources are allocated, report the host-negotiated channel counts.
+        if let Some(cfg) = handle.bus_config.as_ref() {
+            let info = match direction {
+                BusDirection::Input => cfg.input_bus_info(bus_index as usize),
+                BusDirection::Output => cfg.output_bus_info(bus_index as usize),
+            };
+            return info.map(|b| b.channel_count as u32).unwrap_or(0);
+        }
+
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        let info = match direction {
+            BusDirection::Input => plugin.declared_input_bus_info(bus_index as usize),
+            BusDirection::Output => plugin.declared_output_bus_info(bus_index as usize),
+        };
+        info.map(|b| b.channel_count).unwrap_or(0)
+    })
+}
+
 /// Get the number of input buses the plugin supports.
 ///
 /// # Safety
@@ -1360,29 +1381,7 @@ pub extern "C" fn beamer_au_get_vendor(
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_get_input_bus_count(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        // If resources are allocated, the host-provided bus config is the source of truth.
-        if let Some(cfg) = handle.bus_config.as_ref() {
-            let count = cfg.input_bus_count.min(MAX_BUSES) as u32;
-            return count;
-        }
-
-        let plugin = match handle.plugin.lock() {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        
-        plugin.declared_input_bus_count().min(MAX_BUSES) as u32
-    }));
-
-    result.unwrap_or(0)
+    get_bus_count_impl(instance, BusDirection::Input)
 }
 
 /// Get the number of output buses the plugin supports.
@@ -1393,29 +1392,7 @@ pub extern "C" fn beamer_au_get_input_bus_count(instance: BeamerAuInstanceHandle
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_get_output_bus_count(instance: BeamerAuInstanceHandle) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        // If resources are allocated, the host-provided bus config is the source of truth.
-        if let Some(cfg) = handle.bus_config.as_ref() {
-            let count = cfg.output_bus_count.min(MAX_BUSES) as u32;
-            return count;
-        }
-
-        let plugin = match handle.plugin.lock() {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        
-        plugin.declared_output_bus_count().min(MAX_BUSES) as u32
-    }));
-
-    result.unwrap_or(0)
+    get_bus_count_impl(instance, BusDirection::Output)
 }
 
 /// Get the default channel count for an input bus.
@@ -1429,35 +1406,7 @@ pub extern "C" fn beamer_au_get_input_bus_channel_count(
     instance: BeamerAuInstanceHandle,
     bus_index: u32,
 ) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        // If resources are allocated, report the host-negotiated channel counts.
-        if let Some(cfg) = handle.bus_config.as_ref() {
-            let ch = cfg
-                .input_bus_info(bus_index as usize)
-                .map(|b| b.channel_count as u32)
-                .unwrap_or(0);
-            return ch;
-        }
-
-        let plugin = match handle.plugin.lock() {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        
-        plugin
-            .declared_input_bus_info(bus_index as usize)
-            .map(|b| b.channel_count)
-            .unwrap_or(0)
-    }));
-
-    result.unwrap_or(0)
+    get_bus_channel_count_impl(instance, bus_index, BusDirection::Input)
 }
 
 /// Get the default channel count for an output bus.
@@ -1471,35 +1420,7 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
     instance: BeamerAuInstanceHandle,
     bus_index: u32,
 ) -> u32 {
-    if instance.is_null() {
-        return 0;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &*instance;
-
-        // If resources are allocated, report the host-negotiated channel counts.
-        if let Some(cfg) = handle.bus_config.as_ref() {
-            let ch = cfg
-                .output_bus_info(bus_index as usize)
-                .map(|b| b.channel_count as u32)
-                .unwrap_or(0);
-            return ch;
-        }
-
-        let plugin = match handle.plugin.lock() {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        
-        plugin
-            .declared_output_bus_info(bus_index as usize)
-            .map(|b| b.channel_count)
-            .unwrap_or(0)
-    }));
-
-    result.unwrap_or(0)
+    get_bus_channel_count_impl(instance, bus_index, BusDirection::Output)
 }
 
 /// Check if a proposed channel configuration is valid.
@@ -1636,7 +1557,10 @@ mod tests {
         assert_eq!(BeamerAuFloat64Support::NotSupported as i32, 0);
         assert_eq!(BeamerAuFloat64Support::ViaConversion as i32, 1);
         assert_eq!(BeamerAuFloat64Support::Native as i32, 2);
-        assert_eq!(beamer_au_get_float64_support(ptr::null_mut()), BeamerAuFloat64Support::NotSupported);
+        assert_eq!(
+            beamer_au_get_float64_support(ptr::null_mut()),
+            BeamerAuFloat64Support::NotSupported
+        );
     }
 
     #[test]

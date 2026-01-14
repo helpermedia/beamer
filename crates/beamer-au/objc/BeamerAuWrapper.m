@@ -21,38 +21,11 @@
 #include "BeamerAuBridge.h"
 
 // =============================================================================
-// MARK: - Debug Logging (writes to /tmp/beamer_au_debug.log)
+// MARK: - Debug Logging
 // =============================================================================
 
-#define BEAMER_AU_DEBUG 1
-
-#if BEAMER_AU_DEBUG
-static void beamer_debug_log(NSString* format, ...) {
-    va_list args;
-    va_start(args, format);
-    NSString* message = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
-
-    NSString* timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
-                                                         dateStyle:NSDateFormatterNoStyle
-                                                         timeStyle:NSDateFormatterMediumStyle];
-    NSString* line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
-
-    NSFileHandle* file = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/beamer_au_debug.log"];
-    if (file == nil) {
-        [[NSFileManager defaultManager] createFileAtPath:@"/tmp/beamer_au_debug.log"
-                                                contents:nil
-                                              attributes:nil];
-        file = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/beamer_au_debug.log"];
-    }
-    [file seekToEndOfFile];
-    [file writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-    [file closeFile];
-}
-#define AU_DEBUG(fmt, ...) beamer_debug_log(fmt, ##__VA_ARGS__)
-#else
+// Debug logging disabled in production
 #define AU_DEBUG(fmt, ...) ((void)0)
-#endif
 
 // =============================================================================
 // MARK: - Constants
@@ -116,6 +89,9 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     /// Mutable copy of the input buffer list for pullInputBlock.
     /// Reset before each pull from the original PCM buffer's audioBufferList.
     AudioBufferList* _inputMutableABL;
+
+    /// Current preset (required by Logic Pro).
+    AUAudioUnitPreset* _currentPreset;
 }
 
 + (NSUInteger)nextInstanceId;
@@ -192,6 +168,12 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     _maxFrames = kDefaultMaxFrames;
     _resourcesAllocated = NO;
     memset(&_busConfig, 0, sizeof(_busConfig));
+
+    // Initialize to default preset (required for Logic Pro compatibility)
+    AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
+    defaultPreset.number = 0;
+    defaultPreset.name = @"Default";
+    _currentPreset = defaultPreset;
 
     // Create the Rust plugin instance
     _rustInstance = beamer_au_create_instance();
@@ -425,10 +407,6 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         _busConfig.output_buses[i].channel_count = (uint32_t)_outputBusArray[i].format.channelCount;
         _busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
     }
-
-    AU_DEBUG(@"[OBJC] sizeof_config=%zu sizeof_info=%zu in[0]=%u out[0]=%u",
-             sizeof(BeamerAuBusConfig), sizeof(BeamerAuBusInfo),
-             _busConfig.input_buses[0].channel_count, _busConfig.output_buses[0].channel_count);
 }
 
 // -----------------------------------------------------------------------------
@@ -478,18 +456,6 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     // For effect plugins (aufx), input channels must equal output channels
     uint32_t mainInputChannels = (_busConfig.input_bus_count > 0) ? _busConfig.input_buses[0].channel_count : 0;
     uint32_t mainOutputChannels = (_busConfig.output_bus_count > 0) ? _busConfig.output_buses[0].channel_count : 0;
-
-    AU_DEBUG(@"allocateRenderResources: inputChannels=%u outputChannels=%u", mainInputChannels, mainOutputChannels);
-    if (_inputBusArray.count > 0) {
-        AVAudioFormat* inFmt = _inputBusArray[0].format;
-        AU_DEBUG(@"  inputBus[0].format: channels=%u sampleRate=%.0f interleaved=%d",
-                 (uint32_t)inFmt.channelCount, inFmt.sampleRate, inFmt.isInterleaved);
-    }
-    if (_outputBusArray.count > 0) {
-        AVAudioFormat* outFmt = _outputBusArray[0].format;
-        AU_DEBUG(@"  outputBus[0].format: channels=%u sampleRate=%.0f interleaved=%d",
-                 (uint32_t)outFmt.channelCount, outFmt.sampleRate, outFmt.isInterleaved);
-    }
 
     if (!beamer_au_is_channel_config_valid(_rustInstance, mainInputChannels, mainOutputChannels)) {
         if (outError != NULL) {
@@ -646,29 +612,6 @@ static NSUInteger BeamerAuInstanceCounter = 0;
             AUAudioUnitStatus pullStatus = pullInputBlock(&pullFlags, timestamp, frameCount, 0, inputMutableABL);
             if (pullStatus == noErr) {
                 inputData = inputMutableABL;
-            }
-
-            // Debug: log buffer info once
-            static int debugLogCount = 0;
-            if (debugLogCount < 3) {
-                debugLogCount++;
-                AU_DEBUG(@"render[%d]: originalABL.mNumberBuffers=%u inputMutableABL.mNumberBuffers=%u",
-                         debugLogCount, originalABL->mNumberBuffers, inputMutableABL->mNumberBuffers);
-                for (UInt32 i = 0; i < inputMutableABL->mNumberBuffers; ++i) {
-                    AU_DEBUG(@"  inputBuffer[%u]: mNumberChannels=%u mData=%p mDataByteSize=%u",
-                             i, inputMutableABL->mBuffers[i].mNumberChannels,
-                             inputMutableABL->mBuffers[i].mData,
-                             inputMutableABL->mBuffers[i].mDataByteSize);
-                }
-                if (outputData) {
-                    AU_DEBUG(@"  outputData.mNumberBuffers=%u", outputData->mNumberBuffers);
-                    for (UInt32 i = 0; i < outputData->mNumberBuffers; ++i) {
-                        AU_DEBUG(@"  outputBuffer[%u]: mNumberChannels=%u mData=%p mDataByteSize=%u",
-                                 i, outputData->mBuffers[i].mNumberChannels,
-                                 outputData->mBuffers[i].mData,
-                                 outputData->mBuffers[i].mDataByteSize);
-                    }
-                }
             }
         }
 
@@ -985,6 +928,42 @@ static NSUInteger BeamerAuInstanceCounter = 0;
             }
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: Preset Properties
+// -----------------------------------------------------------------------------
+
+/// Current preset - required by Logic Pro.
+/// Returns nil when no preset is selected (default/init state).
+- (AUAudioUnitPreset*)currentPreset {
+    return _currentPreset;
+}
+
+/// Set the current preset.
+- (void)setCurrentPreset:(AUAudioUnitPreset*)currentPreset {
+    if (currentPreset == nil) {
+        _currentPreset = nil;
+        return;
+    }
+
+    // For factory presets (number >= 0), we would load the preset here.
+    // For user presets (number < 0), the host handles loading via fullState.
+    _currentPreset = currentPreset;
+}
+
+/// Factory presets - provide a default preset.
+/// Logic Pro requires at least one factory preset for proper validation.
+- (NSArray<AUAudioUnitPreset*>*)factoryPresets {
+    static NSArray<AUAudioUnitPreset*>* presets = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
+        defaultPreset.number = 0;
+        defaultPreset.name = @"Default";
+        presets = @[defaultPreset];
+    });
+    return presets;
 }
 
 // -----------------------------------------------------------------------------

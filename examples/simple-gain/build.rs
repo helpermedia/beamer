@@ -6,17 +6,9 @@
 fn main() {
     #[cfg(target_os = "macos")]
     {
-        // Print all DEP_ environment variables for debugging
-        for (key, value) in std::env::vars() {
-            if key.starts_with("DEP_") {
-                println!("cargo:warning=ENV: {}={}", key, value);
-            }
-        }
-
         // Find beamer-au's output directory by looking for the DEP_BEAMER_AU_NATIVE_OUT_DIR env var
         // This is set by beamer-au's build.rs due to the `links = "beamer_au_native"` key
         if let Ok(beamer_au_out) = std::env::var("DEP_BEAMER_AU_NATIVE_OUT_DIR") {
-            println!("cargo:warning=Found beamer_au output dir: {}", beamer_au_out);
             println!("cargo:rustc-link-search=native={}", beamer_au_out);
 
             // Use -force_load to ensure ALL symbols from the static libraries are included,

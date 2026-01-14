@@ -534,43 +534,6 @@ impl<S: Sample> ProcessBufferStorage<S> {
 unsafe impl<S: Sample> Send for ProcessBufferStorage<S> {}
 unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
 
-/// Validate buffer alignment before creating slices.
-///
-/// Returns an error message if the buffer is not properly aligned.
-#[inline]
-pub fn validate_buffer_alignment(data_ptr: *const u8, byte_size: u32) -> Result<(), &'static str> {
-    // Check f32 alignment (4 bytes)
-    if data_ptr.align_offset(std::mem::align_of::<f32>()) != 0 {
-        return Err("Buffer not aligned for f32");
-    }
-
-    // Check size is multiple of f32
-    if !(byte_size as usize).is_multiple_of(std::mem::size_of::<f32>()) {
-        return Err("Buffer size not multiple of f32");
-    }
-
-    Ok(())
-}
-
-/// Validate buffer alignment for f64.
-#[inline]
-pub fn validate_buffer_alignment_f64(
-    data_ptr: *const u8,
-    byte_size: u32,
-) -> Result<(), &'static str> {
-    // Check f64 alignment (8 bytes)
-    if data_ptr.align_offset(std::mem::align_of::<f64>()) != 0 {
-        return Err("Buffer not aligned for f64");
-    }
-
-    // Check size is multiple of f64
-    if !(byte_size as usize).is_multiple_of(std::mem::size_of::<f64>()) {
-        return Err("Buffer size not multiple of f64");
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,17 +633,6 @@ mod tests {
         storage.clear();
         assert_eq!(storage.main_inputs.len(), 0);
         assert_eq!(storage.main_inputs.capacity(), 2);
-    }
-
-    #[test]
-    fn test_alignment_validation() {
-        // Aligned pointer
-        let aligned: [f32; 4] = [0.0; 4];
-        let ptr = aligned.as_ptr() as *const u8;
-        assert!(validate_buffer_alignment(ptr, 16).is_ok());
-
-        // Wrong size
-        assert!(validate_buffer_alignment(ptr, 15).is_err());
     }
 
     #[test]

@@ -459,10 +459,12 @@ fn bundle_au(
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>{version}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{version}</string>
 </dict>
 </plist>
-"#, framework_name = framework_name, bundle_id = framework_bundle_id);
+"#, framework_name = framework_name, bundle_id = framework_bundle_id, version = version_string);
     fs::write(framework_dir.join("Info.plist"), framework_plist)
         .map_err(|e| format!("Failed to write framework Info.plist: {}", e))?;
 
@@ -568,7 +570,7 @@ fn bundle_au(
         .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
 
     // Create container app Info.plist
-    let app_info_plist = create_app_info_plist(package, executable_name);
+    let app_info_plist = create_app_info_plist(package, executable_name, &version_string);
     fs::write(contents_dir.join("Info.plist"), app_info_plist)
         .map_err(|e| format!("Failed to write app Info.plist: {}", e))?;
 
@@ -838,7 +840,7 @@ fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
 }
 
 /// Create Info.plist for container app (stub executable that triggers pluginkit registration)
-fn create_app_info_plist(package: &str, executable_name: &str) -> String {
+fn create_app_info_plist(package: &str, executable_name: &str, version: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -859,9 +861,9 @@ fn create_app_info_plist(package: &str, executable_name: &str) -> String {
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleVersion</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13</string>
     <key>LSBackgroundOnly</key>
@@ -870,7 +872,8 @@ fn create_app_info_plist(package: &str, executable_name: &str) -> String {
 </plist>
 "#,
         executable = executable_name,
-        package = package
+        package = package,
+        version = version
     )
 }
 
