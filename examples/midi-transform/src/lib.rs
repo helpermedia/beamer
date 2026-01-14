@@ -69,12 +69,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform")
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
-/// Uses manufacturer code "Demo" and subtype "mtrn" for identification
+/// Uses manufacturer code "Bmer" and subtype "mtrn" for identification
 /// MidiProcessor type indicates this processes MIDI data
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::MidiProcessor,
-    fourcc!(b"Demo"),
+    fourcc!(b"Bmer"),
     fourcc!(b"mtrn"),
 );
 

@@ -39,11 +39,11 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
-/// Uses manufacturer code "Demo" and subtype "gain" for identification
+/// Uses manufacturer code "Bmer" and subtype "gain" for identification
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Demo"),
+    fourcc!(b"Bmer"),
     fourcc!(b"gain"),
 );
 

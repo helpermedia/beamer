@@ -44,12 +44,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth")
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
-/// Uses manufacturer code "Demo" and subtype "synt" for identification
+/// Uses manufacturer code "Bmer" and subtype "synt" for identification
 /// MusicDevice type indicates this is an instrument/synthesizer
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::MusicDevice,
-    fourcc!(b"Demo"),
+    fourcc!(b"Bmer"),
     fourcc!(b"synt"),
 );
 
