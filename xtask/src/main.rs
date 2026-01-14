@@ -101,6 +101,91 @@ fn print_usage() {
     eprintln!("  cargo xtask bundle gain --au --release --clean");
 }
 
+/// Find beamer-au output directory for a given target and profile.
+/// Returns None if not found (beamer-au not yet built).
+fn find_beamer_au_out_dir(workspace_root: &Path, target: &str, profile: &str) -> Option<PathBuf> {
+    let build_dir = workspace_root
+        .join("target")
+        .join(target)
+        .join(profile)
+        .join("build");
+
+    if !build_dir.exists() {
+        return None;
+    }
+
+    // Find beamer-au-* directory
+    for entry in fs::read_dir(&build_dir).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("beamer-au-") {
+            let out_dir = entry.path().join("out");
+            if out_dir.exists() {
+                return Some(out_dir);
+            }
+        }
+    }
+
+    None
+}
+
+/// Generate RUSTFLAGS for linking AU static libraries.
+/// This injects the linker flags that would normally be in build.rs.
+fn get_au_rustflags(workspace_root: &Path, target: &str, profile: &str) -> Result<String, String> {
+    let out_dir = find_beamer_au_out_dir(workspace_root, target, profile)
+        .ok_or_else(|| format!("beamer-au output directory not found for target {}. Try building beamer-au first.", target))?;
+
+    let out_dir_str = out_dir.to_str()
+        .ok_or_else(|| "Invalid output directory path".to_string())?;
+
+    // Build RUSTFLAGS with all necessary linker arguments
+    let flags = vec![
+        format!("-L native={}", out_dir_str),
+        format!("-C link-arg=-Wl,-force_load,{}/libbeamer_au_objc.a", out_dir_str),
+        format!("-C link-arg=-Wl,-force_load,{}/libbeamer_au_extension.a", out_dir_str),
+        "-C link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerAuWrapper".to_string(),
+        "-C link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerAuExtension".to_string(),
+        "-C link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_BeamerAuWrapper".to_string(),
+        "-C link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_BeamerAuExtension".to_string(),
+        "-C link-arg=-Wl,-exported_symbol,_beamer_au_appex_force_link".to_string(),
+        "-C link-arg=-Wl,-exported_symbol,_BeamerAuExtensionFactory".to_string(),
+    ];
+
+    Ok(flags.join(" "))
+}
+
+/// Build beamer-au to ensure static libraries exist before building plugins.
+fn ensure_beamer_au_built(workspace_root: &Path, target: &str, release: bool) -> Result<(), String> {
+    let profile = if release { "release" } else { "debug" };
+
+    // Check if already built
+    if find_beamer_au_out_dir(workspace_root, target, profile).is_some() {
+        return Ok(());
+    }
+
+    println!("Building beamer-au for {}...", target);
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("-p")
+        .arg("beamer-au")
+        .arg("--target")
+        .arg(target)
+        .current_dir(workspace_root);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    let status = cmd.status()
+        .map_err(|e| format!("Failed to build beamer-au: {}", e))?;
+
+    if !status.success() {
+        return Err("Failed to build beamer-au".to_string());
+    }
+
+    Ok(())
+}
+
 fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Result<PathBuf, String> {
     println!("Building universal binary (x86_64 + arm64)...");
 
@@ -108,14 +193,20 @@ fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Resul
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
+    // Ensure beamer-au is built for both architectures first
+    ensure_beamer_au_built(workspace_root, "x86_64-apple-darwin", release)?;
+    ensure_beamer_au_built(workspace_root, "aarch64-apple-darwin", release)?;
+
     // Build for x86_64
     println!("Building for x86_64...");
+    let rustflags = get_au_rustflags(workspace_root, "x86_64-apple-darwin", profile)?;
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg(package)
         .arg("--target")
         .arg("x86_64-apple-darwin")
+        .env("RUSTFLAGS", &rustflags)
         .current_dir(workspace_root);
 
     if release {
@@ -129,12 +220,14 @@ fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Resul
 
     // Build for arm64
     println!("Building for arm64...");
+    let rustflags = get_au_rustflags(workspace_root, "aarch64-apple-darwin", profile)?;
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg(package)
         .arg("--target")
         .arg("aarch64-apple-darwin")
+        .env("RUSTFLAGS", &rustflags)
         .current_dir(workspace_root);
 
     if release {
