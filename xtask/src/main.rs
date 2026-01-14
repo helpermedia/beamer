@@ -1,6 +1,6 @@
 //! Build tooling for Beamer plugins.
 //!
-//! Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install]
+//! Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install] [--clean]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,6 +61,7 @@ fn main() {
     let package = &args[2];
     let release = args.iter().any(|a| a == "--release");
     let install = args.iter().any(|a| a == "--install");
+    let clean = args.iter().any(|a| a == "--clean");
     let build_vst3 = args.iter().any(|a| a == "--vst3");
     let build_au = args.iter().any(|a| a == "--au");
 
@@ -71,14 +72,14 @@ fn main() {
         (build_vst3, build_au)
     };
 
-    if let Err(e) = bundle(package, release, install, build_vst3, build_au) {
+    if let Err(e) = bundle(package, release, install, clean, build_vst3, build_au) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
 fn print_usage() {
-    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install]");
+    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install] [--clean]");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  bundle    Build and bundle a plugin");
@@ -90,11 +91,14 @@ fn print_usage() {
     eprintln!("Options:");
     eprintln!("  --release    Build in release mode");
     eprintln!("  --install    Install to system plugin directories");
+    eprintln!("  --clean      Clean build caches before building (forces full rebuild)");
+    eprintln!("               Removes beamer-au cc cache and previous app bundle.");
+    eprintln!("               Use when ObjC/header changes aren't being picked up.");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  cargo xtask bundle gain --vst3 --release --install");
     eprintln!("  cargo xtask bundle gain --au --release --install");
-    eprintln!("  cargo xtask bundle gain --vst3 --au --release --install");
+    eprintln!("  cargo xtask bundle gain --au --release --clean");
 }
 
 fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Result<PathBuf, String> {
@@ -188,10 +192,64 @@ fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Resul
     Ok(universal_path)
 }
 
+/// Clean build caches to force full rebuild.
+///
+/// This is necessary because:
+/// 1. `cc::Build` (used in build.rs) caches compiled .o files in target/build/beamer-au-*/
+/// 2. Even if cargo triggers a rebuild, cc may use cached object files
+/// 3. The final .app bundle may not get updated if only static libraries changed
+///
+/// Use --clean when ObjC or header file changes aren't being picked up.
+fn clean_build_caches(workspace_root: &Path, package: &str, release: bool) -> Result<(), String> {
+    println!("Cleaning build caches...");
+
+    let profile = if release { "release" } else { "debug" };
+    let target_dir = workspace_root.join("target").join(profile);
+
+    // Clean beamer-au cc cache (compiled ObjC objects)
+    let build_dir = workspace_root.join("target").join(profile).join("build");
+    if build_dir.exists() {
+        for entry in fs::read_dir(&build_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with("beamer-au-") {
+                println!("  Removing: {}", entry.path().display());
+                fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    // Clean beamer-au deps (compiled Rust library)
+    let deps_dir = target_dir.join("deps");
+    if deps_dir.exists() {
+        for entry in fs::read_dir(&deps_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("libbeamer_au") {
+                println!("  Removing: {}", entry.path().display());
+                fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    // Clean previous app bundle
+    let bundle_name = to_au_bundle_name(package);
+    let app_path = target_dir.join(&bundle_name);
+    if app_path.exists() {
+        println!("  Removing: {}", app_path.display());
+        fs::remove_dir_all(&app_path).map_err(|e| e.to_string())?;
+    }
+
+    println!("Clean complete.");
+    Ok(())
+}
+
 fn bundle(
     package: &str,
     release: bool,
     install: bool,
+    clean: bool,
     build_vst3: bool,
     build_au: bool,
 ) -> Result<(), String> {
@@ -199,6 +257,11 @@ fn bundle(
 
     // Get workspace root
     let workspace_root = get_workspace_root()?;
+
+    // Clean build caches if requested
+    if clean {
+        clean_build_caches(&workspace_root, package, release)?;
+    }
 
     // For macOS AU, build universal binary (x86_64 + arm64)
     let universal = build_au && cfg!(target_os = "macos");
@@ -424,7 +487,7 @@ fn bundle_au(
             "-framework", "CoreAudio",
             "-F", frameworks_dir.to_str().unwrap(),
             "-framework", &framework_name,
-            "-Wl,-rpath,@executable_path/../../../../Frameworks",
+            "-Wl,-rpath,@loader_path/../../../../Frameworks",
             "-o", appex_x86_64_path.to_str().unwrap(),
             appex_main_path.to_str().unwrap(),
         ])
@@ -448,7 +511,7 @@ fn bundle_au(
             "-framework", "CoreAudio",
             "-F", frameworks_dir.to_str().unwrap(),
             "-framework", &framework_name,
-            "-Wl,-rpath,@executable_path/../../../../Frameworks",
+            "-Wl,-rpath,@loader_path/../../../../Frameworks",
             "-o", appex_arm64_path.to_str().unwrap(),
             appex_main_path.to_str().unwrap(),
         ])

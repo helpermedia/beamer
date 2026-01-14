@@ -65,7 +65,7 @@ typedef void* BeamerAuInstanceHandle;
  *
  * Matches `beamer_core::MAX_BUSES` for consistency across plugin formats.
  */
-#define BEAMER_AU_MAX_BUSES 8
+#define BEAMER_AU_MAX_BUSES 16
 
 /**
  * Maximum number of channels per audio bus.
@@ -407,6 +407,7 @@ OSStatus beamer_au_render(
     AudioBufferList* output_data,
     const AURenderEvent* _Nullable events,
     AURenderPullInputBlock _Nullable pull_input_block,
+    const AudioBufferList* _Nullable input_data,
     AUHostMusicalContextBlock _Nullable musical_context_block,
     AUHostTransportStateBlock _Nullable transport_state_block,
     AUScheduleMIDIEventBlock _Nullable schedule_midi_block

@@ -234,6 +234,22 @@ fn convert_bus_info_array(c_buses: &[BeamerAuBusInfo; MAX_BUSES], count: u32) ->
 
 /// Convert BeamerAuBusConfig to CachedBusConfig.
 fn bus_config_from_c(config: &BeamerAuBusConfig) -> CachedBusConfig {
+    // Debug: log raw C struct values - single line to guarantee all values appear together
+    {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/beamer_au_debug.log")
+        {
+            let _ = writeln!(file, "[RUST] sizeof_config={} sizeof_info={} in[0]={} out[0]={}",
+                             std::mem::size_of::<BeamerAuBusConfig>(),
+                             std::mem::size_of::<BeamerAuBusInfo>(),
+                             config.input_buses[0].channel_count,
+                             config.output_buses[0].channel_count);
+        }
+    }
+
     let input_buses = convert_bus_info_array(&config.input_buses, config.input_bus_count);
     let output_buses = convert_bus_info_array(&config.output_buses, config.output_bus_count);
 
@@ -674,6 +690,7 @@ pub extern "C" fn beamer_au_render(
     output_data: *mut AudioBufferList,
     events: *const AURenderEvent,
     pull_input_block: *const c_void,
+    input_data: *const AudioBufferList, // Input buffer list from ObjC (after pulling)
     _musical_context_block: *const c_void,
     _transport_state_block: *const c_void,
     _schedule_midi_block: *const c_void,
@@ -726,6 +743,7 @@ pub extern "C" fn beamer_au_render(
             output_data,
             events,
             pull_input_block,
+            input_data,
         )
     }));
 
@@ -1667,6 +1685,7 @@ mod tests {
                 ptr::null_mut(),
                 ptr::null(),
                 ptr::null(),
+                ptr::null(), // input_data
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),

@@ -21,6 +21,40 @@
 #include "BeamerAuBridge.h"
 
 // =============================================================================
+// MARK: - Debug Logging (writes to /tmp/beamer_au_debug.log)
+// =============================================================================
+
+#define BEAMER_AU_DEBUG 1
+
+#if BEAMER_AU_DEBUG
+static void beamer_debug_log(NSString* format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString* message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSString* timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                         dateStyle:NSDateFormatterNoStyle
+                                                         timeStyle:NSDateFormatterMediumStyle];
+    NSString* line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
+
+    NSFileHandle* file = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/beamer_au_debug.log"];
+    if (file == nil) {
+        [[NSFileManager defaultManager] createFileAtPath:@"/tmp/beamer_au_debug.log"
+                                                contents:nil
+                                              attributes:nil];
+        file = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/beamer_au_debug.log"];
+    }
+    [file seekToEndOfFile];
+    [file writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [file closeFile];
+}
+#define AU_DEBUG(fmt, ...) beamer_debug_log(fmt, ##__VA_ARGS__)
+#else
+#define AU_DEBUG(fmt, ...) ((void)0)
+#endif
+
+// =============================================================================
 // MARK: - Constants
 // =============================================================================
 
@@ -74,6 +108,14 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 
     /// Unique instance ID for debugging
     NSUInteger _instanceId;
+
+    /// PCM buffer for main input bus, created from bus.format during allocateRenderResources.
+    /// This ensures the buffer matches the host-negotiated format exactly.
+    AVAudioPCMBuffer* _inputPCMBuffer;
+
+    /// Mutable copy of the input buffer list for pullInputBlock.
+    /// Reset before each pull from the original PCM buffer's audioBufferList.
+    AudioBufferList* _inputMutableABL;
 }
 
 + (NSUInteger)nextInstanceId;
@@ -383,6 +425,10 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         _busConfig.output_buses[i].channel_count = (uint32_t)_outputBusArray[i].format.channelCount;
         _busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
     }
+
+    AU_DEBUG(@"[OBJC] sizeof_config=%zu sizeof_info=%zu in[0]=%u out[0]=%u",
+             sizeof(BeamerAuBusConfig), sizeof(BeamerAuBusInfo),
+             _busConfig.input_buses[0].channel_count, _busConfig.output_buses[0].channel_count);
 }
 
 // -----------------------------------------------------------------------------
@@ -419,14 +465,31 @@ static NSUInteger BeamerAuInstanceCounter = 0;
         return NO;
     }
 
-    // Build bus configuration from current bus arrays BEFORE calling super
-    // This allows us to validate the configuration and reject early
+    // Call super FIRST - this finalizes bus format negotiation (Apple's pattern).
+    // See FilterDemo sample code which also calls super first.
+    if (![super allocateRenderResourcesAndReturnError:outError]) {
+        return NO;
+    }
+
+    // Build bus configuration AFTER super - formats are now finalized
     [self buildBusConfig];
 
-    // Validate channel configuration before allocating any resources
+    // Validate channel configuration
     // For effect plugins (aufx), input channels must equal output channels
     uint32_t mainInputChannels = (_busConfig.input_bus_count > 0) ? _busConfig.input_buses[0].channel_count : 0;
     uint32_t mainOutputChannels = (_busConfig.output_bus_count > 0) ? _busConfig.output_buses[0].channel_count : 0;
+
+    AU_DEBUG(@"allocateRenderResources: inputChannels=%u outputChannels=%u", mainInputChannels, mainOutputChannels);
+    if (_inputBusArray.count > 0) {
+        AVAudioFormat* inFmt = _inputBusArray[0].format;
+        AU_DEBUG(@"  inputBus[0].format: channels=%u sampleRate=%.0f interleaved=%d",
+                 (uint32_t)inFmt.channelCount, inFmt.sampleRate, inFmt.isInterleaved);
+    }
+    if (_outputBusArray.count > 0) {
+        AVAudioFormat* outFmt = _outputBusArray[0].format;
+        AU_DEBUG(@"  outputBus[0].format: channels=%u sampleRate=%.0f interleaved=%d",
+                 (uint32_t)outFmt.channelCount, outFmt.sampleRate, outFmt.isInterleaved);
+    }
 
     if (!beamer_au_is_channel_config_valid(_rustInstance, mainInputChannels, mainOutputChannels)) {
         if (outError != NULL) {
@@ -434,11 +497,8 @@ static NSUInteger BeamerAuInstanceCounter = 0;
                                             code:kAudioUnitErr_FormatNotSupported
                                         userInfo:@{NSLocalizedDescriptionKey: @"Channel configuration not supported"}];
         }
-        return NO;
-    }
-
-    // Call super after validation passes (required by Apple)
-    if (![super allocateRenderResourcesAndReturnError:outError]) {
+        self.renderResourcesAllocated = NO;
+        [super deallocateRenderResources];
         return NO;
     }
 
@@ -464,6 +524,19 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     _maxFrames = self.maximumFramesToRender;
     if (_maxFrames == 0) {
         _maxFrames = kDefaultMaxFrames;
+    }
+
+    // Create AVAudioPCMBuffer for main input bus from the host-negotiated format.
+    // This is the Apple-recommended approach (see FilterDemo sample code).
+    // The PCM buffer automatically creates the correct AudioBufferList structure
+    // matching the negotiated channel count.
+    if (_inputBusArray.count > 0) {
+        AVAudioFormat* inputFormat = _inputBusArray[0].format;
+        _inputPCMBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:inputFormat
+                                                       frameCapacity:_maxFrames];
+        if (_inputPCMBuffer != nil) {
+            _inputMutableABL = _inputPCMBuffer.mutableAudioBufferList;
+        }
     }
 
     // Allocate render resources in Rust
@@ -493,6 +566,10 @@ static NSUInteger BeamerAuInstanceCounter = 0;
 ///
 /// Called by the host when audio processing is stopping.
 - (void)deallocateRenderResources {
+    // Release the PCM buffer (ObjC ARC will handle memory)
+    _inputMutableABL = NULL;
+    _inputPCMBuffer = nil;
+
     if (_rustInstance != NULL && _resourcesAllocated) {
         beamer_au_deallocate_render_resources(_rustInstance);
         _resourcesAllocated = NO;
@@ -525,6 +602,13 @@ static NSUInteger BeamerAuInstanceCounter = 0;
     AUHostTransportStateBlock transportState = self.transportStateBlock;
     AUScheduleMIDIEventBlock scheduleMIDI = self.scheduleMIDIEventBlock;
 
+    // Capture input buffer pointers for pulling audio (Apple's recommended pattern).
+    // _inputPCMBuffer was created from bus.format during allocateRenderResources,
+    // ensuring it matches the host-negotiated channel configuration exactly.
+    AVAudioPCMBuffer* inputPCMBuffer = _inputPCMBuffer;
+    AudioBufferList* inputMutableABL = _inputMutableABL;
+    AUAudioFrameCount maxFrames = _maxFrames;
+
     // Return the render block
     return ^AUAudioUnitStatus(
         AudioUnitRenderActionFlags* actionFlags,
@@ -540,9 +624,55 @@ static NSUInteger BeamerAuInstanceCounter = 0;
             return kAudioUnitErr_Uninitialized;
         }
 
-        // Delegate to Rust render function.
-        // All parameters are passed directly without ObjC object creation.
-        // Host callback blocks were captured at block creation time above.
+        // Pull main input using AVAudioPCMBuffer (Apple's recommended pattern).
+        // The PCM buffer was created from bus.format during allocateRenderResources,
+        // ensuring it matches the host-negotiated channel configuration.
+        AudioBufferList* inputData = NULL;
+        if (inputPCMBuffer != nil && inputMutableABL != NULL && pullInputBlock != nil
+            && frameCount <= maxFrames) {
+            // Prepare buffer: reset pointers from original PCM buffer
+            const AudioBufferList* originalABL = inputPCMBuffer.audioBufferList;
+            UInt32 byteSize = frameCount * sizeof(float);
+
+            inputMutableABL->mNumberBuffers = originalABL->mNumberBuffers;
+            for (UInt32 i = 0; i < originalABL->mNumberBuffers; ++i) {
+                inputMutableABL->mBuffers[i].mNumberChannels = originalABL->mBuffers[i].mNumberChannels;
+                inputMutableABL->mBuffers[i].mData = originalABL->mBuffers[i].mData;
+                inputMutableABL->mBuffers[i].mDataByteSize = byteSize;
+            }
+
+            // Pull input audio
+            AudioUnitRenderActionFlags pullFlags = 0;
+            AUAudioUnitStatus pullStatus = pullInputBlock(&pullFlags, timestamp, frameCount, 0, inputMutableABL);
+            if (pullStatus == noErr) {
+                inputData = inputMutableABL;
+            }
+
+            // Debug: log buffer info once
+            static int debugLogCount = 0;
+            if (debugLogCount < 3) {
+                debugLogCount++;
+                AU_DEBUG(@"render[%d]: originalABL.mNumberBuffers=%u inputMutableABL.mNumberBuffers=%u",
+                         debugLogCount, originalABL->mNumberBuffers, inputMutableABL->mNumberBuffers);
+                for (UInt32 i = 0; i < inputMutableABL->mNumberBuffers; ++i) {
+                    AU_DEBUG(@"  inputBuffer[%u]: mNumberChannels=%u mData=%p mDataByteSize=%u",
+                             i, inputMutableABL->mBuffers[i].mNumberChannels,
+                             inputMutableABL->mBuffers[i].mData,
+                             inputMutableABL->mBuffers[i].mDataByteSize);
+                }
+                if (outputData) {
+                    AU_DEBUG(@"  outputData.mNumberBuffers=%u", outputData->mNumberBuffers);
+                    for (UInt32 i = 0; i < outputData->mNumberBuffers; ++i) {
+                        AU_DEBUG(@"  outputBuffer[%u]: mNumberChannels=%u mData=%p mDataByteSize=%u",
+                                 i, outputData->mBuffers[i].mNumberChannels,
+                                 outputData->mBuffers[i].mData,
+                                 outputData->mBuffers[i].mDataByteSize);
+                    }
+                }
+            }
+        }
+
+        // Delegate to Rust render function with the pulled input data.
         return beamer_au_render(
             rustInstance,
             actionFlags,
@@ -552,6 +682,7 @@ static NSUInteger BeamerAuInstanceCounter = 0;
             outputData,
             realtimeEventListHead,
             pullInputBlock,
+            inputData,
             musicalContext,
             transportState,
             scheduleMIDI
@@ -933,7 +1064,9 @@ static NSUInteger BeamerAuInstanceCounter = 0;
 /// This is important for Logic Pro and other hosts that optimize memory by
 /// using in-place processing when possible.
 - (BOOL)canProcessInPlace {
-    return YES;
+    // Disabled for now - our in-place handling needs more work.
+    // The main stereo channel issue is more important.
+    return NO;
 }
 
 @end

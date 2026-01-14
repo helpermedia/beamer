@@ -500,156 +500,6 @@ type AURenderPullInputBlock = unsafe extern "C" fn(
 // AudioBufferList Allocation Helpers
 // =============================================================================
 
-/// AudioBufferList with owned sample buffer memory.
-///
-/// This struct owns both the AudioBufferList structure and the sample buffer memory.
-/// Used for pulling audio from AU hosts - some hosts fill in their own buffer pointers,
-/// while others expect us to provide writable memory.
-///
-/// When calling pullInputBlock:
-/// - Some hosts (like Logic Pro) replace our data pointers with their own
-/// - Other hosts may write directly into our provided buffers
-///
-/// By providing actual memory, we ensure the pull always succeeds regardless
-/// of host behavior.
-struct OwnedAudioBufferList {
-    /// The AudioBufferList structure (flexible array member, heap allocated)
-    buffer_list: Box<AudioBufferList>,
-    /// The sample buffer memory (one contiguous allocation for all channels)
-    /// Layout: [channel0_samples...][channel1_samples...]...
-    #[allow(dead_code)]
-    sample_data: Vec<u8>,
-    /// Number of samples per channel (for resetting pointers)
-    num_samples: usize,
-    /// Size of each sample in bytes (for resetting pointers)
-    sample_type_size: usize,
-}
-
-impl OwnedAudioBufferList {
-    /// Get a mutable pointer to the AudioBufferList.
-    fn as_mut_ptr(&mut self) -> *mut AudioBufferList {
-        &mut *self.buffer_list as *mut AudioBufferList
-    }
-
-    /// Get a const pointer to the AudioBufferList.
-    fn as_ptr(&self) -> *const AudioBufferList {
-        &*self.buffer_list as *const AudioBufferList
-    }
-
-    /// Prepare buffer for pullInputBlock with current frame count.
-    ///
-    /// Call this before each pullInputBlock call. Resets all buffer fields to our
-    /// owned memory and expected format.
-    ///
-    /// This is critical because the host's pullInputBlock may have modified our
-    /// buffer structure in the previous render call (replacing pointers or even
-    /// modifying number_channels). We must fully reset to our expected non-interleaved
-    /// format before each pull.
-    ///
-    /// # Arguments
-    /// * `frame_count` - Current render frame count (NOT max_frames)
-    fn prepare_for_pull(&mut self, frame_count: u32) {
-        let num_buffers = self.buffer_list.number_buffers as usize;
-        let max_bytes_per_channel = self.num_samples * self.sample_type_size;
-        let current_byte_size = frame_count as usize * self.sample_type_size;
-
-        unsafe {
-            for i in 0..num_buffers {
-                let buffer = self.buffer_list.buffers.as_mut_ptr().add(i);
-                let offset = i * max_bytes_per_channel;
-                // Reset ALL buffer fields to ensure non-interleaved format:
-                // - number_channels = 1 (one channel per buffer)
-                // - data = our owned sample memory
-                // - data_byte_size = current frame count * sample size
-                (*buffer).number_channels = 1;
-                (*buffer).data = self.sample_data.as_mut_ptr().add(offset) as *mut c_void;
-                (*buffer).data_byte_size = current_byte_size as u32;
-            }
-        }
-    }
-
-    /// Clear the sample data (zero all buffers).
-    ///
-    /// Call this when pullInputBlock fails to ensure silence instead of garbage.
-    fn clear(&mut self, frame_count: u32) {
-        let num_buffers = self.buffer_list.number_buffers as usize;
-        let current_byte_size = frame_count as usize * self.sample_type_size;
-        let max_bytes_per_channel = self.num_samples * self.sample_type_size;
-
-        for i in 0..num_buffers {
-            let offset = i * max_bytes_per_channel;
-            // Zero only the current frame_count worth of samples
-            self.sample_data[offset..offset + current_byte_size].fill(0);
-        }
-    }
-}
-
-/// Allocate an AudioBufferList with owned sample buffer memory.
-///
-/// This allocates:
-/// 1. The AudioBufferList structure (FAM pattern)
-/// 2. Contiguous sample buffer memory for all channels
-///
-/// Data pointers in the AudioBufferList point to the owned sample memory.
-/// The sample memory is zeroed.
-///
-/// # Arguments
-///
-/// * `num_buffers` - Number of AudioBuffer entries (channels)
-/// * `num_samples` - Number of samples per buffer
-/// * `sample_type_size` - Size of sample type in bytes (4 for f32, 8 for f64)
-fn allocate_owned_audio_buffer_list(
-    num_buffers: usize,
-    num_samples: usize,
-    sample_type_size: usize,
-) -> OwnedAudioBufferList {
-    // Allocate sample data (zeroed)
-    let bytes_per_channel = num_samples * sample_type_size;
-    let total_sample_bytes = num_buffers * bytes_per_channel;
-    let sample_data = vec![0u8; total_sample_bytes];
-
-    // Calculate AudioBufferList structure size
-    let base_size = std::mem::size_of::<u32>(); // number_buffers field
-    let buffer_size = std::mem::size_of::<AudioBuffer>() * num_buffers;
-    let total_size = base_size + buffer_size;
-
-    // Allocate AudioBufferList structure
-    let layout =
-        std::alloc::Layout::from_size_align(total_size, std::mem::align_of::<AudioBufferList>())
-            .expect("Failed to create layout for AudioBufferList");
-
-    // SAFETY: We allocate memory with the correct layout for AudioBufferList with
-    // num_buffers entries. The flexible array member pattern requires manual allocation
-    // because Rust can't represent variable-length trailing arrays in structs.
-    let buffer_list = unsafe {
-        let ptr = std::alloc::alloc(layout) as *mut AudioBufferList;
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-
-        // Initialize the structure
-        (*ptr).number_buffers = num_buffers as u32;
-
-        // Initialize each buffer with pointer to our sample data
-        for i in 0..num_buffers {
-            let buffer = (*ptr).buffers.as_mut_ptr().add(i);
-            let offset = i * bytes_per_channel;
-            (*buffer).number_channels = 1; // Non-interleaved
-            (*buffer).data_byte_size = bytes_per_channel as u32;
-            (*buffer).data = sample_data.as_ptr().add(offset) as *mut c_void;
-        }
-
-        Box::from_raw(ptr)
-    };
-
-    OwnedAudioBufferList {
-        buffer_list,
-        sample_data,
-        num_samples,
-        sample_type_size,
-    }
-}
-
 /// Allocate an AudioBufferList with null data pointers.
 ///
 /// Used for aux buses where the host always provides its own buffer pointers.
@@ -1011,6 +861,7 @@ pub trait RenderBlockTrait: Send + Sync {
     /// * `output_data` - Output audio buffer list
     /// * `event_list` - Linked list of render events (MIDI, parameter changes)
     /// * `pull_input_block` - Block to pull aux bus inputs
+    /// * `input_data` - Input audio buffer list (already pulled by ObjC)
     fn process(
         &self,
         action_flags: *mut u32,
@@ -1020,6 +871,7 @@ pub trait RenderBlockTrait: Send + Sync {
         output_data: *mut AudioBufferList,
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
+        input_data: *const AudioBufferList,
     ) -> i32;
 
     /// Get a raw pointer to this render block.
@@ -1054,14 +906,6 @@ pub struct RenderBlock<S: Sample> {
     max_frames: u32,
     /// Current sample rate for ProcessContext
     sample_rate: f64,
-    /// Pre-allocated AudioBufferList with owned memory for pulling main input bus (bus 0).
-    ///
-    /// Uses OwnedAudioBufferList which includes actual sample buffer memory.
-    /// Some hosts (like Logic Pro) expect us to provide writable buffer memory,
-    /// while others replace our pointers with their own.
-    ///
-    /// None if the plugin has no main input bus (e.g., instruments).
-    main_input_buffer_list: UnsafeCell<Option<OwnedAudioBufferList>>,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
     /// One per aux input bus (bus 1, 2, 3, ...)
     ///
@@ -1170,20 +1014,6 @@ impl<S: Sample> RenderBlock<S> {
         let aux_input_bus_count = storage.aux_input_bus_count();
         let sample_type_size = std::mem::size_of::<S>();
 
-        // Pre-allocate AudioBufferList with owned memory for main input bus (bus 0).
-        // Using OwnedAudioBufferList ensures we provide writable buffer memory,
-        // which some hosts (like Logic Pro) expect instead of filling in their own pointers.
-        let main_input_buffer_list = if storage.main_inputs.capacity() > 0 {
-            let buffer_list = allocate_owned_audio_buffer_list(
-                storage.main_inputs.capacity(),
-                max_frames as usize,
-                sample_type_size,
-            );
-            Some(buffer_list)
-        } else {
-            None
-        };
-
         // Pre-allocate AudioBufferList for each aux input bus
         // This ensures zero allocation in the render path
         let mut aux_input_buffer_lists = Vec::with_capacity(aux_input_bus_count);
@@ -1205,7 +1035,6 @@ impl<S: Sample> RenderBlock<S> {
             transport_state_block,
             max_frames,
             sample_rate,
-            main_input_buffer_list: UnsafeCell::new(main_input_buffer_list),
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::new()),
@@ -1467,6 +1296,7 @@ impl<S: Sample> RenderBlock<S> {
         output_data: *mut AudioBufferList,
         event_list: *const AURenderEvent,
         _pull_input_block: *const c_void,
+        input_data: *const AudioBufferList,
     ) -> i32 {
         // Real-time safety: use try_lock to avoid blocking
         let mut plugin_guard = match self.plugin.try_lock() {
@@ -1662,49 +1492,39 @@ impl<S: Sample> RenderBlock<S> {
                 return os_status::NO_ERR;
             }
 
-            // Pull main input (bus 0) FIRST using pullInputBlock if available.
-            // We need input pointers before we can handle in-place processing.
-            // SAFETY: pull_input_block is valid for this render call (provided by AU host)
-            if let Some(main_buffer_list) = &mut *self.main_input_buffer_list.get() {
-                // Prepare buffer for pull with current frame count.
-                main_buffer_list.prepare_for_pull(frame_count);
-                // Pre-clear to avoid stale data if host returns success but doesn't write.
-                main_buffer_list.clear(frame_count);
+            // Use input_data provided by ObjC (already pulled using AVAudioPCMBuffer).
+            // This matches Apple's pattern where input pulling happens in ObjC.
+            if !input_data.is_null() {
+                let in_list = &*input_data;
 
-                let pull_succeeded = if !_pull_input_block.is_null() {
-                    // Cast block to function pointer
-                    let invoke = objc_block::invoke_ptr(_pull_input_block);
-                    let pull_fn: AURenderPullInputBlock = std::mem::transmute(invoke);
-
-                    // Pull from bus 0 (main input bus)
-                    let status = pull_fn(
-                        _pull_input_block,
-                        _action_flags,
-                        _timestamp,
-                        frame_count,
-                        0, // Bus 0 = main input
-                        main_buffer_list.as_mut_ptr(),
-                    );
-
-                    status == os_status::NO_ERR
-                } else {
-                    false
-                };
-
-                if !pull_succeeded {
-                    // Clear buffer on pull failure
-                    main_buffer_list.clear(frame_count);
+                // Debug: log storage capacity and input buffer info (once)
+                static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if count < 3 {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/beamer_au_debug.log")
+                    {
+                        let _ = writeln!(file, "[RUST render {}] storage.main_inputs.capacity={} storage.main_outputs.capacity={}",
+                                         count + 1, storage.main_inputs.capacity(), storage.main_outputs.capacity());
+                        let _ = writeln!(file, "[RUST render {}] input_data.number_buffers={}", count + 1, in_list.number_buffers);
+                        for i in 0..in_list.number_buffers {
+                            let buf = in_list.buffer_at(i);
+                            let _ = writeln!(file, "[RUST render {}]   buffer[{}]: number_channels={} data={:?} byte_size={}",
+                                             count + 1, i, buf.number_channels, buf.data, buf.data_byte_size);
+                        }
+                    }
                 }
 
-                // Collect inputs from our buffer (zeroed if pull failed)
-                storage.collect_inputs(main_buffer_list.as_ptr(), num_samples);
+                // Collect inputs from the ObjC-provided buffer
+                storage.collect_inputs(input_data, num_samples);
 
                 // Handle in-place processing: if output buffers have null data pointers,
                 // fill them with input buffer pointers (like Apple's FilterDemo does).
-                // This must happen AFTER pulling input but BEFORE collecting outputs.
                 if !output_data.is_null() {
                     let out_list = &mut *output_data;
-                    let in_list = &*main_buffer_list.as_ptr();
 
                     // Check if ANY output buffer has null data (in-place processing expected)
                     let mut needs_in_place = false;
@@ -1729,26 +1549,30 @@ impl<S: Sample> RenderBlock<S> {
                     }
                 }
             }
-            // If no main_input_buffer_list, this is an instrument with no inputs
+            // If input_data is null, this is an instrument with no inputs
 
             // Now collect output pointers (after in-place fixup)
             storage.collect_outputs(output_data, num_samples);
 
-            // Zero host-provided output buffers up front to avoid any residual garbage the host
-            // might leave before we write. This keeps initial renders clean without extra copies.
-            if !output_data.is_null() {
-                let list = &mut *output_data;
-                for i in 0..list.number_buffers {
-                    let buf = list.buffer_at_mut(i);
-                    if !buf.data.is_null() && buf.data_byte_size > 0 {
-                        let bytes = std::slice::from_raw_parts_mut(
-                            buf.data as *mut u8,
-                            buf.data_byte_size as usize,
-                        );
-                        bytes.fill(0);
-                    }
+            // Debug: log collected channel counts
+            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let count2 = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count2 < 3 {
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/beamer_au_debug.log")
+                {
+                    let _ = writeln!(file, "[RUST collect {}] main_inputs.len={} main_outputs.len={}",
+                                     count2 + 1, storage.main_inputs.len(), storage.main_outputs.len());
                 }
             }
+
+            // Note: We do NOT zero output buffers here because:
+            // 1. For in-place processing, output now points to input data which we need
+            // 2. The plugin's process() will overwrite output anyway
+            // 3. Zeroing would destroy the input data in the in-place case
 
             // Pull auxiliary bus inputs if available
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
@@ -2224,6 +2048,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
         output_data: *mut AudioBufferList,
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
+        input_data: *const AudioBufferList,
     ) -> i32 {
         self.process_impl(
             action_flags,
@@ -2233,6 +2058,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
             output_data,
             event_list,
             pull_input_block,
+            input_data,
         )
     }
 
