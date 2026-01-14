@@ -195,40 +195,31 @@ pub unsafe fn extract_transport_from_au(
     }
 }
 
-/// Extract transport from AU with simplified signature.
-///
-/// This is a convenience function for when you only have basic timing info
-/// and no musical context block.
-///
-/// # Arguments
-///
-/// * `sample_position` - Current sample position
-/// * `is_playing` - Whether transport is playing
-#[allow(dead_code)]
-pub fn create_basic_transport(sample_position: i64, is_playing: bool) -> Transport {
-    Transport {
-        project_time_samples: Some(sample_position),
-        is_playing,
-        ..Default::default()
-    }
-}
-
-/// Check if AU provides musical context.
-///
-/// Some hosts (like Logic Pro, GarageBand) provide rich musical context,
-/// while others may not.
-///
-/// # Safety
-///
-/// The `musical_context_block` pointer must be valid or null.
-#[allow(dead_code)]
-pub unsafe fn has_musical_context(musical_context_block: *const c_void) -> bool {
-    !musical_context_block.is_null()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Extract transport from AU with simplified signature.
+    ///
+    /// Test helper for creating basic transport info without a musical context block.
+    fn create_basic_transport(sample_position: i64, is_playing: bool) -> Transport {
+        Transport {
+            project_time_samples: Some(sample_position),
+            is_playing,
+            ..Default::default()
+        }
+    }
+
+    /// Check if AU provides musical context.
+    ///
+    /// Test helper for verifying musical context block availability.
+    ///
+    /// # Safety
+    ///
+    /// The `musical_context_block` pointer must be valid or null.
+    unsafe fn has_musical_context(musical_context_block: *const c_void) -> bool {
+        !musical_context_block.is_null()
+    }
 
     #[test]
     fn test_basic_transport() {

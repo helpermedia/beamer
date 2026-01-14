@@ -365,6 +365,15 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///
     /// - Pointers must still be valid (within same render call)
     /// - num_samples must match what was used in collect_*
+    ///
+    /// # Clippy Allow: mut_from_ref
+    ///
+    /// Returns `&mut [S]` from `&self` because we're converting raw pointers stored in the struct,
+    /// not mutating `self`. This is a common and safe FFI pattern where:
+    /// - Raw pointers (`*mut S`) are stored during collection
+    /// - Those pointers are then converted back to safe references
+    /// - The mutable references are to the external buffer memory, not to `self`
+    /// - AU guarantees single-threaded render access, preventing aliasing
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn output_slices(&self, num_samples: usize) -> Vec<&mut [S]> {
@@ -503,6 +512,11 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///
     /// - Pointers must still be valid (within same render call)
     /// - num_samples must match what was used in collect_aux_outputs
+    ///
+    /// # Clippy Allow: mut_from_ref
+    ///
+    /// Same justification as `output_slices` - converts raw pointers to mutable references.
+    /// See `output_slices` documentation for detailed explanation of this FFI pattern.
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn aux_output_slices(&self, num_samples: usize) -> Vec<Vec<&mut [S]>> {

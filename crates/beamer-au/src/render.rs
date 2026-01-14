@@ -109,18 +109,18 @@ pub struct AuParameterRampEvent {
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
-    /// Value at start of ramp (placeholder for future host-controlled ramping).
+    /// Value at start of ramp (matches AU's `AURenderEventParameterRamp.value`).
     ///
-    /// Currently unused: we set `end_value` directly and let the smoother interpolate.
-    /// Preserved for API completeness with AU's `AURenderEventParameterRamp.value`.
+    /// Currently unused: beamer's parameter smoothing uses `end_value` as target and interpolates
+    /// with the parameter's configured `SmoothingStyle`. Future: Could enable host-controlled ramps.
     #[allow(dead_code)]
     pub start_value: f32,
     /// Value at end of ramp (used as target for parameter smoother)
     pub end_value: f32,
-    /// Duration of ramp in samples (placeholder for future host-controlled ramping).
+    /// Duration of ramp in samples (matches AU's `AURenderEventParameterRamp.ramp_duration_sample_frames`).
     ///
-    /// Currently unused: smoother uses fixed time constant from `SmoothingStyle`.
-    /// Preserved for API completeness with AU's `AURenderEventParameterRamp.ramp_duration_sample_frames`.
+    /// Currently unused: beamer's parameter smoothers use a fixed time constant configured at
+    /// parameter construction. Future: Could override smoother duration per-event.
     #[allow(dead_code)]
     pub duration_samples: u32,
 }
@@ -368,19 +368,6 @@ pub struct AudioTimeStamp {
     pub reserved: u32,
 }
 
-/// Audio Unit render action flags.
-#[repr(u32)]
-#[allow(dead_code)]
-pub enum AudioUnitRenderActionFlags {
-    PreRender = 1 << 2,
-    PostRender = 1 << 3,
-    OutputIsSilence = 1 << 4,
-    OfflinePreflight = 1 << 5,
-    OfflineRender = 1 << 6,
-    OfflineComplete = 1 << 7,
-    PostRenderError = 1 << 8,
-    DoNotCheckRenderArgs = 1 << 9,
-}
 
 /// AU host transport state flags.
 ///
@@ -849,6 +836,11 @@ pub unsafe fn extract_parameter_events(
 ///
 /// This trait allows storing different sample type render blocks
 /// (f32 or f64) in the same type-erased container.
+///
+/// Clippy Allow: too_many_arguments
+///
+/// The `process()` signature matches Apple's AU API which requires 8 parameters.
+/// Cannot be refactored into a struct without breaking AU host compatibility.
 #[allow(clippy::too_many_arguments)]
 pub trait RenderBlockTrait: Send + Sync {
     /// Process audio through this render block.
@@ -900,18 +892,17 @@ pub struct RenderBlock<S: Sample> {
     musical_context_block: Option<*const c_void>,
     /// Transport state block from AU host for playback state (is_playing, etc.)
     transport_state_block: Option<*const c_void>,
-    /// Maximum frames per render call
-    /// Used during initialization to size aux input buffer lists
-    #[allow(dead_code)]
-    max_frames: u32,
     /// Current sample rate for ProcessContext
     sample_rate: f64,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
     /// One per aux input bus (bus 1, 2, 3, ...)
     ///
-    /// Note: Vec<Box<AudioBufferList>> is intentional despite clippy warning.
-    /// AudioBufferList uses flexible array member (FAM) pattern with variable size.
-    /// Box maintains the custom allocation created by allocate_audio_buffer_list().
+    /// Clippy Allow: vec_box
+    ///
+    /// `Vec<Box<AudioBufferList>>` is necessary because AudioBufferList uses a flexible array
+    /// member (FAM) pattern with variable size determined at allocation time. Each Box maintains
+    /// the custom allocation from `allocate_audio_buffer_list()`. Cannot use `Vec<AudioBufferList>`
+    /// because AudioBufferList is not Sized (contains variable-length array).
     #[allow(clippy::vec_box)]
     aux_input_buffer_lists: UnsafeCell<Vec<Box<AudioBufferList>>>,
     /// Pre-allocated MIDI output buffer for zero-allocation MIDI output processing
@@ -1033,7 +1024,6 @@ impl<S: Sample> RenderBlock<S> {
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
             musical_context_block,
             transport_state_block,
-            max_frames,
             sample_rate,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1294,6 +1284,8 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// This implementation uses pre-allocated storage to eliminate Vec allocations
     /// in the render path, ensuring real-time safety.
+    ///
+    /// Clippy Allow: too_many_arguments - Signature dictated by AU API requirements.
     #[allow(clippy::too_many_arguments)]
     fn process_impl(
         &self,
@@ -1953,6 +1945,8 @@ impl<S: Sample> RenderBlock<S> {
     /// - Vec<&[S]> and Vec<&[f32]> have identical memory layout
     /// - Vec stores pointer + length + capacity (no type-specific data)
     /// - The slice references point to host-provided audio buffers in the correct format
+    ///
+    /// Clippy Allow: too_many_arguments - Needs all parameters from process_impl plus MIDI data.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn call_plugin_process_with_midi(

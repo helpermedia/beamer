@@ -68,8 +68,8 @@ pub(crate) enum AuState<P: Plugin> {
         max_frames: u32,
         /// Pre-allocated conversion buffers (if processor doesn't support f64)
         conversion_buffers: Option<crate::processor::ConversionBuffers>,
-        /// MIDI CC state for tracking controller values (boxed to reduce enum size)
-        #[allow(dead_code)]
+        /// MIDI CC state for tracking controller values (boxed to reduce enum size).
+        /// Accessed via `midi_cc_state()` method by render block for CC event processing.
         midi_cc_state: Option<Box<beamer_core::MidiCcState>>,
         /// Pre-allocated MIDI output buffer for process_midi() (boxed to reduce enum size)
         midi_output_buffer: Box<beamer_core::MidiBuffer>,
@@ -108,24 +108,6 @@ impl<P: Plugin> AuState<P> {
     pub fn max_frames(&self) -> Option<u32> {
         match self {
             Self::Prepared { max_frames, .. } => Some(*max_frames),
-            _ => None,
-        }
-    }
-
-    /// Get reference to plugin (only when unprepared).
-    #[allow(dead_code)]
-    pub fn plugin(&self) -> Option<&P> {
-        match self {
-            Self::Unprepared { plugin, .. } => Some(plugin),
-            _ => None,
-        }
-    }
-
-    /// Get mutable reference to plugin (only when unprepared).
-    #[allow(dead_code)]
-    pub fn plugin_mut(&mut self) -> Option<&mut P> {
-        match self {
-            Self::Unprepared { plugin, .. } => Some(plugin),
             _ => None,
         }
     }
@@ -174,7 +156,8 @@ impl<P: Plugin> AuState<P> {
     }
 
     /// Get reference to MIDI CC state (only when prepared).
-    #[allow(dead_code)]
+    ///
+    /// Used by render block to track MIDI CC changes and update parameter smoothing.
     pub fn midi_cc_state(&self) -> Option<&beamer_core::MidiCcState> {
         match self {
             Self::Prepared { midi_cc_state, .. } => midi_cc_state.as_deref(),
@@ -223,6 +206,13 @@ impl BuildAuConfig for FullAudioSetup {
 }
 
 // Generic prepare for any plugin with BuildAuConfig
+//
+// Clippy Allow: private_bounds
+//
+// `BuildAuConfig` is a sealed trait (pub(crate)) that restricts which config types can be used
+// with AU plugins. This is intentional API design - we only support NoConfig, AudioSetup, and
+// FullAudioSetup. The trait bound must be private because the trait itself is crate-private.
+// Public consumers don't need to see or implement BuildAuConfig.
 #[allow(private_bounds)]
 impl<P: Plugin> AuState<P>
 where

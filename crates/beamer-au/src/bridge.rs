@@ -44,7 +44,9 @@ use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     RenderBlockTrait,
 };
-// ParameterStore trait is used via plugin.parameter_store() which returns a dyn ParameterStore
+// ParameterStore trait must be in scope for trait methods on `dyn ParameterStore` returned by
+// `plugin.parameter_store()`. While no explicit mention appears in code, Rust requires the trait
+// import for method resolution on trait objects.
 #[allow(unused_imports)]
 use beamer_core::ParameterStore;
 

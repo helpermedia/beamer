@@ -92,22 +92,6 @@ impl ConversionBuffers {
         self.input_f32.get_mut(channel).map(|v| v.as_mut_slice())
     }
 
-    /// Get mutable reference to output buffer for a channel.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn output_channel_mut(&mut self, channel: usize) -> Option<&mut [f32]> {
-        self.output_f32.get_mut(channel).map(|v| v.as_mut_slice())
-    }
-
-    /// Get aux input buffer for bus/channel
-    #[allow(dead_code)]
-    pub(crate) fn aux_input_slice(&self, bus: usize, channel: usize, len: usize) -> Option<&[f32]> {
-        self.aux_input_f32
-            .get(bus)
-            .and_then(|b| b.get(channel))
-            .map(|v| &v[..len])
-    }
-
     /// Get mutable aux input buffer for bus/channel
     pub(crate) fn aux_input_slice_mut(
         &mut self,
@@ -116,20 +100,6 @@ impl ConversionBuffers {
         len: usize,
     ) -> Option<&mut [f32]> {
         self.aux_input_f32
-            .get_mut(bus)
-            .and_then(|b| b.get_mut(channel))
-            .map(|v| &mut v[..len])
-    }
-
-    /// Get mutable aux output buffer for bus/channel
-    #[allow(dead_code)]
-    pub(crate) fn aux_output_slice_mut(
-        &mut self,
-        bus: usize,
-        channel: usize,
-        len: usize,
-    ) -> Option<&mut [f32]> {
-        self.aux_output_f32
             .get_mut(bus)
             .and_then(|b| b.get_mut(channel))
             .map(|v| &mut v[..len])
@@ -181,6 +151,12 @@ impl<P: Plugin> Default for AuProcessor<P> {
 }
 
 // Single implementation using the sealed BuildAuConfig trait
+//
+// Clippy Allow: private_bounds
+//
+// `BuildAuConfig` is a sealed (pub(crate)) trait that restricts which config types work with AU.
+// This is intentional API design - only NoConfig, AudioSetup, and FullAudioSetup are supported.
+// The trait bound must be private because BuildAuConfig itself is crate-private.
 #[allow(private_bounds)]
 impl<P> AuPluginInstance for AuProcessor<P>
 where
@@ -828,6 +804,8 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// Create a factory function for a specific plugin type.
 ///
 /// This is used by the export_au! macro.
+///
+/// Clippy Allow: private_bounds - See comment on AuProcessor impl for explanation.
 #[allow(private_bounds)]
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
