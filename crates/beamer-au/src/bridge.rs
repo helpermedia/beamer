@@ -306,12 +306,6 @@ fn bus_config_from_c(config: &BeamerAuBusConfig) -> CachedBusConfig {
 // Factory Registration
 // =============================================================================
 
-// Force-link the ObjC APPEX code by referencing a function defined in BeamerAuExtension.m
-// Without this, the linker strips the ObjC classes since nothing else references them.
-extern "C" {
-    fn beamer_au_appex_force_link();
-}
-
 /// Ensure the plugin factory is registered.
 ///
 /// This function checks if the plugin factory has been registered (via the
@@ -327,11 +321,8 @@ extern "C" {
 /// `true` if the factory is registered and ready, `false` otherwise.
 #[no_mangle]
 pub extern "C" fn beamer_au_ensure_factory_registered() -> bool {
-    // Call the force_link function to ensure the ObjC code is linked.
-    // This is needed for APPEX where the principal class must be in the binary.
-    unsafe {
-        beamer_au_appex_force_link();
-    }
+    // With NSExtensionMain as the appex entry point, the system properly loads
+    // the framework and initializes the ObjC runtime. No force-link needed here.
     factory::is_registered()
 }
 

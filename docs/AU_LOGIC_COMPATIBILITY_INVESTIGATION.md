@@ -292,6 +292,49 @@ BeamerSimpleGainAU.framework/
 
 **Conclusion:** The framework structure (flat vs versioned) is not the root cause of the Logic Pro XPC timeout.
 
+### 7. ✅ Used NSExtensionMain Instead of Custom main()
+
+**What we tried:** Compared iPlug2's working appex binary with Beamer's and discovered iPlug2 uses Apple's standard `NSExtensionMain` entry point instead of a custom `main()` function.
+
+**Before (custom main):**
+```objc
+int main(int argc, char *argv[]) {
+    @autoreleasepool {
+        (void)[BeamerSimpleGainAuViewController class];
+        [[NSRunLoop mainRunLoop] run];
+    }
+    return 0;
+}
+```
+
+**After (NSExtensionMain):**
+- Removed custom `main()` function entirely
+- Added `-Wl,-e,_NSExtensionMain` linker flag
+- Appex stub is now minimal (just imports Foundation.h)
+
+**iPlug2 appex symbols:**
+```
+U _NSExtensionMain
+```
+
+**Beamer (now matches):**
+```
+U _NSExtensionMain
+```
+
+**Result:**
+- auval still passes
+- **Logic Pro now loads the plugin successfully!**
+- Audio processing has issues (silent output) - separate investigation needed
+
+**Conclusion:** The custom `main()` with `[[NSRunLoop mainRunLoop] run]` did not properly initialize the XPC infrastructure. Apple's `NSExtensionMain` handles:
+- XPC listener setup and connection handling
+- Info.plist parsing for `NSExtensionPrincipalClass`
+- Proper instantiation of the principal class
+- Full extension lifecycle management
+
+This was the **root cause** of the Logic Pro XPC timeout.
+
 ---
 
 ## What Was Verified Working
@@ -355,23 +398,30 @@ Appex has correct sandbox entitlements:
 
 ## Remaining Differences to Investigate
 
-### High Priority (Potential Causes)
+### Current Issue: Audio Silent in Logic Pro
 
-1. **Hardened Runtime** - FilterDemo has it enabled, Beamer doesn't
-2. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
-3. **VST3 Code in AU Binary** - Beamer's AU framework contains VST3 entry points (`_GetPluginFactory`), though this shouldn't cause issues
+Plugin loads successfully but audio doesn't pass through. This is a separate issue from XPC loading.
 
-### Ruled Out
+Possible causes:
+1. **Buffer handling differences** in XPC context vs in-process
+2. **Render block setup** may need adjustment for out-of-process operation
+3. **Sandbox restrictions** on audio buffer access
 
-- ~~**Framework Structure**~~ - Changed to versioned structure with symlinks (matching FilterDemo), still fails
-- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass, still fails
+### Ruled Out (XPC Loading Fixed)
+
+- ~~**Custom main() entry point**~~ - **ROOT CAUSE FOUND.** Replaced with `NSExtensionMain`
+- ~~**Framework Structure**~~ - Changed to versioned structure with symlinks
+- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass
 - ~~**NSExtensionPointIdentifier**~~ - `com.apple.AudioUnit` is correct for headless AUs
+- ~~**NIB files**~~ - Not required for headless AUs
+- ~~**PkgInfo file**~~ - Legacy, Info.plist CFBundlePackageType is sufficient
+- ~~**Linked frameworks**~~ - All required frameworks present
 
-### Lower Priority (Probably Not Causes)
+### Lower Priority (For Distribution)
 
-4. **Missing Info.plist keys** - `CFBundleDisplayName`, `CFBundleSupportedPlatforms` (likely cosmetic)
-5. **LSMinimumSystemVersion** - 10.13 vs 11.0 (unlikely to cause Logic issues)
-6. **Binary size** - 1.2MB vs 338KB (shouldn't matter for loading)
+1. **Hardened Runtime** - Not required for loading, needed for notarization
+2. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
+3. **Missing Info.plist keys** - `CFBundleDisplayName`, `CFBundleSupportedPlatforms` (cosmetic)
 
 ---
 
@@ -387,13 +437,15 @@ Appex has correct sandbox entitlements:
 
 **Out-of-Process XPC (Logic Pro):**
 1. Logic spawns appex process
-2. Appex runs `main()` which calls `[[NSRunLoop mainRunLoop] run]`
-3. System looks up `NSExtensionPrincipalClass` = `BeamerSimpleGainAuViewController`
-4. Logic sends XPC request to create AU instance
-5. `BeamerSimpleGainAuViewController.createAudioUnitWithComponentDescription:error:` called
-6. Returns `BeamerSimpleGainAuWrapper` instance via XPC
+2. `NSExtensionMain` runs (Apple's standard extension entry point)
+3. NSExtensionMain sets up XPC listener and parses Info.plist
+4. System looks up `NSExtensionPrincipalClass` = `BeamerSimpleGainAuViewController`
+5. Logic sends XPC request to create AU instance
+6. NSExtensionMain instantiates `BeamerSimpleGainAuViewController`
+7. `createAudioUnitWithComponentDescription:error:` called
+8. Returns `BeamerSimpleGainAuWrapper` instance via XPC
 
-**The XPC path (step 3-6) appears to be failing silently.**
+**Status:** ✅ XPC communication now works with `NSExtensionMain`.
 
 ### Rust Static Initialization
 
@@ -420,7 +472,7 @@ When embedded in appex (failed attempt), this static initialization may have cau
 - `crates/beamer-au/resources/appex.entitlements` - Sandbox entitlements
 - `examples/simple-gain/src/lib.rs` - Example plugin source
 
-**Note:** ObjC source files (`BeamerAuWrapper.m`, `BeamerAuExtension.m`, `appex_main.m`) are now **generated by xtask** per-plugin with unique class names. Generated files are placed in `target/au-gen/<plugin-name>/`.
+**Note:** ObjC source files (`BeamerAuWrapper.m`, `AuExtension.m`, `appex_stub.m`) are now **generated by xtask** per-plugin with unique class names. Generated files are placed in `target/au-gen/<plugin-name>/`. The `appex_stub.m` is minimal - the entry point is `NSExtensionMain` (via linker flag).
 
 ---
 
@@ -430,11 +482,13 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 2. ✅ ~~**Try versioned framework structure**~~ - Done. Changed to versioned layout with symlinks, but didn't fix the issue.
 
-3. **Enable hardened runtime** - Add `--options runtime` to code signing
+3. ✅ ~~**Use NSExtensionMain entry point**~~ - **SUCCESS!** Replaced custom `main()` with Apple's `NSExtensionMain` via `-e _NSExtensionMain` linker flag. Plugin now loads in Logic Pro.
 
-4. **Add missing rpath** - Add `@executable_path/../Frameworks` alongside `@loader_path/../../../../Frameworks`
+4. **Debug audio processing in Logic Pro** - Plugin loads but audio is silent. Likely issue with buffer handling or render block in XPC context. Works correctly in Reaper (in-process).
 
-5. **Investigate Rust static initialization in XPC context** - The `__mod_init_func` static initializer may behave differently when the framework is loaded via XPC vs in-process
+5. *(Lower priority)* **Enable hardened runtime** - Add `--options runtime` to code signing (for notarization)
+
+6. *(Lower priority)* **Add missing rpath** - Add `@executable_path/../Frameworks` alongside `@loader_path/../../../../Frameworks`
 
 ---
 
