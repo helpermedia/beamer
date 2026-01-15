@@ -71,7 +71,7 @@ This indicates the **XPC communication path is broken**, while in-process loadin
 **Beamer plugins are intentionally headless (no UI).** Apple's FilterDemo has a UI. Therefore, certain Info.plist differences related to UI are expected and correct:
 
 - `NSExtensionPointIdentifier`: `com.apple.AudioUnit` (Beamer) vs `com.apple.AudioUnit-UI` (FilterDemo)
-- `NSExtensionPrincipalClass`: `BeamerAuExtension` (factory class) vs `FilterDemoViewController` (view controller)
+- `NSExtensionPrincipalClass`: Both now use `AUViewController` subclass (Beamer: `BeamerSimpleGainAuViewController`, FilterDemo: `FilterDemoViewController`)
 - `NSExtensionServiceRoleType`: Not present in Beamer (UI-related key)
 
 Per Apple documentation, `com.apple.AudioUnit` is the correct extension point for headless AUs.
@@ -126,7 +126,7 @@ LSMinimumSystemVersion: 10.13
 
 NSExtension:
   NSExtensionPointIdentifier: com.apple.AudioUnit              # Headless extension (no GUI) - CORRECT
-  NSExtensionPrincipalClass: BeamerSimpleGainAuExtension       # Plugin-specific factory class - CORRECT
+  NSExtensionPrincipalClass: BeamerSimpleGainAuViewController  # AUViewController subclass (matches iPlug2)
   NSExtensionAttributes:
     AudioComponentBundle: com.beamer.simple-gain.framework
     AudioComponents:
@@ -145,7 +145,7 @@ NSExtension:
 | Key | FilterDemo | Beamer | Issue? |
 |-----|-----------|--------|--------|
 | `NSExtensionPointIdentifier` | `com.apple.AudioUnit-UI` | `com.apple.AudioUnit` | **Expected** (UI vs headless) |
-| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuExtension` | **Expected** (UI vs headless) |
+| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuViewController` | ✅ Both AUViewController subclasses |
 | `NSExtensionServiceRoleType` | `NSExtensionServiceRoleTypeEditor` | *missing* | **Expected** (UI-only key) |
 | `CFBundleDisplayName` | Present | *missing* | Minor |
 | `CFBundleSupportedPlatforms` | `[MacOSX]` | *missing* | Minor |
@@ -244,6 +244,31 @@ The larger Beamer framework includes both AU and VST3 code (same cdylib exports 
 
 **Conclusion:** The appex itself initializes correctly. The issue is in XPC communication with Logic, not appex startup.
 
+### 5. ❌ Changed NSExtensionPrincipalClass to Inherit from AUViewController
+
+**What we tried:** Compared with working iPlug2 headless AUv3 plugin and discovered iPlug2 uses an `AUViewController` subclass as the principal class, while Beamer used `NSObject`. Changed:
+
+- Class name: `BeamerSimpleGainAuExtension` → `BeamerSimpleGainAuViewController`
+- Inheritance: `NSObject <AUAudioUnitFactory>` → `AUViewController <AUAudioUnitFactory>`
+- Added `#import <CoreAudioKit/AUViewController.h>`
+- Added `-framework CoreAudioKit` to appex linking
+
+**iPlug2 (works in Logic):**
+```objc
+@interface IPlugAUViewController_vIPlugEffectHeadless : AUViewController <AUAudioUnitFactory>
+```
+
+**Beamer (now matches):**
+```objc
+@interface BeamerSimpleGainAuViewController : AUViewController <AUAudioUnitFactory>
+```
+
+**Result:**
+- auval still passes
+- Logic Pro still shows "not compatible" with XPC timeout
+
+**Conclusion:** The principal class inheritance from `AUViewController` is not the root cause of the Logic Pro XPC timeout.
+
 ---
 
 ## What Was Verified Working
@@ -271,9 +296,10 @@ The headless AU configuration is correct (example for simple-gain):
 <key>NSExtensionPointIdentifier</key>
 <string>com.apple.AudioUnit</string>              <!-- Correct for headless AU -->
 <key>NSExtensionPrincipalClass</key>
-<string>BeamerSimpleGainAuExtension</string>      <!-- Plugin-specific factory class -->
+<string>BeamerSimpleGainAuViewController</string> <!-- AUViewController subclass -->
 ```
 - ✅ Uses `NSExtensionPrincipalClass` (not `NSExtensionViewController` or `NSExtensionMainStoryboard`)
+- ✅ Principal class inherits from `AUViewController` (matches iPlug2)
 - ✅ Principal class implements `AUAudioUnitFactory` protocol
 - ✅ No storyboard entries (which would cause crashes for headless AUs)
 - ✅ Each plugin has unique class names to avoid collisions
@@ -286,10 +312,10 @@ The headless AU configuration is correct (example for simple-gain):
 ### Symbol Exports
 Each plugin's framework exports plugin-specific ObjC symbols (example for simple-gain):
 ```
-_BeamerSimpleGainAuExtensionFactory
-_OBJC_CLASS_$_BeamerSimpleGainAuExtension
+_BeamerSimpleGainAuViewControllerFactory
+_OBJC_CLASS_$_BeamerSimpleGainAuViewController
 _OBJC_CLASS_$_BeamerSimpleGainAuWrapper
-_OBJC_METACLASS_$_BeamerSimpleGainAuExtension
+_OBJC_METACLASS_$_BeamerSimpleGainAuViewController
 _OBJC_METACLASS_$_BeamerSimpleGainAuWrapper
 ```
 
@@ -308,10 +334,15 @@ Appex has correct sandbox entitlements:
 
 ### High Priority (Potential Causes)
 
-1. **Framework Structure** - Beamer uses flat structure, FilterDemo uses versioned structure with symlinks
+1. **Framework Structure** - Beamer uses flat structure, FilterDemo/iPlug2 use versioned structure with symlinks (`Versions/A/`, `Current -> A`)
 2. **Hardened Runtime** - FilterDemo has it enabled, Beamer doesn't
 3. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
 4. **VST3 Code in AU Binary** - Beamer's AU framework contains VST3 entry points (`_GetPluginFactory`), though this shouldn't cause issues
+
+### Ruled Out
+
+- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass (matching iPlug2), still fails
+- ~~**NSExtensionPointIdentifier**~~ - `com.apple.AudioUnit` is correct for headless AUs
 
 ### Lower Priority (Probably Not Causes)
 
@@ -334,10 +365,10 @@ Appex has correct sandbox entitlements:
 **Out-of-Process XPC (Logic Pro):**
 1. Logic spawns appex process
 2. Appex runs `main()` which calls `[[NSRunLoop mainRunLoop] run]`
-3. System looks up `NSExtensionPrincipalClass` = `BeamerAuExtension`
+3. System looks up `NSExtensionPrincipalClass` = `BeamerSimpleGainAuViewController`
 4. Logic sends XPC request to create AU instance
-5. `BeamerAuExtension.createAudioUnitWithComponentDescription:error:` called
-6. Returns `BeamerAuWrapper` instance via XPC
+5. `BeamerSimpleGainAuViewController.createAudioUnitWithComponentDescription:error:` called
+6. Returns `BeamerSimpleGainAuWrapper` instance via XPC
 
 **The XPC path (step 3-6) appears to be failing silently.**
 
@@ -370,9 +401,26 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 ---
 
-## Recommended Next Step
+## Recommended Next Steps
 
-1. **Compare with a working headless iPlug2-based AUv3** - Compare with a iPlug2-based (headless, meaning no GUI) AUv3 example (production-tested in Logic Pro) to isolate the actual incompatibility.
+1. ✅ ~~**Compare with working iPlug2 headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance), but didn't fix the issue.
+
+2. **Try versioned framework structure** - Both iPlug2 and FilterDemo use versioned framework layout with symlinks:
+   ```
+   Framework.framework/
+   ├── Framework -> Versions/Current/Framework
+   ├── Resources -> Versions/Current/Resources
+   └── Versions/
+       ├── A/
+       │   ├── Framework (binary)
+       │   ├── Resources/Info.plist
+       │   └── _CodeSignature/
+       └── Current -> A
+   ```
+
+3. **Enable hardened runtime** - Add `--options runtime` to code signing
+
+4. **Add missing rpath** - Add `@executable_path/../Frameworks` alongside `@loader_path/../../../../Frameworks`
 
 ---
 
