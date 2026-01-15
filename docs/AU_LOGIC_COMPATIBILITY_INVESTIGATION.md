@@ -156,37 +156,29 @@ NSExtension:
 
 | Aspect | FilterDemo | Beamer |
 |--------|-----------|--------|
-| Structure | **Versioned** (`Versions/A/`, symlinks) | **Flat** (no Versions directory) |
-| Binary path | `.../Versions/A/FilterDemoFramework` | `.../BeamerSimpleGainAU` |
-| Resources | `Versions/A/Resources/Info.plist` | `Info.plist` (root level) |
+| Structure | **Versioned** (`Versions/A/`, symlinks) | ✅ **Versioned** (now matches) |
+| Binary path | `.../Versions/A/FilterDemoFramework` | `.../Versions/A/BeamerSimpleGainAU` |
+| Resources | `Versions/A/Resources/Info.plist` | `Versions/A/Resources/Info.plist` |
 
-**FilterDemo Framework Structure:**
+**Both now use versioned framework structure:**
 ```
-FilterDemoFramework.framework/
-├── FilterDemoFramework -> Versions/Current/FilterDemoFramework
+Framework.framework/
+├── Framework -> Versions/Current/Framework
 ├── Resources -> Versions/Current/Resources
 └── Versions/
     ├── A/
-    │   ├── FilterDemoFramework (binary)
+    │   ├── Framework (binary)
     │   ├── Resources/
     │   │   └── Info.plist
     │   └── _CodeSignature/
     └── Current -> A
 ```
 
-**Beamer Framework Structure:**
-```
-BeamerSimpleGainAU.framework/
-├── BeamerSimpleGainAU (binary)
-├── Info.plist
-└── _CodeSignature/
-```
-
 ### Library Linking Comparison
 
 | Aspect | FilterDemo | Beamer |
 |--------|-----------|--------|
-| Framework link | `@rpath/.../Versions/A/FilterDemoFramework` | `@rpath/.../BeamerSimpleGainAU` |
+| Framework link | `@rpath/.../Versions/A/FilterDemoFramework` | `@rpath/.../Versions/A/BeamerSimpleGainAU` |
 | rpaths | `@executable_path/../Frameworks` **AND** `@executable_path/../../../../Frameworks` | Only `@loader_path/../../../../Frameworks` |
 
 ### Code Signing Comparison
@@ -269,6 +261,37 @@ The larger Beamer framework includes both AU and VST3 code (same cdylib exports 
 
 **Conclusion:** The principal class inheritance from `AUViewController` is not the root cause of the Logic Pro XPC timeout.
 
+### 6. ❌ Changed to Versioned Framework Structure
+
+**What we tried:** Changed framework bundle from flat structure to standard macOS versioned structure with symlinks to match FilterDemo and other working AUv3 plugins.
+
+**Before (flat):**
+```
+BeamerSimpleGainAU.framework/
+├── BeamerSimpleGainAU (binary)
+├── Info.plist
+└── _CodeSignature/
+```
+
+**After (versioned):**
+```
+BeamerSimpleGainAU.framework/
+├── BeamerSimpleGainAU -> Versions/Current/BeamerSimpleGainAU
+├── Resources -> Versions/Current/Resources
+└── Versions/
+    ├── A/
+    │   ├── BeamerSimpleGainAU (binary)
+    │   ├── Resources/Info.plist
+    │   └── _CodeSignature/
+    └── Current -> A
+```
+
+**Result:**
+- auval still passes
+- Logic Pro still shows "not compatible" with XPC timeout
+
+**Conclusion:** The framework structure (flat vs versioned) is not the root cause of the Logic Pro XPC timeout.
+
 ---
 
 ## What Was Verified Working
@@ -334,21 +357,21 @@ Appex has correct sandbox entitlements:
 
 ### High Priority (Potential Causes)
 
-1. **Framework Structure** - Beamer uses flat structure, FilterDemo/iPlug2 use versioned structure with symlinks (`Versions/A/`, `Current -> A`)
-2. **Hardened Runtime** - FilterDemo has it enabled, Beamer doesn't
-3. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
-4. **VST3 Code in AU Binary** - Beamer's AU framework contains VST3 entry points (`_GetPluginFactory`), though this shouldn't cause issues
+1. **Hardened Runtime** - FilterDemo has it enabled, Beamer doesn't
+2. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
+3. **VST3 Code in AU Binary** - Beamer's AU framework contains VST3 entry points (`_GetPluginFactory`), though this shouldn't cause issues
 
 ### Ruled Out
 
-- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass (matching iPlug2), still fails
+- ~~**Framework Structure**~~ - Changed to versioned structure with symlinks (matching FilterDemo), still fails
+- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass, still fails
 - ~~**NSExtensionPointIdentifier**~~ - `com.apple.AudioUnit` is correct for headless AUs
 
 ### Lower Priority (Probably Not Causes)
 
-5. **Missing Info.plist keys** - `CFBundleDisplayName`, `CFBundleSupportedPlatforms` (likely cosmetic)
-6. **LSMinimumSystemVersion** - 10.13 vs 11.0 (unlikely to cause Logic issues)
-7. **Binary size** - 1.2MB vs 338KB (shouldn't matter for loading)
+4. **Missing Info.plist keys** - `CFBundleDisplayName`, `CFBundleSupportedPlatforms` (likely cosmetic)
+5. **LSMinimumSystemVersion** - 10.13 vs 11.0 (unlikely to cause Logic issues)
+6. **Binary size** - 1.2MB vs 338KB (shouldn't matter for loading)
 
 ---
 
@@ -403,24 +426,15 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 ## Recommended Next Steps
 
-1. ✅ ~~**Compare with working iPlug2 headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance), but didn't fix the issue.
+1. ✅ ~~**Compare with working headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance), but didn't fix the issue.
 
-2. **Try versioned framework structure** - Both iPlug2 and FilterDemo use versioned framework layout with symlinks:
-   ```
-   Framework.framework/
-   ├── Framework -> Versions/Current/Framework
-   ├── Resources -> Versions/Current/Resources
-   └── Versions/
-       ├── A/
-       │   ├── Framework (binary)
-       │   ├── Resources/Info.plist
-       │   └── _CodeSignature/
-       └── Current -> A
-   ```
+2. ✅ ~~**Try versioned framework structure**~~ - Done. Changed to versioned layout with symlinks, but didn't fix the issue.
 
 3. **Enable hardened runtime** - Add `--options runtime` to code signing
 
 4. **Add missing rpath** - Add `@executable_path/../Frameworks` alongside `@loader_path/../../../../Frameworks`
+
+5. **Investigate Rust static initialization in XPC context** - The `__mod_init_func` static initializer may behave differently when the framework is loaded via XPC vs in-process
 
 ---
 

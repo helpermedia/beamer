@@ -1512,24 +1512,40 @@ fn bundle_au(
     fs::create_dir_all(&appex_resources_dir).map_err(|e| format!("Failed to create appex Resources dir: {}", e))?;
 
     // Create framework bundle for in-process AU loading on macOS.
-    // Structure: Frameworks/PluginNameAU.framework/PluginNameAU (dylib)
+    // Use versioned framework structure (standard macOS framework layout):
+    // Framework.framework/
+    // ├── Framework -> Versions/Current/Framework  (symlink)
+    // ├── Resources -> Versions/Current/Resources  (symlink)
+    // └── Versions/
+    //     ├── A/
+    //     │   ├── Framework (binary)
+    //     │   ├── Resources/
+    //     │   │   └── Info.plist
+    //     │   └── _CodeSignature/
+    //     └── Current -> A  (symlink)
     let framework_name = format!("{}AU", executable_name);
     let framework_bundle_id = format!("com.beamer.{}.framework", package);
     let framework_dir = frameworks_dir.join(format!("{}.framework", framework_name));
-    fs::create_dir_all(&framework_dir).map_err(|e| format!("Failed to create framework dir: {}", e))?;
 
-    // Copy dylib to framework
-    let framework_binary = framework_dir.join(&framework_name);
+    // Create versioned directory structure
+    let versions_dir = framework_dir.join("Versions");
+    let version_a_dir = versions_dir.join("A");
+    let version_a_resources = version_a_dir.join("Resources");
+    fs::create_dir_all(&version_a_resources)
+        .map_err(|e| format!("Failed to create framework Versions/A/Resources dir: {}", e))?;
+
+    // Copy dylib to Versions/A/
+    let framework_binary = version_a_dir.join(&framework_name);
     fs::copy(dylib_path, &framework_binary)
         .map_err(|e| format!("Failed to copy dylib to framework: {}", e))?;
 
-    // Fix dylib install name to use @rpath
+    // Fix dylib install name to use @rpath with versioned path
     let _ = Command::new("install_name_tool")
-        .args(["-id", &format!("@rpath/{}.framework/{}", framework_name, framework_name),
+        .args(["-id", &format!("@rpath/{}.framework/Versions/A/{}", framework_name, framework_name),
                framework_binary.to_str().unwrap()])
         .status();
 
-    // Create framework Info.plist
+    // Create framework Info.plist in Versions/A/Resources/
     let framework_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1551,10 +1567,34 @@ fn bundle_au(
 </dict>
 </plist>
 "#, framework_name = framework_name, bundle_id = framework_bundle_id, version = version_string);
-    fs::write(framework_dir.join("Info.plist"), framework_plist)
+    fs::write(version_a_resources.join("Info.plist"), framework_plist)
         .map_err(|e| format!("Failed to write framework Info.plist: {}", e))?;
 
-    println!("Created framework: {}.framework", framework_name);
+    // Create symlinks for versioned framework structure
+    // Versions/Current -> A
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let current_link = versions_dir.join("Current");
+        let _ = fs::remove_file(&current_link); // Remove if exists
+        symlink("A", &current_link)
+            .map_err(|e| format!("Failed to create Versions/Current symlink: {}", e))?;
+
+        // Framework root symlinks
+        // Framework -> Versions/Current/Framework
+        let binary_link = framework_dir.join(&framework_name);
+        let _ = fs::remove_file(&binary_link);
+        symlink(format!("Versions/Current/{}", framework_name), &binary_link)
+            .map_err(|e| format!("Failed to create framework binary symlink: {}", e))?;
+
+        // Resources -> Versions/Current/Resources
+        let resources_link = framework_dir.join("Resources");
+        let _ = fs::remove_file(&resources_link);
+        symlink("Versions/Current/Resources", &resources_link)
+            .map_err(|e| format!("Failed to create Resources symlink: {}", e))?;
+    }
+
+    println!("Created framework: {}.framework (versioned structure)", framework_name);
 
     // Build appex executable - thin wrapper that links the framework
     let appex_binary_path = appex_macos_dir.join(executable_name);
