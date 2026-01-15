@@ -970,6 +970,19 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
     )
 }
 
+/// Map AU component type code to appropriate tags for Info.plist.
+///
+/// DAWs use these tags for plugin categorization.
+fn get_au_tags(component_type: &str) -> &'static str {
+    match component_type {
+        "aufx" => "Effects",           // Audio effect
+        "aumu" => "Synth",             // Music device/instrument
+        "aumi" => "MIDI",              // MIDI processor
+        "aumf" => "Effects",           // Music effect
+        _ => "Effects",                // Default fallback
+    }
+}
+
 /// Create Info.plist for appex with NSExtension
 fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let manufacturer = config.manufacturer.unwrap_or("Bemr");
@@ -977,6 +990,9 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
         let gen: String = config.package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
         if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
     });
+
+    // Get appropriate tags based on component type
+    let tags = get_au_tags(config.component_type);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1026,7 +1042,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
                     <true/>
                     <key>tags</key>
                     <array>
-                        <string>Effects</string>
+                        <string>{tags}</string>
                     </array>
                     <key>version</key>
                     <integer>{version_int}</integer>
@@ -1046,6 +1062,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
         manufacturer = manufacturer,
         component_type = config.component_type,
         subtype = subtype,
+        tags = tags,
         framework_bundle_id = config.framework_bundle_id,
         version = config.version_string,
         version_int = config.version_int
