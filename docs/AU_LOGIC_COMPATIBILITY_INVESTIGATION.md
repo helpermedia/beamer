@@ -1,6 +1,12 @@
 # AU Logic Pro Compatibility Investigation
 
-Investigation date: 2026-01-14
+Investigation date: 2026-01-14 (updated 2026-01-15)
+
+## Recent Fix: ObjC Class Name Collisions (Resolved)
+
+**Note:** A separate issue was discovered and fixed on 2026-01-15 where multiple AU plugins loaded in Reaper showed incorrect parameters due to ObjC class name collisions. This was caused by all plugins using identical class names (`BeamerAuWrapper`, `BeamerAuExtension`).
+
+**Solution:** ObjC code is now generated per-plugin by xtask with unique class names (e.g., `BeamerSimpleGainAuWrapper`, `BeamerCompressorAuWrapper`). This fix is unrelated to the Logic Pro XPC timeout issue documented below.
 
 ## Problem Statement
 
@@ -24,10 +30,221 @@ All Beamer AU plugins show "not compatible" in Logic Pro 11.2.2, while they work
 
 1. All plugins appear in Logic's Plugin Manager but show "not compatible"
 2. Plugins are grayed out when inserted on tracks
-3. Rescanning plugins in Logic takes very long (vs instant for Apple's FilterDemo)
-4. Logic's AU scan log shows:
-   - Effects: "took 0.000000 seconds" (suspiciously fast)
-   - BeamerSynth: "failed with timeout" after ~23 seconds
+3. Rescanning plugins in Logic takes very long (~20 seconds per plugin)
+4. Logic's AU scan log shows **all Beamer plugins fail with timeout**:
+   ```
+   BeamerCompressor start
+   BeamerCompressor failed with timeout
+   BeamerCompressor took 0.000000 seconds
+
+   BeamerSimpleGain start
+   BeamerSimpleGain failed with timeout
+   BeamerSimpleGain took 0.000000 seconds
+
+   BeamerSynth start
+   BeamerSynth failed with timeout
+   BeamerSynth took 0.000000 seconds
+   ```
+5. Apple's FilterDemo loads instantly: `AUV3FilterDemo took 0.000000 seconds` (no timeout)
+
+## Critical Finding: In-Process vs XPC Loading
+
+| Host | Loading Method | Result |
+|------|---------------|--------|
+| **auval** | In-process (calls `BeamerAuExtensionFactory` directly) | **PASS** |
+| **Reaper** | In-process | **Works** |
+| **Logic Pro** | Out-of-process XPC (spawns appex, communicates via XPC) | **TIMEOUT** |
+
+This indicates the **XPC communication path is broken**, while in-process loading works fine.
+
+### Additional Evidence
+- The appex binary starts and runs correctly when launched manually
+- Console.app shows no error messages during Logic AU scan
+- The timeout is ~20 seconds per plugin, suggesting Logic gives up waiting for XPC response
+
+---
+
+## Detailed Comparison: Beamer vs Apple FilterDemo
+
+### Important Note on UI Differences
+
+**Beamer plugins are intentionally headless (no UI).** Apple's FilterDemo has a UI. Therefore, certain Info.plist differences related to UI are expected and correct:
+
+- `NSExtensionPointIdentifier`: `com.apple.AudioUnit` (Beamer) vs `com.apple.AudioUnit-UI` (FilterDemo)
+- `NSExtensionPrincipalClass`: `BeamerAuExtension` (factory class) vs `FilterDemoViewController` (view controller)
+- `NSExtensionServiceRoleType`: Not present in Beamer (UI-related key)
+
+Per Apple documentation, `com.apple.AudioUnit` is the correct extension point for headless AUs.
+
+### Complete Info.plist Comparison (Appex)
+
+#### FilterDemo Appex Info.plist
+```xml
+CFBundleDevelopmentRegion: en
+CFBundleDisplayName: FilterDemoAppExtensionOSX
+CFBundleExecutable: FilterDemoAppExtension
+CFBundleIconFile: icon
+CFBundleIdentifier: com.example.apple-samplecode.FilterDemoAppOSXQ5WYU5N7GL.FilterDemoAppExtensionOSX
+CFBundleInfoDictionaryVersion: 6.0
+CFBundleName: FilterDemoAppExtension
+CFBundlePackageType: XPC!
+CFBundleShortVersionString: 1.6
+CFBundleSignature: ????
+CFBundleSupportedPlatforms: [MacOSX]
+CFBundleVersion: 1
+LSMinimumSystemVersion: 11.0
+
+NSExtension:
+  NSExtensionPointIdentifier: com.apple.AudioUnit-UI          # UI extension (has GUI)
+  NSExtensionPrincipalClass: FilterDemoViewController         # ViewController for UI
+  NSExtensionAttributes:
+    NSExtensionServiceRoleType: NSExtensionServiceRoleTypeEditor  # UI-related
+    AudioComponentBundle: com.example.apple-samplecode.FilterDemoFrameworkOSX
+    AudioComponents:
+      - type: aufx
+        subtype: f1tR
+        manufacturer: Demo
+        name: "Demo: AUV3FilterDemo"
+        description: AUV3FilterDemo
+        sandboxSafe: true
+        tags: [Effects]
+        version: 67072
+```
+
+#### Beamer Appex Info.plist
+```xml
+CFBundleDevelopmentRegion: English
+CFBundleExecutable: BeamerSimpleGain
+CFBundleIdentifier: com.beamer.simple-gain.audiounit
+CFBundleInfoDictionaryVersion: 6.0
+CFBundleName: BeamerSimpleGain
+CFBundlePackageType: XPC!
+CFBundleShortVersionString: 0.1.6
+CFBundleSignature: ????
+CFBundleVersion: 0.1.6
+LSMinimumSystemVersion: 10.13
+
+NSExtension:
+  NSExtensionPointIdentifier: com.apple.AudioUnit              # Headless extension (no GUI) - CORRECT
+  NSExtensionPrincipalClass: BeamerSimpleGainAuExtension       # Plugin-specific factory class - CORRECT
+  NSExtensionAttributes:
+    AudioComponentBundle: com.beamer.simple-gain.framework
+    AudioComponents:
+      - type: aufx
+        subtype: siga
+        manufacturer: Bmer
+        name: "Beamer: BeamerSimpleGain"
+        description: "BeamerSimpleGain Audio Unit"
+        sandboxSafe: true
+        tags: [Effects]
+        version: 262
+```
+
+#### Key Differences Summary
+
+| Key | FilterDemo | Beamer | Issue? |
+|-----|-----------|--------|--------|
+| `NSExtensionPointIdentifier` | `com.apple.AudioUnit-UI` | `com.apple.AudioUnit` | **Expected** (UI vs headless) |
+| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuExtension` | **Expected** (UI vs headless) |
+| `NSExtensionServiceRoleType` | `NSExtensionServiceRoleTypeEditor` | *missing* | **Expected** (UI-only key) |
+| `CFBundleDisplayName` | Present | *missing* | Minor |
+| `CFBundleSupportedPlatforms` | `[MacOSX]` | *missing* | Minor |
+| `CFBundleIconFile` | Present | *missing* | Minor |
+| `LSMinimumSystemVersion` | `11.0` | `10.13` | Should update to 11.0 |
+
+### Framework Structure Comparison
+
+| Aspect | FilterDemo | Beamer |
+|--------|-----------|--------|
+| Structure | **Versioned** (`Versions/A/`, symlinks) | **Flat** (no Versions directory) |
+| Binary path | `.../Versions/A/FilterDemoFramework` | `.../BeamerSimpleGainAU` |
+| Resources | `Versions/A/Resources/Info.plist` | `Info.plist` (root level) |
+
+**FilterDemo Framework Structure:**
+```
+FilterDemoFramework.framework/
+├── FilterDemoFramework -> Versions/Current/FilterDemoFramework
+├── Resources -> Versions/Current/Resources
+└── Versions/
+    ├── A/
+    │   ├── FilterDemoFramework (binary)
+    │   ├── Resources/
+    │   │   └── Info.plist
+    │   └── _CodeSignature/
+    └── Current -> A
+```
+
+**Beamer Framework Structure:**
+```
+BeamerSimpleGainAU.framework/
+├── BeamerSimpleGainAU (binary)
+├── Info.plist
+└── _CodeSignature/
+```
+
+### Library Linking Comparison
+
+| Aspect | FilterDemo | Beamer |
+|--------|-----------|--------|
+| Framework link | `@rpath/.../Versions/A/FilterDemoFramework` | `@rpath/.../BeamerSimpleGainAU` |
+| rpaths | `@executable_path/../Frameworks` **AND** `@executable_path/../../../../Frameworks` | Only `@loader_path/../../../../Frameworks` |
+
+### Code Signing Comparison
+
+| Aspect | FilterDemo | Beamer |
+|--------|-----------|--------|
+| Flags | `0x10002 (adhoc,runtime)` | `0x2 (adhoc)` |
+| Hardened Runtime | **Yes** | **No** |
+| Team ID | not set | not set |
+
+### Binary Size Comparison
+
+| Component | FilterDemo | Beamer |
+|-----------|-----------|--------|
+| Appex binary | 117 KB | 118 KB |
+| Framework binary | 338 KB | **1.2 MB** |
+
+The larger Beamer framework includes both AU and VST3 code (same cdylib exports both).
+
+---
+
+## Things We Tried (Did NOT Fix the Issue)
+
+### 1. ❌ Changed NSExtensionPointIdentifier to `com.apple.AudioUnit-UI`
+
+**What we tried:** Changed from `com.apple.AudioUnit` to `com.apple.AudioUnit-UI` to match FilterDemo.
+
+**Result:** Did not fix the Logic Pro issue.
+
+**Conclusion:** The extension point identifier is not the root cause. `com.apple.AudioUnit` is correct for headless AUs per Apple documentation.
+
+### 2. ❌ Embedded Framework Inside Appex (like JUCE)
+
+**What we tried:** Instead of having the framework in `Contents/Frameworks/`, embedded the framework code directly inside the appex (similar to how JUCE structures its AU plugins).
+
+**Result:**
+- Reaper stopped working
+- auval **hangs** at `TESTING OPEN TIMES: COLD:` - never completes
+
+**Conclusion:** This approach breaks even in-process loading. There may be initialization order issues when the Rust code is embedded directly in the appex.
+
+### 3. ❌ Console.app Logging During Logic Scan
+
+**What we tried:** Monitored Console.app with filters for "Beamer", "AudioUnit", "extension", "error" during Logic's AU rescan.
+
+**Result:** No relevant log messages appear.
+
+**Conclusion:** The failure is silent - no errors are logged to the system console.
+
+### 4. ❌ Manually Launching Appex
+
+**What we tried:** Launched the appex binary directly from terminal to see if it starts correctly.
+
+**Result:** The appex starts and runs fine (NSRunLoop runs until killed).
+
+**Conclusion:** The appex itself initializes correctly. The issue is in XPC communication with Logic, not appex startup.
+
+---
 
 ## What Was Verified Working
 
@@ -48,45 +265,33 @@ com.beamer.simple-gain.audiounit(0.1.6)
 com.beamer.synth.audiounit(0.1.6)
 ```
 
-### Bundle Structure
-AUv3 app extension structure is correct:
+### NSExtension Configuration (Correct per Apple Docs)
+The headless AU configuration is correct (example for simple-gain):
+```xml
+<key>NSExtensionPointIdentifier</key>
+<string>com.apple.AudioUnit</string>              <!-- Correct for headless AU -->
+<key>NSExtensionPrincipalClass</key>
+<string>BeamerSimpleGainAuExtension</string>      <!-- Plugin-specific factory class -->
 ```
-BeamerSimpleGain.app/
-├── Contents/
-│   ├── Info.plist
-│   ├── MacOS/BeamerSimpleGain (universal binary stub)
-│   ├── Frameworks/
-│   │   └── BeamerSimpleGainAU.framework/
-│   │       ├── BeamerSimpleGainAU (universal dylib)
-│   │       └── Info.plist
-│   ├── PlugIns/
-│   │   └── BeamerSimpleGain.appex/
-│   │       └── Contents/
-│   │           ├── Info.plist (with AudioComponents)
-│   │           └── MacOS/BeamerSimpleGain (universal)
-│   └── Resources/
-```
+- ✅ Uses `NSExtensionPrincipalClass` (not `NSExtensionViewController` or `NSExtensionMainStoryboard`)
+- ✅ Principal class implements `AUAudioUnitFactory` protocol
+- ✅ No storyboard entries (which would cause crashes for headless AUs)
+- ✅ Each plugin has unique class names to avoid collisions
 
 ### Bundle ID Matching
 - Appex `AudioComponentBundle`: `com.beamer.simple-gain.framework`
 - Framework `CFBundleIdentifier`: `com.beamer.simple-gain.framework`
-- These match correctly.
+- These match correctly ✓
 
 ### Symbol Exports
-Framework exports all required ObjC symbols:
+Each plugin's framework exports plugin-specific ObjC symbols (example for simple-gain):
 ```
-_BeamerAuExtensionFactory
-_OBJC_CLASS_$_BeamerAuExtension
-_OBJC_CLASS_$_BeamerAuWrapper
-_OBJC_METACLASS_$_BeamerAuExtension
-_OBJC_METACLASS_$_BeamerAuWrapper
+_BeamerSimpleGainAuExtensionFactory
+_OBJC_CLASS_$_BeamerSimpleGainAuExtension
+_OBJC_CLASS_$_BeamerSimpleGainAuWrapper
+_OBJC_METACLASS_$_BeamerSimpleGainAuExtension
+_OBJC_METACLASS_$_BeamerSimpleGainAuWrapper
 ```
-
-### Library Linking
-Appex correctly links to framework via rpath:
-- Link: `@rpath/BeamerSimpleGainAU.framework/BeamerSimpleGainAU`
-- Rpath: `@loader_path/../../../../Frameworks`
-- Resolves to: `BeamerSimpleGain.app/Contents/Frameworks/`
 
 ### Entitlements
 Appex has correct sandbox entitlements:
@@ -97,207 +302,84 @@ Appex has correct sandbox entitlements:
 <true/>
 ```
 
-### Code Signing
-All components are ad-hoc signed:
-- Container app: signed, adhoc, no Team ID
-- Framework: signed, adhoc
-- Appex: signed with entitlements, adhoc
+---
 
-## Issues Found
+## Remaining Differences to Investigate
 
-### 1. Hardcoded Tags in Info.plist (Confirmed Bug)
+### High Priority (Potential Causes)
 
-**Location**: `xtask/src/main.rs:1027-1030`
+1. **Framework Structure** - Beamer uses flat structure, FilterDemo uses versioned structure with symlinks
+2. **Hardened Runtime** - FilterDemo has it enabled, Beamer doesn't
+3. **Missing rpath** - FilterDemo has `@executable_path/../Frameworks`, Beamer doesn't
+4. **VST3 Code in AU Binary** - Beamer's AU framework contains VST3 entry points (`_GetPluginFactory`), though this shouldn't cause issues
 
-```xml
-<key>tags</key>
-<array>
-    <string>Effects</string>  <!-- Hardcoded for ALL plugins -->
-</array>
-```
+### Lower Priority (Probably Not Causes)
 
-**Problem**: All plugins get "Effects" tag regardless of component type:
-- `aufx` (effect) → should be "Effects" ✓
-- `aumu` (instrument) → should be "Synth" or "Instrument" ✗
-- `aumi` (MIDI processor) → should be "MIDI" ✗
+5. **Missing Info.plist keys** - `CFBundleDisplayName`, `CFBundleSupportedPlatforms` (likely cosmetic)
+6. **LSMinimumSystemVersion** - 10.13 vs 11.0 (unlikely to cause Logic issues)
+7. **Binary size** - 1.2MB vs 338KB (shouldn't matter for loading)
 
-**Impact**: Logic uses tags for categorization. Mismatched tags may cause validation issues.
+---
 
-### 2. Slow Initialization Time
+## Technical Architecture Notes
 
-auval reports:
-```
-Time to open AudioUnit: 21.266 ms (cold)
-Time to open AudioUnit: 0.298 ms (warm)
-```
+### How the AU Loading Works
 
-Apple's built-in AUs typically open in <5ms. This slower initialization might trigger Logic's timeout during batch validation.
+**In-Process Loading (auval, Reaper):**
+1. Host loads framework directly into its process
+2. Calls `BeamerAuExtensionFactory(desc)` function
+3. Factory calls `beamer_au_ensure_factory_registered()`
+4. Returns `BeamerAuWrapper` instance
 
-### 3. VST3 Version Hardcoded (Unrelated but Found)
+**Out-of-Process XPC (Logic Pro):**
+1. Logic spawns appex process
+2. Appex runs `main()` which calls `[[NSRunLoop mainRunLoop] run]`
+3. System looks up `NSExtensionPrincipalClass` = `BeamerAuExtension`
+4. Logic sends XPC request to create AU instance
+5. `BeamerAuExtension.createAudioUnitWithComponentDescription:error:` called
+6. Returns `BeamerAuWrapper` instance via XPC
 
-**Location**: `xtask/src/main.rs:924-927`
+**The XPC path (step 3-6) appears to be failing silently.**
 
-VST3 Info.plist has hardcoded version `0.2.0` instead of using `get_version_info()` like AU does.
+### Rust Static Initialization
 
-## Tests Performed
-
-### 1. auval Tests
-```bash
-# Basic validation
-auval -v aufx siga Bmer  # PASS
-auval -v aumu synt Bmer  # PASS
-
-# Strict mode
-auval -v aufx siga Bmer -strict  # PASS
-
-# All tests pass including:
-# - Format tests (various sample rates, channel configs)
-# - Render tests (different buffer sizes)
-# - Parameter tests
-# - State persistence
-# - MIDI handling
-```
-
-### 2. Bundle Structure Verification
-```bash
-# Check appex Info.plist
-plutil -p ~/Applications/BeamerSimpleGain.app/Contents/PlugIns/BeamerSimpleGain.appex/Contents/Info.plist
-
-# Check framework Info.plist
-plutil -p ~/Applications/BeamerSimpleGain.app/Contents/Frameworks/BeamerSimpleGainAU.framework/Info.plist
-
-# Verify AudioComponentBundle matches framework CFBundleIdentifier
-# Result: Both are "com.beamer.simple-gain.framework" ✓
-```
-
-### 3. Symbol Export Verification
-```bash
-# Check framework exports
-nm -gU ~/Applications/BeamerSimpleGain.app/Contents/Frameworks/BeamerSimpleGainAU.framework/BeamerSimpleGainAU | grep -E "BeamerAu|OBJC_CLASS"
-
-# Result: All required symbols exported ✓
-```
-
-### 4. Library Dependency Verification
-```bash
-# Check appex dependencies
-otool -L ~/Applications/BeamerSimpleGain.app/Contents/PlugIns/BeamerSimpleGain.appex/Contents/MacOS/BeamerSimpleGain
-
-# Check rpath
-otool -l ... | grep -A2 LC_RPATH
-
-# Result: Framework correctly linked via @rpath ✓
-```
-
-### 5. Code Signing Verification
-```bash
-# Check app signing
-codesign -dvvv ~/Applications/BeamerSimpleGain.app
-
-# Check appex signing and entitlements
-codesign -dvvv ~/Applications/BeamerSimpleGain.app/Contents/PlugIns/BeamerSimpleGain.appex
-codesign -d --entitlements - ~/Applications/BeamerSimpleGain.app/Contents/PlugIns/BeamerSimpleGain.appex
-
-# Result: Ad-hoc signed with correct entitlements ✓
-```
-
-### 6. Logic AU Scan Log Analysis
-```bash
-plutil -p ~/Library/Caches/AudioUnitCache/Logs/AUScan*.plist | grep -i beamer
-
-# Results:
-# BeamerCompressor: "took 0.000000 seconds"
-# BeamerSimpleGain: "took 0.000000 seconds"
-# BeamerSynth: "failed with timeout"
-```
-
-### 7. Plugin Registration Check
-```bash
-pluginkit -m -v -p com.apple.AudioUnit | grep -i beamer
-
-# Result: All three plugins registered correctly ✓
-```
-
-## Comparison: Beamer vs Apple FilterDemo
-
-| Aspect | Beamer | Apple FilterDemo |
-|--------|--------|------------------|
-| Logic rescan time | Very slow | Instant |
-| auval pass | Yes | Yes |
-| In-process loading | Yes | Yes |
-| Init time | ~21ms | <5ms |
-
-## Potential Causes (Theories)
-
-1. **Tags mismatch** - Wrong categorization tags in Info.plist
-2. **Initialization timeout** - Logic may have stricter timeout than auval
-3. **Logic-specific validation** - Logic performs checks beyond auval
-4. **Code signing requirements** - Logic may require proper Team ID signing (not ad-hoc)
-5. **Sandbox restrictions** - Something in AU init blocked in Logic's sandbox
-
-## Fixes Applied
-
-### ✅ Fixed: Tags in Info.plist
-
-**Status**: Fixed in commit (pending)
-
-**Location**: `xtask/src/main.rs:973-983`
-
-Added `get_au_tags()` function that maps component types to correct tags:
+The `export_au!` macro creates a static initializer in `__DATA,__mod_init_func`:
 ```rust
-fn get_au_tags(component_type: &str) -> &'static str {
-    match component_type {
-        "aufx" => "Effects",           // Audio effect
-        "aumu" => "Synth",             // Music device/instrument
-        "aumi" => "MIDI",              // MIDI processor
-        "aumf" => "Effects",           // Music effect
-        _ => "Effects",                // Default fallback
-    }
-}
+#[used]
+#[link_section = "__DATA,__mod_init_func"]
+static __BEAMER_AU_INIT: extern "C" fn() = __beamer_au_register;
 ```
 
-**Verification**:
-- BeamerSimpleGain (aufx): tags = "Effects" ✓
-- BeamerSynth (aumu): tags = "Synth" ✓
-- Both plugins still pass auval ✓
+This runs when the binary loads, registering the plugin factory in an `OnceLock`.
 
-## Recommended Next Steps
+When embedded in appex (failed attempt), this static initialization may have caused issues with initialization order or the ObjC runtime.
 
-### High Priority
-
-1. **Test in Logic Pro** - Verify if corrected tags resolve "not compatible" issue
-2. **Profile initialization** - Find what's causing 21ms cold start
-
-### Medium Priority
-
-3. **Test with proper code signing** - Sign with Developer ID to rule out signing issues
-4. **Test in GarageBand** - Determine if Logic-specific or all Apple hosts
-5. **Compare with working AUv3** - Find a working third-party AUv3 and compare plists/structure
-
-### Low Priority
-
-6. **Fix VST3 version hardcoding** - Use `get_version_info()` for consistency
+---
 
 ## Files Examined
 
-- `xtask/src/main.rs` - Bundle creation and Info.plist generation
-- `crates/beamer-au/objc/BeamerAuWrapper.m` - ObjC AU wrapper
-- `crates/beamer-au/objc/BeamerAuExtension.m` - AUv3 extension principal class
-- `crates/beamer-au/objc/appex_main.m` - Appex entry point
+- `xtask/src/main.rs` - Bundle creation, Info.plist generation, and **ObjC code generation** (generates plugin-specific wrapper/extension classes)
+- `crates/beamer-au/objc/BeamerAuBridge.h` - C bridge declarations for Rust FFI
+- `crates/beamer-au/src/bridge.rs` - Rust FFI bridge (~1700 lines)
+- `crates/beamer-au/src/factory.rs` - Factory registration (83 lines)
+- `crates/beamer-au/src/export.rs` - Export macro (112 lines)
 - `crates/beamer-au/resources/appex.entitlements` - Sandbox entitlements
 - `examples/simple-gain/src/lib.rs` - Example plugin source
-- `examples/synth/src/lib.rs` - Synth plugin source
 
-## Next Steps for Further Investigation
+**Note:** ObjC source files (`BeamerAuWrapper.m`, `BeamerAuExtension.m`, `appex_main.m`) are now **generated by xtask** per-plugin with unique class names. Generated files are placed in `target/au-gen/<plugin-name>/`.
 
-1. Test plugins on a different Mac to rule out environment-specific issues
-2. Test in GarageBand to determine if Logic-specific
-3. Open Console.app and filter by process during Logic rescan to capture real-time errors
-4. Compare Info.plist structure with a known-working third-party AUv3 plugin
-5. Try building with proper Apple Developer signing (not ad-hoc)
-6. Profile AU initialization to find performance bottleneck
+---
+
+## Recommended Next Step
+
+1. **Compare with a working headless iPlug2-based AUv3** - Compare with a iPlug2-based (headless, meaning no GUI) AUv3 example (production-tested in Logic Pro) to isolate the actual incompatibility.
+
+---
 
 ## Related Documentation
 
 - [AU_DEBUG_INFO.md](AU_DEBUG_INFO.md) - Debug procedures
+- [AU_CODE_SIGNING.md](AU_CODE_SIGNING.md) - Code signing details
 - [AU_ARCHITECTURE_REVIEW.md](AU_ARCHITECTURE_REVIEW.md) - Architecture overview
+- [Apple Developer Forums: Audio Extension without UI](https://developer.apple.com/forums/thread/22121)
+- [App Extension Programming Guide: Audio Unit](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
