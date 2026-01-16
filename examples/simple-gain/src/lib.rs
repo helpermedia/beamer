@@ -8,17 +8,17 @@
 //! 5. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
-use beamer::vst3_impl::vst3;
 use beamer::{HasParameters, Parameters}; // Import the derive macros
 
-#[cfg(target_os = "macos")]
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+#[cfg(feature = "vst3")]
+use beamer::vst3_impl::vst3;
 
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
-/// Component UID - unique identifier for the plugin
+/// Component UID - unique identifier for the plugin (VST3 only)
+#[cfg(feature = "vst3")]
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xE54F5273, 0x4F0B4ECC, 0x93810496, 0x6FCB0773);
 
@@ -34,11 +34,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
 /// Note: No .with_controller() - this is a simple plugin without custom GUI.
 /// The host will use its generic parameter UI. For plugins with WebView GUI,
 /// you would add .with_controller(CONTROLLER_UID)
+#[cfg(feature = "vst3")]
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "simple-gain" for identification
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     fourcc!(b"Bmer"),
@@ -224,12 +225,12 @@ impl AudioProcessor for GainProcessor {
 // VST3 Export
 // =============================================================================
 
-// Export VST3 entry points using the generic wrapper
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, GainPlugin);

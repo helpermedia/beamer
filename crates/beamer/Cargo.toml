@@ -11,7 +11,12 @@ repository.workspace = true
 default = ["derive"]
 derive = ["beamer-macros"]
 
+# Plugin format features - controlled by bundler via --features flag
+vst3 = ["dep:beamer-vst3"]
+au = ["dep:beamer-au"]
+
 [dependencies]
 beamer-core = { workspace = true }
-beamer-vst3 = { workspace = true }
+beamer-vst3 = { workspace = true, optional = true }
+beamer-au = { workspace = true, optional = true }
 beamer-macros = { workspace = true, optional = true }

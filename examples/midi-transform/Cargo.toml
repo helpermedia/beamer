@@ -8,9 +8,10 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+vst3 = ["beamer/vst3", "dep:vst3"]
+au = ["beamer/au"]
+
 [dependencies]
 beamer = { workspace = true }
-vst3 = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-beamer-au = { workspace = true }
+vst3 = { workspace = true, optional = true }

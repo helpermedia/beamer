@@ -214,7 +214,7 @@ cargo build
 # Build release
 cargo build --release
 
-# Bundle VST3 plugin
+# Bundle VST3 plugin (native architecture, fastest for development)
 cargo xtask bundle gain --vst3 --release
 
 # Bundle Audio Unit plugin (macOS only)
@@ -223,9 +223,14 @@ cargo xtask bundle gain --au --release
 # Bundle both formats and install to system plugin folders
 cargo xtask bundle gain --vst3 --au --release --install
 
+# Bundle universal binary for distribution (x86_64 + arm64)
+cargo xtask bundle gain --vst3 --au --arch universal --release
+
 # Validate AU plugin (macOS)
 auval -v aufx gain Bemr
 ```
+
+By default, plugins are built for the native architecture (e.g., arm64 on Apple Silicon). Use `--arch universal` when building for distribution to support both Intel and Apple Silicon Macs.
 
 ## License
 

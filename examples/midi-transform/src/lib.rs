@@ -42,17 +42,17 @@
 //! need to specify what changes.
 
 use beamer::prelude::*;
-use beamer::vst3_impl::vst3;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
-#[cfg(target_os = "macos")]
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+#[cfg(feature = "vst3")]
+use beamer::vst3_impl::vst3;
 
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
-/// Unique ID for this plugin component.
+/// Unique ID for this plugin component (VST3 only).
+#[cfg(feature = "vst3")]
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xA1B2C3D4, 0xE5F6A7B8, 0xC9D0E1F2, 0x03040506);
 
@@ -66,12 +66,13 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform")
     .with_sub_categories("Instrument");
 
 /// VST3-specific configuration
+#[cfg(feature = "vst3")]
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "mtrn" for identification
 /// MidiProcessor type indicates this processes MIDI data
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::MidiProcessor,
     fourcc!(b"Bmer"),
@@ -524,11 +525,12 @@ impl AudioProcessor for MidiTransformProcessor {
 // VST3 Export
 // =============================================================================
 
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MidiTransformPlugin>);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MidiTransformPlugin);

@@ -18,17 +18,17 @@
 //! - Dynamic auto makeup gain
 
 use beamer::prelude::*;
-use beamer::vst3_impl::vst3;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
-#[cfg(target_os = "macos")]
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+#[cfg(feature = "vst3")]
+use beamer::vst3_impl::vst3;
 
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
-/// Component UID - unique identifier for the plugin
+/// Component UID - unique identifier for the plugin (VST3 only)
+#[cfg(feature = "vst3")]
 const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xB1C2D3E4, 0xF5061728, 0x394A5B6C, 0x7D8E9F00);
 
@@ -41,11 +41,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
     .with_sub_categories("Fx|Dynamics");
 
 /// VST3-specific configuration
+#[cfg(feature = "vst3")]
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "comp" for identification
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     fourcc!(b"Bmer"),
@@ -579,11 +580,12 @@ impl AudioProcessor for CompressorProcessor {
 // VST3 Export
 // =============================================================================
 
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<CompressorPlugin>);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, CompressorPlugin);

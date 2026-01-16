@@ -1592,7 +1592,7 @@ MyPlugin.component/
 Use `cargo xtask` to build and bundle Audio Unit plugins:
 
 ```bash
-# Build AU bundle
+# Build AU bundle (native architecture, fastest for development)
 cargo xtask bundle my-plugin --au --release
 
 # Build and install to system location
@@ -1600,7 +1600,16 @@ cargo xtask bundle my-plugin --au --release --install
 
 # Build both VST3 and AU
 cargo xtask bundle my-plugin --vst3 --au --release --install
+
+# Build universal binary for distribution (x86_64 + arm64)
+cargo xtask bundle my-plugin --au --arch universal --release
 ```
+
+**Architecture Options:**
+- `--arch native` (default) - Build for current machine's architecture
+- `--arch universal` - Build fat binary for distribution (x86_64 + arm64)
+- `--arch arm64` - Build for Apple Silicon only
+- `--arch x86_64` - Build for Intel only
 
 **Install Location:**
 

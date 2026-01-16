@@ -44,7 +44,12 @@
 
 // Re-export sub-crates
 pub use beamer_core as core;
+
+#[cfg(feature = "vst3")]
 pub use beamer_vst3 as vst3_impl;
+
+#[cfg(feature = "au")]
+pub use beamer_au as au_impl;
 
 // Re-export derive macros when feature is enabled
 #[cfg(feature = "derive")]
@@ -103,8 +108,13 @@ pub mod prelude {
     // Shared plugin configuration (format-agnostic)
     pub use beamer_core::PluginConfig;
 
-    // VST3 implementation
+    // VST3 implementation (only when feature enabled)
+    #[cfg(feature = "vst3")]
     pub use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
+
+    // AU implementation (only when feature enabled)
+    #[cfg(feature = "au")]
+    pub use beamer_au::{export_au, AuConfig, AuProcessor, ComponentType, fourcc};
 
     // Derive macros for parameters (when feature enabled)
     #[cfg(feature = "derive")]

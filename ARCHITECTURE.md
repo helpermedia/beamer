@@ -398,10 +398,10 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 Use `xtask` to build both formats:
 
 ```bash
-# VST3 only
+# VST3 only (native architecture)
 cargo xtask bundle my-plugin --vst3 --release
 
-# AU only (macOS)
+# AU only (macOS, native architecture)
 cargo xtask bundle my-plugin --au --release
 
 # Both formats (macOS)
@@ -409,7 +409,12 @@ cargo xtask bundle my-plugin --vst3 --au --release
 
 # Install to system plugin directories
 cargo xtask bundle my-plugin --vst3 --au --release --install
+
+# Universal binary for distribution (x86_64 + arm64)
+cargo xtask bundle my-plugin --vst3 --au --arch universal --release
 ```
+
+**Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
 
 ---
 

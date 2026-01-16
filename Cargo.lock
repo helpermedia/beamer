@@ -6,6 +6,7 @@ version = 4
 name = "beamer"
 version = "0.1.6"
 dependencies = [
+ "beamer-au",
  "beamer-core",
  "beamer-macros",
  "beamer-vst3",
@@ -72,7 +73,6 @@ name = "compressor"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 
@@ -81,7 +81,6 @@ name = "delay"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 
@@ -96,7 +95,6 @@ name = "gain"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 
@@ -111,7 +109,6 @@ name = "midi-transform"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 
@@ -144,7 +141,6 @@ name = "simple-gain"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 
@@ -164,7 +160,6 @@ name = "synth"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "beamer-au",
  "vst3",
 ]
 

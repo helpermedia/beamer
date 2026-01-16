@@ -1,10 +1,35 @@
 //! Build tooling for Beamer plugins.
 //!
-//! Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install] [--clean]
+//! Usage: cargo xtask bundle <package> [--vst3] [--au] [--arch <arch>] [--release] [--install] [--clean]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Architecture configuration for builds
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Arch {
+    /// Build for current machine's architecture only
+    Native,
+    /// Build universal binary (x86_64 + arm64)
+    Universal,
+    /// Build for arm64 only
+    Arm64,
+    /// Build for x86_64 only
+    X86_64,
+}
+
+impl Arch {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "native" => Some(Arch::Native),
+            "universal" => Some(Arch::Universal),
+            "arm64" | "aarch64" => Some(Arch::Arm64),
+            "x86_64" | "x86-64" | "intel" => Some(Arch::X86_64),
+            _ => None,
+        }
+    }
+}
 
 /// Configuration for creating appex Info.plist
 struct AppexPlistConfig<'a> {
@@ -1039,6 +1064,17 @@ fn main() {
     let build_vst3 = args.iter().any(|a| a == "--vst3");
     let build_au = args.iter().any(|a| a == "--au");
 
+    // Parse --arch flag
+    let arch = args.windows(2)
+        .find(|w| w[0] == "--arch")
+        .map(|w| {
+            Arch::from_str(&w[1]).unwrap_or_else(|| {
+                eprintln!("Warning: unrecognized arch '{}', using native", w[1]);
+                Arch::Native
+            })
+        })
+        .unwrap_or(Arch::Native);
+
     // Default to VST3 if no format specified
     let (build_vst3, build_au) = if !build_vst3 && !build_au {
         (true, false)
@@ -1046,14 +1082,14 @@ fn main() {
         (build_vst3, build_au)
     };
 
-    if let Err(e) = bundle(package, release, install, clean, build_vst3, build_au) {
+    if let Err(e) = bundle(package, release, install, clean, build_vst3, build_au, arch) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
 fn print_usage() {
-    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--au] [--release] [--install] [--clean]");
+    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--au] [--arch <arch>] [--release] [--install] [--clean]");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  bundle    Build and bundle a plugin");
@@ -1061,6 +1097,13 @@ fn print_usage() {
     eprintln!("Formats:");
     eprintln!("  --vst3    Build VST3 bundle (default if no format specified)");
     eprintln!("  --au      Build Audio Unit bundle (AUv3 App Extension: .app with .appex)");
+    eprintln!();
+    eprintln!("Architecture:");
+    eprintln!("  --arch <arch>  Target architecture (default: native)");
+    eprintln!("                 native    - Current machine's architecture only (fastest builds)");
+    eprintln!("                 universal - x86_64 + arm64 (for distribution)");
+    eprintln!("                 arm64     - Apple Silicon only");
+    eprintln!("                 x86_64    - Intel only");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --release    Build in release mode");
@@ -1072,7 +1115,8 @@ fn print_usage() {
     eprintln!("Examples:");
     eprintln!("  cargo xtask bundle gain --vst3 --release --install");
     eprintln!("  cargo xtask bundle gain --au --release --install");
-    eprintln!("  cargo xtask bundle gain --au --release --clean");
+    eprintln!("  cargo xtask bundle gain --au --arch universal --release   # For distribution");
+    eprintln!("  cargo xtask bundle gain --vst3 --au --arch universal      # Both formats, universal");
 }
 
 /// Find beamer-au output directory for a given target and profile.
@@ -1171,36 +1215,133 @@ fn ensure_beamer_au_built(workspace_root: &Path, target: &str, release: bool) ->
     Ok(())
 }
 
-fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Result<PathBuf, String> {
-    println!("Building universal binary (x86_64 + arm64)...");
+/// Build for a single architecture (native, arm64, or x86_64).
+fn build_native(
+    package: &str,
+    release: bool,
+    workspace_root: &Path,
+    format: &str,
+    arch: Arch,
+) -> Result<PathBuf, String> {
+    // Always use explicit target to prevent RUSTFLAGS leaking into build scripts
+    let target = match arch {
+        Arch::Native => current_target(),
+        Arch::Arm64 => "aarch64-apple-darwin",
+        Arch::X86_64 => "x86_64-apple-darwin",
+        Arch::Universal => unreachable!("Universal should use build_universal"),
+    };
+
+    let arch_name = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
+    println!("Building {} ({})...", format.to_uppercase(), arch_name);
 
     let profile = if release { "release" } else { "debug" };
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    // Ensure beamer-au is built for both architectures first
-    ensure_beamer_au_built(workspace_root, "x86_64-apple-darwin", release)?;
-    ensure_beamer_au_built(workspace_root, "aarch64-apple-darwin", release)?;
+    // AU requires additional setup (beamer-au and ObjC code)
+    let rustflags = if format == "au" {
+        ensure_beamer_au_built(workspace_root, target, release)?;
+        println!("Generating plugin-specific ObjC for {}...", package);
+        let objc_lib_dir = compile_plugin_objc(package, workspace_root, target)?;
+        Some(get_au_rustflags(package, &objc_lib_dir)?)
+    } else {
+        None
+    };
 
-    // Generate and compile plugin-specific ObjC code for both architectures
-    println!("Generating plugin-specific ObjC for {}...", package);
-    let objc_lib_dir_x86 = compile_plugin_objc(package, workspace_root, "x86_64-apple-darwin")?;
-    let objc_lib_dir_arm = compile_plugin_objc(package, workspace_root, "aarch64-apple-darwin")?;
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("-p")
+        .arg(package)
+        .arg("--target")
+        .arg(target)
+        .arg("--features")
+        .arg(format)
+        .current_dir(workspace_root);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    if let Some(flags) = &rustflags {
+        cmd.env("RUSTFLAGS", flags);
+    }
+
+    let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
+    if !status.success() {
+        return Err(format!("{} build failed", format.to_uppercase()));
+    }
+
+    // Output is always in target/<target>/<profile>/
+    let dylib_path = workspace_root.join("target").join(target).join(profile).join(&dylib_name);
+
+    if !dylib_path.exists() {
+        return Err(format!("Built library not found: {}", dylib_path.display()));
+    }
+
+    println!("{} binary built: {}", format.to_uppercase(), dylib_path.display());
+    Ok(dylib_path)
+}
+
+/// Get the current host target triple.
+fn current_target() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return "aarch64-apple-darwin";
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return "x86_64-apple-darwin";
+
+    #[cfg(not(target_os = "macos"))]
+    compile_error!("Unsupported platform");
+}
+
+/// Build universal binary (x86_64 + arm64) for the given format.
+fn build_universal(
+    package: &str,
+    release: bool,
+    workspace_root: &Path,
+    format: &str,
+) -> Result<PathBuf, String> {
+    println!("Building {} universal binary (x86_64 + arm64)...", format.to_uppercase());
+
+    let profile = if release { "release" } else { "debug" };
+    let lib_name = package.replace('-', "_");
+    let dylib_name = format!("lib{}.dylib", lib_name);
+
+    // AU requires additional setup (beamer-au and ObjC code)
+    let (rustflags_x86, rustflags_arm) = if format == "au" {
+        ensure_beamer_au_built(workspace_root, "x86_64-apple-darwin", release)?;
+        ensure_beamer_au_built(workspace_root, "aarch64-apple-darwin", release)?;
+
+        println!("Generating plugin-specific ObjC for {}...", package);
+        let objc_lib_dir_x86 = compile_plugin_objc(package, workspace_root, "x86_64-apple-darwin")?;
+        let objc_lib_dir_arm = compile_plugin_objc(package, workspace_root, "aarch64-apple-darwin")?;
+
+        (
+            Some(get_au_rustflags(package, &objc_lib_dir_x86)?),
+            Some(get_au_rustflags(package, &objc_lib_dir_arm)?),
+        )
+    } else {
+        (None, None)
+    };
 
     // Build for x86_64
     println!("Building for x86_64...");
-    let rustflags = get_au_rustflags(package, &objc_lib_dir_x86)?;
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg(package)
         .arg("--target")
         .arg("x86_64-apple-darwin")
-        .env("RUSTFLAGS", &rustflags)
+        .arg("--features")
+        .arg(format)
         .current_dir(workspace_root);
 
     if release {
         cmd.arg("--release");
+    }
+
+    if let Some(flags) = &rustflags_x86 {
+        cmd.env("RUSTFLAGS", flags);
     }
 
     let status = cmd.status().map_err(|e| format!("Failed to build for x86_64: {}", e))?;
@@ -1210,18 +1351,22 @@ fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Resul
 
     // Build for arm64
     println!("Building for arm64...");
-    let rustflags = get_au_rustflags(package, &objc_lib_dir_arm)?;
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg(package)
         .arg("--target")
         .arg("aarch64-apple-darwin")
-        .env("RUSTFLAGS", &rustflags)
+        .arg("--features")
+        .arg(format)
         .current_dir(workspace_root);
 
     if release {
         cmd.arg("--release");
+    }
+
+    if let Some(flags) = &rustflags_arm {
+        cmd.env("RUSTFLAGS", flags);
     }
 
     let status = cmd.status().map_err(|e| format!("Failed to build for arm64: {}", e))?;
@@ -1270,7 +1415,7 @@ fn build_universal(package: &str, release: bool, workspace_root: &Path) -> Resul
         return Err("lipo failed to create universal binary".to_string());
     }
 
-    println!("Universal binary created at: {}", universal_path.display());
+    println!("{} universal binary created: {}", format.to_uppercase(), universal_path.display());
 
     Ok(universal_path)
 }
@@ -1335,8 +1480,15 @@ fn bundle(
     clean: bool,
     build_vst3: bool,
     build_au: bool,
+    arch: Arch,
 ) -> Result<(), String> {
-    println!("Bundling {} (release: {})...", package, release);
+    let arch_str = match arch {
+        Arch::Native => "native",
+        Arch::Universal => "universal",
+        Arch::Arm64 => "arm64",
+        Arch::X86_64 => "x86_64",
+    };
+    println!("Bundling {} (release: {}, arch: {})...", package, release, arch_str);
 
     // Get workspace root
     let workspace_root = get_workspace_root()?;
@@ -1346,54 +1498,28 @@ fn bundle(
         clean_build_caches(&workspace_root, package, release)?;
     }
 
-    // For macOS AU, build universal binary (x86_64 + arm64)
-    let universal = build_au && cfg!(target_os = "macos");
-
     // Determine paths
     let profile = if release { "release" } else { "debug" };
     let target_dir = workspace_root.join("target").join(profile);
 
-    let dylib_path = if universal {
-        build_universal(package, release, &workspace_root)?
-    } else {
-        // Build the plugin for current architecture
-        println!("Building...");
-        let mut cmd = Command::new("cargo");
-        cmd.arg("build")
-            .arg("-p")
-            .arg(package)
-            .current_dir(&workspace_root);
-
-        if release {
-            cmd.arg("--release");
-        }
-
-        let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
-        if !status.success() {
-            return Err("Build failed".to_string());
-        }
-
-        // Convert package name to library name (replace hyphens with underscores)
-        let lib_name = package.replace('-', "_");
-
-        // Find the dylib
-        let dylib_name = format!("lib{}.dylib", lib_name);
-        let dylib_path = target_dir.join(&dylib_name);
-
-        if !dylib_path.exists() {
-            return Err(format!("Built library not found: {}", dylib_path.display()));
-        }
-
-        dylib_path
-    };
-
-    // Build requested formats
+    // Build and bundle VST3
     if build_vst3 {
+        let dylib_path = if arch == Arch::Universal {
+            build_universal(package, release, &workspace_root, "vst3")?
+        } else {
+            build_native(package, release, &workspace_root, "vst3", arch)?
+        };
         bundle_vst3(package, &target_dir, &dylib_path, install)?;
     }
 
-    if build_au {
-        bundle_au(package, &target_dir, &dylib_path, install, &workspace_root)?;
+    // Build and bundle AU (macOS only)
+    if build_au && cfg!(target_os = "macos") {
+        let dylib_path = if arch == Arch::Universal {
+            build_universal(package, release, &workspace_root, "au")?
+        } else {
+            build_native(package, release, &workspace_root, "au", arch)?
+        };
+        bundle_au(package, &target_dir, &dylib_path, install, &workspace_root, arch)?;
     }
 
     Ok(())
@@ -1456,6 +1582,7 @@ fn bundle_au(
     dylib_path: &Path,
     install: bool,
     workspace_root: &Path,
+    arch: Arch,
 ) -> Result<(), String> {
     // Create AUv3 .app bundle structure with .appex extension:
     // BeamerGain.app/                         # Container app
@@ -1605,79 +1732,75 @@ fn bundle_au(
     fs::write(&appex_stub_path, appex_stub_source)
         .map_err(|e| format!("Failed to write appex_stub.m: {}", e))?;
 
-    println!("Building appex executable (universal binary)...");
+    // Build appex executable with appropriate architecture(s)
+    let arches = match arch {
+        Arch::Universal => vec!["x86_64", "arm64"],
+        Arch::Native => vec![if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" }],
+        Arch::Arm64 => vec!["arm64"],
+        Arch::X86_64 => vec!["x86_64"],
+    };
 
-    // Build for x86_64
-    let appex_x86_64_path = bundle_dir.join(format!("{}_x86_64", executable_name));
-    let clang_status = Command::new("clang")
-        .args([
-            "-arch", "x86_64",
-            "-fobjc-arc",
-            "-fmodules",
-            "-framework", "Foundation",
-            "-framework", "AudioToolbox",
-            "-framework", "AVFoundation",
-            "-framework", "CoreAudio",
-            "-F", frameworks_dir.to_str().unwrap(),
-            "-framework", &framework_name,
-            "-Wl,-rpath,@loader_path/../../../../Frameworks",
-            "-Wl,-e,_NSExtensionMain",  // Use Apple's standard extension entry point
-            "-o", appex_x86_64_path.to_str().unwrap(),
-            appex_stub_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run clang for x86_64: {}", e))?;
+    let arch_str = if arches.len() > 1 { "universal" } else { arches[0] };
+    println!("Building appex executable ({})...", arch_str);
 
-    if !clang_status.success() {
-        return Err("Failed to build appex for x86_64".to_string());
+    let mut built_paths: Vec<PathBuf> = Vec::new();
+
+    for target_arch in &arches {
+        let appex_arch_path = bundle_dir.join(format!("{}_{}", executable_name, target_arch));
+        let clang_status = Command::new("clang")
+            .args([
+                "-arch", target_arch,
+                "-fobjc-arc",
+                "-fmodules",
+                "-framework", "Foundation",
+                "-framework", "AudioToolbox",
+                "-framework", "AVFoundation",
+                "-framework", "CoreAudio",
+                "-F", frameworks_dir.to_str().unwrap(),
+                "-framework", &framework_name,
+                "-Wl,-rpath,@loader_path/../../../../Frameworks",
+                "-Wl,-e,_NSExtensionMain",  // Use Apple's standard extension entry point
+                "-o", appex_arch_path.to_str().unwrap(),
+                appex_stub_path.to_str().unwrap(),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
+
+        if !clang_status.success() {
+            return Err(format!("Failed to build appex for {}", target_arch));
+        }
+        built_paths.push(appex_arch_path);
     }
 
-    // Build for arm64
-    let appex_arm64_path = bundle_dir.join(format!("{}_arm64", executable_name));
-    let clang_status = Command::new("clang")
-        .args([
-            "-arch", "arm64",
-            "-fobjc-arc",
-            "-fmodules",
-            "-framework", "Foundation",
-            "-framework", "AudioToolbox",
-            "-framework", "AVFoundation",
-            "-framework", "CoreAudio",
-            "-F", frameworks_dir.to_str().unwrap(),
-            "-framework", &framework_name,
-            "-Wl,-rpath,@loader_path/../../../../Frameworks",
-            "-Wl,-e,_NSExtensionMain",  // Use Apple's standard extension entry point
-            "-o", appex_arm64_path.to_str().unwrap(),
-            appex_stub_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run clang for arm64: {}", e))?;
+    if built_paths.len() == 1 {
+        // Single architecture - just rename
+        fs::rename(&built_paths[0], &appex_binary_path)
+            .map_err(|e| format!("Failed to rename appex binary: {}", e))?;
+    } else {
+        // Multiple architectures - combine with lipo
+        let mut lipo_args: Vec<&str> = vec!["-create"];
+        for path in &built_paths {
+            lipo_args.push(path.to_str().unwrap());
+        }
+        lipo_args.push("-output");
+        lipo_args.push(appex_binary_path.to_str().unwrap());
 
-    if !clang_status.success() {
-        return Err("Failed to build appex for arm64".to_string());
+        let lipo_status = Command::new("lipo")
+            .args(&lipo_args)
+            .status()
+            .map_err(|e| format!("Failed to run lipo for appex: {}", e))?;
+
+        if !lipo_status.success() {
+            return Err("Failed to create universal appex binary".to_string());
+        }
+
+        // Clean up intermediate binaries
+        for path in &built_paths {
+            let _ = fs::remove_file(path);
+        }
     }
 
-    // Combine with lipo
-    let lipo_status = Command::new("lipo")
-        .args([
-            "-create",
-            appex_x86_64_path.to_str().unwrap(),
-            appex_arm64_path.to_str().unwrap(),
-            "-output",
-            appex_binary_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run lipo for appex: {}", e))?;
-
-    if !lipo_status.success() {
-        return Err("Failed to create universal appex binary".to_string());
-    }
-
-    // Clean up intermediate binaries
-    let _ = fs::remove_file(&appex_x86_64_path);
-    let _ = fs::remove_file(&appex_arm64_path);
-
-    println!("Appex executable built (universal)");
+    println!("Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
     let (component_type, detected_manufacturer, detected_subtype) = detect_au_component_info(package, workspace_root);
@@ -1711,67 +1834,63 @@ fn bundle_au(
     fs::write(contents_dir.join("PkgInfo"), "APPL????")
         .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
 
-    // Build host app executable from C stub (universal binary).
+    // Build host app executable from C stub.
     // This is a minimal stub that triggers pluginkit registration when launched.
     // The app is marked LSBackgroundOnly so it exits immediately after registration.
-    println!("Building host app executable (universal)...");
+    println!("Building host app executable ({})...", arch_str);
 
     let stub_main_path = workspace_root.join("crates/beamer-au/objc/stub_main.c");
-    let host_x86_64_path = bundle_dir.join(format!("{}_x86_64", executable_name));
-    let host_arm64_path = bundle_dir.join(format!("{}_arm64", executable_name));
     let host_binary_dst = app_macos_dir.join(executable_name);
 
-    // Build for x86_64
-    let clang_status = Command::new("clang")
-        .args([
-            "-arch", "x86_64",
-            "-framework", "Foundation",
-            "-o", host_x86_64_path.to_str().unwrap(),
-            stub_main_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run clang for x86_64: {}", e))?;
+    let mut host_built_paths: Vec<PathBuf> = Vec::new();
 
-    if !clang_status.success() {
-        return Err("Failed to build host app for x86_64".to_string());
+    for target_arch in &arches {
+        let host_arch_path = bundle_dir.join(format!("{}_{}", executable_name, target_arch));
+        let clang_status = Command::new("clang")
+            .args([
+                "-arch", target_arch,
+                "-framework", "Foundation",
+                "-o", host_arch_path.to_str().unwrap(),
+                stub_main_path.to_str().unwrap(),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
+
+        if !clang_status.success() {
+            return Err(format!("Failed to build host app for {}", target_arch));
+        }
+        host_built_paths.push(host_arch_path);
     }
 
-    // Build for arm64
-    let clang_status = Command::new("clang")
-        .args([
-            "-arch", "arm64",
-            "-framework", "Foundation",
-            "-o", host_arm64_path.to_str().unwrap(),
-            stub_main_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run clang for arm64: {}", e))?;
+    if host_built_paths.len() == 1 {
+        // Single architecture - just rename
+        fs::rename(&host_built_paths[0], &host_binary_dst)
+            .map_err(|e| format!("Failed to rename host binary: {}", e))?;
+    } else {
+        // Multiple architectures - combine with lipo
+        let mut lipo_args: Vec<&str> = vec!["-create"];
+        for path in &host_built_paths {
+            lipo_args.push(path.to_str().unwrap());
+        }
+        lipo_args.push("-output");
+        lipo_args.push(host_binary_dst.to_str().unwrap());
 
-    if !clang_status.success() {
-        return Err("Failed to build host app for arm64".to_string());
+        let lipo_status = Command::new("lipo")
+            .args(&lipo_args)
+            .status()
+            .map_err(|e| format!("Failed to run lipo for host app: {}", e))?;
+
+        if !lipo_status.success() {
+            return Err("Failed to create universal host app binary".to_string());
+        }
+
+        // Clean up intermediate binaries
+        for path in &host_built_paths {
+            let _ = fs::remove_file(path);
+        }
     }
 
-    // Combine with lipo
-    let lipo_status = Command::new("lipo")
-        .args([
-            "-create",
-            host_x86_64_path.to_str().unwrap(),
-            host_arm64_path.to_str().unwrap(),
-            "-output",
-            host_binary_dst.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run lipo for host app: {}", e))?;
-
-    if !lipo_status.success() {
-        return Err("Failed to create universal host app binary".to_string());
-    }
-
-    // Clean up intermediate binaries
-    let _ = fs::remove_file(&host_x86_64_path);
-    let _ = fs::remove_file(&host_arm64_path);
-
-    println!("Host app built (universal)");
+    println!("Host app built ({})", arch_str);
 
     println!("AUv3 app extension bundle created: {}", bundle_dir.display());
 
