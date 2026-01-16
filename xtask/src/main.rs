@@ -447,9 +447,11 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     AUHostTransportStateBlock transportState = self.transportStateBlock;
     AUScheduleMIDIEventBlock scheduleMIDI = self.scheduleMIDIEventBlock;
 
-    AVAudioPCMBuffer* inputPCMBuffer = _inputPCMBuffer;
-    AudioBufferList* inputMutableABL = _inputMutableABL;
-    AUAudioFrameCount maxFrames = _maxFrames;
+    // Capture self to access instance variables dynamically.
+    // This is necessary because the host may call internalRenderBlock before
+    // allocateRenderResourcesAndReturnError, so capturing by value would get nil.
+    // Use __unsafe_unretained to avoid retain cycle (AU lifecycle guarantees validity).
+    __unsafe_unretained typeof(self) blockSelf = self;
 
     return ^AUAudioUnitStatus(
         AudioUnitRenderActionFlags* actionFlags,
@@ -463,6 +465,11 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         if (rustInstance == NULL) {{
             return kAudioUnitErr_Uninitialized;
         }}
+
+        // Access these dynamically - they're set in allocateRenderResourcesAndReturnError
+        AVAudioPCMBuffer* inputPCMBuffer = blockSelf->_inputPCMBuffer;
+        AudioBufferList* inputMutableABL = blockSelf->_inputMutableABL;
+        AUAudioFrameCount maxFrames = blockSelf->_maxFrames;
 
         AudioBufferList* inputData = NULL;
         if (inputPCMBuffer != nil && inputMutableABL != NULL && pullInputBlock != nil

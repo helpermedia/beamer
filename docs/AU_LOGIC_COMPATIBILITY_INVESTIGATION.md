@@ -484,11 +484,11 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 3. ✅ ~~**Use NSExtensionMain entry point**~~ - **SUCCESS!** Replaced custom `main()` with Apple's `NSExtensionMain` via `-e _NSExtensionMain` linker flag. Plugin now loads in Logic Pro.
 
-4. **Debug audio processing in Logic Pro** - Plugin loads but audio is silent. Likely issue with buffer handling or render block in XPC context. Works correctly in Reaper (in-process).
+4. ✅ ~~**Debug audio processing in Logic Pro**~~ - **FIXED for effects!** Two issues found and resolved:
+   - **Output buffer zeroing** (render.rs): Code was zeroing output buffers after in-place processing setup, destroying input data. Logic Pro uses in-place processing (null output pointers filled with input pointers).
+   - **Render block variable capture** (xtask ObjC generation): `_inputPCMBuffer`, `_inputMutableABL`, `_maxFrames` were captured by value at block creation. In XPC context, host may call `internalRenderBlock` before `allocateRenderResourcesAndReturnError`, capturing nil values. Fixed by accessing via `blockSelf->` dynamically.
 
-5. *(Lower priority)* **Enable hardened runtime** - Add `--options runtime` to code signing (for notarization)
-
-6. *(Lower priority)* **Add missing rpath** - Add `@executable_path/../Frameworks` alongside `@loader_path/../../../../Frameworks`
+5. **Debug instrument (synth) audio in Logic Pro** - Effects now work, but BeamerSynth is still silent. Instruments have no input bus, so different buffer handling path.
 
 ---
 

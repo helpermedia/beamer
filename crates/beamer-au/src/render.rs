@@ -1631,14 +1631,10 @@ impl<S: Sample> RenderBlock<S> {
                 return os_status::NO_ERR;
             }
 
-            // Always clear collected outputs to avoid residual garbage before DSP writes.
-            for &out_ptr in &storage.main_outputs {
-                let bytes = std::slice::from_raw_parts_mut(
-                    out_ptr as *mut u8,
-                    num_samples * std::mem::size_of::<S>(),
-                );
-                bytes.fill(0);
-            }
+            // Note: We intentionally do NOT zero output buffers here because:
+            // 1. For in-place processing, output pointers point to input data which we need
+            // 2. The plugin's process() will overwrite output anyway
+            // 3. Zeroing would destroy the input data in the in-place case (Logic Pro uses this)
         }
 
         let _main_inputs = storage.input_channel_count();
