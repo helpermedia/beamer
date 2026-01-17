@@ -661,7 +661,7 @@ fn parse_midi1_to_beamer(
             channel,
             pitch: data1,
             velocity: data2 as f32 / 127.0,
-            note_id: -1,
+            note_id: data1 as i32,
             tuning: 0.0,
         }),
         0x90 => {
@@ -671,7 +671,7 @@ fn parse_midi1_to_beamer(
                     channel,
                     pitch: data1,
                     velocity: 0.0,
-                    note_id: -1,
+                    note_id: data1 as i32,
                     tuning: 0.0,
                 })
             } else {
@@ -679,7 +679,7 @@ fn parse_midi1_to_beamer(
                     channel,
                     pitch: data1,
                     velocity: data2 as f32 / 127.0,
-                    note_id: -1,
+                    note_id: data1 as i32,
                     tuning: 0.0,
                     length: 0,
                 })
@@ -689,7 +689,7 @@ fn parse_midi1_to_beamer(
             channel,
             pitch: data1,
             pressure: data2 as f32 / 127.0,
-            note_id: -1,
+            note_id: data1 as i32,
         }),
         0xB0 => MidiEventKind::ControlChange(ControlChange {
             channel,

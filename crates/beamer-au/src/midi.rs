@@ -103,7 +103,7 @@ fn parse_midi1_message(
             channel,
             pitch: data1,
             velocity: data2 as f32 / 127.0,
-            note_id: -1, // Unknown
+            note_id: data1 as i32,
             tuning: 0.0,
         }),
         0x90 => {
@@ -113,7 +113,7 @@ fn parse_midi1_message(
                     channel,
                     pitch: data1,
                     velocity: 0.0,
-                    note_id: -1,
+                    note_id: data1 as i32,
                     tuning: 0.0,
                 })
             } else {
@@ -121,7 +121,7 @@ fn parse_midi1_message(
                     channel,
                     pitch: data1,
                     velocity: data2 as f32 / 127.0,
-                    note_id: -1,
+                    note_id: data1 as i32,
                     tuning: 0.0,
                     length: 0,
                 })

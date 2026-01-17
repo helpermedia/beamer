@@ -2959,35 +2959,53 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
     match event.r#type {
         K_NOTE_ON_EVENT => {
             let note_on = &event.__field0.noteOn;
+            // Use pitch as note_id when host sends -1
+            let note_id = if note_on.noteId == -1 {
+                note_on.pitch as i32
+            } else {
+                note_on.noteId
+            };
             Some(MidiEvent::note_on(
                 sample_offset,
                 note_on.channel as u8,
                 note_on.pitch as u8,
                 note_on.velocity,
-                note_on.noteId,
+                note_id,
                 note_on.tuning,
                 note_on.length,
             ))
         }
         K_NOTE_OFF_EVENT => {
             let note_off = &event.__field0.noteOff;
+            // Use pitch as note_id when host sends -1
+            let note_id = if note_off.noteId == -1 {
+                note_off.pitch as i32
+            } else {
+                note_off.noteId
+            };
             Some(MidiEvent::note_off(
                 sample_offset,
                 note_off.channel as u8,
                 note_off.pitch as u8,
                 note_off.velocity,
-                note_off.noteId,
+                note_id,
                 note_off.tuning,
             ))
         }
         K_POLY_PRESSURE_EVENT => {
             let poly = &event.__field0.polyPressure;
+            // Use pitch as note_id when host sends -1
+            let note_id = if poly.noteId == -1 {
+                poly.pitch as i32
+            } else {
+                poly.noteId
+            };
             Some(MidiEvent::poly_pressure(
                 sample_offset,
                 poly.channel as u8,
                 poly.pitch as u8,
                 poly.pressure,
-                poly.noteId,
+                note_id,
             ))
         }
         K_DATA_EVENT => {

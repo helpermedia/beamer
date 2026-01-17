@@ -283,7 +283,6 @@ typedef struct {
 
 **Remaining Issues**:
 - ❌ Still no sound in Logic Pro (needs investigation - Logic may handle `scheduleMIDIEventBlock` differently)
-- ⚠️ Polyphony bug: Monophonic behavior in all DAWs (Reaper, Cubase) - affects both AU and VST3, likely a beamer framework or synth plugin bug
 
 ---
 
@@ -344,9 +343,9 @@ This confirms the host is using the standard `renderBlock` path (not bypassing t
 **Why This Works**: We intercept MIDI events at the source (`scheduleMIDIEventBlock`) before they enter the broken base class forwarding mechanism, then manually construct the event list format that the render code expects.
 
 **Current Status**:
-- ✅ **Reaper**: MIDI works, synth produces sound
+- ✅ **Reaper**: MIDI works, synth produces sound with full polyphony
 - ❌ **Logic Pro**: Still silent (Logic may use a different MIDI delivery path)
-- ⚠️ **Polyphony bug**: Monophonic behavior in all DAWs (Reaper, Cubase) - affects both AU and VST3, likely a bug in the synth plugin or framework MIDI handling
+- ✅ **Polyphony**: Fixed - notes now get unique IDs for voice tracking
 
 ## What We've Ruled Out
 
@@ -362,6 +361,7 @@ This confirms the host is using the standard `renderBlock` path (not bypassing t
 10. ~~renderBlock override issue~~ - Removing override didn't help
 11. ~~internalRenderBlock caching~~ - Caching the block instance didn't fix event forwarding
 12. ~~Base class event forwarding~~ - **BYPASSED** with custom MIDI collection
+13. ~~Polyphony/voice allocation bug~~ - **FIXED**: Use pitch as note_id (AU/MIDI 1.0 has no native note IDs)
 
 ## Next Steps
 
@@ -370,10 +370,10 @@ This confirms the host is using the standard `renderBlock` path (not bypassing t
    - Investigate if Logic requires specific entitlements or capabilities
    - Compare with how working AU instruments handle Logic Pro
 
-2. **Fix polyphony bug** - Affects all DAWs (Reaper, Cubase), both AU and VST3:
-   - Likely a bug in the synth plugin or beamer framework MIDI handling
-   - Check if `note_id` values are being handled correctly for voice allocation
-   - May be related to how MIDI events are converted to beamer's internal format
+2. ~~**Fix polyphony bug**~~ - ✅ **FIXED**: The issue was that `note_id` was always 0, causing all notes to map to the same voice. Solution: use MIDI pitch as `note_id` since AU/MIDI 1.0 doesn't have native note IDs (unlike VST3's note expression). Fixed in:
+   - `beamer-au/src/render.rs` - AU: use pitch as note_id
+   - `beamer-au/src/midi.rs` - AU: same fix
+   - `beamer-vst3/src/processor.rs` - VST3: use pitch as note_id when host sends -1
 
 3. **Test with iPlug2 AU instrument in Logic** - Build IPlugInstrument from iPlug2 Examples and verify it receives MIDI correctly in Logic. If it works, compare how they handle MIDI delivery.
 
