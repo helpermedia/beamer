@@ -72,7 +72,16 @@ typedef void* BeamerAuInstanceHandle;
  *
  * Matches `beamer_core::MAX_CHANNELS` for consistency across plugin formats.
  */
-#define BEAMER_AU_MAX_CHANNELS 64
+#define BEAMER_AU_MAX_CHANNELS 32
+
+/**
+ * Maximum number of MIDI events per render buffer.
+ *
+ * Matches `beamer_core::midi::MAX_MIDI_EVENTS` for consistency across plugin formats.
+ * This limit accommodates dense MIDI input including MPE controllers which can
+ * generate many events per buffer (pitch bend + slide + pressure per voice).
+ */
+#define BEAMER_AU_MAX_MIDI_EVENTS 1024
 
 /**
  * Bus type enumeration.

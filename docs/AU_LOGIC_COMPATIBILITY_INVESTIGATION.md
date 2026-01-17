@@ -488,12 +488,13 @@ When embedded in appex (failed attempt), this static initialization may have cau
    - **Output buffer zeroing** (render.rs): Code was zeroing output buffers after in-place processing setup, destroying input data. Logic Pro uses in-place processing (null output pointers filled with input pointers).
    - **Render block variable capture** (xtask ObjC generation): `_inputPCMBuffer`, `_inputMutableABL`, `_maxFrames` were captured by value at block creation. In XPC context, host may call `internalRenderBlock` before `allocateRenderResourcesAndReturnError`, capturing nil values. Fixed by accessing via `blockSelf->` dynamically.
 
-5. **Debug instrument (synth) audio in Logic Pro** - Effects now work, but BeamerSynth is still silent. Instruments have no input bus, so different buffer handling path.
+5. **Debug instrument (synth) audio** - Effects now work, but BeamerSynth is still silent. **Root cause identified: MIDI events not delivered to render block** (`realtimeEventListHead` is null). Separate investigation: [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md)
 
 ---
 
 ## Related Documentation
 
+- [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md) - **Ongoing**: AU instrument MIDI input issue
 - [AU_DEBUG_INFO.md](AU_DEBUG_INFO.md) - Debug procedures
 - [AU_CODE_SIGNING.md](AU_CODE_SIGNING.md) - Code signing details
 - [AU_ARCHITECTURE_REVIEW.md](AU_ARCHITECTURE_REVIEW.md) - Architecture overview

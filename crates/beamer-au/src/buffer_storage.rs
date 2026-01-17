@@ -64,7 +64,7 @@ use std::slice;
 /// ```ignore
 /// let config = extract_bus_config_from_au(au)?;
 /// validate_bus_limits_from_config(&config)?;
-/// let storage = ProcessBufferStorage::allocate_from_config(&config);
+/// let storage = ProcessBufferStorage::allocate_from_config(&config, 4096);
 /// ```
 pub fn validate_bus_limits_from_config(bus_config: &CachedBusConfig) -> Result<(), String> {
     // Validate input bus count
@@ -140,6 +140,14 @@ pub struct ProcessBufferStorage<S: Sample> {
     pub aux_inputs: Vec<Vec<*const S>>,
     /// Auxiliary output buses (only allocated if plugin uses them)
     pub aux_outputs: Vec<Vec<*mut S>>,
+    /// Internal output buffers for instruments (when host provides null pointers).
+    /// Only allocated for plugins with no input buses (instruments/generators).
+    /// When a host provides null output pointers, `collect_outputs` will use these
+    /// buffers and update the AudioBufferList to point to them.
+    internal_output_buffers: Option<Vec<Vec<S>>>,
+    /// Max frames for internal buffers (set during allocation).
+    /// Used to validate that num_samples doesn't exceed buffer capacity.
+    max_frames: usize,
 }
 
 impl<S: Sample> ProcessBufferStorage<S> {
@@ -160,15 +168,16 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// # Arguments
     ///
     /// * `bus_config` - Cached bus configuration from AU
+    /// * `max_frames` - Maximum frames per render call (for internal buffer allocation)
     ///
     /// # Example
     ///
     /// ```ignore
     /// let config = extract_bus_config_from_au(au)?;
     /// validate_bus_limits_from_config(&config)?;
-    /// let storage = ProcessBufferStorage::allocate_from_config(&config);
+    /// let storage = ProcessBufferStorage::allocate_from_config(&config, 4096);
     /// ```
-    pub fn allocate_from_config(bus_config: &CachedBusConfig) -> Self {
+    pub fn allocate_from_config(bus_config: &CachedBusConfig, max_frames: usize) -> Self {
         // Extract main bus channel counts (bus 0)
         let main_in_channels = bus_config
             .input_bus_info(0)
@@ -214,11 +223,26 @@ impl<S: Sample> ProcessBufferStorage<S> {
             Vec::new() // Zero-capacity allocation - no heap memory
         };
 
+        // For instruments (no input buses), allocate internal output buffers.
+        // Some hosts (Logic Pro, Reaper) may provide null output buffer pointers,
+        // expecting the AU to use its own buffers.
+        let internal_output_buffers = if main_in_channels == 0 && main_out_channels > 0 {
+            let mut buffers = Vec::with_capacity(main_out_channels);
+            for _ in 0..main_out_channels {
+                buffers.push(vec![S::ZERO; max_frames]);
+            }
+            Some(buffers)
+        } else {
+            None
+        };
+
         Self {
             main_inputs: Vec::with_capacity(main_in_channels),
             main_outputs: Vec::with_capacity(main_out_channels),
             aux_inputs,
             aux_outputs,
+            internal_output_buffers,
+            max_frames,
         }
     }
 
@@ -256,6 +280,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
             main_outputs: Vec::with_capacity(main_out_channels),
             aux_inputs,
             aux_outputs,
+            internal_output_buffers: None, // Manual allocation doesn't set up internal buffers
+            max_frames: 0,
         }
     }
 
@@ -312,11 +338,15 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
     /// Collect output pointers from an AudioBufferList.
     ///
+    /// For instruments (plugins with no inputs), if the host provides null buffer pointers,
+    /// this function will use internal buffers and update the AudioBufferList to point to them.
+    /// This is necessary because some hosts (Logic Pro, Reaper) expect the AU to provide buffers.
+    ///
     /// # Safety
     ///
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
+    /// - num_samples must not exceed actual buffer sizes or max_frames
     #[inline]
     pub unsafe fn collect_outputs(
         &mut self,
@@ -332,16 +362,37 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
         for i in 0..list.number_buffers.min(max_channels as u32) {
             let buffer = list.buffer_at_mut(i);
-            if !buffer.data.is_null() && buffer.number_channels == 1 {
-                // Non-interleaved: one channel per buffer
-                let data_ptr = buffer.data as *mut S;
-                // Validate we have enough data
-                let available_samples = buffer.data_byte_size as usize / std::mem::size_of::<S>();
+
+            // Skip interleaved buffers (number_channels > 1)
+            if buffer.number_channels != 1 {
+                continue;
+            }
+
+            if !buffer.data.is_null() {
+                // Host provided a buffer - use it
+                let available_samples =
+                    buffer.data_byte_size as usize / std::mem::size_of::<S>();
                 if available_samples >= num_samples {
-                    self.main_outputs.push(data_ptr);
+                    self.main_outputs.push(buffer.data as *mut S);
+                }
+            } else if let Some(ref mut internal_buffers) = self.internal_output_buffers {
+                // Host provided null pointer - use our internal buffer (instruments only).
+                // This happens in some hosts (Logic Pro, Reaper) that expect the AU to
+                // provide its own output buffers for instruments/generators.
+                let channel_idx = i as usize;
+                if channel_idx < internal_buffers.len() && num_samples <= self.max_frames {
+                    let internal_buf = &mut internal_buffers[channel_idx];
+                    let ptr = internal_buf.as_mut_ptr();
+
+                    // Update the AudioBufferList to point to our internal buffer.
+                    // The host will read rendered audio from this location.
+                    buffer.data = ptr as *mut std::ffi::c_void;
+                    buffer.data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
+
+                    self.main_outputs.push(ptr);
                 }
             }
-            // Skip interleaved buffers (number_channels > 1) - handled separately
+            // If null data and no internal buffers (effects), skip this channel
         }
     }
 
@@ -589,7 +640,7 @@ mod tests {
     fn test_allocate_from_config_stereo() {
         let config = CachedBusConfig::default(); // 2in/2out
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         assert_eq!(storage.main_inputs.capacity(), 2);
         assert_eq!(storage.main_outputs.capacity(), 2);
@@ -617,7 +668,7 @@ mod tests {
         );
 
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         assert_eq!(storage.main_inputs.capacity(), 2);
         assert_eq!(storage.main_outputs.capacity(), 6);
@@ -664,7 +715,7 @@ mod tests {
         );
 
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         // Verify exact allocation - no wasted space
         assert_eq!(
@@ -714,7 +765,7 @@ mod tests {
         );
 
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         assert_eq!(storage.main_inputs.capacity(), 1);
         assert_eq!(storage.main_outputs.capacity(), 2);
@@ -753,7 +804,7 @@ mod tests {
         );
 
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         assert_eq!(storage.main_inputs.capacity(), 2);
         assert_eq!(storage.main_outputs.capacity(), 2);
@@ -795,7 +846,7 @@ mod tests {
             }],
         );
         let mono_storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&mono_config);
+            ProcessBufferStorage::allocate_from_config(&mono_config, 4096);
 
         // Calculate actual memory used (capacity * size_of::<*const f32>)
         let mono_memory = (mono_storage.main_inputs.capacity()
@@ -825,7 +876,7 @@ mod tests {
 
         let stereo_config = CachedBusConfig::default(); // 2in/2out, no aux
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&stereo_config);
+            ProcessBufferStorage::allocate_from_config(&stereo_config, 4096);
 
         // The aux_inputs and aux_outputs should be completely empty Vec::new()
         assert_eq!(storage.aux_inputs.len(), 0);
@@ -861,7 +912,7 @@ mod tests {
         );
 
         let storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         // No input aux buses - should be empty
         assert_eq!(storage.aux_inputs.len(), 0);
@@ -895,7 +946,7 @@ mod tests {
         );
 
         let mut storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         // Record initial capacities
         let main_in_cap = storage.main_inputs.capacity();
@@ -970,7 +1021,7 @@ mod tests {
         );
 
         let mut storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         // Verify aux input bus count
         assert_eq!(storage.aux_input_bus_count(), 1);
@@ -1013,7 +1064,7 @@ mod tests {
         );
 
         let mut storage: ProcessBufferStorage<f32> =
-            ProcessBufferStorage::allocate_from_config(&config);
+            ProcessBufferStorage::allocate_from_config(&config, 4096);
 
         // Create dummy buffers
         let aux_input_buffer: [f32; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
@@ -1047,5 +1098,116 @@ mod tests {
         // Verify aux output slices
         assert_eq!(aux_output_slices.len(), 1); // One aux bus
         assert_eq!(aux_output_slices[0].len(), 2); // Two channels
+    }
+
+    #[test]
+    fn test_instrument_internal_buffers_allocated() {
+        // Instruments have 0 inputs and >0 outputs - should allocate internal buffers
+        let config = CachedBusConfig::new(
+            vec![], // No input buses (instrument)
+            vec![BusInfo {
+                channel_count: 2,
+                bus_type: BusType::Main,
+            }],
+        );
+
+        let storage: ProcessBufferStorage<f32> =
+            ProcessBufferStorage::allocate_from_config(&config, 512);
+
+        // Internal buffers should be allocated for instruments
+        assert!(storage.internal_output_buffers.is_some());
+        let internal = storage.internal_output_buffers.as_ref().unwrap();
+        assert_eq!(internal.len(), 2); // Stereo
+        assert_eq!(internal[0].len(), 512); // max_frames
+        assert_eq!(internal[1].len(), 512);
+        assert_eq!(storage.max_frames, 512);
+    }
+
+    #[test]
+    fn test_effect_no_internal_buffers() {
+        // Effects have inputs - should NOT allocate internal buffers
+        let config = CachedBusConfig::default(); // 2in/2out
+
+        let storage: ProcessBufferStorage<f32> =
+            ProcessBufferStorage::allocate_from_config(&config, 512);
+
+        // Effects don't need internal buffers (can use in-place processing)
+        assert!(storage.internal_output_buffers.is_none());
+    }
+
+    #[test]
+    fn test_collect_outputs_uses_internal_buffers_for_null_pointers() {
+        use crate::buffers::{AudioBuffer, AudioBufferList};
+
+        // Create instrument config (no inputs)
+        let config = CachedBusConfig::new(
+            vec![], // No input buses
+            vec![BusInfo {
+                channel_count: 2,
+                bus_type: BusType::Main,
+            }],
+        );
+
+        let mut storage: ProcessBufferStorage<f32> =
+            ProcessBufferStorage::allocate_from_config(&config, 256);
+
+        // Create an AudioBufferList with null data pointers (simulating host behavior).
+        // We need space for 2 AudioBuffers, so use a repr(C) struct.
+        #[repr(C)]
+        struct TestAudioBufferList {
+            number_buffers: u32,
+            buffers: [AudioBuffer; 2],
+        }
+
+        let mut test_abl = TestAudioBufferList {
+            number_buffers: 2,
+            buffers: [
+                AudioBuffer {
+                    number_channels: 1,
+                    data_byte_size: 0,
+                    data: std::ptr::null_mut(), // Null pointer - host expects AU to provide
+                },
+                AudioBuffer {
+                    number_channels: 1,
+                    data_byte_size: 0,
+                    data: std::ptr::null_mut(),
+                },
+            ],
+        };
+
+        // Collect outputs - should use internal buffers
+        let num_samples = 128;
+        unsafe {
+            storage.collect_outputs(
+                &mut test_abl as *mut TestAudioBufferList as *mut AudioBufferList,
+                num_samples,
+            );
+        }
+
+        // Verify outputs were collected
+        assert_eq!(storage.main_outputs.len(), 2);
+
+        // Verify the AudioBufferList was updated to point to internal buffers
+        assert!(!test_abl.buffers[0].data.is_null());
+        assert!(!test_abl.buffers[1].data.is_null());
+        assert_eq!(
+            test_abl.buffers[0].data_byte_size,
+            (num_samples * std::mem::size_of::<f32>()) as u32
+        );
+
+        // Verify we can write to the output slices and they're backed by internal buffers
+        unsafe {
+            let mut slices = storage.output_slices(num_samples);
+            assert_eq!(slices.len(), 2);
+
+            // Write test data
+            slices[0][0] = 0.5;
+            slices[1][0] = -0.5;
+        }
+
+        // Verify the data is in the internal buffers
+        let internal = storage.internal_output_buffers.as_ref().unwrap();
+        assert_eq!(internal[0][0], 0.5);
+        assert_eq!(internal[1][0], -0.5);
     }
 }

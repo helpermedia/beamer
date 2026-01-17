@@ -51,6 +51,27 @@ use crate::render::{
 use beamer_core::ParameterStore;
 
 // =============================================================================
+// Compile-time checks for C header constant sync
+// =============================================================================
+//
+// These assertions ensure that constants in BeamerAuBridge.h stay in sync with
+// their Rust counterparts. If you change a constant in beamer_core and the build
+// fails here, update the corresponding #define in objc/BeamerAuBridge.h.
+
+const _: () = assert!(
+    beamer_core::midi::MAX_MIDI_EVENTS == 1024,
+    "Update BEAMER_AU_MAX_MIDI_EVENTS in BeamerAuBridge.h"
+);
+const _: () = assert!(
+    MAX_BUSES == 16,
+    "Update BEAMER_AU_MAX_BUSES in BeamerAuBridge.h"
+);
+const _: () = assert!(
+    beamer_core::MAX_CHANNELS == 32,
+    "Update BEAMER_AU_MAX_CHANNELS in BeamerAuBridge.h"
+);
+
+// =============================================================================
 // Macros
 // =============================================================================
 
@@ -517,7 +538,10 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         // Note: We don't store host block pointers here - they're passed per-render call
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
             BeamerAuSampleFormat::Float32 => {
-                let storage = ProcessBufferStorage::<f32>::allocate_from_config(&rust_bus_config);
+                let storage = ProcessBufferStorage::<f32>::allocate_from_config(
+                    &rust_bus_config,
+                    max_frames as usize,
+                );
                 Arc::from(create_render_block_f32(
                     Arc::clone(&handle.plugin),
                     storage,
@@ -529,7 +553,10 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 ))
             }
             BeamerAuSampleFormat::Float64 => {
-                let storage = ProcessBufferStorage::<f64>::allocate_from_config(&rust_bus_config);
+                let storage = ProcessBufferStorage::<f64>::allocate_from_config(
+                    &rust_bus_config,
+                    max_frames as usize,
+                );
                 Arc::from(create_render_block_f64(
                     Arc::clone(&handle.plugin),
                     storage,
