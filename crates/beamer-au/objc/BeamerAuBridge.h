@@ -17,22 +17,57 @@
  * - Render function is called from real-time audio thread (no allocations, no locks)
  * - Parameter get/set may be called from any thread (uses atomics internally)
  * - State save/load should be called from main thread
- *
- * Copyright (c) 2026 Helpermedia. All rights reserved.
  */
 
 #ifndef BEAMER_AU_BRIDGE_H
 #define BEAMER_AU_BRIDGE_H
 
-#include <AudioToolbox/AudioToolbox.h>
+// =============================================================================
+// Platform Detection and Fallbacks
+// =============================================================================
+//
+// This header uses Apple/Objective-C types and macros. When parsed by IDE
+// tooling (clangd) without proper SDK configuration, we provide stub
+// definitions so the header can be analyzed without errors.
+
 #include <stdint.h>
 #include <stdbool.h>
+
+// Check if AudioToolbox is actually available (not just __APPLE__ defined)
+#if defined(__has_include) && __has_include(<AudioToolbox/AudioToolbox.h>)
+#include <AudioToolbox/AudioToolbox.h>
+#define BEAMER_HAS_AUDIOTOOLBOX 1
+#endif
+
+#ifndef BEAMER_HAS_AUDIOTOOLBOX
+// Stub type definitions for IDE parsing when SDK headers unavailable
+typedef int32_t OSStatus;
+typedef uint32_t AudioUnitRenderActionFlags;
+typedef uint32_t AUAudioFrameCount;
+typedef int64_t AUEventSampleTime;
+typedef long NSInteger;
+typedef struct AudioTimeStamp { uint64_t mHostTime; } AudioTimeStamp;
+typedef struct AudioBufferList { uint32_t mNumberBuffers; } AudioBufferList;
+typedef struct AudioComponentDescription { uint32_t componentType; } AudioComponentDescription;
+typedef struct AURenderEvent { int type; } AURenderEvent;
+typedef void* AURenderPullInputBlock;
+typedef void* AUHostMusicalContextBlock;
+typedef void* AUHostTransportStateBlock;
+typedef void* AUScheduleMIDIEventBlock;
+#endif
+
+// Nullability annotation fallbacks for non-clang or missing SDK
+#ifndef NS_ASSUME_NONNULL_BEGIN
+#define NS_ASSUME_NONNULL_BEGIN
+#define NS_ASSUME_NONNULL_END
+#define _Nullable
+#define _Nonnull
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Enable nullability annotations for better Objective-C interop
 NS_ASSUME_NONNULL_BEGIN
 
 // =============================================================================
