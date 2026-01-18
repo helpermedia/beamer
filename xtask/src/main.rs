@@ -3,8 +3,18 @@
 //! Usage: cargo xtask bundle <package> [--vst3] [--au] [--arch <arch>] [--release] [--install] [--clean]
 
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Print an error message, with red color if stderr is a terminal.
+fn print_error(msg: &str) {
+    if std::io::stderr().is_terminal() {
+        eprintln!("\x1b[1;31mError:\x1b[0m {}", msg);
+    } else {
+        eprintln!("Error: {}", msg);
+    }
+}
 
 /// Architecture configuration for builds
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1249,6 +1259,21 @@ fn main() {
         })
         .unwrap_or(Arch::Native);
 
+    // Check for unknown flags
+    let known_flags = ["--release", "--install", "--clean", "--vst3", "--au", "--arch"];
+    let arch_values = ["native", "universal", "arm64", "x86_64"];
+    for arg in args.iter().skip(3) {
+        if arg.starts_with("--") && !known_flags.contains(&arg.as_str()) {
+            print_error(&format!("unknown flag '{}'", arg));
+            eprintln!("Known flags: {}", known_flags.join(", "));
+            std::process::exit(1);
+        } else if !arg.starts_with("--") && !arch_values.contains(&arg.as_str()) {
+            print_error(&format!("unexpected argument '{}'", arg));
+            print_usage();
+            std::process::exit(1);
+        }
+    }
+
     // Default to VST3 if no format specified
     let (build_vst3, build_au) = if !build_vst3 && !build_au {
         (true, false)
@@ -1257,7 +1282,7 @@ fn main() {
     };
 
     if let Err(e) = bundle(package, release, install, clean, build_vst3, build_au, arch) {
-        eprintln!("Error: {}", e);
+        print_error(&e);
         std::process::exit(1);
     }
 }
