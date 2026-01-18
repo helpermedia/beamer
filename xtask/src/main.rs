@@ -41,6 +41,8 @@ struct AppexPlistConfig<'a> {
     framework_bundle_id: &'a str,
     version_string: &'a str,
     version_int: u32,
+    plugin_name: Option<&'a str>,
+    vendor_name: Option<&'a str>,
 }
 
 // =============================================================================
@@ -1975,13 +1977,19 @@ fn bundle_au(
     println!("Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype) = detect_au_component_info(package, workspace_root);
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name) = detect_au_component_info(package, workspace_root);
     println!(
         "Detected AU: {} (manufacturer: {}, subtype: {})",
         component_type,
         detected_manufacturer.as_deref().unwrap_or("Bemr"),
         detected_subtype.as_deref().unwrap_or("auto")
     );
+    if let Some(ref name) = detected_plugin_name {
+        println!("  Plugin name: {}", name);
+    }
+    if let Some(ref vendor) = detected_vendor_name {
+        println!("  Vendor: {}", vendor);
+    }
 
     // Create appex Info.plist with NSExtension (out-of-process/XPC mode)
     let appex_info_plist = create_appex_info_plist(&AppexPlistConfig {
@@ -1993,6 +2001,8 @@ fn bundle_au(
         framework_bundle_id: &framework_bundle_id,
         version_string: &version_string,
         version_int,
+        plugin_name: detected_plugin_name.as_deref(),
+        vendor_name: detected_vendor_name.as_deref(),
     });
     fs::write(appex_contents_dir.join("Info.plist"), appex_info_plist)
         .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
@@ -2114,13 +2124,14 @@ fn bundle_au(
     Ok(())
 }
 
-/// Detect AU component type, manufacturer, and subtype from plugin source code.
+/// Detect AU component type, manufacturer, subtype, and plugin metadata from source code.
 ///
-/// Parses the plugin's lib.rs file looking for the `AuConfig::new()` declaration
-/// to extract the ComponentType and fourcc codes.
+/// Parses the plugin's lib.rs file looking for:
+/// - `AuConfig::new()` declaration to extract ComponentType and fourcc codes
+/// - `PluginConfig::new()` to extract plugin name and vendor
 ///
-/// Returns (component_type_code, manufacturer_option, subtype_option)
-fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>) {
+/// Returns (component_type_code, manufacturer_option, subtype_option, plugin_name, vendor_name)
+fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
     // Try to find the lib.rs for this package
     let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
 
@@ -2143,10 +2154,13 @@ fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Op
         // Pattern: AuConfig::new(type, fourcc!(b"manu"), fourcc!(b"subt"))
         let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
 
-        (component_type, manufacturer, subtype)
+        // Detect plugin name and vendor from PluginConfig
+        let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
+
+        (component_type, manufacturer, subtype, plugin_name, vendor_name)
     } else {
         // Default to effect if we can't read the file
-        ("aufx".to_string(), None, None)
+        ("aufx".to_string(), None, None, None, None)
     }
 }
 
@@ -2179,6 +2193,36 @@ fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
     let manufacturer = fourcc_codes.first().cloned();
     let subtype = fourcc_codes.get(1).cloned();
     (manufacturer, subtype)
+}
+
+/// Extract plugin name and vendor from PluginConfig in source code.
+///
+/// Looks for patterns:
+/// - `PluginConfig::new("Plugin Name")`
+/// - `.with_vendor("Vendor Name")`
+///
+/// Returns (plugin_name, vendor_name) as Options.
+fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
+    let mut plugin_name = None;
+    let mut vendor_name = None;
+
+    // Find PluginConfig::new("name")
+    if let Some(start) = content.find("PluginConfig::new(\"") {
+        let after_prefix = &content[start + 19..]; // Skip "PluginConfig::new(\""
+        if let Some(end) = after_prefix.find('"') {
+            plugin_name = Some(after_prefix[..end].to_string());
+        }
+    }
+
+    // Find .with_vendor("name")
+    if let Some(start) = content.find(".with_vendor(\"") {
+        let after_prefix = &content[start + 14..]; // Skip ".with_vendor(\""
+        if let Some(end) = after_prefix.find('"') {
+            vendor_name = Some(after_prefix[..end].to_string());
+        }
+    }
+
+    (plugin_name, vendor_name)
 }
 
 fn get_workspace_root() -> Result<PathBuf, String> {
@@ -2329,6 +2373,15 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let pascal_name = to_pascal_case(config.package);
     let extension_class = format!("Beamer{}AuExtension", pascal_name);
 
+    // Create the plugin display name from vendor and plugin name
+    // Format: "Vendor: Plugin Name" (e.g., "Beamer Framework: Beamer Synth")
+    let plugin_display_name = match (config.vendor_name, config.plugin_name) {
+        (Some(vendor), Some(name)) => format!("{}: {}", vendor, name),
+        (None, Some(name)) => format!("Beamer: {}", name),
+        (Some(vendor), None) => format!("{}: {}", vendor, config.executable_name),
+        (None, None) => format!("Beamer: {}", config.executable_name),
+    };
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2344,10 +2397,16 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>{executable}</string>
+    <key>CFBundleDisplayName</key>
+    <string>{display_name}</string>
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleSignature</key>
     <string>????</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
     <key>CFBundleVersion</key>
     <string>{version}</string>
     <key>CFBundleShortVersionString</key>
@@ -2372,7 +2431,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
                     <key>manufacturer</key>
                     <string>{manufacturer}</string>
                     <key>name</key>
-                    <string>Beamer: {executable}</string>
+                    <string>{plugin_display_name}</string>
                     <key>sandboxSafe</key>
                     <true/>
                     <key>tags</key>
@@ -2401,7 +2460,9 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
         tags = tags,
         framework_bundle_id = config.framework_bundle_id,
         version = config.version_string,
-        version_int = config.version_int
+        version_int = config.version_int,
+        plugin_display_name = plugin_display_name,
+        display_name = config.plugin_name.unwrap_or(config.executable_name),
     )
 }
 
