@@ -465,8 +465,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 *Rust Layer:*
 - [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations (~1,100 lines)
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion (~650 lines)
-- [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + parameter events (~1,300 lines)
-- [midi.rs](crates/beamer-au/src/midi.rs) - MIDI conversion (~350 lines)
+- [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events (~1,400 lines)
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare (~350 lines)
 - [sysex_pool.rs](crates/beamer-au/src/sysex_pool.rs) - SysEx output pool (~120 lines)
 

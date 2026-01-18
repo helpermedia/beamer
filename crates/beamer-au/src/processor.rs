@@ -754,7 +754,7 @@ where
         self.state.midi_cc_state()
     }
 
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::midi::MidiBuffer) {
+    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::render::MidiBuffer) {
         // Take the pre-allocated buffer temporarily to avoid borrow issues
         let mut core_output = match &mut self.state {
             AuState::Prepared {

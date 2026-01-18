@@ -39,13 +39,97 @@ use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::bus_config::{MAX_BUSES, MAX_CHANNELS};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;
-use crate::midi::MidiBuffer;
 use crate::objc_block;
 use crate::sysex_pool::SysExOutputPool;
 use crate::transport::extract_transport_from_au;
-use beamer_core::{
-    ControlChange, MidiEvent, MidiEventKind, NoteOff, NoteOn, PitchBend, ProcessContext, Sample,
-};
+use beamer_core::{MidiEvent, MidiEventKind, ProcessContext, Sample};
+
+// =============================================================================
+// MIDI Buffer
+// =============================================================================
+
+/// Pre-allocated MIDI buffer for real-time safe event collection.
+///
+/// Uses a `Vec` with pre-allocated capacity to avoid heap allocations during
+/// audio processing. Events are collected during the render callback and
+/// processed sample-accurately.
+pub struct MidiBuffer {
+    events: Vec<MidiEvent>,
+    capacity: usize,
+}
+
+impl MidiBuffer {
+    /// Create a new buffer with the specified capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            events: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Clear the buffer without deallocating.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    /// Push an event if there's capacity.
+    #[inline]
+    pub fn push(&mut self, event: MidiEvent) -> bool {
+        if self.events.len() < self.capacity {
+            self.events.push(event);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the events as a slice.
+    #[inline]
+    pub fn as_slice(&self) -> &[MidiEvent] {
+        &self.events
+    }
+
+    /// Get the event count.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Check if empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// Get an iterator over the events.
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, MidiEvent> {
+        self.events.iter()
+    }
+
+    /// Sort events by sample offset (ascending).
+    ///
+    /// AU render event lists are typically ordered by `event_sample_time`, but
+    /// the bridge does not rely on that invariant. Sorting here is allocation-free
+    /// and enables efficient sub-block processing for sample-accurate timing.
+    #[inline]
+    pub fn sort_by_sample_offset(&mut self) {
+        self.events.sort_by_key(|e| e.sample_offset);
+    }
+
+    /// Check if the buffer overflowed (reached capacity).
+    #[inline]
+    pub fn has_overflowed(&self) -> bool {
+        self.events.len() >= self.capacity
+    }
+}
+
+impl Default for MidiBuffer {
+    fn default() -> Self {
+        Self::with_capacity(256)
+    }
+}
 
 // =============================================================================
 // Parameter Events
@@ -585,7 +669,7 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
                     };
 
                     if let Some(beamer_event) =
-                        parse_midi1_to_beamer(sample_offset, status, channel, data1, data2)
+                        MidiEvent::from_midi1_bytes(sample_offset, status, channel, data1, data2)
                     {
                         buffer.push(beamer_event);
                     }
@@ -621,7 +705,7 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
                             let data2 = (word & 0x7F) as u8;
 
                             if let Some(beamer_event) =
-                                parse_midi1_to_beamer(sample_offset, status, channel, data1, data2)
+                                MidiEvent::from_midi1_bytes(sample_offset, status, channel, data1, data2)
                             {
                                 buffer.push(beamer_event);
                             }
@@ -647,81 +731,6 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
     }
 }
 
-/// Parse MIDI 1.0 message bytes to beamer MidiEvent.
-#[inline]
-fn parse_midi1_to_beamer(
-    sample_offset: u32,
-    status: u8,
-    channel: u8,
-    data1: u8,
-    data2: u8,
-) -> Option<MidiEvent> {
-    let kind = match status {
-        0x80 => MidiEventKind::NoteOff(NoteOff {
-            channel,
-            pitch: data1,
-            velocity: data2 as f32 / 127.0,
-            note_id: data1 as i32,
-            tuning: 0.0,
-        }),
-        0x90 => {
-            if data2 == 0 {
-                // Note On with velocity 0 = Note Off
-                MidiEventKind::NoteOff(NoteOff {
-                    channel,
-                    pitch: data1,
-                    velocity: 0.0,
-                    note_id: data1 as i32,
-                    tuning: 0.0,
-                })
-            } else {
-                MidiEventKind::NoteOn(NoteOn {
-                    channel,
-                    pitch: data1,
-                    velocity: data2 as f32 / 127.0,
-                    note_id: data1 as i32,
-                    tuning: 0.0,
-                    length: 0,
-                })
-            }
-        }
-        0xA0 => MidiEventKind::PolyPressure(beamer_core::PolyPressure {
-            channel,
-            pitch: data1,
-            pressure: data2 as f32 / 127.0,
-            note_id: data1 as i32,
-        }),
-        0xB0 => MidiEventKind::ControlChange(ControlChange {
-            channel,
-            controller: data1,
-            value: data2 as f32 / 127.0,
-        }),
-        0xC0 => MidiEventKind::ProgramChange(beamer_core::ProgramChange {
-            channel,
-            program: data1,
-        }),
-        0xD0 => MidiEventKind::ChannelPressure(beamer_core::ChannelPressure {
-            channel,
-            pressure: data1 as f32 / 127.0,
-        }),
-        0xE0 => {
-            // Pitch bend: data1 = LSB, data2 = MSB
-            let raw_value = ((data2 as u16) << 7) | (data1 as u16);
-            let normalized = (raw_value as f32 - 8192.0) / 8192.0;
-            MidiEventKind::PitchBend(PitchBend {
-                channel,
-                value: normalized,
-            })
-        }
-        _ => return None,
-    };
-
-    Some(MidiEvent {
-        sample_offset,
-        event: kind,
-    })
-}
-
 /// Update MidiCcState from incoming MIDI events.
 ///
 /// Scans the MIDI buffer for CC, pitch bend, and channel pressure events,
@@ -735,7 +744,7 @@ fn parse_midi1_to_beamer(
 /// - Channel pressure is normalized: 0.0-1.0 (already normalized in beamer)
 /// - Uses atomic operations internally for thread safety (MidiCcState takes `&self`)
 fn update_midi_cc_state(
-    midi_buffer: &crate::midi::MidiBuffer,
+    midi_buffer: &MidiBuffer,
     cc_state: &beamer_core::MidiCcState,
 ) {
     use beamer_core::midi_cc_config::controller;

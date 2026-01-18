@@ -940,6 +940,7 @@ pub struct ProgramChange {
 #### Constructors
 
 ```rust
+// Semantic constructors (used by VST3)
 MidiEvent::note_on(offset, channel, pitch, velocity, note_id, tuning, length)
 MidiEvent::note_off(offset, channel, pitch, velocity, note_id, tuning)
 MidiEvent::poly_pressure(offset, channel, pitch, pressure, note_id)
@@ -951,7 +952,14 @@ MidiEvent::sysex(offset, &data)
 MidiEvent::note_expression_value(offset, note_id, type_id, value)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
+
+// Raw MIDI 1.0 byte parsing (used by AU, future CLAP/LV2)
+MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<MidiEvent>
 ```
+
+**Construction Paths:**
+- **Semantic constructors** - Used by VST3 which provides already-parsed event structures
+- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding, and Note On velocity 0 → Note Off conversion
 
 ### 2.2 MidiBuffer
 
@@ -1433,11 +1441,13 @@ crates/beamer-au/
 └── src/
     ├── bridge.rs               # C-ABI implementations (~1100 lines)
     ├── factory.rs              # Plugin factory registration
-    ├── processor.rs            # AuProcessor<P> wrapper
-    ├── render.rs               # RenderBlock audio processing
+    ├── processor.rs            # AuProcessor<P> wrapper (lifecycle, state)
+    ├── render.rs               # RenderBlock (audio, MIDI, parameters)
     ├── instance.rs             # AuPluginInstance trait
     └── ...
 ```
+
+**Why two files vs VST3's single `processor.rs`?** Unlike VST3 (which implements a single COM interface in Rust), AU's render callback crosses an FFI boundary from Objective-C. `processor.rs` handles plugin lifecycle on the main thread, while `render.rs` contains the `RenderBlock` for real-time audio processing on the audio thread. This separation reflects the different threading contexts and the ObjC/Rust boundary.
 
 **Key Features (Full VST3 Parity):**
 - Native AUv3 support (macOS 10.11+)

@@ -1487,6 +1487,128 @@ impl MidiEvent {
     }
 
     // =========================================================================
+    // Raw MIDI 1.0 byte parsing
+    // =========================================================================
+
+    /// Parse a MIDI 1.0 channel voice message from raw bytes.
+    ///
+    /// This is the standard way to convert raw MIDI bytes (as received from
+    /// Audio Units, CLAP, LV2, or hardware MIDI) into beamer's `MidiEvent` format.
+    ///
+    /// # Arguments
+    ///
+    /// * `sample_offset` - Sample position within the current buffer
+    /// * `status` - MIDI status byte with channel masked out (0x80-0xF0)
+    /// * `channel` - MIDI channel (0-15)
+    /// * `data1` - First data byte (note number, CC number, etc.)
+    /// * `data2` - Second data byte (velocity, CC value, etc.)
+    ///
+    /// # Returns
+    ///
+    /// `Some(MidiEvent)` for supported channel voice messages, `None` for
+    /// unsupported message types (system messages, etc.)
+    ///
+    /// # Supported Messages
+    ///
+    /// | Status | Message Type     | data1        | data2         |
+    /// |--------|------------------|--------------|---------------|
+    /// | 0x80   | Note Off         | note number  | velocity      |
+    /// | 0x90   | Note On          | note number  | velocity      |
+    /// | 0xA0   | Poly Pressure    | note number  | pressure      |
+    /// | 0xB0   | Control Change   | CC number    | value         |
+    /// | 0xC0   | Program Change   | program      | (ignored)     |
+    /// | 0xD0   | Channel Pressure | pressure     | (ignored)     |
+    /// | 0xE0   | Pitch Bend       | LSB          | MSB           |
+    ///
+    /// # Notes
+    ///
+    /// - Note On with velocity 0 is converted to Note Off (per MIDI spec)
+    /// - Velocities and CC values are normalized: 0-127 → 0.0-1.0
+    /// - Pitch bend is normalized: 0-16383 → -1.0 to 1.0 (center at 8192)
+    /// - `note_id` is set to the pitch value for basic voice allocation
+    /// - `tuning` and `length` default to 0
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use beamer_core::MidiEvent;
+    ///
+    /// // Parse a Note On: channel 0, note 60 (middle C), velocity 100
+    /// let event = MidiEvent::from_midi1_bytes(0, 0x90, 0, 60, 100);
+    /// assert!(event.is_some());
+    /// ```
+    #[inline]
+    pub fn from_midi1_bytes(
+        sample_offset: u32,
+        status: u8,
+        channel: MidiChannel,
+        data1: u8,
+        data2: u8,
+    ) -> Option<Self> {
+        match status {
+            0x80 => Some(Self::note_off(
+                sample_offset,
+                channel,
+                data1,
+                data2 as f32 / 127.0,
+                data1 as NoteId,
+                0.0,
+            )),
+            0x90 => {
+                if data2 == 0 {
+                    // Note On with velocity 0 = Note Off (per MIDI spec)
+                    Some(Self::note_off(
+                        sample_offset,
+                        channel,
+                        data1,
+                        0.0,
+                        data1 as NoteId,
+                        0.0,
+                    ))
+                } else {
+                    Some(Self::note_on(
+                        sample_offset,
+                        channel,
+                        data1,
+                        data2 as f32 / 127.0,
+                        data1 as NoteId,
+                        0.0,
+                        0,
+                    ))
+                }
+            }
+            0xA0 => Some(Self::poly_pressure(
+                sample_offset,
+                channel,
+                data1,
+                data2 as f32 / 127.0,
+                data1 as NoteId,
+            )),
+            0xB0 => Some(Self::control_change(
+                sample_offset,
+                channel,
+                data1,
+                data2 as f32 / 127.0,
+            )),
+            0xC0 => Some(Self::program_change(sample_offset, channel, data1)),
+            0xD0 => Some(Self::channel_pressure(
+                sample_offset,
+                channel,
+                data1 as f32 / 127.0,
+            )),
+            0xE0 => {
+                // Pitch bend: data1 = LSB (bits 0-6), data2 = MSB (bits 7-13)
+                // Raw value: 0-16383, center at 8192
+                // Normalized: -1.0 to 1.0
+                let raw_value = ((data2 as u16) << 7) | (data1 as u16);
+                let normalized = (raw_value as f32 - 8192.0) / 8192.0;
+                Some(Self::pitch_bend(sample_offset, channel, normalized))
+            }
+            _ => None, // System messages, etc. not supported
+        }
+    }
+
+    // =========================================================================
     // Advanced VST3 event constructors
     // =========================================================================
 

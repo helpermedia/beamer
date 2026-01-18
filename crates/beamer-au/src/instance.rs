@@ -344,7 +344,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// - MIDI effects: Transpose notes, change velocities, add effects
     /// - Instruments: Generate note-off events for voice management
     /// - Arpeggiators: Transform held notes into patterns
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::midi::MidiBuffer) {
+    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::render::MidiBuffer) {
         // Default: pass through all events
         for event in input {
             output.push(event.clone());
