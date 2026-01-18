@@ -5,18 +5,29 @@
 //! handles a specific unit type (dB, Hz, ms, etc.) with appropriate
 //! formatting and parsing logic.
 //!
+//! # Design
+//!
+//! The formatter separates value formatting from unit strings:
+//! - `text()` returns the bare value without units (e.g., "440", "-6.0")
+//! - `unit()` returns the unit string (e.g., "Hz", "dB")
+//! - The host/UI combines them for display (e.g., "440 Hz", "-6.0 dB")
+//!
+//! This separation allows proper VST3/AU parameter info where the units
+//! field is separate from the formatted value string.
+//!
 //! # Example
 //!
 //! ```ignore
 //! use beamer_core::parameter_format::Formatter;
 //!
 //! let db_formatter = Formatter::Decibel { precision: 1 };
-//! assert_eq!(db_formatter.format(1.0), "0.0 dB");  // 1.0 linear = 0 dB
-//! assert_eq!(db_formatter.format(0.5), "-6.0 dB"); // 0.5 linear ≈ -6 dB
+//! assert_eq!(db_formatter.text(1.0), "0.0");   // Value only
+//! assert_eq!(db_formatter.unit(), "dB");       // Unit separately
 //!
 //! let hz_formatter = Formatter::Frequency;
-//! assert_eq!(hz_formatter.format(440.0), "440 Hz");
-//! assert_eq!(hz_formatter.format(1500.0), "1.50 kHz");
+//! assert_eq!(hz_formatter.text(440.0), "440");
+//! assert_eq!(hz_formatter.text(1500.0), "1.50k");  // Auto-scaled with SI prefix
+//! assert_eq!(hz_formatter.unit(), "Hz");
 //! ```
 
 /// Parameter value formatter.
@@ -34,7 +45,7 @@ pub enum Formatter {
     /// Decibel formatter for gain/level parameters.
     ///
     /// Input is linear amplitude (0.0 = silence, 1.0 = unity).
-    /// Display: "-12.0 dB", "-inf dB"
+    /// Format: "-12.0", "-inf" (unit "dB" via `unit()`)
     Decibel {
         /// Number of decimal places.
         precision: usize,
@@ -43,22 +54,22 @@ pub enum Formatter {
     /// Direct decibel formatter where input is already in dB.
     ///
     /// Used by `FloatParameter::db()` where the plain value is stored as dB.
-    /// Display: "+12.0 dB", "-60.0 dB"
+    /// Format: "+12.0", "-60.0" (unit "dB" via `unit()`)
     DecibelDirect {
         /// Number of decimal places.
         precision: usize,
-        /// Minimum dB value (below this shows "-inf dB")
+        /// Minimum dB value (below this shows "-inf")
         min_db: f64,
     },
 
     /// Frequency formatter with automatic Hz/kHz scaling.
     ///
-    /// Display: "440 Hz", "1.50 kHz"
+    /// Format: "440", "1.50k" (unit "Hz" via `unit()`)
     Frequency,
 
     /// Milliseconds formatter.
     ///
-    /// Display: "10.0 ms"
+    /// Format: "10.0" (unit "ms" via `unit()`)
     Milliseconds {
         /// Number of decimal places.
         precision: usize,
@@ -66,7 +77,7 @@ pub enum Formatter {
 
     /// Seconds formatter.
     ///
-    /// Display: "1.50 s"
+    /// Format: "1.50" (unit "s" via `unit()`)
     Seconds {
         /// Number of decimal places.
         precision: usize,
@@ -74,8 +85,8 @@ pub enum Formatter {
 
     /// Percentage formatter.
     ///
-    /// Input is 0.0-1.0, display is 0%-100%.
-    /// Display: "75%"
+    /// Input is 0.0-1.0, display is 0-100.
+    /// Format: "75" (unit "%" via `unit()`)
     Percent {
         /// Number of decimal places.
         precision: usize,
@@ -97,7 +108,7 @@ pub enum Formatter {
 
     /// Semitones formatter for pitch shifting.
     ///
-    /// Display: "+12 st", "-7 st", "0 st"
+    /// Format: "+12", "-7", "0" (unit "st" via `unit()`)
     Semitones,
 
     /// Boolean formatter.
@@ -107,19 +118,19 @@ pub enum Formatter {
 }
 
 impl Formatter {
-    /// Format a plain value to a display string.
+    /// Convert a plain value to a display string (without unit).
     ///
     /// The interpretation of `value` depends on the formatter variant:
     /// - `Decibel`: linear amplitude (1.0 = 0 dB)
     /// - `Frequency`: Hz
     /// - `Milliseconds`: ms
     /// - `Seconds`: s
-    /// - `Percent`: 0.0-1.0 (displayed as 0%-100%)
+    /// - `Percent`: 0.0-1.0 (displayed as 0-100)
     /// - `Pan`: -1.0 to +1.0
     /// - `Ratio`: ratio value (4.0 = "4:1")
     /// - `Semitones`: integer semitones
     /// - `Boolean`: >0.5 = On, <=0.5 = Off
-    pub fn format(&self, value: f64) -> String {
+    pub fn text(&self, value: f64) -> String {
         match self {
             Formatter::Float { precision } => {
                 format!("{:.prec$}", value, prec = *precision)
@@ -127,13 +138,13 @@ impl Formatter {
 
             Formatter::Decibel { precision } => {
                 if value < 1e-10 {
-                    "-inf dB".to_string()
+                    "-inf".to_string()
                 } else {
                     let db = 20.0 * value.log10();
                     if db >= 0.0 {
-                        format!("+{:.prec$} dB", db, prec = *precision)
+                        format!("+{:.prec$}", db, prec = *precision)
                     } else {
-                        format!("{:.prec$} dB", db, prec = *precision)
+                        format!("{:.prec$}", db, prec = *precision)
                     }
                 }
             }
@@ -142,34 +153,34 @@ impl Formatter {
                 // Value is already in dB, just format it
                 // Use strict less-than so that min_db itself displays correctly
                 if value < *min_db {
-                    "-inf dB".to_string()
+                    "-inf".to_string()
                 } else if value >= 0.0 {
-                    format!("+{:.prec$} dB", value, prec = *precision)
+                    format!("+{:.prec$}", value, prec = *precision)
                 } else {
-                    format!("{:.prec$} dB", value, prec = *precision)
+                    format!("{:.prec$}", value, prec = *precision)
                 }
             }
 
             Formatter::Frequency => {
                 if value >= 1000.0 {
-                    format!("{:.2} kHz", value / 1000.0)
+                    format!("{:.2}k", value / 1000.0)
                 } else if value >= 100.0 {
-                    format!("{:.0} Hz", value)
+                    format!("{:.0}", value)
                 } else {
-                    format!("{:.1} Hz", value)
+                    format!("{:.1}", value)
                 }
             }
 
             Formatter::Milliseconds { precision } => {
-                format!("{:.prec$} ms", value, prec = *precision)
+                format!("{:.prec$}", value, prec = *precision)
             }
 
             Formatter::Seconds { precision } => {
-                format!("{:.prec$} s", value, prec = *precision)
+                format!("{:.prec$}", value, prec = *precision)
             }
 
             Formatter::Percent { precision } => {
-                format!("{:.prec$}%", value * 100.0, prec = *precision)
+                format!("{:.prec$}", value * 100.0, prec = *precision)
             }
 
             Formatter::Pan => {
@@ -193,9 +204,9 @@ impl Formatter {
             Formatter::Semitones => {
                 let st = value.round() as i64;
                 if st > 0 {
-                    format!("+{} st", st)
+                    format!("+{}", st)
                 } else {
-                    format!("{} st", st)
+                    format!("{}", st)
                 }
             }
 
@@ -347,8 +358,8 @@ impl Formatter {
         }
     }
 
-    /// Get the unit string for this formatter (for ParameterInfo).
-    pub fn units(&self) -> &'static str {
+    /// Get the unit string for this formatter.
+    pub fn unit(&self) -> &'static str {
         match self {
             Formatter::Float { .. } => "",
             Formatter::Decibel { .. } => "dB",

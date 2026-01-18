@@ -560,13 +560,14 @@ impl FloatParameter {
         let min_db = *range_db.start();
         let mapper = LinearMapper::new(range_db);
         let default_normalized = mapper.normalize(default_db);
+        let formatter = Formatter::DecibelDirect { precision: 1, min_db };
 
         Self {
             info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
-                units: "dB",
+                units: formatter.unit(),
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -574,7 +575,7 @@ impl FloatParameter {
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
-            formatter: Formatter::DecibelDirect { precision: 1, min_db },
+            formatter,
             smoother: None,
             is_db: true,
         }
@@ -605,13 +606,14 @@ impl FloatParameter {
         let min_db = *range_db.start();
         let mapper = PowerMapper::new(range_db, 2.0);
         let default_normalized = mapper.normalize(default_db);
+        let formatter = Formatter::DecibelDirect { precision: 1, min_db };
 
         Self {
             info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
-                units: "dB",
+                units: formatter.unit(),
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -619,7 +621,7 @@ impl FloatParameter {
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
-            formatter: Formatter::DecibelDirect { precision: 1, min_db },
+            formatter,
             smoother: None,
             is_db: true,
         }
@@ -653,13 +655,14 @@ impl FloatParameter {
         let min_db = *range_db.start();
         let mapper = LogOffsetMapper::new(range_db);
         let default_normalized = mapper.normalize(default_db);
+        let formatter = Formatter::DecibelDirect { precision: 1, min_db };
 
         Self {
             info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
-                units: "dB",
+                units: formatter.unit(),
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -667,7 +670,7 @@ impl FloatParameter {
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
-            formatter: Formatter::DecibelDirect { precision: 1, min_db },
+            formatter,
             smoother: None,
             is_db: true,
         }
@@ -695,13 +698,14 @@ impl FloatParameter {
     pub fn hz(name: &'static str, default_hz: f64, range_hz: RangeInclusive<f64>) -> Self {
         let mapper = LogMapper::new(range_hz.clone());
         let default_normalized = mapper.normalize(default_hz);
+        let formatter = Formatter::Frequency;
 
         Self {
             info: ParameterInfo {
                 id: 0,
                 name,
                 short_name: name,
-                units: "Hz",
+                units: formatter.unit(),
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -709,7 +713,7 @@ impl FloatParameter {
             },
             value: AtomicU64::new(default_normalized.to_bits()),
             range: Box::new(mapper),
-            formatter: Formatter::Frequency,
+            formatter,
             smoother: None,
             is_db: false,
         }
@@ -727,8 +731,9 @@ impl FloatParameter {
     /// * `range_ms` - Valid range in milliseconds (inclusive)
     pub fn ms(name: &'static str, default_ms: f64, range_ms: RangeInclusive<f64>) -> Self {
         let mut parameter = Self::new(name, default_ms, range_ms);
-        parameter.info.units = "ms";
-        parameter.formatter = Formatter::Milliseconds { precision: 1 };
+        let formatter = Formatter::Milliseconds { precision: 1 };
+        parameter.info.units = formatter.unit();
+        parameter.formatter = formatter;
         parameter
     }
 
@@ -744,8 +749,9 @@ impl FloatParameter {
     /// * `range_s` - Valid range in seconds (inclusive)
     pub fn seconds(name: &'static str, default_s: f64, range_s: RangeInclusive<f64>) -> Self {
         let mut parameter = Self::new(name, default_s, range_s);
-        parameter.info.units = "s";
-        parameter.formatter = Formatter::Seconds { precision: 2 };
+        let formatter = Formatter::Seconds { precision: 2 };
+        parameter.info.units = formatter.unit();
+        parameter.formatter = formatter;
         parameter
     }
 
@@ -762,8 +768,9 @@ impl FloatParameter {
     /// * `default_pct` - Default value as 0.0-1.0 (not 0-100)
     pub fn percent(name: &'static str, default_pct: f64) -> Self {
         let mut parameter = Self::new(name, default_pct, 0.0..=1.0);
-        parameter.info.units = "%";
-        parameter.formatter = Formatter::Percent { precision: 0 };
+        let formatter = Formatter::Percent { precision: 0 };
+        parameter.info.units = formatter.unit();
+        parameter.formatter = formatter;
         parameter
     }
 
@@ -1084,7 +1091,7 @@ impl ParameterRef for FloatParameter {
 
     fn display_normalized(&self, normalized: ParameterValue) -> String {
         let plain = self.range.denormalize(normalized);
-        self.formatter.format(plain)
+        self.formatter.text(plain)
     }
 
     fn parse(&self, s: &str) -> Option<ParameterValue> {
@@ -1191,7 +1198,7 @@ impl IntParameter {
 
     /// Create a semitones parameter for pitch shifting.
     ///
-    /// Display: "+12 st", "-7 st", "0 st"
+    /// Format: "+12", "-7", "0" (unit "st" via `units()`)
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
     /// or the `#[derive(Parameters)]` macro.
@@ -1203,8 +1210,9 @@ impl IntParameter {
     /// * `range` - Valid range in semitones (inclusive)
     pub fn semitones(name: &'static str, default: i64, range: RangeInclusive<i64>) -> Self {
         let mut parameter = Self::new(name, default, range);
-        parameter.info.units = "st";
-        parameter.formatter = Formatter::Semitones;
+        let formatter = Formatter::Semitones;
+        parameter.info.units = formatter.unit();
+        parameter.formatter = formatter;
         parameter
     }
 
@@ -1345,7 +1353,7 @@ impl ParameterRef for IntParameter {
 
     fn display_normalized(&self, normalized: ParameterValue) -> String {
         let plain = self.normalized_to_plain(normalized).round();
-        self.formatter.format(plain)
+        self.formatter.text(plain)
     }
 
     fn parse(&self, s: &str) -> Option<ParameterValue> {
@@ -1598,7 +1606,7 @@ impl ParameterRef for BoolParameter {
     }
 
     fn display_normalized(&self, normalized: ParameterValue) -> String {
-        self.formatter.format(normalized)
+        self.formatter.text(normalized)
     }
 
     fn parse(&self, s: &str) -> Option<ParameterValue> {
