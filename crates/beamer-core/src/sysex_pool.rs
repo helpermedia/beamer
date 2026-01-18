@@ -1,7 +1,7 @@
 //! Pre-allocated SysEx output buffer pool for real-time safety.
 //!
-//! Mirrors VST3's SysExOutputPool - provides stable memory for SysEx messages
-//! that need to be passed to the AU host during render.
+//! This module provides `SysExOutputPool`, which pre-allocates buffer slots
+//! to avoid heap allocation during audio processing.
 
 /// Pre-allocated pool for SysEx output messages.
 ///
@@ -26,9 +26,9 @@ pub struct SysExOutputPool {
 }
 
 impl SysExOutputPool {
-    /// Default number of SysEx slots per process block
+    /// Default number of SysEx slots per process block.
     pub const DEFAULT_SLOTS: usize = 16;
-    /// Default maximum size per SysEx message
+    /// Default maximum size per SysEx message.
     pub const DEFAULT_BUFFER_SIZE: usize = 512;
 
     /// Create a new pool with default capacity.
@@ -37,6 +37,8 @@ impl SysExOutputPool {
     }
 
     /// Create a new pool with the specified capacity.
+    ///
+    /// Pre-allocates all buffers to avoid heap allocation during process().
     pub fn with_capacity(slots: usize, buffer_size: usize) -> Self {
         let mut buffers = Vec::with_capacity(slots);
         for _ in 0..slots {
@@ -57,6 +59,9 @@ impl SysExOutputPool {
     }
 
     /// Clear the pool for reuse. O(1) operation.
+    ///
+    /// Note: This does NOT clear the fallback buffer, which is drained separately
+    /// at the start of the next process block.
     #[inline]
     pub fn clear(&mut self) {
         self.next_slot = 0;
@@ -67,6 +72,10 @@ impl SysExOutputPool {
     ///
     /// Returns `Some((pointer, length))` on success, `None` if pool exhausted.
     /// The pointer is stable until `clear()` is called.
+    ///
+    /// Sets the overflow flag when the pool is exhausted.
+    /// With `sysex-heap-fallback` feature: overflow messages are stored in a
+    /// heap-backed fallback buffer instead of being dropped.
     pub fn allocate(&mut self, data: &[u8]) -> Option<(*const u8, usize)> {
         if self.next_slot >= self.max_slots {
             self.overflowed = true;
@@ -91,6 +100,8 @@ impl SysExOutputPool {
     }
 
     /// Allocate and return a slice reference instead of raw pointer.
+    ///
+    /// Safer API for contexts that don't need raw pointers.
     pub fn allocate_slice(&mut self, data: &[u8]) -> Option<&[u8]> {
         if self.next_slot >= self.max_slots {
             self.overflowed = true;
@@ -140,6 +151,8 @@ impl SysExOutputPool {
     }
 
     /// Take ownership of fallback messages (feature-gated).
+    ///
+    /// These messages should be emitted at the start of the current process block.
     #[cfg(feature = "sysex-heap-fallback")]
     #[inline]
     pub fn take_fallback(&mut self) -> Vec<Vec<u8>> {
@@ -150,5 +163,81 @@ impl SysExOutputPool {
 impl Default for SysExOutputPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_pool() {
+        let pool = SysExOutputPool::new();
+        assert_eq!(pool.capacity(), SysExOutputPool::DEFAULT_SLOTS);
+        assert_eq!(pool.used(), 0);
+        assert!(!pool.has_overflowed());
+    }
+
+    #[test]
+    fn test_allocate() {
+        let mut pool = SysExOutputPool::with_capacity(2, 64);
+        let data = [0xF0, 0x41, 0x10, 0xF7];
+
+        let result = pool.allocate(&data);
+        assert!(result.is_some());
+        assert_eq!(pool.used(), 1);
+
+        let (ptr, len) = result.unwrap();
+        assert_eq!(len, 4);
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_eq!(slice, &data);
+    }
+
+    #[test]
+    fn test_allocate_slice() {
+        let mut pool = SysExOutputPool::with_capacity(2, 64);
+        let data = [0xF0, 0x41, 0x10, 0xF7];
+
+        let result = pool.allocate_slice(&data);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &data);
+        assert_eq!(pool.used(), 1);
+    }
+
+    #[test]
+    fn test_overflow() {
+        let mut pool = SysExOutputPool::with_capacity(1, 64);
+        let data = [0xF0, 0xF7];
+
+        assert!(pool.allocate(&data).is_some());
+        assert!(!pool.has_overflowed());
+
+        assert!(pool.allocate(&data).is_none());
+        assert!(pool.has_overflowed());
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut pool = SysExOutputPool::with_capacity(1, 64);
+        let data = [0xF0, 0xF7];
+
+        pool.allocate(&data);
+        pool.allocate(&data); // Overflow
+        assert!(pool.has_overflowed());
+        assert_eq!(pool.used(), 1);
+
+        pool.clear();
+        assert!(!pool.has_overflowed());
+        assert_eq!(pool.used(), 0);
+    }
+
+    #[test]
+    fn test_truncation() {
+        let mut pool = SysExOutputPool::with_capacity(1, 4);
+        let data = [0xF0, 0x41, 0x10, 0x42, 0x00, 0xF7]; // 6 bytes
+
+        let result = pool.allocate_slice(&data);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 4); // Truncated to buffer size
     }
 }

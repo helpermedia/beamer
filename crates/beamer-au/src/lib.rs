@@ -107,8 +107,6 @@ pub mod buffer_storage;
 #[cfg(target_os = "macos")]
 pub mod buffers;
 #[cfg(target_os = "macos")]
-pub mod bus_config;
-#[cfg(target_os = "macos")]
 pub mod error_helpers;
 #[cfg(target_os = "macos")]
 pub mod export;
@@ -125,13 +123,11 @@ pub mod processor;
 #[cfg(target_os = "macos")]
 pub mod render;
 #[cfg(target_os = "macos")]
-pub mod sysex_pool;
-#[cfg(target_os = "macos")]
 mod transport; // Keep private for now
 
 // Re-exports for macOS-only modules
 #[cfg(target_os = "macos")]
-pub use bus_config::{BusInfo, BusType, CachedBusConfig};
+pub use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, SysExOutputPool};
 #[cfg(target_os = "macos")]
 pub use error_helpers::{DEFAULT_CHANNEL_COUNT, DEFAULT_MAX_FRAMES, DEFAULT_SAMPLE_RATE};
 #[cfg(target_os = "macos")]
@@ -140,8 +136,6 @@ pub use instance::AuPluginInstance;
 pub use processor::AuProcessor;
 #[cfg(target_os = "macos")]
 pub use render::{AuParameterEvent, AuParameterRampEvent, ParameterEventBuffer};
-#[cfg(target_os = "macos")]
-pub use sysex_pool::SysExOutputPool;
 
 // C-ABI bridge exports for hybrid AU architecture
 #[cfg(target_os = "macos")]

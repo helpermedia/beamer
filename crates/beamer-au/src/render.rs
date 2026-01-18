@@ -36,13 +36,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::{AudioBuffer, AudioBufferList};
-use crate::bus_config::{MAX_BUSES, MAX_CHANNELS};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;
 use crate::objc_block;
-use crate::sysex_pool::SysExOutputPool;
 use crate::transport::extract_transport_from_au;
-use beamer_core::{MidiEvent, MidiEventKind, ProcessContext, Sample};
+use beamer_core::{
+    MidiEvent, MidiEventKind, ProcessContext, Sample, SysExOutputPool, MAX_BUSES, MAX_CHANNELS,
+};
 
 // =============================================================================
 // MIDI Buffer

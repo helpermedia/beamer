@@ -14,9 +14,8 @@
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
 //! plugin implementation.
 
-use crate::bus_config::CachedBusConfig;
 use crate::error::{PluginError, PluginResult};
-use beamer_core::{MidiEvent, ParameterStore, ProcessContext};
+use beamer_core::{CachedBusConfig, MidiEvent, ParameterStore, ProcessContext};
 
 /// Type-erased interface for AU plugin instances.
 ///

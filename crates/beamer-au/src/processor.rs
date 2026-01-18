@@ -28,96 +28,13 @@
 //! `AudioProcessor::process()` method. Transport information comes from the host
 //! via the render callback (currently placeholder).
 
-use crate::bus_config::CachedBusConfig;
 use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
 use crate::lifecycle::{AuState, BuildAuConfig};
 use beamer_core::{
-    AudioProcessor, AuxiliaryBuffers, Buffer, HasParameters, MidiEvent, ParameterStore, Plugin,
-    ProcessContext, Transport,
+    AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, HasParameters, MidiEvent,
+    ParameterStore, Plugin, ProcessContext, Transport,
 };
-
-/// Pre-allocated buffers for f64↔f32 conversion.
-/// Avoids heap allocation during audio processing when processor doesn't support f64.
-pub(crate) struct ConversionBuffers {
-    /// Main input bus conversion buffers
-    input_f32: Vec<Vec<f32>>,
-    /// Main output bus conversion buffers
-    output_f32: Vec<Vec<f32>>,
-    /// Auxiliary input buses: [bus_index][channel_index][samples]
-    aux_input_f32: Vec<Vec<Vec<f32>>>,
-    /// Auxiliary output buses: [bus_index][channel_index][samples]
-    aux_output_f32: Vec<Vec<Vec<f32>>>,
-}
-
-impl ConversionBuffers {
-    /// Allocate conversion buffers for the given configuration.
-    pub(crate) fn allocate(
-        input_channels: usize,
-        output_channels: usize,
-        aux_input_configs: &[(usize, usize)], // Vec of (bus_channels, max_frames)
-        aux_output_configs: &[(usize, usize)],
-        max_frames: usize,
-    ) -> Self {
-        let input_f32 = (0..input_channels)
-            .map(|_| vec![0.0f32; max_frames])
-            .collect();
-        let output_f32 = (0..output_channels)
-            .map(|_| vec![0.0f32; max_frames])
-            .collect();
-
-        // Allocate aux input buffers
-        let aux_input_f32 = aux_input_configs
-            .iter()
-            .map(|(channels, _)| (0..*channels).map(|_| vec![0.0f32; max_frames]).collect())
-            .collect();
-
-        // Allocate aux output buffers
-        let aux_output_f32 = aux_output_configs
-            .iter()
-            .map(|(channels, _)| (0..*channels).map(|_| vec![0.0f32; max_frames]).collect())
-            .collect();
-
-        Self {
-            input_f32,
-            output_f32,
-            aux_input_f32,
-            aux_output_f32,
-        }
-    }
-
-    /// Get mutable reference to input buffer for a channel.
-    #[inline]
-    pub(crate) fn input_channel_mut(&mut self, channel: usize) -> Option<&mut [f32]> {
-        self.input_f32.get_mut(channel).map(|v| v.as_mut_slice())
-    }
-
-    /// Get mutable aux input buffer for bus/channel
-    pub(crate) fn aux_input_slice_mut(
-        &mut self,
-        bus: usize,
-        channel: usize,
-        len: usize,
-    ) -> Option<&mut [f32]> {
-        self.aux_input_f32
-            .get_mut(bus)
-            .and_then(|b| b.get_mut(channel))
-            .map(|v| &mut v[..len])
-    }
-
-    /// Get aux output buffer for reading back
-    pub(crate) fn aux_output_slice(
-        &self,
-        bus: usize,
-        channel: usize,
-        len: usize,
-    ) -> Option<&[f32]> {
-        self.aux_output_f32
-            .get(bus)
-            .and_then(|b| b.get(channel))
-            .map(|v| &v[..len])
-    }
-}
 
 /// Generic AU processor wrapper.
 ///
@@ -389,7 +306,7 @@ where
 
             // Convert f64 → f32 using pre-allocated input buffers
             for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.input_channel_mut(ch_idx) {
+                if let Some(buf) = conversion.main_input_mut(ch_idx) {
                     for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
                         buf[i] = sample as f32;
                     }
@@ -398,12 +315,12 @@ where
 
             // Build f32 buffer views for processing
             let input_f32_slices: Vec<&[f32]> = conversion
-                .input_f32
+                .main_input_f32
                 .iter()
                 .map(|v| &v[..num_samples])
                 .collect();
             let mut output_f32_slices: Vec<&mut [f32]> = conversion
-                .output_f32
+                .main_output_f32
                 .iter_mut()
                 .map(|v| &mut v[..num_samples])
                 .collect();
@@ -420,7 +337,7 @@ where
 
             // Convert f32 → f64 back to output
             for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.output_f32.get(ch_idx) {
+                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
                     for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
                         *sample = buf[i] as f64;
                     }
@@ -471,7 +388,7 @@ where
 
             // Convert f64 → f32 using pre-allocated input buffers
             for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.input_channel_mut(ch_idx) {
+                if let Some(buf) = conversion.main_input_mut(ch_idx) {
                     for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
                         buf[i] = sample as f32;
                     }
@@ -480,12 +397,12 @@ where
 
             // Build f32 buffer views for processing
             let input_f32_slices: Vec<&[f32]> = conversion
-                .input_f32
+                .main_input_f32
                 .iter()
                 .map(|v| &v[..num_samples])
                 .collect();
             let mut output_f32_slices: Vec<&mut [f32]> = conversion
-                .output_f32
+                .main_output_f32
                 .iter_mut()
                 .map(|v| &mut v[..num_samples])
                 .collect();
@@ -499,7 +416,7 @@ where
 
             // Convert f32 → f64 back to output
             for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.output_f32.get(ch_idx) {
+                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
                     for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
                         *sample = buf[i] as f64;
                     }
@@ -596,7 +513,7 @@ where
 
             // Convert main inputs f64 → f32
             for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.input_channel_mut(ch_idx) {
+                if let Some(buf) = conversion.main_input_mut(ch_idx) {
                     for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
                         buf[i] = sample as f32;
                     }
@@ -606,7 +523,7 @@ where
             // Convert aux inputs f64 → f32
             for (bus_idx, bus) in aux_inputs.iter().enumerate() {
                 for (ch_idx, ch) in bus.iter().enumerate() {
-                    if let Some(buf) = conversion.aux_input_slice_mut(bus_idx, ch_idx, num_samples)
+                    if let Some(buf) = conversion.aux_input_mut(bus_idx, ch_idx, num_samples)
                     {
                         for (i, &sample) in ch.iter().take(num_samples).enumerate() {
                             buf[i] = sample as f32;
@@ -617,12 +534,12 @@ where
 
             // Build f32 slices for processing
             let input_f32_slices: Vec<&[f32]> = conversion
-                .input_f32
+                .main_input_f32
                 .iter()
                 .map(|v| &v[..num_samples])
                 .collect();
             let mut output_f32_slices: Vec<&mut [f32]> = conversion
-                .output_f32
+                .main_output_f32
                 .iter_mut()
                 .map(|v| &mut v[..num_samples])
                 .collect();
@@ -654,7 +571,7 @@ where
 
             // Convert main outputs f32 → f64
             for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.output_f32.get(ch_idx) {
+                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
                     for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
                         *sample = buf[i] as f64;
                     }
@@ -664,7 +581,7 @@ where
             // Convert aux outputs f32 → f64
             for (bus_idx, bus) in aux_outputs.iter_mut().enumerate() {
                 for (ch_idx, ch) in bus.iter_mut().enumerate() {
-                    if let Some(buf) = conversion.aux_output_slice(bus_idx, ch_idx, num_samples) {
+                    if let Some(buf) = conversion.aux_output(bus_idx, ch_idx, num_samples) {
                         for (i, sample) in ch.iter_mut().take(num_samples).enumerate() {
                             *sample = buf[i] as f64;
                         }

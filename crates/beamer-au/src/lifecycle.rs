@@ -33,9 +33,9 @@
 //!
 //! Standard Beamer configs (NoConfig, AudioSetup, FullAudioSetup) are provided.
 
-use crate::bus_config::CachedBusConfig;
 use beamer_core::{
-    AudioProcessor, AudioSetup, FullAudioSetup, HasParameters, NoConfig, Plugin, ProcessorConfig,
+    AudioProcessor, AudioSetup, CachedBusConfig, ConversionBuffers, FullAudioSetup, HasParameters,
+    NoConfig, Plugin, ProcessorConfig,
 };
 use log;
 
@@ -67,7 +67,7 @@ pub(crate) enum AuState<P: Plugin> {
         sample_rate: f64,
         max_frames: u32,
         /// Pre-allocated conversion buffers (if processor doesn't support f64)
-        conversion_buffers: Option<crate::processor::ConversionBuffers>,
+        conversion_buffers: Option<ConversionBuffers>,
         /// MIDI CC state for tracking controller values (boxed to reduce enum size).
         /// Accessed via `midi_cc_state()` method by render block for CC event processing.
         midi_cc_state: Option<Box<beamer_core::MidiCcState>>,
@@ -258,26 +258,26 @@ where
                     let input_channels = layout.main_input_channels as usize;
                     let output_channels = layout.main_output_channels as usize;
 
-                    // Build aux bus configs from CachedBusConfig with ACTUAL channel counts
+                    // Build aux bus channel counts from CachedBusConfig
                     // Skip main bus (index 0) to get aux buses only
-                    let aux_input_configs: Vec<(usize, usize)> = bus_config
+                    let aux_input_channels: Vec<usize> = bus_config
                         .input_buses
                         .iter()
-                        .skip(1) // Skip main bus (index 0)
-                        .map(|bus_info| (bus_info.channel_count, max_frames as usize))
+                        .skip(1)
+                        .map(|bus_info| bus_info.channel_count)
                         .collect();
-                    let aux_output_configs: Vec<(usize, usize)> = bus_config
+                    let aux_output_channels: Vec<usize> = bus_config
                         .output_buses
                         .iter()
-                        .skip(1) // Skip main bus (index 0)
-                        .map(|bus_info| (bus_info.channel_count, max_frames as usize))
+                        .skip(1)
+                        .map(|bus_info| bus_info.channel_count)
                         .collect();
 
-                    Some(crate::processor::ConversionBuffers::allocate(
+                    Some(ConversionBuffers::allocate(
                         input_channels,
                         output_channels,
-                        &aux_input_configs,
-                        &aux_output_configs,
+                        &aux_input_channels,
+                        &aux_output_channels,
                         max_frames as usize,
                     ))
                 } else {
@@ -318,26 +318,26 @@ where
                     let input_channels = layout.main_input_channels as usize;
                     let output_channels = layout.main_output_channels as usize;
 
-                    // Build aux bus configs from CachedBusConfig with ACTUAL channel counts
+                    // Build aux bus channel counts from CachedBusConfig
                     // Skip main bus (index 0) to get aux buses only
-                    let aux_input_configs: Vec<(usize, usize)> = bus_config
+                    let aux_input_channels: Vec<usize> = bus_config
                         .input_buses
                         .iter()
-                        .skip(1) // Skip main bus (index 0)
-                        .map(|bus_info| (bus_info.channel_count, max_frames as usize))
+                        .skip(1)
+                        .map(|bus_info| bus_info.channel_count)
                         .collect();
-                    let aux_output_configs: Vec<(usize, usize)> = bus_config
+                    let aux_output_channels: Vec<usize> = bus_config
                         .output_buses
                         .iter()
-                        .skip(1) // Skip main bus (index 0)
-                        .map(|bus_info| (bus_info.channel_count, max_frames as usize))
+                        .skip(1)
+                        .map(|bus_info| bus_info.channel_count)
                         .collect();
 
-                    Some(crate::processor::ConversionBuffers::allocate(
+                    Some(ConversionBuffers::allocate(
                         input_channels,
                         output_channels,
-                        &aux_input_configs,
-                        &aux_output_configs,
+                        &aux_input_channels,
+                        &aux_output_channels,
                         max_frames as usize,
                     ))
                 } else {

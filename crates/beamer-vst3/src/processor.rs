@@ -27,15 +27,14 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
-    BusType as CoreBusType, ChordInfo, FrameRate as CoreFrameRate, FullAudioSetup, HasParameters,
+    BusType as CoreBusType, CachedBusConfig as CoreCachedBusConfig,
+    ChordInfo, ConversionBuffers, FrameRate as CoreFrameRate, FullAudioSetup, HasParameters,
     MidiBuffer, MidiCcState, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
     NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin,
-    ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx, Transport, MAX_BUSES,
-    MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
-    MAX_SYSEX_SIZE,
+    PluginConfig, ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx,
+    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
+    MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
-
-use beamer_core::PluginConfig;
 
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
@@ -60,132 +59,6 @@ const LEGACY_CC_PROGRAM_CHANGE: u8 = 130;
 
 // DataEvent type for SysEx
 const DATA_TYPE_MIDI_SYSEX: u32 = 0;
-
-// =============================================================================
-// SysEx Output Buffer Pool
-// =============================================================================
-
-/// Pool of buffers for SysEx output events.
-///
-/// VST3's DataEvent requires a pointer to data that must remain valid until
-/// the host processes the event. This pool provides stable storage for SysEx
-/// data during each process() call.
-///
-/// The pool is pre-allocated at construction time based on plugin configuration,
-/// ensuring no heap allocations occur during audio processing (unless the
-/// `sysex-heap-fallback` feature is enabled and the pool overflows).
-struct SysExOutputPool {
-    /// Pre-allocated buffer slots for SysEx data (Vec of Vecs, but fixed capacity)
-    buffers: Vec<Vec<u8>>,
-    /// Length of valid data in each slot
-    lengths: Vec<usize>,
-    /// Maximum number of slots
-    max_slots: usize,
-    /// Maximum buffer size per slot
-    max_buffer_size: usize,
-    /// Next available slot index
-    next_slot: usize,
-    /// Set to true when an allocation fails due to pool exhaustion
-    overflowed: bool,
-    /// Heap-backed fallback buffer for overflow (only when feature enabled).
-    /// Messages stored here are emitted at the start of the next process block.
-    #[cfg(feature = "sysex-heap-fallback")]
-    fallback: Vec<Vec<u8>>,
-}
-
-impl SysExOutputPool {
-    /// Create a new pool with the specified capacity.
-    ///
-    /// Pre-allocates all buffers to avoid heap allocation during process().
-    fn with_capacity(slots: usize, buffer_size: usize) -> Self {
-        let mut buffers = Vec::with_capacity(slots);
-        for _ in 0..slots {
-            let buf = vec![0u8; buffer_size];
-            buffers.push(buf);
-        }
-        let lengths = vec![0usize; slots];
-
-        Self {
-            buffers,
-            lengths,
-            max_slots: slots,
-            max_buffer_size: buffer_size,
-            next_slot: 0,
-            overflowed: false,
-            #[cfg(feature = "sysex-heap-fallback")]
-            fallback: Vec::new(),
-        }
-    }
-
-    /// Clear the pool for reuse.
-    ///
-    /// Note: This does NOT clear the fallback buffer, which is drained separately
-    /// at the start of the next process block.
-    #[inline]
-    fn clear(&mut self) {
-        self.next_slot = 0;
-        self.overflowed = false;
-    }
-
-    /// Returns true if any SysEx allocation failed since the last clear.
-    #[inline]
-    fn has_overflowed(&self) -> bool {
-        self.overflowed
-    }
-
-    /// Returns the maximum number of slots in this pool.
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.max_slots
-    }
-
-    /// Returns true if there are pending fallback messages from a previous overflow.
-    #[cfg(feature = "sysex-heap-fallback")]
-    #[inline]
-    fn has_fallback(&self) -> bool {
-        !self.fallback.is_empty()
-    }
-
-    /// Take all pending fallback messages, leaving the fallback buffer empty.
-    ///
-    /// These messages should be emitted at the start of the current process block.
-    #[cfg(feature = "sysex-heap-fallback")]
-    #[inline]
-    fn take_fallback(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.fallback)
-    }
-
-    /// Allocate a slot and copy SysEx data into it.
-    ///
-    /// Returns a pointer to the data and its length, or None if the pool is full.
-    /// Sets the overflow flag when the pool is exhausted.
-    ///
-    /// With `sysex-heap-fallback` feature: overflow messages are stored in a
-    /// heap-backed fallback buffer instead of being dropped.
-    fn allocate(&mut self, data: &[u8]) -> Option<(*const u8, usize)> {
-        if self.next_slot >= self.max_slots {
-            self.overflowed = true;
-
-            // With heap fallback enabled, store overflow in fallback buffer
-            #[cfg(feature = "sysex-heap-fallback")]
-            {
-                let copy_len = data.len().min(self.max_buffer_size);
-                self.fallback.push(data[..copy_len].to_vec());
-            }
-
-            return None;
-        }
-
-        let slot = self.next_slot;
-        self.next_slot += 1;
-
-        let copy_len = data.len().min(self.max_buffer_size);
-        self.buffers[slot][..copy_len].copy_from_slice(&data[..copy_len]);
-        self.lengths[slot] = copy_len;
-
-        Some((self.buffers[slot].as_ptr(), copy_len))
-    }
-}
 
 // =============================================================================
 // Transport Extraction
@@ -270,126 +143,6 @@ unsafe fn extract_transport(context_ptr: *const ProcessContext) -> Transport {
     }
 }
 
-/// Conversion buffers for f64→f32 processing when plugin doesn't support native f64.
-///
-/// Pre-allocated in `setupProcessing()` to avoid heap allocations on the audio thread.
-struct ConversionBuffers {
-    /// Input conversion buffers: f64 → f32
-    /// Outer Vec: per bus, Inner Vec: per channel
-    main_input_f32: Vec<Vec<f32>>,
-    /// Output conversion buffers: f32 → f64
-    main_output_f32: Vec<Vec<f32>>,
-    /// Auxiliary input conversion buffers
-    aux_input_f32: Vec<Vec<Vec<f32>>>,
-    /// Auxiliary output conversion buffers
-    aux_output_f32: Vec<Vec<Vec<f32>>>,
-}
-
-impl ConversionBuffers {
-    fn new() -> Self {
-        Self {
-            main_input_f32: Vec::new(),
-            main_output_f32: Vec::new(),
-            aux_input_f32: Vec::new(),
-            aux_output_f32: Vec::new(),
-        }
-    }
-
-    /// Pre-allocate buffers based on cached bus configuration and max block size.
-    ///
-    /// This is used during setupProcessing() when we don't have a plugin reference
-    /// anymore (it was consumed by prepare()).
-    fn allocate_from_config(bus_config: &CachedBusConfig, max_block_size: usize) -> Self {
-        // Main bus (bus 0) channels
-        let main_in_channels = bus_config.input_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
-        let main_out_channels = bus_config.output_bus_info(0).map(|b| b.channel_count as usize).unwrap_or(0);
-
-        let main_input_f32: Vec<Vec<f32>> = (0..main_in_channels)
-            .map(|_| vec![0.0f32; max_block_size])
-            .collect();
-
-        let main_output_f32: Vec<Vec<f32>> = (0..main_out_channels)
-            .map(|_| vec![0.0f32; max_block_size])
-            .collect();
-
-        // Auxiliary buses (bus 1+)
-        let mut aux_input_f32 = Vec::new();
-        for bus_idx in 1..bus_config.input_bus_count {
-            if let Some(info) = bus_config.input_bus_info(bus_idx) {
-                let channels: Vec<Vec<f32>> = (0..info.channel_count)
-                    .map(|_| vec![0.0f32; max_block_size])
-                    .collect();
-                aux_input_f32.push(channels);
-            }
-        }
-
-        let mut aux_output_f32 = Vec::new();
-        for bus_idx in 1..bus_config.output_bus_count {
-            if let Some(info) = bus_config.output_bus_info(bus_idx) {
-                let channels: Vec<Vec<f32>> = (0..info.channel_count)
-                    .map(|_| vec![0.0f32; max_block_size])
-                    .collect();
-                aux_output_f32.push(channels);
-            }
-        }
-
-        Self {
-            main_input_f32,
-            main_output_f32,
-            aux_input_f32,
-            aux_output_f32,
-        }
-    }
-}
-
-// =============================================================================
-// Bus Limit Validation
-// =============================================================================
-
-/// Validate that a cached bus configuration doesn't exceed compile-time limits.
-///
-/// Returns `Ok(())` if valid, or `Err` with a descriptive message if limits are exceeded.
-/// Used during setupProcessing() to validate the cached config.
-fn validate_bus_limits_from_config(bus_config: &CachedBusConfig) -> Result<(), String> {
-    // Validate bus counts
-    if bus_config.input_bus_count > MAX_BUSES {
-        return Err(format!(
-            "Plugin declares {} input buses, but MAX_BUSES is {}",
-            bus_config.input_bus_count, MAX_BUSES
-        ));
-    }
-    if bus_config.output_bus_count > MAX_BUSES {
-        return Err(format!(
-            "Plugin declares {} output buses, but MAX_BUSES is {}",
-            bus_config.output_bus_count, MAX_BUSES
-        ));
-    }
-
-    // Validate channel counts for each input bus
-    for (i, info) in bus_config.input_buses.iter().enumerate() {
-        let channels = info.channel_count as usize;
-        if channels > MAX_CHANNELS {
-            return Err(format!(
-                "Input bus {} declares {} channels, but MAX_CHANNELS is {}",
-                i, channels, MAX_CHANNELS
-            ));
-        }
-    }
-
-    // Validate channel counts for each output bus
-    for (i, info) in bus_config.output_buses.iter().enumerate() {
-        let channels = info.channel_count as usize;
-        if channels > MAX_CHANNELS {
-            return Err(format!(
-                "Output bus {} declares {} channels, but MAX_CHANNELS is {}",
-                i, channels, MAX_CHANNELS
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 /// Validate that a speaker arrangement doesn't exceed MAX_CHANNELS.
 ///
 /// Returns `Ok(())` if valid, or `Err` with a descriptive message if exceeded.
@@ -462,42 +215,27 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///
     /// Reserves Vec capacity for the exact channel counts declared by the plugin.
     /// This ensures that subsequent push() calls in process() never allocate.
-    fn allocate_from_config(bus_config: &CachedBusConfig) -> Self {
+    fn allocate_from_buses(input_buses: &[CoreBusInfo], output_buses: &[CoreBusInfo]) -> Self {
         // Get main bus channel counts
-        let main_in_channels = bus_config
-            .input_bus_info(0)
-            .map(|b| b.channel_count as usize)
-            .unwrap_or(0);
-        let main_out_channels = bus_config
-            .output_bus_info(0)
-            .map(|b| b.channel_count as usize)
-            .unwrap_or(0);
+        let main_in_channels = input_buses.first().map(|b| b.channel_count as usize).unwrap_or(0);
+        let main_out_channels = output_buses.first().map(|b| b.channel_count as usize).unwrap_or(0);
 
         // Pre-allocate main bus storage
         let main_inputs = Vec::with_capacity(main_in_channels);
         let main_outputs = Vec::with_capacity(main_out_channels);
 
-        // Pre-allocate auxiliary bus storage
-        let aux_input_bus_count = bus_config.input_bus_count.saturating_sub(1);
-        let aux_output_bus_count = bus_config.output_bus_count.saturating_sub(1);
+        // Pre-allocate auxiliary bus storage (skip main bus at index 0)
+        let aux_inputs: Vec<Vec<*const S>> = input_buses
+            .iter()
+            .skip(1)
+            .map(|info| Vec::with_capacity(info.channel_count as usize))
+            .collect();
 
-        let mut aux_inputs = Vec::with_capacity(aux_input_bus_count);
-        for bus_idx in 1..bus_config.input_bus_count {
-            if let Some(info) = bus_config.input_bus_info(bus_idx) {
-                aux_inputs.push(Vec::with_capacity(info.channel_count as usize));
-            } else {
-                aux_inputs.push(Vec::new());
-            }
-        }
-
-        let mut aux_outputs = Vec::with_capacity(aux_output_bus_count);
-        for bus_idx in 1..bus_config.output_bus_count {
-            if let Some(info) = bus_config.output_bus_info(bus_idx) {
-                aux_outputs.push(Vec::with_capacity(info.channel_count as usize));
-            } else {
-                aux_outputs.push(Vec::new());
-            }
-        }
+        let aux_outputs: Vec<Vec<*mut S>> = output_buses
+            .iter()
+            .skip(1)
+            .map(|info| Vec::with_capacity(info.channel_count as usize))
+            .collect();
 
         Self {
             main_inputs,
@@ -573,49 +311,6 @@ impl BuildConfig for FullAudioSetup {
 // to avoid collision with vst3::Steinberg::Vst::BusInfo used in COM interfaces.
 // We use CoreBusInfo throughout this module for the beamer type.
 
-/// Cached bus configuration for the Prepared state.
-///
-/// VST3 can query bus info at any time, including after setupProcessing().
-/// Since the Plugin is consumed during prepare(), we cache the bus config.
-#[derive(Clone)]
-struct CachedBusConfig {
-    input_bus_count: usize,
-    output_bus_count: usize,
-    input_buses: Vec<CoreBusInfo>,
-    output_buses: Vec<CoreBusInfo>,
-}
-
-impl CachedBusConfig {
-    /// Create from a plugin's bus configuration.
-    fn from_plugin<P: Plugin>(plugin: &P) -> Self {
-        let input_bus_count = plugin.input_bus_count();
-        let output_bus_count = plugin.output_bus_count();
-
-        let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
-            .filter_map(|i| plugin.input_bus_info(i))
-            .collect();
-
-        let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
-            .filter_map(|i| plugin.output_bus_info(i))
-            .collect();
-
-        Self {
-            input_bus_count,
-            output_bus_count,
-            input_buses,
-            output_buses,
-        }
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<&CoreBusInfo> {
-        self.input_buses.get(index)
-    }
-
-    fn output_bus_info(&self, index: usize) -> Option<&CoreBusInfo> {
-        self.output_buses.get(index)
-    }
-}
-
 /// Internal state machine for plugin lifecycle.
 ///
 /// The wrapper manages two states:
@@ -636,8 +331,10 @@ enum PluginState<P: Plugin> {
     Prepared {
         /// The prepared processor (ready for audio)
         processor: P::Processor,
-        /// Cached bus configuration (since Plugin is consumed)
-        bus_config: CachedBusConfig,
+        /// Cached input bus info (since Plugin is consumed)
+        input_buses: Vec<CoreBusInfo>,
+        /// Cached output bus info (since Plugin is consumed)
+        output_buses: Vec<CoreBusInfo>,
     },
 }
 
@@ -886,7 +583,7 @@ where
     unsafe fn input_bus_count(&self) -> usize {
         match &*self.state.get() {
             PluginState::Unprepared { plugin, .. } => plugin.input_bus_count(),
-            PluginState::Prepared { bus_config, .. } => bus_config.input_bus_count,
+            PluginState::Prepared { input_buses, .. } => input_buses.len(),
         }
     }
 
@@ -895,7 +592,7 @@ where
     unsafe fn output_bus_count(&self) -> usize {
         match &*self.state.get() {
             PluginState::Unprepared { plugin, .. } => plugin.output_bus_count(),
-            PluginState::Prepared { bus_config, .. } => bus_config.output_bus_count,
+            PluginState::Prepared { output_buses, .. } => output_buses.len(),
         }
     }
 
@@ -905,7 +602,7 @@ where
     unsafe fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
         match &*self.state.get() {
             PluginState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
-            PluginState::Prepared { bus_config, .. } => bus_config.input_bus_info(index).cloned(),
+            PluginState::Prepared { input_buses, .. } => input_buses.get(index).cloned(),
         }
     }
 
@@ -915,7 +612,7 @@ where
     unsafe fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
         match &*self.state.get() {
             PluginState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
-            PluginState::Prepared { bus_config, .. } => bus_config.output_bus_info(index).cloned(),
+            PluginState::Prepared { output_buses, .. } => output_buses.get(index).cloned(),
         }
     }
 
@@ -1794,12 +1491,20 @@ where
         let state = &mut *self.state.get();
         match state {
             PluginState::Unprepared { plugin, pending_state } => {
-                // Cache bus config before consuming the plugin
-                let bus_config = CachedBusConfig::from_plugin(plugin);
+                // Cache bus info before consuming the plugin
+                let input_bus_count = plugin.input_bus_count();
+                let output_bus_count = plugin.output_bus_count();
+                let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
+                    .filter_map(|i| plugin.input_bus_info(i))
+                    .collect();
+                let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
+                    .filter_map(|i| plugin.output_bus_info(i))
+                    .collect();
+
                 let bus_layout = BusLayout::from_plugin(plugin);
 
                 // Validate plugin's bus configuration against compile-time limits
-                if let Err(msg) = validate_bus_limits_from_config(&bus_config) {
+                if let Err(msg) = CoreCachedBusConfig::from_plugin(plugin).validate() {
                     log::error!("Plugin bus configuration exceeds limits: {}", msg);
                     return kResultFalse;
                 }
@@ -1824,40 +1529,41 @@ where
 
                 // Pre-allocate buffer storage based on bus config
                 *self.buffer_storage_f32.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config);
+                    ProcessBufferStorage::allocate_from_buses(&input_buses, &output_buses);
                 *self.buffer_storage_f64.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config);
+                    ProcessBufferStorage::allocate_from_buses(&input_buses, &output_buses);
 
                 // Pre-allocate conversion buffers for f64→f32 processing
                 if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
                     && !processor.supports_double_precision()
                 {
                     *self.conversion_buffers.get() =
-                        ConversionBuffers::allocate_from_config(&bus_config, setup.maxSamplesPerBlock as usize);
+                        ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, setup.maxSamplesPerBlock as usize);
                 }
 
                 // Update state to Prepared
                 *state = PluginState::Prepared {
                     processor,
-                    bus_config,
+                    input_buses,
+                    output_buses,
                 };
             }
-            PluginState::Prepared { processor, bus_config } => {
+            PluginState::Prepared { processor, input_buses, output_buses } => {
                 // Already prepared - check if sample rate changed
                 let current_sample_rate = *self.sample_rate.get();
                 if (current_sample_rate - setup.sampleRate).abs() > 0.001 {
                     // Sample rate changed - unprepare and re-prepare
                     let bus_layout = BusLayout {
-                        main_input_channels: bus_config
-                            .input_bus_info(0)
+                        main_input_channels: input_buses
+                            .first()
                             .map(|b| b.channel_count)
                             .unwrap_or(2),
-                        main_output_channels: bus_config
-                            .output_bus_info(0)
+                        main_output_channels: output_buses
+                            .first()
                             .map(|b| b.channel_count)
                             .unwrap_or(2),
-                        aux_input_count: bus_config.input_bus_count.saturating_sub(1),
-                        aux_output_count: bus_config.output_bus_count.saturating_sub(1),
+                        aux_input_count: input_buses.len().saturating_sub(1),
+                        aux_output_count: output_buses.len().saturating_sub(1),
                     };
 
                     // Take ownership of the processor
@@ -1879,7 +1585,7 @@ where
                         && !new_processor.supports_double_precision()
                     {
                         *self.conversion_buffers.get() =
-                            ConversionBuffers::allocate_from_config(bus_config, setup.maxSamplesPerBlock as usize);
+                            ConversionBuffers::allocate_from_buses(input_buses, output_buses, setup.maxSamplesPerBlock as usize);
                     }
 
                     *processor = new_processor;

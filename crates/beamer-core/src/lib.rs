@@ -27,7 +27,9 @@
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod buffer;
+pub mod bus_config;
 pub mod bypass;
+pub mod conversion_buffers;
 pub mod config;
 pub mod editor;
 pub mod error;
@@ -44,11 +46,14 @@ pub mod plugin;
 pub mod process_context;
 pub mod sample;
 pub mod smoothing;
+pub mod sysex_pool;
 pub mod types;
 
 // Re-exports for convenience
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
+pub use bus_config::{CachedBusConfig, CachedBusInfo};
 pub use config::PluginConfig;
+pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
 pub use error::{PluginError, PluginResult};
@@ -93,4 +98,5 @@ pub use plugin::{
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
+pub use sysex_pool::SysExOutputPool;
 pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};

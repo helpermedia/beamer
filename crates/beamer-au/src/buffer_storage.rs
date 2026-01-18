@@ -37,74 +37,10 @@
 //! - All allocations happen in `allocate_from_config()` (non-real-time)
 
 use crate::buffers::AudioBufferList;
-use crate::bus_config::{CachedBusConfig, MAX_BUSES, MAX_CHANNELS};
-use beamer_core::Sample;
+use beamer_core::{CachedBusConfig, Sample};
+#[cfg(test)]
+use beamer_core::{BusType, CachedBusInfo, MAX_CHANNELS};
 use std::slice;
-
-// =============================================================================
-// Bus Limit Validation
-// =============================================================================
-
-/// Validate that bus configuration doesn't exceed system limits.
-///
-/// This function checks that:
-/// - Bus counts are within MAX_BUSES (from beamer_core)
-/// - Channel counts per bus are within MAX_CHANNELS (from beamer_core)
-///
-/// # Arguments
-///
-/// * `bus_config` - The cached bus configuration to validate
-///
-/// # Returns
-///
-/// Ok(()) if valid, Err with detailed message if limits are exceeded.
-///
-/// # Example
-///
-/// ```ignore
-/// let config = extract_bus_config_from_au(au)?;
-/// validate_bus_limits_from_config(&config)?;
-/// let storage = ProcessBufferStorage::allocate_from_config(&config, 4096);
-/// ```
-pub fn validate_bus_limits_from_config(bus_config: &CachedBusConfig) -> Result<(), String> {
-    // Validate input bus count
-    if bus_config.input_bus_count > MAX_BUSES {
-        return Err(format!(
-            "Plugin declares {} input buses, but MAX_BUSES is {}",
-            bus_config.input_bus_count, MAX_BUSES
-        ));
-    }
-
-    // Validate output bus count
-    if bus_config.output_bus_count > MAX_BUSES {
-        return Err(format!(
-            "Plugin declares {} output buses, but MAX_BUSES is {}",
-            bus_config.output_bus_count, MAX_BUSES
-        ));
-    }
-
-    // Validate channel counts for each input bus
-    for (i, bus) in bus_config.input_buses.iter().enumerate() {
-        if bus.channel_count > MAX_CHANNELS {
-            return Err(format!(
-                "Input bus {} declares {} channels, but MAX_CHANNELS is {}",
-                i, bus.channel_count, MAX_CHANNELS
-            ));
-        }
-    }
-
-    // Validate channel counts for each output bus
-    for (i, bus) in bus_config.output_buses.iter().enumerate() {
-        if bus.channel_count > MAX_CHANNELS {
-            return Err(format!(
-                "Output bus {} declares {} channels, but MAX_CHANNELS is {}",
-                i, bus.channel_count, MAX_CHANNELS
-            ));
-        }
-    }
-
-    Ok(())
-}
 
 // =============================================================================
 // ProcessBufferStorage
@@ -602,38 +538,25 @@ unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus_config::{BusInfo, BusType, CachedBusConfig};
 
     #[test]
     fn test_validate_bus_limits_success() {
         let config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
-        assert!(validate_bus_limits_from_config(&config).is_ok());
+        assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_validate_bus_limits_too_many_channels() {
         let config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: MAX_CHANNELS + 1,
-                bus_type: BusType::Main,
-            }],
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(MAX_CHANNELS + 1, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
-        assert!(validate_bus_limits_from_config(&config).is_err());
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -652,19 +575,10 @@ mod tests {
     fn test_allocate_from_config_with_aux() {
         let config = CachedBusConfig::new(
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux),
             ],
-            vec![BusInfo {
-                channel_count: 6,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(6, BusType::Main)],
         );
 
         let storage: ProcessBufferStorage<f32> =
@@ -704,14 +618,8 @@ mod tests {
     fn test_allocate_from_config_mono() {
         // Mono plugin: 1 in, 1 out, no aux buses
         let config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: 1,
-                bus_type: BusType::Main,
-            }],
-            vec![BusInfo {
-                channel_count: 1,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(1, BusType::Main)],
+            vec![CachedBusInfo::new(1, BusType::Main)],
         );
 
         let storage: ProcessBufferStorage<f32> =
@@ -754,14 +662,8 @@ mod tests {
     fn test_allocate_from_config_asymmetric() {
         // Asymmetric plugin: 1 in, 2 out (e.g., mono-to-stereo effect)
         let config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: 1,
-                bus_type: BusType::Main,
-            }],
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(1, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
         let storage: ProcessBufferStorage<f32> =
@@ -778,28 +680,13 @@ mod tests {
         // Complex plugin: different channel counts per aux bus
         let config = CachedBusConfig::new(
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 1, // Mono sidechain
-                    bus_type: BusType::Auxiliary,
-                },
-                BusInfo {
-                    channel_count: 4, // Quad input
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(1, BusType::Aux), // Mono sidechain
+                CachedBusInfo::new(4, BusType::Aux), // Quad input
             ],
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 6, // 5.1 aux output
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(6, BusType::Aux), // 5.1 aux output
             ],
         );
 
@@ -836,14 +723,8 @@ mod tests {
 
         // Mono plugin with config-based allocation
         let mono_config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: 1,
-                bus_type: BusType::Main,
-            }],
-            vec![BusInfo {
-                channel_count: 1,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(1, BusType::Main)],
+            vec![CachedBusInfo::new(1, BusType::Main)],
         );
         let mono_storage: ProcessBufferStorage<f32> =
             ProcessBufferStorage::allocate_from_config(&mono_config, 4096);
@@ -895,19 +776,10 @@ mod tests {
 
         // Config with only output aux bus (no input aux)
         let config = CachedBusConfig::new(
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux),
             ],
         );
 
@@ -930,19 +802,10 @@ mod tests {
 
         let config = CachedBusConfig::new(
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux),
             ],
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
         let mut storage: ProcessBufferStorage<f32> =
@@ -1005,19 +868,10 @@ mod tests {
         // Test that aux bus collection methods work correctly
         let config = CachedBusConfig::new(
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2, // Stereo sidechain
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux), // Stereo sidechain
             ],
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
         let mut storage: ProcessBufferStorage<f32> =
@@ -1042,24 +896,12 @@ mod tests {
         // Test building aux input/output slices from collected pointers
         let config = CachedBusConfig::new(
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux),
             ],
             vec![
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Main,
-                },
-                BusInfo {
-                    channel_count: 2,
-                    bus_type: BusType::Auxiliary,
-                },
+                CachedBusInfo::new(2, BusType::Main),
+                CachedBusInfo::new(2, BusType::Aux),
             ],
         );
 
@@ -1105,10 +947,7 @@ mod tests {
         // Instruments have 0 inputs and >0 outputs - should allocate internal buffers
         let config = CachedBusConfig::new(
             vec![], // No input buses (instrument)
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
         let storage: ProcessBufferStorage<f32> =
@@ -1142,10 +981,7 @@ mod tests {
         // Create instrument config (no inputs)
         let config = CachedBusConfig::new(
             vec![], // No input buses
-            vec![BusInfo {
-                channel_count: 2,
-                bus_type: BusType::Main,
-            }],
+            vec![CachedBusInfo::new(2, BusType::Main)],
         );
 
         let mut storage: ProcessBufferStorage<f32> =

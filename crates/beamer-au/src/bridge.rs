@@ -36,8 +36,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
-use crate::bus_config::{BusInfo, BusType, CachedBusConfig, MAX_BUSES};
 use crate::error::os_status;
+use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, MAX_BUSES};
 use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
@@ -293,23 +293,24 @@ fn copy_str_to_char_array(s: &str, dest: &mut [c_char]) {
     }
 }
 
-/// Convert a C bus info array to a Vec<BusInfo>.
+/// Convert a C bus info array to a Vec<CachedBusInfo>.
 ///
 /// This helper converts FFI bus information from the C-ABI format to Rust's internal
 /// representation, handling the bus type conversion and respecting MAX_BUSES bounds.
-fn convert_bus_info_array(c_buses: &[BeamerAuBusInfo; MAX_BUSES], count: u32) -> Vec<BusInfo> {
+fn convert_bus_info_array(
+    c_buses: &[BeamerAuBusInfo; MAX_BUSES],
+    count: u32,
+) -> Vec<CachedBusInfo> {
     let count = (count as usize).min(MAX_BUSES);
     let mut buses = Vec::with_capacity(count);
 
     for bus in c_buses.iter().take(count) {
-        buses.push(BusInfo {
-            channel_count: bus.channel_count as usize,
-            bus_type: if bus.bus_type == BeamerAuBusType::Main {
-                BusType::Main
-            } else {
-                BusType::Auxiliary
-            },
-        });
+        let bus_type = if bus.bus_type == BeamerAuBusType::Main {
+            BusType::Main
+        } else {
+            BusType::Aux
+        };
+        buses.push(CachedBusInfo::new(bus.channel_count as usize, bus_type));
     }
 
     buses
@@ -1458,7 +1459,7 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
     main_input_channels: u32,
     main_output_channels: u32,
 ) -> bool {
-    use crate::bus_config::MAX_CHANNELS;
+    use beamer_core::MAX_CHANNELS;
     use crate::config::ComponentType;
 
     let result = catch_unwind(|| {

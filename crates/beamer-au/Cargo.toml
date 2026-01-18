@@ -12,7 +12,7 @@ links = "beamer_au_native"
 
 [features]
 default = []
-sysex-heap-fallback = []
+sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 
 [build-dependencies]
 cc = "1.0"

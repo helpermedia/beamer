@@ -13,6 +13,8 @@ default = []
 sysex-256 = []
 sysex-1024 = []
 sysex-2048 = []
+# Enable heap-backed fallback for SysEx output pool overflow
+sysex-heap-fallback = []
 
 [dependencies]
 # Internal utilities crate (zero external deps)
