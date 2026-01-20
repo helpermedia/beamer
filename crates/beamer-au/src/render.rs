@@ -1298,13 +1298,13 @@ impl<S: Sample> RenderBlock<S> {
     #[allow(clippy::too_many_arguments)]
     fn process_impl(
         &self,
-        _action_flags: *mut u32,
-        _timestamp: *const AudioTimeStamp,
+        action_flags: *mut u32,
+        timestamp: *const AudioTimeStamp,
         frame_count: u32,
         _output_bus_number: i32,
         output_data: *mut AudioBufferList,
         event_list: *const AURenderEvent,
-        _pull_input_block: *const c_void,
+        pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
     ) -> i32 {
         // Real-time safety: use try_lock to avoid blocking
@@ -1349,6 +1349,27 @@ impl<S: Sample> RenderBlock<S> {
         // SAFETY: event_list is valid for this render call (provided by AU host)
         unsafe {
             extract_midi_events(event_list, midi_buffer);
+        }
+
+        // Convert absolute sample times to relative buffer offsets.
+        //
+        // AU's eventSampleTime is an ABSOLUTE sample position (like the transport).
+        // We need to subtract the timestamp's sample_time (the buffer start position)
+        // to get a relative offset within [0, frame_count).
+        let buffer_start_sample = unsafe {
+            if !timestamp.is_null() {
+                (*timestamp).sample_time as i64
+            } else {
+                0
+            }
+        };
+
+        for event in midi_buffer.events.iter_mut() {
+            let absolute_time = event.sample_offset as i64;
+            let relative_offset = absolute_time - buffer_start_sample;
+
+            // Clamp to buffer bounds (handle late/early events gracefully)
+            event.sample_offset = relative_offset.clamp(0, (num_samples - 1) as i64) as u32;
         }
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
@@ -1461,8 +1482,8 @@ impl<S: Sample> RenderBlock<S> {
                 None => false, // No transport state block, default to stopped
             };
 
-            let sample_position = if !_timestamp.is_null() {
-                (*_timestamp).sample_time as i64
+            let sample_position = if !timestamp.is_null() {
+                (*timestamp).sample_time as i64
             } else {
                 0
             };
@@ -1549,7 +1570,7 @@ impl<S: Sample> RenderBlock<S> {
 
             // Pull auxiliary bus inputs if available
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
-            if !_pull_input_block.is_null() {
+            if !pull_input_block.is_null() {
                 let aux_buffer_lists = &mut *self.aux_input_buffer_lists.get();
                 let aux_input_count = aux_buffer_lists.len();
 
@@ -1562,7 +1583,7 @@ impl<S: Sample> RenderBlock<S> {
                     // - The block must be cast to a function pointer with the correct signature
                     //
                     // Invariants that must hold:
-                    // 1. `_pull_input_block` must be a valid AURenderPullInputBlock provided by AU host
+                    // 1. `pull_input_block` must be a valid AURenderPullInputBlock provided by AU host
                     // 2. The block must remain valid for the duration of this render callback
                     // 3. The function signature must exactly match Apple's documented AURenderPullInputBlock:
                     //    - action_flags: pointer to AudioUnitRenderActionFlags
@@ -1590,7 +1611,7 @@ impl<S: Sample> RenderBlock<S> {
                     //
                     // Alternative approach:
                     // - Use `block2` crate for proper Objective-C block handling (adds dependency)
-                    let invoke = objc_block::invoke_ptr(_pull_input_block);
+                    let invoke = objc_block::invoke_ptr(pull_input_block);
                     let pull_fn: AURenderPullInputBlock = std::mem::transmute(invoke);
 
                     // Use stack-based array to avoid heap allocation in render path
@@ -1611,9 +1632,9 @@ impl<S: Sample> RenderBlock<S> {
 
                         // Call the pull input block to get audio from this aux bus
                         let status = pull_fn(
-                            _pull_input_block,
-                            _action_flags,
-                            _timestamp,
+                            pull_input_block,
+                            action_flags,
+                            timestamp,
                             frame_count,
                             bus_number,
                             &mut **buffer_list as *mut AudioBufferList,

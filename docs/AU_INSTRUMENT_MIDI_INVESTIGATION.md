@@ -1,8 +1,14 @@
 # AU Instrument (aumu) MIDI Investigation
 
+**Status: ✅ RESOLVED (2026-01-20)**
+
 ## Problem Summary
 
-AU instruments (`aumu` component type) produce no audio because **MIDI events are not being delivered** to the render block. The same synth plugin works correctly as VST3.
+AU instruments (`aumu` component type) produced no audio because **MIDI events were not being delivered** to the render block. The same synth plugin worked correctly as VST3.
+
+**Solution**: Two fixes were required:
+1. Create render block eagerly in `init` (like JUCE) - enables base class MIDI forwarding
+2. Convert absolute `eventSampleTime` to relative buffer offset (like iPlug2)
 
 ## Symptoms
 
@@ -322,30 +328,87 @@ This confirms the host is using the standard `renderBlock` path (not bypassing t
 
 ---
 
-## Solution Summary
+## Solution Summary (RESOLVED)
 
-**The Problem**: The base class `AUAudioUnit` has an internal mechanism that should collect events from `scheduleMIDIEventBlock` calls and forward them to `internalRenderBlock` via the `realtimeEventListHead` parameter. This mechanism was completely non-functional for our AUv3 App Extension implementation.
+**The Problem**: AU instruments produced no sound because MIDI events weren't reaching the audio processing code. Two issues were identified:
 
-**What We Tried That Didn't Work**:
-1. Implementing `virtualMIDICableCount` (returns 1)
-2. Implementing `musicDeviceOrEffect` (returns YES)
-3. Implementing `MIDIOutputNames` (returns empty array)
-4. Caching `internalRenderBlock` (returns same instance)
-5. Not overriding `renderBlock`
-6. Various property overrides
+### Issue 1: Render Block Creation Timing
 
-**What Actually Worked**: Custom MIDI event collection that completely bypasses the base class:
-1. Override `scheduleMIDIEventBlock` getter to return our own block
-2. Our block stores events in a thread-safe buffer
-3. In `internalRenderBlock`, build an `AURenderEvent` linked list from our buffer
-4. Pass our event list to Rust instead of the always-null `realtimeEventListHead`
+The base class `AUAudioUnit` sets up MIDI forwarding (wiring `scheduleMIDIEventBlock` → `realtimeEventListHead`) during initialization. If `internalRenderBlock` doesn't exist at that point, the forwarding can't be established.
 
-**Why This Works**: We intercept MIDI events at the source (`scheduleMIDIEventBlock`) before they enter the broken base class forwarding mechanism, then manually construct the event list format that the render code expects.
+**Comparison of frameworks:**
 
-**Current Status**:
+| Framework | When Block Created | Cached | MIDI Works |
+|-----------|-------------------|--------|------------|
+| JUCE | Eagerly in init() | Yes | Yes |
+| iPlug2 | Lazily in getter | No | Yes |
+| Beamer (old) | Lazily in getter | Yes | No |
+| Beamer (fixed) | Eagerly in init() | Yes | Yes |
+
+**Fix**: Create render block eagerly during `init` (like JUCE):
+
+```objc
+- (instancetype)initWithComponentDescription:... {
+    self = [super initWithComponentDescription:desc options:options error:outError];
+    if (self) {
+        // ... other init code ...
+
+        // CRITICAL: Create render block eagerly during init, like JUCE does.
+        // The base class AUAudioUnit may set up MIDI forwarding (wiring
+        // scheduleMIDIEventBlock -> realtimeEventListHead) during initialization.
+        // If internalRenderBlock doesn't exist at that point, forwarding fails.
+        (void)[self internalRenderBlock];
+    }
+    return self;
+}
+```
+
+### Issue 2: Absolute vs Relative Sample Offsets
+
+Even after fixing Issue 1, MIDI events still weren't being processed. Debug logging revealed the problem:
+
+```
+MIDI1: status=0x90 ch=0 d1=36 d2=108 offset=145346
+```
+
+The sample offset `145346` was way larger than the buffer size (~512 samples). This caused MIDI events to fall outside the processing window.
+
+**Root Cause**: AU's `eventSampleTime` is an **absolute** sample position (like the transport), not a relative offset within the buffer.
+
+**How iPlug2 handles this** (IPlugAUv3.mm:151):
+```objc
+midiMsg = {static_cast<int>(midiEvent.eventSampleTime - now), ...};
+```
+
+iPlug2 subtracts `now` (the timestamp's `sample_time`, i.e., buffer start position) from `eventSampleTime` to get a relative offset.
+
+**Fix**: Convert absolute sample times to relative buffer offsets:
+
+```rust
+// In process_impl, after extracting MIDI events:
+let buffer_start_sample = unsafe {
+    if !timestamp.is_null() {
+        (*timestamp).sample_time as i64
+    } else {
+        0
+    }
+};
+
+for event in midi_buffer.events.iter_mut() {
+    let absolute_time = event.sample_offset as i64;
+    let relative_offset = absolute_time - buffer_start_sample;
+
+    // Clamp to buffer bounds
+    event.sample_offset = relative_offset.clamp(0, (num_samples - 1) as i64) as u32;
+}
+```
+
+### Final Status
+
+✅ **RESOLVED** - Both Reaper and Logic Pro now work correctly:
 - ✅ **Reaper**: MIDI works, synth produces sound with full polyphony
-- ❌ **Logic Pro**: Still silent (Logic may use a different MIDI delivery path)
-- ✅ **Polyphony**: Fixed - notes now get unique IDs for voice tracking
+- ✅ **Logic Pro**: MIDI works, synth produces sound with full polyphony
+- ✅ **Polyphony**: Notes get unique IDs for voice tracking (pitch as note_id)
 
 ## What We've Ruled Out
 
@@ -365,17 +428,17 @@ This confirms the host is using the standard `renderBlock` path (not bypassing t
 
 ## Next Steps
 
-1. **Fix Logic Pro MIDI delivery** - Logic may use a different mechanism than `scheduleMIDIEventBlock`:
-   - Check if Logic uses `AUMIDIOutputEventBlock` or direct MIDI routing
-   - Investigate if Logic requires specific entitlements or capabilities
-   - Compare with how working AU instruments handle Logic Pro
+All major issues are now resolved:
 
-2. ~~**Fix polyphony bug**~~ - ✅ **FIXED**: The issue was that `note_id` was always 0, causing all notes to map to the same voice. Solution: use MIDI pitch as `note_id` since AU/MIDI 1.0 doesn't have native note IDs (unlike VST3's note expression). Fixed in:
+1. ~~**Fix Logic Pro MIDI delivery**~~ - ✅ **FIXED**: Two issues found and resolved:
+   - **Render block timing**: Create render block eagerly in `init` (like JUCE) so base class can wire MIDI forwarding
+   - **Sample offset conversion**: Convert absolute `eventSampleTime` to relative buffer offset (like iPlug2)
+
+2. ~~**Fix polyphony bug**~~ - ✅ **FIXED**: Use MIDI pitch as `note_id` since AU/MIDI 1.0 doesn't have native note IDs. Fixed in:
    - `beamer-au/src/render.rs` - AU: use pitch as note_id
-   - `beamer-au/src/midi.rs` - AU: same fix
    - `beamer-vst3/src/processor.rs` - VST3: use pitch as note_id when host sends -1
 
-3. **Test with iPlug2 AU instrument in Logic** - Build IPlugInstrument from iPlug2 Examples and verify it receives MIDI correctly in Logic. If it works, compare how they handle MIDI delivery.
+3. ~~**Test with iPlug2 AU instrument in Logic**~~ - No longer needed, our implementation now works in both Reaper and Logic Pro.
 
 ## Related Files
 

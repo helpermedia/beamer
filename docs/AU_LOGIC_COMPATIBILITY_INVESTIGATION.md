@@ -1,6 +1,6 @@
 # AU Logic Pro Compatibility Investigation
 
-Investigation date: 2026-01-14 (updated 2026-01-15)
+Investigation date: 2026-01-14 (updated 2026-01-20 - ALL RESOLVED)
 
 ## Recent Fix: ObjC Class Name Collisions (Resolved)
 
@@ -396,18 +396,25 @@ Appex has correct sandbox entitlements:
 
 ---
 
-## Remaining Differences to Investigate
+## All Issues Resolved
 
-### Current Issue: Audio Silent in Logic Pro
+### ✅ Effects Work in Logic Pro (Fixed 2026-01-15)
 
-Plugin loads successfully but audio doesn't pass through. This is a separate issue from XPC loading.
+Two issues were found and fixed:
+- **Output buffer zeroing**: Code was zeroing output buffers after in-place processing setup
+- **Render block variable capture**: Variables captured by value at block creation; fixed to access via `blockSelf->` dynamically
 
-Possible causes:
-1. **Buffer handling differences** in XPC context vs in-process
-2. **Render block setup** may need adjustment for out-of-process operation
-3. **Sandbox restrictions** on audio buffer access
+### ✅ Instruments Work in Logic Pro (Fixed 2026-01-20)
 
-### Ruled Out (XPC Loading Fixed)
+MIDI events weren't reaching the audio processing. Two issues found:
+
+1. **Render block creation timing**: The base class `AUAudioUnit` wires MIDI forwarding during init. If `internalRenderBlock` doesn't exist yet, forwarding fails. **Fix**: Create render block eagerly in `init` (like JUCE does).
+
+2. **Absolute vs relative sample offsets**: AU's `eventSampleTime` is absolute, not relative to the buffer. **Fix**: Subtract `timestamp.sample_time` from `eventSampleTime` (like iPlug2 does).
+
+See [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md) for full details.
+
+### Ruled Out (All Fixed)
 
 - ~~**Custom main() entry point**~~ - **ROOT CAUSE FOUND.** Replaced with `NSExtensionMain`
 - ~~**Framework Structure**~~ - Changed to versioned structure with symlinks
@@ -478,17 +485,23 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 ## Recommended Next Steps
 
-1. ✅ ~~**Compare with working headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance), but didn't fix the issue.
+All issues have been resolved:
 
-2. ✅ ~~**Try versioned framework structure**~~ - Done. Changed to versioned layout with symlinks, but didn't fix the issue.
+1. ✅ ~~**Compare with working headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance).
 
-3. ✅ ~~**Use NSExtensionMain entry point**~~ - **SUCCESS!** Replaced custom `main()` with Apple's `NSExtensionMain` via `-e _NSExtensionMain` linker flag. Plugin now loads in Logic Pro.
+2. ✅ ~~**Try versioned framework structure**~~ - Done. Changed to versioned layout with symlinks.
+
+3. ✅ ~~**Use NSExtensionMain entry point**~~ - **SUCCESS!** Replaced custom `main()` with Apple's `NSExtensionMain` via `-e _NSExtensionMain` linker flag.
 
 4. ✅ ~~**Debug audio processing in Logic Pro**~~ - **FIXED for effects!** Two issues found and resolved:
-   - **Output buffer zeroing** (render.rs): Code was zeroing output buffers after in-place processing setup, destroying input data. Logic Pro uses in-place processing (null output pointers filled with input pointers).
-   - **Render block variable capture** (xtask ObjC generation): `_inputPCMBuffer`, `_inputMutableABL`, `_maxFrames` were captured by value at block creation. In XPC context, host may call `internalRenderBlock` before `allocateRenderResourcesAndReturnError`, capturing nil values. Fixed by accessing via `blockSelf->` dynamically.
+   - **Output buffer zeroing** (render.rs): Code was zeroing output buffers after in-place processing setup
+   - **Render block variable capture** (xtask ObjC generation): Variables accessed via `blockSelf->` dynamically
 
-5. **Debug instrument (synth) audio** - Effects now work, but BeamerSynth is still silent. **Root cause identified: MIDI events not delivered to render block** (`realtimeEventListHead` is null). Separate investigation: [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md)
+5. ✅ ~~**Debug instrument (synth) audio**~~ - **FIXED!** Two issues found and resolved:
+   - **Render block creation timing**: Create block eagerly in `init` (like JUCE)
+   - **Sample offset conversion**: Convert absolute `eventSampleTime` to relative buffer offset (like iPlug2)
+
+   See [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md) for details.
 
 ---
 

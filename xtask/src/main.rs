@@ -90,12 +90,6 @@ fn generate_au_wrapper_source(plugin_name: &str) -> String {
 #include "BeamerAuBridge.h"
 
 // =============================================================================
-// MARK: - Debug Logging
-// =============================================================================
-
-#define AU_DEBUG(fmt, ...) ((void)0)
-
-// =============================================================================
 // MARK: - Constants
 // =============================================================================
 
@@ -129,7 +123,7 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 @end
 
 // Class extension with bus array properties.
-// Using @property enables KVO and matches iPlug2's pattern.
+// Using @property enables KVO which AU hosts rely on for bus configuration changes.
 @interface {wrapper_class} ()
 @property (nonatomic) AUAudioUnitBusArray* inputBusArray;
 @property (nonatomic) AUAudioUnitBusArray* outputBusArray;
@@ -217,6 +211,12 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         _rustInstance = NULL;
         return nil;
     }}
+
+    // CRITICAL: Create render block eagerly during init, like JUCE does.
+    // The base class AUAudioUnit may set up MIDI forwarding (wiring
+    // scheduleMIDIEventBlock -> realtimeEventListHead) during initialization.
+    // If internalRenderBlock doesn't exist at that point, forwarding fails.
+    (void)[self internalRenderBlock];
 
     return self;
 }}
@@ -541,9 +541,10 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 // -----------------------------------------------------------------------------
 
 - (AUInternalRenderBlock)internalRenderBlock {{
-    // CRITICAL: Cache the render block instance. AUAudioUnit wires MIDI event forwarding
-    // (scheduleMIDIEventBlock -> realtimeEventListHead) to the FIRST block it obtains.
-    // Returning different block instances on subsequent calls breaks the forwarding chain.
+    // Cache the render block instance. This block is created eagerly during init()
+    // to ensure the base class AUAudioUnit can set up MIDI forwarding (wiring
+    // scheduleMIDIEventBlock -> realtimeEventListHead) at the right time.
+    // JUCE also creates the render block eagerly during initialization.
     if (_cachedInternalRenderBlock != nil) {{
         return _cachedInternalRenderBlock;
     }}

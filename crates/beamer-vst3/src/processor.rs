@@ -724,11 +724,10 @@ where
     // refactoring to a macro-based approach.
     //
     // TODO: Null buffer handling - Currently we skip null channel pointers.
-    // This is correct for VST3's parameter flushing (numSamples=0) but some
-    // buggy hosts (e.g., Bitwig - see iPlug2 issue #96) may send null buffers
-    // with non-zero numSamples. Consider adding internal buffer fallback like
-    // beamer-au does for instruments if this becomes a real issue. For now,
-    // VST3 hosts are generally compliant and this hasn't caused problems.
+    // This is correct for VST3's parameter flushing (numSamples=0). Some hosts
+    // may send null buffers with non-zero numSamples. Consider adding internal
+    // buffer fallback like beamer-au does for instruments if this becomes an
+    // issue. For now, VST3 hosts are generally compliant.
     // =========================================================================
 
     /// Process audio at 32-bit (f32) precision.
