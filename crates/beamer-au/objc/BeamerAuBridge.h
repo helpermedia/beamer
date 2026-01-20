@@ -816,6 +816,73 @@ bool beamer_au_is_channel_config_valid(
 );
 
 // =============================================================================
+// MARK: - Channel Capabilities
+// =============================================================================
+
+/**
+ * Maximum number of channel capability entries a plugin can declare.
+ *
+ * Most plugins only need 1-3 configurations (e.g., mono, stereo, surround).
+ */
+#define BEAMER_AU_MAX_CHANNEL_CAPABILITIES 16
+
+/**
+ * A single channel capability entry representing a supported [input, output] pair.
+ *
+ * AU channel capabilities use signed integers with special semantics:
+ * - `-1` means "any number of channels" (wildcard)
+ * - `0` means "no channels" (e.g., for instruments with no audio input)
+ * - Positive values indicate exact channel counts
+ *
+ * Common patterns:
+ * - `[-1, -1]`: Any matching input/output (typical for effects)
+ * - `[0, 2]`: Stereo instrument (no input, stereo output)
+ * - `[2, 2]`: Stereo effect (stereo in, stereo out)
+ * - `[1, 1]`: Mono effect
+ */
+typedef struct {
+    /// Number of input channels (-1 = any, 0 = none, >0 = exact count)
+    int32_t input_channels;
+    /// Number of output channels (-1 = any, 0 = none, >0 = exact count)
+    int32_t output_channels;
+} BeamerAuChannelCapability;
+
+/**
+ * Channel capabilities result containing all supported configurations.
+ *
+ * The AU framework uses this to populate the `channelCapabilities` property.
+ */
+typedef struct {
+    /// Number of valid capability entries (0 means "any configuration supported")
+    uint32_t count;
+    /// Array of supported [input, output] channel configurations
+    BeamerAuChannelCapability capabilities[BEAMER_AU_MAX_CHANNEL_CAPABILITIES];
+} BeamerAuChannelCapabilities;
+
+/**
+ * Get the supported channel capabilities for the main bus.
+ *
+ * This function returns the [input, output] channel configurations that
+ * the plugin supports, based on its component type and declared bus configuration.
+ *
+ * Capability semantics:
+ * - Effects (aufx): Returns [-1, -1] meaning "any matching configuration"
+ * - Instruments (aumu): Returns [0, N] where N is declared output channel count
+ * - MIDI Processors (aumi): Returns [-1, -1] like effects
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance          Handle to the plugin instance (may be NULL for static query).
+ * @param out_capabilities  Pointer to structure to fill with channel capabilities.
+ *
+ * @return true if capabilities were successfully retrieved, false on error.
+ */
+bool beamer_au_get_channel_capabilities(
+    BeamerAuInstanceHandle _Nullable instance,
+    BeamerAuChannelCapabilities* out_capabilities
+);
+
+// =============================================================================
 // MARK: - MIDI Support
 // =============================================================================
 

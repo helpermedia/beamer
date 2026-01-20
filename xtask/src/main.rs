@@ -110,8 +110,6 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     BeamerAuInstanceHandle _rustInstance;
     NSLock* _instanceLock;
     BOOL _instanceValid;
-    AUAudioUnitBusArray* _inputBusArray;
-    AUAudioUnitBusArray* _outputBusArray;
     AUParameterTree* _parameterTree;
     BeamerAuSampleFormat _sampleFormat;
     double _sampleRate;
@@ -130,6 +128,13 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 
 @end
 
+// Class extension with bus array properties.
+// Using @property enables KVO and matches iPlug2's pattern.
+@interface {wrapper_class} ()
+@property (nonatomic) AUAudioUnitBusArray* inputBusArray;
+@property (nonatomic) AUAudioUnitBusArray* outputBusArray;
+@end
+
 static NSUInteger {wrapper_class}InstanceCounter = 0;
 
 // =============================================================================
@@ -140,6 +145,8 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
 @synthesize parameterTree = _parameterTree;
 @synthesize factoryPresets = _factoryPresets;
+@synthesize inputBusArray = _inputBusArray;
+@synthesize outputBusArray = _outputBusArray;
 
 + (NSUInteger)nextInstanceId {{
     @synchronized([{wrapper_class} class]) {{
@@ -356,6 +363,78 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
 - (AUAudioUnitBusArray*)outputBusses {{
     return _outputBusArray;
+}}
+
+// -----------------------------------------------------------------------------
+// MARK: Format Validation
+// -----------------------------------------------------------------------------
+
+- (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {{
+    // Get the channel capabilities to validate against
+    BeamerAuChannelCapabilities caps;
+    if (!beamer_au_get_channel_capabilities(_rustInstance, &caps)) {{
+        // Can't get capabilities, let the superclass decide
+        return [super shouldChangeToFormat:format forBus:bus];
+    }}
+
+    // If no specific capabilities, accept any format
+    if (caps.count == 0) {{
+        return [super shouldChangeToFormat:format forBus:bus];
+    }}
+
+    // Determine which bus this is (input or output, and which index)
+    BOOL isInput = NO;
+    NSUInteger busIndex = NSNotFound;
+
+    for (NSUInteger i = 0; i < _inputBusArray.count; i++) {{
+        if (_inputBusArray[i] == bus) {{
+            isInput = YES;
+            busIndex = i;
+            break;
+        }}
+    }}
+
+    if (busIndex == NSNotFound) {{
+        for (NSUInteger i = 0; i < _outputBusArray.count; i++) {{
+            if (_outputBusArray[i] == bus) {{
+                isInput = NO;
+                busIndex = i;
+                break;
+            }}
+        }}
+    }}
+
+    // Only validate main bus (index 0) format changes
+    if (busIndex != 0) {{
+        return [super shouldChangeToFormat:format forBus:bus];
+    }}
+
+    uint32_t newChannelCount = (uint32_t)format.channelCount;
+
+    // Get the current channel count for the other bus direction
+    uint32_t inputChannels = isInput ? newChannelCount : (uint32_t)(_inputBusArray.count > 0 ? _inputBusArray[0].format.channelCount : 0);
+    uint32_t outputChannels = isInput ? (uint32_t)(_outputBusArray.count > 0 ? _outputBusArray[0].format.channelCount : 0) : newChannelCount;
+
+    // Check if this configuration matches any declared capability
+    for (uint32_t i = 0; i < caps.count; i++) {{
+        int32_t capInput = caps.capabilities[i].input_channels;
+        int32_t capOutput = caps.capabilities[i].output_channels;
+
+        BOOL inputMatches = (capInput == -1) || (capInput == (int32_t)inputChannels);
+        BOOL outputMatches = (capOutput == -1) || (capOutput == (int32_t)outputChannels);
+
+        // For wildcard capabilities ([-1, -1]), also require channels to match
+        if (capInput == -1 && capOutput == -1) {{
+            if (inputChannels == outputChannels) {{
+                return [super shouldChangeToFormat:format forBus:bus];
+            }}
+        }} else if (inputMatches && outputMatches) {{
+            return [super shouldChangeToFormat:format forBus:bus];
+        }}
+    }}
+
+    // No matching capability found, reject the format change
+    return NO;
 }}
 
 // -----------------------------------------------------------------------------
@@ -825,19 +904,8 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 }}
 
 - (NSArray<NSString*>*)MIDIOutputNames {{
-    // Return empty array - we don't have MIDI output but implementing this
-    // signals to the host that we're MIDI-aware
+    // Return empty array - we don't have MIDI output
     return @[];
-}}
-
-- (BOOL)musicDeviceOrEffect {{
-    // Override to explicitly declare MIDI capability for instruments/MIDI effects
-    return beamer_au_accepts_midi(_rustInstance);
-}}
-
-- (NSInteger)virtualMIDICableCount {{
-    // Return 1 for instruments/MIDI effects that accept MIDI input
-    return beamer_au_accepts_midi(_rustInstance) ? 1 : 0;
 }}
 
 - (BOOL)supportsUserPresets {{
@@ -845,11 +913,26 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 }}
 
 - (NSArray<NSNumber*>*)channelCapabilities {{
-    // Return nil to indicate "any configuration supported"
-    // Note: Returning dynamic values from bus state causes auval failures
-    // because the bus format changes during format tests.
-    // TODO: Query static configuration from Rust plugin if needed.
-    return nil;
+    // Query the declared channel capabilities from the Rust plugin
+    BeamerAuChannelCapabilities caps;
+    if (!beamer_au_get_channel_capabilities(_rustInstance, &caps)) {{
+        // Failed to get capabilities, fall back to "any supported"
+        return nil;
+    }}
+
+    if (caps.count == 0) {{
+        // No specific capabilities declared, "any supported"
+        return nil;
+    }}
+
+    // Convert capabilities to NSArray<NSNumber*> format
+    // AU expects pairs of [input, output] channel counts
+    NSMutableArray<NSNumber*>* result = [[NSMutableArray alloc] initWithCapacity:caps.count * 2];
+    for (uint32_t i = 0; i < caps.count; i++) {{
+        [result addObject:@(caps.capabilities[i].input_channels)];
+        [result addObject:@(caps.capabilities[i].output_channels)];
+    }}
+    return result;
 }}
 
 - (void)reset {{
@@ -867,7 +950,10 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 }
 
 /// Generate the AU extension ObjC implementation with plugin-specific class names.
-/// The extension class implements AUAudioUnitFactory protocol for AU instantiation.
+/// The extension class inherits from AUViewController to enable proper MIDI forwarding.
+/// Even for headless plugins (no custom UI), AUViewController is required because the
+/// base class manages the audioUnit property binding that wires scheduleMIDIEventBlock
+/// to realtimeEventListHead in the render block.
 fn generate_au_extension_source(plugin_name: &str) -> String {
     let pascal_name = to_pascal_case(plugin_name);
     let wrapper_class = format!("Beamer{}AuWrapper", pascal_name);
@@ -877,8 +963,9 @@ fn generate_au_extension_source(plugin_name: &str) -> String {
     format!(r#"// Auto-generated AU extension for {plugin_name}
 // DO NOT EDIT - Generated by xtask
 
-#import <AudioToolbox/AudioToolbox.h>
-#import <Foundation/Foundation.h>
+@import AudioToolbox;
+@import CoreAudioKit;
+@import Foundation;
 #include "BeamerAuBridge.h"
 
 @class {wrapper_class};
@@ -889,21 +976,18 @@ fn generate_au_extension_source(plugin_name: &str) -> String {
                                        error:(NSError**)outError;
 @end
 
-// Extension class implementing AUAudioUnitFactory protocol.
-// NSExtensionMain instantiates this class based on NSExtensionPrincipalClass in Info.plist.
-@interface {extension_class} : NSObject <AUAudioUnitFactory>
+// Extension class inheriting from AUViewController.
+// Even for headless plugins, AUViewController is required because its audioUnit property
+// binding enables the base class to wire MIDI events from scheduleMIDIEventBlock to
+// realtimeEventListHead in the render block.
+@interface {extension_class} : AUViewController <AUAudioUnitFactory>
+@property (nonatomic, retain) AUAudioUnit* audioUnit;
 @end
 
 @implementation {extension_class}
 
-// Required by NSExtensionRequestHandling protocol, but not used for AUv3.
-// NSExtensionMain calls createAudioUnitWithComponentDescription:error: directly.
-- (void)beginRequestWithExtensionContext:(NSExtensionContext *)context {{
-    (void)context;
-}}
-
-- (nullable AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)desc
-                                                            error:(NSError **)error {{
+- (AUAudioUnit *)createAudioUnitWithComponentDescription:(AudioComponentDescription)desc
+                                                   error:(NSError **)error {{
     if (!beamer_au_ensure_factory_registered()) {{
         if (error) {{
             *error = [NSError errorWithDomain:NSOSStatusErrorDomain
@@ -912,7 +996,12 @@ fn generate_au_extension_source(plugin_name: &str) -> String {
         }}
         return nil;
     }}
-    return [[{wrapper_class} alloc] initWithComponentDescription:desc options:0 error:error];
+
+    // Setting self.audioUnit establishes the binding that enables MIDI forwarding.
+    // The AUViewController base class uses this property to wire scheduleMIDIEventBlock
+    // calls to realtimeEventListHead in the internalRenderBlock.
+    self.audioUnit = [[{wrapper_class} alloc] initWithComponentDescription:desc options:0 error:error];
+    return self.audioUnit;
 }}
 
 @end
@@ -1831,6 +1920,7 @@ fn bundle_au(
                 "-framework", "AudioToolbox",
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
+                "-framework", "CoreAudioKit",  // Required for AUViewController
                 "-F", frameworks_dir.to_str().unwrap(),
                 "-framework", &framework_name,
                 "-Wl,-rpath,@loader_path/../../../../Frameworks",

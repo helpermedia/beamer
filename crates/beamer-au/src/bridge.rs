@@ -219,6 +219,58 @@ impl Default for BeamerAuParameterInfo {
 }
 
 // =============================================================================
+// Channel Capabilities
+// =============================================================================
+
+/// Maximum number of channel capability entries a plugin can declare.
+///
+/// Most plugins only need 1-3 configurations (e.g., mono, stereo, surround).
+pub const BEAMER_AU_MAX_CHANNEL_CAPABILITIES: usize = 16;
+
+/// A single channel capability entry representing a supported [input, output] pair.
+///
+/// AU channel capabilities use signed integers with special semantics:
+/// - `-1` means "any number of channels" (wildcard)
+/// - `0` means "no channels" (e.g., for instruments with no audio input)
+/// - Positive values indicate exact channel counts
+///
+/// Common patterns:
+/// - `[-1, -1]`: Any matching input/output (typical for effects)
+/// - `[0, 2]`: Stereo instrument (no input, stereo output)
+/// - `[2, 2]`: Stereo effect (stereo in, stereo out)
+/// - `[1, 1]`: Mono effect
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BeamerAuChannelCapability {
+    /// Number of input channels (-1 = any, 0 = none, >0 = exact count)
+    pub input_channels: i32,
+    /// Number of output channels (-1 = any, 0 = none, >0 = exact count)
+    pub output_channels: i32,
+}
+
+/// Channel capabilities result containing all supported configurations.
+///
+/// The AU framework uses this to populate the `channelCapabilities` property.
+/// Each pair of values in the array represents one supported configuration.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct BeamerAuChannelCapabilities {
+    /// Number of valid capability entries (0 means "any configuration supported")
+    pub count: u32,
+    /// Array of supported [input, output] channel configurations
+    pub capabilities: [BeamerAuChannelCapability; BEAMER_AU_MAX_CHANNEL_CAPABILITIES],
+}
+
+impl Default for BeamerAuChannelCapabilities {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            capabilities: [BeamerAuChannelCapability::default(); BEAMER_AU_MAX_CHANNEL_CAPABILITIES],
+        }
+    }
+}
+
+// =============================================================================
 // Instance Handle
 // =============================================================================
 
@@ -1446,23 +1498,29 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
 
 /// Check if a proposed channel configuration is valid.
 ///
+/// Validates a channel configuration against the plugin's declared capabilities.
+///
 /// For effect plugins (aufx), this enforces that input channels equal output channels
 /// on the main bus, which is the typical expectation for [-1, -1] channel capability.
 ///
+/// For instruments (aumu), this verifies that the configuration matches the declared
+/// output channel count (with 0 input channels).
+///
 /// # Safety
 ///
-/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `instance` should be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case instruments fall back to accepting stereo)
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_is_channel_config_valid(
-    _instance: BeamerAuInstanceHandle,
+    instance: BeamerAuInstanceHandle,
     main_input_channels: u32,
     main_output_channels: u32,
 ) -> bool {
     use beamer_core::MAX_CHANNELS;
     use crate::config::ComponentType;
 
-    let result = catch_unwind(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         // Get the AU config to check the component type
         let config = match factory::au_config() {
             Some(c) => c,
@@ -1474,26 +1532,138 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
             return false;
         }
 
-        // For effect plugins (aufx), require matching input/output channel counts
-        // This implements the [-1, -1] channel capability behavior
-        if config.component_type == ComponentType::Effect {
-            return main_input_channels == main_output_channels;
+        match config.component_type {
+            ComponentType::Effect | ComponentType::MidiProcessor => {
+                // Effects and MIDI processors require matching input/output channel counts
+                // This implements the [-1, -1] channel capability behavior
+                main_input_channels == main_output_channels
+            }
+            ComponentType::MusicDevice => {
+                // Instruments: must have 0 input channels
+                if main_input_channels != 0 {
+                    return false;
+                }
+
+                // Query declared output channel count from the plugin
+                let declared_output_channels = if instance.is_null() {
+                    // No instance available, accept stereo as default
+                    2
+                } else {
+                    let handle = unsafe { &*instance };
+                    match lock_plugin(handle) {
+                        Ok(plugin) => plugin
+                            .declared_output_bus_info(0)
+                            .map(|info| info.channel_count)
+                            .unwrap_or(2),
+                        Err(_) => 2, // Lock failed, fall back to stereo
+                    }
+                };
+
+                // Validate output channels match the declared configuration
+                main_output_channels == declared_output_channels
+            }
+        }
+    }));
+
+    result.unwrap_or(false)
+}
+
+/// Get the supported channel capabilities for the main bus.
+///
+/// This function returns the [input, output] channel configurations that
+/// the plugin supports, based on its component type and declared bus configuration.
+///
+/// # Capability Semantics
+///
+/// - **Effects (`aufx`)**: Return `[-1, -1]` meaning "any matching configuration"
+///   where input and output channel counts must be equal.
+/// - **Instruments (`aumu`)**: Return `[0, N]` where N is the declared output
+///   channel count. Instruments have no audio input, only MIDI.
+/// - **MIDI Processors (`aumi`)**: Similar to effects, `[-1, -1]`.
+///
+/// # Returns
+///
+/// Returns `true` if capabilities were successfully written to `out_capabilities`.
+/// Returns `false` if the instance is null, the output pointer is null, or an error occurs.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - `out_capabilities` must be a valid pointer to a `BeamerAuChannelCapabilities` struct
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_channel_capabilities(
+    instance: BeamerAuInstanceHandle,
+    out_capabilities: *mut BeamerAuChannelCapabilities,
+) -> bool {
+    use crate::config::ComponentType;
+
+    if out_capabilities.is_null() {
+        return false;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // Get the AU config to check component type
+        let config = match factory::au_config() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let capabilities = unsafe { &mut *out_capabilities };
+        *capabilities = BeamerAuChannelCapabilities::default();
+
+        match config.component_type {
+            ComponentType::Effect | ComponentType::MidiProcessor => {
+                // Effects and MIDI processors support "any matching" configuration
+                // This is the [-1, -1] capability in AU speak
+                capabilities.count = 1;
+                capabilities.capabilities[0] = BeamerAuChannelCapability {
+                    input_channels: -1,
+                    output_channels: -1,
+                };
+            }
+            ComponentType::MusicDevice => {
+                // Instruments: query the declared output channel count from the plugin
+                if instance.is_null() {
+                    // No instance, fall back to stereo
+                    capabilities.count = 1;
+                    capabilities.capabilities[0] = BeamerAuChannelCapability {
+                        input_channels: 0,
+                        output_channels: 2,
+                    };
+                    return true;
+                }
+
+                let handle = unsafe { &*instance };
+                let plugin = match lock_plugin(handle) {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        // Lock failed, fall back to stereo
+                        capabilities.count = 1;
+                        capabilities.capabilities[0] = BeamerAuChannelCapability {
+                            input_channels: 0,
+                            output_channels: 2,
+                        };
+                        return true;
+                    }
+                };
+
+                // Get the declared output channel count from the main output bus
+                let output_channels = plugin
+                    .declared_output_bus_info(0)
+                    .map(|info| info.channel_count as i32)
+                    .unwrap_or(2); // Default to stereo if not declared
+
+                capabilities.count = 1;
+                capabilities.capabilities[0] = BeamerAuChannelCapability {
+                    input_channels: 0, // Instruments have no audio input
+                    output_channels,
+                };
+            }
         }
 
-        // For instruments (aumu), any output channel count is valid
-        // Instruments typically don't have audio input, only MIDI
-        if config.component_type == ComponentType::MusicDevice {
-            return true;
-        }
-
-        // For MIDI processors (aumi), require matching input/output
-        if config.component_type == ComponentType::MidiProcessor {
-            return main_input_channels == main_output_channels;
-        }
-
-        // Default: accept any configuration
         true
-    });
+    }));
 
     result.unwrap_or(false)
 }
