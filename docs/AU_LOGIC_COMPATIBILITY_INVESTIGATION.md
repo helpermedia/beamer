@@ -71,7 +71,7 @@ This indicates the **XPC communication path is broken**, while in-process loadin
 **Beamer plugins are intentionally headless (no UI).** Apple's FilterDemo has a UI. Therefore, certain Info.plist differences related to UI are expected and correct:
 
 - `NSExtensionPointIdentifier`: `com.apple.AudioUnit` (Beamer) vs `com.apple.AudioUnit-UI` (FilterDemo)
-- `NSExtensionPrincipalClass`: Both now use `AUViewController` subclass (Beamer: `BeamerSimpleGainAuViewController`, FilterDemo: `FilterDemoViewController`)
+- `NSExtensionPrincipalClass`: Beamer uses `NSObject` subclass (`BeamerSimpleGainAuExtension`), FilterDemo uses `AUViewController` subclass (`FilterDemoViewController`) - this difference is fine for headless plugins
 - `NSExtensionServiceRoleType`: Not present in Beamer (UI-related key)
 
 Per Apple documentation, `com.apple.AudioUnit` is the correct extension point for headless AUs.
@@ -126,7 +126,7 @@ LSMinimumSystemVersion: 10.13
 
 NSExtension:
   NSExtensionPointIdentifier: com.apple.AudioUnit              # Headless extension (no GUI) - CORRECT
-  NSExtensionPrincipalClass: BeamerSimpleGainAuViewController  # AUViewController subclass (matches iPlug2)
+  NSExtensionPrincipalClass: BeamerSimpleGainAuExtension        # NSObject subclass (AUViewController not needed for headless)
   NSExtensionAttributes:
     AudioComponentBundle: com.beamer.simple-gain.framework
     AudioComponents:
@@ -145,7 +145,7 @@ NSExtension:
 | Key | FilterDemo | Beamer | Issue? |
 |-----|-----------|--------|--------|
 | `NSExtensionPointIdentifier` | `com.apple.AudioUnit-UI` | `com.apple.AudioUnit` | **Expected** (UI vs headless) |
-| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuViewController` | ✅ Both AUViewController subclasses |
+| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuExtension` | ✅ NSObject works for headless |
 | `NSExtensionServiceRoleType` | `NSExtensionServiceRoleTypeEditor` | *missing* | **Expected** (UI-only key) |
 | `CFBundleDisplayName` | Present | *missing* | Minor |
 | `CFBundleSupportedPlatforms` | `[MacOSX]` | *missing* | Minor |
@@ -362,10 +362,10 @@ The headless AU configuration is correct (example for simple-gain):
 <key>NSExtensionPointIdentifier</key>
 <string>com.apple.AudioUnit</string>              <!-- Correct for headless AU -->
 <key>NSExtensionPrincipalClass</key>
-<string>BeamerSimpleGainAuViewController</string> <!-- AUViewController subclass -->
+<string>BeamerSimpleGainAuExtension</string>       <!-- NSObject subclass -->
 ```
 - ✅ Uses `NSExtensionPrincipalClass` (not `NSExtensionViewController` or `NSExtensionMainStoryboard`)
-- ✅ Principal class inherits from `AUViewController` (matches iPlug2)
+- ✅ Principal class inherits from `NSObject` (AUViewController not needed for headless)
 - ✅ Principal class implements `AUAudioUnitFactory` protocol
 - ✅ No storyboard entries (which would cause crashes for headless AUs)
 - ✅ Each plugin has unique class names to avoid collisions
@@ -418,7 +418,7 @@ See [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md) f
 
 - ~~**Custom main() entry point**~~ - **ROOT CAUSE FOUND.** Replaced with `NSExtensionMain`
 - ~~**Framework Structure**~~ - Changed to versioned structure with symlinks
-- ~~**NSExtensionPrincipalClass inheritance**~~ - Changed to `AUViewController` subclass
+- ~~**NSExtensionPrincipalClass inheritance**~~ - `NSObject` works fine for headless AUs (AUViewController not needed)
 - ~~**NSExtensionPointIdentifier**~~ - `com.apple.AudioUnit` is correct for headless AUs
 - ~~**NIB files**~~ - Not required for headless AUs
 - ~~**PkgInfo file**~~ - Legacy, Info.plist CFBundlePackageType is sufficient
@@ -487,7 +487,7 @@ When embedded in appex (failed attempt), this static initialization may have cau
 
 All issues have been resolved:
 
-1. ✅ ~~**Compare with working headless AUv3**~~ - Done. Key difference found and applied (AUViewController inheritance).
+1. ✅ ~~**Compare with working headless AUv3**~~ - Done. AUViewController inheritance was tried but not needed; NSObject works fine for headless.
 
 2. ✅ ~~**Try versioned framework structure**~~ - Done. Changed to versioned layout with symlinks.
 

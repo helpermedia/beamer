@@ -111,7 +111,7 @@ The auval "Test MIDI" passes, but this is auval's own synthetic test - it doesn'
 - Also uses `realtimeEventListHead` parameter
 - Same render block signature
 - MIDI events are received and processed
-- Uses `AUViewController` as extension class (we use `NSObject`)
+- Uses `AUViewController` as extension class (we use `NSObject` - not needed for headless)
 
 ## Attempted Fixes
 
