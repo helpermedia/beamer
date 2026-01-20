@@ -19,17 +19,14 @@
 use beamer::prelude::*;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
-#[cfg(feature = "vst3")]
-use beamer::vst3_impl::vst3;
-
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
 /// Component UID - unique identifier for the plugin (VST3 only)
 #[cfg(feature = "vst3")]
-const COMPONENT_UID: vst3::Steinberg::TUID =
-    vst3::uid(0xB3A2C1D0, 0xE4F5A6B7, 0xC8D9E0F1, 0x12233445);
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0xB3A2C1D0, 0xE4F5A6B7, 0xC8D9E0F1, 0x12233445);
 
 /// Shared plugin configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth")

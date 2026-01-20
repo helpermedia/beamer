@@ -70,14 +70,14 @@ macro_rules! export_vst3 {
         // Plugin factory export
         #[no_mangle]
         extern "system" fn GetPluginFactory() -> *mut std::ffi::c_void {
-            use vst3::ComWrapper;
+            use $crate::vst3::ComWrapper;
             use $crate::Factory;
 
             let factory = Factory::<$component>::new(&$config, &$vst3_config);
             let wrapper = ComWrapper::new(factory);
 
             wrapper
-                .to_com_ptr::<vst3::Steinberg::IPluginFactory>()
+                .to_com_ptr::<$crate::vst3::Steinberg::IPluginFactory>()
                 .unwrap()
                 .into_raw() as *mut std::ffi::c_void
         }

@@ -14,17 +14,14 @@
 use beamer::prelude::*;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
-#[cfg(feature = "vst3")]
-use beamer::vst3_impl::vst3;
-
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
 /// Component UID - unique identifier for the plugin (VST3 only)
 #[cfg(feature = "vst3")]
-const COMPONENT_UID: vst3::Steinberg::TUID =
-    vst3::uid(0xA7B8C9D0, 0xE1F2A3B4, 0xC5D6E7F8, 0x09101112);
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0xA7B8C9D0, 0xE1F2A3B4, 0xC5D6E7F8, 0x09101112);
 
 /// Shared plugin configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay")

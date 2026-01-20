@@ -44,17 +44,14 @@
 use beamer::prelude::*;
 use beamer::{EnumParameter, HasParameters, Parameters};
 
-#[cfg(feature = "vst3")]
-use beamer::vst3_impl::vst3;
-
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
 /// Unique ID for this plugin component (VST3 only).
 #[cfg(feature = "vst3")]
-const COMPONENT_UID: vst3::Steinberg::TUID =
-    vst3::uid(0xA1B2C3D4, 0xE5F6A7B8, 0xC9D0E1F2, 0x03040506);
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0xA1B2C3D4, 0xE5F6A7B8, 0xC9D0E1F2, 0x03040506);
 
 /// Shared plugin configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform")

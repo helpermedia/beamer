@@ -48,6 +48,15 @@ pub use beamer_core as core;
 #[cfg(feature = "vst3")]
 pub use beamer_vst3 as vst3_impl;
 
+/// Re-export of vst3 types needed for plugin configuration.
+///
+/// This allows examples and plugins to use `beamer::vst3::{uid, Steinberg::TUID}`
+/// without adding a direct dependency on the vst3 crate.
+#[cfg(feature = "vst3")]
+pub mod vst3 {
+    pub use ::vst3::{uid, Steinberg};
+}
+
 #[cfg(feature = "au")]
 pub use beamer_au as au_impl;
 

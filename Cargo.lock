@@ -10,6 +10,7 @@ dependencies = [
  "beamer-core",
  "beamer-macros",
  "beamer-vst3",
+ "vst3",
 ]
 
 [[package]]
@@ -73,7 +74,6 @@ name = "compressor"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "vst3",
 ]
 
 [[package]]
@@ -81,7 +81,6 @@ name = "delay"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "vst3",
 ]
 
 [[package]]
@@ -95,7 +94,6 @@ name = "gain"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "vst3",
 ]
 
 [[package]]
@@ -109,7 +107,6 @@ name = "midi-transform"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "vst3",
 ]
 
 [[package]]
@@ -152,7 +149,6 @@ name = "synth"
 version = "0.1.6"
 dependencies = [
  "beamer",
- "vst3",
 ]
 
 [[package]]

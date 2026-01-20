@@ -1784,13 +1784,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
     .with_sub_categories("Fx|Dynamics");
 
 // VST3 configuration
-#[cfg(not(target_os = "macos"))]
-use beamer_vst3::{Vst3Config, vst3};
-#[cfg(not(target_os = "macos"))]
-const COMPONENT_UID: vst3::Steinberg::TUID =
-    vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
-#[cfg(not(target_os = "macos"))]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+#[cfg(feature = "vst3")]
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: beamer_vst3::Vst3Config =
+    beamer_vst3::Vst3Config::new(COMPONENT_UID);
 
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
@@ -2063,7 +2062,6 @@ cargo clippy
 
 ```rust
 use beamer::prelude::*;
-use beamer::vst3_impl::vst3;
 use beamer::{HasParameters, Parameters};
 
 // =============================================================================
@@ -2086,9 +2084,11 @@ impl GainParameters {
 // Plugin (Unprepared State)
 // =============================================================================
 
-const UID: vst3::Steinberg::TUID = vst3::uid(0x12345678, 0x12345678, 0x12345678, 0x12345678);
+#[cfg(feature = "vst3")]
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0x12345678, 0x12345678, 0x12345678, 0x12345678);
 
-pub static CONFIG: PluginConfig = PluginConfig::new("My Gain", UID)
+pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
     .with_vendor("My Company")
     .with_version("1.0.0");
 
@@ -2146,7 +2146,12 @@ impl AudioProcessor for GainProcessor {
 // VST3 Export
 // =============================================================================
 
-export_vst3!(CONFIG, Vst3Processor<GainPlugin>);
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: beamer_vst3::Vst3Config =
+    beamer_vst3::Vst3Config::new(COMPONENT_UID);
+
+#[cfg(feature = "vst3")]
+beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, beamer_vst3::Vst3Processor<GainPlugin>);
 ```
 
 ### C. Example: Sidechain Compressor

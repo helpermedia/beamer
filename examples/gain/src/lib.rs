@@ -12,17 +12,14 @@
 use beamer::prelude::*;
 use beamer::{HasParameters, Parameters}; // Import the derive macros
 
-#[cfg(feature = "vst3")]
-use beamer::vst3_impl::vst3;
-
 // =============================================================================
 // Plugin Configuration
 // =============================================================================
 
 /// Component UID - unique identifier for the plugin (VST3 only)
 #[cfg(feature = "vst3")]
-const COMPONENT_UID: vst3::Steinberg::TUID =
-    vst3::uid(0xDCDDB4BA, 0x2D6A4EC3, 0xA526D3E7, 0x244FAAE3);
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0xDCDDB4BA, 0x2D6A4EC3, 0xA526D3E7, 0x244FAAE3);
 
 /// Shared plugin configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")

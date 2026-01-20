@@ -332,8 +332,8 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 ### Example: Multi-Format Plugin
 
 ```rust
-use beamer_core::PluginConfig;
-use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor, vst3};
+use beamer::prelude::*;
+use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
 use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
 
 // Shared configuration (format-agnostic)
@@ -343,9 +343,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
     .with_sub_categories("Fx|Gain");
 
 // VST3-specific configuration
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(
-    vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
-);
+#[cfg(feature = "vst3")]
+const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
+    beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
+
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 // AU-specific configuration (macOS only)
 #[cfg(target_os = "macos")]
