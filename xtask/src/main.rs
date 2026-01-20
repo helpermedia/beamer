@@ -60,7 +60,7 @@ struct AppexPlistConfig<'a> {
 // =============================================================================
 
 /// Convert plugin name to PascalCase for class names.
-/// "simple-gain" → "SimpleGain"
+/// "midi-transform" → "MidiTransform"
 fn to_pascal_case(name: &str) -> String {
     name.split(['-', '_'])
         .map(|word| {

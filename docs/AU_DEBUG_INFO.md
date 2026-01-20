@@ -4,14 +4,14 @@
 
 ```bash
 # Clean build, install to ~/Applications, register AU
-cargo xtask bundle simple-gain --release --au --clean --install
+cargo xtask bundle gain --release --au --clean --install
 ```
 
 This single command does everything:
 1. Cleans cc cache and previous build artifacts
 2. Builds universal binary (x86_64 + arm64)
 3. Creates and signs the .app bundle
-4. Installs to `~/Applications/BeamerSimpleGain.app`
+4. Installs to `~/Applications/BeamerGain.app`
 5. **Automatically launches the app** (required to register AU with macOS)
 6. Clears AU cache
 
@@ -24,17 +24,17 @@ No manual steps needed - the `--install` flag handles app execution.
 auval -a | grep -i beamer
 
 # Validate the plugin
-auval -v aufx siga Bmer
+auval -v aufx gain Bmer
 ```
 
-Component codes: `aufx` (effect), `Bmer` (manufacturer), `siga` (simple-gain)
+Component codes: `aufx` (effect), `Bmer` (manufacturer), `gain` (gain)
 
 ## Quick Reference
 
 | Action | Command |
 |--------|---------|
-| Full rebuild & install | `cargo xtask bundle simple-gain --release --au --clean --install` |
-| Validate AU | `auval -v aufx siga Bmer` |
+| Full rebuild & install | `cargo xtask bundle gain --release --au --clean --install` |
+| Validate AU | `auval -v aufx gain Bmer` |
 | List registered AUs | `auval -a \| grep -i beamer` |
 
 > **Note:** `pluginkit -m` shows App Extension registrations, not AudioComponent registrations. Use `auval` to verify AU plugins - if `auval` passes, the plugin is working correctly.

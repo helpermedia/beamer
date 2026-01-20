@@ -7,7 +7,6 @@ members = [
     "crates/beamer-macros",
     "crates/beamer",
     "examples/gain",
-    "examples/simple-gain",
     "examples/midi-transform",
     "examples/delay",
     "examples/synth",

@@ -277,8 +277,6 @@ File: `xtask/src/main.rs`
 
 Currently, Beamer only generates AUv3 (`.appex`) bundles. Support for AUv2 (`.component`) is planned for the future.
 
-**Note**: Legacy `BeamerSimpleGain.component` exists but uses `com.beamer.simple-gain.audiounit` which would conflict with future AUv3. This should be updated to use `.component` suffix for consistency.
-
 ## Distribution Considerations
 
 ### AUv2 (.component)

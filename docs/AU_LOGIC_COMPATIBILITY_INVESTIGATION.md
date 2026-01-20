@@ -6,7 +6,7 @@ Investigation date: 2026-01-14 (updated 2026-01-20 - ALL RESOLVED)
 
 **Note:** A separate issue was discovered and fixed on 2026-01-15 where multiple AU plugins loaded in Reaper showed incorrect parameters due to ObjC class name collisions. This was caused by all plugins using identical class names (`BeamerAuWrapper`, `BeamerAuExtension`).
 
-**Solution:** ObjC code is now generated per-plugin by xtask with unique class names (e.g., `BeamerSimpleGainAuWrapper`, `BeamerCompressorAuWrapper`). This fix is unrelated to the Logic Pro XPC timeout issue documented below.
+**Solution:** ObjC code is now generated per-plugin by xtask with unique class names (e.g., `BeamerGainAuWrapper`, `BeamerCompressorAuWrapper`). This fix is unrelated to the Logic Pro XPC timeout issue documented below.
 
 ## Problem Statement
 
@@ -22,7 +22,7 @@ All Beamer AU plugins show "not compatible" in Logic Pro 11.2.2, while they work
 
 | Plugin | Type | Subtype | Manufacturer | Logic Status | Reaper Status | auval |
 |--------|------|---------|--------------|--------------|---------------|-------|
-| BeamerSimpleGain | aufx (effect) | siga | Bmer | not compatible | works | PASS |
+| BeamerGain | aufx (effect) | gain | Bmer | not compatible | works | PASS |
 | BeamerCompressor | aufx (effect) | comp | Bmer | not compatible | works | PASS |
 | BeamerSynth | aumu (instrument) | synt | Bmer | not compatible | works | PASS |
 
@@ -37,9 +37,9 @@ All Beamer AU plugins show "not compatible" in Logic Pro 11.2.2, while they work
    BeamerCompressor failed with timeout
    BeamerCompressor took 0.000000 seconds
 
-   BeamerSimpleGain start
-   BeamerSimpleGain failed with timeout
-   BeamerSimpleGain took 0.000000 seconds
+   BeamerGain start
+   BeamerGain failed with timeout
+   BeamerGain took 0.000000 seconds
 
    BeamerSynth start
    BeamerSynth failed with timeout
@@ -71,7 +71,7 @@ This indicates the **XPC communication path is broken**, while in-process loadin
 **Beamer plugins are intentionally headless (no UI).** Apple's FilterDemo has a UI. Therefore, certain Info.plist differences related to UI are expected and correct:
 
 - `NSExtensionPointIdentifier`: `com.apple.AudioUnit` (Beamer) vs `com.apple.AudioUnit-UI` (FilterDemo)
-- `NSExtensionPrincipalClass`: Beamer uses `NSObject` subclass (`BeamerSimpleGainAuExtension`), FilterDemo uses `AUViewController` subclass (`FilterDemoViewController`) - this difference is fine for headless plugins
+- `NSExtensionPrincipalClass`: Beamer uses `NSObject` subclass (`BeamerGainAuExtension`), FilterDemo uses `AUViewController` subclass (`FilterDemoViewController`) - this difference is fine for headless plugins
 - `NSExtensionServiceRoleType`: Not present in Beamer (UI-related key)
 
 Per Apple documentation, `com.apple.AudioUnit` is the correct extension point for headless AUs.
@@ -114,10 +114,10 @@ NSExtension:
 #### Beamer Appex Info.plist
 ```xml
 CFBundleDevelopmentRegion: English
-CFBundleExecutable: BeamerSimpleGain
-CFBundleIdentifier: com.beamer.simple-gain.audiounit
+CFBundleExecutable: BeamerGain
+CFBundleIdentifier: com.beamer.gain.audiounit
 CFBundleInfoDictionaryVersion: 6.0
-CFBundleName: BeamerSimpleGain
+CFBundleName: BeamerGain
 CFBundlePackageType: XPC!
 CFBundleShortVersionString: 0.1.6
 CFBundleSignature: ????
@@ -126,15 +126,15 @@ LSMinimumSystemVersion: 10.13
 
 NSExtension:
   NSExtensionPointIdentifier: com.apple.AudioUnit              # Headless extension (no GUI) - CORRECT
-  NSExtensionPrincipalClass: BeamerSimpleGainAuExtension        # NSObject subclass (AUViewController not needed for headless)
+  NSExtensionPrincipalClass: BeamerGainAuExtension        # NSObject subclass (AUViewController not needed for headless)
   NSExtensionAttributes:
-    AudioComponentBundle: com.beamer.simple-gain.framework
+    AudioComponentBundle: com.beamer.gain.framework
     AudioComponents:
       - type: aufx
-        subtype: siga
+        subtype: gain
         manufacturer: Bmer
-        name: "Beamer: BeamerSimpleGain"
-        description: "BeamerSimpleGain Audio Unit"
+        name: "Beamer: BeamerGain"
+        description: "BeamerGain Audio Unit"
         sandboxSafe: true
         tags: [Effects]
         version: 262
@@ -145,7 +145,7 @@ NSExtension:
 | Key | FilterDemo | Beamer | Issue? |
 |-----|-----------|--------|--------|
 | `NSExtensionPointIdentifier` | `com.apple.AudioUnit-UI` | `com.apple.AudioUnit` | **Expected** (UI vs headless) |
-| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerSimpleGainAuExtension` | ✅ NSObject works for headless |
+| `NSExtensionPrincipalClass` | `FilterDemoViewController` | `BeamerGainAuExtension` | ✅ NSObject works for headless |
 | `NSExtensionServiceRoleType` | `NSExtensionServiceRoleTypeEditor` | *missing* | **Expected** (UI-only key) |
 | `CFBundleDisplayName` | Present | *missing* | Minor |
 | `CFBundleSupportedPlatforms` | `[MacOSX]` | *missing* | Minor |
@@ -157,7 +157,7 @@ NSExtension:
 | Aspect | FilterDemo | Beamer |
 |--------|-----------|--------|
 | Structure | **Versioned** (`Versions/A/`, symlinks) | ✅ **Versioned** (now matches) |
-| Binary path | `.../Versions/A/FilterDemoFramework` | `.../Versions/A/BeamerSimpleGainAU` |
+| Binary path | `.../Versions/A/FilterDemoFramework` | `.../Versions/A/BeamerGainAU` |
 | Resources | `Versions/A/Resources/Info.plist` | `Versions/A/Resources/Info.plist` |
 
 **Both now use versioned framework structure:**
@@ -178,7 +178,7 @@ Framework.framework/
 
 | Aspect | FilterDemo | Beamer |
 |--------|-----------|--------|
-| Framework link | `@rpath/.../Versions/A/FilterDemoFramework` | `@rpath/.../Versions/A/BeamerSimpleGainAU` |
+| Framework link | `@rpath/.../Versions/A/FilterDemoFramework` | `@rpath/.../Versions/A/BeamerGainAU` |
 | rpaths | `@executable_path/../Frameworks` **AND** `@executable_path/../../../../Frameworks` | Only `@loader_path/../../../../Frameworks` |
 
 ### Code Signing Comparison
@@ -240,7 +240,7 @@ The larger Beamer framework includes both AU and VST3 code (same cdylib exports 
 
 **What we tried:** Compared with working iPlug2 headless AUv3 plugin and discovered iPlug2 uses an `AUViewController` subclass as the principal class, while Beamer used `NSObject`. Changed:
 
-- Class name: `BeamerSimpleGainAuExtension` → `BeamerSimpleGainAuViewController`
+- Class name: `BeamerGainAuExtension` → `BeamerGainAuViewController`
 - Inheritance: `NSObject <AUAudioUnitFactory>` → `AUViewController <AUAudioUnitFactory>`
 - Added `#import <CoreAudioKit/AUViewController.h>`
 - Added `-framework CoreAudioKit` to appex linking
@@ -252,7 +252,7 @@ The larger Beamer framework includes both AU and VST3 code (same cdylib exports 
 
 **Beamer (now matches):**
 ```objc
-@interface BeamerSimpleGainAuViewController : AUViewController <AUAudioUnitFactory>
+@interface BeamerGainAuViewController : AUViewController <AUAudioUnitFactory>
 ```
 
 **Result:**
@@ -267,20 +267,20 @@ The larger Beamer framework includes both AU and VST3 code (same cdylib exports 
 
 **Before (flat):**
 ```
-BeamerSimpleGainAU.framework/
-├── BeamerSimpleGainAU (binary)
+BeamerGainAU.framework/
+├── BeamerGainAU (binary)
 ├── Info.plist
 └── _CodeSignature/
 ```
 
 **After (versioned):**
 ```
-BeamerSimpleGainAU.framework/
-├── BeamerSimpleGainAU -> Versions/Current/BeamerSimpleGainAU
+BeamerGainAU.framework/
+├── BeamerGainAU -> Versions/Current/BeamerGainAU
 ├── Resources -> Versions/Current/Resources
 └── Versions/
     ├── A/
-    │   ├── BeamerSimpleGainAU (binary)
+    │   ├── BeamerGainAU (binary)
     │   ├── Resources/Info.plist
     │   └── _CodeSignature/
     └── Current -> A
@@ -300,7 +300,7 @@ BeamerSimpleGainAU.framework/
 ```objc
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        (void)[BeamerSimpleGainAuViewController class];
+        (void)[BeamerGainAuViewController class];
         [[NSRunLoop mainRunLoop] run];
     }
     return 0;
@@ -342,27 +342,27 @@ This was the **root cause** of the Logic Pro XPC timeout.
 ### auval Validation
 All plugins pass complete auval validation including strict mode:
 ```bash
-auval -v aufx siga Bmer        # PASS
+auval -v aufx gain Bmer        # PASS
 auval -v aufx comp Bmer        # PASS
 auval -v aumu synt Bmer        # PASS
-auval -v aufx siga Bmer -strict # PASS
+auval -v aufx gain Bmer -strict # PASS
 ```
 
 ### Plugin Registration
 Plugins are properly registered via pluginkit:
 ```
 com.beamer.compressor.audiounit(0.1.6)
-com.beamer.simple-gain.audiounit(0.1.6)
+com.beamer.gain.audiounit(0.1.6)
 com.beamer.synth.audiounit(0.1.6)
 ```
 
 ### NSExtension Configuration (Correct per Apple Docs)
-The headless AU configuration is correct (example for simple-gain):
+The headless AU configuration is correct (example for gain):
 ```xml
 <key>NSExtensionPointIdentifier</key>
 <string>com.apple.AudioUnit</string>              <!-- Correct for headless AU -->
 <key>NSExtensionPrincipalClass</key>
-<string>BeamerSimpleGainAuExtension</string>       <!-- NSObject subclass -->
+<string>BeamerGainAuExtension</string>       <!-- NSObject subclass -->
 ```
 - ✅ Uses `NSExtensionPrincipalClass` (not `NSExtensionViewController` or `NSExtensionMainStoryboard`)
 - ✅ Principal class inherits from `NSObject` (AUViewController not needed for headless)
@@ -371,18 +371,18 @@ The headless AU configuration is correct (example for simple-gain):
 - ✅ Each plugin has unique class names to avoid collisions
 
 ### Bundle ID Matching
-- Appex `AudioComponentBundle`: `com.beamer.simple-gain.framework`
-- Framework `CFBundleIdentifier`: `com.beamer.simple-gain.framework`
+- Appex `AudioComponentBundle`: `com.beamer.gain.framework`
+- Framework `CFBundleIdentifier`: `com.beamer.gain.framework`
 - These match correctly ✓
 
 ### Symbol Exports
-Each plugin's framework exports plugin-specific ObjC symbols (example for simple-gain):
+Each plugin's framework exports plugin-specific ObjC symbols (example for gain):
 ```
-_BeamerSimpleGainAuViewControllerFactory
-_OBJC_CLASS_$_BeamerSimpleGainAuViewController
-_OBJC_CLASS_$_BeamerSimpleGainAuWrapper
-_OBJC_METACLASS_$_BeamerSimpleGainAuViewController
-_OBJC_METACLASS_$_BeamerSimpleGainAuWrapper
+_BeamerGainAuExtensionFactory
+_OBJC_CLASS_$_BeamerGainAuExtension
+_OBJC_CLASS_$_BeamerGainAuWrapper
+_OBJC_METACLASS_$_BeamerGainAuExtension
+_OBJC_METACLASS_$_BeamerGainAuWrapper
 ```
 
 ### Entitlements
@@ -446,11 +446,11 @@ See [AU_INSTRUMENT_MIDI_INVESTIGATION.md](AU_INSTRUMENT_MIDI_INVESTIGATION.md) f
 1. Logic spawns appex process
 2. `NSExtensionMain` runs (Apple's standard extension entry point)
 3. NSExtensionMain sets up XPC listener and parses Info.plist
-4. System looks up `NSExtensionPrincipalClass` = `BeamerSimpleGainAuViewController`
+4. System looks up `NSExtensionPrincipalClass` = `BeamerGainAuExtension`
 5. Logic sends XPC request to create AU instance
-6. NSExtensionMain instantiates `BeamerSimpleGainAuViewController`
+6. NSExtensionMain instantiates `BeamerGainAuExtension`
 7. `createAudioUnitWithComponentDescription:error:` called
-8. Returns `BeamerSimpleGainAuWrapper` instance via XPC
+8. Returns `BeamerGainAuWrapper` instance via XPC
 
 **Status:** ✅ XPC communication now works with `NSExtensionMain`.
 
@@ -477,7 +477,7 @@ When embedded in appex (failed attempt), this static initialization may have cau
 - `crates/beamer-au/src/factory.rs` - Factory registration (83 lines)
 - `crates/beamer-au/src/export.rs` - Export macro (112 lines)
 - `crates/beamer-au/resources/appex.entitlements` - Sandbox entitlements
-- `examples/simple-gain/src/lib.rs` - Example plugin source
+- `examples/gain/src/lib.rs` - Example plugin source
 
 **Note:** ObjC source files (`BeamerAuWrapper.m`, `AuExtension.m`, `appex_stub.m`) are now **generated by xtask** per-plugin with unique class names. Generated files are placed in `target/au-gen/<plugin-name>/`. The `appex_stub.m` is minimal - the entry point is `NSExtensionMain` (via linker flag).
 
