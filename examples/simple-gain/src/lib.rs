@@ -23,7 +23,7 @@ const COMPONENT_UID: vst3::Steinberg::TUID =
     vst3::uid(0xE54F5273, 0x4F0B4ECC, 0x93810496, 0x6FCB0773);
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
+pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Simple Gain")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")

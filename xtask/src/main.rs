@@ -106,14 +106,6 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 // MARK: - {wrapper_class} Interface
 // =============================================================================
 
-// Buffered MIDI event structure
-typedef struct {{
-    AUEventSampleTime sampleTime;
-    uint8_t cable;
-    uint8_t length;
-    uint8_t data[3];
-}} BufferedMIDIEvent;
-
 @interface {wrapper_class} : AUAudioUnit {{
     BeamerAuInstanceHandle _rustInstance;
     NSLock* _instanceLock;
@@ -131,13 +123,7 @@ typedef struct {{
     AudioBufferList* _inputMutableABL;
     AUAudioUnitPreset* _currentPreset;
     AUInternalRenderBlock _cachedInternalRenderBlock;
-    AUScheduleMIDIEventBlock _cachedScheduleMIDIEventBlock;
-
-    // Custom MIDI event collection (bypasses broken base class mechanism)
-    BufferedMIDIEvent _midiEvents[BEAMER_AU_MAX_MIDI_EVENTS];
-    volatile uint32_t _midiEventCount;
-    volatile BOOL _midiOverflowed;
-    os_unfair_lock _midiLock;
+    NSArray<AUAudioUnitPreset*>* _factoryPresets;
 }}
 
 + (NSUInteger)nextInstanceId;
@@ -151,6 +137,9 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 // =============================================================================
 
 @implementation {wrapper_class}
+
+@synthesize parameterTree = _parameterTree;
+@synthesize factoryPresets = _factoryPresets;
 
 + (NSUInteger)nextInstanceId {{
     @synchronized([{wrapper_class} class]) {{
@@ -191,17 +180,12 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     _inputBusArray = nil;
     _outputBusArray = nil;
     _parameterTree = nil;
+    _factoryPresets = nil;
     _sampleFormat = BeamerAuSampleFormatFloat32;
     _sampleRate = kDefaultSampleRate;
     _maxFrames = kDefaultMaxFrames;
     _resourcesAllocated = NO;
     memset(&_busConfig, 0, sizeof(_busConfig));
-
-    // Initialize custom MIDI event collection
-    _midiEventCount = 0;
-    _midiOverflowed = NO;
-    _midiLock = OS_UNFAIR_LOCK_INIT;
-    memset(_midiEvents, 0, sizeof(_midiEvents));
 
     AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
     defaultPreset.number = 0;
@@ -490,8 +474,8 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     // Capture self to access instance variables and host blocks dynamically.
     // This is necessary because the host may call internalRenderBlock before
     // allocateRenderResourcesAndReturnError, so capturing by value would get nil.
-    // Host blocks (musicalContextBlock, transportStateBlock, scheduleMIDIEventBlock)
-    // are also accessed dynamically as they may be set after block creation.
+    // Host blocks (musicalContextBlock, transportStateBlock) are accessed dynamically
+    // as they may be set after block creation.
     // Use __unsafe_unretained to avoid retain cycle (AU lifecycle guarantees validity).
     __unsafe_unretained typeof(self) blockSelf = self;
 
@@ -533,74 +517,13 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
             }}
         }}
 
-        // =====================================================================
-        // Custom MIDI Event Collection
-        // =====================================================================
-        // Build AURenderEvent linked list from our buffered MIDI events.
-        // This bypasses the broken base class mechanism.
-        //
-        // SAFETY: midiEventStorage is stack-allocated and pointers into it are
-        // passed to beamer_au_render(). This is safe because:
-        // 1. beamer_au_render() processes the event list SYNCHRONOUSLY
-        // 2. extract_midi_events() copies all event data to MidiBuffer by value
-        // 3. No pointers to the event list are retained after the function returns
-        // 4. See: crates/beamer-au/src/render.rs::extract_midi_events()
-
-        AURenderEvent midiEventStorage[BEAMER_AU_MAX_MIDI_EVENTS];
-        const AURenderEvent* eventListHead = realtimeEventListHead; // Fallback to base class (usually null)
-
-        os_unfair_lock_lock(&blockSelf->_midiLock);
-        uint32_t midiCount = blockSelf->_midiEventCount;
-
-        if (midiCount > 0) {{
-            // Copy events and build linked list
-            for (uint32_t i = 0; i < midiCount; i++) {{
-                BufferedMIDIEvent* src = &blockSelf->_midiEvents[i];
-                AURenderEvent* dst = &midiEventStorage[i];
-
-                // Set up as MIDI event
-                dst->head.eventType = AURenderEventMIDI;
-                dst->head.eventSampleTime = src->sampleTime;
-                dst->head.reserved = 0;
-
-                // Link to next event (or NULL for last)
-                dst->head.next = (i + 1 < midiCount) ? &midiEventStorage[i + 1] : NULL;
-
-                // Copy MIDI data
-                dst->MIDI.cable = src->cable;
-                dst->MIDI.length = src->length;
-                dst->MIDI.reserved = 0;
-                dst->MIDI.data[0] = src->data[0];
-                dst->MIDI.data[1] = src->data[1];
-                dst->MIDI.data[2] = src->data[2];
-            }}
-
-            eventListHead = &midiEventStorage[0];
-
-            // Clear buffer for next render cycle
-            blockSelf->_midiEventCount = 0;
-        }}
-
-        // Check for overflow (and clear flag) while still holding lock
-        BOOL didOverflow = blockSelf->_midiOverflowed;
-        if (didOverflow) {{
-            blockSelf->_midiOverflowed = NO;
-        }}
-
-        os_unfair_lock_unlock(&blockSelf->_midiLock);
-
-        // Log overflow warning (once per occurrence, outside lock)
-        if (didOverflow) {{
-            os_log_error(OS_LOG_DEFAULT,
-                "MIDI input buffer overflow: %d events max, some events were dropped",
-                BEAMER_AU_MAX_MIDI_EVENTS);
-        }}
-
         // Access host blocks dynamically - they may be set after block creation
         AUHostMusicalContextBlock musicalContext = blockSelf.musicalContextBlock;
         AUHostTransportStateBlock transportState = blockSelf.transportStateBlock;
-        AUScheduleMIDIEventBlock scheduleMIDI = blockSelf.scheduleMIDIEventBlock;
 
+        // Use realtimeEventListHead directly from the base class.
+        // The base class AUAudioUnit should forward MIDI events from
+        // scheduleMIDIEventBlock to this parameter automatically.
         return beamer_au_render(
             rustInstance,
             actionFlags,
@@ -608,12 +531,12 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
             frameCount,
             outputBusNumber,
             outputData,
-            eventListHead,
+            realtimeEventListHead,
             pullInputBlock,
             inputData,
             musicalContext,
             transportState,
-            scheduleMIDI
+            NULL
         );
     }};
 
@@ -865,15 +788,13 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 }}
 
 - (NSArray<AUAudioUnitPreset*>*)factoryPresets {{
-    static NSArray<AUAudioUnitPreset*>* presets = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{{
+    if (_factoryPresets == nil) {{
         AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
         defaultPreset.number = 0;
         defaultPreset.name = @"Default";
-        presets = @[defaultPreset];
-    }});
-    return presets;
+        _factoryPresets = @[defaultPreset];
+    }}
+    return _factoryPresets;
 }}
 
 // -----------------------------------------------------------------------------
@@ -917,51 +838,6 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 - (NSInteger)virtualMIDICableCount {{
     // Return 1 for instruments/MIDI effects that accept MIDI input
     return beamer_au_accepts_midi(_rustInstance) ? 1 : 0;
-}}
-
-// -----------------------------------------------------------------------------
-// MARK: Custom MIDI Event Collection
-// -----------------------------------------------------------------------------
-// The base class AUAudioUnit is supposed to forward events from scheduleMIDIEventBlock
-// to realtimeEventListHead in internalRenderBlock. This mechanism is broken for us
-// (realtimeEventListHead is always null). We bypass it by collecting events ourselves.
-
-- (AUScheduleMIDIEventBlock)scheduleMIDIEventBlock {{
-    // Cache the block - hosts may call this getter multiple times
-    if (_cachedScheduleMIDIEventBlock != nil) {{
-        return _cachedScheduleMIDIEventBlock;
-    }}
-
-    // Return a custom block that collects MIDI events into our buffer.
-    // Use __unsafe_unretained to avoid retain cycle - AU lifecycle guarantees validity.
-    __unsafe_unretained typeof(self) blockSelf = self;
-
-    _cachedScheduleMIDIEventBlock = ^(AUEventSampleTime eventSampleTime, uint8_t cable, NSInteger length, const uint8_t* midiBytes) {{
-        if (length <= 0 || length > 3 || midiBytes == NULL) {{
-            return;
-        }}
-
-        os_unfair_lock_lock(&blockSelf->_midiLock);
-
-        uint32_t count = blockSelf->_midiEventCount;
-        if (count < BEAMER_AU_MAX_MIDI_EVENTS) {{
-            BufferedMIDIEvent* event = &blockSelf->_midiEvents[count];
-            event->sampleTime = eventSampleTime;
-            event->cable = cable;
-            event->length = (uint8_t)length;
-            event->data[0] = midiBytes[0];
-            event->data[1] = (length > 1) ? midiBytes[1] : 0;
-            event->data[2] = (length > 2) ? midiBytes[2] : 0;
-            blockSelf->_midiEventCount = count + 1;
-        }} else {{
-            // Buffer full - mark overflow (logged once per render cycle)
-            blockSelf->_midiOverflowed = YES;
-        }}
-
-        os_unfair_lock_unlock(&blockSelf->_midiLock);
-    }};
-
-    return _cachedScheduleMIDIEventBlock;
 }}
 
 - (BOOL)supportsUserPresets {{

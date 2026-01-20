@@ -15,12 +15,15 @@ A comprehensive guide to building headless (no GUI) AUv3 audio plugins for macOS
 9. [Plugin Registration](#plugin-registration)
 10. [Building from Rust](#building-from-rust)
 11. [Validation and Testing](#validation-and-testing)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-AUv3 (Audio Unit version 3) is Apple's modern audio plugin format based on App Extensions. Unlike older formats (VST2, AUv2), AUv3 plugins are sandboxed and must be delivered as part of a host application.
+AUv3 (Audio Unit version 3) is Apple's modern audio plugin format based on App Extensions. Unlike older formats, AUv3 plugins must be delivered as part of a host application.
+
+By default, AUv3 plugins run **out-of-process** (in a separate sandboxed process). On macOS, hosts can request **in-process** loading for lower latency, but the plugin must be packaged to support it (with `AudioComponentBundle` pointing to a framework containing the `AUAudioUnit` implementation). The `sandboxSafe` key in Info.plist indicates whether the plugin can be loaded directly into a sandboxed host process.
 
 A **headless** AUv3 plugin has no custom GUI - it relies on the host DAW to provide a generic parameter interface. This simplifies development significantly while still providing full audio processing capabilities.
 
@@ -33,6 +36,11 @@ A **headless** AUv3 plugin has no custom GUI - it relies on the host DAW to prov
 - Host provides generic parameter UI (sliders, knobs)
 - Full audio processing capabilities retained
 
+### Limitations
+
+- **Audio Unit extensions cannot perform recording** - They only provide real-time audio processing (generation or modification)
+- Each extension contains exactly one audio unit
+
 ---
 
 ## AUv3 Architecture
@@ -40,26 +48,26 @@ A **headless** AUv3 plugin has no custom GUI - it relies on the host DAW to prov
 An AUv3 plugin on macOS consists of three nested bundles:
 
 ```
-MyPlugin.app/                           # Host Application
+Gain.app/                               # Host Application
 ├── Contents/
 │   ├── Info.plist                      # App metadata
 │   ├── MacOS/
-│   │   └── MyPlugin                    # App executable
+│   │   └── gain                        # App executable
 │   ├── Frameworks/
-│   │   └── AUv3Framework.framework/    # Shared framework
+│   │   └── GainAU.framework/           # Shared framework
 │   │       └── Versions/A/
-│   │           ├── AUv3Framework       # Framework binary
+│   │           ├── GainAU              # Framework binary
 │   │           └── Resources/
 │   │               └── Info.plist      # Framework metadata
 │   ├── PlugIns/
-│   │   └── MyPlugin.appex/             # App Extension
+│   │   └── Gain.appex/                 # App Extension
 │   │       └── Contents/
 │   │           ├── Info.plist          # Extension metadata (CRITICAL)
 │   │           ├── MacOS/
-│   │           │   └── MyPlugin        # Extension binary
+│   │           │   └── gain            # Extension binary
 │   │           └── _CodeSignature/
 │   └── Resources/
-│       └── MyPlugin.icns               # App icon
+│       └── Gain.icns                   # App icon
 └── _CodeSignature/
 ```
 
@@ -85,45 +93,55 @@ MyPlugin.app/                           # Host Application
 ### Detailed File Tree
 
 ```
-BeamerEffectHeadless.app/
+Gain.app/
 ├── Contents/
 │   ├── Info.plist
 │   ├── PkgInfo                         # Contains "BNDL????" or "APPL????"
 │   ├── MacOS/
-│   │   └── BeamerEffectHeadless         # Mach-O executable (arm64/x86_64)
+│   │   └── gain                        # Mach-O executable (arm64/x86_64)
 │   ├── Frameworks/
-│   │   └── AUv3Framework.framework/
+│   │   └── GainAU.framework/
 │   │       ├── Versions/
 │   │       │   ├── A/
-│   │       │   │   ├── AUv3Framework   # Mach-O dylib
+│   │       │   │   ├── GainAU          # Mach-O dylib
 │   │       │   │   ├── Resources/
 │   │       │   │   │   └── Info.plist
 │   │       │   │   └── _CodeSignature/
 │   │       │   │       └── CodeResources
 │   │       │   └── Current -> A        # Symlink
-│   │       ├── AUv3Framework -> Versions/Current/AUv3Framework
+│   │       ├── GainAU -> Versions/Current/GainAU
 │   │       └── Resources -> Versions/Current/Resources
 │   ├── PlugIns/
-│   │   └── BeamerEffectHeadless.appex/
+│   │   └── Gain.appex/
 │   │       └── Contents/
 │   │           ├── Info.plist          # MOST IMPORTANT FILE
 │   │           ├── PkgInfo             # Contains "XPC!????"
 │   │           ├── MacOS/
-│   │           │   └── BeamerEffectHeadless
+│   │           │   └── gain
 │   │           └── _CodeSignature/
 │   │               └── CodeResources
 │   ├── Resources/
-│   │   └── BeamerEffectHeadless.icns
+│   │   └── Gain.icns
 │   └── _CodeSignature/
 │       └── CodeResources
 ```
 
 ### Bundle Identifiers (Must Be Consistent)
 
+Beamer uses the following bundle identifier pattern:
+
 ```
-App:        com.AcmeInc.app.BeamerEffectHeadless
-Extension:  com.AcmeInc.app.BeamerEffectHeadless.AUv3
-Framework:  com.AcmeInc.app.BeamerEffectHeadless.AUv3Framework
+App:        com.beamer.{package}
+Extension:  com.beamer.{package}.audiounit
+Framework:  com.beamer.{package}.framework
+```
+
+For example, a plugin named `gain`:
+
+```
+App:        com.beamer.gain
+Extension:  com.beamer.gain.audiounit
+Framework:  com.beamer.gain.framework
 ```
 
 The extension's `AudioComponentBundle` key must exactly match the framework's `CFBundleIdentifier`.
@@ -142,13 +160,13 @@ The extension's `AudioComponentBundle` key must exactly match the framework's `C
 <dict>
     <!-- Required keys -->
     <key>CFBundleExecutable</key>
-    <string>BeamerEffectHeadless</string>
+    <string>gain</string>
 
     <key>CFBundleIdentifier</key>
-    <string>com.AcmeInc.app.BeamerEffectHeadless</string>
+    <string>com.beamer.gain</string>
 
     <key>CFBundleName</key>
-    <string>BeamerEffectHeadless</string>
+    <string>Gain</string>
 
     <key>CFBundlePackageType</key>
     <string>APPL</string>
@@ -184,13 +202,13 @@ This is the most important configuration file. It tells macOS this is an Audio U
 <dict>
     <!-- Standard bundle keys -->
     <key>CFBundleExecutable</key>
-    <string>BeamerEffectHeadless</string>
+    <string>gain</string>
 
     <key>CFBundleIdentifier</key>
-    <string>com.AcmeInc.app.BeamerEffectHeadless.AUv3</string>
+    <string>com.beamer.gain.audiounit</string>
 
     <key>CFBundleName</key>
-    <string>BeamerEffectHeadless</string>
+    <string>Gain</string>
 
     <key>CFBundlePackageType</key>
     <string>XPC!</string>  <!-- MUST be XPC! for app extensions -->
@@ -213,15 +231,17 @@ This is the most important configuration file. It tells macOS this is an Audio U
         <!-- Use "com.apple.AudioUnit" for headless -->
         <!-- Use "com.apple.AudioUnit-UI" for plugins with custom UI -->
 
-        <!-- Principal class - your AUViewController subclass -->
+        <!-- Principal class - must conform to AUAudioUnitFactory protocol -->
+        <!-- For headless: subclass NSObject -->
+        <!-- For UI: subclass AUViewController (from CoreAudioKit) -->
         <key>NSExtensionPrincipalClass</key>
-        <string>BeamerAUViewController_vBeamerEffectHeadless</string>
+        <string>BeamerAuViewController_vGain</string>
 
         <key>NSExtensionAttributes</key>
         <dict>
             <!-- Links to the framework containing the AUAudioUnit -->
             <key>AudioComponentBundle</key>
-            <string>com.AcmeInc.app.BeamerEffectHeadless.AUv3Framework</string>
+            <string>com.beamer.gain.framework</string>
 
             <!-- Audio Unit component description -->
             <key>AudioComponents</key>
@@ -232,23 +252,24 @@ This is the most important configuration file. It tells macOS this is an Audio U
                     <string>aufx</string>  <!-- Effect type -->
 
                     <key>subtype</key>
-                    <string>Iphl</string>  <!-- Your unique 4-char code -->
+                    <string>Gain</string>  <!-- Your unique 4-char code -->
 
                     <key>manufacturer</key>
-                    <string>Acme</string>  <!-- Your 4-char manufacturer code -->
+                    <string>Beam</string>  <!-- Your 4-char manufacturer code -->
 
                     <!-- Display information -->
                     <key>name</key>
-                    <string>AcmeInc: BeamerEffectHeadless</string>
+                    <string>Beamer: Gain</string>
 
                     <key>description</key>
-                    <string>BeamerEffectHeadless</string>
+                    <string>Gain</string>
 
                     <!-- Version as integer: 0x00010000 = 1.0.0 -->
                     <key>version</key>
                     <integer>65536</integer>
 
-                    <!-- Sandbox safety declaration -->
+                    <!-- Sandbox safety: true = can load in-process into sandboxed hosts -->
+                    <!-- If false, host needs com.apple.security.temporary-exception.audio-unit-host entitlement -->
                     <key>sandboxSafe</key>
                     <true/>
 
@@ -271,6 +292,7 @@ This is the most important configuration file. It tells macOS this is an Audio U
 |-----------|-------------|-------------|
 | `aufx` | Audio Effect | EQ, compressor, reverb |
 | `aumu` | Music Device (Instrument) | Synthesizer, sampler |
+| `augn` | Generator | Test tone, noise generator |
 | `aumf` | Music Effect | MIDI-controlled effect |
 | `aufc` | Format Converter | Sample rate converter |
 | `auol` | Offline Effect | Time-stretch, pitch-shift |
@@ -285,14 +307,14 @@ This is the most important configuration file. It tells macOS this is an Audio U
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>AUv3Framework</string>
+    <string>GainAU</string>
 
     <key>CFBundleIdentifier</key>
-    <string>com.AcmeInc.app.BeamerEffectHeadless.AUv3Framework</string>
+    <string>com.beamer.gain.framework</string>
     <!-- MUST match AudioComponentBundle in extension Info.plist -->
 
     <key>CFBundleName</key>
-    <string>AUv3Framework</string>
+    <string>GainAU</string>
 
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
@@ -362,7 +384,7 @@ For production apps, you may need:
 <!-- App groups (for sharing data between app and extension) -->
 <key>com.apple.security.application-groups</key>
 <array>
-    <string>group.com.AcmeInc.BeamerEffectHeadless</string>
+    <string>group.com.beamer.gain</string>
 </array>
 ```
 
@@ -390,7 +412,7 @@ Components must be signed in this order (inside-out):
 
 ```bash
 #!/bin/bash
-APP_PATH="/path/to/MyPlugin.app"
+APP_PATH="/path/to/Gain.app"
 
 # Create entitlements for appex
 cat > /tmp/appex.entitlements << 'EOF'
@@ -420,12 +442,12 @@ EOF
 
 # 1. Sign framework first
 codesign --force --sign - \
-    "$APP_PATH/Contents/Frameworks/AUv3Framework.framework"
+    "$APP_PATH/Contents/Frameworks/GainAU.framework"
 
 # 2. Sign app extension with entitlements
 codesign --force --sign - \
     --entitlements /tmp/appex.entitlements \
-    "$APP_PATH/Contents/PlugIns/MyPlugin.appex"
+    "$APP_PATH/Contents/PlugIns/Gain.appex"
 
 # 3. Sign host app with entitlements
 codesign --force --sign - \
@@ -453,8 +475,20 @@ echo "Signing complete"
 For a headless plugin, you need to implement:
 
 1. **AUAudioUnit subclass** - Core audio processing
-2. **AUAudioUnitFactory** - Creates instances
+2. **AUAudioUnitFactory protocol** - Creates instances (principal class must conform)
 3. **Parameter tree** - Exposes parameters to host
+
+### Required AUAudioUnit Overrides
+
+Your `AUAudioUnit` subclass **must** override these methods:
+
+| Method | Purpose |
+|--------|---------|
+| `inputBusses` (getter) | Returns the array of input buses |
+| `outputBusses` (getter) | Returns the array of output buses |
+| `internalRenderBlock` (getter) | Returns the block that processes audio |
+| `allocateRenderResourcesAndReturnError:` | Called when plugin loads; allocate buffers here |
+| `deallocateRenderResources` | Called when plugin unloads; free resources here |
 
 ### Core Audio Callbacks
 
@@ -591,14 +625,14 @@ When a properly configured app is launched, macOS automatically registers its ex
 
 ```bash
 # Register a plugin
-pluginkit -a /path/to/MyPlugin.app/Contents/PlugIns/MyPlugin.appex
+pluginkit -a /path/to/Gain.app/Contents/PlugIns/Gain.appex
 
 # List registered Audio Units
 pluginkit -m -p com.apple.AudioUnit
 pluginkit -m -p com.apple.AudioUnit-UI
 
 # Remove registration
-pluginkit -r /path/to/MyPlugin.appex
+pluginkit -r /path/to/Gain.appex
 ```
 
 ### Verifying Registration
@@ -608,10 +642,10 @@ pluginkit -r /path/to/MyPlugin.appex
 auval -a
 
 # Find your plugin
-auval -a | grep "YourManufacturer"
+auval -a | grep "Beamer"
 
 # Validate specific plugin
-auval -v aufx Iphl Acme
+auval -v aufx Gain Beam
 #        │    │    └── Manufacturer code
 #        │    └── Subtype code
 #        └── Type code
@@ -641,16 +675,16 @@ For Rust developers, the recommended approach is:
 ### Project Structure
 
 ```
-my-plugin/
+gain/
 ├── Cargo.toml
 ├── src/
 │   └── lib.rs              # Rust DSP code
 ├── capi/
 │   └── bridge.h            # C API for FFI
 ├── objc/
-│   ├── AUv3Framework.h
-│   ├── MyAudioUnit.h
-│   └── MyAudioUnit.m       # AUAudioUnit subclass
+│   ├── GainAU.h
+│   ├── GainAudioUnit.h
+│   └── GainAudioUnit.m     # AUAudioUnit subclass
 ├── resources/
 │   ├── App-Info.plist
 │   ├── Appex-Info.plist
@@ -716,9 +750,9 @@ pub extern "C" fn plugin_process(
 ### Objective-C Bridge
 
 ```objc
-// objc/MyAudioUnit.m
+// objc/GainAudioUnit.m
 
-#import "MyAudioUnit.h"
+#import "GainAudioUnit.h"
 
 // Import Rust functions
 extern void* plugin_create(void);
@@ -730,7 +764,7 @@ extern void plugin_process(void* state,
                            uint32_t channels,
                            uint32_t frames);
 
-@implementation MyAudioUnit {
+@implementation GainAudioUnit {
     void* _pluginState;
     AUAudioUnitBus* _inputBus;
     AUAudioUnitBus* _outputBus;
@@ -817,23 +851,23 @@ use objc2_foundation::NSObject;
 auval -a
 
 # Validate your plugin
-auval -v aufx Iphl Acme
+auval -v aufx Gain Beam
 
 # Verbose validation
-auval -v aufx Iphl Acme -w
+auval -v aufx Gain Beam -w
 
 # Strict validation
-auval -v aufx Iphl Acme -strict
+auval -v aufx Gain Beam -strict
 ```
 
 ### Expected auval Output
 
 ```
 --------------------------------------------------
-VALIDATING AUDIO UNIT: 'aufx' - 'Iphl' - 'Acme'
+VALIDATING AUDIO UNIT: 'aufx' - 'Gain' - 'Beam'
 --------------------------------------------------
-Manufacturer String: AcmeInc
-AudioUnit Name: BeamerEffectHeadless
+Manufacturer String: Beamer
+AudioUnit Name: Gain
 Component Version: 1.0.0 (0x10000)
 
 * * PASS
@@ -864,23 +898,89 @@ Time to open AudioUnit:    0.045 ms
 
 ---
 
+## Troubleshooting
+
+### Instrument (Synth) Produces No Sound
+
+Common causes for AUv3 instruments not producing audio:
+
+#### 1. Wrong Audio Unit Type
+- Effects use `aufx`, instruments use `aumu`
+- Check `type` in Info.plist matches your plugin type
+- Verify with: `auval -v aumu <subtype> <manufacturer>`
+
+#### 2. Channel Configuration
+- Instruments typically have no inputs: `PLUG_CHANNEL_IO "0-2"` (0 inputs, 2 outputs)
+- Effects have inputs: `PLUG_CHANNEL_IO "1-1 2-2"`
+- Mismatch causes the host to not route audio correctly
+
+#### 3. MIDI Not Being Processed
+- Ensure `PLUG_DOES_MIDI_IN 1` is set in config.h
+- Verify `ProcessMidiMsg()` is implemented and called
+- Check that MIDI events reach your DSP code
+
+#### 4. Audio Buffer Not Written
+- Verify `ProcessBlock()` actually writes to the output buffers
+- Check for silent/zero initialization that never gets overwritten
+- Ensure sample rate and block size are handled in `OnReset()`
+
+#### 5. Headless vs UI Plugin Registration
+- Headless (no UI): register with `pluginkit -m -p com.apple.AudioUnit`
+- With UI: register with `pluginkit -m -p com.apple.AudioUnit-UI`
+- Wrong extension point = plugin won't appear in correct host category
+
+#### Debugging Tips for Rust Developers
+
+When building AUv3 instruments in Rust (via FFI to C/C++ or frameworks like `nih-plug`):
+
+1. **Verify FFI boundary**: Ensure audio buffers cross the Rust/C boundary correctly
+   - Check pointer alignment and lifetime
+   - Verify buffer sizes match between Rust and host expectations
+
+2. **Check render callback timing**:
+   - Audio callbacks must be realtime-safe (no allocations, no locks)
+   - Use `#[inline]` and avoid `Vec` resizing in the audio path
+
+3. **Validate MIDI parsing**:
+   ```bash
+   # Monitor MIDI in Console.app or with:
+   log stream --predicate 'subsystem == "com.apple.coreaudio"' --level debug
+   ```
+
+4. **Test outside DAW first**:
+   - Use `auval` to validate: `auval -v aumu <subtype> <mfr>`
+   - Use the standalone app to test audio generation independently
+
+5. **Memory/Thread issues**:
+   - Rust's ownership model can conflict with AU's threading expectations
+   - Audio thread != main thread - ensure `Send`/`Sync` bounds are correct
+   - Use atomics for parameter communication between threads
+
+6. **Sample format mismatch**:
+   - macOS AUv3 typically uses `Float32` (f32 in Rust)
+   - Ensure your DSP processes and outputs the correct sample type
+
+---
+
 ## Build Commands Reference
 
-### Building with Xcode (Command Line)
+### Building with Beamer
 
 ```bash
-cd /path/to/BeamerEffectHeadless
+# Bundle a plugin (creates .app with .appex and .framework)
+cargo xtask bundle gain
 
-# Build
-xcodebuild -project projects/BeamerEffectHeadless-macOS.xcodeproj \
-    -scheme "macOS-APP with AUv3" \
-    -configuration Debug \
-    CODE_SIGNING_ALLOWED=NO
+# Bundle with release optimizations
+cargo xtask bundle gain --release
 
-# Clean
-xcodebuild -project projects/BeamerEffectHeadless-macOS.xcodeproj \
-    -scheme "macOS-APP with AUv3" \
-    clean
+# Build all crates without bundling
+cargo build
+
+# Run tests
+cargo test
+
+# Run lints
+cargo clippy
 ```
 
 ### Manual Build Steps (for Rust/Custom)
@@ -888,17 +988,17 @@ xcodebuild -project projects/BeamerEffectHeadless-macOS.xcodeproj \
 ```bash
 # 1. Compile framework
 clang -framework AudioToolbox -framework AVFoundation \
-    -dynamiclib -o AUv3Framework.framework/AUv3Framework \
-    MyAudioUnit.m -L. -lmy_rust_dsp
+    -dynamiclib -o GainAU.framework/GainAU \
+    GainAudioUnit.m -L. -lgain
 
 # 2. Compile app extension
 clang -framework AudioToolbox \
-    -o MyPlugin.appex/Contents/MacOS/MyPlugin \
+    -o Gain.appex/Contents/MacOS/gain \
     AppexMain.m
 
 # 3. Compile host app
 clang -framework Cocoa \
-    -o MyPlugin.app/Contents/MacOS/MyPlugin \
+    -o Gain.app/Contents/MacOS/gain \
     AppMain.m
 
 # 4. Sign everything
@@ -924,8 +1024,9 @@ For headless plugins, you can skip all GUI code, graphics frameworks, and custom
 
 ## References
 
-- [Apple Audio Unit Hosting Guide](https://developer.apple.com/documentation/audiotoolbox/audio_unit_hosting_guide)
-- [App Extension Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/)
+- [Audio Unit App Extensions (Apple Archive)](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html) - Official guide for AUv3 extensions
 - [AUAudioUnit Class Reference](https://developer.apple.com/documentation/audiotoolbox/auaudiounit)
+- [Creating Custom Audio Effects](https://developer.apple.com/documentation/avfaudio/creating-custom-audio-effects)
+- [TN2312: Audio Unit Host Sandboxing Guide](https://developer.apple.com/library/archive/technotes/tn2312/_index.html) - In-process loading and sandbox requirements
+- [App Extension Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/)
 - [Code Signing Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/)
-- [iPlug2 Framework](https://github.com/iPlug2/iPlug2)
