@@ -15,7 +15,7 @@
 //! plugin implementation.
 
 use crate::error::{PluginError, PluginResult};
-use beamer_core::{CachedBusConfig, MidiEvent, ParameterStore, ProcessContext};
+use beamer_core::{CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext};
 
 /// Type-erased interface for AU plugin instances.
 ///
@@ -75,6 +75,16 @@ pub trait AuPluginInstance: Send + 'static {
     /// # Errors
     /// Returns an error if the plugin is in an invalid state (transitioning).
     fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError>;
+
+    /// Get parameter groups for building hierarchical AUParameterTree.
+    ///
+    /// Returns a reference to the `ParameterGroups` trait object which provides:
+    /// - Group count and metadata
+    /// - Hierarchical group relationships
+    ///
+    /// # Errors
+    /// Returns an error if the plugin is in an invalid state (transitioning).
+    fn parameter_groups(&self) -> Result<&dyn ParameterGroups, PluginError>;
 
     /// Save plugin state to bytes.
     ///

@@ -125,6 +125,9 @@ macro_rules! with_instance_void {
 /// Maximum length of parameter name/unit strings.
 const BEAMER_AU_MAX_PARAM_NAME_LENGTH: usize = 128;
 
+/// Maximum length of group name strings.
+const BEAMER_AU_MAX_GROUP_NAME_LENGTH: usize = 128;
+
 // =============================================================================
 // C-ABI Structs (must match BeamerAuBridge.h exactly)
 // =============================================================================
@@ -202,6 +205,8 @@ pub struct BeamerAuParameterInfo {
     pub step_count: i32,
     /// Flags (reserved for future use: automatable, hidden, etc.)
     pub flags: u32,
+    /// Group ID this parameter belongs to (0 = root/ungrouped)
+    pub group_id: i32,
 }
 
 impl Default for BeamerAuParameterInfo {
@@ -214,6 +219,30 @@ impl Default for BeamerAuParameterInfo {
             current_value: 0.0,
             step_count: 0,
             flags: 0,
+            group_id: 0,
+        }
+    }
+}
+
+/// Parameter group metadata for building hierarchical AUParameterTree.
+///
+/// Matches `BeamerAuGroupInfo` in header.
+#[repr(C)]
+pub struct BeamerAuGroupInfo {
+    /// Unique group identifier (matches VST3 UnitId)
+    pub id: i32,
+    /// Human-readable group name (UTF-8, null-terminated)
+    pub name: [c_char; BEAMER_AU_MAX_GROUP_NAME_LENGTH],
+    /// Parent group ID (0 = top-level, i.e., child of root)
+    pub parent_id: i32,
+}
+
+impl Default for BeamerAuGroupInfo {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: [0; BEAMER_AU_MAX_GROUP_NAME_LENGTH],
+            parent_id: 0,
         }
     }
 }
@@ -959,6 +988,7 @@ pub extern "C" fn beamer_au_get_parameter_info(
             }
             flags
         };
+        out.group_id = param_info.group_id;
 
         true
     })
@@ -1113,6 +1143,85 @@ pub extern "C" fn beamer_au_parse_parameter_value(
             },
             Err(_) => false,
         }
+    })
+}
+
+// =============================================================================
+// Parameter Groups
+// =============================================================================
+
+/// Get the number of parameter groups (including root group).
+///
+/// Returns 1 if there are no explicit groups (just the root group).
+/// For nested groups, returns 1 + total nested groups.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0`)
+/// - `instance` must not have been destroyed
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_group_count(instance: BeamerAuInstanceHandle) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        match plugin.parameter_groups() {
+            Ok(groups) => groups.group_count() as u32,
+            Err(_) => 1, // At least root group
+        }
+    })
+}
+
+/// Get information about a parameter group by index.
+///
+/// Index 0 returns the root group (id=0, name="", parent_id=0).
+/// Used to build hierarchical AUParameterTree with AUParameterGroup nodes.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `false`)
+/// - `instance` must not have been destroyed
+/// - `out_info` must be a valid pointer to a `BeamerAuGroupInfo` struct,
+///   or null (in which case this function returns `false`)
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_group_info(
+    instance: BeamerAuInstanceHandle,
+    index: u32,
+    out_info: *mut BeamerAuGroupInfo,
+) -> bool {
+    if out_info.is_null() {
+        return false;
+    }
+
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+
+        let groups = match plugin.parameter_groups() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+
+        let group_info = match groups.group_info(index as usize) {
+            Some(info) => info,
+            None => return false,
+        };
+
+        // SAFETY: out_info was validated as non-null above
+        let out = &mut *out_info;
+        out.id = group_info.id;
+        out.parent_id = group_info.parent_id;
+        copy_str_to_char_array(group_info.name, &mut out.name);
+
+        true
     })
 }
 

@@ -223,6 +223,8 @@ typedef struct {
     int32_t step_count;
     /// Flags (reserved for future use: automatable, hidden, etc.)
     uint32_t flags;
+    /// Group ID this parameter belongs to (0 = root/ungrouped)
+    int32_t group_id;
 } BeamerAuParameterInfo;
 
 /**
@@ -236,6 +238,32 @@ typedef enum {
     /// Parameter is read-only (e.g., meter output)
     BeamerAuParameterFlagReadOnly = (1 << 2),
 } BeamerAuParameterFlags;
+
+/**
+ * Maximum length of group name strings.
+ *
+ * Names longer than this are truncated.
+ */
+#define BEAMER_AU_MAX_GROUP_NAME_LENGTH 128
+
+/**
+ * Parameter group metadata for building hierarchical AUParameterTree.
+ *
+ * Groups organize parameters into folders in the DAW's parameter list.
+ * Groups can be nested via parent_id references to form a tree structure.
+ *
+ * Special values:
+ * - Group ID 0 is the root group (implicit, never returned by getGroupInfo for index > 0)
+ * - parent_id = 0 means the group is at the top level
+ */
+typedef struct {
+    /// Unique group identifier (matches VST3 UnitId)
+    int32_t id;
+    /// Human-readable group name (UTF-8, null-terminated)
+    char name[BEAMER_AU_MAX_GROUP_NAME_LENGTH];
+    /// Parent group ID (0 = top-level, i.e., child of root)
+    int32_t parent_id;
+} BeamerAuGroupInfo;
 
 // =============================================================================
 // MARK: - Factory Registration
@@ -582,6 +610,43 @@ bool beamer_au_parse_parameter_value(
     uint32_t param_id,
     const char* string,
     float* out_value
+);
+
+// =============================================================================
+// MARK: - Parameter Groups
+// =============================================================================
+
+/**
+ * Get the number of parameter groups (including root group).
+ *
+ * Returns 1 if there are no explicit groups (just the root group).
+ * For nested groups, returns 1 + total nested groups.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return Number of groups (minimum 1 for root), or 0 if instance invalid.
+ */
+uint32_t beamer_au_get_group_count(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Get information about a parameter group by index.
+ *
+ * Index 0 returns the root group (id=0, name="", parent_id=0).
+ * Used to build hierarchical AUParameterTree with AUParameterGroup nodes.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param index      Group index (0 to count-1).
+ * @param out_info   Pointer to structure to fill with group info.
+ *
+ * @return true if successful, false if index out of range or instance invalid.
+ */
+bool beamer_au_get_group_info(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t index,
+    BeamerAuGroupInfo* _Nonnull out_info
 );
 
 // =============================================================================

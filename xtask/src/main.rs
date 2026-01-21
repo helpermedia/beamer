@@ -641,14 +641,15 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     }}
 
     uint32_t paramCount = beamer_au_get_parameter_count(_rustInstance);
+    uint32_t groupCount = beamer_au_get_group_count(_rustInstance);
 
     if (paramCount == 0) {{
         _parameterTree = [AUParameterTree createTreeWithChildren:@[]];
         return;
     }}
 
-    NSMutableArray<AUParameterNode*>* parameters = [[NSMutableArray alloc] initWithCapacity:paramCount];
-
+    // Collect parameters
+    NSMutableArray<NSDictionary*>* allParams = [[NSMutableArray alloc] initWithCapacity:paramCount];
     for (uint32_t i = 0; i < paramCount; i++) {{
         BeamerAuParameterInfo info;
         if (!beamer_au_get_parameter_info(_rustInstance, i, &info)) {{
@@ -674,12 +675,86 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
                                                                       flags:flags
                                                                valueStrings:nil
                                                         dependentParameters:nil];
-
         param.value = info.default_value;
-        [parameters addObject:param];
+
+        [allParams addObject:@{{
+            @"param": param,
+            @"groupId": @(info.group_id)
+        }}];
     }}
 
-    _parameterTree = [AUParameterTree createTreeWithChildren:parameters];
+    // Collect groups (skip index 0 = root)
+    NSMutableDictionary<NSNumber*, NSDictionary*>* groupInfoMap = [[NSMutableDictionary alloc] init];
+    for (uint32_t i = 1; i < groupCount; i++) {{
+        BeamerAuGroupInfo ginfo;
+        if (beamer_au_get_group_info(_rustInstance, i, &ginfo)) {{
+            NSString* gname = [NSString stringWithUTF8String:ginfo.name];
+            groupInfoMap[@(ginfo.id)] = @{{
+                @"name": gname,
+                @"parentId": @(ginfo.parent_id)
+            }};
+        }}
+    }}
+
+    // Build group hierarchy
+    NSMutableDictionary<NSNumber*, AUParameterGroup*>* groupNodes = [[NSMutableDictionary alloc] init];
+    NSMutableDictionary<NSNumber*, NSMutableArray<AUParameterNode*>*>* groupChildren = [[NSMutableDictionary alloc] init];
+
+    groupChildren[@0] = [[NSMutableArray alloc] init];
+    for (NSNumber* gid in groupInfoMap) {{
+        groupChildren[gid] = [[NSMutableArray alloc] init];
+    }}
+
+    // Assign parameters to groups
+    for (NSDictionary* pdict in allParams) {{
+        NSNumber* gid = pdict[@"groupId"];
+        NSMutableArray* children = groupChildren[gid];
+        if (children == nil) {{
+            children = groupChildren[@0];
+        }}
+        [children addObject:pdict[@"param"]];
+    }}
+
+    // Build groups bottom-up
+    NSMutableSet<NSNumber*>* remaining = [NSMutableSet setWithArray:groupInfoMap.allKeys];
+    while (remaining.count > 0) {{
+        BOOL madeProgress = NO;
+        for (NSNumber* gid in [remaining copy]) {{
+            NSDictionary* ginfo = groupInfoMap[gid];
+            NSNumber* parentId = ginfo[@"parentId"];
+
+            if ([parentId intValue] == 0 || groupNodes[parentId] != nil) {{
+                NSString* gname = ginfo[@"name"];
+                NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
+
+                AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
+                                                                                name:gname
+                                                                            children:groupChildren[gid]];
+                groupNodes[gid] = group;
+                [groupChildren[parentId] addObject:group];
+
+                [remaining removeObject:gid];
+                madeProgress = YES;
+            }}
+        }}
+
+        if (!madeProgress && remaining.count > 0) {{
+            for (NSNumber* gid in remaining) {{
+                NSDictionary* ginfo = groupInfoMap[gid];
+                NSString* gname = ginfo[@"name"];
+                NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
+
+                AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
+                                                                                name:gname
+                                                                            children:groupChildren[gid]];
+                groupNodes[gid] = group;
+                [groupChildren[@0] addObject:group];
+            }}
+            break;
+        }}
+    }}
+
+    _parameterTree = [AUParameterTree createTreeWithChildren:groupChildren[@0]];
     [self setupParameterCallbacks];
 }}
 

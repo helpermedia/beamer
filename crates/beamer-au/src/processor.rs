@@ -33,7 +33,7 @@ use crate::instance::AuPluginInstance;
 use crate::lifecycle::{AuState, BuildAuConfig};
 use beamer_core::{
     AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, HasParameters, MidiEvent,
-    ParameterStore, Plugin, ProcessContext, Transport,
+    ParameterGroups, ParameterStore, Plugin, ProcessContext, Transport,
 };
 
 /// Generic AU processor wrapper.
@@ -122,6 +122,16 @@ where
         match &mut self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters_mut()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters_mut()),
+            AuState::Transitioning => {
+                Err(PluginError::ProcessingError("transitioning".to_string()))
+            }
+        }
+    }
+
+    fn parameter_groups(&self) -> Result<&dyn ParameterGroups, PluginError> {
+        match &self.state {
+            AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
+            AuState::Prepared { processor, .. } => Ok(processor.parameters()),
             AuState::Transitioning => {
                 Err(PluginError::ProcessingError("transitioning".to_string()))
             }
