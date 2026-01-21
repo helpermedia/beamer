@@ -489,6 +489,8 @@ pub struct FloatParameter {
     smoother: Option<Smoother>,
     /// Whether this parameter stores dB values (for as_linear() optimization)
     is_db: bool,
+    /// Optional step size for discrete stepping. None = continuous.
+    step_size: Option<f64>,
 }
 
 impl FloatParameter {
@@ -522,6 +524,7 @@ impl FloatParameter {
             formatter: Formatter::Float { precision: 2 },
             smoother: None,
             is_db: false,
+            step_size: None,
         }
     }
 
@@ -578,6 +581,7 @@ impl FloatParameter {
             formatter,
             smoother: None,
             is_db: true,
+            step_size: None,
         }
     }
 
@@ -624,6 +628,7 @@ impl FloatParameter {
             formatter,
             smoother: None,
             is_db: true,
+            step_size: None,
         }
     }
 
@@ -673,6 +678,7 @@ impl FloatParameter {
             formatter,
             smoother: None,
             is_db: true,
+            step_size: None,
         }
     }
 
@@ -716,6 +722,7 @@ impl FloatParameter {
             formatter,
             smoother: None,
             is_db: false,
+            step_size: None,
         }
     }
 
@@ -860,6 +867,62 @@ impl FloatParameter {
         self
     }
 
+    /// Set the step size for discrete stepping.
+    ///
+    /// When set, values are snapped to the nearest multiple of `step_size`
+    /// within the parameter's range. The `step_count` is automatically calculated
+    /// as `((max - min) / step_size).round()` for host UI integration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `step_size <= 0.0`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Volume control that snaps to 0.5 dB increments
+    /// let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
+    ///     .with_step_size(0.5);
+    ///
+    /// volume.set(-5.3);
+    /// assert_eq!(volume.get(), -5.5); // Snapped to nearest 0.5
+    /// ```
+    pub fn with_step_size(mut self, step_size: f64) -> Self {
+        assert!(
+            step_size > 0.0,
+            "step_size must be positive, got {}",
+            step_size
+        );
+
+        let (min, max) = self.range.range();
+        let range_size = max - min;
+
+        // Calculate step_count: number of intervals (not values)
+        // step_count = 0 means continuous, step_count = N means N+1 discrete values
+        let step_count = if step_size >= range_size {
+            // Step size larger than range: treat as 2 values (min, max)
+            1
+        } else {
+            (range_size / step_size).round() as i32
+        };
+
+        self.step_size = Some(step_size);
+        self.info.step_count = step_count;
+        self
+    }
+
+    /// Get the step size, if configured.
+    pub fn step_size(&self) -> Option<f64> {
+        self.step_size
+    }
+
+    /// Get the step count for host UI integration.
+    ///
+    /// Returns 0 for continuous parameters, or N for parameters with N+1 discrete values.
+    pub fn step_count(&self) -> i32 {
+        self.info.step_count
+    }
+
     /// Get the parameter metadata.
     pub fn info(&self) -> &ParameterInfo {
         &self.info
@@ -882,9 +945,18 @@ impl FloatParameter {
     }
 
     /// Set the plain value in natural units.
+    ///
+    /// If a step size is configured, the value is snapped to the nearest step.
     #[inline]
     pub fn set(&self, value: f64) {
-        let normalized = self.range.normalize(value);
+        let snapped = match self.step_size {
+            Some(step) => {
+                let (min, max) = self.range.range();
+                snap_to_step(value, step, min, max)
+            }
+            None => value,
+        };
+        let normalized = self.range.normalize(snapped);
         self.value.store(normalized.to_bits(), Ordering::Relaxed);
     }
 
@@ -2010,5 +2082,136 @@ fn db_to_linear(db: f64) -> f64 {
         0.0
     } else {
         10.0_f64.powf(db / 20.0)
+    }
+}
+
+/// Snap a value to the nearest step within a range.
+#[inline]
+fn snap_to_step(value: f64, step_size: f64, min: f64, max: f64) -> f64 {
+    // Calculate the number of steps from min
+    let steps_from_min = ((value - min) / step_size).round();
+    // Calculate snapped value
+    let snapped = min + steps_from_min * step_size;
+    // Clamp to range (handles edge cases from rounding)
+    snapped.clamp(min, max)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_step_size_snapping() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+
+        // Test snapping to nearest step
+        param.set(2.3);
+        assert!((param.get() - 2.5).abs() < 1e-10);
+
+        param.set(2.2);
+        assert!((param.get() - 2.0).abs() < 1e-10);
+
+        param.set(2.25);
+        assert!((param.get() - 2.5).abs() < 1e-10); // Round up at midpoint
+    }
+
+    #[test]
+    fn test_step_size_edge_cases() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.3);
+
+        // Snap at boundaries
+        param.set(-0.1);
+        assert!((param.get() - 0.0).abs() < 1e-10); // Clamp to min
+
+        param.set(10.1);
+        assert!((param.get() - 10.0).abs() < 1e-10); // Clamp to max
+    }
+
+    #[test]
+    fn test_step_count_calculation() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+
+        // 10.0 / 0.5 = 20 steps, meaning 21 discrete values
+        assert_eq!(param.step_count(), 20);
+    }
+
+    #[test]
+    fn test_step_size_with_negative_range() {
+        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_step_size(0.5);
+
+        // Range is 72, so 144 steps
+        assert_eq!(param.step_count(), 144);
+
+        param.set(-5.3);
+        assert!((param.get() - -5.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_continuous_parameter_no_snapping() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0);
+
+        param.set(2.3);
+        assert!((param.get() - 2.3).abs() < 1e-10); // No snapping
+        assert_eq!(param.step_count(), 0); // Continuous
+    }
+
+    #[test]
+    #[should_panic(expected = "step_size must be positive")]
+    fn test_step_size_zero_panics() {
+        FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "step_size must be positive")]
+    fn test_step_size_negative_panics() {
+        FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(-0.5);
+    }
+
+    #[test]
+    fn test_step_size_larger_than_range() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=1.0).with_step_size(2.0);
+
+        // Step larger than range = step_count of 1 (two values: min and max)
+        assert_eq!(param.step_count(), 1);
+    }
+
+    #[test]
+    fn test_step_size_getter() {
+        let param_with_step = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+        assert_eq!(param_with_step.step_size(), Some(0.5));
+
+        let param_continuous = FloatParameter::new("Test", 0.0, 0.0..=10.0);
+        assert_eq!(param_continuous.step_size(), None);
+    }
+
+    #[test]
+    fn test_step_size_with_smoother() {
+        let mut param = FloatParameter::new("Test", 0.0, 0.0..=10.0)
+            .with_step_size(1.0)
+            .with_smoother(crate::smoothing::SmoothingStyle::Linear(10.0));
+
+        param.set_sample_rate(1000.0);
+        param.set(5.3); // Snaps to 5.0
+
+        // Target should be the snapped value
+        assert!((param.get() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_snap_to_step_helper() {
+        // Basic snapping
+        assert!((snap_to_step(2.3, 0.5, 0.0, 10.0) - 2.5).abs() < 1e-10);
+        assert!((snap_to_step(2.2, 0.5, 0.0, 10.0) - 2.0).abs() < 1e-10);
+
+        // Negative range
+        assert!((snap_to_step(-5.3, 0.5, -60.0, 12.0) - -5.5).abs() < 1e-10);
+
+        // Clamping
+        assert!((snap_to_step(-1.0, 0.5, 0.0, 10.0) - 0.0).abs() < 1e-10);
+        assert!((snap_to_step(11.0, 0.5, 0.0, 10.0) - 10.0).abs() < 1e-10);
     }
 }

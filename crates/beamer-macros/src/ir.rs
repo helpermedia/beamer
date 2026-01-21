@@ -29,6 +29,8 @@ pub struct ParameterAttributes {
     /// Visual grouping for DAW display (without nested struct).
     /// Parameters with the same group name will appear together in the DAW.
     pub group: Option<String>,
+    /// Step size for discrete float parameters.
+    pub step: Option<f64>,
 }
 
 impl ParameterAttributes {
@@ -173,8 +175,8 @@ pub struct ParametersIR {
 
 /// A single field in the parameter struct.
 pub enum FieldIR {
-    /// A direct parameter field (FloatParameter, IntParameter, BoolParameter)
-    Parameter(ParameterFieldIR),
+    /// A direct parameter field (boxed to reduce enum size)
+    Parameter(Box<ParameterFieldIR>),
     /// A nested parameter struct (boxed to reduce enum size)
     Nested(Box<NestedFieldIR>),
 }
@@ -241,7 +243,7 @@ impl ParametersIR {
     /// Iterate over all parameter fields (excluding nested).
     pub fn parameter_fields(&self) -> impl Iterator<Item = &ParameterFieldIR> {
         self.fields.iter().filter_map(|f| match f {
-            FieldIR::Parameter(p) => Some(p),
+            FieldIR::Parameter(p) => Some(p.as_ref()),
             FieldIR::Nested(_) => None,
         })
     }

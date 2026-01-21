@@ -1168,7 +1168,7 @@ fn generate_enum_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     }
 }
 
-/// Generate the builder method chain (.with_id(), .with_short_name(), .with_smoother()).
+/// Generate the builder method chain (.with_id(), .with_short_name(), .with_smoother(), .with_step_size()).
 fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident) -> TokenStream {
     let const_name = parameter.const_name();
 
@@ -1200,9 +1200,19 @@ fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident
         None
     };
 
+    // Optional: .with_step_size() (only for FloatParameter)
+    let with_step_size = if parameter.parameter_type == crate::ir::ParameterType::Float {
+        parameter.attributes.step.map(|step| {
+            quote! { .with_step_size(#step) }
+        })
+    } else {
+        None
+    };
+
     quote! {
         #with_id
         #with_short_name
         #with_smoother
+        #with_step_size
     }
 }

@@ -88,6 +88,9 @@ fn validate_single_parameter(parameter: &ParameterFieldIR) -> syn::Result<()> {
     // Validate kind/type consistency
     validate_kind_type_consistency(parameter)?;
 
+    // Validate step size constraints
+    validate_step_size(parameter)?;
+
     Ok(())
 }
 
@@ -209,6 +212,32 @@ fn validate_kind_type_consistency(parameter: &ParameterFieldIR) -> syn::Result<(
             ));
         }
         _ => {}
+    }
+
+    Ok(())
+}
+
+/// Validate step size constraints.
+fn validate_step_size(parameter: &ParameterFieldIR) -> syn::Result<()> {
+    let step = match parameter.attributes.step {
+        Some(s) => s,
+        None => return Ok(()), // No step configured
+    };
+
+    // Step must be positive
+    if step <= 0.0 {
+        return Err(syn::Error::new(
+            parameter.span,
+            format!("step must be positive, got {}", step),
+        ));
+    }
+
+    // Step only makes sense for FloatParameter
+    if parameter.parameter_type != ParameterType::Float {
+        return Err(syn::Error::new(
+            parameter.span,
+            "step attribute is only valid for FloatParameter",
+        ));
     }
 
     Ok(())

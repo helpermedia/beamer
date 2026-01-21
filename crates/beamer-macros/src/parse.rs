@@ -80,7 +80,7 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
     // Check for #[parameter] attribute
     for attr in &field.attrs {
         if attr.path().is_ident("parameter") {
-            return parse_parameter_field(field, attr).map(|p| Some(FieldIR::Parameter(p)));
+            return parse_parameter_field(field, attr).map(|p| Some(FieldIR::Parameter(Box::new(p))));
         }
         if attr.path().is_ident("nested") {
             return parse_nested_field(field, attr).map(|n| Some(FieldIR::Nested(Box::new(n))));
@@ -169,9 +169,31 @@ fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Pa
             let value: syn::LitStr = meta.value()?.parse()?;
             attributes.group = Some(value.value());
             Ok(())
+        } else if meta.path.is_ident("step") {
+            let expr: syn::Expr = meta.value()?.parse()?;
+            let value = match &expr {
+                syn::Expr::Lit(lit) => match &lit.lit {
+                    syn::Lit::Float(f) => f.base10_parse::<f64>()?,
+                    syn::Lit::Int(i) => i.base10_parse::<i64>()? as f64,
+                    _ => {
+                        return Err(syn::Error::new_spanned(lit, "step must be a number"));
+                    }
+                },
+                syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+                    return Err(syn::Error::new_spanned(
+                        &expr,
+                        "step must be positive",
+                    ));
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(&expr, "step must be a literal number"));
+                }
+            };
+            attributes.step = Some(value);
+            Ok(())
         } else {
             Err(meta.error(
-                "unknown attribute. Expected: id, name, default, range, kind, short_name, smoothing, bypass, group"
+                "unknown attribute. Expected: id, name, default, range, kind, short_name, smoothing, bypass, group, step"
             ))
         }
     })?;
@@ -368,6 +390,17 @@ fn parse_nested_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Neste
         )
     })?;
 
+    // Validate that the group name doesn't contain path separators (used for nested group routing)
+    if group_name.contains('/') {
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!(
+                "group name '{}' cannot contain '/' (reserved for nested group path routing)",
+                group_name
+            ),
+        ));
+    }
+
     Ok(NestedFieldIR {
         field_name,
         field_type: field.ty.clone(),
@@ -392,7 +425,7 @@ fn assign_group_ids(fields: &mut [FieldIR]) {
     for field in fields {
         if let FieldIR::Nested(nested) = field {
             nested.group_id = next_group_id;
-            nested.parent_group_id = 0; // All top-level for now (recursive nesting is future work)
+            nested.parent_group_id = 0; // Top-level nested fields are children of root; deeper nesting handled at runtime
             next_group_id += 1;
         }
     }
