@@ -215,6 +215,16 @@ typedef struct {
     char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
     /// Parameter unit string (e.g., "dB", "Hz", "ms"; UTF-8, null-terminated)
     char units[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    /// AudioUnitParameterUnit value for host UI hints.
+    ///
+    /// This tells AU hosts what visual control to render:
+    /// - 0 = kAudioUnitParameterUnit_Generic (slider)
+    /// - 1 = kAudioUnitParameterUnit_Indexed (dropdown)
+    /// - 2 = kAudioUnitParameterUnit_Boolean (checkbox)
+    /// - 13 = kAudioUnitParameterUnit_Decibels
+    /// - 8 = kAudioUnitParameterUnit_Hertz
+    /// - etc. (see AudioUnitProperties.h for full list)
+    uint32_t unit_type;
     /// Default normalized value (0.0 to 1.0)
     float default_value;
     /// Current normalized value (0.0 to 1.0)
@@ -610,6 +620,52 @@ bool beamer_au_parse_parameter_value(
     uint32_t param_id,
     const char* string,
     float* out_value
+);
+
+/**
+ * Get the number of discrete value strings for an indexed parameter.
+ *
+ * For enum/indexed parameters (unit_type = Indexed), returns the number of
+ * possible values (step_count + 1). This is used to build the valueStrings
+ * array for AUParameter.
+ *
+ * For continuous parameters or those without indexed unit type, returns 0.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance  Handle to the plugin instance.
+ * @param param_id  Parameter ID (from BeamerAuParameterInfo.id).
+ *
+ * @return Number of value strings (0 if not an indexed parameter).
+ */
+uint32_t beamer_au_get_parameter_value_count(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t param_id
+);
+
+/**
+ * Get the display string for a specific value of an indexed parameter.
+ *
+ * For enum parameters, index 0 returns the first variant name, index 1
+ * returns the second, etc. This is used to populate the valueStrings array
+ * for AUParameter creation.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance     Handle to the plugin instance.
+ * @param param_id     Parameter ID (from BeamerAuParameterInfo.id).
+ * @param value_index  Index of the value (0 to count-1).
+ * @param out_string   Buffer to receive the string (UTF-8, null-terminated).
+ * @param max_length   Maximum buffer length including null terminator.
+ *
+ * @return true if successful, false if index out of range or not indexed parameter.
+ */
+bool beamer_au_get_parameter_value_string(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t param_id,
+    uint32_t value_index,
+    char* out_string,
+    uint32_t max_length
 );
 
 // =============================================================================

@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
 use crate::error::os_status;
-use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, MAX_BUSES};
+use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, MAX_BUSES};
 use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
@@ -197,6 +197,14 @@ pub struct BeamerAuParameterInfo {
     pub name: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
     /// Parameter unit string (e.g., "dB", "Hz", "ms"; UTF-8, null-terminated)
     pub units: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+    /// AudioUnitParameterUnit value for host UI hints.
+    ///
+    /// This tells AU hosts what visual control to render:
+    /// - 0 = Generic (slider)
+    /// - 1 = Indexed (dropdown)
+    /// - 2 = Boolean (checkbox)
+    /// - 13 = Decibels, 8 = Hertz, etc.
+    pub unit_type: u32,
     /// Default normalized value (0.0 to 1.0)
     pub default_value: f32,
     /// Current normalized value (0.0 to 1.0)
@@ -215,6 +223,7 @@ impl Default for BeamerAuParameterInfo {
             id: 0,
             name: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
             units: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+            unit_type: 0, // Generic
             default_value: 0.0,
             current_value: 0.0,
             step_count: 0,
@@ -971,6 +980,7 @@ pub extern "C" fn beamer_au_get_parameter_info(
         out.id = param_info.id;
         copy_str_to_char_array(param_info.name, &mut out.name);
         copy_str_to_char_array(param_info.units, &mut out.units);
+        out.unit_type = param_info.unit as u32;
         out.default_value = param_info.default_normalized as f32;
         out.current_value = store.get_normalized(param_info.id) as f32;
         out.step_count = param_info.step_count;
@@ -1143,6 +1153,137 @@ pub extern "C" fn beamer_au_parse_parameter_value(
             },
             Err(_) => false,
         }
+    })
+}
+
+/// Get the number of discrete value strings for an indexed parameter.
+///
+/// For enum/indexed parameters, returns the number of possible values (step_count + 1).
+/// For continuous parameters or those without indexed unit type, returns 0.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0`)
+/// - `instance` must not have been destroyed
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_parameter_value_count(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        let store = match plugin.parameter_store() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        // Find the parameter info by ID
+        let count = store.count();
+        for i in 0..count {
+            if let Some(info) = store.info(i) {
+                if info.id == param_id {
+                    // Only return value count for indexed parameters
+                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                        return (info.step_count + 1) as u32;
+                    }
+                    return 0;
+                }
+            }
+        }
+        0
+    })
+}
+
+/// Get the display string for a specific value of an indexed parameter.
+///
+/// For enum parameters, index 0 returns the first variant name, etc.
+/// Converts the index to a normalized value and calls the parameter's
+/// value-to-string function.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `false`)
+/// - `instance` must not have been destroyed
+/// - `out_string` must be a valid pointer to a writable buffer of at least
+///   `max_length` bytes, or null (in which case this function returns `false`)
+/// - `max_length` must be greater than 0
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_parameter_value_string(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+    value_index: u32,
+    out_string: *mut c_char,
+    max_length: u32,
+) -> bool {
+    if out_string.is_null() || max_length == 0 {
+        return false;
+    }
+
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+
+        let store = match plugin.parameter_store() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        // Find the parameter info by ID to get step_count
+        let count = store.count();
+        let mut step_count: Option<i32> = None;
+
+        for i in 0..count {
+            if let Some(info) = store.info(i) {
+                if info.id == param_id {
+                    // Only process indexed parameters
+                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                        step_count = Some(info.step_count);
+                    }
+                    break;
+                }
+            }
+        }
+
+        let step_count = match step_count {
+            Some(sc) => sc,
+            None => return false, // Not an indexed parameter
+        };
+
+        // Check if value_index is in range
+        if value_index > step_count as u32 {
+            return false;
+        }
+
+        // Convert index to normalized value
+        // For N+1 values with step_count N: normalized = index / step_count
+        let normalized = if step_count > 0 {
+            value_index as f64 / step_count as f64
+        } else {
+            0.0
+        };
+
+        // Get the display string for this normalized value
+        let display_string = store.normalized_to_string(param_id, normalized);
+
+        // Copy to output buffer
+        // SAFETY: out_string and max_length were validated above
+        let bytes = display_string.as_bytes();
+        let copy_len = bytes.len().min(max_length as usize - 1);
+
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out_string as *mut u8, copy_len);
+        *out_string.add(copy_len) = 0; // Null terminator
+
+        true
     })
 }
 

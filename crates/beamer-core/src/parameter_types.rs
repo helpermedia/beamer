@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use crate::parameter_format::Formatter;
 use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
-use crate::parameter_info::{ParameterFlags, ParameterInfo};
+use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 use crate::smoothing::{Smoother, SmoothingStyle};
 use crate::types::{ParameterId, ParameterValue};
@@ -514,6 +514,7 @@ impl FloatParameter {
                 name,
                 short_name: name,
                 units: "",
+                unit: ParameterUnit::Generic,
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -571,6 +572,7 @@ impl FloatParameter {
                 name,
                 short_name: name,
                 units: formatter.unit(),
+                unit: ParameterUnit::Decibels,
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -618,6 +620,7 @@ impl FloatParameter {
                 name,
                 short_name: name,
                 units: formatter.unit(),
+                unit: ParameterUnit::Decibels,
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -668,6 +671,7 @@ impl FloatParameter {
                 name,
                 short_name: name,
                 units: formatter.unit(),
+                unit: ParameterUnit::Decibels,
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -712,6 +716,7 @@ impl FloatParameter {
                 name,
                 short_name: name,
                 units: formatter.unit(),
+                unit: ParameterUnit::Hertz,
                 default_normalized,
                 step_count: 0,
                 flags: ParameterFlags::default(),
@@ -740,6 +745,7 @@ impl FloatParameter {
         let mut parameter = Self::new(name, default_ms, range_ms);
         let formatter = Formatter::Milliseconds { precision: 1 };
         parameter.info.units = formatter.unit();
+        parameter.info.unit = ParameterUnit::Milliseconds;
         parameter.formatter = formatter;
         parameter
     }
@@ -758,6 +764,7 @@ impl FloatParameter {
         let mut parameter = Self::new(name, default_s, range_s);
         let formatter = Formatter::Seconds { precision: 2 };
         parameter.info.units = formatter.unit();
+        parameter.info.unit = ParameterUnit::Seconds;
         parameter.formatter = formatter;
         parameter
     }
@@ -777,6 +784,7 @@ impl FloatParameter {
         let mut parameter = Self::new(name, default_pct, 0.0..=1.0);
         let formatter = Formatter::Percent { precision: 0 };
         parameter.info.units = formatter.unit();
+        parameter.info.unit = ParameterUnit::Percent;
         parameter.formatter = formatter;
         parameter
     }
@@ -795,6 +803,7 @@ impl FloatParameter {
     /// * `default` - Default value (-1.0 to +1.0, typically 0.0)
     pub fn pan(name: &'static str, default: f64) -> Self {
         let mut parameter = Self::new(name, default, -1.0..=1.0);
+        parameter.info.unit = ParameterUnit::Pan;
         parameter.formatter = Formatter::Pan;
         parameter
     }
@@ -813,6 +822,7 @@ impl FloatParameter {
     /// * `range` - Valid ratio range (inclusive)
     pub fn ratio(name: &'static str, default: f64, range: RangeInclusive<f64>) -> Self {
         let mut parameter = Self::new(name, default, range);
+        parameter.info.unit = ParameterUnit::Ratio;
         parameter.formatter = Formatter::Ratio { precision: 1 };
         parameter
     }
@@ -864,6 +874,15 @@ impl FloatParameter {
     /// Disable automation for this parameter.
     pub fn non_automatable(mut self) -> Self {
         self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Set the unit type hint for AU hosts.
+    ///
+    /// This is typically set automatically by the constructor (e.g., `db()` sets `Decibels`),
+    /// but can be overridden if needed.
+    pub fn with_unit(mut self, unit: ParameterUnit) -> Self {
+        self.info.unit = unit;
         self
     }
 
@@ -1310,6 +1329,7 @@ impl IntParameter {
                 name,
                 short_name: name,
                 units: "",
+                unit: ParameterUnit::Generic,
                 default_normalized,
                 step_count,
                 flags: ParameterFlags::default(),
@@ -1338,6 +1358,7 @@ impl IntParameter {
         let mut parameter = Self::new(name, default, range);
         let formatter = Formatter::Semitones;
         parameter.info.units = formatter.unit();
+        parameter.info.unit = ParameterUnit::RelativeSemiTones;
         parameter.formatter = formatter;
         parameter
     }
@@ -1382,6 +1403,15 @@ impl IntParameter {
     /// Disable automation for this parameter.
     pub fn non_automatable(mut self) -> Self {
         self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Set the unit type hint for AU hosts.
+    ///
+    /// This is typically set automatically by the constructor (e.g., `semitones()` sets
+    /// `RelativeSemiTones`), but can be overridden if needed.
+    pub fn with_unit(mut self, unit: ParameterUnit) -> Self {
+        self.info.unit = unit;
         self
     }
 
@@ -1594,6 +1624,7 @@ impl BoolParameter {
                 name,
                 short_name: name,
                 units: "",
+                unit: ParameterUnit::Boolean,
                 default_normalized: if default { 1.0 } else { 0.0 },
                 step_count: 1, // Toggle
                 flags: ParameterFlags::default(),
@@ -1621,6 +1652,7 @@ impl BoolParameter {
                 name: "Bypass",
                 short_name: "Byp",
                 units: "",
+                unit: ParameterUnit::Boolean,
                 default_normalized: 0.0,
                 step_count: 1,
                 flags: ParameterFlags {
@@ -1677,6 +1709,15 @@ impl BoolParameter {
     /// Disable automation for this parameter.
     pub fn non_automatable(mut self) -> Self {
         self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Set the unit type hint for AU hosts.
+    ///
+    /// BoolParameter defaults to `Boolean` which renders as a checkbox.
+    /// This can be overridden if needed.
+    pub fn with_unit(mut self, unit: ParameterUnit) -> Self {
+        self.info.unit = unit;
         self
     }
 
@@ -1943,6 +1984,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
                 name,
                 short_name: name,
                 units: "",
+                unit: ParameterUnit::Indexed,
                 default_normalized,
                 step_count: (E::COUNT.saturating_sub(1)) as i32,
                 // EnumParameter is always a list (dropdown), even with only 2 choices
@@ -1997,6 +2039,15 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     /// Disable automation for this parameter.
     pub fn non_automatable(mut self) -> Self {
         self.info.flags.can_automate = false;
+        self
+    }
+
+    /// Set the unit type hint for AU hosts.
+    ///
+    /// EnumParameter defaults to `Indexed` which renders as a dropdown.
+    /// This can be overridden if needed.
+    pub fn with_unit(mut self, unit: ParameterUnit) -> Self {
+        self.info.unit = unit;
         self
     }
 
@@ -2458,5 +2509,170 @@ mod tests {
         let formatter = param.formatter();
         assert_eq!(formatter.unit(), "st");
         assert!(!formatter.supports_precision()); // Semitones doesn't have precision
+    }
+
+    // =========================================================================
+    // ParameterUnit tests
+    // =========================================================================
+
+    #[test]
+    fn test_float_parameter_unit_generic() {
+        let param = FloatParameter::new("Test", 0.0, 0.0..=1.0);
+        assert_eq!(param.info().unit, ParameterUnit::Generic);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_decibels() {
+        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
+        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_db_log() {
+        let param = FloatParameter::db_log("Threshold", -20.0, -60.0..=0.0);
+        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_db_log_offset() {
+        let param = FloatParameter::db_log_offset("Threshold", -20.0, -60.0..=0.0);
+        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_hertz() {
+        let param = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0);
+        assert_eq!(param.info().unit, ParameterUnit::Hertz);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_milliseconds() {
+        let param = FloatParameter::ms("Attack", 10.0, 0.1..=100.0);
+        assert_eq!(param.info().unit, ParameterUnit::Milliseconds);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_seconds() {
+        let param = FloatParameter::seconds("Decay", 1.0, 0.0..=10.0);
+        assert_eq!(param.info().unit, ParameterUnit::Seconds);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_percent() {
+        let param = FloatParameter::percent("Mix", 0.5);
+        assert_eq!(param.info().unit, ParameterUnit::Percent);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_pan() {
+        let param = FloatParameter::pan("Pan", 0.0);
+        assert_eq!(param.info().unit, ParameterUnit::Pan);
+    }
+
+    #[test]
+    fn test_float_parameter_unit_ratio() {
+        let param = FloatParameter::ratio("Ratio", 4.0, 1.0..=20.0);
+        assert_eq!(param.info().unit, ParameterUnit::Ratio);
+    }
+
+    #[test]
+    fn test_int_parameter_unit_generic() {
+        let param = IntParameter::new("Value", 0, -100..=100);
+        assert_eq!(param.info().unit, ParameterUnit::Generic);
+    }
+
+    #[test]
+    fn test_int_parameter_unit_semitones() {
+        let param = IntParameter::semitones("Transpose", 0, -24..=24);
+        assert_eq!(param.info().unit, ParameterUnit::RelativeSemiTones);
+    }
+
+    #[test]
+    fn test_bool_parameter_unit_boolean() {
+        let param = BoolParameter::new("Enabled", true);
+        assert_eq!(param.info().unit, ParameterUnit::Boolean);
+    }
+
+    #[test]
+    fn test_bool_parameter_bypass_unit_boolean() {
+        let param = BoolParameter::bypass();
+        assert_eq!(param.info().unit, ParameterUnit::Boolean);
+    }
+
+    #[test]
+    fn test_float_parameter_with_unit_override() {
+        let param = FloatParameter::new("Custom", 0.5, 0.0..=1.0)
+            .with_unit(ParameterUnit::Percent);
+        assert_eq!(param.info().unit, ParameterUnit::Percent);
+    }
+
+    #[test]
+    fn test_enum_parameter_unit_indexed() {
+        #[derive(Debug, Clone, Copy, Default, PartialEq)]
+        enum TestEnum {
+            #[default]
+            A,
+            B,
+            C,
+        }
+
+        impl EnumParameterValue for TestEnum {
+            const COUNT: usize = 3;
+            const DEFAULT_INDEX: usize = 0;
+
+            fn from_index(index: usize) -> Option<Self> {
+                match index {
+                    0 => Some(Self::A),
+                    1 => Some(Self::B),
+                    2 => Some(Self::C),
+                    _ => None,
+                }
+            }
+
+            fn to_index(self) -> usize {
+                match self {
+                    Self::A => 0,
+                    Self::B => 1,
+                    Self::C => 2,
+                }
+            }
+
+            fn name(index: usize) -> &'static str {
+                match index {
+                    0 => "A",
+                    1 => "B",
+                    2 => "C",
+                    _ => "",
+                }
+            }
+
+            fn names() -> &'static [&'static str] {
+                &["A", "B", "C"]
+            }
+
+            fn default_value() -> Self {
+                Self::default()
+            }
+        }
+
+        let param = EnumParameter::<TestEnum>::new("Mode");
+        assert_eq!(param.info().unit, ParameterUnit::Indexed);
+    }
+
+    #[test]
+    fn test_parameter_unit_repr_values() {
+        // Verify the repr(u32) values match Apple's AudioUnitParameterUnit enum
+        assert_eq!(ParameterUnit::Generic as u32, 0);
+        assert_eq!(ParameterUnit::Indexed as u32, 1);
+        assert_eq!(ParameterUnit::Boolean as u32, 2);
+        assert_eq!(ParameterUnit::Percent as u32, 3);
+        assert_eq!(ParameterUnit::Seconds as u32, 4);
+        assert_eq!(ParameterUnit::Hertz as u32, 8);
+        assert_eq!(ParameterUnit::RelativeSemiTones as u32, 10);
+        assert_eq!(ParameterUnit::Decibels as u32, 13);
+        assert_eq!(ParameterUnit::Pan as u32, 18);
+        assert_eq!(ParameterUnit::Milliseconds as u32, 24);
+        assert_eq!(ParameterUnit::Ratio as u32, 25);
+        assert_eq!(ParameterUnit::CustomUnit as u32, 26);
     }
 }

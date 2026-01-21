@@ -658,24 +658,51 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
         NSString* identifier = [NSString stringWithFormat:@"param_%u", info.id];
         NSString* name = [NSString stringWithUTF8String:info.name];
-        AudioUnitParameterUnit auUnit = [self auUnitFromUnitsString:info.units];
+        // Use the unit_type directly from Rust instead of inferring from string
+        AudioUnitParameterUnit auUnit = (AudioUnitParameterUnit)info.unit_type;
 
         AudioUnitParameterOptions flags = kAudioUnitParameterFlag_IsReadable;
         if (!(info.flags & BeamerAuParameterFlagReadOnly)) {{
             flags |= kAudioUnitParameterFlag_IsWritable;
         }}
 
+        // Build valueStrings array for indexed parameters (enums)
+        NSArray<NSString*>* valueStrings = nil;
+        uint32_t valueCount = beamer_au_get_parameter_value_count(_rustInstance, info.id);
+        if (valueCount > 0) {{
+            NSMutableArray<NSString*>* strings = [[NSMutableArray alloc] initWithCapacity:valueCount];
+            char stringBuffer[128];
+            for (uint32_t vi = 0; vi < valueCount; vi++) {{
+                if (beamer_au_get_parameter_value_string(_rustInstance, info.id, vi, stringBuffer, sizeof(stringBuffer))) {{
+                    [strings addObject:[NSString stringWithUTF8String:stringBuffer]];
+                }}
+            }}
+            if (strings.count == valueCount) {{
+                valueStrings = strings;
+            }}
+        }}
+
+        // For indexed parameters, use integer range (0 to step_count)
+        float paramMin = 0.0f;
+        float paramMax = 1.0f;
+        float paramDefault = info.default_value;
+
+        if (info.unit_type == kAudioUnitParameterUnit_Indexed) {{
+            paramMax = (float)info.step_count;
+            paramDefault = roundf(info.default_value * info.step_count);
+        }}
+
         AUParameter* param = [AUParameterTree createParameterWithIdentifier:identifier
                                                                        name:name
                                                                     address:(AUParameterAddress)info.id
-                                                                        min:0.0f
-                                                                        max:1.0f
+                                                                        min:paramMin
+                                                                        max:paramMax
                                                                        unit:auUnit
                                                                    unitName:nil
                                                                       flags:flags
-                                                               valueStrings:nil
+                                                               valueStrings:valueStrings
                                                         dependentParameters:nil];
-        param.value = info.default_value;
+        param.value = paramDefault;
 
         [allParams addObject:@{{
             @"param": param,
@@ -775,6 +802,10 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         AUValue result = 0.0f;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
             result = beamer_au_get_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address);
+            // Convert normalized to index for indexed parameters
+            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
+                result = roundf(result * param.maxValue);
+            }}
         }}
         [strongSelf->_instanceLock unlock];
         return result;
@@ -788,7 +819,12 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
         [strongSelf->_instanceLock lock];
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            beamer_au_set_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, value);
+            AUValue normalizedValue = value;
+            // Convert index to normalized for indexed parameters
+            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
+                normalizedValue = value / param.maxValue;
+            }}
+            beamer_au_set_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, normalizedValue);
         }}
         [strongSelf->_instanceLock unlock];
     }};
@@ -804,11 +840,16 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         [strongSelf->_instanceLock lock];
         NSString* result = nil;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
+            // Convert index to normalized for formatting (Rust expects normalized)
+            AUValue formatValue = displayValue;
+            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
+                formatValue = displayValue / param.maxValue;
+            }}
             char buffer[128];
             uint32_t written = beamer_au_format_parameter_value(
                 strongSelf->_rustInstance,
                 (uint32_t)param.address,
-                displayValue,
+                formatValue,
                 buffer,
                 sizeof(buffer)
             );
@@ -833,47 +874,15 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
             float parsedValue = 0.0f;
             if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedValue)) {{
                 result = parsedValue;
+                // Convert normalized to index for indexed parameters
+                if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
+                    result = roundf(parsedValue * param.maxValue);
+                }}
             }}
         }}
         [strongSelf->_instanceLock unlock];
         return result;
     }};
-}}
-
-- (AudioUnitParameterUnit)auUnitFromUnitsString:(const char*)units {{
-    if (units == NULL || units[0] == '\0') {{
-        return kAudioUnitParameterUnit_Generic;
-    }}
-
-    NSString* unitStr = [[NSString stringWithUTF8String:units] lowercaseString];
-
-    if ([unitStr isEqualToString:@"db"] || [unitStr isEqualToString:@"decibels"]) {{
-        return kAudioUnitParameterUnit_Decibels;
-    }} else if ([unitStr isEqualToString:@"hz"] || [unitStr isEqualToString:@"hertz"]) {{
-        return kAudioUnitParameterUnit_Hertz;
-    }} else if ([unitStr isEqualToString:@"ms"] || [unitStr isEqualToString:@"milliseconds"]) {{
-        return kAudioUnitParameterUnit_Milliseconds;
-    }} else if ([unitStr isEqualToString:@"s"] || [unitStr isEqualToString:@"seconds"]) {{
-        return kAudioUnitParameterUnit_Seconds;
-    }} else if ([unitStr isEqualToString:@"%"] || [unitStr isEqualToString:@"percent"]) {{
-        return kAudioUnitParameterUnit_Percent;
-    }} else if ([unitStr isEqualToString:@"pan"]) {{
-        return kAudioUnitParameterUnit_Pan;
-    }} else if ([unitStr isEqualToString:@"ratio"]) {{
-        return kAudioUnitParameterUnit_Ratio;
-    }} else if ([unitStr isEqualToString:@"bpm"]) {{
-        return kAudioUnitParameterUnit_BPM;
-    }} else if ([unitStr isEqualToString:@"semitones"]) {{
-        return kAudioUnitParameterUnit_RelativeSemiTones;
-    }} else if ([unitStr isEqualToString:@"cents"]) {{
-        return kAudioUnitParameterUnit_Cents;
-    }} else if ([unitStr isEqualToString:@"octaves"]) {{
-        return kAudioUnitParameterUnit_Octaves;
-    }} else if ([unitStr isEqualToString:@"degrees"]) {{
-        return kAudioUnitParameterUnit_Degrees;
-    }}
-
-    return kAudioUnitParameterUnit_Generic;
 }}
 
 // -----------------------------------------------------------------------------

@@ -86,7 +86,7 @@ pub use midi::{
 pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
-pub use parameter_info::{ParameterFlags, ParameterInfo};
+pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 pub use parameter_store::{NoParameters, ParameterStore};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};

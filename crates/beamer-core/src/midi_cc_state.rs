@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 use crate::parameter_groups::{GroupInfo, ParameterGroups, ROOT_GROUP_ID};
-use crate::parameter_info::{ParameterFlags, ParameterInfo};
+use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_store::ParameterStore;
 use crate::types::{ParameterId, ParameterValue};
 
@@ -249,6 +249,7 @@ impl MidiCcState {
             name,
             short_name,
             units: "",
+            unit: ParameterUnit::Generic,
             default_normalized: default,
             step_count: 0,
             flags: ParameterFlags {
