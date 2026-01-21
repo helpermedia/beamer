@@ -323,6 +323,60 @@ EnumParameter constructors:
 | `EnumParameter::new(name)` | Uses `#[default]` variant or first |
 | `EnumParameter::with_value(name, variant)` | Explicit default override |
 
+#### Builder Methods
+
+All parameter types support builder methods for customization. Chain these after constructors:
+
+**FloatParameter Builder Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `.with_id(id)` | Set parameter ID (usually via macro) |
+| `.with_short_name(name)` | Short name for constrained UIs |
+| `.with_group(group_id)` | Assign to parameter group |
+| `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments) |
+| `.with_precision(n)` | Display precision (decimal places) |
+| `.with_formatter(fmt)` | Replace formatter entirely |
+| `.with_smoother(style)` | Add parameter smoothing |
+| `.readonly()` | Make parameter read-only |
+| `.non_automatable()` | Disable automation |
+
+**IntParameter Builder Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `.with_id(id)` | Set parameter ID (usually via macro) |
+| `.with_short_name(name)` | Short name for constrained UIs |
+| `.with_group(group_id)` | Assign to parameter group |
+| `.with_precision(n)` | Display precision (for Float formatter) |
+| `.with_formatter(fmt)` | Replace formatter entirely |
+| `.readonly()` | Make parameter read-only |
+| `.non_automatable()` | Disable automation |
+
+**Precision and Formatter Customization:**
+
+```rust
+// High-precision gain for mastering plugins
+let gain = FloatParameter::db("Output", 0.0, -12.0..=12.0)
+    .with_precision(2);  // Shows "-0.50 dB" instead of "-0.5 dB"
+
+// Milliseconds with integer display
+let attack = FloatParameter::ms("Attack", 10.0, 0.1..=100.0)
+    .with_precision(0);  // Shows "10" instead of "10.0"
+
+// Completely custom formatter
+let ratio = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
+    .with_formatter(Formatter::Ratio { precision: 1 });  // Shows "4.0:1"
+
+// Chain multiple builder methods
+let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
+    .with_step_size(0.5)
+    .with_precision(2)
+    .with_smoother(SmoothingStyle::Exponential(5.0));
+```
+
+**Note:** Formatters without precision fields (`Pan`, `Boolean`, `Semitones`, `Frequency`) ignore `.with_precision()` calls.
+
 #### Parameter Smoothing
 
 Avoid zipper noise during automation by adding smoothing to parameters:

@@ -381,3 +381,216 @@ impl Default for Formatter {
         Formatter::Float { precision: 2 }
     }
 }
+
+impl Formatter {
+    /// Return a new `Formatter` with updated precision.
+    ///
+    /// For formatter variants that have a `precision` field, this returns
+    /// a new formatter with the updated precision. For variants without
+    /// precision (e.g., `Pan`, `Boolean`, `Semitones`, `Frequency`), this
+    /// returns `self` unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let formatter = Formatter::DecibelDirect { precision: 1, min_db: -60.0 };
+    /// let high_precision = formatter.with_precision(3);
+    /// // high_precision is DecibelDirect { precision: 3, min_db: -60.0 }
+    ///
+    /// let pan = Formatter::Pan;
+    /// let same_pan = pan.with_precision(2);
+    /// // same_pan is still Pan (no precision field)
+    /// ```
+    pub fn with_precision(self, precision: usize) -> Self {
+        match self {
+            Formatter::Float { .. } => Formatter::Float { precision },
+            Formatter::Decibel { .. } => Formatter::Decibel { precision },
+            Formatter::DecibelDirect { min_db, .. } => {
+                Formatter::DecibelDirect { precision, min_db }
+            }
+            Formatter::Milliseconds { .. } => Formatter::Milliseconds { precision },
+            Formatter::Seconds { .. } => Formatter::Seconds { precision },
+            Formatter::Percent { .. } => Formatter::Percent { precision },
+            Formatter::Ratio { .. } => Formatter::Ratio { precision },
+            // Variants without precision return self unchanged
+            Formatter::Frequency
+            | Formatter::Pan
+            | Formatter::Semitones
+            | Formatter::Boolean => self,
+        }
+    }
+
+    /// Check if this formatter variant supports precision customization.
+    ///
+    /// Returns `true` for variants with a `precision` field, `false` otherwise.
+    pub fn supports_precision(&self) -> bool {
+        matches!(
+            self,
+            Formatter::Float { .. }
+                | Formatter::Decibel { .. }
+                | Formatter::DecibelDirect { .. }
+                | Formatter::Milliseconds { .. }
+                | Formatter::Seconds { .. }
+                | Formatter::Percent { .. }
+                | Formatter::Ratio { .. }
+        )
+    }
+
+    /// Get the current precision, if applicable.
+    ///
+    /// Returns `Some(precision)` for variants with a `precision` field,
+    /// `None` otherwise.
+    pub fn precision(&self) -> Option<usize> {
+        match self {
+            Formatter::Float { precision }
+            | Formatter::Decibel { precision }
+            | Formatter::DecibelDirect { precision, .. }
+            | Formatter::Milliseconds { precision }
+            | Formatter::Seconds { precision }
+            | Formatter::Percent { precision }
+            | Formatter::Ratio { precision } => Some(*precision),
+            Formatter::Frequency | Formatter::Pan | Formatter::Semitones | Formatter::Boolean => {
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_precision_float() {
+        let formatter = Formatter::Float { precision: 2 };
+        let updated = formatter.with_precision(4);
+        assert_eq!(updated.precision(), Some(4));
+        assert_eq!(updated.text(1.2345), "1.2345");
+    }
+
+    #[test]
+    fn test_with_precision_decibel() {
+        let formatter = Formatter::Decibel { precision: 1 };
+        let updated = formatter.with_precision(2);
+        assert_eq!(updated.precision(), Some(2));
+        assert_eq!(updated.text(1.0), "+0.00"); // 0 dB
+    }
+
+    #[test]
+    fn test_with_precision_decibel_direct() {
+        let formatter = Formatter::DecibelDirect {
+            precision: 1,
+            min_db: -60.0,
+        };
+        let updated = formatter.with_precision(3);
+        assert_eq!(updated.precision(), Some(3));
+        // Verify min_db is preserved
+        if let Formatter::DecibelDirect { min_db, precision } = updated {
+            assert_eq!(min_db, -60.0);
+            assert_eq!(precision, 3);
+        } else {
+            panic!("Expected DecibelDirect variant");
+        }
+        assert_eq!(updated.text(-6.5), "-6.500");
+    }
+
+    #[test]
+    fn test_with_precision_milliseconds() {
+        let formatter = Formatter::Milliseconds { precision: 1 };
+        let updated = formatter.with_precision(0);
+        assert_eq!(updated.precision(), Some(0));
+        assert_eq!(updated.text(10.5), "10"); // Rounded to 0 decimal places
+    }
+
+    #[test]
+    fn test_with_precision_seconds() {
+        let formatter = Formatter::Seconds { precision: 2 };
+        let updated = formatter.with_precision(3);
+        assert_eq!(updated.precision(), Some(3));
+        assert_eq!(updated.text(1.5), "1.500");
+    }
+
+    #[test]
+    fn test_with_precision_percent() {
+        let formatter = Formatter::Percent { precision: 0 };
+        let updated = formatter.with_precision(1);
+        assert_eq!(updated.precision(), Some(1));
+        assert_eq!(updated.text(0.755), "75.5"); // 0.755 * 100 = 75.5
+    }
+
+    #[test]
+    fn test_with_precision_ratio() {
+        let formatter = Formatter::Ratio { precision: 1 };
+        let updated = formatter.with_precision(2);
+        assert_eq!(updated.precision(), Some(2));
+        assert_eq!(updated.text(4.0), "4.00:1");
+    }
+
+    #[test]
+    fn test_with_precision_no_effect_on_frequency() {
+        let formatter = Formatter::Frequency;
+        let updated = formatter.with_precision(5);
+        assert_eq!(updated, Formatter::Frequency);
+        assert_eq!(updated.precision(), None);
+    }
+
+    #[test]
+    fn test_with_precision_no_effect_on_pan() {
+        let formatter = Formatter::Pan;
+        let updated = formatter.with_precision(3);
+        assert_eq!(updated, Formatter::Pan);
+        assert_eq!(updated.precision(), None);
+    }
+
+    #[test]
+    fn test_with_precision_no_effect_on_semitones() {
+        let formatter = Formatter::Semitones;
+        let updated = formatter.with_precision(2);
+        assert_eq!(updated, Formatter::Semitones);
+        assert_eq!(updated.precision(), None);
+    }
+
+    #[test]
+    fn test_with_precision_no_effect_on_boolean() {
+        let formatter = Formatter::Boolean;
+        let updated = formatter.with_precision(1);
+        assert_eq!(updated, Formatter::Boolean);
+        assert_eq!(updated.precision(), None);
+    }
+
+    #[test]
+    fn test_supports_precision() {
+        assert!(Formatter::Float { precision: 2 }.supports_precision());
+        assert!(Formatter::Decibel { precision: 1 }.supports_precision());
+        assert!(Formatter::DecibelDirect {
+            precision: 1,
+            min_db: -60.0
+        }
+        .supports_precision());
+        assert!(Formatter::Milliseconds { precision: 1 }.supports_precision());
+        assert!(Formatter::Seconds { precision: 2 }.supports_precision());
+        assert!(Formatter::Percent { precision: 0 }.supports_precision());
+        assert!(Formatter::Ratio { precision: 1 }.supports_precision());
+
+        assert!(!Formatter::Frequency.supports_precision());
+        assert!(!Formatter::Pan.supports_precision());
+        assert!(!Formatter::Semitones.supports_precision());
+        assert!(!Formatter::Boolean.supports_precision());
+    }
+
+    #[test]
+    fn test_precision_getter() {
+        assert_eq!(Formatter::Float { precision: 3 }.precision(), Some(3));
+        assert_eq!(Formatter::Decibel { precision: 2 }.precision(), Some(2));
+        assert_eq!(
+            Formatter::DecibelDirect {
+                precision: 1,
+                min_db: -60.0
+            }
+            .precision(),
+            Some(1)
+        );
+        assert_eq!(Formatter::Frequency.precision(), None);
+        assert_eq!(Formatter::Pan.precision(), None);
+    }
+}

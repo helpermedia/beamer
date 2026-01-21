@@ -923,6 +923,60 @@ impl FloatParameter {
         self.info.step_count
     }
 
+    /// Set the display precision for this parameter.
+    ///
+    /// This updates the precision of the current formatter. For formatters that
+    /// don't support precision (e.g., `Pan`, `Boolean`), this has no effect.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // High-precision gain for mastering plugins
+    /// let gain = FloatParameter::db("Output", 0.0, -12.0..=12.0)
+    ///     .with_precision(2);  // Shows "-0.50 dB" instead of "-0.5 dB"
+    ///
+    /// // Frequency with custom precision
+    /// let freq = FloatParameter::hz("Cutoff", 1000.0, 20.0..=20000.0)
+    ///     .with_precision(0);  // Note: Frequency formatter uses auto-scaling
+    /// ```
+    pub fn with_precision(mut self, precision: usize) -> Self {
+        self.formatter = self.formatter.with_precision(precision);
+        self
+    }
+
+    /// Replace the formatter for this parameter.
+    ///
+    /// This allows complete customization of how the parameter value is displayed
+    /// and parsed. The unit string is automatically updated to match the new
+    /// formatter.
+    ///
+    /// **Note:** For dB parameters created with [`db()`](Self::db), changing the
+    /// formatter does not change the underlying value storage or the behavior of
+    /// [`as_linear()`](Self::as_linear). The `is_db` flag remains set based on
+    /// how the parameter was constructed.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Use a ratio formatter for a parameter
+    /// let ratio = FloatParameter::new("Ratio", 4.0, 1.0..=20.0, LinearMapper::new(1.0..=20.0))
+    ///     .with_formatter(Formatter::Ratio { precision: 1 });  // Shows "4.0:1"
+    ///
+    /// // Override precision and use a different dB formatter
+    /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
+    ///     .with_formatter(Formatter::DecibelDirect { precision: 2, min_db: -60.0 });
+    /// ```
+    pub fn with_formatter(mut self, formatter: Formatter) -> Self {
+        self.info.units = formatter.unit();
+        self.formatter = formatter;
+        self
+    }
+
+    /// Get the current formatter.
+    pub fn formatter(&self) -> &Formatter {
+        &self.formatter
+    }
+
     /// Get the parameter metadata.
     pub fn info(&self) -> &ParameterInfo {
         &self.info
@@ -1341,6 +1395,49 @@ impl IntParameter {
     /// Used for runtime modification of parameter properties like group_id.
     pub fn info_mut(&mut self) -> &mut ParameterInfo {
         &mut self.info
+    }
+
+    /// Set the display precision for this parameter.
+    ///
+    /// This updates the precision of the current formatter. For formatters that
+    /// don't support precision (e.g., `Semitones`), this has no effect.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // IntParameter uses Float { precision: 0 } by default.
+    /// // Use with_formatter() to change to a formatter that supports precision,
+    /// // then with_precision() to adjust it:
+    /// let value = IntParameter::new("Value", 50, 0..=100)
+    ///     .with_formatter(Formatter::Percent { precision: 1 })
+    ///     .with_precision(0);  // Shows "50%" instead of "50.0%"
+    /// ```
+    pub fn with_precision(mut self, precision: usize) -> Self {
+        self.formatter = self.formatter.with_precision(precision);
+        self
+    }
+
+    /// Replace the formatter for this parameter.
+    ///
+    /// This allows complete customization of how the parameter value is displayed
+    /// and parsed. The unit string is automatically updated to match the new
+    /// formatter.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let transpose = IntParameter::new("Transpose", 0, -24..=24)
+    ///     .with_formatter(Formatter::Semitones);  // Shows "+12", "-7", "0"
+    /// ```
+    pub fn with_formatter(mut self, formatter: Formatter) -> Self {
+        self.info.units = formatter.unit();
+        self.formatter = formatter;
+        self
+    }
+
+    /// Get the current formatter.
+    pub fn formatter(&self) -> &Formatter {
+        &self.formatter
     }
 
     // === Value access ===
@@ -2213,5 +2310,153 @@ mod tests {
         // Clamping
         assert!((snap_to_step(-1.0, 0.5, 0.0, 10.0) - 0.0).abs() < 1e-10);
         assert!((snap_to_step(11.0, 0.5, 0.0, 10.0) - 10.0).abs() < 1e-10);
+    }
+
+    // =========================================================================
+    // FloatParameter precision and formatter tests
+    // =========================================================================
+
+    #[test]
+    fn test_float_parameter_with_precision_db() {
+        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_precision(2);
+
+        // Check precision was updated
+        assert_eq!(param.formatter().precision(), Some(2));
+
+        // Check display uses new precision
+        param.set(-6.5);
+        let display = param.display();
+        assert_eq!(display, "-6.50");
+    }
+
+    #[test]
+    fn test_float_parameter_with_precision_ms() {
+        let param = FloatParameter::ms("Attack", 10.0, 0.1..=100.0).with_precision(0);
+
+        assert_eq!(param.formatter().precision(), Some(0));
+
+        param.set(10.5);
+        let display = param.display();
+        assert_eq!(display, "10"); // Rounded to 0 decimal places
+    }
+
+    #[test]
+    fn test_float_parameter_with_precision_percent() {
+        let param = FloatParameter::percent("Mix", 0.5).with_precision(1);
+
+        assert_eq!(param.formatter().precision(), Some(1));
+
+        param.set(0.755);
+        let display = param.display();
+        assert_eq!(display, "75.5");
+    }
+
+    #[test]
+    fn test_float_parameter_with_precision_pan_no_effect() {
+        let param = FloatParameter::pan("Pan", 0.0).with_precision(3);
+
+        // Pan formatter doesn't support precision, should remain unchanged
+        assert_eq!(param.formatter().precision(), None);
+        assert!(!param.formatter().supports_precision());
+    }
+
+    #[test]
+    fn test_float_parameter_with_formatter_replace() {
+        let param = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
+            .with_formatter(Formatter::Ratio { precision: 1 });
+
+        assert_eq!(param.info().units, ""); // Ratio uses empty unit (suffix is ":1")
+        assert_eq!(param.formatter().precision(), Some(1));
+
+        param.set(4.0);
+        let display = param.display();
+        assert_eq!(display, "4.0:1");
+    }
+
+    #[test]
+    fn test_float_parameter_with_formatter_updates_units() {
+        // Start with a generic float parameter (no units)
+        let param =
+            FloatParameter::new("Time", 100.0, 1.0..=1000.0).with_formatter(Formatter::Milliseconds {
+                precision: 1,
+            });
+
+        // Units should be updated to match the new formatter
+        assert_eq!(param.info().units, "ms");
+    }
+
+    #[test]
+    fn test_float_parameter_with_formatter_preserves_is_db() {
+        // Create a dB parameter, then change formatter
+        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
+            .with_formatter(Formatter::Float { precision: 2 });
+
+        // Even though we changed the formatter, as_linear() should still work
+        // because is_db is based on how the parameter was constructed
+        param.set(0.0);
+        assert!((param.as_linear() - 1.0).abs() < 0.001); // 0 dB = 1.0 linear
+    }
+
+    #[test]
+    fn test_float_parameter_formatter_getter() {
+        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
+
+        // Check we can access the formatter
+        let formatter = param.formatter();
+        assert!(formatter.supports_precision());
+        assert_eq!(formatter.unit(), "dB");
+    }
+
+    #[test]
+    fn test_float_parameter_chained_precision_and_step_size() {
+        let param = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
+            .with_step_size(0.5)
+            .with_precision(2);
+
+        // Both should work together
+        assert_eq!(param.step_count(), 144); // (12 - (-60)) / 0.5 = 144
+        assert_eq!(param.formatter().precision(), Some(2));
+
+        param.set(-5.3);
+        assert!((param.get() - -5.5).abs() < 1e-10); // Snapped
+        let display = param.display();
+        assert_eq!(display, "-5.50"); // High precision
+    }
+
+    // =========================================================================
+    // IntParameter precision and formatter tests
+    // =========================================================================
+
+    #[test]
+    fn test_int_parameter_with_precision() {
+        // IntParameter uses Float { precision: 0 } by default
+        let param = IntParameter::new("Value", 0, -100..=100).with_precision(0);
+
+        assert_eq!(param.formatter().precision(), Some(0));
+    }
+
+    #[test]
+    fn test_int_parameter_with_formatter() {
+        let param =
+            IntParameter::new("Transpose", 0, -24..=24).with_formatter(Formatter::Semitones);
+
+        assert_eq!(param.info().units, "st");
+
+        param.set(12);
+        let display = param.display_normalized(param.get_normalized());
+        assert_eq!(display, "+12");
+
+        param.set(-7);
+        let display = param.display_normalized(param.get_normalized());
+        assert_eq!(display, "-7");
+    }
+
+    #[test]
+    fn test_int_parameter_formatter_getter() {
+        let param = IntParameter::semitones("Pitch", 0, -24..=24);
+
+        let formatter = param.formatter();
+        assert_eq!(formatter.unit(), "st");
+        assert!(!formatter.supports_precision()); // Semitones doesn't have precision
     }
 }
