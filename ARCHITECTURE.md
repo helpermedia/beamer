@@ -24,7 +24,7 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 ### Goals
 
 - VST3 plugin support (VST3 3.8, MIT licensed) ✅
-- Audio Unit support (macOS, v3) ✅
+- Audio Unit support (macOS, AUv2 and AUv3) ✅
 - WebView GUI using OS-native engines
 - Cross-platform: Windows, macOS, Linux
 - Tauri-inspired IPC (invoke/emit pattern)
@@ -74,21 +74,21 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 
 ### Audio Unit Architecture (Hybrid ObjC/Rust)
 
-The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runtime compatibility, with all DSP in Rust via C-ABI bridge.
+The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runtime compatibility, with all DSP in Rust via C-ABI bridge. Both AUv2 (`.component`) and AUv3 (`.appex`) formats are supported through the same C-ABI bridge layer.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    DAW Host (macOS)                             │
 ├─────────────────────────────────────────────────────────────────┤
-│                  Audio Unit Interface (v3)                      │
-│         (AUAudioUnit, AUParameterTree, Render Block)            │
-├────────────────────────────────┬────────────────────────────────┤
+│     AUv2 API (.component)       │      AUv3 API (.appex)        │
+│     AudioComponentPlugInInterface│      AUAudioUnit subclass     │
+├────────────────────────────────┬┴───────────────────────────────┤
 │                                │                                │
 │    Audio Thread                │         Main Thread            │
 │    ┌──────────────┐            │         ┌──────────────────┐   │
-│    │              │            │         │  BeamerAuWrapper │   │
-│    │ Render Block │◄───────────┼────────►│  (Native ObjC)   │   │
-│    │  (ObjC block)│   C-ABI    │         │                  │   │
+│    │              │            │         │  Native ObjC     │   │
+│    │ Render Call  │◄───────────┼────────►│  Wrapper Layer   │   │
+│    │  (AUv2/v3)   │   C-ABI    │         │                  │   │
 │    │              │   calls    │         └────────┬─────────┘   │
 │    └──────┬───────┘            │                  │             │
 │           │                    │                  │ NSView      │
@@ -168,7 +168,7 @@ beamer/
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`HasParameters`, `Plugin`, `AudioProcessor`), buffer types, MIDI types, shared `PluginConfig` |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
-| `beamer-au` | Audio Unit (v3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
+| `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
 | `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
@@ -404,17 +404,20 @@ Use `xtask` to build both formats:
 # VST3 only (native architecture)
 cargo xtask bundle my-plugin --vst3 --release
 
-# AU only (macOS, native architecture)
-cargo xtask bundle my-plugin --au --release
+# AUv2 only (macOS, native architecture)
+cargo xtask bundle my-plugin --auv2 --release
 
-# Both formats (macOS)
-cargo xtask bundle my-plugin --vst3 --au --release
+# AUv3 only (macOS, native architecture)
+cargo xtask bundle my-plugin --auv3 --release
+
+# All formats (macOS)
+cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --release
 
 # Install to system plugin directories
-cargo xtask bundle my-plugin --vst3 --au --release --install
+cargo xtask bundle my-plugin --vst3 --auv2 --release --install
 
 # Universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --vst3 --au --arch universal --release
+cargo xtask bundle my-plugin --vst3 --auv2 --arch universal --release
 ```
 
 **Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
@@ -452,8 +455,9 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 ### Audio Unit Implementation
 
 **Architecture**: Hybrid Objective-C/Rust
-- `BeamerAuWrapper` native ObjC class (subclass of `AUAudioUnit`)
-- C-ABI bridge layer (`BeamerAuBridge.h` ↔ `bridge.rs`) with ~30 functions
+- AUv2: `AudioComponentPlugInInterface` with selector-based dispatch
+- AUv3: `BeamerAuWrapper` native ObjC class (subclass of `AUAudioUnit`)
+- Shared C-ABI bridge layer (`BeamerAuBridge.h` ↔ `bridge.rs`) with 40+ functions
 - Uses type erasure (`AuPluginInstance` trait) for generic plugin support
 - Render blocks call into Rust via `beamer_au_render()`
 - Full feature parity with VST3 wrapper
@@ -514,7 +518,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **f64 Conversion** | Pre-allocated | Pre-allocated |
 | **State Format** | Binary blob | NSDictionary |
 | **Processor State** | ✓ | ✓ |
-| **Bundle Type** | `.vst3` | `.component` |
+| **Bundle Type** | `.vst3` | `.component` (AUv2) / `.appex` (AUv3) |
 | **Registration** | `GetPluginFactory()` | ObjC factory + module init |
 | **Feature Parity** | Reference | ✓ Full parity |
 

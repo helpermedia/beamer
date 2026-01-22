@@ -1784,9 +1784,30 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
 
         match config.component_type {
             ComponentType::Effect | ComponentType::MidiProcessor => {
-                // Effects and MIDI processors require matching input/output channel counts
-                // This implements the [-1, -1] channel capability behavior
-                main_input_channels == main_output_channels
+                // Effects and MIDI processors: validate against declared MAIN bus channels.
+                // For plugins with sidechain, we only check the main bus (bus 0).
+                let (declared_input, declared_output) = if instance.is_null() {
+                    (2, 2) // Default to stereo
+                } else {
+                    let handle = unsafe { &*instance };
+                    match lock_plugin(handle) {
+                        Ok(plugin) => {
+                            let input = plugin
+                                .declared_input_bus_info(0)
+                                .map(|info| info.channel_count)
+                                .unwrap_or(2);
+                            let output = plugin
+                                .declared_output_bus_info(0)
+                                .map(|info| info.channel_count)
+                                .unwrap_or(2);
+                            (input, output)
+                        }
+                        Err(_) => (2, 2), // Lock failed, fall back to stereo
+                    }
+                };
+
+                // Validate channels match the declared configuration
+                main_input_channels == declared_input && main_output_channels == declared_output
             }
             ComponentType::MusicDevice => {
                 // Instruments: must have 0 input channels
@@ -1864,12 +1885,36 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
 
         match config.component_type {
             ComponentType::Effect | ComponentType::MidiProcessor => {
-                // Effects and MIDI processors support "any matching" configuration
-                // This is the [-1, -1] capability in AU speak
+                // Query the declared MAIN bus channel counts from the plugin.
+                // For plugins with sidechain (multiple input buses), we only report
+                // the main bus capability. Sidechain channels are handled separately.
+                //
+                // If no instance available, fall back to stereo.
+                let (input_ch, output_ch) = if instance.is_null() {
+                    (2, 2) // Default to stereo
+                } else {
+                    let handle = unsafe { &*instance };
+                    match lock_plugin(handle) {
+                        Ok(plugin) => {
+                            let input = plugin
+                                .declared_input_bus_info(0)
+                                .map(|info| info.channel_count as i32)
+                                .unwrap_or(2);
+                            let output = plugin
+                                .declared_output_bus_info(0)
+                                .map(|info| info.channel_count as i32)
+                                .unwrap_or(2);
+                            (input, output)
+                        }
+                        Err(_) => (2, 2), // Lock failed, fall back to stereo
+                    }
+                };
+
+                // Report explicit channel configuration for the main bus
                 capabilities.count = 1;
                 capabilities.capabilities[0] = BeamerAuChannelCapability {
-                    input_channels: -1,
-                    output_channels: -1,
+                    input_channels: input_ch,
+                    output_channels: output_ch,
                 };
             }
             ComponentType::MusicDevice => {

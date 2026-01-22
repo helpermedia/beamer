@@ -1,12 +1,13 @@
 # beamer-au
 
-Audio Unit implementation layer for the Beamer framework (macOS only).
+Audio Unit implementation for the Beamer framework (macOS only).
 
-This crate uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles for simple distribution, with a modern v3 `AUAudioUnit` implementation internally. A native Objective-C `AUAudioUnit` subclass handles Apple runtime compatibility, while all DSP and plugin logic remains in Rust via a C-ABI bridge.
+This crate provides **both AUv2 and AUv3** implementations that share a common C-ABI bridge to Rust. A native Objective-C layer handles Apple runtime compatibility, while all DSP and plugin logic remains in Rust.
 
-- **Hybrid architecture**: Native ObjC `AUAudioUnit` subclass + Rust DSP via C-ABI bridge
+- **Dual format support**: Full AUv2 and AUv3 implementations
+- **Shared bridge**: Both formats use the same 40+ C-ABI bridge functions
 - **Full AU lifecycle**: allocate/deallocate render resources, parameter tree, state persistence
-- **Parameter automation**: Complete `AUParameterTree` integration with KVO callbacks
+- **Parameter automation**: Complete parameter integration with host callbacks
 - **MIDI support**: MIDI 1.0 and MIDI 2.0 UMP event processing
 - **Real-time safe**: Zero-allocation render path with config-based pre-allocation
 - **Auxiliary buses**: Sidechain and multi-bus support with pull-based input
@@ -34,14 +35,16 @@ Audio Unit plugins share the same `Plugin` and `AudioProcessor` traits as VST3, 
 
 ### Production Ready
 
-- ✅ Audio effects (all bus configurations)
-- ✅ Instruments/generators (MIDI input)
-- ✅ MIDI effects
-- ✅ Sidechain/auxiliary buses
-- ✅ Parameter automation (full KVO integration)
-- ✅ State persistence (cross-compatible with VST3)
-- ✅ f32 and f64 processing
-- ✅ Transport information (tempo, beat, playback state)
+- AUv2 `.component` bundles (auval validated)
+- AUv3 via App Extension (`.appex`)
+- Audio effects (all bus configurations)
+- Instruments/generators (MIDI input)
+- MIDI effects
+- Sidechain/auxiliary buses
+- Parameter automation
+- State persistence (cross-compatible with VST3)
+- f32 and f64 processing
+- Transport information (tempo, beat, playback state)
 
 ### Limitations
 
@@ -49,63 +52,59 @@ Audio Unit plugins share the same `Plugin` and `AudioProcessor` traits as VST3, 
 
 ## Architecture
 
-Beamer AU uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles with a modern v3 `AUAudioUnit` implementation internally.
+Beamer AU provides dual-format support through a shared C-ABI bridge layer:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  AUv2 .component bundle                                         │
-│  - Simple distribution (no app extension required)              │
-│  - Works with ad-hoc code signing                               │
-│  - Compatible with all AU hosts                                 │
+│                        Host Application                          │
+│                    (Logic, GarageBand, etc.)                     │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+           │                                    │
+           │ AUv2 API                           │ AUv3 API
+           ▼                                    ▼
+┌─────────────────────────────┐   ┌─────────────────────────────┐
+│  AUv2 .component bundle     │   │  AUv3 .appex bundle         │
+│  ─────────────────────────  │   │  ─────────────────────────  │
+│  Factory → Interface        │   │  AUAudioUnit subclass       │
+│  Open/Close/Lookup          │   │  - parameterTree            │
+│  Initialize/Render          │   │  - internalRenderBlock      │
+│  Get/SetProperty            │   │  - inputBusses/outputBusses │
+│  Get/SetParameter           │   │                             │
+└─────────────────────────────┘   └─────────────────────────────┘
+           │                                    │
+           └──────────────┬─────────────────────┘
+                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  BeamerAudioUnitFactory (minimal v2 shim)                       │
-│  - Lookup() returns NULL to defer to v3 API                     │
-│  - dispatch_once subclass registration                          │
+│                    C-ABI Bridge Layer                            │
+│  ─────────────────────────────────────────────────────────────  │
+│  beamer_au_create_instance()    beamer_au_render()              │
+│  beamer_au_allocate_render_resources()                          │
+│  beamer_au_get/set_parameter_value()                            │
+│  beamer_au_get/set_state()                                      │
+│  ... 40+ bridge functions                                       │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+                          │
+                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  BeamerAuWrapper : AUAudioUnit (full v3 implementation)         │
-│  - internalRenderBlock for audio processing                     │
-│  - parameterTree with KVO callbacks                             │
-│  - inputBusses/outputBusses for I/O                             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Rust Plugin (via C-ABI bridge)                                 │
+│                    Rust Plugin Implementation                    │
+│  ─────────────────────────────────────────────────────────────  │
+│  Plugin trait + AudioProcessor trait                            │
+│  Same code as VST3                                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Why this approach?**
+### AUv2 vs AUv3
 
-- **Simple distribution**: `.component` bundles just copy to `/Library/Audio/Plug-Ins/Components/`
-- **No special signing**: Works without Apple Developer Program membership
-- **Modern API**: Uses v3 `AUAudioUnit` for parameters, buses, rendering—not legacy v2 callbacks
-- **Wide compatibility**: Loads in all DAWs that support Audio Units
+| Format | Bundle | Build command |
+|--------|--------|---------------|
+| AUv2 | `.component` | `--auv2` |
+| AUv3 | `.appex` in `.app` | `--auv3` |
 
-The AUv2 factory is intentionally minimal—it exists only to bootstrap the v3 `AUAudioUnit` subclass. All actual audio processing uses the modern v3 API.
+Both formats are fully supported. AUv3 is required for iOS/iPadOS.
 
-For Mac App Store distribution, AUv3 App Extensions (`.appex` bundles) would be required, which need proper Apple Developer signing and a container app
+### Why Objective-C?
 
-## Documentation
-
-See the [main repository](https://github.com/helpermedia/beamer) for:
-- [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
-- [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
-- [Audio Unit Integration Details](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#4-audio-unit-integration)
-
-### Implementation Notes
-
-For contributors working on the AU implementation:
-- [Buffer Storage Optimization](https://github.com/helpermedia/beamer/blob/main/crates/beamer-au/BUFFER_STORAGE_OPTIMIZATION.md) - Memory optimization strategy
-- [Hybrid AU Implementation Plan](https://github.com/helpermedia/beamer/blob/main/docs/HYBRID_AU_IMPLEMENTATION_PLAN.md) - Why hybrid ObjC/Rust was needed
-- [AU Crash Analysis](https://github.com/helpermedia/beamer/blob/main/docs/AU_CRASH_ANALYSIS.md) - Investigation of objc2 incompatibility
-
-**Why hybrid?** Apple's `AUAudioUnit` requires specific Objective-C runtime metadata that Rust's `objc2` crate cannot generate correctly. Even a minimal subclass with no method overrides crashes. The hybrid approach uses native ObjC for the AU wrapper while keeping all DSP in Rust.
+Apple's Audio Unit APIs require specific Objective-C runtime metadata that Rust cannot generate correctly. Even using Rust's `objc2` crate, minimal AUAudioUnit subclasses crash due to missing runtime structures. The hybrid approach uses native Objective-C for the AU wrapper while keeping all DSP in Rust via the C-ABI bridge.
 
 ## Example
 
@@ -132,12 +131,24 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 ## Building
 
 ```bash
-# Build AU bundle (creates .component)
-cargo xtask bundle my-plugin --au --release
+# Build AUv2 bundle (creates .component, recommended)
+cargo xtask bundle my-plugin --auv2 --release
+
+# Build AUv3 bundle (creates .appex)
+cargo xtask bundle my-plugin --auv3 --release
 
 # Build and install to system location
-cargo xtask bundle my-plugin --au --release --install
+cargo xtask bundle my-plugin --auv2 --release --install
+
+# Validate with Apple's auval tool
+auval -v aufx mypg Myco
 ```
+
+## Documentation
+
+See the [main repository](https://github.com/helpermedia/beamer) for:
+- [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
+- [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
 
 ## License
 

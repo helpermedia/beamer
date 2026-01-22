@@ -1449,7 +1449,7 @@ PluginConfig::new("My Synth", UID).with_category("Instrument")
 
 ## 4. Audio Unit Integration
 
-Beamer supports Audio Unit v3 plugins on macOS through the `beamer-au` crate. Audio Units share the same core traits (`Plugin`, `AudioProcessor`, `Parameters`) as VST3, allowing you to target both formats from a single codebase.
+Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Plugin`, `AudioProcessor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
 
 ### 4.1 Architecture Overview
 
@@ -1504,8 +1504,8 @@ crates/beamer-au/
 **Why two files vs VST3's single `processor.rs`?** Unlike VST3 (which implements a single COM interface in Rust), AU's render callback crosses an FFI boundary from Objective-C. `processor.rs` handles plugin lifecycle on the main thread, while `render.rs` contains the `RenderBlock` for real-time audio processing on the audio thread. This separation reflects the different threading contexts and the ObjC/Rust boundary.
 
 **Key Features (Full VST3 Parity):**
-- Native AUv3 support (macOS 10.11+)
-- Full parameter automation via `AUParameterTree`
+- Both AUv2 and AUv3 formats supported (macOS 10.11+)
+- Full parameter automation via `AUParameterTree` (AUv3) and properties (AUv2)
 - Parameter automation with smoother interpolation (buffer-quantized, matches VST3)
 - MIDI input (legacy MIDI 1.0 and MIDI 2.0 UMP, 1024 event buffer)
 - MIDI output via `scheduleMIDIEventBlock` (instruments/MIDI effects only)
@@ -1608,7 +1608,7 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 
 ### 4.4 Bundle Structure
 
-Audio Unit plugins are `.component` bundles (AUv2 packaging with v3 internals):
+#### AUv2 Bundle (`.component`)
 
 ```
 MyPlugin.component/
@@ -1619,6 +1619,26 @@ MyPlugin.component/
 │   ├── PkgInfo
 │   └── Resources/
 │       └── (assets, if any)
+```
+
+#### AUv3 Bundle (`.appex` in `.app`)
+
+AUv3 plugins are App Extensions that must be embedded in a host application:
+
+```
+MyPlugin.app/
+├── Contents/
+│   ├── Info.plist
+│   ├── MacOS/
+│   │   └── MyPlugin            # Minimal host app
+│   └── PlugIns/
+│       └── MyPlugin.appex/
+│           ├── Contents/
+│           │   ├── Info.plist  # Extension metadata
+│           │   ├── MacOS/
+│           │   │   └── MyPlugin  # Rust binary
+│           │   └── Resources/
+│           └── ...
 ```
 
 **Info.plist AudioComponents:**
@@ -1656,17 +1676,20 @@ MyPlugin.component/
 Use `cargo xtask` to build and bundle Audio Unit plugins:
 
 ```bash
-# Build AU bundle (native architecture, fastest for development)
-cargo xtask bundle my-plugin --au --release
+# Build AUv2 bundle (native architecture, fastest for development)
+cargo xtask bundle my-plugin --auv2 --release
+
+# Build AUv3 bundle
+cargo xtask bundle my-plugin --auv3 --release
 
 # Build and install to system location
-cargo xtask bundle my-plugin --au --release --install
+cargo xtask bundle my-plugin --auv2 --release --install
 
-# Build both VST3 and AU
-cargo xtask bundle my-plugin --vst3 --au --release --install
+# Build VST3 and AUv2
+cargo xtask bundle my-plugin --vst3 --auv2 --release --install
 
 # Build universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --au --arch universal --release
+cargo xtask bundle my-plugin --auv2 --arch universal --release
 ```
 
 **Architecture Options:**
@@ -1675,11 +1698,11 @@ cargo xtask bundle my-plugin --au --arch universal --release
 - `--arch arm64` - Build for Apple Silicon only
 - `--arch x86_64` - Build for Intel only
 
-**Install Location:**
+**Install Locations:**
 
-Audio Unit plugins are installed to:
 ```
-~/Library/Audio/Plug-Ins/Components/
+AUv2: ~/Library/Audio/Plug-Ins/Components/
+AUv3: ~/Applications/ (or /Applications/)
 ```
 
 **Code Signing:**
@@ -1698,7 +1721,7 @@ The `xtask` tool automatically performs ad-hoc signing during bundling.
 
 ### 4.6 C-ABI Bridge Interface
 
-The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between Objective-C and Rust:
+The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between the native wrappers (both AUv2 and AUv3) and Rust. Both formats share the same 40+ bridge functions:
 
 #### Instance Lifecycle
 
@@ -1780,16 +1803,16 @@ bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 
 ### 4.7 Current Status
 
-**Implementation Status: In Progress**
+**Implementation Status: Complete**
 
-The hybrid Objective-C/Rust architecture is implemented and builds successfully. Runtime testing is in progress.
+Both AUv2 and AUv3 formats are fully implemented with full VST3 feature parity.
 
 **Implemented (VST3 Parity):**
 - ✅ Audio effects (all bus configurations)
 - ✅ Instruments/generators (MIDI input + output)
 - ✅ MIDI effects (MIDI input + output)
 - ✅ Sidechain/auxiliary buses
-- ✅ Parameter automation (full KVO integration)
+- ✅ Parameter automation (KVO for AUv3, properties for AUv2)
 - ✅ State persistence (save/load presets)
 - ✅ f32 and f64 processing
 - ✅ Transport information (tempo, beat, playback state)
@@ -1797,29 +1820,25 @@ The hybrid Objective-C/Rust architecture is implemented and builds successfully.
 - ✅ Thread-safe parameter access (RwLock for render block)
 
 **Architecture Features:**
-- Native Objective-C `AUAudioUnit` subclass (guaranteed Apple compatibility)
-- C-ABI bridge with ~30 functions for ObjC ↔ Rust communication
+- AUv2: `AudioComponentPlugInInterface` with selector-based dispatch
+- AUv3: Native Objective-C `AUAudioUnit` subclass
+- Shared C-ABI bridge with 40+ functions for wrapper ↔ Rust communication
 - Pre-allocated buffers for audio processing
 - Weak/strong self pattern in parameter callbacks (prevents use-after-free)
 - Comprehensive null pointer validation
 
-**Known Issue (In Progress):**
-- Factory registration timing: The Rust module initializer may not execute before the ObjC factory is called
-- See `docs/AU_HYBRID_TODO.md` for investigation tasks and proposed fixes
-
 **Limitations:**
 - No custom UI (uses host generic parameter UI)
 - MIDI output only for instruments/MIDI effects (not audio effects)
-- macOS only (AUv3 is Apple-exclusive)
-- No AUv2 legacy support (v3 only)
+- macOS only (Audio Units are Apple-exclusive)
 
 **Validation Commands:**
 ```bash
-# Build and install AU
-cargo xtask bundle gain --au --release --install
+# Build and install AUv2
+cargo xtask bundle gain --auv2 --release --install
 
 # Validate with Apple's auval tool
-auval -v aufx gain Bemr
+auval -v aufx gain Bmer
 
 # Check installed location
 ls ~/Library/Audio/Plug-Ins/Components/

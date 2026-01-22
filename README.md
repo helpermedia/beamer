@@ -4,6 +4,9 @@ A Rust framework for building VST3 and Audio Unit (AU) audio plugins.
 
 Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms) and AU (macOS).
 
+> [!NOTE]
+> Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
+
 ## Why Beamer?
 
 Audio plugin development has traditionally meant wrestling with C++ memory management, threading bugs, and cryptic SDK interfaces—time spent debugging instead of creating. Beamer changes this.
@@ -12,11 +15,11 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 **No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
-**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates VST3 integration, state persistence, and DAW automation. Use `#[derive(HasParameters)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
+**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, and DAW automation. Use `#[derive(HasParameters)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
 
 **Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools—HTML, CSS, JavaScript—while your audio code stays in safe Rust. Each team does what they do best.
 
-**For creative developers.** Whether you're an audio engineer learning Rust or a Rust developer exploring audio, Beamer handles the VST3 plumbing so you can focus on what matters: making something that sounds great.
+**For creative developers.** Whether you're an audio engineer learning Rust or a Rust developer exploring audio, Beamer handles the plugin format plumbing so you can focus on what matters: making something that sounds great.
 
 ## Quick Start
 
@@ -136,7 +139,7 @@ The `#[parameter(...)]` attribute supports:
 
 | Attribute | Description |
 |-----------|-------------|
-| `id = "..."` | Required. String ID (hashed to u32 for VST3) |
+| `id = "..."` | Required. String ID (hashed to u32 internally) |
 | `name = "..."` | Display name in DAW |
 | `default = <value>` | Default value |
 | `range = start..=end` | Value range |
@@ -170,7 +173,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Features
 
-- **Multi-format** - VST3 (all platforms) and AU (macOS, hybrid v2/v3 architecture; AUv3 app extensions planned)
+- **Multi-format** - VST3 (all platforms) and AU (macOS, both AUv2 and AUv3)
 - **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
@@ -201,7 +204,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-au` | AU wrapper (macOS) - hybrid v2 bundle / v3 API architecture |
+| `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
@@ -217,17 +220,17 @@ cargo build --release
 # Bundle VST3 plugin (native architecture, fastest for development)
 cargo xtask bundle gain --vst3 --release
 
-# Bundle Audio Unit plugin (macOS only)
-cargo xtask bundle gain --au --release
+# Bundle AUv2 plugin (macOS only)
+cargo xtask bundle gain --auv2 --release
 
 # Bundle both formats and install to system plugin folders
-cargo xtask bundle gain --vst3 --au --release --install
+cargo xtask bundle gain --vst3 --auv2 --release --install
 
 # Bundle universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle gain --vst3 --au --arch universal --release
+cargo xtask bundle gain --vst3 --auv2 --arch universal --release
 
 # Validate AU plugin (macOS)
-auval -v aufx gain Bemr
+auval -v aufx gain Bmer
 ```
 
 By default, plugins are built for the native architecture (e.g., arm64 on Apple Silicon). Use `--arch universal` when building for distribution to support both Intel and Apple Silicon Macs.

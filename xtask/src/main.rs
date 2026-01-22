@@ -1,6 +1,6 @@
 //! Build tooling for Beamer plugins.
 //!
-//! Usage: cargo xtask bundle <package> [--vst3] [--au] [--arch <arch>] [--release] [--install] [--clean]
+//! Usage: cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean]
 
 use std::fs;
 use std::io::IsTerminal;
@@ -14,6 +14,33 @@ fn print_error(msg: &str) {
     } else {
         eprintln!("Error: {}", msg);
     }
+}
+
+/// Print status message (always shown)
+macro_rules! status {
+    ($($arg:tt)*) => {
+        println!($($arg)*)
+    };
+}
+
+/// Print verbose message (only in verbose mode)
+macro_rules! verbose {
+    ($verbose:expr, $($arg:tt)*) => {
+        if $verbose {
+            println!($($arg)*)
+        }
+    };
+}
+
+/// Shorten home directory in path for display
+fn shorten_path(path: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home);
+        if let Ok(stripped) = path.strip_prefix(&home_path) {
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.display().to_string()
 }
 
 /// Architecture configuration for builds
@@ -41,7 +68,7 @@ impl Arch {
     }
 }
 
-/// Configuration for creating appex Info.plist
+/// Configuration for creating appex Info.plist (AUv3)
 struct AppexPlistConfig<'a> {
     package: &'a str,
     executable_name: &'a str,
@@ -53,6 +80,32 @@ struct AppexPlistConfig<'a> {
     version_int: u32,
     plugin_name: Option<&'a str>,
     vendor_name: Option<&'a str>,
+}
+
+/// Configuration for creating AUv2 component Info.plist
+struct ComponentPlistConfig<'a> {
+    package: &'a str,
+    executable_name: &'a str,
+    component_type: &'a str,
+    manufacturer: Option<&'a str>,
+    subtype: Option<&'a str>,
+    version_string: &'a str,
+    version_int: u32,
+    plugin_name: Option<&'a str>,
+    vendor_name: Option<&'a str>,
+}
+
+/// Configuration for the bundle command
+struct BundleConfig {
+    package: String,
+    release: bool,
+    install: bool,
+    clean: bool,
+    build_vst3: bool,
+    build_auv2: bool,
+    build_auv3: bool,
+    arch: Arch,
+    verbose: bool,
 }
 
 // =============================================================================
@@ -1034,6 +1087,1379 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 "#, plugin_name = plugin_name, wrapper_class = wrapper_class)
 }
 
+/// Generate AUv2 wrapper source code.
+///
+/// This generates a complete AUv2 plugin implementation with:
+/// - AudioComponentPlugInInterface struct with Open/Close/Lookup
+/// - Selector handlers for Initialize, Render, GetProperty, etc.
+/// - All handlers call the beamer_au_* bridge functions
+fn generate_auv2_wrapper_source(plugin_name: &str) -> String {
+    let pascal_name = to_pascal_case(plugin_name);
+    let factory_name = format!("Beamer{}Factory", pascal_name);
+
+    format!(
+        r#"
+// =============================================================================
+// AUv2 Plugin Implementation for {plugin_name}
+// =============================================================================
+// Auto-generated proper AUv2 implementation that returns AudioComponentPlugInInterface*.
+// All plugin logic is handled by the beamer_au_* bridge functions.
+
+#include <AudioToolbox/AudioToolbox.h>
+#include <AudioUnit/AudioUnit.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+
+// Include the bridge header for Rust plugin access
+#include "BeamerAuBridge.h"
+
+// =============================================================================
+// MARK: - Constants
+// =============================================================================
+
+#define MAX_PROPERTY_LISTENERS 64
+#define MAX_RENDER_NOTIFY 32
+
+// =============================================================================
+// MARK: - Data Structures
+// =============================================================================
+
+typedef struct {{
+    AudioUnitPropertyID propID;
+    AudioUnitPropertyListenerProc proc;
+    void* userData;
+}} PropertyListener;
+
+typedef struct {{
+    AURenderCallback proc;
+    void* userData;
+}} RenderNotify;
+
+typedef struct {{
+    AudioUnit sourceAU;
+    UInt32 sourceOutputNumber;
+}} InputConnection;
+
+typedef struct BeamerAuv2Instance {{
+    // AudioComponentPlugInInterface MUST be first (ABI requirement)
+    AudioComponentPlugInInterface interface;
+    AudioComponentInstance componentInstance;
+    BeamerAuInstanceHandle rustInstance;
+
+    // Audio configuration
+    Float64 sampleRate;
+    UInt32 maxFramesPerSlice;
+    bool initialized;
+    bool bypassed;
+
+    // Stream formats for input/output scope, element 0
+    AudioStreamBasicDescription inputFormat;
+    AudioStreamBasicDescription outputFormat;
+
+    // Input handling - either callback or connection
+    AURenderCallbackStruct inputCallback;
+    InputConnection inputConnection;
+
+    // Allocated input buffer for pulling
+    AudioBufferList* inputBufferList;
+    UInt32 inputBufferCapacity;
+
+    // Property listeners
+    PropertyListener propertyListeners[MAX_PROPERTY_LISTENERS];
+    UInt32 propertyListenerCount;
+    pthread_mutex_t listenerMutex;
+
+    // Render notifications
+    RenderNotify renderNotify[MAX_RENDER_NOTIFY];
+    UInt32 renderNotifyCount;
+    pthread_mutex_t renderNotifyMutex;
+
+    // Host callbacks (for tempo, transport, etc.)
+    HostCallbackInfo hostCallbacks;
+}} BeamerAuv2Instance;
+
+// =============================================================================
+// MARK: - Forward Declarations
+// =============================================================================
+
+static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci);
+static OSStatus BeamerAuv2Close(void* self);
+static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector);
+
+static OSStatus BeamerAuv2Initialize(void* self);
+static OSStatus BeamerAuv2Uninitialize(void* self);
+static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, UInt32* outDataSize, Boolean* outWritable);
+static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, void* outData, UInt32* ioDataSize);
+static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, const void* inData, UInt32 inDataSize);
+static OSStatus BeamerAuv2AddPropertyListener(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc, void* userData);
+static OSStatus BeamerAuv2RemovePropertyListener(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc);
+static OSStatus BeamerAuv2RemovePropertyListenerWithUserData(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc, void* userData);
+static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
+    AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue* outValue);
+static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
+    AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset);
+static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParameterEvent* events, UInt32 numEvents);
+static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActionFlags,
+    const AudioTimeStamp* inTimeStamp, UInt32 inOutputBusNumber, UInt32 inNumberFrames, AudioBufferList* ioData);
+static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitElement element);
+static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, void* userData);
+static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
+
+// =============================================================================
+// MARK: - Helper Functions
+// =============================================================================
+
+static void InitDefaultFormat(AudioStreamBasicDescription* format, Float64 sampleRate, UInt32 channels) {{
+    memset(format, 0, sizeof(AudioStreamBasicDescription));
+    format->mSampleRate = sampleRate;
+    format->mFormatID = kAudioFormatLinearPCM;
+    format->mFormatFlags = kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved;
+    format->mBytesPerPacket = sizeof(Float32);
+    format->mFramesPerPacket = 1;
+    format->mBytesPerFrame = sizeof(Float32);
+    format->mChannelsPerFrame = channels;
+    format->mBitsPerChannel = 32;
+}}
+
+static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element) {{
+    pthread_mutex_lock(&inst->listenerMutex);
+    for (UInt32 i = 0; i < inst->propertyListenerCount; i++) {{
+        if (inst->propertyListeners[i].propID == propID) {{
+            inst->propertyListeners[i].proc(
+                inst->propertyListeners[i].userData,
+                inst->componentInstance,
+                propID, scope, element);
+        }}
+    }}
+    pthread_mutex_unlock(&inst->listenerMutex);
+}}
+
+static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels, UInt32 frames) {{
+    UInt32 neededCapacity = frames * channels;
+    if (inst->inputBufferList && inst->inputBufferCapacity >= neededCapacity) {{
+        // Existing buffer is large enough, just update frame counts
+        for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {{
+            inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
+        }}
+        return noErr;
+    }}
+
+    // Free old buffer if it exists
+    if (inst->inputBufferList) {{
+        for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {{
+            if (inst->inputBufferList->mBuffers[i].mData) {{
+                free(inst->inputBufferList->mBuffers[i].mData);
+            }}
+        }}
+        free(inst->inputBufferList);
+    }}
+
+    // Allocate new buffer list (non-interleaved: one buffer per channel)
+    size_t listSize = sizeof(AudioBufferList) + (channels > 0 ? (channels - 1) * sizeof(AudioBuffer) : 0);
+    inst->inputBufferList = (AudioBufferList*)calloc(1, listSize);
+    if (!inst->inputBufferList) return kAudio_MemFullError;
+
+    inst->inputBufferList->mNumberBuffers = channels;
+    for (UInt32 i = 0; i < channels; i++) {{
+        inst->inputBufferList->mBuffers[i].mNumberChannels = 1;
+        inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
+        inst->inputBufferList->mBuffers[i].mData = calloc(frames, sizeof(Float32));
+        if (!inst->inputBufferList->mBuffers[i].mData) return kAudio_MemFullError;
+    }}
+
+    inst->inputBufferCapacity = neededCapacity;
+    return noErr;
+}}
+
+static void FreeInputBufferList(BeamerAuv2Instance* inst) {{
+    if (inst->inputBufferList) {{
+        for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {{
+            if (inst->inputBufferList->mBuffers[i].mData) {{
+                free(inst->inputBufferList->mBuffers[i].mData);
+            }}
+        }}
+        free(inst->inputBufferList);
+        inst->inputBufferList = NULL;
+        inst->inputBufferCapacity = 0;
+    }}
+}}
+
+// =============================================================================
+// MARK: - Factory Function
+// =============================================================================
+
+__attribute__((visibility("default")))
+void* {factory_name}(const AudioComponentDescription* inDesc) {{
+    (void)inDesc;
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)calloc(1, sizeof(BeamerAuv2Instance));
+    if (!inst) return NULL;
+
+    // Set up the interface function pointers
+    inst->interface.Open = BeamerAuv2Open;
+    inst->interface.Close = BeamerAuv2Close;
+    inst->interface.Lookup = BeamerAuv2Lookup;
+    inst->interface.reserved = NULL;
+
+    // Set defaults
+    inst->sampleRate = 44100.0;
+    inst->maxFramesPerSlice = 1024;
+    inst->initialized = false;
+    inst->bypassed = false;
+
+    // Initialize mutexes
+    pthread_mutex_init(&inst->listenerMutex, NULL);
+    pthread_mutex_init(&inst->renderNotifyMutex, NULL);
+
+    return &inst->interface;
+}}
+
+// =============================================================================
+// MARK: - Open/Close/Lookup
+// =============================================================================
+
+static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    inst->componentInstance = ci;
+
+    // Ensure Rust factory is registered
+    if (!beamer_au_ensure_factory_registered()) {{
+        return kAudioUnitErr_FailedInitialization;
+    }}
+
+    // Create Rust plugin instance
+    inst->rustInstance = beamer_au_create_instance();
+    if (!inst->rustInstance) {{
+        return kAudioUnitErr_FailedInitialization;
+    }}
+
+    // Query bus configuration from Rust and set up default formats
+    uint32_t inputChannels = beamer_au_get_input_bus_channel_count(inst->rustInstance, 0);
+    uint32_t outputChannels = beamer_au_get_output_bus_channel_count(inst->rustInstance, 0);
+
+    // Default to stereo if plugin reports 0 (shouldn't happen)
+    if (inputChannels == 0 && beamer_au_get_input_bus_count(inst->rustInstance) > 0) inputChannels = 2;
+    if (outputChannels == 0 && beamer_au_get_output_bus_count(inst->rustInstance) > 0) outputChannels = 2;
+
+    InitDefaultFormat(&inst->inputFormat, inst->sampleRate, inputChannels);
+    InitDefaultFormat(&inst->outputFormat, inst->sampleRate, outputChannels);
+
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2Close(void* self) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    if (inst->initialized) {{
+        beamer_au_deallocate_render_resources(inst->rustInstance);
+        inst->initialized = false;
+    }}
+
+    if (inst->rustInstance) {{
+        beamer_au_destroy_instance(inst->rustInstance);
+        inst->rustInstance = NULL;
+    }}
+
+    FreeInputBufferList(inst);
+
+    pthread_mutex_destroy(&inst->listenerMutex);
+    pthread_mutex_destroy(&inst->renderNotifyMutex);
+
+    free(inst);
+    return noErr;
+}}
+
+static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector) {{
+    switch (selector) {{
+        case kAudioUnitInitializeSelect:
+            return (AudioComponentMethod)BeamerAuv2Initialize;
+        case kAudioUnitUninitializeSelect:
+            return (AudioComponentMethod)BeamerAuv2Uninitialize;
+        case kAudioUnitGetPropertyInfoSelect:
+            return (AudioComponentMethod)BeamerAuv2GetPropertyInfo;
+        case kAudioUnitGetPropertySelect:
+            return (AudioComponentMethod)BeamerAuv2GetProperty;
+        case kAudioUnitSetPropertySelect:
+            return (AudioComponentMethod)BeamerAuv2SetProperty;
+        case kAudioUnitAddPropertyListenerSelect:
+            return (AudioComponentMethod)BeamerAuv2AddPropertyListener;
+        case kAudioUnitRemovePropertyListenerSelect:
+            return (AudioComponentMethod)BeamerAuv2RemovePropertyListener;
+        case kAudioUnitRemovePropertyListenerWithUserDataSelect:
+            return (AudioComponentMethod)BeamerAuv2RemovePropertyListenerWithUserData;
+        case kAudioUnitGetParameterSelect:
+            return (AudioComponentMethod)BeamerAuv2GetParameter;
+        case kAudioUnitSetParameterSelect:
+            return (AudioComponentMethod)BeamerAuv2SetParameter;
+        case kAudioUnitScheduleParametersSelect:
+            return (AudioComponentMethod)BeamerAuv2ScheduleParameters;
+        case kAudioUnitRenderSelect:
+            return (AudioComponentMethod)BeamerAuv2Render;
+        case kAudioUnitResetSelect:
+            return (AudioComponentMethod)BeamerAuv2Reset;
+        case kAudioUnitAddRenderNotifySelect:
+            return (AudioComponentMethod)BeamerAuv2AddRenderNotify;
+        case kAudioUnitRemoveRenderNotifySelect:
+            return (AudioComponentMethod)BeamerAuv2RemoveRenderNotify;
+        default:
+            return NULL;
+    }}
+}}
+
+// =============================================================================
+// MARK: - Initialize/Uninitialize
+// =============================================================================
+
+static OSStatus BeamerAuv2Initialize(void* self) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    if (inst->initialized) {{
+        return noErr; // Already initialized
+    }}
+
+    // Build bus config from current stream formats
+    BeamerAuBusConfig busConfig;
+    memset(&busConfig, 0, sizeof(busConfig));
+
+    uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
+    uint32_t outputBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
+
+    busConfig.input_bus_count = inputBusCount;
+    busConfig.output_bus_count = outputBusCount;
+
+    uint32_t inputChannels = 0;
+    uint32_t outputChannels = 0;
+
+    if (inputBusCount > 0) {{
+        inputChannels = inst->inputFormat.mChannelsPerFrame;
+        busConfig.input_buses[0].channel_count = inputChannels;
+        busConfig.input_buses[0].bus_type = BeamerAuBusTypeMain;
+    }}
+    if (outputBusCount > 0) {{
+        outputChannels = inst->outputFormat.mChannelsPerFrame;
+        busConfig.output_buses[0].channel_count = outputChannels;
+        busConfig.output_buses[0].bus_type = BeamerAuBusTypeMain;
+    }}
+
+    // Validate channel configuration before proceeding
+    bool configValid = beamer_au_is_channel_config_valid(inst->rustInstance, inputChannels, outputChannels);
+    NSLog(@"AUv2 Initialize: input=%u output=%u valid=%d", inputChannels, outputChannels, configValid);
+    if (!configValid) {{
+        NSLog(@"AUv2 Initialize: Rejecting invalid channel config");
+        return kAudioUnitErr_FormatNotSupported;
+    }}
+
+    // Determine sample format
+    BeamerAuSampleFormat format = BeamerAuSampleFormatFloat32;
+    if (inst->outputFormat.mBitsPerChannel == 64) {{
+        format = BeamerAuSampleFormatFloat64;
+    }}
+
+    // Allocate render resources in Rust
+    OSStatus status = beamer_au_allocate_render_resources(
+        inst->rustInstance,
+        inst->sampleRate,
+        inst->maxFramesPerSlice,
+        format,
+        &busConfig
+    );
+
+    if (status == noErr) {{
+        inst->initialized = true;
+
+        // Pre-allocate input buffer if we have input buses
+        if (inputBusCount > 0) {{
+            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inst->maxFramesPerSlice);
+        }}
+    }}
+
+    return status;
+}}
+
+static OSStatus BeamerAuv2Uninitialize(void* self) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    if (inst->initialized) {{
+        beamer_au_deallocate_render_resources(inst->rustInstance);
+        inst->initialized = false;
+    }}
+
+    return noErr;
+}}
+
+// =============================================================================
+// MARK: - Property Handling
+// =============================================================================
+
+static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, UInt32* outDataSize, Boolean* outWritable) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    // Default to not writable
+    if (outWritable) *outWritable = false;
+
+    switch (propID) {{
+        // Stream format
+        case kAudioUnitProperty_StreamFormat:
+            if (outDataSize) *outDataSize = sizeof(AudioStreamBasicDescription);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Sample rate
+        case kAudioUnitProperty_SampleRate:
+            if (outDataSize) *outDataSize = sizeof(Float64);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Maximum frames per slice
+        case kAudioUnitProperty_MaximumFramesPerSlice:
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Parameter list
+        case kAudioUnitProperty_ParameterList:
+            if (scope == kAudioUnitScope_Global && element == 0) {{
+                uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
+                if (outDataSize) *outDataSize = count * sizeof(AudioUnitParameterID);
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
+        // Parameter info (element is param ID)
+        case kAudioUnitProperty_ParameterInfo:
+            if (scope == kAudioUnitScope_Global) {{
+                if (outDataSize) *outDataSize = sizeof(AudioUnitParameterInfo);
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
+        // Parameter value strings (for indexed params)
+        case kAudioUnitProperty_ParameterValueStrings:
+            if (scope == kAudioUnitScope_Global) {{
+                uint32_t count = beamer_au_get_parameter_value_count(inst->rustInstance, element);
+                if (count > 0) {{
+                    if (outDataSize) *outDataSize = sizeof(CFArrayRef);
+                    return noErr;
+                }}
+            }}
+            return kAudioUnitErr_InvalidProperty;
+
+        // Latency (Global scope only)
+        case kAudioUnitProperty_Latency:
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (outDataSize) *outDataSize = sizeof(Float64);
+            return noErr;
+
+        // Tail time (Global scope only)
+        case kAudioUnitProperty_TailTime:
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (outDataSize) *outDataSize = sizeof(Float64);
+            return noErr;
+
+        // Bypass (Global scope only)
+        case kAudioUnitProperty_BypassEffect:
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Present preset
+        case kAudioUnitProperty_PresentPreset:
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (outDataSize) *outDataSize = sizeof(AUPreset);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Render callback (for setting input source)
+        case kAudioUnitProperty_SetRenderCallback:
+            if (scope == kAudioUnitScope_Input && element == 0) {{
+                if (outDataSize) *outDataSize = sizeof(AURenderCallbackStruct);
+                if (outWritable) *outWritable = true;
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
+        // Audio unit connection
+        case kAudioUnitProperty_MakeConnection:
+            if (scope == kAudioUnitScope_Input && element == 0) {{
+                if (outDataSize) *outDataSize = sizeof(AudioUnitConnection);
+                if (outWritable) *outWritable = true;
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
+        // Supported channel layouts
+        case kAudioUnitProperty_SupportedNumChannels:
+            if (scope == kAudioUnitScope_Global) {{
+                BeamerAuChannelCapabilities caps;
+                if (beamer_au_get_channel_capabilities(inst->rustInstance, &caps)) {{
+                    if (outDataSize) *outDataSize = caps.count * sizeof(AUChannelInfo);
+                    return noErr;
+                }}
+            }}
+            return kAudioUnitErr_InvalidProperty;
+
+        // Class info (state save/restore)
+        case kAudioUnitProperty_ClassInfo:
+            if (outDataSize) *outDataSize = sizeof(CFPropertyListRef);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Host callbacks
+        case kAudioUnitProperty_HostCallbacks:
+            if (outDataSize) *outDataSize = sizeof(HostCallbackInfo);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Element count
+        case kAudioUnitProperty_ElementCount:
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            return noErr;
+
+        // In-place processing
+        case kAudioUnitProperty_InPlaceProcessing:
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Offline render
+        case kAudioUnitProperty_OfflineRender:
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Should allocate buffer
+        case kAudioUnitProperty_ShouldAllocateBuffer:
+            if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Last render error
+        case kAudioUnitProperty_LastRenderError:
+            if (outDataSize) *outDataSize = sizeof(OSStatus);
+            return noErr;
+
+        default:
+            return kAudioUnitErr_InvalidProperty;
+    }}
+}}
+
+static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, void* outData, UInt32* ioDataSize) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    switch (propID) {{
+        case kAudioUnitProperty_StreamFormat: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioStreamBasicDescription)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            AudioStreamBasicDescription* desc = (AudioStreamBasicDescription*)outData;
+            if (scope == kAudioUnitScope_Input) {{
+                *desc = inst->inputFormat;
+            }} else if (scope == kAudioUnitScope_Output) {{
+                *desc = inst->outputFormat;
+            }} else {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            *ioDataSize = sizeof(AudioStreamBasicDescription);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_SampleRate: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(Float64)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            *(Float64*)outData = inst->sampleRate;
+            *ioDataSize = sizeof(Float64);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_MaximumFramesPerSlice: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            *(UInt32*)outData = inst->maxFramesPerSlice;
+            *ioDataSize = sizeof(UInt32);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ParameterList: {{
+            if (scope != kAudioUnitScope_Global || element != 0) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
+            UInt32 needed = count * sizeof(AudioUnitParameterID);
+            if (!outData || !ioDataSize || *ioDataSize < needed) {{
+                if (ioDataSize) *ioDataSize = needed;
+                return outData ? kAudioUnitErr_InvalidPropertyValue : noErr;
+            }}
+            AudioUnitParameterID* ids = (AudioUnitParameterID*)outData;
+            for (uint32_t i = 0; i < count; i++) {{
+                BeamerAuParameterInfo info;
+                if (beamer_au_get_parameter_info(inst->rustInstance, i, &info)) {{
+                    ids[i] = info.id;
+                }} else {{
+                    ids[i] = 0;
+                }}
+            }}
+            *ioDataSize = needed;
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ParameterInfo: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitParameterInfo)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            // element is the parameter ID - find it by iterating
+            uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
+            for (uint32_t i = 0; i < count; i++) {{
+                BeamerAuParameterInfo bInfo;
+                if (beamer_au_get_parameter_info(inst->rustInstance, i, &bInfo) && bInfo.id == element) {{
+                    AudioUnitParameterInfo* auInfo = (AudioUnitParameterInfo*)outData;
+                    memset(auInfo, 0, sizeof(AudioUnitParameterInfo));
+
+                    // Copy name (CFString)
+                    auInfo->cfNameString = CFStringCreateWithCString(NULL, bInfo.name, kCFStringEncodingUTF8);
+                    auInfo->flags = kAudioUnitParameterFlag_HasCFNameString |
+                                    kAudioUnitParameterFlag_IsReadable |
+                                    kAudioUnitParameterFlag_IsWritable;
+
+                    if (bInfo.flags & BeamerAuParameterFlagAutomatable) {{
+                        auInfo->flags |= kAudioUnitParameterFlag_IsHighResolution;
+                    }}
+
+                    // Map unit type
+                    auInfo->unit = bInfo.unit_type;
+
+                    // Normalized range 0-1
+                    auInfo->minValue = 0.0f;
+                    auInfo->maxValue = 1.0f;
+                    auInfo->defaultValue = bInfo.default_value;
+
+                    // Check if indexed parameter (for value strings)
+                    if (bInfo.unit_type == kAudioUnitParameterUnit_Indexed && bInfo.step_count > 0) {{
+                        auInfo->flags |= kAudioUnitParameterFlag_ValuesHaveStrings;
+                        auInfo->maxValue = (float)bInfo.step_count;
+                    }}
+
+                    // Copy unit label if present
+                    if (bInfo.units[0] != '\0') {{
+                        auInfo->unitName = CFStringCreateWithCString(NULL, bInfo.units, kCFStringEncodingUTF8);
+                    }}
+
+                    *ioDataSize = sizeof(AudioUnitParameterInfo);
+                    return noErr;
+                }}
+            }}
+            return kAudioUnitErr_InvalidParameter;
+        }}
+
+        case kAudioUnitProperty_ParameterValueStrings: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            uint32_t count = beamer_au_get_parameter_value_count(inst->rustInstance, element);
+            if (count == 0) {{
+                return kAudioUnitErr_InvalidProperty;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(CFArrayRef)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            CFMutableArrayRef array = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks);
+            char buffer[256];
+            for (uint32_t i = 0; i < count; i++) {{
+                if (beamer_au_get_parameter_value_string(inst->rustInstance, element, i, buffer, sizeof(buffer))) {{
+                    CFStringRef str = CFStringCreateWithCString(NULL, buffer, kCFStringEncodingUTF8);
+                    CFArrayAppendValue(array, str);
+                    CFRelease(str);
+                }}
+            }}
+            *(CFArrayRef*)outData = array;
+            *ioDataSize = sizeof(CFArrayRef);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_Latency: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(Float64)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            uint32_t samples = beamer_au_get_latency_samples(inst->rustInstance);
+            *(Float64*)outData = (inst->sampleRate > 0) ? (Float64)samples / inst->sampleRate : 0.0;
+            *ioDataSize = sizeof(Float64);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_TailTime: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(Float64)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            uint32_t samples = beamer_au_get_tail_samples(inst->rustInstance);
+            if (samples == UINT32_MAX) {{
+                *(Float64*)outData = INFINITY;
+            }} else {{
+                *(Float64*)outData = (inst->sampleRate > 0) ? (Float64)samples / inst->sampleRate : 0.0;
+            }}
+            *ioDataSize = sizeof(Float64);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_BypassEffect: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            *(UInt32*)outData = inst->bypassed ? 1 : 0;
+            *ioDataSize = sizeof(UInt32);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_SupportedNumChannels: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            BeamerAuChannelCapabilities caps;
+            if (!beamer_au_get_channel_capabilities(inst->rustInstance, &caps)) {{
+                return kAudioUnitErr_InvalidProperty;
+            }}
+            UInt32 needed = caps.count * sizeof(AUChannelInfo);
+            if (!outData || !ioDataSize || *ioDataSize < needed) {{
+                if (ioDataSize) *ioDataSize = needed;
+                return outData ? kAudioUnitErr_InvalidPropertyValue : noErr;
+            }}
+            AUChannelInfo* info = (AUChannelInfo*)outData;
+            for (uint32_t i = 0; i < caps.count; i++) {{
+                info[i].inChannels = (SInt16)caps.capabilities[i].input_channels;
+                info[i].outChannels = (SInt16)caps.capabilities[i].output_channels;
+            }}
+            *ioDataSize = needed;
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ClassInfo: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(CFPropertyListRef)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            // Get component description for type/subtype/manufacturer
+            AudioComponentDescription desc;
+            beamer_au_get_component_description(&desc);
+
+            CFMutableDictionaryRef dict = CFDictionaryCreateMutable(NULL, 0,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+            // Add required type/subtype/manufacturer fields
+            SInt32 compType = (SInt32)desc.componentType;
+            SInt32 compSubType = (SInt32)desc.componentSubType;
+            SInt32 compManu = (SInt32)desc.componentManufacturer;
+            CFNumberRef typeNum = CFNumberCreate(NULL, kCFNumberSInt32Type, &compType);
+            CFNumberRef subTypeNum = CFNumberCreate(NULL, kCFNumberSInt32Type, &compSubType);
+            CFNumberRef manuNum = CFNumberCreate(NULL, kCFNumberSInt32Type, &compManu);
+            CFDictionarySetValue(dict, CFSTR("type"), typeNum);
+            CFDictionarySetValue(dict, CFSTR("subtype"), subTypeNum);
+            CFDictionarySetValue(dict, CFSTR("manufacturer"), manuNum);
+            CFRelease(typeNum);
+            CFRelease(subTypeNum);
+            CFRelease(manuNum);
+
+            // Add plugin name
+            char nameBuffer[256];
+            uint32_t nameLen = beamer_au_get_name(inst->rustInstance, nameBuffer, sizeof(nameBuffer));
+            if (nameLen > 0) {{
+                CFStringRef nameStr = CFStringCreateWithCString(NULL, nameBuffer, kCFStringEncodingUTF8);
+                CFDictionarySetValue(dict, CFSTR("name"), nameStr);
+                CFRelease(nameStr);
+            }}
+
+            // Store format version
+            SInt32 version = 0;
+            CFNumberRef versionNum = CFNumberCreate(NULL, kCFNumberSInt32Type, &version);
+            CFDictionarySetValue(dict, CFSTR("version"), versionNum);
+            CFRelease(versionNum);
+
+            // Get state from Rust (save as "data" key which is the standard AU key)
+            uint32_t stateSize = beamer_au_get_state_size(inst->rustInstance);
+            if (stateSize > 0) {{
+                uint8_t* stateBuffer = (uint8_t*)malloc(stateSize);
+                if (stateBuffer) {{
+                    uint32_t written = beamer_au_get_state(inst->rustInstance, stateBuffer, stateSize);
+                    if (written > 0) {{
+                        CFDataRef data = CFDataCreate(NULL, stateBuffer, written);
+                        CFDictionarySetValue(dict, CFSTR("data"), data);
+                        CFRelease(data);
+                    }}
+                    free(stateBuffer);
+                }}
+            }}
+
+            *(CFPropertyListRef*)outData = dict;
+            *ioDataSize = sizeof(CFPropertyListRef);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ElementCount: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            if (scope == kAudioUnitScope_Input) {{
+                *(UInt32*)outData = beamer_au_get_input_bus_count(inst->rustInstance);
+            }} else if (scope == kAudioUnitScope_Output) {{
+                *(UInt32*)outData = beamer_au_get_output_bus_count(inst->rustInstance);
+            }} else if (scope == kAudioUnitScope_Global) {{
+                *(UInt32*)outData = 1;
+            }} else {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            *ioDataSize = sizeof(UInt32);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_InPlaceProcessing: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            *(UInt32*)outData = 0; // Not using in-place processing
+            *ioDataSize = sizeof(UInt32);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_PresentPreset: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AUPreset)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            AUPreset* preset = (AUPreset*)outData;
+            preset->presetNumber = -1; // User preset (not from factory list)
+            preset->presetName = CFSTR("Current Settings");
+            *ioDataSize = sizeof(AUPreset);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_LastRenderError: {{
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(OSStatus)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            *(OSStatus*)outData = noErr;
+            *ioDataSize = sizeof(OSStatus);
+            return noErr;
+        }}
+
+        default:
+            return kAudioUnitErr_InvalidProperty;
+    }}
+}}
+
+static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, const void* inData, UInt32 inDataSize) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    switch (propID) {{
+        case kAudioUnitProperty_StreamFormat: {{
+            if (!inData || inDataSize < sizeof(AudioStreamBasicDescription)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            const AudioStreamBasicDescription* desc = (const AudioStreamBasicDescription*)inData;
+
+            // Validate format (must be float, non-interleaved)
+            if (desc->mFormatID != kAudioFormatLinearPCM) {{
+                return kAudioUnitErr_FormatNotSupported;
+            }}
+            if (!(desc->mFormatFlags & kAudioFormatFlagIsFloat)) {{
+                return kAudioUnitErr_FormatNotSupported;
+            }}
+
+            // Validate scope first
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+
+            // Validate channel count is reasonable (1-64 channels)
+            UInt32 proposedChannels = desc->mChannelsPerFrame;
+            if (proposedChannels == 0 || proposedChannels > 64) {{
+                return kAudioUnitErr_FormatNotSupported;
+            }}
+
+            // Validate channel count against declared capability for MAIN bus (element 0).
+            // This enforces the [N, M] capability we report in SupportedNumChannels.
+            // Auxiliary buses (sidechain, etc.) can have any reasonable channel count.
+            if (element == 0) {{
+                uint32_t declaredChannels;
+                if (scope == kAudioUnitScope_Input) {{
+                    declaredChannels = beamer_au_get_input_bus_channel_count(inst->rustInstance, 0);
+                }} else {{
+                    declaredChannels = beamer_au_get_output_bus_channel_count(inst->rustInstance, 0);
+                }}
+                if (declaredChannels > 0 && proposedChannels != declaredChannels) {{
+                    return kAudioUnitErr_FormatNotSupported;
+                }}
+            }}
+
+            // Apply the format change
+            if (scope == kAudioUnitScope_Input) {{
+                inst->inputFormat = *desc;
+            }} else {{
+                inst->outputFormat = *desc;
+            }}
+            inst->sampleRate = desc->mSampleRate;
+
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_SampleRate: {{
+            if (!inData || inDataSize < sizeof(Float64)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            inst->sampleRate = *(Float64*)inData;
+            inst->inputFormat.mSampleRate = inst->sampleRate;
+            inst->outputFormat.mSampleRate = inst->sampleRate;
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_MaximumFramesPerSlice: {{
+            if (!inData || inDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            inst->maxFramesPerSlice = *(UInt32*)inData;
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_BypassEffect: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!inData || inDataSize < sizeof(UInt32)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            inst->bypassed = (*(UInt32*)inData != 0);
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_SetRenderCallback: {{
+            if (scope != kAudioUnitScope_Input || element != 0) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!inData || inDataSize < sizeof(AURenderCallbackStruct)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            inst->inputCallback = *(AURenderCallbackStruct*)inData;
+            // Clear connection when callback is set
+            inst->inputConnection.sourceAU = NULL;
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_MakeConnection: {{
+            if (scope != kAudioUnitScope_Input || element != 0) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!inData || inDataSize < sizeof(AudioUnitConnection)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            const AudioUnitConnection* conn = (const AudioUnitConnection*)inData;
+            inst->inputConnection.sourceAU = conn->sourceAudioUnit;
+            inst->inputConnection.sourceOutputNumber = conn->sourceOutputNumber;
+            // Clear callback when connection is set
+            inst->inputCallback.inputProc = NULL;
+            inst->inputCallback.inputProcRefCon = NULL;
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_HostCallbacks: {{
+            if (!inData || inDataSize < sizeof(HostCallbackInfo)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            inst->hostCallbacks = *(HostCallbackInfo*)inData;
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ClassInfo: {{
+            if (!inData || inDataSize < sizeof(CFPropertyListRef)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+            CFDictionaryRef dict = *(CFDictionaryRef*)inData;
+            if (!dict || CFGetTypeID(dict) != CFDictionaryGetTypeID()) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            // Try "data" key (standard AU) first, then fallback to "beamer-state"
+            CFDataRef stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("data"));
+            if (!stateData) {{
+                stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("beamer-state"));
+            }}
+            if (stateData && CFGetTypeID(stateData) == CFDataGetTypeID()) {{
+                const uint8_t* bytes = CFDataGetBytePtr(stateData);
+                CFIndex length = CFDataGetLength(stateData);
+                beamer_au_set_state(inst->rustInstance, bytes, (uint32_t)length);
+            }}
+
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_PresentPreset: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            // Accept preset changes but we don't have a preset system
+            // Just notify listeners that preset changed
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_OfflineRender:
+        case kAudioUnitProperty_InPlaceProcessing:
+        case kAudioUnitProperty_ShouldAllocateBuffer:
+            // Accept but ignore these
+            return noErr;
+
+        default:
+            return kAudioUnitErr_InvalidProperty;
+    }}
+}}
+
+// =============================================================================
+// MARK: - Property Listeners
+// =============================================================================
+
+static OSStatus BeamerAuv2AddPropertyListener(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc, void* userData) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    pthread_mutex_lock(&inst->listenerMutex);
+    if (inst->propertyListenerCount >= MAX_PROPERTY_LISTENERS) {{
+        pthread_mutex_unlock(&inst->listenerMutex);
+        return kAudio_TooManyFilesOpenError;
+    }}
+
+    PropertyListener* listener = &inst->propertyListeners[inst->propertyListenerCount++];
+    listener->propID = propID;
+    listener->proc = proc;
+    listener->userData = userData;
+
+    pthread_mutex_unlock(&inst->listenerMutex);
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2RemovePropertyListener(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    pthread_mutex_lock(&inst->listenerMutex);
+    for (UInt32 i = 0; i < inst->propertyListenerCount; i++) {{
+        if (inst->propertyListeners[i].propID == propID && inst->propertyListeners[i].proc == proc) {{
+            // Shift remaining listeners down
+            for (UInt32 j = i; j < inst->propertyListenerCount - 1; j++) {{
+                inst->propertyListeners[j] = inst->propertyListeners[j + 1];
+            }}
+            inst->propertyListenerCount--;
+            pthread_mutex_unlock(&inst->listenerMutex);
+            return noErr;
+        }}
+    }}
+    pthread_mutex_unlock(&inst->listenerMutex);
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2RemovePropertyListenerWithUserData(void* self, AudioUnitPropertyID propID,
+    AudioUnitPropertyListenerProc proc, void* userData) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    pthread_mutex_lock(&inst->listenerMutex);
+    for (UInt32 i = 0; i < inst->propertyListenerCount; i++) {{
+        if (inst->propertyListeners[i].propID == propID &&
+            inst->propertyListeners[i].proc == proc &&
+            inst->propertyListeners[i].userData == userData) {{
+            // Shift remaining listeners down
+            for (UInt32 j = i; j < inst->propertyListenerCount - 1; j++) {{
+                inst->propertyListeners[j] = inst->propertyListeners[j + 1];
+            }}
+            inst->propertyListenerCount--;
+            pthread_mutex_unlock(&inst->listenerMutex);
+            return noErr;
+        }}
+    }}
+    pthread_mutex_unlock(&inst->listenerMutex);
+    return noErr;
+}}
+
+// =============================================================================
+// MARK: - Parameters
+// =============================================================================
+
+static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
+    AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue* outValue) {{
+
+    if (scope != kAudioUnitScope_Global) {{
+        return kAudioUnitErr_InvalidScope;
+    }}
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    *outValue = beamer_au_get_parameter_value(inst->rustInstance, paramID);
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
+    AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset) {{
+
+    (void)bufferOffset; // TODO: Support sample-accurate automation
+
+    if (scope != kAudioUnitScope_Global) {{
+        return kAudioUnitErr_InvalidScope;
+    }}
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    beamer_au_set_parameter_value(inst->rustInstance, paramID, value);
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParameterEvent* events, UInt32 numEvents) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    for (UInt32 i = 0; i < numEvents; i++) {{
+        const AudioUnitParameterEvent* event = &events[i];
+        if (event->eventType == kParameterEvent_Immediate) {{
+            beamer_au_set_parameter_value(inst->rustInstance,
+                event->parameter, event->eventValues.immediate.value);
+        }}
+        // TODO: Handle ramped parameter changes
+    }}
+
+    return noErr;
+}}
+
+// =============================================================================
+// MARK: - Render
+// =============================================================================
+
+static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActionFlags,
+    const AudioTimeStamp* inTimeStamp, UInt32 inOutputBusNumber, UInt32 inNumberFrames, AudioBufferList* ioData) {{
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    if (!inst->initialized) {{
+        return kAudioUnitErr_Uninitialized;
+    }}
+
+    if (inNumberFrames > inst->maxFramesPerSlice) {{
+        return kAudioUnitErr_TooManyFramesToProcess;
+    }}
+
+    // Call pre-render notifications
+    pthread_mutex_lock(&inst->renderNotifyMutex);
+    for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {{
+        AudioUnitRenderActionFlags preFlags = kAudioUnitRenderAction_PreRender;
+        inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+            &preFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+    }}
+    pthread_mutex_unlock(&inst->renderNotifyMutex);
+
+    // Handle bypass
+    if (inst->bypassed) {{
+        // For bypass, we need to copy input to output
+        // Pull input first
+        AudioBufferList* inputData = NULL;
+        if (inst->inputCallback.inputProc) {{
+            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            AudioUnitRenderActionFlags pullFlags = 0;
+            OSStatus pullStatus = inst->inputCallback.inputProc(
+                inst->inputCallback.inputProcRefCon,
+                &pullFlags, inTimeStamp, 0, inNumberFrames, inst->inputBufferList);
+            if (pullStatus == noErr) {{
+                inputData = inst->inputBufferList;
+            }}
+        }} else if (inst->inputConnection.sourceAU) {{
+            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            AudioUnitRenderActionFlags pullFlags = 0;
+            OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
+                &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
+                inNumberFrames, inst->inputBufferList);
+            if (pullStatus == noErr) {{
+                inputData = inst->inputBufferList;
+            }}
+        }}
+
+        // Copy input to output for bypass
+        if (inputData) {{
+            UInt32 buffersToCopy = (inputData->mNumberBuffers < ioData->mNumberBuffers) ?
+                inputData->mNumberBuffers : ioData->mNumberBuffers;
+            for (UInt32 i = 0; i < buffersToCopy; i++) {{
+                UInt32 bytesToCopy = (inputData->mBuffers[i].mDataByteSize < ioData->mBuffers[i].mDataByteSize) ?
+                    inputData->mBuffers[i].mDataByteSize : ioData->mBuffers[i].mDataByteSize;
+                memcpy(ioData->mBuffers[i].mData, inputData->mBuffers[i].mData, bytesToCopy);
+            }}
+        }} else {{
+            // No input, silence output
+            for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {{
+                memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
+            }}
+        }}
+
+        // Call post-render notifications
+        pthread_mutex_lock(&inst->renderNotifyMutex);
+        for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {{
+            AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
+            inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+                &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+        }}
+        pthread_mutex_unlock(&inst->renderNotifyMutex);
+
+        return noErr;
+    }}
+
+    // Pull input audio
+    AudioBufferList* inputData = NULL;
+    uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
+
+    if (inputBusCount > 0) {{
+        if (inst->inputCallback.inputProc) {{
+            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            AudioUnitRenderActionFlags pullFlags = 0;
+            OSStatus pullStatus = inst->inputCallback.inputProc(
+                inst->inputCallback.inputProcRefCon,
+                &pullFlags, inTimeStamp, 0, inNumberFrames, inst->inputBufferList);
+            if (pullStatus == noErr) {{
+                inputData = inst->inputBufferList;
+            }}
+        }} else if (inst->inputConnection.sourceAU) {{
+            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            AudioUnitRenderActionFlags pullFlags = 0;
+            OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
+                &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
+                inNumberFrames, inst->inputBufferList);
+            if (pullStatus == noErr) {{
+                inputData = inst->inputBufferList;
+            }}
+        }}
+    }}
+
+    // Call Rust render function
+    // Note: AUv2 doesn't have AURenderEvent, so we pass NULL for events and blocks
+    OSStatus status = beamer_au_render(
+        inst->rustInstance,
+        ioActionFlags,
+        inTimeStamp,
+        inNumberFrames,
+        inOutputBusNumber,
+        ioData,
+        NULL,  // events (AUv2 doesn't use AURenderEvent linked list)
+        NULL,  // pull_input_block (we pre-pulled via callback/connection)
+        inputData,
+        NULL,  // musical_context_block (TODO: wrap host callbacks)
+        NULL,  // transport_state_block (TODO: wrap host callbacks)
+        NULL   // schedule_midi_block
+    );
+
+    // Call post-render notifications
+    pthread_mutex_lock(&inst->renderNotifyMutex);
+    for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {{
+        AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
+        inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+            &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+    }}
+    pthread_mutex_unlock(&inst->renderNotifyMutex);
+
+    return status;
+}}
+
+// =============================================================================
+// MARK: - Reset
+// =============================================================================
+
+static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitElement element) {{
+    (void)scope;
+    (void)element;
+
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    beamer_au_reset(inst->rustInstance);
+    return noErr;
+}}
+
+// =============================================================================
+// MARK: - Render Notifications
+// =============================================================================
+
+static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, void* userData) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    pthread_mutex_lock(&inst->renderNotifyMutex);
+    if (inst->renderNotifyCount >= MAX_RENDER_NOTIFY) {{
+        pthread_mutex_unlock(&inst->renderNotifyMutex);
+        return kAudio_TooManyFilesOpenError;
+    }}
+
+    inst->renderNotify[inst->renderNotifyCount].proc = proc;
+    inst->renderNotify[inst->renderNotifyCount].userData = userData;
+    inst->renderNotifyCount++;
+
+    pthread_mutex_unlock(&inst->renderNotifyMutex);
+    return noErr;
+}}
+
+static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData) {{
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    pthread_mutex_lock(&inst->renderNotifyMutex);
+    for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {{
+        if (inst->renderNotify[i].proc == proc && inst->renderNotify[i].userData == userData) {{
+            // Shift remaining entries down
+            for (UInt32 j = i; j < inst->renderNotifyCount - 1; j++) {{
+                inst->renderNotify[j] = inst->renderNotify[j + 1];
+            }}
+            inst->renderNotifyCount--;
+            pthread_mutex_unlock(&inst->renderNotifyMutex);
+            return noErr;
+        }}
+    }}
+    pthread_mutex_unlock(&inst->renderNotifyMutex);
+    return noErr;
+}}
+"#,
+        plugin_name = plugin_name,
+        factory_name = factory_name
+    )
+}
+
 /// Generate the AU extension ObjC implementation with plugin-specific class names.
 /// The extension class implements AUAudioUnitFactory protocol for AU instantiation.
 fn generate_au_extension_source(plugin_name: &str) -> String {
@@ -1290,8 +2716,10 @@ fn main() {
     let release = args.iter().any(|a| a == "--release");
     let install = args.iter().any(|a| a == "--install");
     let clean = args.iter().any(|a| a == "--clean");
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let build_vst3 = args.iter().any(|a| a == "--vst3");
-    let build_au = args.iter().any(|a| a == "--au");
+    let build_auv2 = args.iter().any(|a| a == "--auv2");
+    let build_auv3 = args.iter().any(|a| a == "--auv3");
 
     // Parse --arch flag
     let arch = args.windows(2)
@@ -1305,10 +2733,10 @@ fn main() {
         .unwrap_or(Arch::Native);
 
     // Check for unknown flags
-    let known_flags = ["--release", "--install", "--clean", "--vst3", "--au", "--arch"];
+    let known_flags = ["--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv3", "--arch"];
     let arch_values = ["native", "universal", "arm64", "x86_64"];
     for arg in args.iter().skip(3) {
-        if arg.starts_with("--") && !known_flags.contains(&arg.as_str()) {
+        if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
             print_error(&format!("unknown flag '{}'", arg));
             eprintln!("Known flags: {}", known_flags.join(", "));
             std::process::exit(1);
@@ -1320,27 +2748,40 @@ fn main() {
     }
 
     // Default to VST3 if no format specified
-    let (build_vst3, build_au) = if !build_vst3 && !build_au {
-        (true, false)
+    let (build_vst3, build_auv2, build_auv3) = if !build_vst3 && !build_auv2 && !build_auv3 {
+        (true, false, false)
     } else {
-        (build_vst3, build_au)
+        (build_vst3, build_auv2, build_auv3)
     };
 
-    if let Err(e) = bundle(package, release, install, clean, build_vst3, build_au, arch) {
+    let config = BundleConfig {
+        package: package.to_string(),
+        release,
+        install,
+        clean,
+        verbose,
+        build_vst3,
+        build_auv2,
+        build_auv3,
+        arch,
+    };
+
+    if let Err(e) = bundle(&config) {
         print_error(&e);
         std::process::exit(1);
     }
 }
 
 fn print_usage() {
-    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--au] [--arch <arch>] [--release] [--install] [--clean]");
+    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean] [--verbose]");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  bundle    Build and bundle a plugin");
     eprintln!();
     eprintln!("Formats:");
     eprintln!("  --vst3    Build VST3 bundle (default if no format specified)");
-    eprintln!("  --au      Build Audio Unit bundle (AUv3 App Extension: .app with .appex)");
+    eprintln!("  --auv2    Build AUv2 .component bundle (simple distribution, works with all DAWs)");
+    eprintln!("  --auv3    Build AUv3 .app/.appex bundle (App Store distribution)");
     eprintln!();
     eprintln!("Architecture:");
     eprintln!("  --arch <arch>  Target architecture (default: native)");
@@ -1352,15 +2793,19 @@ fn print_usage() {
     eprintln!("Options:");
     eprintln!("  --release    Build in release mode");
     eprintln!("  --install    Install to system plugin directories");
+    eprintln!("               AUv2: ~/Library/Audio/Plug-Ins/Components/");
+    eprintln!("               AUv3: ~/Applications/");
     eprintln!("  --clean      Clean build caches before building (forces full rebuild)");
-    eprintln!("               Removes beamer-au cc cache and previous app bundle.");
+    eprintln!("               Removes beamer-au cc cache and previous bundles.");
     eprintln!("               Use when ObjC/header changes aren't being picked up.");
+    eprintln!("  --verbose    Show detailed build output (default: quiet)");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  cargo xtask bundle gain --vst3 --release --install");
-    eprintln!("  cargo xtask bundle gain --au --release --install");
-    eprintln!("  cargo xtask bundle gain --au --arch universal --release   # For distribution");
-    eprintln!("  cargo xtask bundle gain --vst3 --au --arch universal      # Both formats, universal");
+    eprintln!("  cargo xtask bundle gain --auv2 --release --install");
+    eprintln!("  cargo xtask bundle gain --auv3 --release --install");
+    eprintln!("  cargo xtask bundle gain --auv2 --auv3 --arch universal    # Both AU formats");
+    eprintln!("  cargo xtask bundle gain --vst3 --auv2 --arch universal    # VST3 + AUv2");
 }
 
 /// Find beamer-au output directory for a given target and profile.
@@ -1466,6 +2911,7 @@ fn build_native(
     workspace_root: &Path,
     format: &str,
     arch: Arch,
+    verbose: bool,
 ) -> Result<PathBuf, String> {
     // Always use explicit target to prevent RUSTFLAGS leaking into build scripts
     let target = match arch {
@@ -1476,7 +2922,7 @@ fn build_native(
     };
 
     let arch_name = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
-    println!("Building {} ({})...", format.to_uppercase(), arch_name);
+    status!("  Building {} ({})...", format.to_uppercase(), arch_name);
 
     let profile = if release { "release" } else { "debug" };
     let lib_name = package.replace('-', "_");
@@ -1485,7 +2931,7 @@ fn build_native(
     // AU requires additional setup (beamer-au and ObjC code)
     let rustflags = if format == "au" {
         ensure_beamer_au_built(workspace_root, target, release)?;
-        println!("Generating plugin-specific ObjC for {}...", package);
+        verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
         let objc_lib_dir = compile_plugin_objc(package, workspace_root, target)?;
         Some(get_au_rustflags(package, &objc_lib_dir)?)
     } else {
@@ -1522,7 +2968,7 @@ fn build_native(
         return Err(format!("Built library not found: {}", dylib_path.display()));
     }
 
-    println!("{} binary built: {}", format.to_uppercase(), dylib_path.display());
+    verbose!(verbose, "    Binary: {}", dylib_path.display());
     Ok(dylib_path)
 }
 
@@ -1544,8 +2990,9 @@ fn build_universal(
     release: bool,
     workspace_root: &Path,
     format: &str,
+    verbose: bool,
 ) -> Result<PathBuf, String> {
-    println!("Building {} universal binary (x86_64 + arm64)...", format.to_uppercase());
+    status!("  Building {} (universal)...", format.to_uppercase());
 
     let profile = if release { "release" } else { "debug" };
     let lib_name = package.replace('-', "_");
@@ -1556,7 +3003,7 @@ fn build_universal(
         ensure_beamer_au_built(workspace_root, "x86_64-apple-darwin", release)?;
         ensure_beamer_au_built(workspace_root, "aarch64-apple-darwin", release)?;
 
-        println!("Generating plugin-specific ObjC for {}...", package);
+        verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
         let objc_lib_dir_x86 = compile_plugin_objc(package, workspace_root, "x86_64-apple-darwin")?;
         let objc_lib_dir_arm = compile_plugin_objc(package, workspace_root, "aarch64-apple-darwin")?;
 
@@ -1569,7 +3016,7 @@ fn build_universal(
     };
 
     // Build for x86_64
-    println!("Building for x86_64...");
+    verbose!(verbose, "    Building for x86_64...");
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
@@ -1594,7 +3041,7 @@ fn build_universal(
     }
 
     // Build for arm64
-    println!("Building for arm64...");
+    verbose!(verbose, "    Building for arm64...");
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
@@ -1643,7 +3090,7 @@ fn build_universal(
     }
 
     // Combine using lipo
-    println!("Creating universal binary with lipo...");
+    verbose!(verbose, "    Creating universal binary with lipo...");
     let status = Command::new("lipo")
         .args([
             "-create",
@@ -1659,7 +3106,7 @@ fn build_universal(
         return Err("lipo failed to create universal binary".to_string());
     }
 
-    println!("{} universal binary created: {}", format.to_uppercase(), universal_path.display());
+    verbose!(verbose, "    Binary: {}", universal_path.display());
 
     Ok(universal_path)
 }
@@ -1672,8 +3119,8 @@ fn build_universal(
 /// 3. The final .app bundle may not get updated if only static libraries changed
 ///
 /// Use --clean when ObjC or header file changes aren't being picked up.
-fn clean_build_caches(workspace_root: &Path, package: &str, release: bool) -> Result<(), String> {
-    println!("Cleaning build caches...");
+fn clean_build_caches(workspace_root: &Path, package: &str, release: bool, verbose: bool) -> Result<(), String> {
+    status!("  Cleaning...");
 
     let profile = if release { "release" } else { "debug" };
     let target_dir = workspace_root.join("target").join(profile);
@@ -1685,7 +3132,7 @@ fn clean_build_caches(workspace_root: &Path, package: &str, release: bool) -> Re
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name();
             if name.to_string_lossy().starts_with("beamer-au-") {
-                println!("  Removing: {}", entry.path().display());
+                verbose!(verbose, "    Removing: {}", entry.path().display());
                 fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
             }
         }
@@ -1699,71 +3146,80 @@ fn clean_build_caches(workspace_root: &Path, package: &str, release: bool) -> Re
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str.starts_with("libbeamer_au") {
-                println!("  Removing: {}", entry.path().display());
+                verbose!(verbose, "    Removing: {}", entry.path().display());
                 fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
             }
         }
     }
 
-    // Clean previous app bundle
-    let bundle_name = to_au_bundle_name(package);
-    let app_path = target_dir.join(&bundle_name);
+    // Clean previous AUv3 app bundle
+    let auv3_bundle_name = to_au_bundle_name(package);
+    let app_path = target_dir.join(&auv3_bundle_name);
     if app_path.exists() {
-        println!("  Removing: {}", app_path.display());
+        verbose!(verbose, "    Removing: {}", app_path.display());
         fs::remove_dir_all(&app_path).map_err(|e| e.to_string())?;
     }
 
-    println!("Clean complete.");
+    // Clean previous AUv2 component bundle
+    let auv2_bundle_name = to_auv2_component_name(package);
+    let component_path = target_dir.join(&auv2_bundle_name);
+    if component_path.exists() {
+        verbose!(verbose, "    Removing: {}", component_path.display());
+        fs::remove_dir_all(&component_path).map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
-fn bundle(
-    package: &str,
-    release: bool,
-    install: bool,
-    clean: bool,
-    build_vst3: bool,
-    build_au: bool,
-    arch: Arch,
-) -> Result<(), String> {
-    let arch_str = match arch {
+fn bundle(config: &BundleConfig) -> Result<(), String> {
+    let arch_str = match config.arch {
         Arch::Native => "native",
         Arch::Universal => "universal",
         Arch::Arm64 => "arm64",
         Arch::X86_64 => "x86_64",
     };
-    println!("Bundling {} (release: {}, arch: {})...", package, release, arch_str);
+    let profile_str = if config.release { "release" } else { "debug" };
+    status!("Bundling {} ({}, {})...", config.package, profile_str, arch_str);
 
     // Get workspace root
     let workspace_root = get_workspace_root()?;
 
     // Clean build caches if requested
-    if clean {
-        clean_build_caches(&workspace_root, package, release)?;
+    if config.clean {
+        clean_build_caches(&workspace_root, &config.package, config.release, config.verbose)?;
     }
 
     // Determine paths
-    let profile = if release { "release" } else { "debug" };
-    let target_dir = workspace_root.join("target").join(profile);
+    let target_dir = workspace_root.join("target").join(profile_str);
 
     // Build and bundle VST3
-    if build_vst3 {
-        let dylib_path = if arch == Arch::Universal {
-            build_universal(package, release, &workspace_root, "vst3")?
+    if config.build_vst3 {
+        let dylib_path = if config.arch == Arch::Universal {
+            build_universal(&config.package, config.release, &workspace_root, "vst3", config.verbose)?
         } else {
-            build_native(package, release, &workspace_root, "vst3", arch)?
+            build_native(&config.package, config.release, &workspace_root, "vst3", config.arch, config.verbose)?
         };
-        bundle_vst3(package, &target_dir, &dylib_path, install)?;
+        bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, config.verbose)?;
     }
 
-    // Build and bundle AU (macOS only)
-    if build_au && cfg!(target_os = "macos") {
-        let dylib_path = if arch == Arch::Universal {
-            build_universal(package, release, &workspace_root, "au")?
+    // Build and bundle AUv2 (macOS only)
+    if config.build_auv2 && cfg!(target_os = "macos") {
+        let dylib_path = if config.arch == Arch::Universal {
+            build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
         } else {
-            build_native(package, release, &workspace_root, "au", arch)?
+            build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
         };
-        bundle_au(package, &target_dir, &dylib_path, install, &workspace_root, arch)?;
+        bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
+    }
+
+    // Build and bundle AUv3 (macOS only)
+    if config.build_auv3 && cfg!(target_os = "macos") {
+        let dylib_path = if config.arch == Arch::Universal {
+            build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
+        } else {
+            build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
+        };
+        bundle_auv3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
     }
 
     Ok(())
@@ -1774,6 +3230,7 @@ fn bundle_vst3(
     target_dir: &Path,
     dylib_path: &Path,
     install: bool,
+    verbose: bool,
 ) -> Result<(), String> {
     // Create bundle name (convert to CamelCase and add .vst3)
     let bundle_name = to_vst3_bundle_name(package);
@@ -1784,7 +3241,8 @@ fn bundle_vst3(
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
 
-    println!("Creating VST3 bundle at {}...", bundle_dir.display());
+    status!("  Creating VST3 bundle...");
+    verbose!(verbose, "    Path: {}", bundle_dir.display());
 
     // Clean up existing bundle
     if bundle_dir.exists() {
@@ -1810,23 +3268,220 @@ fn bundle_vst3(
     fs::write(contents_dir.join("PkgInfo"), "BNDL????")
         .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
 
-    println!("VST3 bundle created: {}", bundle_dir.display());
-
     // Install if requested
     if install {
-        install_vst3(&bundle_dir, &bundle_name)?;
+        install_vst3(&bundle_dir, &bundle_name, verbose)?;
+    } else {
+        status!("✓ {}", bundle_name);
     }
 
     Ok(())
 }
 
-fn bundle_au(
+fn bundle_auv2(
     package: &str,
     target_dir: &Path,
     dylib_path: &Path,
     install: bool,
     workspace_root: &Path,
     arch: Arch,
+    verbose: bool,
+) -> Result<(), String> {
+    // Create AUv2 .component bundle structure:
+    // BeamerGain.component/
+    // ├── Contents/
+    // │   ├── Info.plist       ← AudioComponents + factoryFunction
+    // │   ├── MacOS/
+    // │   │   └── BeamerGain   ← Plugin dylib with factory symbol
+    // │   ├── Resources/
+    // │   └── PkgInfo
+
+    // Get version from Cargo.toml
+    let (version_string, version_int) = get_version_info(workspace_root)?;
+
+    let bundle_name = to_auv2_component_name(package);
+    let bundle_dir = target_dir.join(&bundle_name);
+    let contents_dir = bundle_dir.join("Contents");
+    let macos_dir = contents_dir.join("MacOS");
+    let resources_dir = contents_dir.join("Resources");
+
+    status!("  Creating AUv2 component...");
+    verbose!(verbose, "    Path: {}", bundle_dir.display());
+
+    // Clean up existing bundle
+    if bundle_dir.exists() {
+        fs::remove_dir_all(&bundle_dir).map_err(|e| format!("Failed to remove old bundle: {}", e))?;
+    }
+
+    // Create directories
+    fs::create_dir_all(&macos_dir).map_err(|e| format!("Failed to create MacOS dir: {}", e))?;
+    fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
+
+    // Auto-detect component type, manufacturer, and subtype from plugin source
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name) =
+        detect_au_component_info(package, workspace_root);
+    verbose!(
+        verbose,
+        "    Detected: {} (manufacturer: {}, subtype: {})",
+        component_type,
+        detected_manufacturer.as_deref().unwrap_or("Bemr"),
+        detected_subtype.as_deref().unwrap_or("auto")
+    );
+    if let Some(ref name) = detected_plugin_name {
+        verbose!(verbose, "    Plugin name: {}", name);
+    }
+    if let Some(ref vendor) = detected_vendor_name {
+        verbose!(verbose, "    Vendor: {}", vendor);
+    }
+
+    // Generate ObjC wrapper with factory function
+    let wrapper_source = generate_auv2_wrapper_source(package);
+    let gen_dir = workspace_root.join("target/au-gen").join(package);
+    fs::create_dir_all(&gen_dir).map_err(|e| format!("Failed to create gen dir: {}", e))?;
+    let wrapper_path = gen_dir.join("auv2_wrapper.m");
+    fs::write(&wrapper_path, wrapper_source).map_err(|e| format!("Failed to write wrapper: {}", e))?;
+
+    // Build for each architecture
+    let arches = match arch {
+        Arch::Universal => vec!["x86_64", "arm64"],
+        Arch::Native => vec![if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" }],
+        Arch::Arm64 => vec!["arm64"],
+        Arch::X86_64 => vec!["x86_64"],
+    };
+
+    let arch_str = if arches.len() > 1 { "universal" } else { arches[0] };
+    verbose!(verbose, "    Building component ({})...", arch_str);
+
+    // Get bridge header path
+    let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
+
+    let executable_name = bundle_name.trim_end_matches(".component");
+    let binary_dest = macos_dir.join(executable_name);
+
+    let mut built_paths: Vec<PathBuf> = Vec::new();
+
+    for target_arch in &arches {
+        let arch_output = gen_dir.join(format!("{}_{}", executable_name, target_arch));
+
+        // Compile ObjC wrapper and link with Rust dylib as a bundle
+        let clang_status = Command::new("clang")
+            .args([
+                "-arch", target_arch,
+                "-bundle",  // Create a bundle (loadable module), not an executable
+                "-fobjc-arc",
+                "-fmodules",
+                "-framework", "Foundation",
+                "-framework", "AudioToolbox",
+                "-framework", "AVFoundation",
+                "-framework", "CoreAudio",
+                "-framework", "CoreAudioKit",
+                "-I", bridge_header_dir.to_str().unwrap(),
+                dylib_path.to_str().unwrap(),  // Link directly with the dylib
+                "-Wl,-rpath,@loader_path",
+                "-o", arch_output.to_str().unwrap(),
+                wrapper_path.to_str().unwrap(),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
+
+        if !clang_status.success() {
+            return Err(format!("Failed to build AUv2 component for {}", target_arch));
+        }
+        built_paths.push(arch_output);
+    }
+
+    if built_paths.len() == 1 {
+        // Single architecture - just rename
+        fs::rename(&built_paths[0], &binary_dest)
+            .map_err(|e| format!("Failed to rename binary: {}", e))?;
+    } else {
+        // Multiple architectures - combine with lipo
+        let mut lipo_args: Vec<&str> = vec!["-create"];
+        for path in &built_paths {
+            lipo_args.push(path.to_str().unwrap());
+        }
+        lipo_args.push("-output");
+        lipo_args.push(binary_dest.to_str().unwrap());
+
+        let lipo_status = Command::new("lipo")
+            .args(&lipo_args)
+            .status()
+            .map_err(|e| format!("Failed to run lipo: {}", e))?;
+
+        if !lipo_status.success() {
+            return Err("Failed to create universal binary".to_string());
+        }
+
+        // Clean up intermediate binaries
+        for path in &built_paths {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    // Copy dylib next to the binary (for @rpath resolution)
+    let dylib_name = dylib_path.file_name().unwrap();
+    let dylib_dest = macos_dir.join(dylib_name);
+    fs::copy(dylib_path, &dylib_dest).map_err(|e| format!("Failed to copy dylib: {}", e))?;
+
+    // Create Info.plist with factoryFunction
+    let info_plist = create_component_info_plist(&ComponentPlistConfig {
+        package,
+        executable_name,
+        component_type: &component_type,
+        manufacturer: detected_manufacturer.as_deref(),
+        subtype: detected_subtype.as_deref(),
+        version_string: &version_string,
+        version_int,
+        plugin_name: detected_plugin_name.as_deref(),
+        vendor_name: detected_vendor_name.as_deref(),
+    });
+    fs::write(contents_dir.join("Info.plist"), info_plist)
+        .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
+
+    // Create PkgInfo
+    fs::write(contents_dir.join("PkgInfo"), "BNDL????")
+        .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
+
+    // Code sign with ad-hoc signature
+    verbose!(verbose, "    Signing...");
+    let sign_result = Command::new("codesign")
+        .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
+        .output();
+
+    match sign_result {
+        Ok(output) if output.status.success() => {
+            if verbose {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.is_empty() {
+                    for line in stderr.lines() {
+                        verbose!(verbose, "    {}", line);
+                    }
+                }
+                verbose!(verbose, "    Code signing successful");
+            }
+        }
+        Ok(_) => status!("  Warning: Code signing failed"),
+        Err(e) => status!("  Warning: Could not run codesign: {}", e),
+    }
+
+    // Install if requested
+    if install {
+        install_auv2(&bundle_dir, &bundle_name, verbose)?;
+    } else {
+        status!("✓ {}", bundle_name);
+    }
+
+    Ok(())
+}
+
+fn bundle_auv3(
+    package: &str,
+    target_dir: &Path,
+    dylib_path: &Path,
+    install: bool,
+    workspace_root: &Path,
+    arch: Arch,
+    verbose: bool,
 ) -> Result<(), String> {
     // Create AUv3 .app bundle structure with .appex extension:
     // BeamerGain.app/                         # Container app
@@ -1853,7 +3508,8 @@ fn bundle_au(
     let app_resources_dir = contents_dir.join("Resources");
     let plugins_dir = contents_dir.join("PlugIns");
 
-    println!("Creating AUv3 app extension bundle at {}...", bundle_dir.display());
+    status!("  Creating AUv3 app extension...");
+    verbose!(verbose, "    Path: {}", bundle_dir.display());
 
     // Clean up existing bundle
     if bundle_dir.exists() {
@@ -1962,7 +3618,7 @@ fn bundle_au(
             .map_err(|e| format!("Failed to create Resources symlink: {}", e))?;
     }
 
-    println!("Created framework: {}.framework (versioned structure)", framework_name);
+    verbose!(verbose, "    Created framework: {}.framework", framework_name);
 
     // Build appex executable - thin wrapper that links the framework
     let appex_binary_path = appex_macos_dir.join(executable_name);
@@ -1985,7 +3641,7 @@ fn bundle_au(
     };
 
     let arch_str = if arches.len() > 1 { "universal" } else { arches[0] };
-    println!("Building appex executable ({})...", arch_str);
+    verbose!(verbose, "    Building appex executable ({})...", arch_str);
 
     let mut built_paths: Vec<PathBuf> = Vec::new();
 
@@ -2044,21 +3700,22 @@ fn bundle_au(
         }
     }
 
-    println!("Appex executable built ({})", arch_str);
+    verbose!(verbose, "    Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
     let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name) = detect_au_component_info(package, workspace_root);
-    println!(
-        "Detected AU: {} (manufacturer: {}, subtype: {})",
+    verbose!(
+        verbose,
+        "    Detected: {} (manufacturer: {}, subtype: {})",
         component_type,
         detected_manufacturer.as_deref().unwrap_or("Bemr"),
         detected_subtype.as_deref().unwrap_or("auto")
     );
     if let Some(ref name) = detected_plugin_name {
-        println!("  Plugin name: {}", name);
+        verbose!(verbose, "    Plugin name: {}", name);
     }
     if let Some(ref vendor) = detected_vendor_name {
-        println!("  Vendor: {}", vendor);
+        verbose!(verbose, "    Vendor: {}", vendor);
     }
 
     // Create appex Info.plist with NSExtension (out-of-process/XPC mode)
@@ -2089,7 +3746,7 @@ fn bundle_au(
     // Build host app executable from C stub.
     // This is a minimal stub that triggers pluginkit registration when launched.
     // The app is marked LSBackgroundOnly so it exits immediately after registration.
-    println!("Building host app executable ({})...", arch_str);
+    verbose!(verbose, "    Building host app executable ({})...", arch_str);
 
     let stub_main_path = workspace_root.join("crates/beamer-au/objc/stub_main.c");
     let host_binary_dst = app_macos_dir.join(executable_name);
@@ -2142,53 +3799,75 @@ fn bundle_au(
         }
     }
 
-    println!("Host app built ({})", arch_str);
-
-    println!("AUv3 app extension bundle created: {}", bundle_dir.display());
+    verbose!(verbose, "    Host app built ({})", arch_str);
 
     // Code sign framework first, then appex, then container app
-    println!("Code signing framework...");
-    let framework_sign_status = Command::new("codesign")
+    verbose!(verbose, "    Signing...");
+    let framework_sign_result = Command::new("codesign")
         .args(["--force", "--sign", "-", framework_dir.to_str().unwrap()])
-        .status();
+        .output();
 
-    match framework_sign_status {
-        Ok(status) if status.success() => println!("Framework code signing successful"),
-        Ok(_) => println!("Warning: Framework code signing failed"),
-        Err(e) => println!("Warning: Could not run codesign on framework: {}", e),
+    match framework_sign_result {
+        Ok(output) if output.status.success() => {
+            if verbose {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                for line in stderr.lines() {
+                    verbose!(verbose, "    {}", line);
+                }
+            }
+            verbose!(verbose, "    Framework code signing successful")
+        }
+        Ok(_) => status!("  Warning: Framework code signing failed"),
+        Err(e) => status!("  Warning: Could not run codesign on framework: {}", e),
     }
 
-    println!("Code signing appex...");
     let entitlements_path = workspace_root.join("crates/beamer-au/resources/appex.entitlements");
-    let appex_sign_status = Command::new("codesign")
+    let appex_sign_result = Command::new("codesign")
         .args([
             "--force",
             "--sign", "-",
             "--entitlements", entitlements_path.to_str().unwrap(),
             appex_dir.to_str().unwrap()
         ])
-        .status();
+        .output();
 
-    match appex_sign_status {
-        Ok(status) if status.success() => println!("Appex code signing successful"),
-        Ok(_) => println!("Warning: Appex code signing failed"),
-        Err(e) => println!("Warning: Could not run codesign on appex: {}", e),
+    match appex_sign_result {
+        Ok(output) if output.status.success() => {
+            if verbose {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                for line in stderr.lines() {
+                    verbose!(verbose, "    {}", line);
+                }
+            }
+            verbose!(verbose, "    Appex code signing successful")
+        }
+        Ok(_) => status!("  Warning: Appex code signing failed"),
+        Err(e) => status!("  Warning: Could not run codesign on appex: {}", e),
     }
 
-    println!("Code signing container app...");
-    let app_sign_status = Command::new("codesign")
+    let app_sign_result = Command::new("codesign")
         .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
-        .status();
+        .output();
 
-    match app_sign_status {
-        Ok(status) if status.success() => println!("Container app code signing successful"),
-        Ok(_) => println!("Warning: Container app code signing failed"),
-        Err(e) => println!("Warning: Could not run codesign on app: {}", e),
+    match app_sign_result {
+        Ok(output) if output.status.success() => {
+            if verbose {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                for line in stderr.lines() {
+                    verbose!(verbose, "    {}", line);
+                }
+            }
+            verbose!(verbose, "    Container app code signing successful")
+        }
+        Ok(_) => status!("  Warning: Container app code signing failed"),
+        Err(e) => status!("  Warning: Could not run codesign on app: {}", e),
     }
 
     // Install if requested
     if install {
-        install_au(&bundle_dir, &bundle_name)?;
+        install_au(&bundle_dir, &bundle_name, verbose)?;
+    } else {
+        status!("✓ {}", bundle_name);
     }
 
     Ok(())
@@ -2342,6 +4021,22 @@ fn to_au_bundle_name(package: &str) -> String {
         })
         .collect();
     format!("Beamer{}.app", name)
+}
+
+/// Returns component bundle name for AUv2
+/// e.g., "gain" -> "BeamerGain.component"
+fn to_auv2_component_name(package: &str) -> String {
+    let name: String = package
+        .split('-')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect();
+    format!("Beamer{}.component", name)
 }
 
 fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
@@ -2536,7 +4231,103 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     )
 }
 
-fn install_vst3(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
+/// Create Info.plist for AUv2 .component bundle
+fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
+    let manufacturer = config.manufacturer.unwrap_or("Bemr");
+    let subtype = config.subtype.map(|s| s.to_string()).unwrap_or_else(|| {
+        let gen: String = config.package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
+        if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
+    });
+
+    // Get appropriate tags based on component type
+    let tags = get_au_tags(config.component_type);
+
+    // Generate factory function name
+    let pascal_name = to_pascal_case(config.package);
+    let factory_name = format!("Beamer{}Factory", pascal_name);
+
+    // Create the plugin display name from vendor and plugin name
+    let plugin_display_name = match (config.vendor_name, config.plugin_name) {
+        (Some(vendor), Some(name)) => format!("{}: {}", vendor, name),
+        (None, Some(name)) => format!("Beamer: {}", name),
+        (Some(vendor), None) => format!("{}: {}", vendor, config.executable_name),
+        (None, None) => format!("Beamer: {}", config.executable_name),
+    };
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleExecutable</key>
+    <string>{executable}</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.beamer.{package}.component</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{executable}</string>
+    <key>CFBundleDisplayName</key>
+    <string>{display_name}</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+    <key>CFBundleVersion</key>
+    <string>{version}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{version}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>AudioComponents</key>
+    <array>
+        <dict>
+            <key>type</key>
+            <string>{component_type}</string>
+            <key>subtype</key>
+            <string>{subtype}</string>
+            <key>manufacturer</key>
+            <string>{manufacturer}</string>
+            <key>name</key>
+            <string>{plugin_display_name}</string>
+            <key>description</key>
+            <string>{executable} Audio Unit</string>
+            <key>factoryFunction</key>
+            <string>{factory_name}</string>
+            <key>sandboxSafe</key>
+            <true/>
+            <key>tags</key>
+            <array>
+                <string>{tags}</string>
+            </array>
+            <key>version</key>
+            <integer>{version_int}</integer>
+        </dict>
+    </array>
+</dict>
+</plist>
+"#,
+        executable = config.executable_name,
+        package = config.package,
+        manufacturer = manufacturer,
+        component_type = config.component_type,
+        subtype = subtype,
+        tags = tags,
+        factory_name = factory_name,
+        version = config.version_string,
+        version_int = config.version_int,
+        plugin_display_name = plugin_display_name,
+        display_name = config.plugin_name.unwrap_or(config.executable_name),
+    )
+}
+
+fn install_vst3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
     let vst3_dir = PathBuf::from(home)
         .join("Library")
@@ -2557,11 +4348,50 @@ fn install_vst3(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
     // Copy bundle
     copy_dir_all(bundle_dir, &dest)?;
 
-    println!("VST3 installed to: {}", dest.display());
+    verbose!(verbose, "    Installed to: {}", dest.display());
+    status!("✓ {} → {}", bundle_name, shorten_path(&dest));
     Ok(())
 }
 
-fn install_au(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
+fn install_auv2(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
+
+    // AUv2 components go to ~/Library/Audio/Plug-Ins/Components/
+    let components_dir = PathBuf::from(&home)
+        .join("Library")
+        .join("Audio")
+        .join("Plug-Ins")
+        .join("Components");
+
+    // Create Components directory if needed
+    fs::create_dir_all(&components_dir)
+        .map_err(|e| format!("Failed to create Components dir: {}", e))?;
+
+    let dest = components_dir.join(bundle_name);
+
+    // Remove existing installation
+    if dest.exists() {
+        fs::remove_dir_all(&dest).map_err(|e| format!("Failed to remove old installation: {}", e))?;
+    }
+
+    // Copy bundle
+    copy_dir_all(bundle_dir, &dest)?;
+
+    verbose!(verbose, "    Installed to: {}", dest.display());
+
+    // Refresh AU cache to pick up the new component
+    let _ = Command::new("killall")
+        .arg("-9")
+        .arg("AudioComponentRegistrar")
+        .status();
+
+    verbose!(verbose, "    Audio Unit cache refreshed");
+    status!("✓ {} → {}", bundle_name, shorten_path(&dest));
+
+    Ok(())
+}
+
+fn install_au(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
 
     // AUv3 app extensions must be installed as apps (not in Components folder).
@@ -2581,11 +4411,11 @@ fn install_au(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
     // Copy bundle
     copy_dir_all(bundle_dir, &dest)?;
 
-    println!("AUv3 app extension installed to: {}", dest.display());
+    verbose!(verbose, "    Installed to: {}", dest.display());
 
     // Launch the app briefly to trigger pluginkit registration.
     // AUv3 extensions are registered when their containing app is first launched.
-    println!("Registering Audio Unit extension...");
+    verbose!(verbose, "    Registering Audio Unit extension...");
     let _ = Command::new("open")
         .arg(&dest)
         .status();
@@ -2605,7 +4435,8 @@ fn install_au(bundle_dir: &Path, bundle_name: &str) -> Result<(), String> {
         .arg("AudioComponentRegistrar")
         .status();
 
-    println!("Audio Unit registered successfully");
+    verbose!(verbose, "    Audio Unit registered");
+    status!("✓ {} → {}", bundle_name, shorten_path(&dest));
 
     Ok(())
 }
