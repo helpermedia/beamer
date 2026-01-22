@@ -3119,53 +3119,92 @@ fn build_universal(
 /// 3. The final .app bundle may not get updated if only static libraries changed
 ///
 /// Use --clean when ObjC or header file changes aren't being picked up.
-fn clean_build_caches(workspace_root: &Path, package: &str, release: bool, verbose: bool) -> Result<(), String> {
-    status!("  Cleaning...");
-
+fn clean_build_caches(
+    workspace_root: &Path,
+    package: &str,
+    release: bool,
+    verbose: bool,
+    build_auv2: bool,
+    build_auv3: bool,
+    build_vst3: bool,
+) -> Result<(), String> {
     let profile = if release { "release" } else { "debug" };
     let target_dir = workspace_root.join("target").join(profile);
+    let clean_au = build_auv2 || build_auv3;
 
-    // Clean beamer-au cc cache (compiled ObjC objects)
-    let build_dir = workspace_root.join("target").join(profile).join("build");
-    if build_dir.exists() {
-        for entry in fs::read_dir(&build_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with("beamer-au-") {
-                verbose!(verbose, "    Removing: {}", entry.path().display());
-                fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+    // Build description of what we're cleaning
+    let mut targets = Vec::new();
+    if clean_au {
+        targets.push("AU caches");
+    }
+    if build_auv2 {
+        targets.push("AUv2");
+    }
+    if build_auv3 {
+        targets.push("AUv3");
+    }
+    if build_vst3 {
+        targets.push("VST3");
+    }
+    status!("  Cleaning ({})...", targets.join(", "));
+
+    // Clean beamer-au cc cache (compiled ObjC objects) - only for AU builds
+    if clean_au {
+        let build_dir = workspace_root.join("target").join(profile).join("build");
+        if build_dir.exists() {
+            for entry in fs::read_dir(&build_dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("beamer-au-") {
+                    verbose!(verbose, "    Removing: {}", entry.path().display());
+                    fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+
+        // Clean beamer-au deps (compiled Rust library)
+        let deps_dir = target_dir.join("deps");
+        if deps_dir.exists() {
+            for entry in fs::read_dir(&deps_dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("libbeamer_au") {
+                    verbose!(verbose, "    Removing: {}", entry.path().display());
+                    fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                }
             }
         }
     }
 
-    // Clean beamer-au deps (compiled Rust library)
-    let deps_dir = target_dir.join("deps");
-    if deps_dir.exists() {
-        for entry in fs::read_dir(&deps_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with("libbeamer_au") {
-                verbose!(verbose, "    Removing: {}", entry.path().display());
-                fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
-            }
+    // Clean previous VST3 bundle
+    if build_vst3 {
+        let vst3_bundle_name = to_vst3_bundle_name(package);
+        let vst3_path = target_dir.join(&vst3_bundle_name);
+        if vst3_path.exists() {
+            verbose!(verbose, "    Removing: {}", vst3_path.display());
+            fs::remove_dir_all(&vst3_path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Clean previous AUv2 component bundle
+    if build_auv2 {
+        let auv2_bundle_name = to_auv2_component_name(package);
+        let component_path = target_dir.join(&auv2_bundle_name);
+        if component_path.exists() {
+            verbose!(verbose, "    Removing: {}", component_path.display());
+            fs::remove_dir_all(&component_path).map_err(|e| e.to_string())?;
         }
     }
 
     // Clean previous AUv3 app bundle
-    let auv3_bundle_name = to_au_bundle_name(package);
-    let app_path = target_dir.join(&auv3_bundle_name);
-    if app_path.exists() {
-        verbose!(verbose, "    Removing: {}", app_path.display());
-        fs::remove_dir_all(&app_path).map_err(|e| e.to_string())?;
-    }
-
-    // Clean previous AUv2 component bundle
-    let auv2_bundle_name = to_auv2_component_name(package);
-    let component_path = target_dir.join(&auv2_bundle_name);
-    if component_path.exists() {
-        verbose!(verbose, "    Removing: {}", component_path.display());
-        fs::remove_dir_all(&component_path).map_err(|e| e.to_string())?;
+    if build_auv3 {
+        let auv3_bundle_name = to_au_bundle_name(package);
+        let app_path = target_dir.join(&auv3_bundle_name);
+        if app_path.exists() {
+            verbose!(verbose, "    Removing: {}", app_path.display());
+            fs::remove_dir_all(&app_path).map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(())
@@ -3186,11 +3225,35 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
 
     // Clean build caches if requested
     if config.clean {
-        clean_build_caches(&workspace_root, &config.package, config.release, config.verbose)?;
+        clean_build_caches(
+            &workspace_root,
+            &config.package,
+            config.release,
+            config.verbose,
+            config.build_auv2,
+            config.build_auv3,
+            config.build_vst3,
+        )?;
     }
 
     // Determine paths
     let target_dir = workspace_root.join("target").join(profile_str);
+
+    // Build and bundle AU (macOS only) - build once, bundle for each requested format
+    if (config.build_auv2 || config.build_auv3) && cfg!(target_os = "macos") {
+        let dylib_path = if config.arch == Arch::Universal {
+            build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
+        } else {
+            build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
+        };
+
+        if config.build_auv2 {
+            bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
+        }
+        if config.build_auv3 {
+            bundle_auv3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
+        }
+    }
 
     // Build and bundle VST3
     if config.build_vst3 {
@@ -3200,26 +3263,6 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
             build_native(&config.package, config.release, &workspace_root, "vst3", config.arch, config.verbose)?
         };
         bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, config.verbose)?;
-    }
-
-    // Build and bundle AUv2 (macOS only)
-    if config.build_auv2 && cfg!(target_os = "macos") {
-        let dylib_path = if config.arch == Arch::Universal {
-            build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
-        } else {
-            build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
-        };
-        bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
-    }
-
-    // Build and bundle AUv3 (macOS only)
-    if config.build_auv3 && cfg!(target_os = "macos") {
-        let dylib_path = if config.arch == Arch::Universal {
-            build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
-        } else {
-            build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
-        };
-        bundle_auv3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
     }
 
     Ok(())
@@ -4380,11 +4423,19 @@ fn install_auv2(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(
     verbose!(verbose, "    Installed to: {}", dest.display());
 
     // Refresh AU cache to pick up the new component
-    let _ = Command::new("killall")
+    let killall_result = Command::new("killall")
         .arg("-9")
         .arg("AudioComponentRegistrar")
-        .status();
+        .output();
 
+    if verbose {
+        if let Ok(output) = killall_result {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines() {
+                verbose!(verbose, "    {}", line);
+            }
+        }
+    }
     verbose!(verbose, "    Audio Unit cache refreshed");
     status!("✓ {} → {}", bundle_name, shorten_path(&dest));
 
@@ -4425,16 +4476,33 @@ fn install_au(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(),
 
     // Terminate the background app (it has LSBackgroundOnly so it won't show UI)
     let executable_name = bundle_name.trim_end_matches(".app");
-    let _ = Command::new("killall")
+    let killall_app = Command::new("killall")
         .arg(executable_name)
-        .status();
+        .output();
+
+    if verbose {
+        if let Ok(output) = killall_app {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines() {
+                verbose!(verbose, "    {}", line);
+            }
+        }
+    }
 
     // Also refresh AU cache
-    let _ = Command::new("killall")
+    let killall_au = Command::new("killall")
         .arg("-9")
         .arg("AudioComponentRegistrar")
-        .status();
+        .output();
 
+    if verbose {
+        if let Ok(output) = killall_au {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines() {
+                verbose!(verbose, "    {}", line);
+            }
+        }
+    }
     verbose!(verbose, "    Audio Unit registered");
     status!("✓ {} → {}", bundle_name, shorten_path(&dest));
 
