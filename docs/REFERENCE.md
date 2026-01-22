@@ -1698,11 +1698,18 @@ cargo xtask bundle my-plugin --auv2 --arch universal --release
 - `--arch arm64` - Build for Apple Silicon only
 - `--arch x86_64` - Build for Intel only
 
+**Build Options:**
+- `--release` - Build with optimizations (required for real-time audio performance)
+- `--install` - Install to user directory (see Install Locations below)
+- `--clean` - Clean build caches before building (use when ObjC changes aren't picked up)
+- `--verbose` / `-v` - Show detailed build output
+
 **Install Locations:**
 
 ```
+VST3: ~/Library/Audio/Plug-Ins/VST3/
 AUv2: ~/Library/Audio/Plug-Ins/Components/
-AUv3: ~/Applications/ (or /Applications/)
+AUv3: ~/Applications/
 ```
 
 **Code Signing:**
