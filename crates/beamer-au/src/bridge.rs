@@ -1058,6 +1058,111 @@ pub extern "C" fn beamer_au_set_parameter_value(
     })
 }
 
+/// Get a parameter's current value in AU format (denormalized for indexed parameters).
+///
+/// For indexed parameters (those with `unit_type == kAudioUnitParameterUnit_Indexed`),
+/// this returns the index value (0 to step_count) instead of the normalized value (0.0 to 1.0).
+/// For non-indexed parameters, this returns the normalized value.
+///
+/// This function is designed for use by AU wrappers that need to provide values
+/// in the format expected by AU hosts, where indexed parameters use integer indices.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0.0`)
+/// - `instance` must not have been destroyed
+/// - This function validates `instance` is non-null before dereferencing
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_parameter_value_au(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+) -> f32 {
+    with_instance!(instance, 0.0, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0.0,
+        };
+
+        let store = match plugin.parameter_store() {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        };
+
+        let normalized = store.get_normalized(param_id) as f32;
+
+        // Find parameter info to check if it's indexed
+        let count = store.count();
+        for i in 0..count {
+            if let Some(info) = store.info(i) {
+                if info.id == param_id {
+                    // For indexed parameters, convert normalized (0..1) to index (0..step_count)
+                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                        return (normalized * info.step_count as f32).round();
+                    }
+                    break;
+                }
+            }
+        }
+
+        normalized
+    })
+}
+
+/// Set a parameter's value from AU format (denormalized for indexed parameters).
+///
+/// For indexed parameters (those with `unit_type == kAudioUnitParameterUnit_Indexed`),
+/// this accepts an index value (0 to step_count) and converts it to normalized (0.0 to 1.0).
+/// For non-indexed parameters, this accepts the normalized value directly.
+///
+/// This function is designed for use by AU wrappers that receive values
+/// in the format provided by AU hosts, where indexed parameters use integer indices.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function does nothing)
+/// - `instance` must not have been destroyed
+/// - This function validates `instance` is non-null before dereferencing
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_set_parameter_value_au(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+    value: f32,
+) {
+    with_instance_void!(instance, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let store = match plugin.parameter_store() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        // Find parameter info to check if it's indexed
+        let count = store.count();
+        let mut normalized = value;
+
+        for i in 0..count {
+            if let Some(info) = store.info(i) {
+                if info.id == param_id {
+                    // For indexed parameters, convert index (0..step_count) to normalized (0..1)
+                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                        normalized = value / info.step_count as f32;
+                    }
+                    break;
+                }
+            }
+        }
+
+        store.set_normalized(param_id, normalized as f64);
+    })
+}
+
 /// Format a parameter value as a display string.
 ///
 /// # Safety

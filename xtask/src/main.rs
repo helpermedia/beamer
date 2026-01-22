@@ -854,11 +854,8 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         [strongSelf->_instanceLock lock];
         AUValue result = 0.0f;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            result = beamer_au_get_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address);
-            // Convert normalized to index for indexed parameters
-            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
-                result = roundf(result * param.maxValue);
-            }}
+            // Use AU-format getter which handles indexed parameter conversion internally
+            result = beamer_au_get_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address);
         }}
         [strongSelf->_instanceLock unlock];
         return result;
@@ -872,12 +869,8 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
         [strongSelf->_instanceLock lock];
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            AUValue normalizedValue = value;
-            // Convert index to normalized for indexed parameters
-            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
-                normalizedValue = value / param.maxValue;
-            }}
-            beamer_au_set_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, normalizedValue);
+            // Use AU-format setter which handles indexed parameter conversion internally
+            beamer_au_set_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address, value);
         }}
         [strongSelf->_instanceLock unlock];
     }};
@@ -1555,6 +1548,23 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }}
             return kAudioUnitErr_InvalidProperty;
 
+        // Parameter string from value (convert value to display string)
+        case kAudioUnitProperty_ParameterStringFromValue:
+            if (scope == kAudioUnitScope_Global) {{
+                if (outDataSize) *outDataSize = sizeof(AudioUnitParameterStringFromValue);
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
+        // Parameter value from string (convert display string to value)
+        case kAudioUnitProperty_ParameterValueFromString:
+            if (scope == kAudioUnitScope_Global) {{
+                if (outDataSize) *outDataSize = sizeof(AudioUnitParameterValueFromString);
+                if (outWritable) *outWritable = true;
+                return noErr;
+            }}
+            return kAudioUnitErr_InvalidScope;
+
         // Latency (Global scope only)
         case kAudioUnitProperty_Latency:
             if (scope != kAudioUnitScope_Global) {{
@@ -1755,15 +1765,18 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                     // Map unit type
                     auInfo->unit = bInfo.unit_type;
 
-                    // Normalized range 0-1
+                    // Normalized range 0-1 (unless indexed)
                     auInfo->minValue = 0.0f;
                     auInfo->maxValue = 1.0f;
                     auInfo->defaultValue = bInfo.default_value;
 
                     // Check if indexed parameter (for value strings)
+                    // AUv2 indexed params use integer values 0..step_count
                     if (bInfo.unit_type == kAudioUnitParameterUnit_Indexed && bInfo.step_count > 0) {{
                         auInfo->flags |= kAudioUnitParameterFlag_ValuesHaveStrings;
                         auInfo->maxValue = (float)bInfo.step_count;
+                        // Convert default from normalized to index
+                        auInfo->defaultValue = roundf(bInfo.default_value * (float)bInfo.step_count);
                     }}
 
                     // Copy unit label if present
@@ -1801,6 +1814,97 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             }}
             *(CFArrayRef*)outData = array;
             *ioDataSize = sizeof(CFArrayRef);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ParameterStringFromValue: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitParameterStringFromValue)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            AudioUnitParameterStringFromValue* params = (AudioUnitParameterStringFromValue*)outData;
+            AudioUnitParameterID paramID = params->inParamID;
+
+            // Get the value to convert (either provided or current)
+            float value;
+            if (params->inValue != NULL) {{
+                value = *(params->inValue);
+            }} else {{
+                value = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
+            }}
+
+            // For indexed parameters, convert index to normalized for formatting
+            float formatValue = value;
+            uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
+            for (uint32_t i = 0; i < count; i++) {{
+                BeamerAuParameterInfo info;
+                if (beamer_au_get_parameter_info(inst->rustInstance, i, &info) && info.id == paramID) {{
+                    if (info.unit_type == kAudioUnitParameterUnit_Indexed && info.step_count > 0) {{
+                        formatValue = value / (float)info.step_count;
+                    }}
+                    break;
+                }}
+            }}
+
+            char buffer[256];
+            uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, paramID, formatValue, buffer, sizeof(buffer));
+            if (written > 0) {{
+                params->outString = CFStringCreateWithCString(NULL, buffer, kCFStringEncodingUTF8);
+            }} else {{
+                // Fallback: format as number
+                char fallback[64];
+                snprintf(fallback, sizeof(fallback), "%.2f", value);
+                params->outString = CFStringCreateWithCString(NULL, fallback, kCFStringEncodingUTF8);
+            }}
+
+            *ioDataSize = sizeof(AudioUnitParameterStringFromValue);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_ParameterValueFromString: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitParameterValueFromString)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            AudioUnitParameterValueFromString* params = (AudioUnitParameterValueFromString*)outData;
+            AudioUnitParameterID paramID = params->inParamID;
+            CFStringRef inputString = params->inString;
+
+            if (inputString == NULL) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            char buffer[256];
+            if (!CFStringGetCString(inputString, buffer, sizeof(buffer), kCFStringEncodingUTF8)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            float parsedValue = 0.0f;
+            if (beamer_au_parse_parameter_value(inst->rustInstance, paramID, buffer, &parsedValue)) {{
+                // For indexed parameters, convert normalized to index
+                uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
+                for (uint32_t i = 0; i < count; i++) {{
+                    BeamerAuParameterInfo info;
+                    if (beamer_au_get_parameter_info(inst->rustInstance, i, &info) && info.id == paramID) {{
+                        if (info.unit_type == kAudioUnitParameterUnit_Indexed && info.step_count > 0) {{
+                            parsedValue = roundf(parsedValue * (float)info.step_count);
+                        }}
+                        break;
+                    }}
+                }}
+                params->outValue = parsedValue;
+            }} else {{
+                // Parsing failed, try to interpret as a number directly
+                params->outValue = (float)atof(buffer);
+            }}
+
+            *ioDataSize = sizeof(AudioUnitParameterValueFromString);
             return noErr;
         }}
 
@@ -2230,18 +2334,22 @@ static OSStatus BeamerAuv2RemovePropertyListenerWithUserData(void* self, AudioUn
 static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue* outValue) {{
 
+    (void)element;
+
     if (scope != kAudioUnitScope_Global) {{
         return kAudioUnitErr_InvalidScope;
     }}
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
-    *outValue = beamer_au_get_parameter_value(inst->rustInstance, paramID);
+    // Use AU-format getter which handles indexed parameter conversion internally
+    *outValue = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
     return noErr;
 }}
 
 static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset) {{
 
+    (void)element;
     (void)bufferOffset; // TODO: Support sample-accurate automation
 
     if (scope != kAudioUnitScope_Global) {{
@@ -2249,7 +2357,8 @@ static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
     }}
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
-    beamer_au_set_parameter_value(inst->rustInstance, paramID, value);
+    // Use AU-format setter which handles indexed parameter conversion internally
+    beamer_au_set_parameter_value_au(inst->rustInstance, paramID, value);
     return noErr;
 }}
 
@@ -2259,8 +2368,9 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
     for (UInt32 i = 0; i < numEvents; i++) {{
         const AudioUnitParameterEvent* event = &events[i];
         if (event->eventType == kParameterEvent_Immediate) {{
-            beamer_au_set_parameter_value(inst->rustInstance,
-                event->parameter, event->eventValues.immediate.value);
+            // Use AU-format setter which handles indexed parameter conversion internally
+            beamer_au_set_parameter_value_au(inst->rustInstance, event->parameter,
+                event->eventValues.immediate.value);
         }}
         // TODO: Handle ramped parameter changes
     }}

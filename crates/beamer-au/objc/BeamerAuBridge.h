@@ -577,6 +577,54 @@ void beamer_au_set_parameter_value(
 );
 
 /**
+ * Get a parameter's current value in AU format (denormalized for indexed parameters).
+ *
+ * For indexed parameters (unit_type = kAudioUnitParameterUnit_Indexed), this returns
+ * the index value (0 to step_count) instead of the normalized value (0.0 to 1.0).
+ * For non-indexed parameters, this returns the normalized value.
+ *
+ * This function handles the conversion internally using the parameter's step_count,
+ * eliminating the need for AU wrappers to duplicate the conversion logic.
+ *
+ * Thread Safety: Can be called from any thread (uses atomics internally).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
+ *
+ * @return Value in AU format:
+ *         - For indexed parameters: index (0 to step_count)
+ *         - For non-indexed parameters: normalized value (0.0 to 1.0)
+ */
+float beamer_au_get_parameter_value_au(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
+
+/**
+ * Set a parameter's value from AU format (denormalized for indexed parameters).
+ *
+ * For indexed parameters (unit_type = kAudioUnitParameterUnit_Indexed), this accepts
+ * an index value (0 to step_count) and converts it to normalized (0.0 to 1.0).
+ * For non-indexed parameters, this accepts the normalized value directly.
+ *
+ * This function handles the conversion internally using the parameter's step_count,
+ * eliminating the need for AU wrappers to duplicate the conversion logic.
+ *
+ * Thread Safety: Can be called from any thread (uses atomics internally).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
+ * @param value    Value in AU format:
+ *                 - For indexed parameters: index (0 to step_count)
+ *                 - For non-indexed parameters: normalized value (0.0 to 1.0)
+ *
+ * Note: The parameter's smoother will interpolate to the new value over time
+ * to avoid zipper noise.
+ */
+void beamer_au_set_parameter_value_au(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t param_id,
+    float value
+);
+
+/**
  * Format a parameter value as a display string.
  *
  * Converts a normalized value to a human-readable string using the parameter's
