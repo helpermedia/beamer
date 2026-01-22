@@ -225,24 +225,26 @@ Beamer's solution makes it impossible to process audio without valid configurati
 ```rust
 // ✅ New pattern - type system enforces correctness
 impl Plugin for MyPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
 
-    fn prepare(self, config: AudioSetup) -> MyProcessor {
+    fn prepare(self, setup: SampleRate) -> MyProcessor {
         MyProcessor {
-            sample_rate: config.sample_rate,  // Real value from start!
-            buffer: vec![0.0; (config.sample_rate * 2.0) as usize],  // Correct size!
+            sample_rate: setup.hz(),  // Real value from start!
+            buffer: vec![0.0; (setup.hz() * 2.0) as usize],  // Correct size!
         }
     }
 }
 ```
 
-### Configuration Types
+### Setup Types
 
-| Type | Use Case | Fields |
-|------|----------|--------|
-| `NoConfig` | Stateless plugins (gain, pan) | None |
-| `AudioSetup` | Most plugins (delay, compressor, synth) | `sample_rate`, `max_buffer_size` |
-| `FullAudioSetup` | Channel-dependent plugins | Above + `BusLayout` |
+| Type | Use Case | Value |
+|------|----------|-------|
+| `()` | Stateless plugins (gain, pan) | — |
+| `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
+| `MaxBufferSize` | FFT, lookahead | `usize` |
+| `MainOutputChannels` | Per-channel state | `u32` |
+| `(A, B, ...)` | Combine multiple types | Tuples up to 5 elements |
 
 ### Trait Responsibilities
 

@@ -43,10 +43,10 @@ struct GainPlugin {
 }
 
 impl Plugin for GainPlugin {
-    type Config = NoConfig;  // Simple gain doesn't need sample rate
+    type Setup = ();  // Simple gain doesn't need sample rate
     type Processor = GainProcessor;
 
-    fn prepare(self, _config: NoConfig) -> GainProcessor {
+    fn prepare(self, _: ()) -> GainProcessor {
         GainProcessor { parameters: self.parameters }
     }
 }
@@ -83,7 +83,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 ```text
 Plugin::default() → Plugin (unprepared, holds parameters)
                          │
-                         ▼  prepare(config)
+                         ▼  prepare(setup)
                          │
                     AudioProcessor (prepared, ready for audio)
                          │
@@ -94,11 +94,12 @@ Plugin::default() → Plugin (unprepared, holds parameters)
 
 **Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
 
-| Config Type | Use Case |
-|-------------|----------|
-| `NoConfig` | Stateless plugins (gain, pan) |
-| `AudioSetup` | Most plugins (delay, compressor, synth) |
-| `FullAudioSetup` | Plugins needing channel layout info |
+| Setup Type | Use Case |
+|------------|----------|
+| `()` | Stateless plugins (gain, pan) |
+| `SampleRate` | Most plugins (delay, filter, envelope) |
+| `(SampleRate, MaxBufferSize)` | FFT, lookahead |
+| `(SampleRate, MainOutputChannels)` | Surround, per-channel state |
 
 ## Examples
 

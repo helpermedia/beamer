@@ -7,7 +7,7 @@
 //! 4. Use `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
 //! 5. Use linear smoothing (`smoothing = "linear:50.0"`)
 //! 6. Access sidechain input for external key signal
-//! 7. Use `AudioSetup` config for sample-rate-dependent initialization
+//! 7. Use `SampleRate` setup for sample-rate-dependent initialization
 //!
 //! ## DSP Overview
 //!
@@ -255,15 +255,15 @@ pub struct CompressorPlugin {
 }
 
 impl Plugin for CompressorPlugin {
-    type Config = AudioSetup; // Compressor needs sample rate for envelope coefficients
+    type Setup = SampleRate; // Compressor needs sample rate for envelope coefficients
     type Processor = CompressorProcessor;
 
-    fn prepare(mut self, config: AudioSetup) -> CompressorProcessor {
+    fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(config.sample_rate);
+        self.parameters.set_sample_rate(setup.hz());
 
         // Calculate bypass ramp samples based on sample rate
-        let ramp_samples = (config.sample_rate * BYPASS_RAMP_MS * 0.001) as u32;
+        let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
             parameters: self.parameters,
@@ -272,7 +272,7 @@ impl Plugin for CompressorPlugin {
                 env_db: DC_OFFSET,
                 average_gr_db: 0.0,
             },
-            sample_rate: config.sample_rate,
+            sample_rate: setup.hz(),
         }
     }
 

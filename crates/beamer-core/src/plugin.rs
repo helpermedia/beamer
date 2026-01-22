@@ -66,104 +66,317 @@ pub trait HasParameters: Send + 'static {
 }
 
 // =============================================================================
-// Processor Configuration Types
+// Plugin Setup Types - Composable Host Information
 // =============================================================================
 
-/// Marker trait for processor configuration types.
+/// Internal: All information the host provides at initialization.
 ///
-/// Plugins declare their configuration requirements via the associated
-/// [`Plugin::Config`] type. The framework provides these standard configs:
-///
-/// - [`NoConfig`]: For plugins that don't need sample rate (e.g., simple gain)
-/// - [`AudioSetup`]: For plugins that need sample rate and max buffer size
-/// - [`FullAudioSetup`]: For plugins that also need bus layout information
-///
-/// Plugins can also define custom config types by implementing this trait.
-pub trait ProcessorConfig: Clone + Send + 'static {}
-
-/// Configuration for plugins that don't need audio setup information.
-///
-/// Use this for stateless plugins like simple gain, pan, or polarity flip
-/// that don't have any sample-rate-dependent state.
-///
-/// # Example
-///
-/// ```ignore
-/// impl Plugin for GainPlugin {
-///     type Config = NoConfig;
-///     // ...
-///     fn prepare(self, _: NoConfig) -> GainProcessor {
-///         GainProcessor { parameters: self.parameters }
-///     }
-/// }
-/// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct NoConfig;
-impl ProcessorConfig for NoConfig {}
-
-/// Standard audio setup configuration with sample rate and max buffer size.
-///
-/// Use this for most plugins that have sample-rate-dependent state,
-/// such as delays, filters, compressors, or any plugin with smoothing.
-///
-/// # Example
-///
-/// ```ignore
-/// impl Plugin for DelayPlugin {
-///     type Config = AudioSetup;
-///     // ...
-///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
-///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
-///         DelayProcessor {
-///             parameters: self.parameters,
-///             sample_rate: config.sample_rate,  // Real value from start!
-///             buffer: vec![0.0; buffer_size],   // Correct allocation!
-///         }
-///     }
-/// }
-/// ```
-#[derive(Clone, Debug, PartialEq)]
-pub struct AudioSetup {
+/// This is passed to `PluginSetup::extract()` so each setup type can
+/// extract only what it needs.
+#[derive(Clone, Debug)]
+pub struct HostSetup {
     /// Sample rate in Hz (e.g., 44100.0, 48000.0, 96000.0)
-    pub sample_rate: f64,
-    /// Maximum number of samples per process() call
-    pub max_buffer_size: usize,
-}
-impl ProcessorConfig for AudioSetup {}
-
-/// Full audio setup including bus layout information.
-///
-/// Use this for plugins that need to know the channel configuration,
-/// such as surround processors or plugins with channel-specific processing.
-///
-/// # Example
-///
-/// ```ignore
-/// impl Plugin for SurroundPlugin {
-///     type Config = FullAudioSetup;
-///     // ...
-///     fn prepare(self, config: FullAudioSetup) -> SurroundProcessor {
-///         let channel_count = config.layout.main_output_channels();
-///         SurroundProcessor {
-///             parameters: self.parameters,
-///             sample_rate: config.sample_rate,
-///             per_channel_state: vec![ChannelState::new(); channel_count],
-///         }
-///     }
-/// }
-/// ```
-#[derive(Clone, Debug, PartialEq)]
-pub struct FullAudioSetup {
-    /// Sample rate in Hz
     pub sample_rate: f64,
     /// Maximum number of samples per process() call
     pub max_buffer_size: usize,
     /// Bus layout information
     pub layout: BusLayout,
+    /// Processing mode (realtime vs offline)
+    pub process_mode: ProcessMode,
 }
-impl ProcessorConfig for FullAudioSetup {}
+
+impl HostSetup {
+    /// Create a new HostSetup with the given values.
+    pub fn new(sample_rate: f64, max_buffer_size: usize, layout: BusLayout, process_mode: ProcessMode) -> Self {
+        Self {
+            sample_rate,
+            max_buffer_size,
+            layout,
+            process_mode,
+        }
+    }
+}
+
+/// Trait for plugin setup requirements.
+///
+/// Plugins declare what host information they need via [`Plugin::Setup`].
+/// The framework extracts only the requested data from the host.
+///
+/// # Composable Setup Types
+///
+/// Request exactly what you need using individual types or tuples:
+///
+/// ```ignore
+/// type Setup = ();                                  // No setup needed
+/// type Setup = SampleRate;                          // Just sample rate
+/// type Setup = (SampleRate, MaxBufferSize);         // Sample rate + buffer size
+/// type Setup = (SampleRate, MainOutputChannels);    // Sample rate + channels
+/// ```
+///
+/// # Available Types
+///
+/// | Type | Value | Use Case |
+/// |------|-------|----------|
+/// | `()` | — | Stateless plugins (gain, pan) |
+/// | [`SampleRate`] | `f64` | Time-based DSP (delay, filter, envelope) |
+/// | [`MaxBufferSize`] | `usize` | FFT, lookahead buffers |
+/// | [`MainInputChannels`] | `u32` | Per-channel input processing |
+/// | [`MainOutputChannels`] | `u32` | Per-channel output state |
+/// | [`AuxInputCount`] | `usize` | Sidechain-aware processing |
+/// | [`AuxOutputCount`] | `usize` | Multi-bus output |
+/// | [`ProcessMode`] | enum | Quality settings for offline rendering |
+pub trait PluginSetup: Clone + Send + 'static {
+    /// Extract this setup from the host-provided information.
+    fn extract(host: &HostSetup) -> Self;
+}
+
+// =============================================================================
+// Unit Type - No Setup Needed
+// =============================================================================
+
+/// Use `()` for stateless plugins that don't depend on sample rate.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for GainPlugin {
+///     type Setup = ();
+///     fn prepare(self, _: ()) -> GainProcessor {
+///         GainProcessor { parameters: self.parameters }
+///     }
+/// }
+/// ```
+impl PluginSetup for () {
+    fn extract(_: &HostSetup) -> Self {}
+}
+
+// =============================================================================
+// Individual Setup Types
+// =============================================================================
+
+/// Sample rate in Hz.
+///
+/// Use for most plugins with time-dependent DSP: delays, filters,
+/// envelopes, parameter smoothing, etc. This is the most common choice.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for DelayPlugin {
+///     type Setup = SampleRate;
+///     fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+///         let buffer_size = (MAX_DELAY_SECONDS * sample_rate.0) as usize;
+///         DelayProcessor {
+///             sample_rate: sample_rate.0,
+///             buffer: vec![0.0; buffer_size],
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampleRate(pub f64);
+
+impl SampleRate {
+    /// Get the sample rate in Hz.
+    #[inline]
+    pub fn hz(&self) -> f64 {
+        self.0
+    }
+}
+
+impl PluginSetup for SampleRate {
+    fn extract(host: &HostSetup) -> Self {
+        SampleRate(host.sample_rate)
+    }
+}
+
+/// Maximum buffer size in samples.
+///
+/// Use for plugins that need to pre-allocate processing buffers,
+/// like FFT-based processors or lookahead limiters.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for FftPlugin {
+///     type Setup = (SampleRate, MaxBufferSize);
+///     fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+///         FftProcessor {
+///             sample_rate: sr.0,
+///             fft_buffer: vec![0.0; mbs.0],
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaxBufferSize(pub usize);
+
+impl PluginSetup for MaxBufferSize {
+    fn extract(host: &HostSetup) -> Self {
+        MaxBufferSize(host.max_buffer_size)
+    }
+}
+
+/// Number of channels on the main input bus.
+///
+/// Use for plugins that need per-channel input processing,
+/// like channel-specific EQ or surround processors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MainInputChannels(pub u32);
+
+impl PluginSetup for MainInputChannels {
+    fn extract(host: &HostSetup) -> Self {
+        MainInputChannels(host.layout.main_input_channels)
+    }
+}
+
+/// Number of channels on the main output bus.
+///
+/// Use for plugins that need per-channel output state allocation,
+/// like surround processors or multi-channel analyzers.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for SurroundPlugin {
+///     type Setup = (SampleRate, MainOutputChannels);
+///     fn prepare(self, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
+///         SurroundProcessor {
+///             sample_rate: sr.0,
+///             per_channel_state: vec![State::new(); channels.0 as usize],
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MainOutputChannels(pub u32);
+
+impl PluginSetup for MainOutputChannels {
+    fn extract(host: &HostSetup) -> Self {
+        MainOutputChannels(host.layout.main_output_channels)
+    }
+}
+
+/// Number of auxiliary input buses.
+///
+/// Use for sidechain-aware plugins that need to know
+/// how many aux inputs are available.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuxInputCount(pub usize);
+
+impl PluginSetup for AuxInputCount {
+    fn extract(host: &HostSetup) -> Self {
+        AuxInputCount(host.layout.aux_input_count)
+    }
+}
+
+/// Number of auxiliary output buses.
+///
+/// Use for multi-bus output plugins.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuxOutputCount(pub usize);
+
+impl PluginSetup for AuxOutputCount {
+    fn extract(host: &HostSetup) -> Self {
+        AuxOutputCount(host.layout.aux_output_count)
+    }
+}
+
+/// Processing mode (realtime vs offline).
+///
+/// Use for plugins that want different quality settings
+/// for realtime vs offline rendering (e.g., higher quality
+/// oversampling when rendering offline).
+///
+/// # Example
+///
+/// ```ignore
+/// impl Plugin for OversamplingPlugin {
+///     type Setup = (SampleRate, ProcessMode);
+///     fn prepare(self, (sr, mode): (SampleRate, ProcessMode)) -> Processor {
+///         let oversampling = match mode {
+///             ProcessMode::Realtime => 2,
+///             ProcessMode::Offline => 8,
+///         };
+///         Processor { sample_rate: sr.0, oversampling }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProcessMode {
+    /// Normal realtime playback.
+    #[default]
+    Realtime,
+    /// Offline rendering (bounce, export).
+    Offline,
+    /// Prefetch (used by some hosts for look-ahead).
+    Prefetch,
+}
+
+impl PluginSetup for ProcessMode {
+    fn extract(host: &HostSetup) -> Self {
+        host.process_mode
+    }
+}
+
+// =============================================================================
+// Tuple Implementations - Compose Multiple Setup Types
+// =============================================================================
+
+impl<A, B> PluginSetup for (A, B)
+where
+    A: PluginSetup,
+    B: PluginSetup,
+{
+    fn extract(host: &HostSetup) -> Self {
+        (A::extract(host), B::extract(host))
+    }
+}
+
+impl<A, B, C> PluginSetup for (A, B, C)
+where
+    A: PluginSetup,
+    B: PluginSetup,
+    C: PluginSetup,
+{
+    fn extract(host: &HostSetup) -> Self {
+        (A::extract(host), B::extract(host), C::extract(host))
+    }
+}
+
+impl<A, B, C, D> PluginSetup for (A, B, C, D)
+where
+    A: PluginSetup,
+    B: PluginSetup,
+    C: PluginSetup,
+    D: PluginSetup,
+{
+    fn extract(host: &HostSetup) -> Self {
+        (A::extract(host), B::extract(host), C::extract(host), D::extract(host))
+    }
+}
+
+impl<A, B, C, D, E> PluginSetup for (A, B, C, D, E)
+where
+    A: PluginSetup,
+    B: PluginSetup,
+    C: PluginSetup,
+    D: PluginSetup,
+    E: PluginSetup,
+{
+    fn extract(host: &HostSetup) -> Self {
+        (A::extract(host), B::extract(host), C::extract(host), D::extract(host), E::extract(host))
+    }
+}
+
+// =============================================================================
+// Bus Layout Information
+// =============================================================================
 
 /// Bus layout information for plugins that need channel configuration.
+///
+/// This is used internally to populate the individual setup types
+/// like [`MainInputChannels`], [`MainOutputChannels`], etc.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BusLayout {
     /// Number of channels on the main input bus
@@ -705,7 +918,7 @@ pub trait AudioProcessor: HasParameters {
 ///                 Plugin (unprepared, parameters preserved)
 /// ```
 ///
-/// # Example: Simple Gain (NoConfig)
+/// # Example: Simple Gain (no setup)
 ///
 /// ```ignore
 /// #[derive(Default, HasParameters)]
@@ -715,10 +928,10 @@ pub trait AudioProcessor: HasParameters {
 /// }
 ///
 /// impl Plugin for GainPlugin {
-///     type Config = NoConfig;
+///     type Setup = ();
 ///     type Processor = GainProcessor;
 ///
-///     fn prepare(self, _: NoConfig) -> GainProcessor {
+///     fn prepare(self, _: ()) -> GainProcessor {
 ///         GainProcessor { parameters: self.parameters }
 ///     }
 /// }
@@ -747,7 +960,7 @@ pub trait AudioProcessor: HasParameters {
 /// }
 /// ```
 ///
-/// # Example: Delay (AudioSetup)
+/// # Example: Delay (SampleRate)
 ///
 /// ```ignore
 /// #[derive(Default, HasParameters)]
@@ -757,14 +970,14 @@ pub trait AudioProcessor: HasParameters {
 /// }
 ///
 /// impl Plugin for DelayPlugin {
-///     type Config = AudioSetup;
+///     type Setup = SampleRate;
 ///     type Processor = DelayProcessor;
 ///
-///     fn prepare(self, config: AudioSetup) -> DelayProcessor {
-///         let buffer_size = (MAX_DELAY_SECONDS * config.sample_rate) as usize;
+///     fn prepare(self, setup: SampleRate) -> DelayProcessor {
+///         let buffer_size = (MAX_DELAY_SECONDS * setup.hz()) as usize;
 ///         DelayProcessor {
 ///             parameters: self.parameters,
-///             sample_rate: config.sample_rate,  // Real value from start!
+///             sample_rate: setup.hz(),  // Real value from start!
 ///             buffer: vec![0.0; buffer_size],   // Correct allocation!
 ///         }
 ///     }
@@ -777,12 +990,16 @@ pub trait AudioProcessor: HasParameters {
 /// `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
 /// `#[parameters]` field annotation to implement this automatically.
 pub trait Plugin: HasParameters + Default {
-    /// The configuration type this plugin needs to prepare.
+    /// The setup information this plugin needs to prepare.
     ///
-    /// - [`NoConfig`]: For plugins that don't need sample rate (simple gain)
-    /// - [`AudioSetup`]: For plugins that need sample rate and max buffer size
-    /// - [`FullAudioSetup`]: For plugins that also need bus layout information
-    type Config: ProcessorConfig;
+    /// Request exactly what you need:
+    /// - `()`: No setup needed (gain, pan)
+    /// - [`SampleRate`]: Time-based DSP (delay, filter, envelope) - most common
+    /// - `(SampleRate, MaxBufferSize)`: FFT, lookahead
+    /// - `(SampleRate, MainOutputChannels)`: Surround, per-channel state
+    ///
+    /// See [`PluginSetup`] for all available types.
+    type Setup: PluginSetup;
 
     /// The prepared processor type created by [`Plugin::prepare()`].
     type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
@@ -795,12 +1012,12 @@ pub trait Plugin: HasParameters + Default {
     ///
     /// # Arguments
     ///
-    /// * `config` - The audio configuration (sample rate, buffer size, layout)
+    /// * `setup` - The setup information (sample rate, buffer size, layout)
     ///
     /// # Returns
     ///
     /// A prepared processor ready for audio processing.
-    fn prepare(self, config: Self::Config) -> Self::Processor;
+    fn prepare(self, setup: Self::Setup) -> Self::Processor;
 
     // =========================================================================
     // Bus Configuration (static, known before prepare)

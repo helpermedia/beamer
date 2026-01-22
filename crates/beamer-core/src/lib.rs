@@ -93,8 +93,9 @@ pub use smoothing::{Smoother, SmoothingStyle};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AudioProcessor, AudioSetup, BusInfo, BusLayout, BusType, FullAudioSetup, HasParameters,
-    Midi1Assignment, Midi2Assignment, MidiControllerAssignment, NoConfig, Plugin, ProcessorConfig,
+    AudioProcessor, AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType, HasParameters,
+    HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
+    Midi2Assignment, MidiControllerAssignment, Plugin, PluginSetup, ProcessMode, SampleRate,
 };
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;

@@ -229,11 +229,11 @@ pub struct MidiTransformPlugin {
 }
 
 impl Plugin for MidiTransformPlugin {
-    type Config = AudioSetup; // Needs sample rate for parameter smoothing
+    type Setup = SampleRate; // Needs sample rate for parameter smoothing
     type Processor = MidiTransformProcessor;
 
-    fn prepare(mut self, config: AudioSetup) -> MidiTransformProcessor {
-        self.parameters.set_sample_rate(config.sample_rate);
+    fn prepare(mut self, setup: SampleRate) -> MidiTransformProcessor {
+        self.parameters.set_sample_rate(setup.hz());
 
         MidiTransformProcessor {
             parameters: self.parameters,

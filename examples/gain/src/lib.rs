@@ -117,10 +117,10 @@ pub struct GainPlugin {
 }
 
 impl Plugin for GainPlugin {
-    type Config = NoConfig; // Simple gain doesn't need sample rate
+    type Setup = (); // Simple gain doesn't need sample rate
     type Processor = GainProcessor;
 
-    fn prepare(self, _config: NoConfig) -> GainProcessor {
+    fn prepare(self, _: ()) -> GainProcessor {
         GainProcessor {
             parameters: self.parameters,
         }

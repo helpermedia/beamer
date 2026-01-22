@@ -30,13 +30,13 @@ pub struct MyPlugin {
 }
 
 impl Plugin for MyPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
     type Processor = MyProcessor;
 
-    fn prepare(self, config: AudioSetup) -> MyProcessor {
+    fn prepare(self, setup: SampleRate) -> MyProcessor {
         MyProcessor {
             parameters: self.parameters,
-            sample_rate: config.sample_rate,
+            sample_rate: setup.hz(),
         }
     }
 }
@@ -80,7 +80,7 @@ beamer::define_plugin! {
     plugin: MyPlugin,
     processor: MyProcessor,
     parameters: MyParameters,
-    config: AudioSetup,
+    setup: SampleRate,
 
     // Fields only present in Processor (DSP state)
     processor_fields: {
@@ -88,8 +88,8 @@ beamer::define_plugin! {
     },
 
     // Initialization for processor fields
-    prepare: |params, config| {
-        sample_rate: config.sample_rate,
+    prepare: |setup| {
+        sample_rate: setup.hz(),
     },
 }
 
@@ -116,14 +116,14 @@ pub struct MyPlugin {
 
 // Generated Plugin impl
 impl Plugin for MyPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
     type Processor = MyProcessor;
 
-    fn prepare(self, config: AudioSetup) -> MyProcessor {
+    fn prepare(self, setup: SampleRate) -> MyProcessor {
         MyProcessor {
             parameters: self.parameters,
             // From prepare block:
-            sample_rate: config.sample_rate,
+            sample_rate: setup.hz(),
         }
     }
 }
@@ -171,7 +171,7 @@ pub fn define_plugin(input: TokenStream) -> TokenStream {
     // - plugin name
     // - processor name
     // - parameters type
-    // - config type
+    // - setup type
     // - processor_fields block
     // - prepare block
     //
@@ -191,9 +191,9 @@ beamer::define_plugin! {
     plugin: MyPlugin,
     processor: MyProcessor,
     parameters: MyParameters,
-    config: AudioSetup,
+    setup: SampleRate,
     processor_fields: { sample_rate: f64 },
-    prepare: |params, config| { sample_rate: config.sample_rate },
+    prepare: |setup| { sample_rate: setup.hz() },
 }
 ```
 
@@ -225,24 +225,24 @@ The challenge: most plugins need custom initialization in `prepare()`.
 
 **Approach 1: Closure in macro**
 ```rust
-prepare: |params, config| {
-    sample_rate: config.sample_rate,
-    delay_buffer: vec![0.0; (config.sample_rate * 2.0) as usize],
+prepare: |setup| {
+    sample_rate: setup.hz(),
+    delay_buffer: vec![0.0; (setup.hz() * 2.0) as usize],
 }
 ```
 
 **Approach 2: Trait with default**
 ```rust
 trait ProcessorInit {
-    fn init(config: &AudioSetup) -> Self::ProcessorFields;
+    fn init(setup: &SampleRate) -> Self::ProcessorFields;
 }
 ```
 
 **Approach 3: Builder pattern**
 ```rust
 processor_fields: {
-    sample_rate: f64 = config.sample_rate,
-    delay_buffer: Vec<f64> = vec![0.0; (config.sample_rate * 2.0) as usize],
+    sample_rate: f64 = setup.hz(),
+    delay_buffer: Vec<f64> = vec![0.0; (setup.hz() * 2.0) as usize],
 }
 ```
 
@@ -270,17 +270,17 @@ pub struct DelayPlugin {
 }
 
 impl Plugin for DelayPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
     type Processor = DelayProcessor;
 
-    fn prepare(self, config: AudioSetup) -> DelayProcessor {
-        let max_samples = (config.sample_rate * 2.0) as usize;
+    fn prepare(self, setup: SampleRate) -> DelayProcessor {
+        let max_samples = (setup.hz() * 2.0) as usize;
         DelayProcessor {
             parameters: self.parameters,
             buffer_l: vec![0.0; max_samples],
             buffer_r: vec![0.0; max_samples],
             write_pos: 0,
-            sample_rate: config.sample_rate,
+            sample_rate: setup.hz(),
         }
     }
 }
@@ -333,7 +333,7 @@ beamer::define_plugin! {
     plugin: DelayPlugin,
     processor: DelayProcessor,
     parameters: DelayParameters,
-    config: AudioSetup,
+    setup: SampleRate,
 
     processor_fields: {
         buffer_l: Vec<f64>,
@@ -342,12 +342,12 @@ beamer::define_plugin! {
         sample_rate: f64,
     },
 
-    prepare: |config| {
-        let max_samples = (config.sample_rate * 2.0) as usize;
+    prepare: |setup| {
+        let max_samples = (setup.hz() * 2.0) as usize;
         buffer_l: vec![0.0; max_samples],
         buffer_r: vec![0.0; max_samples],
         write_pos: 0,
-        sample_rate: config.sample_rate,
+        sample_rate: setup.hz(),
     },
 }
 

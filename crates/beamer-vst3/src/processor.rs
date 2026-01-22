@@ -26,13 +26,12 @@ use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
-    AudioProcessor, AudioSetup, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
-    BusType as CoreBusType, CachedBusConfig as CoreCachedBusConfig,
-    ChordInfo, ConversionBuffers, FrameRate as CoreFrameRate, FullAudioSetup, HasParameters,
-    MidiBuffer, MidiCcState, MidiEvent, MidiEventKind, NoConfig, NoteExpressionInt,
-    NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin,
-    PluginConfig, ProcessContext as CoreProcessContext, ProcessorConfig, ScaleInfo, SysEx,
-    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
+    AudioProcessor, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
+    BusType as CoreBusType, CachedBusConfig as CoreCachedBusConfig, ChordInfo, ConversionBuffers,
+    FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState, MidiEvent, MidiEventKind,
+    NoteExpressionInt, NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue,
+    ParameterStore, Plugin, PluginConfig, PluginSetup, ProcessContext as CoreProcessContext,
+    ScaleInfo, SysEx, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
@@ -262,45 +261,31 @@ impl<S: Sample> ProcessBufferStorage<S> {
 }
 
 // =============================================================================
-// Config Building
+// Setup Extraction
 // =============================================================================
 
-/// Internal trait for building plugin configs from VST3 ProcessSetup.
+/// Build plugin setup from VST3 ProcessSetup.
 ///
-/// Each ProcessorConfig type implements this to construct itself from the
-/// VST3 setup information and optional plugin reference.
-///
-/// This trait is `pub(crate)` to satisfy the bound in `Vst3Processor<P>` where
-/// `P::Config: BuildConfig`. External users don't need to implement this -
-/// all standard ProcessorConfig types (NoConfig, AudioSetup, FullAudioSetup)
-/// have built-in implementations.
-pub(crate) trait BuildConfig: ProcessorConfig {
-    fn build<P: Plugin>(setup: &ProcessSetup, plugin: &P, bus_layout: &BusLayout) -> Self;
-}
+/// Creates a HostSetup with all available information, then uses the
+/// `PluginSetup::extract` method to extract only what the plugin needs.
+fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> S {
+    use beamer_core::{HostSetup, ProcessMode};
 
-impl BuildConfig for NoConfig {
-    fn build<P: Plugin>(_setup: &ProcessSetup, _plugin: &P, _bus_layout: &BusLayout) -> Self {
-        NoConfig
-    }
-}
+    // Convert VST3 process mode to our ProcessMode
+    let process_mode = match setup.processMode {
+        1 => ProcessMode::Offline,       // kOffline
+        2 => ProcessMode::Prefetch,      // kPrefetch
+        _ => ProcessMode::Realtime,      // kRealtime (0) or unknown
+    };
 
-impl BuildConfig for AudioSetup {
-    fn build<P: Plugin>(setup: &ProcessSetup, _plugin: &P, _bus_layout: &BusLayout) -> Self {
-        AudioSetup {
-            sample_rate: setup.sampleRate,
-            max_buffer_size: setup.maxSamplesPerBlock as usize,
-        }
-    }
-}
+    let host_setup = HostSetup::new(
+        setup.sampleRate,
+        setup.maxSamplesPerBlock as usize,
+        bus_layout.clone(),
+        process_mode,
+    );
 
-impl BuildConfig for FullAudioSetup {
-    fn build<P: Plugin>(setup: &ProcessSetup, _plugin: &P, bus_layout: &BusLayout) -> Self {
-        FullAudioSetup {
-            sample_rate: setup.sampleRate,
-            max_buffer_size: setup.maxSamplesPerBlock as usize,
-            layout: bus_layout.clone(),
-        }
-    }
+    S::extract(&host_setup)
 }
 
 // =============================================================================
@@ -426,14 +411,7 @@ unsafe impl<P: Plugin> Send for Vst3Processor<P> {}
 // - Parameter access through Parameters trait requires Sync
 unsafe impl<P: Plugin> Sync for Vst3Processor<P> {}
 
-// Allow private_bounds: BuildConfig is intentionally private (sealed pattern).
-// External users use standard ProcessorConfig types (NoConfig, AudioSetup, FullAudioSetup)
-// which already implement BuildConfig. Custom ProcessorConfig types are internal only.
-#[allow(private_bounds)]
-impl<P: Plugin + 'static> Vst3Processor<P>
-where
-    P::Config: BuildConfig,
-{
+impl<P: Plugin + 'static> Vst3Processor<P> {
     /// Create a new VST3 processor wrapping the given plugin configuration.
     ///
     /// The wrapper starts in the Unprepared state with a default plugin instance.
@@ -1085,8 +1063,6 @@ where
 }
 
 impl<P: Plugin + 'static> ComponentFactory for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
         Self::new(config, vst3_config)
@@ -1094,8 +1070,6 @@ where
 }
 
 impl<P: Plugin + 'static> Class for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     type Interfaces = (
         IComponent,
@@ -1119,8 +1093,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
         kResultOk
@@ -1136,8 +1108,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         if class_id.is_null() {
@@ -1372,8 +1342,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn setBusArrangements(
         &self,
@@ -1508,15 +1476,15 @@ where
                     return kResultFalse;
                 }
 
-                // Build the processor config
-                let config = P::Config::build(setup, plugin, &bus_layout);
+                // Build the plugin setup
+                let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
 
                 // Take ownership of the plugin and any pending state
                 let plugin = std::mem::take(plugin);
                 let pending = pending_state.take();
 
                 // Prepare the processor
-                let mut processor = plugin.prepare(config);
+                let mut processor = plugin.prepare(plugin_setup);
 
                 // Apply any pending state that was set before preparation
                 if let Some(data) = pending {
@@ -1575,9 +1543,9 @@ where
                     // Unprepare to get the plugin back
                     let plugin = old_processor.unprepare();
 
-                    // Build new config and re-prepare
-                    let config = P::Config::build(setup, &plugin, &bus_layout);
-                    let new_processor = plugin.prepare(config);
+                    // Build new setup and re-prepare
+                    let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
+                    let new_processor = plugin.prepare(plugin_setup);
 
                     // Pre-allocate conversion buffers if needed
                     if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
@@ -1806,8 +1774,6 @@ where
 }
 
 impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         // Request all available transport information from host.
@@ -1842,8 +1808,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
         // For combined component, state is handled by IComponent::setState
@@ -2029,8 +1993,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::parameter_groups::ParameterGroups;
@@ -2131,8 +2093,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getMidiControllerAssignment(
         &self,
@@ -2172,8 +2132,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn onLiveMIDIControllerInput(
         &self,
@@ -2196,8 +2154,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getNumMidi1ControllerAssignments(&self, direction: BusDirections) -> u32 {
         // Only support input direction
@@ -2306,8 +2262,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn onLiveMidi1ControllerInput(
         &self,
@@ -2348,8 +2302,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.try_plugin()
@@ -2442,8 +2394,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.try_plugin()
@@ -2489,8 +2439,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn getPhysicalUIMapping(
         &self,
@@ -2527,8 +2475,6 @@ where
 // =============================================================================
 
 impl<P: Plugin + 'static> IVst3WrapperMPESupportTrait for Vst3Processor<P>
-where
-    P::Config: BuildConfig,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
         if let Some(plugin) = self.try_plugin_mut() {

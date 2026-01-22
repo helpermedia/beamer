@@ -24,18 +24,17 @@
 //! If the sample rate or buffer size changes while prepared, the state machine
 //! automatically unprepares and re-prepares to adapt to the new configuration.
 //!
-//! # Configuration Building
+//! # Setup Extraction
 //!
-//! The `BuildAuConfig` sealed trait enables generic AU setup from platform-specific
+//! The `PluginSetup::extract` method enables generic AU setup from platform-specific
 //! parameters (sample_rate, max_frames). This allows a single `AuProcessor<P>`
-//! implementation to work with any `ProcessorConfig` type, as long as the config
-//! type implements `BuildAuConfig`.
+//! implementation to work with any setup type the plugin declares.
 //!
-//! Standard Beamer configs (NoConfig, AudioSetup, FullAudioSetup) are provided.
+//! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
 use beamer_core::{
-    AudioProcessor, AudioSetup, CachedBusConfig, ConversionBuffers, FullAudioSetup, HasParameters,
-    NoConfig, Plugin, ProcessorConfig,
+    AudioProcessor, BusLayout, CachedBusConfig, ConversionBuffers, HasParameters, Plugin,
+    PluginSetup,
 };
 use log;
 
@@ -172,53 +171,27 @@ impl<P: Plugin> Default for AuState<P> {
     }
 }
 
-/// Sealed trait for building processor config from AU setup.
+/// Build plugin setup from AU parameters.
 ///
-/// This is an internal trait that allows us to have a single implementation
-/// of `AuPluginInstance` that works with any `ProcessorConfig`.
-pub(crate) trait BuildAuConfig: ProcessorConfig {
-    fn build_au(sample_rate: f64, max_frames: u32, layout: beamer_core::BusLayout) -> Self;
+/// Creates a HostSetup with all available information, then uses the
+/// `PluginSetup::extract` method to extract only what the plugin needs.
+fn build_setup<S: PluginSetup>(sample_rate: f64, max_frames: u32, layout: &BusLayout) -> S {
+    use beamer_core::{HostSetup, ProcessMode};
+
+    // AU doesn't distinguish offline rendering at the API level,
+    // so we default to Realtime
+    let host_setup = HostSetup::new(
+        sample_rate,
+        max_frames as usize,
+        layout.clone(),
+        ProcessMode::Realtime,
+    );
+
+    S::extract(&host_setup)
 }
 
-impl BuildAuConfig for NoConfig {
-    fn build_au(_sample_rate: f64, _max_frames: u32, _layout: beamer_core::BusLayout) -> Self {
-        NoConfig
-    }
-}
-
-impl BuildAuConfig for AudioSetup {
-    fn build_au(sample_rate: f64, max_frames: u32, _layout: beamer_core::BusLayout) -> Self {
-        AudioSetup {
-            sample_rate,
-            max_buffer_size: max_frames as usize,
-        }
-    }
-}
-
-impl BuildAuConfig for FullAudioSetup {
-    fn build_au(sample_rate: f64, max_frames: u32, layout: beamer_core::BusLayout) -> Self {
-        FullAudioSetup {
-            sample_rate,
-            max_buffer_size: max_frames as usize,
-            layout,
-        }
-    }
-}
-
-// Generic prepare for any plugin with BuildAuConfig
-//
-// Clippy Allow: private_bounds
-//
-// `BuildAuConfig` is a sealed trait (pub(crate)) that restricts which config types can be used
-// with AU plugins. This is intentional API design - we only support NoConfig, AudioSetup, and
-// FullAudioSetup. The trait bound must be private because the trait itself is crate-private.
-// Public consumers don't need to see or implement BuildAuConfig.
-#[allow(private_bounds)]
-impl<P: Plugin> AuState<P>
-where
-    P::Config: BuildAuConfig,
-{
-    /// Transition from Unprepared to Prepared using BuildAuConfig.
+impl<P: Plugin> AuState<P> {
+    /// Transition from Unprepared to Prepared.
     ///
     /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for
     /// proper conversion buffer allocation.
@@ -240,8 +213,8 @@ where
                 // Capture MIDI CC config before consuming the plugin
                 let midi_cc_config = plugin.midi_cc_config();
 
-                let config = P::Config::build_au(sample_rate, max_frames, layout.clone());
-                let mut processor = plugin.prepare(config);
+                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout);
+                let mut processor = plugin.prepare(plugin_setup);
 
                 // Apply any pending state that was set before preparation
                 if let Some(data) = pending_state {
@@ -310,8 +283,8 @@ where
                 // Capture MIDI CC config before consuming the plugin
                 let midi_cc_config = plugin.midi_cc_config();
 
-                let config = P::Config::build_au(sample_rate, max_frames, layout.clone());
-                let new_processor = plugin.prepare(config);
+                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout);
+                let new_processor = plugin.prepare(plugin_setup);
 
                 // Pre-allocate conversion buffers if processor doesn't support f64
                 let conversion_buffers = if !new_processor.supports_double_precision() {

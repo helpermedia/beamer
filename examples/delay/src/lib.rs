@@ -8,7 +8,7 @@
 //! 5. Apply parameter smoothing to avoid zipper noise
 //! 6. Support both simple stereo and ping-pong modes
 //! 7. Declare proper tail length for delay decay
-//! 8. Use `AudioSetup` config for sample-rate-dependent initialization
+//! 8. Use `SampleRate` setup for sample-rate-dependent initialization
 //! 9. Implement `reset()` to clear internal state on playback restart
 
 use beamer::prelude::*;
@@ -207,18 +207,18 @@ pub struct DelayPlugin {
 }
 
 impl Plugin for DelayPlugin {
-    type Config = AudioSetup; // Delay needs sample rate for buffer allocation
+    type Setup = SampleRate; // Delay needs sample rate for buffer allocation
     type Processor = DelayProcessor;
 
-    fn prepare(mut self, config: AudioSetup) -> DelayProcessor {
+    fn prepare(mut self, setup: SampleRate) -> DelayProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(config.sample_rate);
+        self.parameters.set_sample_rate(setup.hz());
 
         DelayProcessor {
             parameters: self.parameters,
-            delay_l: DelayLine::new(config.sample_rate),
-            delay_r: DelayLine::new(config.sample_rate),
-            sample_rate: config.sample_rate,
+            delay_l: DelayLine::new(setup.hz()),
+            delay_r: DelayLine::new(setup.hz()),
+            sample_rate: setup.hz(),
         }
     }
 }

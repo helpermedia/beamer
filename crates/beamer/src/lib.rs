@@ -85,8 +85,9 @@ pub mod prelude {
         Sample,
         // Traits
         AudioProcessor, EditorDelegate, HasParameters, Plugin,
-        // Processor configuration types
-        ProcessorConfig, NoConfig, AudioSetup, FullAudioSetup, BusLayout,
+        // Plugin setup types (composable)
+        PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
+        AuxInputCount, AuxOutputCount, ProcessMode,
         // Bus configuration
         BusInfo, BusType,
         // Editor types

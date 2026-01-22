@@ -32,7 +32,7 @@ Simple stereo gain effect with sidechain ducking.
 - Two-phase lifecycle: `Plugin` → `AudioProcessor` via `prepare()`
 - `#[derive(Parameters)]` with declarative attributes
 - `#[derive(HasParameters)]` for parameters access boilerplate
-- `NoConfig` for plugins without sample-rate-dependent state
+- `()` setup for plugins without sample-rate-dependent state
 - `FloatParameter` with dB scaling
 - Multi-bus audio (main + sidechain input)
 - Generic f32/f64 processing via `Sample` trait
@@ -63,7 +63,7 @@ Tempo-synced stereo delay with ping-pong mode.
 - **Ambient tail**: 1/4 note, high feedback (60-80%), low mix (20-30%)
 
 **Demonstrates:**
-- `AudioSetup` config for sample-rate-dependent initialization
+- `SampleRate` setup for sample-rate-dependent initialization
 - `set_active()` for clearing delay buffers on reset
 - `EnumParameter` for sync mode and stereo mode
 - Tempo sync using `ProcessContext.samples_per_beat()`
@@ -101,7 +101,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - **Sidechain ducking**: Enable sidechain, route kick to sidechain input, high ratio, fast attack/release
 
 **Demonstrates:**
-- `AudioSetup` config for sample-rate-dependent envelope coefficients
+- `SampleRate` setup for sample-rate-dependent envelope coefficients
 - `BypassHandler` with `CrossfadeCurve::EqualPower` for click-free bypass
 - `set_active()` for resetting envelope state on activation
 - `kind = "db_log"` for logarithmic-feel threshold control
@@ -155,7 +155,7 @@ cargo xtask bundle compressor --release --install
 **Why MidiCcConfig?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcConfig` tells the framework which controllers to enable - it creates hidden parameters that receive these values and converts them back to MIDI events for your plugin. No manual state management needed!
 
 **Demonstrates:**
-- `AudioSetup` config for sample-rate-dependent filter calculations
+- `SampleRate` setup for sample-rate-dependent filter calculations
 - `IntParameter` for transpose (±2 octaves in semitones)
 - Flat parameter groups (`group = "..."`) - works in Cubase
 - `MidiCcConfig` for pitch bend/mod wheel via IMidiMapping (framework manages state)
@@ -214,7 +214,7 @@ MIDI instrument that transforms notes and CC messages.
 - **Remap + Scale** - Remap CC number AND scale value
 
 **Demonstrates:**
-- `AudioSetup` config for parameter smoothing
+- `SampleRate` setup for parameter smoothing
 - Nested parameter groups with `#[nested(group = "...")]`
 - `EnumParameter` for discrete choices
 - `IntParameter` for note/CC selection

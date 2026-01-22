@@ -27,15 +27,15 @@ The `Plugin` trait represents a plugin in its **unprepared state** — before th
 
 ```rust
 pub trait Plugin: HasParameters + Default {
-    /// Configuration type for prepare() — determines what info is needed
-    type Config: ProcessorConfig;
+    /// Setup type for prepare() — determines what info is needed
+    type Setup: PluginSetup;
 
     /// The prepared processor type
     type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
 
     /// Transform into a prepared processor with audio configuration.
     /// Consumes self — the plugin moves into the prepared state.
-    fn prepare(self, config: Self::Config) -> Self::Processor;
+    fn prepare(self, setup: Self::Setup) -> Self::Processor;
 
     // Bus configuration (defaults provided)
     fn input_bus_count(&self) -> usize { 1 }
@@ -65,28 +65,43 @@ struct GainPlugin {
 }
 ```
 
-#### ProcessorConfig Types
+#### PluginSetup Types
 
-Choose the config type based on what your plugin needs:
+Request exactly what your plugin needs using composable types:
 
-| Type | When to Use | Provides |
-|------|-------------|----------|
-| `NoConfig` | Simple plugins (gain, utility) | Nothing |
-| `AudioSetup` | Most plugins needing sample rate | `sample_rate`, `max_buffer_size` |
-| `FullAudioSetup` | Plugins needing bus layout | `AudioSetup` + `BusLayout` |
+| Type | When to Use | Value |
+|------|-------------|-------|
+| `()` | Stateless plugins (gain, pan) | — |
+| `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
+| `MaxBufferSize` | FFT, lookahead | `usize` |
+| `MainInputChannels` | Per-channel input processing | `u32` |
+| `MainOutputChannels` | Per-channel output state | `u32` |
+| `AuxInputCount` | Sidechain-aware processing | `usize` |
+| `AuxOutputCount` | Multi-bus output | `usize` |
+| `ProcessMode` | Offline quality settings | enum |
+
+Compose multiple types using tuples:
 
 ```rust
-// Simple plugin — no configuration needed
+// Simple plugin — no setup needed
 impl Plugin for GainPlugin {
-    type Config = NoConfig;
-    fn prepare(self, _config: NoConfig) -> GainProcessor { /* ... */ }
+    type Setup = ();
+    fn prepare(self, _: ()) -> GainProcessor { /* ... */ }
 }
 
 // Plugin needing sample rate (delays, filters, smoothing)
 impl Plugin for DelayPlugin {
-    type Config = AudioSetup;
-    fn prepare(self, config: AudioSetup) -> DelayProcessor {
-        // config.sample_rate, config.max_buffer_size available
+    type Setup = SampleRate;
+    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+        // sample_rate.hz() returns the sample rate
+    }
+}
+
+// Plugin needing multiple setup values
+impl Plugin for FftPlugin {
+    type Setup = (SampleRate, MaxBufferSize);
+    fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+        // sr.0, mbs.0 contain the values
     }
 }
 ```
@@ -402,17 +417,17 @@ Call `set_sample_rate()` in `prepare()` to initialize smoothers:
 
 ```rust
 impl Plugin for MyPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
 
-    fn prepare(mut self, config: AudioSetup) -> MyProcessor {
-        self.parameters.set_sample_rate(config.sample_rate);
+    fn prepare(mut self, setup: SampleRate) -> MyProcessor {
+        self.parameters.set_sample_rate(setup.hz());
         MyProcessor { parameters: self.parameters, /* ... */ }
     }
 }
 ```
 
 > **Oversampling:** If your plugin uses oversampling, pass the actual processing rate:
-> `self.parameters.set_sample_rate(config.sample_rate * oversampling_factor as f64);`
+> `self.parameters.set_sample_rate(setup.hz() * oversampling_factor as f64);`
 
 **Per-Sample Processing:**
 
@@ -1131,10 +1146,10 @@ struct MySynthPlugin {
 }
 
 impl Plugin for MySynthPlugin {
-    type Config = AudioSetup;
+    type Setup = SampleRate;
     type Processor = MySynthProcessor;
 
-    fn prepare(mut self, config: AudioSetup) -> MySynthProcessor {
+    fn prepare(mut self, _setup: SampleRate) -> MySynthProcessor {
         MySynthProcessor {
             parameters: self.parameters,
             // No midi_cc to move - framework manages it!
@@ -1895,9 +1910,9 @@ pub struct GainPlugin {
 }
 
 impl Plugin for GainPlugin {
-    type Config = NoConfig;
+    type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(self, _config: NoConfig) -> GainProcessor {
+    fn prepare(self, _: ()) -> GainProcessor {
         GainProcessor { parameters: self.parameters }
     }
 }
@@ -2179,10 +2194,10 @@ pub struct GainPlugin {
 }
 
 impl Plugin for GainPlugin {
-    type Config = NoConfig;  // Simple gain doesn't need sample rate
+    type Setup = ();  // Simple gain doesn't need sample rate
     type Processor = GainProcessor;
 
-    fn prepare(self, _config: NoConfig) -> GainProcessor {
+    fn prepare(self, _: ()) -> GainProcessor {
         GainProcessor { parameters: self.parameters }
     }
 }

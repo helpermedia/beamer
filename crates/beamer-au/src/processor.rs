@@ -30,7 +30,7 @@
 
 use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
-use crate::lifecycle::{AuState, BuildAuConfig};
+use crate::lifecycle::AuState;
 use beamer_core::{
     AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, HasParameters, MidiEvent,
     ParameterGroups, ParameterStore, Plugin, ProcessContext, Transport,
@@ -67,18 +67,9 @@ impl<P: Plugin> Default for AuProcessor<P> {
     }
 }
 
-// Single implementation using the sealed BuildAuConfig trait
-//
-// Clippy Allow: private_bounds
-//
-// `BuildAuConfig` is a sealed (pub(crate)) trait that restricts which config types work with AU.
-// This is intentional API design - only NoConfig, AudioSetup, and FullAudioSetup are supported.
-// The trait bound must be private because BuildAuConfig itself is crate-private.
-#[allow(private_bounds)]
 impl<P> AuPluginInstance for AuProcessor<P>
 where
     P: Plugin + 'static,
-    P::Config: BuildAuConfig,
     P::Processor: HasParameters<Parameters = P::Parameters>,
 {
     fn allocate_render_resources(
@@ -731,13 +722,9 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// Create a factory function for a specific plugin type.
 ///
 /// This is used by the export_au! macro.
-///
-/// Clippy Allow: private_bounds - See comment on AuProcessor impl for explanation.
-#[allow(private_bounds)]
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
     P: Plugin + 'static,
-    P::Config: BuildAuConfig,
     P::Processor: HasParameters<Parameters = P::Parameters>,
 {
     Box::new(AuProcessor::<P>::new())

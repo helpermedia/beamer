@@ -14,7 +14,7 @@
 //! 11. Use mod wheel (CC 1) to control vibrato depth and filter cutoff
 //! 12. Handle polyphonic aftertouch (per-note vibrato control)
 //! 13. Handle channel aftertouch (global vibrato control)
-//! 14. Use `AudioSetup` config for sample-rate-dependent initialization
+//! 14. Use `SampleRate` setup for sample-rate-dependent initialization
 
 use beamer::prelude::*;
 use beamer::{EnumParameter, HasParameters, Parameters};
@@ -412,18 +412,18 @@ pub struct SynthPlugin {
 }
 
 impl Plugin for SynthPlugin {
-    type Config = AudioSetup; // Synth needs sample rate for filter calculations
+    type Setup = SampleRate; // Synth needs sample rate for filter calculations
     type Processor = SynthProcessor;
 
-    fn prepare(mut self, config: AudioSetup) -> SynthProcessor {
+    fn prepare(mut self, setup: SampleRate) -> SynthProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(config.sample_rate);
+        self.parameters.set_sample_rate(setup.hz());
 
         SynthProcessor {
             parameters: self.parameters,
             // No midi_cc_parameters to move! Framework manages it.
             voices: [Voice::new(); NUM_VOICES],
-            sample_rate: config.sample_rate,
+            sample_rate: setup.hz(),
             time_counter: 0,
             pending_events: Vec::with_capacity(64),
             pitch_bend: 0.0,
