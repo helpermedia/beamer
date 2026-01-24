@@ -57,6 +57,7 @@ mod enum_parameter;
 mod has_parameters;
 mod ir;
 mod parse;
+mod presets;
 mod range_eval;
 mod validate;
 
@@ -222,6 +223,63 @@ pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
     match has_parameters::derive_has_parameters_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive macro for implementing `FactoryPresets` trait on preset enums.
+///
+/// This macro generates the `FactoryPresets` implementation that allows
+/// factory presets to be integrated into VST3 and AU plugin wrappers.
+///
+/// # Container Attribute
+///
+/// The enum must have a `#[preset(parameters = Type)]` attribute specifying
+/// which parameter struct the presets apply to.
+///
+/// # Variant Attributes
+///
+/// Each variant must have a `#[preset(name = "...", values(...))]` attribute:
+/// - `name = "..."` - Display name shown in the DAW's preset browser
+/// - `values(param = value, ...)` - Parameter values using string IDs
+///
+/// Values are specified in plain units (dB, Hz, etc.) and automatically
+/// converted to normalized values at runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use beamer::Presets;
+///
+/// #[derive(Presets)]
+/// #[preset(parameters = GainParameters)]
+/// pub enum GainPresets {
+///     #[preset(name = "Unity", values(gain = 0.0))]
+///     Unity,
+///
+///     #[preset(name = "Quiet", values(gain = -12.0))]
+///     Quiet,
+///
+///     #[preset(name = "Boost", values(gain = 6.0))]
+///     Boost,
+/// }
+/// ```
+///
+/// # Sparse Presets
+///
+/// Presets can specify only some parameters - unspecified parameters keep
+/// their current values when the preset is applied:
+///
+/// ```ignore
+/// #[preset(name = "High Resonance", values(resonance = 0.9))]
+/// HighResonance,  // Only changes resonance, leaves other params alone
+/// ```
+#[proc_macro_derive(Presets, attributes(preset))]
+pub fn derive_presets(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+
+    match presets::derive_presets_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

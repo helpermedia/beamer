@@ -28,11 +28,12 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 use beamer_core::{
     AudioProcessor, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, CachedBusConfig as CoreCachedBusConfig, ChordInfo, ConversionBuffers,
-    FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState, MidiEvent, MidiEventKind,
-    NoteExpressionInt, NoteExpressionText, NoteExpressionValue as CoreNoteExpressionValue,
-    ParameterStore, Plugin, PluginConfig, PluginSetup, ProcessContext as CoreProcessContext,
-    ScaleInfo, SysEx, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
-    MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
+    FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState, MidiEvent,
+    MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
+    NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin, PluginConfig,
+    PluginSetup, ProcessContext as CoreProcessContext, ScaleInfo, SysEx, SysExOutputPool,
+    Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE,
+    MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
 use crate::factory::ComponentFactory;
@@ -58,6 +59,12 @@ const LEGACY_CC_PROGRAM_CHANGE: u8 = 130;
 
 // DataEvent type for SysEx
 const DATA_TYPE_MIDI_SYSEX: u32 = 0;
+
+// Program change parameter ID (for preset selection, distinct from MIDI CC range)
+const PROGRAM_CHANGE_PARAM_ID: u32 = 0x20000000;
+
+// Program list ID for factory presets
+const FACTORY_PRESETS_LIST_ID: i32 = 0;
 
 // =============================================================================
 // Transport Extraction
@@ -370,7 +377,11 @@ enum PluginState<P: Plugin> {
 /// VST3 guarantees that `process()` is called from a single thread at a time.
 /// We use `UnsafeCell` for interior mutability in `process()` since the COM
 /// interface only provides `&self`.
-pub struct Vst3Processor<P: Plugin> {
+pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
+where
+    P: Plugin,
+    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+{
     /// The plugin state machine (Unprepared or Prepared)
     state: UnsafeCell<PluginState<P>>,
     /// VST3-specific configuration reference
@@ -396,22 +407,39 @@ pub struct Vst3Processor<P: Plugin> {
     /// MIDI CC state (created from Plugin's midi_cc_config())
     /// Framework owns this - plugin authors don't touch it
     midi_cc_state: Option<MidiCcState>,
-    /// Marker for the plugin type
-    _marker: PhantomData<P>,
+    /// Current factory preset index (0-based, or -1 for no preset / custom state)
+    /// Used for the program change parameter exposed to the host
+    current_preset_index: UnsafeCell<i32>,
+    /// Component handler for notifying host of parameter changes
+    /// Stored as raw pointer - host manages lifetime, we just AddRef/Release
+    component_handler: UnsafeCell<*mut IComponentHandler>,
+    /// Marker for the plugin type and preset collection
+    _marker: PhantomData<(P, Presets)>,
 }
 
 // Safety: Vst3Processor is Send because:
 // - Plugin: Send is required by the Plugin trait
 // - AudioProcessor: Send is required by the AudioProcessor trait
 // - UnsafeCell contents are only accessed from VST3's guaranteed single-threaded contexts
-unsafe impl<P: Plugin> Send for Vst3Processor<P> {}
+unsafe impl<P: Plugin, Presets> Send for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
+{
+}
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
 // - Parameter access through Parameters trait requires Sync
-unsafe impl<P: Plugin> Sync for Vst3Processor<P> {}
+unsafe impl<P: Plugin, Presets> Sync for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
+{
+}
 
-impl<P: Plugin + 'static> Vst3Processor<P> {
+impl<P: Plugin + 'static, Presets> Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
+{
     /// Create a new VST3 processor wrapping the given plugin configuration.
     ///
     /// The wrapper starts in the Unprepared state with a default plugin instance.
@@ -441,6 +469,8 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
             midi_cc_state,
+            current_preset_index: UnsafeCell::new(0), // Default to first preset
+            component_handler: UnsafeCell::new(std::ptr::null_mut()),
             _marker: PhantomData,
         }
     }
@@ -1062,14 +1092,18 @@ impl<P: Plugin + 'static> Vst3Processor<P> {
     }
 }
 
-impl<P: Plugin + 'static> ComponentFactory for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> ComponentFactory for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
         Self::new(config, vst3_config)
     }
 }
 
-impl<P: Plugin + 'static> Class for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> Class for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     type Interfaces = (
         IComponent,
@@ -1092,7 +1126,9 @@ impl<P: Plugin + 'static> Class for Vst3Processor<P>
 // IPluginBase implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
         kResultOk
@@ -1107,7 +1143,9 @@ impl<P: Plugin + 'static> IPluginBaseTrait for Vst3Processor<P>
 // IComponent implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IComponentTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         if class_id.is_null() {
@@ -1341,7 +1379,9 @@ impl<P: Plugin + 'static> IComponentTrait for Vst3Processor<P>
 // IAudioProcessor implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn setBusArrangements(
         &self,
@@ -1773,7 +1813,9 @@ impl<P: Plugin + 'static> IAudioProcessorTrait for Vst3Processor<P>
     }
 }
 
-impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         // Request all available transport information from host.
@@ -1807,7 +1849,9 @@ impl<P: Plugin + 'static> IProcessContextRequirementsTrait for Vst3Processor<P>
 // IEditController implementation
 // =============================================================================
 
-impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
         // For combined component, state is handled by IComponent::setState
@@ -1830,7 +1874,9 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
             .as_ref()
             .map(|s| s.enabled_count())
             .unwrap_or(0);
-        (user_parameters + cc_parameters) as i32
+        // Add program change parameter if we have factory presets
+        let preset_parameter = if Presets::count() > 0 { 1 } else { 0 };
+        (user_parameters + cc_parameters + preset_parameter) as i32
     }
 
     unsafe fn getParameterInfo(&self, parameter_index: i32, info: *mut ParameterInfo) -> tresult {
@@ -1876,20 +1922,48 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
         }
 
         // Hidden MIDI CC parameters (framework-owned state)
+        let cc_parameter_count = self
+            .midi_cc_state
+            .as_ref()
+            .map(|s| s.enabled_count())
+            .unwrap_or(0);
+
         if let Some(cc_state) = self.midi_cc_state.as_ref() {
             let cc_index = (parameter_index as usize) - user_parameter_count;
-            if let Some(parameter_info) = cc_state.info(cc_index) {
+            if cc_index < cc_parameter_count {
+                if let Some(parameter_info) = cc_state.info(cc_index) {
+                    let info = &mut *info;
+                    info.id = parameter_info.id;
+                    copy_wstring(parameter_info.name, &mut info.title);
+                    copy_wstring(parameter_info.short_name, &mut info.shortTitle);
+                    copy_wstring(parameter_info.units, &mut info.units);
+                    info.stepCount = parameter_info.step_count;
+                    info.defaultNormalizedValue = parameter_info.default_normalized;
+                    info.unitId = parameter_info.group_id;
+                    // Hidden + automatable
+                    info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
+                        | ParameterInfo_::ParameterFlags_::kIsHidden;
+                    return kResultOk;
+                }
+            }
+        }
+
+        // Program change parameter for factory presets (after all other parameters)
+        let preset_count = Presets::count();
+        if preset_count > 0 {
+            let preset_param_index = user_parameter_count + cc_parameter_count;
+            if parameter_index as usize == preset_param_index {
                 let info = &mut *info;
-                info.id = parameter_info.id;
-                copy_wstring(parameter_info.name, &mut info.title);
-                copy_wstring(parameter_info.short_name, &mut info.shortTitle);
-                copy_wstring(parameter_info.units, &mut info.units);
-                info.stepCount = parameter_info.step_count;
-                info.defaultNormalizedValue = parameter_info.default_normalized;
-                info.unitId = parameter_info.group_id;
-                // Hidden + automatable
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
-                    | ParameterInfo_::ParameterFlags_::kIsHidden;
+                info.id = PROGRAM_CHANGE_PARAM_ID;
+                copy_wstring("Program", &mut info.title);
+                copy_wstring("Prg", &mut info.shortTitle);
+                copy_wstring("", &mut info.units);
+                info.stepCount = (preset_count - 1) as i32; // Discrete steps
+                info.defaultNormalizedValue = 0.0; // First preset is default
+                info.unitId = 0; // Root unit
+                // Program change + list (shows preset names in host)
+                info.flags = ParameterInfo_::ParameterFlags_::kIsProgramChange
+                    | ParameterInfo_::ParameterFlags_::kIsList;
                 return kResultOk;
             }
         }
@@ -1905,6 +1979,24 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
     ) -> tresult {
         if string.is_null() {
             return kInvalidArgument;
+        }
+
+        // Handle program change parameter (preset names)
+        if id == PROGRAM_CHANGE_PARAM_ID {
+            let preset_count = Presets::count();
+            if preset_count > 0 {
+                // Convert normalized value to preset index
+                let step_count = (preset_count - 1).max(1) as f64;
+                let preset_index = (value_normalized * step_count).round() as usize;
+                let preset_index = preset_index.min(preset_count - 1);
+
+                if let Some(preset_info) = Presets::info(preset_index) {
+                    copy_wstring(preset_info.name, &mut *string);
+                    return kResultOk;
+                }
+            }
+            copy_wstring("", &mut *string);
+            return kResultOk;
         }
 
         let parameters = self.parameters();
@@ -1925,6 +2017,22 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
 
         let len = len_wstring(string as *const TChar);
         if let Ok(s) = String::from_utf16(slice::from_raw_parts(string as *const u16, len)) {
+            // Handle program change parameter (preset name to value)
+            if id == PROGRAM_CHANGE_PARAM_ID {
+                let preset_count = Presets::count();
+                // Find preset by name
+                for i in 0..preset_count {
+                    if let Some(preset_info) = Presets::info(i) {
+                        if preset_info.name == s {
+                            let step_count = (preset_count - 1).max(1) as f64;
+                            *value_normalized = (i as f64) / step_count;
+                            return kResultOk;
+                        }
+                    }
+                }
+                return kInvalidArgument;
+            }
+
             let parameters = self.parameters();
             if let Some(value) = parameters.string_to_normalized(id, &s) {
                 *value_normalized = value;
@@ -1935,10 +2043,28 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
     }
 
     unsafe fn normalizedParamToPlain(&self, id: u32, value_normalized: f64) -> f64 {
+        // Handle program change parameter (normalized to index)
+        if id == PROGRAM_CHANGE_PARAM_ID {
+            let preset_count = Presets::count();
+            if preset_count > 0 {
+                let step_count = (preset_count - 1).max(1) as f64;
+                return (value_normalized * step_count).round();
+            }
+            return 0.0;
+        }
         self.parameters().normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
+        // Handle program change parameter (index to normalized)
+        if id == PROGRAM_CHANGE_PARAM_ID {
+            let preset_count = Presets::count();
+            if preset_count > 1 {
+                let step_count = (preset_count - 1) as f64;
+                return plain_value / step_count;
+            }
+            return 0.0;
+        }
         self.parameters().plain_to_normalized(id, plain_value)
     }
 
@@ -1948,6 +2074,19 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
             if let Some(cc_state) = self.midi_cc_state.as_ref() {
                 return cc_state.get_normalized(id);
             }
+        }
+
+        // Check if this is the program change parameter
+        if id == PROGRAM_CHANGE_PARAM_ID {
+            let preset_count = Presets::count();
+            if preset_count > 1 {
+                let current_index = *self.current_preset_index.get();
+                let step_count = (preset_count - 1) as f64;
+                return (current_index as f64) / step_count;
+            } else if preset_count == 1 {
+                return 0.0;
+            }
+            return 0.0;
         }
 
         self.parameters().get_normalized(id)
@@ -1962,12 +2101,60 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
             }
         }
 
+        // Check if this is the program change parameter (preset selection)
+        if id == PROGRAM_CHANGE_PARAM_ID {
+            let preset_count = Presets::count();
+            if preset_count > 0 {
+                // Convert normalized value to preset index
+                // stepCount = preset_count - 1, so index = round(value * stepCount)
+                let step_count = (preset_count - 1) as f64;
+                let preset_index = (value * step_count).round() as usize;
+                let preset_index = preset_index.min(preset_count - 1);
+
+                // Always apply unconditionally - never skip with "if changed" guard.
+                // Hosts may re-send the same preset index (e.g., user clicks preset 0
+                // when it's already selected), and skipping would break preset 0 on
+                // fresh load when current_preset_index is initialized to 0.
+                Presets::apply(preset_index, self.parameters());
+
+                // Store the current preset index
+                *self.current_preset_index.get() = preset_index as i32;
+
+                // Notify host that parameter values changed so UI refreshes
+                let handler = *self.component_handler.get();
+                if !handler.is_null() {
+                    ((*(*handler).vtbl).restartComponent)(
+                        handler,
+                        RestartFlags_::kParamValuesChanged,
+                    );
+                }
+
+                return kResultOk;
+            }
+            return kInvalidArgument;
+        }
+
         self.parameters().set_normalized(id, value);
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
-        // TODO: Store handler for notifying host of parameter changes from GUI
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        let handler_ptr = self.component_handler.get();
+        let old_handler = *handler_ptr;
+
+        // Release old handler if present
+        if !old_handler.is_null() {
+            let unknown = old_handler as *mut FUnknown;
+            ((*(*unknown).vtbl).release)(unknown);
+        }
+
+        // Store and AddRef new handler if present
+        if !handler.is_null() {
+            let unknown = handler as *mut FUnknown;
+            ((*(*unknown).vtbl).addRef)(unknown);
+        }
+
+        *handler_ptr = handler;
         kResultOk
     }
 
@@ -1992,7 +2179,9 @@ impl<P: Plugin + 'static> IEditControllerTrait for Vst3Processor<P>
 // IUnitInfo implementation (VST3 Unit/Group hierarchy)
 // =============================================================================
 
-impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::parameter_groups::ParameterGroups;
@@ -2011,7 +2200,12 @@ impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
             let info = &mut *info;
             info.id = group_info.id;
             info.parentUnitId = group_info.parent_id;
-            info.programListId = kNoProgramListId;
+            // Assign program list to root unit if we have presets
+            info.programListId = if group_info.id == 0 && Presets::count() > 0 {
+                FACTORY_PRESETS_LIST_ID
+            } else {
+                kNoProgramListId
+            };
             copy_wstring(group_info.name, &mut info.name);
             kResultOk
         } else {
@@ -2020,19 +2214,51 @@ impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
     }
 
     unsafe fn getProgramListCount(&self) -> i32 {
-        0 // No program lists (presets) for now
+        if Presets::count() > 0 {
+            1 // One program list for factory presets
+        } else {
+            0
+        }
     }
 
     unsafe fn getProgramListInfo(
         &self,
-        _list_index: i32,
-        _info: *mut ProgramListInfo,
+        list_index: i32,
+        info: *mut ProgramListInfo,
     ) -> tresult {
-        kNotImplemented
+        if info.is_null() {
+            return kInvalidArgument;
+        }
+
+        // Only support our single factory presets list
+        if list_index != 0 || Presets::count() == 0 {
+            return kInvalidArgument;
+        }
+
+        let info = &mut *info;
+        info.id = FACTORY_PRESETS_LIST_ID;
+        info.programCount = Presets::count() as i32;
+        copy_wstring("Factory Presets", &mut info.name);
+
+        kResultOk
     }
 
-    unsafe fn getProgramName(&self, _list_id: i32, _program_index: i32, _name: *mut String128) -> tresult {
-        kNotImplemented
+    unsafe fn getProgramName(&self, list_id: i32, program_index: i32, name: *mut String128) -> tresult {
+        if name.is_null() {
+            return kInvalidArgument;
+        }
+
+        // Only support our factory presets list
+        if list_id != FACTORY_PRESETS_LIST_ID {
+            return kInvalidArgument;
+        }
+
+        if let Some(preset_info) = Presets::info(program_index as usize) {
+            copy_wstring(preset_info.name, &mut *name);
+            kResultOk
+        } else {
+            kInvalidArgument
+        }
     }
 
     unsafe fn getProgramInfo(
@@ -2092,7 +2318,9 @@ impl<P: Plugin + 'static> IUnitInfoTrait for Vst3Processor<P>
 // IMidiMapping implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getMidiControllerAssignment(
         &self,
@@ -2131,7 +2359,9 @@ impl<P: Plugin + 'static> IMidiMappingTrait for Vst3Processor<P>
 // IMidiLearn implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn onLiveMIDIControllerInput(
         &self,
@@ -2153,7 +2383,9 @@ impl<P: Plugin + 'static> IMidiLearnTrait for Vst3Processor<P>
 // IMidiMapping2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getNumMidi1ControllerAssignments(&self, direction: BusDirections) -> u32 {
         // Only support input direction
@@ -2261,7 +2493,9 @@ impl<P: Plugin + 'static> IMidiMapping2Trait for Vst3Processor<P>
 // IMidiLearn2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn onLiveMidi1ControllerInput(
         &self,
@@ -2301,7 +2535,9 @@ impl<P: Plugin + 'static> IMidiLearn2Trait for Vst3Processor<P>
 // INoteExpressionController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.try_plugin()
@@ -2393,7 +2629,9 @@ impl<P: Plugin + 'static> INoteExpressionControllerTrait for Vst3Processor<P>
 // IKeyswitchController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.try_plugin()
@@ -2438,7 +2676,9 @@ impl<P: Plugin + 'static> IKeyswitchControllerTrait for Vst3Processor<P>
 // INoteExpressionPhysicalUIMapping implementation (VST3 SDK 3.6.11)
 // =============================================================================
 
-impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getPhysicalUIMapping(
         &self,
@@ -2474,7 +2714,9 @@ impl<P: Plugin + 'static> INoteExpressionPhysicalUIMappingTrait for Vst3Processo
 // IVst3WrapperMPESupport implementation (VST3 SDK 3.6.12)
 // =============================================================================
 
-impl<P: Plugin + 'static> IVst3WrapperMPESupportTrait for Vst3Processor<P>
+impl<P: Plugin + 'static, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
+where
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
         if let Some(plugin) = self.try_plugin_mut() {

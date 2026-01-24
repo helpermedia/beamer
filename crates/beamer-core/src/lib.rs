@@ -43,6 +43,7 @@ pub mod parameter_range;
 pub mod parameter_store;
 pub mod parameter_types;
 pub mod plugin;
+pub mod preset;
 pub mod process_context;
 pub mod sample;
 pub mod smoothing;
@@ -97,6 +98,7 @@ pub use plugin::{
     HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
     Midi2Assignment, MidiControllerAssignment, Plugin, PluginSetup, ProcessMode, SampleRate,
 };
+pub use preset::{fnv1a_hash, FactoryPresets, NoPresets, PresetInfo, PresetValue};
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use sysex_pool::SysExOutputPool;

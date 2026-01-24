@@ -28,12 +28,14 @@
 //! `AudioProcessor::process()` method. Transport information comes from the host
 //! via the render callback (currently placeholder).
 
+use std::marker::PhantomData;
+
 use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
 use crate::lifecycle::AuState;
 use beamer_core::{
-    AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, HasParameters, MidiEvent,
-    ParameterGroups, ParameterStore, Plugin, ProcessContext, Transport,
+    AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, FactoryPresets, HasParameters,
+    MidiEvent, NoPresets, ParameterGroups, ParameterStore, Plugin, ProcessContext, Transport,
 };
 
 /// Generic AU processor wrapper.
@@ -44,11 +46,21 @@ use beamer_core::{
 /// # Type Parameters
 ///
 /// * `P` - The plugin type implementing `beamer_core::Plugin`
-pub struct AuProcessor<P: Plugin> {
+/// * `Presets` - Optional factory presets collection (default: `NoPresets`)
+pub struct AuProcessor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
+where
+    P: Plugin,
+    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+{
     state: AuState<P>,
+    _presets: PhantomData<Presets>,
 }
 
-impl<P: Plugin> AuProcessor<P> {
+impl<P, Presets> AuProcessor<P, Presets>
+where
+    P: Plugin,
+    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+{
     /// Create a new AU processor.
     ///
     /// The processor starts in the Unprepared state with a default
@@ -57,20 +69,26 @@ impl<P: Plugin> AuProcessor<P> {
     pub fn new() -> Self {
         Self {
             state: AuState::new(),
+            _presets: PhantomData,
         }
     }
 }
 
-impl<P: Plugin> Default for AuProcessor<P> {
+impl<P, Presets> Default for AuProcessor<P, Presets>
+where
+    P: Plugin,
+    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<P> AuPluginInstance for AuProcessor<P>
+impl<P, Presets> AuPluginInstance for AuProcessor<P, Presets>
 where
     P: Plugin + 'static,
     P::Processor: HasParameters<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     fn allocate_render_resources(
         &mut self,

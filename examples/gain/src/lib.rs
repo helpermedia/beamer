@@ -10,7 +10,7 @@
 //! 7. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters}; // Import the derive macros
+use beamer::{HasParameters, Parameters, Presets}; // Import the derive macros
 
 // =============================================================================
 // Plugin Configuration
@@ -70,6 +70,31 @@ pub struct GainParameters {
 }
 
 // No manual `new()` or `Default` impl needed - the macro generates everything!
+
+// =============================================================================
+// Factory Presets
+// =============================================================================
+
+/// Factory presets for the gain plugin.
+///
+/// These presets demonstrate the sparse preset feature - each preset only
+/// specifies the parameters it wants to change. The `#[derive(Presets)]` macro
+/// generates the `FactoryPresets` trait implementation.
+#[derive(Presets)]
+#[preset(parameters = GainParameters)]
+pub enum GainPresets {
+    /// Unity gain - signal passes through unchanged
+    #[preset(name = "Unity", values(gain = 0.0))]
+    Unity,
+
+    /// Quiet - reduce volume by 12 dB (quarter amplitude)
+    #[preset(name = "Quiet", values(gain = -12.0))]
+    Quiet,
+
+    /// Boost - increase volume by 6 dB (double amplitude)
+    #[preset(name = "Boost", values(gain = 6.0))]
+    Boost,
+}
 
 impl GainParameters {
     /// Get the gain as a linear multiplier for DSP calculations.
@@ -283,7 +308,7 @@ impl AudioProcessor for GainProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin, GainPresets>);
 
 // =============================================================================
 // Audio Unit Export

@@ -67,6 +67,8 @@ pub use beamer_macros::Parameters;
 pub use beamer_macros::EnumParameter;
 #[cfg(feature = "derive")]
 pub use beamer_macros::HasParameters;
+#[cfg(feature = "derive")]
+pub use beamer_macros::Presets;
 
 /// Prelude module for convenient imports.
 ///
@@ -94,6 +96,8 @@ pub mod prelude {
         EditorConstraints, NoEditor,
         // Parameter metadata
         NoParameters, ParameterFlags, ParameterInfo,
+        // Factory presets
+        FactoryPresets, NoPresets, PresetInfo, PresetValue,
         // Parameter types
         BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, ParameterRef, Parameters,
         // MIDI CC configuration (framework manages runtime state)
@@ -133,4 +137,6 @@ pub mod prelude {
     pub use beamer_macros::EnumParameter as DeriveEnumParameter;
     #[cfg(feature = "derive")]
     pub use beamer_macros::HasParameters as DeriveHasParameters;
+    #[cfg(feature = "derive")]
+    pub use beamer_macros::Presets as DerivePresets;
 }
