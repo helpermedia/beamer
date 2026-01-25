@@ -423,3 +423,223 @@ mod tests {
         );
     }
 }
+
+// =============================================================================
+// AU-specific MIDI Tests
+// =============================================================================
+
+/// Tests for MIDI Program Change → Factory Preset mapping in the AU wrapper.
+///
+/// This feature automatically maps MIDI PC events to factory presets:
+/// - PC 0 → Preset 0, PC 1 → Preset 1, etc.
+/// - PC events within preset range are applied and filtered out
+/// - PC events outside preset range pass through to the plugin
+#[cfg(all(test, feature = "au", target_os = "macos"))]
+mod au_midi_tests {
+    use super::*;
+    use beamer::prelude::{AuProcessor, BusType, MidiEvent, MidiEventKind};
+    use beamer::au_impl::{AuPluginInstance, CachedBusConfig, CachedBusInfo};
+    use beamer::au_impl::render::MidiBuffer;
+
+    /// Helper to create a prepared AuProcessor for testing.
+    fn create_prepared_processor() -> AuProcessor<GainPlugin, GainPresets> {
+        let mut processor = AuProcessor::<GainPlugin, GainPresets>::new();
+
+        // Simple stereo config
+        let bus_config = CachedBusConfig::new(
+            vec![
+                CachedBusInfo::new(2, BusType::Main),  // Main stereo input
+                CachedBusInfo::new(2, BusType::Aux),   // Sidechain
+            ],
+            vec![CachedBusInfo::new(2, BusType::Main)], // Main stereo output
+        );
+
+        processor
+            .allocate_render_resources(44100.0, 512, &bus_config)
+            .expect("Failed to prepare processor");
+
+        processor
+    }
+
+    // Normalized values for gain presets (range: -60..=12 dB, 72 dB total)
+    // Unity (0 dB):   (0 - (-60)) / 72 = 60/72 ≈ 0.833
+    // Quiet (-12 dB): (-12 - (-60)) / 72 = 48/72 ≈ 0.667
+    // Boost (6 dB):   (6 - (-60)) / 72 = 66/72 ≈ 0.917
+    const NORM_UNITY: f64 = 60.0 / 72.0;  // ~0.833
+    const NORM_QUIET: f64 = 48.0 / 72.0;  // ~0.667
+    const NORM_BOOST: f64 = 66.0 / 72.0;  // ~0.917
+
+    /// Helper to get the gain parameter's normalized value.
+    /// Uses info(0) to get the first parameter's ID, then reads its normalized value.
+    fn get_gain_normalized(processor: &AuProcessor<GainPlugin, GainPresets>) -> f64 {
+        let params = processor.parameter_store().unwrap();
+        let gain_id = params.info(0).unwrap().id;
+        params.get_normalized(gain_id)
+    }
+
+    /// Helper to set the gain parameter's normalized value.
+    fn set_gain_normalized(processor: &mut AuProcessor<GainPlugin, GainPresets>, value: f64) {
+        let params = processor.parameter_store().unwrap();
+        let gain_id = params.info(0).unwrap().id;
+        processor.parameter_store_mut().unwrap().set_normalized(gain_id, value);
+    }
+
+    #[test]
+    fn midi_pc_applies_preset_and_filters() {
+        let mut processor = create_prepared_processor();
+
+        // Set gain to max (normalized 1.0 = 12 dB)
+        set_gain_normalized(&mut processor, 1.0);
+
+        // Send PC 1 (Quiet preset: gain = -12 dB)
+        let input = vec![MidiEvent::program_change(0, 0, 1)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // PC event should be filtered out (preset was applied)
+        assert_eq!(output.len(), 0, "PC event should be filtered out");
+
+        // Verify the preset was applied (Quiet = -12 dB ≈ 0.667 normalized)
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - NORM_QUIET).abs() < 0.01,
+            "Quiet preset should set normalized gain to ~{}, got {}",
+            NORM_QUIET, norm_value
+        );
+    }
+
+    #[test]
+    fn midi_pc_out_of_range_passes_through() {
+        let mut processor = create_prepared_processor();
+
+        // Set initial gain to something known
+        set_gain_normalized(&mut processor, 0.5);
+        let initial_norm = get_gain_normalized(&processor);
+
+        // Send PC 10 (out of range - only 3 presets)
+        let input = vec![MidiEvent::program_change(0, 0, 10)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // Out-of-range PC should pass through
+        assert_eq!(output.len(), 1, "Out-of-range PC should pass through");
+
+        // Verify it's a PC event with correct program number
+        if let MidiEventKind::ProgramChange(pc) = &output.iter().next().unwrap().event {
+            assert_eq!(pc.program, 10);
+        } else {
+            panic!("Expected ProgramChange event");
+        }
+
+        // Parameters should be unchanged
+        let final_norm = get_gain_normalized(&processor);
+        assert!(
+            (final_norm - initial_norm).abs() < 0.001,
+            "Out-of-range PC should not change parameters"
+        );
+    }
+
+    #[test]
+    fn midi_other_events_pass_through() {
+        let mut processor = create_prepared_processor();
+
+        // Send control change events (simpler than notes)
+        let input = vec![
+            MidiEvent::control_change(0, 0, 1, 0.5),   // Mod wheel
+            MidiEvent::control_change(10, 0, 7, 0.8),  // Volume
+            MidiEvent::control_change(20, 0, 10, 0.5), // Pan
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // All events should pass through
+        assert_eq!(output.len(), 3, "Non-PC events should pass through");
+    }
+
+    #[test]
+    fn midi_mixed_events_filters_only_valid_pc() {
+        let mut processor = create_prepared_processor();
+
+        // Mix of events: CC, valid PC, CC, invalid PC, CC
+        let input = vec![
+            MidiEvent::control_change(0, 0, 1, 0.5),
+            MidiEvent::program_change(0, 0, 2),  // Boost preset (valid)
+            MidiEvent::control_change(10, 0, 7, 0.8),
+            MidiEvent::program_change(20, 0, 50), // Invalid (out of range)
+            MidiEvent::control_change(30, 0, 10, 0.5),
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // 5 input events, but valid PC (program 2) should be filtered
+        // Remaining: CC, CC, PC(50), CC = 4 events
+        assert_eq!(
+            output.len(),
+            4,
+            "Valid PC should be filtered, others pass through"
+        );
+
+        // Verify Boost preset was applied
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - NORM_BOOST).abs() < 0.01,
+            "Boost preset should set normalized gain to ~{}, got {}",
+            NORM_BOOST, norm_value
+        );
+    }
+
+    #[test]
+    fn midi_pc_zero_applies_first_preset() {
+        let mut processor = create_prepared_processor();
+
+        // Set gain to something other than Unity
+        set_gain_normalized(&mut processor, 0.3);
+
+        // Send PC 0 (Unity preset: gain = 0 dB)
+        let input = vec![MidiEvent::program_change(0, 0, 0)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // PC should be filtered
+        assert_eq!(output.len(), 0);
+
+        // Verify Unity preset was applied
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - NORM_UNITY).abs() < 0.01,
+            "Unity preset should set normalized gain to ~{}, got {}",
+            NORM_UNITY, norm_value
+        );
+    }
+
+    #[test]
+    fn midi_multiple_pc_events_last_wins() {
+        let mut processor = create_prepared_processor();
+
+        // Send multiple PC events - last valid one should win
+        let input = vec![
+            MidiEvent::program_change(0, 0, 0),  // Unity (0 dB)
+            MidiEvent::program_change(10, 0, 1), // Quiet (-12 dB)
+            MidiEvent::program_change(20, 0, 2), // Boost (6 dB) - last, should win
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // All PC events should be filtered
+        assert_eq!(output.len(), 0);
+
+        // Last preset (Boost) should be applied
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - NORM_BOOST).abs() < 0.01,
+            "Last PC (Boost) should set normalized gain to ~{}, got {}",
+            NORM_BOOST, norm_value
+        );
+    }
+}

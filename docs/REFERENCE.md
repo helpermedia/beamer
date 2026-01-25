@@ -717,6 +717,26 @@ pub trait FactoryPresets: Send + Sync + 'static {
 }
 ```
 
+#### MIDI Program Change Mapping
+
+When a plugin has factory presets, MIDI Program Change (PC) events are automatically mapped to presets at the framework level:
+
+| PC Number | Action |
+|-----------|--------|
+| 0 | Apply Preset 0 |
+| 1 | Apply Preset 1 |
+| ... | ... |
+| N-1 | Apply Preset N-1 (last preset) |
+| ≥N | Pass through to plugin (out of range) |
+
+**Behavior:**
+- PC events within the preset range are applied and **filtered out** (not passed to `process_midi()`)
+- PC events outside the preset range pass through unchanged
+- When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
+- Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
+
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required—the framework handles this based on whether factory presets are defined.
+
 ### 1.5 Buffer Types
 
 Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.

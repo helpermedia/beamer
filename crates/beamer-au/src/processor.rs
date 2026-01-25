@@ -691,6 +691,11 @@ where
     }
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::render::MidiBuffer) {
+        use beamer_core::MidiEventKind;
+
+        // Check if we have factory presets for automatic MIDI PC mapping
+        let preset_count = Presets::count();
+
         // Take the pre-allocated buffer temporarily to avoid borrow issues
         let mut core_output = match &mut self.state {
             AuState::Prepared {
@@ -714,7 +719,64 @@ where
             _ => unreachable!(), // We already matched Prepared above
         };
 
-        // Call the processor's MIDI processing method
+        // =========================================================================
+        // MIDI Program Change → Factory Preset Mapping
+        // =========================================================================
+        //
+        // When a plugin has factory presets, MIDI Program Change events are
+        // automatically mapped to presets at the framework level:
+        // - PC 0 → Preset 0, PC 1 → Preset 1, etc.
+        // - PC events within preset range are applied and filtered out
+        // - PC events outside preset range pass through to the plugin
+        //
+        // This mirrors VST3's kIsProgramChange behavior where the host handles
+        // PC→preset mapping automatically.
+        // =========================================================================
+
+        if preset_count > 0 {
+            // Check if any PC events map to valid factory presets
+            let has_preset_pc = input.iter().any(|e| {
+                matches!(&e.event, MidiEventKind::ProgramChange(pc) if (pc.program as usize) < preset_count)
+            });
+
+            if has_preset_pc {
+                // Filter input: apply presets for matching PCs, pass through others
+                let filtered: Vec<MidiEvent> = input
+                    .iter()
+                    .filter_map(|event| {
+                        if let MidiEventKind::ProgramChange(pc) = &event.event {
+                            if (pc.program as usize) < preset_count {
+                                // Apply the factory preset
+                                Presets::apply(pc.program as usize, processor.parameters());
+                                // Filter out this event - it's been handled
+                                return None;
+                            }
+                        }
+                        // Pass through all other events (including out-of-range PCs)
+                        Some(event.clone())
+                    })
+                    .collect();
+
+                // Process remaining events through the plugin
+                processor.process_midi(&filtered, &mut core_output);
+
+                // Copy events back to AU's MidiBuffer
+                for event in core_output.iter() {
+                    let _ = output.push(event.clone());
+                }
+
+                // Put buffer back
+                if let AuState::Prepared {
+                    midi_output_buffer, ..
+                } = &mut self.state
+                {
+                    *midi_output_buffer = core_output;
+                }
+                return;
+            }
+        }
+
+        // No PC filtering needed - process all events directly
         processor.process_midi(input, &mut core_output);
 
         // Copy events back to AU's MidiBuffer
