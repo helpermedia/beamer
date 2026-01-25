@@ -995,14 +995,55 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         return;
     }}
     _currentPreset = currentPreset;
+
+    // Apply factory preset if it's a factory preset (number >= 0)
+    if (currentPreset.number >= 0) {{
+        [self applyFactoryPreset:(int)currentPreset.number];
+    }}
+}}
+
+- (void)applyFactoryPreset:(int)presetNumber {{
+    if (_rustInstance == NULL) {{
+        return;
+    }}
+
+    // Apply preset via Rust bridge (sets all parameter values)
+    if (!beamer_au_apply_preset(_rustInstance, (uint32_t)presetNumber)) {{
+        return;
+    }}
+
+    // CRITICAL: Refresh all AUParameter values from Rust to notify host UI.
+    // After applying a preset, the parameter values in Rust have changed.
+    // We must update the AUParameter objects so the host UI reflects the changes.
+    if (_parameterTree != nil) {{
+        for (AUParameter* param in _parameterTree.allParameters) {{
+            AUValue newValue = beamer_au_get_parameter_value(_rustInstance, (uint32_t)param.address);
+            [param setValue:newValue originator:nil];
+        }}
+    }}
 }}
 
 - (NSArray<AUAudioUnitPreset*>*)factoryPresets {{
-    if (_factoryPresets == nil) {{
-        AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
-        defaultPreset.number = 0;
-        defaultPreset.name = @"Default";
-        _factoryPresets = @[defaultPreset];
+    if (_factoryPresets == nil && _rustInstance != NULL) {{
+        uint32_t presetCount = beamer_au_get_preset_count(_rustInstance);
+
+        if (presetCount > 0) {{
+            NSMutableArray<AUAudioUnitPreset*>* presets = [[NSMutableArray alloc] initWithCapacity:presetCount];
+
+            for (uint32_t i = 0; i < presetCount; i++) {{
+                BeamerAuPresetInfo info;
+                memset(&info, 0, sizeof(info));
+
+                if (beamer_au_get_preset_info(_rustInstance, i, &info)) {{
+                    AUAudioUnitPreset* preset = [[AUAudioUnitPreset alloc] init];
+                    preset.number = (NSInteger)info.number;
+                    preset.name = [NSString stringWithUTF8String:info.name];
+                    [presets addObject:preset];
+                }}
+            }}
+
+            _factoryPresets = [presets copy];
+        }}
     }}
     return _factoryPresets;
 }}
@@ -1171,6 +1212,12 @@ typedef struct BeamerAuv2Instance {{
 
     // Host callbacks (for tempo, transport, etc.)
     HostCallbackInfo hostCallbacks;
+
+    // Factory presets
+    CFArrayRef factoryPresets;         // CFArray of AUPreset pointers (NULL callbacks)
+    AUPreset* presetStorage;           // Backing storage for preset structs
+    uint32_t presetCount;              // Number of factory presets
+    int32_t currentPresetIndex;        // -1 = no preset, >=0 = factory preset index
 }} BeamerAuv2Instance;
 
 // =============================================================================
@@ -1346,6 +1393,45 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {{
     InitDefaultFormat(&inst->inputFormat, inst->sampleRate, inputChannels);
     InitDefaultFormat(&inst->outputFormat, inst->sampleRate, outputChannels);
 
+    // Build factory presets cache
+    uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
+    inst->presetCount = presetCount;
+    inst->currentPresetIndex = -1;
+
+    if (presetCount > 0) {{
+        // Allocate backing storage for AUPreset structs
+        inst->presetStorage = (AUPreset*)calloc(presetCount, sizeof(AUPreset));
+        if (inst->presetStorage) {{
+            // Initialize each preset from Rust
+            for (uint32_t i = 0; i < presetCount; i++) {{
+                BeamerAuPresetInfo info;
+                memset(&info, 0, sizeof(info));
+                if (beamer_au_get_preset_info(inst->rustInstance, i, &info)) {{
+                    inst->presetStorage[i].presetNumber = (SInt32)info.number;
+                    inst->presetStorage[i].presetName = CFStringCreateWithCString(
+                        kCFAllocatorDefault, info.name, kCFStringEncodingUTF8);
+                }}
+            }}
+
+            // Build CFArray with NULL callbacks (stores raw pointers to AUPreset)
+            CFMutableArrayRef presets = CFArrayCreateMutable(kCFAllocatorDefault, presetCount, NULL);
+            if (presets) {{
+                for (uint32_t i = 0; i < presetCount; i++) {{
+                    CFArrayAppendValue(presets, &inst->presetStorage[i]);
+                }}
+                inst->factoryPresets = presets;
+            }} else {{
+                inst->factoryPresets = NULL;
+            }}
+        }} else {{
+            inst->factoryPresets = NULL;
+            inst->presetCount = 0;
+        }}
+    }} else {{
+        inst->factoryPresets = NULL;
+        inst->presetStorage = NULL;
+    }}
+
     return noErr;
 }}
 
@@ -1363,6 +1449,23 @@ static OSStatus BeamerAuv2Close(void* self) {{
     }}
 
     FreeInputBufferList(inst);
+
+    // Release factory presets
+    if (inst->factoryPresets) {{
+        CFRelease(inst->factoryPresets);
+        inst->factoryPresets = NULL;
+    }}
+
+    // Free preset storage and release dynamically created CFStrings
+    if (inst->presetStorage) {{
+        for (uint32_t i = 0; i < inst->presetCount; i++) {{
+            if (inst->presetStorage[i].presetName) {{
+                CFRelease(inst->presetStorage[i].presetName);
+            }}
+        }}
+        free(inst->presetStorage);
+        inst->presetStorage = NULL;
+    }}
 
     pthread_mutex_destroy(&inst->listenerMutex);
     pthread_mutex_destroy(&inst->renderNotifyMutex);
@@ -1525,6 +1628,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (scope == kAudioUnitScope_Global && element == 0) {{
                 uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
                 if (outDataSize) *outDataSize = count * sizeof(AudioUnitParameterID);
+                if (outWritable) *outWritable = false;
                 return noErr;
             }}
             return kAudioUnitErr_InvalidScope;
@@ -1533,6 +1637,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         case kAudioUnitProperty_ParameterInfo:
             if (scope == kAudioUnitScope_Global) {{
                 if (outDataSize) *outDataSize = sizeof(AudioUnitParameterInfo);
+                if (outWritable) *outWritable = false;
                 return noErr;
             }}
             return kAudioUnitErr_InvalidScope;
@@ -1543,6 +1648,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 uint32_t count = beamer_au_get_parameter_value_count(inst->rustInstance, element);
                 if (count > 0) {{
                     if (outDataSize) *outDataSize = sizeof(CFArrayRef);
+                    if (outWritable) *outWritable = false;
                     return noErr;
                 }}
             }}
@@ -1552,6 +1658,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         case kAudioUnitProperty_ParameterStringFromValue:
             if (scope == kAudioUnitScope_Global) {{
                 if (outDataSize) *outDataSize = sizeof(AudioUnitParameterStringFromValue);
+                if (outWritable) *outWritable = false;
                 return noErr;
             }}
             return kAudioUnitErr_InvalidScope;
@@ -1571,6 +1678,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 return kAudioUnitErr_InvalidScope;
             }}
             if (outDataSize) *outDataSize = sizeof(Float64);
+            if (outWritable) *outWritable = false;
             return noErr;
 
         // Tail time (Global scope only)
@@ -1579,6 +1687,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 return kAudioUnitErr_InvalidScope;
             }}
             if (outDataSize) *outDataSize = sizeof(Float64);
+            if (outWritable) *outWritable = false;
             return noErr;
 
         // Bypass (Global scope only)
@@ -1597,6 +1706,15 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }}
             if (outDataSize) *outDataSize = sizeof(AUPreset);
             if (outWritable) *outWritable = true;
+            return noErr;
+
+        // Factory presets
+        case kAudioUnitProperty_FactoryPresets:
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (outDataSize) *outDataSize = sizeof(CFArrayRef);
+            if (outWritable) *outWritable = false;  // Factory presets are read-only
             return noErr;
 
         // Render callback (for setting input source)
@@ -1623,6 +1741,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 BeamerAuChannelCapabilities caps;
                 if (beamer_au_get_channel_capabilities(inst->rustInstance, &caps)) {{
                     if (outDataSize) *outDataSize = caps.count * sizeof(AUChannelInfo);
+                    if (outWritable) *outWritable = false;
                     return noErr;
                 }}
             }}
@@ -1643,6 +1762,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         // Element count
         case kAudioUnitProperty_ElementCount:
             if (outDataSize) *outDataSize = sizeof(UInt32);
+            if (outWritable) *outWritable = false;
             return noErr;
 
         // In-place processing
@@ -1666,6 +1786,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         // Last render error
         case kAudioUnitProperty_LastRenderError:
             if (outDataSize) *outDataSize = sizeof(OSStatus);
+            if (outWritable) *outWritable = false;
             return noErr;
 
         default:
@@ -2067,9 +2188,32 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }}
             AUPreset* preset = (AUPreset*)outData;
-            preset->presetNumber = -1; // User preset (not from factory list)
-            preset->presetName = CFSTR("Current Settings");
+            if (inst->currentPresetIndex >= 0 && (uint32_t)inst->currentPresetIndex < inst->presetCount && inst->presetStorage) {{
+                preset->presetNumber = inst->presetStorage[inst->currentPresetIndex].presetNumber;
+                preset->presetName = inst->presetStorage[inst->currentPresetIndex].presetName;
+            }} else {{
+                preset->presetNumber = -1;
+                preset->presetName = CFSTR("Current Settings");
+            }}
             *ioDataSize = sizeof(AUPreset);
+            return noErr;
+        }}
+
+        case kAudioUnitProperty_FactoryPresets: {{
+            if (scope != kAudioUnitScope_Global) {{
+                return kAudioUnitErr_InvalidScope;
+            }}
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(CFArrayRef)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            if (inst->factoryPresets) {{
+                CFRetain(inst->factoryPresets);  // Caller owns reference
+                *(CFArrayRef*)outData = inst->factoryPresets;
+            }} else {{
+                *(CFArrayRef*)outData = NULL;
+            }}
+            *ioDataSize = sizeof(CFArrayRef);
             return noErr;
         }}
 
@@ -2242,8 +2386,19 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (scope != kAudioUnitScope_Global) {{
                 return kAudioUnitErr_InvalidScope;
             }}
-            // Accept preset changes but we don't have a preset system
-            // Just notify listeners that preset changed
+            if (!inData || inDataSize < sizeof(AUPreset)) {{
+                return kAudioUnitErr_InvalidPropertyValue;
+            }}
+
+            const AUPreset* newPreset = (const AUPreset*)inData;
+            if (newPreset->presetNumber >= 0 && (uint32_t)newPreset->presetNumber < inst->presetCount) {{
+                inst->currentPresetIndex = newPreset->presetNumber;
+                beamer_au_apply_preset(inst->rustInstance, (uint32_t)newPreset->presetNumber);
+            }} else {{
+                // User preset (negative number) - just track the index
+                inst->currentPresetIndex = -1;
+            }}
+
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }}

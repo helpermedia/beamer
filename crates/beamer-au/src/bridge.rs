@@ -2123,6 +2123,112 @@ pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> 
 }
 
 // =============================================================================
+// Factory Presets
+// =============================================================================
+
+/// Preset information for building AUAudioUnitPreset / AUPreset arrays.
+///
+/// Matches `BeamerAuPresetInfo` in header.
+#[repr(C)]
+pub struct BeamerAuPresetInfo {
+    /// Preset number/index (0-based)
+    pub number: i32,
+    /// Human-readable preset name (UTF-8, null-terminated)
+    pub name: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+}
+
+impl Default for BeamerAuPresetInfo {
+    fn default() -> Self {
+        Self {
+            number: 0,
+            name: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+        }
+    }
+}
+
+/// Get the number of factory presets.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0`)
+/// - `instance` must not have been destroyed
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_preset_count(instance: BeamerAuInstanceHandle) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+        plugin.preset_count()
+    })
+}
+
+/// Get information about a factory preset by index.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `false`)
+/// - `instance` must not have been destroyed
+/// - `out_info` must be a valid pointer to a `BeamerAuPresetInfo` struct,
+///   or null (in which case this function returns `false`)
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_get_preset_info(
+    instance: BeamerAuInstanceHandle,
+    index: u32,
+    out_info: *mut BeamerAuPresetInfo,
+) -> bool {
+    if out_info.is_null() {
+        return false;
+    }
+
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+
+        if let Some((number, name)) = plugin.preset_info(index) {
+            // SAFETY: out_info was validated as non-null above
+            let out = &mut *out_info;
+            out.number = number;
+            copy_str_to_char_array(name, &mut out.name);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Apply a factory preset by index.
+///
+/// This sets all parameters defined in the preset to their preset values.
+/// Parameters not defined in the preset retain their current values (sparse application).
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `false`)
+/// - `instance` must not have been destroyed
+/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+#[no_mangle]
+pub extern "C" fn beamer_au_apply_preset(
+    instance: BeamerAuInstanceHandle,
+    preset_index: u32,
+) -> bool {
+    with_instance!(instance, false, |handle| {
+        let plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        plugin.apply_preset(preset_index)
+    })
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

@@ -156,3 +156,481 @@ pub const fn fnv1a_hash(s: &str) -> u32 {
     }
     hash
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parameter_groups::{GroupInfo, ParameterGroups};
+    use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
+    use crate::parameter_types::{ParameterRef, Parameters};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // =========================================================================
+    // Mock Parameter for testing
+    // =========================================================================
+
+    /// A minimal mock parameter for testing preset application.
+    struct MockParameter {
+        id: ParameterId,
+        name: &'static str,
+        value: AtomicU64,
+        info: ParameterInfo,
+    }
+
+    impl MockParameter {
+        fn new(id: ParameterId, name: &'static str) -> Self {
+            Self {
+                id,
+                name,
+                value: AtomicU64::new(0.0f64.to_bits()),
+                info: ParameterInfo {
+                    id,
+                    name,
+                    short_name: name,
+                    units: "",
+                    unit: ParameterUnit::Generic,
+                    step_count: 0,
+                    default_normalized: 0.0,
+                    flags: ParameterFlags::default(),
+                    group_id: 0,
+                },
+            }
+        }
+
+        fn get_value(&self) -> f64 {
+            f64::from_bits(self.value.load(Ordering::Relaxed))
+        }
+    }
+
+    impl ParameterRef for MockParameter {
+        fn id(&self) -> ParameterId {
+            self.id
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn short_name(&self) -> &'static str {
+            self.name
+        }
+
+        fn units(&self) -> &'static str {
+            ""
+        }
+
+        fn flags(&self) -> &ParameterFlags {
+            &self.info.flags
+        }
+
+        fn default_normalized(&self) -> f64 {
+            0.0
+        }
+
+        fn step_count(&self) -> i32 {
+            0
+        }
+
+        fn get_normalized(&self) -> f64 {
+            self.get_value()
+        }
+
+        fn set_normalized(&self, value: f64) {
+            self.value.store(value.to_bits(), Ordering::Relaxed);
+        }
+
+        fn get_plain(&self) -> f64 {
+            // For simplicity, plain = normalized in mock
+            self.get_normalized()
+        }
+
+        fn set_plain(&self, value: f64) {
+            self.set_normalized(value);
+        }
+
+        fn display_normalized(&self, normalized: f64) -> String {
+            format!("{:.2}", normalized)
+        }
+
+        fn parse(&self, s: &str) -> Option<f64> {
+            s.parse().ok()
+        }
+
+        fn normalized_to_plain(&self, normalized: f64) -> f64 {
+            // 1:1 mapping for simplicity
+            normalized
+        }
+
+        fn plain_to_normalized(&self, plain: f64) -> f64 {
+            // 1:1 mapping for simplicity
+            plain
+        }
+
+        fn info(&self) -> &ParameterInfo {
+            &self.info
+        }
+    }
+
+    // =========================================================================
+    // Mock Parameters Collection
+    // =========================================================================
+
+    /// A simple parameter collection with two parameters for testing.
+    struct MockParameters {
+        gain: MockParameter,
+        mix: MockParameter,
+    }
+
+    impl MockParameters {
+        fn new() -> Self {
+            Self {
+                gain: MockParameter::new(fnv1a_hash("gain"), "Gain"),
+                mix: MockParameter::new(fnv1a_hash("mix"), "Mix"),
+            }
+        }
+    }
+
+    impl ParameterGroups for MockParameters {
+        fn group_count(&self) -> usize {
+            1
+        }
+
+        fn group_info(&self, index: usize) -> Option<GroupInfo> {
+            if index == 0 {
+                Some(GroupInfo::root())
+            } else {
+                None
+            }
+        }
+    }
+
+    impl Parameters for MockParameters {
+        fn count(&self) -> usize {
+            2
+        }
+
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(
+                [&self.gain as &dyn ParameterRef, &self.mix as &dyn ParameterRef].into_iter(),
+            )
+        }
+
+        fn by_id(&self, id: ParameterId) -> Option<&dyn ParameterRef> {
+            if id == self.gain.id {
+                Some(&self.gain)
+            } else if id == self.mix.id {
+                Some(&self.mix)
+            } else {
+                None
+            }
+        }
+    }
+
+    // =========================================================================
+    // Test Preset Implementation
+    // =========================================================================
+
+    /// A manual implementation of `FactoryPresets` for testing.
+    struct TestPresets;
+
+    const TEST_PRESET_VALUES_0: &[PresetValue] = &[
+        PresetValue {
+            id: fnv1a_hash("gain"),
+            plain_value: 0.5,
+        },
+        PresetValue {
+            id: fnv1a_hash("mix"),
+            plain_value: 1.0,
+        },
+    ];
+
+    const TEST_PRESET_VALUES_1: &[PresetValue] = &[PresetValue {
+        id: fnv1a_hash("gain"),
+        plain_value: 0.0,
+    }];
+
+    impl FactoryPresets for TestPresets {
+        type Parameters = MockParameters;
+
+        fn count() -> usize {
+            2
+        }
+
+        fn info(index: usize) -> Option<PresetInfo> {
+            match index {
+                0 => Some(PresetInfo { name: "Full Mix" }),
+                1 => Some(PresetInfo { name: "Silent" }),
+                _ => None,
+            }
+        }
+
+        fn values(index: usize) -> &'static [PresetValue] {
+            match index {
+                0 => TEST_PRESET_VALUES_0,
+                1 => TEST_PRESET_VALUES_1,
+                _ => &[],
+            }
+        }
+    }
+
+    // =========================================================================
+    // NoPresets Tests
+    // =========================================================================
+
+    #[test]
+    fn no_presets_count_returns_zero() {
+        assert_eq!(NoPresets::<MockParameters>::count(), 0);
+    }
+
+    #[test]
+    fn no_presets_info_returns_none() {
+        assert!(NoPresets::<MockParameters>::info(0).is_none());
+        assert!(NoPresets::<MockParameters>::info(1).is_none());
+        assert!(NoPresets::<MockParameters>::info(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn no_presets_values_returns_empty_slice() {
+        assert!(NoPresets::<MockParameters>::values(0).is_empty());
+        assert!(NoPresets::<MockParameters>::values(1).is_empty());
+    }
+
+    #[test]
+    fn no_presets_apply_returns_false() {
+        let params = MockParameters::new();
+        assert!(!NoPresets::<MockParameters>::apply(0, &params));
+        assert!(!NoPresets::<MockParameters>::apply(1, &params));
+        assert!(!NoPresets::<MockParameters>::apply(usize::MAX, &params));
+    }
+
+    // =========================================================================
+    // PresetInfo Tests
+    // =========================================================================
+
+    #[test]
+    fn preset_info_can_be_created_with_name() {
+        let info = PresetInfo { name: "My Preset" };
+        assert_eq!(info.name, "My Preset");
+    }
+
+    #[test]
+    fn preset_info_supports_empty_name() {
+        let info = PresetInfo { name: "" };
+        assert_eq!(info.name, "");
+    }
+
+    #[test]
+    fn preset_info_is_copy() {
+        let info = PresetInfo { name: "Test" };
+        let info2 = info; // Copy
+        assert_eq!(info.name, info2.name);
+    }
+
+    #[test]
+    fn preset_info_is_clone() {
+        let info = PresetInfo { name: "Test" };
+        // Use Clone::clone explicitly to test Clone trait, not Copy
+        let info2 = Clone::clone(&info);
+        assert_eq!(info.name, info2.name);
+    }
+
+    // =========================================================================
+    // PresetValue Tests
+    // =========================================================================
+
+    #[test]
+    fn preset_value_stores_id_and_plain_value() {
+        let value = PresetValue {
+            id: 12345,
+            plain_value: 0.75,
+        };
+        assert_eq!(value.id, 12345);
+        assert!((value.plain_value - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn preset_value_is_copy() {
+        let value = PresetValue {
+            id: 100,
+            plain_value: 0.5,
+        };
+        let value2 = value; // Copy
+        assert_eq!(value.id, value2.id);
+        assert!((value.plain_value - value2.plain_value).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // FactoryPresets Trait Tests (via TestPresets)
+    // =========================================================================
+
+    #[test]
+    fn test_presets_count() {
+        assert_eq!(TestPresets::count(), 2);
+    }
+
+    #[test]
+    fn test_presets_info_valid_index() {
+        let info0 = TestPresets::info(0);
+        assert!(info0.is_some());
+        assert_eq!(info0.unwrap().name, "Full Mix");
+
+        let info1 = TestPresets::info(1);
+        assert!(info1.is_some());
+        assert_eq!(info1.unwrap().name, "Silent");
+    }
+
+    #[test]
+    fn test_presets_info_invalid_index() {
+        assert!(TestPresets::info(2).is_none());
+        assert!(TestPresets::info(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn test_presets_values_valid_index() {
+        let values0 = TestPresets::values(0);
+        assert_eq!(values0.len(), 2);
+        assert_eq!(values0[0].id, fnv1a_hash("gain"));
+        assert!((values0[0].plain_value - 0.5).abs() < f64::EPSILON);
+        assert_eq!(values0[1].id, fnv1a_hash("mix"));
+        assert!((values0[1].plain_value - 1.0).abs() < f64::EPSILON);
+
+        let values1 = TestPresets::values(1);
+        assert_eq!(values1.len(), 1);
+        assert_eq!(values1[0].id, fnv1a_hash("gain"));
+        assert!((values1[0].plain_value - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_presets_values_invalid_index() {
+        assert!(TestPresets::values(2).is_empty());
+        assert!(TestPresets::values(usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn test_presets_apply_sets_parameters() {
+        let params = MockParameters::new();
+
+        // Initial values should be 0.0
+        assert!((params.gain.get_value() - 0.0).abs() < f64::EPSILON);
+        assert!((params.mix.get_value() - 0.0).abs() < f64::EPSILON);
+
+        // Apply preset 0 (Full Mix: gain=0.5, mix=1.0)
+        let result = TestPresets::apply(0, &params);
+        assert!(result);
+        assert!((params.gain.get_value() - 0.5).abs() < f64::EPSILON);
+        assert!((params.mix.get_value() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_presets_apply_sparse_preset() {
+        let params = MockParameters::new();
+
+        // Set initial values
+        params.gain.set_normalized(0.75);
+        params.mix.set_normalized(0.5);
+
+        // Apply preset 1 (Silent: only gain=0.0)
+        // Mix should remain at 0.5 (sparse preset)
+        let result = TestPresets::apply(1, &params);
+        assert!(result);
+        assert!((params.gain.get_value() - 0.0).abs() < f64::EPSILON);
+        assert!((params.mix.get_value() - 0.5).abs() < f64::EPSILON); // Unchanged
+    }
+
+    #[test]
+    fn test_presets_apply_invalid_index_returns_false() {
+        let params = MockParameters::new();
+
+        // Set initial values
+        params.gain.set_normalized(0.75);
+        params.mix.set_normalized(0.5);
+
+        // Apply invalid preset
+        let result = TestPresets::apply(2, &params);
+        assert!(!result);
+
+        // Values should remain unchanged
+        assert!((params.gain.get_value() - 0.75).abs() < f64::EPSILON);
+        assert!((params.mix.get_value() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_presets_apply_with_unknown_parameter_id() {
+        // Test that preset values with unknown parameter IDs are silently ignored
+        struct PresetsWithUnknownParam;
+
+        const UNKNOWN_PARAM_VALUES: &[PresetValue] = &[
+            PresetValue {
+                id: fnv1a_hash("gain"),
+                plain_value: 0.5,
+            },
+            PresetValue {
+                id: fnv1a_hash("unknown"),
+                plain_value: 0.9,
+            },
+        ];
+
+        impl FactoryPresets for PresetsWithUnknownParam {
+            type Parameters = MockParameters;
+
+            fn count() -> usize {
+                1
+            }
+
+            fn info(index: usize) -> Option<PresetInfo> {
+                if index == 0 {
+                    Some(PresetInfo { name: "Test" })
+                } else {
+                    None
+                }
+            }
+
+            fn values(index: usize) -> &'static [PresetValue] {
+                if index == 0 {
+                    UNKNOWN_PARAM_VALUES
+                } else {
+                    &[]
+                }
+            }
+        }
+
+        let params = MockParameters::new();
+
+        // Apply preset with unknown parameter ID - should succeed and apply known params
+        let result = PresetsWithUnknownParam::apply(0, &params);
+        assert!(result);
+        assert!((params.gain.get_value() - 0.5).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // fnv1a_hash Tests
+    // =========================================================================
+
+    #[test]
+    fn fnv1a_hash_produces_consistent_values() {
+        // Same input should produce same hash
+        assert_eq!(fnv1a_hash("gain"), fnv1a_hash("gain"));
+        assert_eq!(fnv1a_hash("mix"), fnv1a_hash("mix"));
+    }
+
+    #[test]
+    fn fnv1a_hash_different_inputs_produce_different_hashes() {
+        // Different inputs should (usually) produce different hashes
+        assert_ne!(fnv1a_hash("gain"), fnv1a_hash("mix"));
+        assert_ne!(fnv1a_hash("a"), fnv1a_hash("b"));
+    }
+
+    #[test]
+    fn fnv1a_hash_empty_string() {
+        // Empty string should produce a consistent hash (the offset basis)
+        let hash = fnv1a_hash("");
+        assert_eq!(hash, 2166136261); // FNV offset basis
+    }
+
+    #[test]
+    fn fnv1a_hash_is_const() {
+        // Verify hash can be used in const context
+        const GAIN_HASH: u32 = fnv1a_hash("gain");
+        assert_eq!(GAIN_HASH, fnv1a_hash("gain"));
+    }
+}

@@ -730,6 +730,29 @@ where
             *midi_output_buffer = core_output;
         }
     }
+
+    fn preset_count(&self) -> u32 {
+        Presets::count() as u32
+    }
+
+    fn preset_info(&self, index: u32) -> Option<(i32, &str)> {
+        if (index as usize) < Presets::count() {
+            Presets::info(index as usize).map(|info| (index as i32, info.name))
+        } else {
+            None
+        }
+    }
+
+    fn apply_preset(&self, index: u32) -> bool {
+        // Always apply unconditionally - never guard with "if changed".
+        // Hosts may re-send the same preset, and skipping would break preset 0.
+        let params = match &self.state {
+            AuState::Unprepared { plugin, .. } => plugin.parameters(),
+            AuState::Prepared { processor, .. } => processor.parameters(),
+            AuState::Transitioning => return false,
+        };
+        Presets::apply(index as usize, params)
+    }
 }
 
 /// Factory function type for creating AU processor instances.

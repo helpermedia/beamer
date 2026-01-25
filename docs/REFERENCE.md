@@ -621,7 +621,103 @@ impl ParameterInfo {
 }
 ```
 
-### 1.4 Buffer Types
+### 1.4 Factory Presets
+
+Factory presets let plugins provide built-in presets that appear in host preset menus (e.g., Logic's preset browser, VST3 program changes). Users can browse and load these presets without needing separate preset files.
+
+#### Derive Macro
+
+Use `#[derive(Presets)]` on an enum to define factory presets:
+
+```rust
+use beamer::prelude::*;
+use beamer::Presets;
+
+#[derive(Presets)]
+#[preset(parameters = GainParameters)]
+pub enum GainPresets {
+    #[preset(name = "Default", values(gain = 0.0))]
+    Default,
+
+    #[preset(name = "Subtle", values(gain = -6.0))]
+    Subtle,
+
+    #[preset(name = "Boost", values(gain = 6.0))]
+    Boost,
+}
+```
+
+#### Attributes
+
+| Attribute | Location | Description |
+|-----------|----------|-------------|
+| `#[preset(parameters = Type)]` | Enum | Links to the Parameters type for validation |
+| `#[preset(name = "...", values(...))]` | Variant | Defines preset name and parameter values |
+
+**Values syntax:** `values(param_id = value, ...)` where:
+- `param_id` matches the parameter's `id` attribute (e.g., `gain` for `#[parameter(id = "gain", ...)]`)
+- `value` is the plain/display value (e.g., `-6.0` for dB), not normalized
+
+#### Sparse Presets
+
+Presets can specify only a subset of parameters. Unspecified parameters retain their current values:
+
+```rust
+#[derive(Presets)]
+#[preset(parameters = MyParameters)]
+pub enum MyPresets {
+    // Full preset: sets all parameters
+    #[preset(name = "Initialize", values(gain = 0.0, mix = 1.0, bypass = false))]
+    Init,
+
+    // Sparse preset: only changes gain, mix and bypass unchanged
+    #[preset(name = "Quiet", values(gain = -12.0))]
+    Quiet,
+}
+```
+
+#### Integration with Export Macros
+
+Pass the presets type as the final argument to export macros:
+
+```rust
+// VST3 with factory presets
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin, MyPresets>);
+
+// AU with factory presets
+#[cfg(feature = "au")]
+export_au!(CONFIG, AU_CONFIG, MyPlugin, MyPresets);
+
+// Without factory presets (uses NoPresets internally)
+#[cfg(feature = "au")]
+export_au!(CONFIG, AU_CONFIG, MyPlugin);
+```
+
+#### FactoryPresets Trait
+
+The derive macro generates an implementation of the `FactoryPresets` trait. For advanced use cases, you can implement it manually:
+
+```rust
+pub trait FactoryPresets: Send + Sync + 'static {
+    /// The parameter struct this preset collection applies to.
+    type Parameters: Parameters;
+
+    /// Number of available presets.
+    fn count() -> usize;
+
+    /// Get preset metadata by index.
+    fn info(index: usize) -> Option<PresetInfo>;
+
+    /// Get parameter values for a preset.
+    fn values(index: usize) -> &'static [PresetValue];
+
+    /// Apply a preset to parameters. Returns true if successful.
+    fn apply(index: usize, parameters: &Self::Parameters) -> bool;
+}
+```
+
+### 1.5 Buffer Types
 
 Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
 
@@ -698,7 +794,7 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
 
 The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't allow lifetime shortening. The solution uses `'borrow` for the outer reference and `'data` for the inner data, allowing the borrow to be shorter while preserving safety.
 
-### 1.5 ProcessContext and Transport
+### 1.6 ProcessContext and Transport
 
 The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size, and detailed DAW transport state for tempo-synced effects, sequencers, and time-based processing.
 
@@ -769,7 +865,7 @@ pub enum FrameRate {
 }
 ```
 
-### 1.6 Sample Trait (f32/f64)
+### 1.7 Sample Trait (f32/f64)
 
 The `Sample` trait lets you write DSP code once and support both `f32` and `f64` processing. This is the recommended pattern for plugins that want to offer native double-precision support.
 
@@ -852,7 +948,7 @@ impl AudioProcessor for MyProcessor {
 - Most dynamics processors
 - Synthesizers (often limited by oscillator precision anyway)
 
-### 1.7 Soft Bypass
+### 1.8 Soft Bypass
 
 ```rust
 pub enum BypassState {

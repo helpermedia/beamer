@@ -353,7 +353,7 @@ const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 
 // AU-specific configuration (macOS only)
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     fourcc!(b"Demo"),  // Manufacturer code (4 chars)
@@ -364,9 +364,23 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
 export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
 
 // Export Audio Unit plugin (macOS only)
-#[cfg(target_os = "macos")]
+#[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
 ```
+
+### Factory Presets
+
+Both export macros support an optional presets parameter for plugins that provide factory presets:
+
+```rust
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin, GainPresets>);
+
+#[cfg(feature = "au")]
+export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
+```
+
+If no presets type is specified, `NoPresets` is used automatically.
 
 ### Configuration Fields
 

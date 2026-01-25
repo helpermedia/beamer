@@ -1052,6 +1052,70 @@ bool beamer_au_get_channel_capabilities(
 );
 
 // =============================================================================
+// MARK: - Factory Presets
+// =============================================================================
+
+/**
+ * Preset information for building AUAudioUnitPreset / AUPreset arrays.
+ *
+ * This structure provides information about a single factory preset,
+ * including its index number and display name.
+ */
+typedef struct {
+    /// Preset number/index (0-based, maps to AUPreset.presetNumber)
+    int32_t number;
+    /// Human-readable preset name (UTF-8, null-terminated)
+    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+} BeamerAuPresetInfo;
+
+/**
+ * Get the number of factory presets.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return Number of factory presets (0 if none or instance invalid).
+ */
+uint32_t beamer_au_get_preset_count(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Get information about a factory preset by index.
+ *
+ * Used to build factory preset arrays for AU hosts.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance  Handle to the plugin instance.
+ * @param index     Preset index (0 to count-1).
+ * @param out_info  Pointer to structure to fill with preset info.
+ *
+ * @return true if successful, false if index out of range or instance invalid.
+ */
+bool beamer_au_get_preset_info(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t index,
+    BeamerAuPresetInfo* _Nonnull out_info
+);
+
+/**
+ * Apply a factory preset by index.
+ *
+ * This sets all parameters defined in the preset to their preset values.
+ * Parameters not defined in the preset retain their current values (sparse application).
+ *
+ * Thread Safety: Can be called from any thread (parameter changes use atomics internally).
+ *
+ * @param instance      Handle to the plugin instance.
+ * @param preset_index  Preset index (0 to count-1).
+ *
+ * @return true if the preset was applied successfully, false if index out of range.
+ */
+bool beamer_au_apply_preset(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t preset_index
+);
+
+// =============================================================================
 // MARK: - MIDI Support
 // =============================================================================
 

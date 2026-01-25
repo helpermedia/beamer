@@ -359,4 +359,33 @@ pub trait AuPluginInstance: Send + 'static {
             output.push(event.clone());
         }
     }
+
+    // =========================================================================
+    // Factory Presets
+    // =========================================================================
+
+    /// Returns the number of factory presets.
+    ///
+    /// Returns 0 if the plugin has no factory presets.
+    fn preset_count(&self) -> u32 {
+        0
+    }
+
+    /// Returns preset info (number, name) for given index.
+    ///
+    /// Returns `None` if the index is out of range.
+    fn preset_info(&self, _index: u32) -> Option<(i32, &str)> {
+        None
+    }
+
+    /// Applies a factory preset by index.
+    ///
+    /// Only parameters specified in the preset are modified; other parameters
+    /// retain their current values (sparse application).
+    ///
+    /// Returns `true` if the preset was applied successfully, `false` if the
+    /// index is out of range.
+    fn apply_preset(&self, _index: u32) -> bool {
+        false
+    }
 }

@@ -315,4 +315,111 @@ export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin, GainPresets>);
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, GainPlugin);
+export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beamer::prelude::FactoryPresets;
+
+    #[test]
+    fn factory_presets_count() {
+        // GainPresets has 3 presets: Unity, Quiet, Boost
+        assert_eq!(GainPresets::count(), 3);
+    }
+
+    #[test]
+    fn factory_presets_info_unity() {
+        let info = GainPresets::info(0);
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().name, "Unity");
+    }
+
+    #[test]
+    fn factory_presets_info_quiet() {
+        let info = GainPresets::info(1);
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().name, "Quiet");
+    }
+
+    #[test]
+    fn factory_presets_info_boost() {
+        let info = GainPresets::info(2);
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().name, "Boost");
+    }
+
+    #[test]
+    fn factory_presets_info_out_of_bounds() {
+        assert!(GainPresets::info(3).is_none());
+        assert!(GainPresets::info(100).is_none());
+    }
+
+    #[test]
+    fn factory_presets_apply_unity() {
+        let params = GainParameters::default();
+        // Set gain to something other than 0.0 first to verify apply works
+        params.gain.set_normalized(0.5);
+
+        let result = GainPresets::apply(0, &params);
+        assert!(result);
+        // Unity preset sets gain to 0.0 dB
+        let gain_value = params.gain.get();
+        assert!(
+            (gain_value - 0.0).abs() < 0.001,
+            "Expected gain ~0.0, got {}",
+            gain_value
+        );
+    }
+
+    #[test]
+    fn factory_presets_apply_quiet() {
+        let params = GainParameters::default();
+
+        let result = GainPresets::apply(1, &params);
+        assert!(result);
+        // Quiet preset sets gain to -12.0 dB
+        let gain_value = params.gain.get();
+        assert!(
+            (gain_value - (-12.0)).abs() < 0.001,
+            "Expected gain ~-12.0, got {}",
+            gain_value
+        );
+    }
+
+    #[test]
+    fn factory_presets_apply_boost() {
+        let params = GainParameters::default();
+
+        let result = GainPresets::apply(2, &params);
+        assert!(result);
+        // Boost preset sets gain to 6.0 dB
+        let gain_value = params.gain.get();
+        assert!(
+            (gain_value - 6.0).abs() < 0.001,
+            "Expected gain ~6.0, got {}",
+            gain_value
+        );
+    }
+
+    #[test]
+    fn factory_presets_apply_out_of_bounds() {
+        let params = GainParameters::default();
+        // Store original value
+        let original = params.gain.get();
+
+        // apply() with invalid index should return false
+        let result = GainPresets::apply(3, &params);
+        assert!(!result);
+
+        // Parameter should be unchanged
+        assert!(
+            (params.gain.get() - original).abs() < 0.001,
+            "Parameter should not change on invalid preset index"
+        );
+    }
+}
