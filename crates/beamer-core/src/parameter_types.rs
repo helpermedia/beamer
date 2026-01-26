@@ -906,6 +906,17 @@ impl FloatParameter {
     /// volume.set(-5.3);
     /// assert_eq!(volume.get(), -5.5); // Snapped to nearest 0.5
     /// ```
+    ///
+    /// # Format-specific behavior
+    ///
+    /// - **VST3**: Fully supported. The `step_count` is communicated to the host,
+    ///   which uses it for UI granularity and automation.
+    /// - **AUv3**: Values are snapped correctly. However, the AUv3 API has no step
+    ///   property, so hosts may display their own UI granularity based on the
+    ///   parameter range.
+    /// - **AUv2**: Values are snapped correctly. The AUv2 `AudioUnitParameterInfo`
+    ///   structure has no step size field (format limitation), so hosts display
+    ///   raw floating-point precision in their native UI.
     pub fn with_step_size(mut self, step_size: f64) -> Self {
         assert!(
             step_size > 0.0,

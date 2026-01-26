@@ -2068,6 +2068,36 @@ export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
 export_au!(CONFIG, AU_CONFIG, GainPlugin);
 ```
 
+### 4.9 Development: Testing Both AUv2 and AUv3
+
+When you build the same plugin as both AUv2 and AUv3, macOS bridges them together if they share the same **type/subtype/manufacturer** codes. Hosts like Logic Pro and Reaper will show only one version (typically preferring AUv3).
+
+This is by design—Apple intended AUv3 to be a drop-in replacement for AUv2 with the same identifiers allowing seamless project compatibility.
+
+**To test both formats side by side during development:**
+
+Create a separate test project with a different subtype code:
+
+```rust
+// Main plugin (builds as AUv3)
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Bmer"),
+    fourcc!(b"gain"),  // subtype: "gain"
+);
+
+// Test plugin (builds as AUv2 with different subtype)
+pub static AU_CONFIG: AuConfig = AuConfig::new(
+    ComponentType::Effect,
+    fourcc!(b"Bmer"),
+    fourcc!(b"gai2"),  // subtype: "gai2" — different!
+);
+```
+
+With different subtype codes, hosts treat them as separate plugins and both will appear in the plugin list.
+
+**Alternative:** Uninstall one format before testing the other, then run `killall -9 AudioComponentRegistrar` to refresh the host's plugin cache.
+
 ---
 
 ## 5. Future Phases
