@@ -160,7 +160,7 @@
 - ✅ `BoolParameter` - Auto-makeup gain on/off, Knee type (hard/soft) - *Also tested in midi-transform*
 - ✅ `BypassHandler` - Smooth bypass with equal-power crossfade - **NEW**
 - ✅ `bypass_ramp_samples()` - Proper bypass reporting - **NEW**
-- ✅ Sidechain input - External sidechain - *Also tested in gain*
+- ✅ Sidechain input - External sidechain
 - ✅ `set_active()` - Reset envelope followers on activation - **NEW**
 - ✅ `LogMapper` - Threshold and ratio with logarithmic scaling - **NEW**
 - ✅ Linear smoothing - Attack/release time smoothing - **NEW**

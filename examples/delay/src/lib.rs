@@ -511,7 +511,7 @@ impl AudioProcessor for DelayProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<DelayPlugin, DelayPresets>);
+export_vst3!(CONFIG, VST3_CONFIG, DelayPlugin, DelayPresets);
 
 // =============================================================================
 // Audio Unit Export

@@ -18,7 +18,7 @@ cargo xtask bundle <example> --release
 
 ### [Gain](gain/)
 
-Simple stereo gain effect with sidechain ducking.
+Simple stereo gain effect with minimal complexity.
 
 **Parameters:**
 
@@ -26,15 +26,12 @@ Simple stereo gain effect with sidechain ducking.
 |-----------|-------------|
 | **Gain** | Volume adjustment from -60 dB (silent) to +12 dB (boost). 0 dB = no change. |
 
-**Sidechain Ducking:** When a sidechain input is connected, the plugin automatically reduces gain when the sidechain signal is loud (like a kick drum). This creates the classic "pumping" effect used in EDM and radio production.
-
 **Demonstrates:**
 - Two-phase lifecycle: `Plugin` → `AudioProcessor` via `prepare()`
 - `#[derive(Parameters)]` with declarative attributes
 - `#[derive(HasParameters)]` for parameters access boilerplate
 - `()` setup for plugins without sample-rate-dependent state
 - `FloatParameter` with dB scaling
-- Multi-bus audio (main + sidechain input)
 - Generic f32/f64 processing via `Sample` trait
 
 ```bash
@@ -45,7 +42,7 @@ cargo xtask bundle gain --release --install
 
 ### [Delay](delay/)
 
-Tempo-synced stereo delay with ping-pong mode.
+Tempo-synced stereo delay with ping-pong mode and factory presets.
 
 **Parameters:**
 
@@ -57,10 +54,11 @@ Tempo-synced stereo delay with ping-pong mode.
 | **Feedback** | Controls how many repeats you hear. 0% = single echo, higher = more repeats. |
 | **Mix** | Blend between dry (original) and wet (delayed) signal. 0% = no effect, 100% = only echoes. |
 
-**Typical Settings:**
-- **Slapback**: Free mode, 80-120ms, low feedback (10-20%), mix to taste
-- **Rhythmic delay**: 1/8 note, Ping-Pong, feedback 30-50%
-- **Ambient tail**: 1/4 note, high feedback (60-80%), low mix (20-30%)
+**Factory Presets:**
+- **Slapback**: Quick 80ms echo for doubling effect
+- **Eighth Note**: Tempo-synced 1/8 note delay with moderate feedback
+- **Ping Pong**: Quarter note bouncing between channels
+- **Ambient**: Long 750ms delay with high feedback for textures
 
 **Demonstrates:**
 - `SampleRate` setup for sample-rate-dependent initialization
@@ -70,6 +68,7 @@ Tempo-synced stereo delay with ping-pong mode.
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
 - Ring buffer delay line implementation
 - Proper tail length via `tail_samples()`
+- `#[derive(Presets)]` with factory presets for enum parameters
 
 ```bash
 cargo xtask bundle delay --release --install

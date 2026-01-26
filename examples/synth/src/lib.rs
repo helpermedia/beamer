@@ -751,7 +751,7 @@ impl AudioProcessor for SynthProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<SynthPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, SynthPlugin);
 
 // =============================================================================
 // Audio Unit Export

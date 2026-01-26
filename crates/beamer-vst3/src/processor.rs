@@ -368,8 +368,9 @@ enum PluginState<P: Plugin> {
 /// struct MyProcessor { parameters: MyParameters, sample_rate: f64 }
 /// impl AudioProcessor for MyProcessor { /* ... */ }
 ///
-/// static CONFIG: PluginConfig = PluginConfig::new("MyPlugin", MY_UID);
-/// export_vst3!(CONFIG, Vst3Processor<MyPlugin>);
+/// static CONFIG: PluginConfig = PluginConfig::new("MyPlugin");
+/// static VST3_CONFIG: Vst3Config = Vst3Config::new(MY_UID);
+/// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 /// ```
 ///
 /// # Thread Safety

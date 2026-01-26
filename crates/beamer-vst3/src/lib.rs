@@ -44,7 +44,7 @@
 //!     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
 //! );
 //!
-//! export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyGain>);
+//! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
 //! ```
 
 #![allow(non_upper_case_globals)]
@@ -62,8 +62,9 @@ pub use factory::Factory;
 pub use processor::Vst3Processor;
 pub use wrapper::Vst3Config;
 
-// Re-export shared PluginConfig from beamer-core
+// Re-export shared types from beamer-core
 pub use beamer_core::PluginConfig;
+pub use beamer_core::{FactoryPresets, HasParameters, NoPresets};
 
 // Re-export vst3 crate for use in macros and UIDs
 pub use vst3;

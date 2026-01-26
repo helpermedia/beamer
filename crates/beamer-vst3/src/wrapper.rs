@@ -31,7 +31,7 @@ pub const DEFAULT_SYSEX_BUFFER_SIZE: usize = 512;
 ///
 /// pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 ///
-/// export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+/// export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);
 /// ```
 pub struct Vst3Config {
     /// Unique ID for the audio component class.

@@ -38,8 +38,9 @@
 //! }
 //!
 //! // Export
-//! static CONFIG: PluginConfig = PluginConfig::new("MyGain", MY_UID);
-//! export_vst3!(CONFIG, Vst3Processor<MyGain>);
+//! static CONFIG: PluginConfig = PluginConfig::new("MyGain");
+//! static VST3_CONFIG: Vst3Config = Vst3Config::new(vst3::uid(...));
+//! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
 //! ```
 
 // Re-export sub-crates

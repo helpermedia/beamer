@@ -8,11 +8,18 @@
 /// Uses combined component architecture where processor and controller
 /// are implemented by the same object.
 ///
+/// # Arguments
+///
+/// * `$config` - A static reference to [`beamer_core::PluginConfig`] containing shared plugin metadata
+/// * `$vst3_config` - A static reference to [`Vst3Config`] containing VST3-specific configuration
+/// * `$plugin` - The plugin type implementing the [`beamer_core::Plugin`] trait
+/// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
+///
 /// # Example
 ///
 /// ```rust,ignore
 /// use beamer_core::PluginConfig;
-/// use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor, vst3};
+/// use beamer_vst3::{export_vst3, Vst3Config, vst3};
 ///
 /// // Shared plugin configuration
 /// static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
@@ -23,11 +30,19 @@
 ///     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
 /// );
 ///
-/// export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
+/// // Without presets
+/// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+///
+/// // With presets
+/// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
 /// ```
+///
+/// [`Vst3Config`]: crate::Vst3Config
+/// [`FactoryPresets`]: beamer_core::FactoryPresets
 #[macro_export]
 macro_rules! export_vst3 {
-    ($config:expr, $vst3_config:expr, $component:ty) => {
+    // With explicit presets type
+    ($config:expr, $vst3_config:expr, $plugin:ty, $presets:ty) => {
         // Platform-specific entry points
 
         #[cfg(target_os = "windows")]
@@ -73,7 +88,7 @@ macro_rules! export_vst3 {
             use $crate::vst3::ComWrapper;
             use $crate::Factory;
 
-            let factory = Factory::<$component>::new(&$config, &$vst3_config);
+            let factory = Factory::<$crate::Vst3Processor<$plugin, $presets>>::new(&$config, &$vst3_config);
             let wrapper = ComWrapper::new(factory);
 
             wrapper
@@ -81,5 +96,10 @@ macro_rules! export_vst3 {
                 .unwrap()
                 .into_raw() as *mut std::ffi::c_void
         }
+    };
+
+    // Without presets (default to NoPresets)
+    ($config:expr, $vst3_config:expr, $plugin:ty) => {
+        $crate::export_vst3!($config, $vst3_config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
     };
 }

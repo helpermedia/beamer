@@ -683,13 +683,16 @@ Pass the presets type as the final argument to export macros:
 ```rust
 // VST3 with factory presets
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin, MyPresets>);
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
 
 // AU with factory presets
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin, MyPresets);
 
 // Without factory presets (uses NoPresets internally)
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
 ```
@@ -1731,7 +1734,7 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 ```rust
 // Export both VST3 and AU from the same plugin
 #[cfg(not(target_os = "macos"))]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 
 #[cfg(target_os = "macos")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
@@ -2062,7 +2065,7 @@ impl AudioProcessor for GainProcessor {
 
 // Format-specific exports
 #[cfg(not(target_os = "macos"))]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);
 
 #[cfg(target_os = "macos")]
 export_au!(CONFIG, AU_CONFIG, GainPlugin);
@@ -2392,7 +2395,7 @@ pub static VST3_CONFIG: beamer_vst3::Vst3Config =
     beamer_vst3::Vst3Config::new(COMPONENT_UID);
 
 #[cfg(feature = "vst3")]
-beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, beamer_vst3::Vst3Processor<GainPlugin>);
+beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);
 ```
 
 ### C. Example: Sidechain Compressor

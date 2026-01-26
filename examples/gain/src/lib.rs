@@ -4,7 +4,7 @@
 //! 1. Use `#[derive(Parameters)]` macro for automatic trait implementations
 //! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
 //! 3. Implement the two-phase Plugin → AudioProcessor lifecycle
-//! 4. Export using `Vst3Processor<T>` wrapper
+//! 4. Export using `export_vst3!` and `export_au!` macros
 //! 5. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
@@ -218,7 +218,7 @@ impl AudioProcessor for GainProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);
 
 // =============================================================================
 // Audio Unit Export

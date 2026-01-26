@@ -578,7 +578,7 @@ impl AudioProcessor for CompressorProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<CompressorPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, CompressorPlugin);
 
 // =============================================================================
 // Audio Unit Export

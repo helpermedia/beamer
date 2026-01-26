@@ -335,7 +335,7 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 
 ```rust
 use beamer::prelude::*;
-use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
+use beamer_vst3::{export_vst3, Vst3Config};
 use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
 
 // Shared configuration (format-agnostic)
@@ -361,7 +361,7 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
 );
 
 // Export VST3 plugin
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<MyPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 
 // Export Audio Unit plugin (macOS only)
 #[cfg(feature = "au")]
@@ -374,7 +374,7 @@ Both export macros support an optional presets parameter for plugins that provid
 
 ```rust
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin, GainPresets>);
+export_vst3!(CONFIG, VST3_CONFIG, GainPlugin, GainPresets);
 
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
