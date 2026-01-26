@@ -8,7 +8,6 @@
 //! 5. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters}; // Import the derive macros
 
 // =============================================================================
 // Plugin Configuration

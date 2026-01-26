@@ -1989,7 +1989,6 @@ ls ~/Library/Audio/Plug-Ins/Components/
 
 ```rust
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters};
 
 // Shared configuration
 pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
@@ -2306,7 +2305,6 @@ cargo clippy
 
 ```rust
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters};
 
 // =============================================================================
 // Parameters

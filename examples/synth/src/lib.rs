@@ -17,7 +17,6 @@
 //! 14. Use `SampleRate` setup for sample-rate-dependent initialization
 
 use beamer::prelude::*;
-use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration

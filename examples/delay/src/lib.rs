@@ -12,7 +12,6 @@
 //! 9. Implement `reset()` to clear internal state on playback restart
 
 use beamer::prelude::*;
-use beamer::{EnumParameter, HasParameters, Parameters, Presets};
 
 // =============================================================================
 // Plugin Configuration

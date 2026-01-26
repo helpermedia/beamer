@@ -25,7 +25,6 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 ```rust
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters};
 
 // Declarative parameters - macro generates Default, VST3 integration, state persistence
 #[derive(Parameters)]

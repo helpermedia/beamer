@@ -132,12 +132,8 @@ pub mod prelude {
     pub use beamer_au::{export_au, AuConfig, AuProcessor, ComponentType, fourcc};
 
     // Derive macros for parameters (when feature enabled)
+    // These share names with the traits/types they implement, which is allowed
+    // because traits and derive macros live in different namespaces.
     #[cfg(feature = "derive")]
-    pub use beamer_macros::Parameters as DeriveParameters;
-    #[cfg(feature = "derive")]
-    pub use beamer_macros::EnumParameter as DeriveEnumParameter;
-    #[cfg(feature = "derive")]
-    pub use beamer_macros::HasParameters as DeriveHasParameters;
-    #[cfg(feature = "derive")]
-    pub use beamer_macros::Presets as DerivePresets;
+    pub use beamer_macros::{EnumParameter, HasParameters, Parameters, Presets};
 }

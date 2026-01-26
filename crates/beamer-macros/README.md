@@ -16,7 +16,6 @@ This crate provides procedural macros that generate boilerplate code for plugins
 
 ```rust
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters};
 
 #[derive(Parameters)]
 struct GainParameters {

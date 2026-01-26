@@ -42,7 +42,6 @@
 //! need to specify what changes.
 
 use beamer::prelude::*;
-use beamer::{EnumParameter, HasParameters, Parameters};
 
 // =============================================================================
 // Plugin Configuration
