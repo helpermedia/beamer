@@ -23,11 +23,6 @@ use beamer::prelude::*;
 // Plugin Configuration
 // =============================================================================
 
-/// Component UID - unique identifier for the plugin (VST3 only)
-#[cfg(feature = "vst3")]
-const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
-    beamer::vst3::uid(0xB1C2D3E4, 0xF5061728, 0x394A5B6C, 0x7D8E9F00);
-
 /// Shared plugin configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
     .with_vendor("Beamer Framework")
@@ -38,7 +33,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
 
 /// VST3-specific configuration
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
+    0xB1C2D3E4,
+    0xF5061728,
+    0x394A5B6C,
+    0x7D8E9F00,
+));
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "comp" for identification
