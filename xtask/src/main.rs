@@ -221,7 +221,7 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
         } else {
             build::build_native(&config.package, config.release, &workspace_root, "vst3", config.arch, config.verbose)?
         };
-        vst3::bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, config.verbose)?;
+        vst3::bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.verbose)?;
     }
 
     Ok(())

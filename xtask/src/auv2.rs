@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::get_version_info;
-use crate::util::{copy_dir_all, shorten_path, to_pascal_case, Arch};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt};
 use crate::ComponentPlistConfig;
 
 // AUv2 C code generation template (large embedded C implementation)
@@ -108,11 +108,11 @@ pub fn bundle_auv2(
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
                 "-framework", "CoreAudioKit",
-                "-I", bridge_header_dir.to_str().unwrap(),
-                dylib_path.to_str().unwrap(),  // Link directly with the dylib
+                "-I", bridge_header_dir.to_str_safe()?,
+                dylib_path.to_str_safe()?,  // Link directly with the dylib
                 "-Wl,-rpath,@loader_path",
-                "-o", arch_output.to_str().unwrap(),
-                wrapper_path.to_str().unwrap(),
+                "-o", arch_output.to_str_safe()?,
+                wrapper_path.to_str_safe()?,
             ])
             .status()
             .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
@@ -123,33 +123,7 @@ pub fn bundle_auv2(
         built_paths.push(arch_output);
     }
 
-    if built_paths.len() == 1 {
-        // Single architecture - just rename
-        fs::rename(&built_paths[0], &binary_dest)
-            .map_err(|e| format!("Failed to rename binary: {}", e))?;
-    } else {
-        // Multiple architectures - combine with lipo
-        let mut lipo_args: Vec<&str> = vec!["-create"];
-        for path in &built_paths {
-            lipo_args.push(path.to_str().unwrap());
-        }
-        lipo_args.push("-output");
-        lipo_args.push(binary_dest.to_str().unwrap());
-
-        let lipo_status = Command::new("lipo")
-            .args(&lipo_args)
-            .status()
-            .map_err(|e| format!("Failed to run lipo: {}", e))?;
-
-        if !lipo_status.success() {
-            return Err("Failed to create universal binary".to_string());
-        }
-
-        // Clean up intermediate binaries
-        for path in &built_paths {
-            let _ = fs::remove_file(path);
-        }
-    }
+    combine_or_rename_binaries(&built_paths, &binary_dest, true)?;
 
     // Copy dylib next to the binary (for @rpath resolution)
     let dylib_name = dylib_path.file_name().unwrap();
@@ -177,25 +151,7 @@ pub fn bundle_auv2(
 
     // Code sign with ad-hoc signature
     crate::verbose!(verbose, "    Signing...");
-    let sign_result = Command::new("codesign")
-        .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
-        .output();
-
-    match sign_result {
-        Ok(output) if output.status.success() => {
-            if verbose {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.is_empty() {
-                    for line in stderr.lines() {
-                        crate::verbose!(verbose, "    {}", line);
-                    }
-                }
-                crate::verbose!(verbose, "    Code signing successful");
-            }
-        }
-        Ok(_) => crate::status!("  Warning: Code signing failed"),
-        Err(e) => crate::status!("  Warning: Could not run codesign: {}", e),
-    }
+    codesign_bundle(&bundle_dir, None, "Component", verbose);
 
     // Install if requested
     if install {
@@ -301,36 +257,12 @@ fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
     (plugin_name, vendor_name)
 }
 
-fn to_auv2_component_name(package: &str) -> String {
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.component", name)
-}
-
-fn get_au_tags(component_type: &str) -> &'static str {
-    match component_type {
-        "aufx" => "Effects",           // Audio effect
-        "aumu" => "Synth",             // Music device/instrument
-        "aumi" => "MIDI",              // MIDI processor
-        "aumf" => "Effects",           // Music effect
-        _ => "Effects",                // Default fallback
-    }
-}
-
 fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     let manufacturer = config.manufacturer.unwrap_or("Bemr");
-    let subtype = config.subtype.map(|s| s.to_string()).unwrap_or_else(|| {
-        let gen: String = config.package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
-        if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
-    });
+    let subtype = config
+        .subtype
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| generate_au_subtype(config.package));
 
     // Get appropriate tags based on component type
     let tags = get_au_tags(config.component_type);
@@ -421,30 +353,12 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
 }
 
 fn install_auv2(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-
-    // AUv2 components go to ~/Library/Audio/Plug-Ins/Components/
-    let components_dir = PathBuf::from(&home)
-        .join("Library")
-        .join("Audio")
-        .join("Plug-Ins")
-        .join("Components");
-
-    // Create Components directory if needed
-    fs::create_dir_all(&components_dir)
-        .map_err(|e| format!("Failed to create Components dir: {}", e))?;
-
-    let dest = components_dir.join(bundle_name);
-
-    // Remove existing installation
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("Failed to remove old installation: {}", e))?;
-    }
-
-    // Copy bundle
-    copy_dir_all(bundle_dir, &dest)?;
-
-    crate::verbose!(verbose, "    Installed to: {}", dest.display());
+    let dest = install_bundle(
+        bundle_dir,
+        bundle_name,
+        &["Library", "Audio", "Plug-Ins", "Components"],
+        verbose,
+    )?;
 
     // Refresh AU cache to pick up the new component
     let killall_result = Command::new("killall")

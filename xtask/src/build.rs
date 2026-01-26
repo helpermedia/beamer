@@ -4,50 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{to_pascal_case, Arch};
-
-// Helper functions used by clean_build_caches
-fn to_vst3_bundle_name(package: &str) -> String {
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.vst3", name)
-}
-
-fn to_au_bundle_name(package: &str) -> String {
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.app", name)
-}
-
-fn to_auv2_component_name(package: &str) -> String {
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.component", name)
-}
+use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, Arch, PathExt};
 
 /// Read version from workspace Cargo.toml and convert to Apple's version integer format
 pub fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> {
@@ -360,22 +317,9 @@ pub fn build_universal(
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create target dir: {}", e))?;
     }
 
-    // Combine using lipo
+    // Combine using lipo (don't clean up - these are standard cargo output directories)
     crate::verbose!(verbose, "    Creating universal binary with lipo...");
-    let status = Command::new("lipo")
-        .args([
-            "-create",
-            x86_64_path.to_str().unwrap(),
-            arm64_path.to_str().unwrap(),
-            "-output",
-            universal_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("Failed to run lipo: {}", e))?;
-
-    if !status.success() {
-        return Err("lipo failed to create universal binary".to_string());
-    }
+    combine_or_rename_binaries(&[x86_64_path, arm64_path], &universal_path, false)?;
 
     crate::verbose!(verbose, "    Binary: {}", universal_path.display());
 
@@ -536,9 +480,9 @@ pub fn compile_plugin_objc(
             "-arch", arch,
             "-fobjc-arc",
             "-fmodules",
-            "-I", bridge_header_dir.to_str().unwrap(),
-            "-o", wrapper_obj.to_str().unwrap(),
-            wrapper_path.to_str().unwrap(),
+            "-I", bridge_header_dir.to_str_safe()?,
+            "-o", wrapper_obj.to_str_safe()?,
+            wrapper_path.to_str_safe()?,
         ])
         .status()
         .map_err(|e| format!("Failed to compile AuWrapper.m: {}", e))?;
@@ -549,7 +493,7 @@ pub fn compile_plugin_objc(
 
     // Create static library from object file
     let status = Command::new("ar")
-        .args(["rcs", wrapper_lib.to_str().unwrap(), wrapper_obj.to_str().unwrap()])
+        .args(["rcs", wrapper_lib.to_str_safe()?, wrapper_obj.to_str_safe()?])
         .status()
         .map_err(|e| format!("Failed to create static library: {}", e))?;
 
@@ -567,9 +511,9 @@ pub fn compile_plugin_objc(
             "-arch", arch,
             "-fobjc-arc",
             "-fmodules",
-            "-I", bridge_header_dir.to_str().unwrap(),
-            "-o", extension_obj.to_str().unwrap(),
-            extension_path.to_str().unwrap(),
+            "-I", bridge_header_dir.to_str_safe()?,
+            "-o", extension_obj.to_str_safe()?,
+            extension_path.to_str_safe()?,
         ])
         .status()
         .map_err(|e| format!("Failed to compile AuExtension.m: {}", e))?;
@@ -579,7 +523,7 @@ pub fn compile_plugin_objc(
     }
 
     let status = Command::new("ar")
-        .args(["rcs", extension_lib.to_str().unwrap(), extension_obj.to_str().unwrap()])
+        .args(["rcs", extension_lib.to_str_safe()?, extension_obj.to_str_safe()?])
         .status()
         .map_err(|e| format!("Failed to create static library: {}", e))?;
 

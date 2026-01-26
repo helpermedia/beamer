@@ -3,9 +3,10 @@
 //! This module handles creating and installing VST3 plugin bundles on macOS.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::util::{copy_dir_all, shorten_path};
+use crate::build::get_version_info;
+use crate::util::{install_bundle, shorten_path, to_vst3_bundle_name};
 
 /// Creates a VST3 bundle from a compiled dylib.
 ///
@@ -24,8 +25,12 @@ pub fn bundle_vst3(
     target_dir: &Path,
     dylib_path: &Path,
     install: bool,
+    workspace_root: &Path,
     verbose: bool,
 ) -> Result<(), String> {
+    // Get version from Cargo.toml
+    let (version_string, _version_int) = get_version_info(workspace_root)?;
+
     // Create bundle name (convert to CamelCase and add .vst3)
     let bundle_name = to_vst3_bundle_name(package);
     let bundle_dir = target_dir.join(&bundle_name);
@@ -54,7 +59,7 @@ pub fn bundle_vst3(
         .map_err(|e| format!("Failed to copy dylib: {}", e))?;
 
     // Create Info.plist
-    let info_plist = create_vst3_info_plist(package, &bundle_name);
+    let info_plist = create_vst3_info_plist(package, &bundle_name, &version_string);
     fs::write(contents_dir.join("Info.plist"), info_plist)
         .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
 
@@ -66,35 +71,14 @@ pub fn bundle_vst3(
     if install {
         install_vst3(&bundle_dir, &bundle_name, verbose)?;
     } else {
-        crate::status!("✓ {}", bundle_name);
+        crate::status!("  {}", bundle_name);
     }
 
     Ok(())
 }
 
-/// Converts a package name to a VST3 bundle name.
-///
-/// Examples:
-/// - "gain" -> "BeamerGain.vst3"
-/// - "midi-transform" -> "BeamerMidiTransform.vst3"
-fn to_vst3_bundle_name(package: &str) -> String {
-    // Convert package name to CamelCase bundle name with Beamer prefix
-    // e.g., "gain" -> "BeamerGain.vst3", "midi-transform" -> "BeamerMidiTransform.vst3"
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.vst3", name)
-}
-
 /// Creates the Info.plist content for a VST3 bundle.
-fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
+fn create_vst3_info_plist(package: &str, bundle_name: &str, version: &str) -> String {
     let executable_name = bundle_name.trim_end_matches(".vst3");
 
     format!(
@@ -105,25 +89,27 @@ fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
     <key>CFBundleDevelopmentRegion</key>
     <string>English</string>
     <key>CFBundleExecutable</key>
-    <string>{}</string>
+    <string>{executable}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.beamer.{}</string>
+    <string>com.beamer.{package}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>{}</string>
+    <string>{executable}</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleVersion</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>{version}</string>
 </dict>
 </plist>
 "#,
-        executable_name, package, executable_name
+        executable = executable_name,
+        package = package,
+        version = version
     )
 }
 
@@ -131,27 +117,12 @@ fn create_vst3_info_plist(package: &str, bundle_name: &str) -> String {
 ///
 /// The bundle is copied to `~/Library/Audio/Plug-Ins/VST3/`.
 fn install_vst3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-    let vst3_dir = PathBuf::from(home)
-        .join("Library")
-        .join("Audio")
-        .join("Plug-Ins")
-        .join("VST3");
-
-    // Create VST3 directory if needed
-    fs::create_dir_all(&vst3_dir).map_err(|e| format!("Failed to create VST3 dir: {}", e))?;
-
-    let dest = vst3_dir.join(bundle_name);
-
-    // Remove existing installation
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("Failed to remove old installation: {}", e))?;
-    }
-
-    // Copy bundle
-    copy_dir_all(bundle_dir, &dest)?;
-
-    crate::verbose!(verbose, "    Installed to: {}", dest.display());
-    crate::status!("✓ {} → {}", bundle_name, shorten_path(&dest));
+    let dest = install_bundle(
+        bundle_dir,
+        bundle_name,
+        &["Library", "Audio", "Plug-Ins", "VST3"],
+        verbose,
+    )?;
+    crate::status!("  {} -> {}", bundle_name, shorten_path(&dest));
     Ok(())
 }

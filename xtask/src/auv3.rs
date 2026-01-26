@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::auv2::detect_au_component_info;
 use crate::build::get_version_info;
-use crate::util::{copy_dir_all, shorten_path, to_pascal_case, Arch};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt};
 use crate::AppexPlistConfig;
 
 /// Creates an AUv3 app extension bundle from a compiled dylib.
@@ -109,7 +109,7 @@ pub fn bundle_auv3(
     // Fix dylib install name to use @rpath with versioned path
     let _ = Command::new("install_name_tool")
         .args(["-id", &format!("@rpath/{}.framework/Versions/A/{}", framework_name, framework_name),
-               framework_binary.to_str().unwrap()])
+               &framework_binary.to_string_lossy()])
         .status();
 
     // Create framework Info.plist in Versions/A/Resources/
@@ -199,12 +199,12 @@ pub fn bundle_auv3(
                 "-framework", "AudioToolbox",
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
-                "-F", frameworks_dir.to_str().unwrap(),
+                "-F", frameworks_dir.to_str_safe()?,
                 "-framework", &framework_name,
                 "-Wl,-rpath,@loader_path/../../../../Frameworks",
                 "-Wl,-e,_NSExtensionMain",  // Use Apple's standard extension entry point
-                "-o", appex_arch_path.to_str().unwrap(),
-                appex_stub_path.to_str().unwrap(),
+                "-o", appex_arch_path.to_str_safe()?,
+                appex_stub_path.to_str_safe()?,
             ])
             .status()
             .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
@@ -215,33 +215,7 @@ pub fn bundle_auv3(
         built_paths.push(appex_arch_path);
     }
 
-    if built_paths.len() == 1 {
-        // Single architecture - just rename
-        fs::rename(&built_paths[0], &appex_binary_path)
-            .map_err(|e| format!("Failed to rename appex binary: {}", e))?;
-    } else {
-        // Multiple architectures - combine with lipo
-        let mut lipo_args: Vec<&str> = vec!["-create"];
-        for path in &built_paths {
-            lipo_args.push(path.to_str().unwrap());
-        }
-        lipo_args.push("-output");
-        lipo_args.push(appex_binary_path.to_str().unwrap());
-
-        let lipo_status = Command::new("lipo")
-            .args(&lipo_args)
-            .status()
-            .map_err(|e| format!("Failed to run lipo for appex: {}", e))?;
-
-        if !lipo_status.success() {
-            return Err("Failed to create universal appex binary".to_string());
-        }
-
-        // Clean up intermediate binaries
-        for path in &built_paths {
-            let _ = fs::remove_file(path);
-        }
-    }
+    combine_or_rename_binaries(&built_paths, &appex_binary_path, true)?;
 
     crate::verbose!(verbose, "    Appex executable built ({})", arch_str);
 
@@ -302,8 +276,8 @@ pub fn bundle_auv3(
             .args([
                 "-arch", target_arch,
                 "-framework", "Foundation",
-                "-o", host_arch_path.to_str().unwrap(),
-                stub_main_path.to_str().unwrap(),
+                "-o", host_arch_path.to_str_safe()?,
+                stub_main_path.to_str_safe()?,
             ])
             .status()
             .map_err(|e| format!("Failed to run clang for {}: {}", target_arch, e))?;
@@ -314,103 +288,24 @@ pub fn bundle_auv3(
         host_built_paths.push(host_arch_path);
     }
 
-    if host_built_paths.len() == 1 {
-        // Single architecture - just rename
-        fs::rename(&host_built_paths[0], &host_binary_dst)
-            .map_err(|e| format!("Failed to rename host binary: {}", e))?;
-    } else {
-        // Multiple architectures - combine with lipo
-        let mut lipo_args: Vec<&str> = vec!["-create"];
-        for path in &host_built_paths {
-            lipo_args.push(path.to_str().unwrap());
-        }
-        lipo_args.push("-output");
-        lipo_args.push(host_binary_dst.to_str().unwrap());
-
-        let lipo_status = Command::new("lipo")
-            .args(&lipo_args)
-            .status()
-            .map_err(|e| format!("Failed to run lipo for host app: {}", e))?;
-
-        if !lipo_status.success() {
-            return Err("Failed to create universal host app binary".to_string());
-        }
-
-        // Clean up intermediate binaries
-        for path in &host_built_paths {
-            let _ = fs::remove_file(path);
-        }
-    }
+    combine_or_rename_binaries(&host_built_paths, &host_binary_dst, true)?;
 
     crate::verbose!(verbose, "    Host app built ({})", arch_str);
 
     // Code sign framework first, then appex, then container app
     crate::verbose!(verbose, "    Signing...");
-    let framework_sign_result = Command::new("codesign")
-        .args(["--force", "--sign", "-", framework_dir.to_str().unwrap()])
-        .output();
-
-    match framework_sign_result {
-        Ok(output) if output.status.success() => {
-            if verbose {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                for line in stderr.lines() {
-                    crate::verbose!(verbose, "    {}", line);
-                }
-            }
-            crate::verbose!(verbose, "    Framework code signing successful")
-        }
-        Ok(_) => crate::status!("  Warning: Framework code signing failed"),
-        Err(e) => crate::status!("  Warning: Could not run codesign on framework: {}", e),
-    }
+    codesign_bundle(&framework_dir, None, "Framework", verbose);
 
     let entitlements_path = workspace_root.join("crates/beamer-au/resources/appex.entitlements");
-    let appex_sign_result = Command::new("codesign")
-        .args([
-            "--force",
-            "--sign", "-",
-            "--entitlements", entitlements_path.to_str().unwrap(),
-            appex_dir.to_str().unwrap()
-        ])
-        .output();
+    codesign_bundle(&appex_dir, Some(&entitlements_path), "Appex", verbose);
 
-    match appex_sign_result {
-        Ok(output) if output.status.success() => {
-            if verbose {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                for line in stderr.lines() {
-                    crate::verbose!(verbose, "    {}", line);
-                }
-            }
-            crate::verbose!(verbose, "    Appex code signing successful")
-        }
-        Ok(_) => crate::status!("  Warning: Appex code signing failed"),
-        Err(e) => crate::status!("  Warning: Could not run codesign on appex: {}", e),
-    }
-
-    let app_sign_result = Command::new("codesign")
-        .args(["--force", "--sign", "-", bundle_dir.to_str().unwrap()])
-        .output();
-
-    match app_sign_result {
-        Ok(output) if output.status.success() => {
-            if verbose {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                for line in stderr.lines() {
-                    crate::verbose!(verbose, "    {}", line);
-                }
-            }
-            crate::verbose!(verbose, "    Container app code signing successful")
-        }
-        Ok(_) => crate::status!("  Warning: Container app code signing failed"),
-        Err(e) => crate::status!("  Warning: Could not run codesign on app: {}", e),
-    }
+    codesign_bundle(&bundle_dir, None, "Container app", verbose);
 
     // Install if requested
     if install {
-        install_au(&bundle_dir, &bundle_name, verbose)?;
+        install_auv3(&bundle_dir, &bundle_name, verbose)?;
     } else {
-        crate::status!("✓ {}", bundle_name);
+        crate::status!("  {}", bundle_name);
     }
 
     Ok(())
@@ -437,25 +332,6 @@ fn generate_appex_stub_source(plugin_name: &str) -> String {
 // Minimal stub - just needs to compile to create an object file.
 // The -framework link ensures our AU framework is loaded at runtime.
 "#, plugin_name = plugin_name)
-}
-
-/// Returns app bundle name for AUv3.
-///
-/// Examples:
-/// - "gain" -> "BeamerGain.app"
-/// - "midi-transform" -> "BeamerMidiTransform.app"
-fn to_au_bundle_name(package: &str) -> String {
-    let name: String = package
-        .split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect();
-    format!("Beamer{}.app", name)
 }
 
 /// Creates the Info.plist content for the container app.
@@ -499,26 +375,13 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
     )
 }
 
-/// Maps AU component type code to appropriate tags for Info.plist.
-///
-/// DAWs use these tags for plugin categorization.
-fn get_au_tags(component_type: &str) -> &'static str {
-    match component_type {
-        "aufx" => "Effects",           // Audio effect
-        "aumu" => "Synth",             // Music device/instrument
-        "aumi" => "MIDI",              // MIDI processor
-        "aumf" => "Effects",           // Music effect
-        _ => "Effects",                // Default fallback
-    }
-}
-
 /// Creates the Info.plist content for the appex with NSExtension.
 fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let manufacturer = config.manufacturer.unwrap_or("Bemr");
-    let subtype = config.subtype.map(|s| s.to_string()).unwrap_or_else(|| {
-        let gen: String = config.package.chars().filter(|c| c.is_alphanumeric()).take(4).collect::<String>().to_lowercase();
-        if gen.len() < 4 { format!("{:_<4}", gen) } else { gen }
-    });
+    let subtype = config
+        .subtype
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| generate_au_subtype(config.package));
 
     // Get appropriate tags based on component type
     let tags = get_au_tags(config.component_type);
@@ -624,27 +487,8 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
 ///
 /// AUv3 app extensions must be installed as apps (not in the Components folder).
 /// The system discovers them when the containing app is launched.
-fn install_au(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-
-    // AUv3 app extensions must be installed as apps (not in Components folder).
-    // The system discovers them when the containing app is launched.
-    let au_dir = PathBuf::from(&home).join("Applications");
-
-    // Create Applications directory if needed
-    fs::create_dir_all(&au_dir).map_err(|e| format!("Failed to create Applications dir: {}", e))?;
-
-    let dest = au_dir.join(bundle_name);
-
-    // Remove existing installation
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("Failed to remove old installation: {}", e))?;
-    }
-
-    // Copy bundle
-    copy_dir_all(bundle_dir, &dest)?;
-
-    crate::verbose!(verbose, "    Installed to: {}", dest.display());
+fn install_auv3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
+    let dest = install_bundle(bundle_dir, bundle_name, &["Applications"], verbose)?;
 
     // Launch the app briefly to trigger pluginkit registration.
     // AUv3 extensions are registered when their containing app is first launched.
@@ -686,7 +530,7 @@ fn install_au(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(),
         }
     }
     crate::verbose!(verbose, "    Audio Unit registered");
-    crate::status!("✓ {} → {}", bundle_name, shorten_path(&dest));
+    crate::status!("  {} -> {}", bundle_name, shorten_path(&dest));
 
     Ok(())
 }
