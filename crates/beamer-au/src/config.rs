@@ -164,7 +164,7 @@ macro_rules! fourcc {
 ///
 /// ```ignore
 /// use beamer_core::PluginConfig;
-/// use beamer_au::{AuConfig, ComponentType, fourcc};
+/// use beamer_au::{AuConfig, ComponentType};
 ///
 /// pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
 ///     .with_vendor("Beamer Framework")
@@ -172,8 +172,8 @@ macro_rules! fourcc {
 ///
 /// pub static AU_CONFIG: AuConfig = AuConfig::new(
 ///     ComponentType::Effect,
-///     fourcc!(b"Demo"),  // Manufacturer
-///     fourcc!(b"gain"),  // Subtype
+///     "Demo",  // Manufacturer
+///     "gain",  // Subtype
 /// );
 ///
 /// export_au!(CONFIG, AU_CONFIG, GainPlugin);
@@ -197,23 +197,42 @@ pub struct AuConfig {
     pub tags: &'static [&'static str],
 }
 
+/// Helper to convert a string literal to a 4-byte array at compile time.
+///
+/// # Panics
+/// Panics at compile time if the string is not exactly 4 bytes.
+const fn str_to_four_bytes(s: &str) -> [u8; 4] {
+    let bytes = s.as_bytes();
+    assert!(bytes.len() == 4, "FourCC string must be exactly 4 bytes");
+    [bytes[0], bytes[1], bytes[2], bytes[3]]
+}
+
 impl AuConfig {
     /// Create a new AU configuration.
     ///
     /// # Arguments
     ///
     /// * `component_type` - The AU component type (Effect, MusicDevice, MidiProcessor)
-    /// * `manufacturer` - Your 4-character manufacturer code
-    /// * `subtype` - Your 4-character plugin subtype code
+    /// * `manufacturer` - Your 4-character manufacturer code (e.g., `"Demo"`)
+    /// * `subtype` - Your 4-character plugin subtype code (e.g., `"gain"`)
+    ///
+    /// # Panics
+    /// Panics at compile time if codes are not exactly 4 ASCII characters.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// AuConfig::new(ComponentType::Effect, "Bmer", "gain")
+    /// ```
     pub const fn new(
         component_type: ComponentType,
-        manufacturer: FourCharCode,
-        subtype: FourCharCode,
+        manufacturer: &str,
+        subtype: &str,
     ) -> Self {
         Self {
             component_type,
-            manufacturer,
-            subtype,
+            manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer)),
+            subtype: FourCharCode::new(&str_to_four_bytes(subtype)),
             tags: &[],
         }
     }

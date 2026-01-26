@@ -38,8 +38,8 @@ pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
 #[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Bmer"),
-    fourcc!(b"gain"),
+    "Bmer",
+    "gain",
 );
 
 // =============================================================================

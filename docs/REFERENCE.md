@@ -310,7 +310,7 @@ impl Default for FilterParameters {
     fn default() -> Self {
         Self {
             // Uses HighPass (from #[default]) as the default value
-            filter_type: EnumParameter::new("Filter Type"),
+            filter_type: EnumParameter::new("Filter Type",
         }
     }
 }
@@ -1657,7 +1657,7 @@ Audio Unit plugins require two configuration objects: the shared `PluginConfig` 
 
 ```rust
 use beamer_core::PluginConfig;
-use beamer_au::{AuConfig, ComponentType, fourcc};
+use beamer_au::{AuConfig, ComponentType};
 
 // Shared configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
@@ -1668,8 +1668,8 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
 // AU-specific configuration
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,      // Effect, MusicEffect, or Generator
-    fourcc!(b"Myco"),           // Manufacturer code (4 chars)
-    fourcc!(b"mypg"),           // Subtype code (4 chars, unique)
+    "Myco",           // Manufacturer code (4 chars)
+    "mypg",           // Subtype code (4 chars, unique)
 );
 ```
 
@@ -1706,10 +1706,10 @@ The `export_au!` macro creates the necessary entry points for Audio Unit discove
 
 ```rust
 use beamer::prelude::*;
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+use beamer_au::{export_au, AuConfig, ComponentType};
 
 #[cfg(target_os = "macos")]
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared config
 pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
@@ -1720,8 +1720,8 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Demo"),
-    fourcc!(b"gain"),
+    "Demo",
+    "gain",
 );
 
 // Export for macOS only
@@ -2006,12 +2006,12 @@ pub static VST3_CONFIG: beamer_vst3::Vst3Config =
 
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
-use beamer_au::{AuConfig, ComponentType, fourcc};
+use beamer_au::{AuConfig, ComponentType};
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Myco"),
-    fourcc!(b"gain"),
+    "Myco",
+    "gain",
 );
 
 // Plugin implementation (format-agnostic)
@@ -2084,15 +2084,15 @@ Create a separate test project with a different subtype code:
 // Main plugin (builds as AUv3)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Bmer"),
-    fourcc!(b"gain"),  // subtype: "gain"
+    b"Bmer",
+    b"gain",  // subtype: "gain"
 );
 
 // Test plugin (builds as AUv2 with different subtype)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Bmer"),
-    fourcc!(b"gai2"),  // subtype: "gai2" — different!
+    b"Bmer",
+    b"gai2",  // subtype: "gai2" — different!
 );
 ```
 

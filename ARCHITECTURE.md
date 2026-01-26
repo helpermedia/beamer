@@ -336,7 +336,7 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 ```rust
 use beamer::prelude::*;
 use beamer_vst3::{export_vst3, Vst3Config};
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared configuration (format-agnostic)
 pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
@@ -356,8 +356,8 @@ pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
 #[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Demo"),  // Manufacturer code (4 chars)
-    fourcc!(b"gain"),  // Subtype code (4 chars)
+    "Demo",  // Manufacturer code (4 chars)
+    "gain",  // Subtype code (4 chars)
 );
 
 // Export VST3 plugin

@@ -110,7 +110,7 @@ Apple's Audio Unit APIs require specific Objective-C runtime metadata that Rust 
 
 ```rust
 use beamer::prelude::*;
-use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared configuration
 pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
@@ -120,8 +120,8 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
 // AU-specific configuration
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    fourcc!(b"Myco"),  // Manufacturer code
-    fourcc!(b"mypg"),  // Subtype code
+    "Myco",  // Manufacturer code
+    "mypg",  // Subtype code
 );
 
 // Export Audio Unit
