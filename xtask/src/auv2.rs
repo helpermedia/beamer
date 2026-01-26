@@ -9,7 +9,7 @@ use crate::util::{codesign_bundle, combine_or_rename_binaries, generate_au_subty
 use crate::ComponentPlistConfig;
 
 // AUv2 C code generation template (large embedded C implementation)
-include!("au_templates/auv2_c.rs");
+include!("au_codegen/auv2_c.rs");
 
 pub fn bundle_auv2(
     package: &str,

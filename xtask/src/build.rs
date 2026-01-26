@@ -539,4 +539,4 @@ pub fn compile_plugin_objc(
 }
 
 // Include the AUv3 ObjC code generation functions
-include!("au_templates/auv3_objc.rs");
+include!("au_codegen/auv3_objc.rs");
