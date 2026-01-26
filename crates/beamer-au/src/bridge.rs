@@ -205,9 +205,13 @@ pub struct BeamerAuParameterInfo {
     /// - 2 = Boolean (checkbox)
     /// - 13 = Decibels, 8 = Hertz, etc.
     pub unit_type: u32,
-    /// Default normalized value (0.0 to 1.0)
+    /// Minimum actual value (e.g., -60 dB for gain)
+    pub min_value: f32,
+    /// Maximum actual value (e.g., +12 dB for gain)
+    pub max_value: f32,
+    /// Default actual value (converted from normalized)
     pub default_value: f32,
-    /// Current normalized value (0.0 to 1.0)
+    /// Current actual value (converted from normalized)
     pub current_value: f32,
     /// Number of discrete steps (0 = continuous, 1 = boolean, N = N+1 states)
     pub step_count: i32,
@@ -224,6 +228,8 @@ impl Default for BeamerAuParameterInfo {
             name: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
             units: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
             unit_type: 0, // Generic
+            min_value: 0.0,
+            max_value: 1.0,
             default_value: 0.0,
             current_value: 0.0,
             step_count: 0,
@@ -981,8 +987,14 @@ pub extern "C" fn beamer_au_get_parameter_info(
         copy_str_to_char_array(param_info.name, &mut out.name);
         copy_str_to_char_array(param_info.units, &mut out.units);
         out.unit_type = param_info.unit as u32;
-        out.default_value = param_info.default_normalized as f32;
-        out.current_value = store.get_normalized(param_info.id) as f32;
+        // Compute min/max actual values from normalized range
+        out.min_value = store.normalized_to_plain(param_info.id, 0.0) as f32;
+        out.max_value = store.normalized_to_plain(param_info.id, 1.0) as f32;
+        // Convert default and current values to actual (plain) values
+        out.default_value =
+            store.normalized_to_plain(param_info.id, param_info.default_normalized) as f32;
+        out.current_value =
+            store.normalized_to_plain(param_info.id, store.get_normalized(param_info.id)) as f32;
         out.step_count = param_info.step_count;
         // Convert ParameterFlags to u32 bitfield
         out.flags = {
@@ -1090,34 +1102,36 @@ pub extern "C" fn beamer_au_get_parameter_value_au(
             Err(_) => return 0.0,
         };
 
-        let normalized = store.get_normalized(param_id) as f32;
+        let normalized = store.get_normalized(param_id);
 
         // Find parameter info to check if it's indexed
         let count = store.count();
         for i in 0..count {
             if let Some(info) = store.info(i) {
                 if info.id == param_id {
-                    // For indexed parameters, convert normalized (0..1) to index (0..step_count)
+                    // For indexed parameters, return integer index (0..step_count)
                     if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        return (normalized * info.step_count as f32).round();
+                        return (normalized as f32 * info.step_count as f32).round();
                     }
                     break;
                 }
             }
         }
 
-        normalized
+        // For all other parameters, return actual (plain) value
+        store.normalized_to_plain(param_id, normalized) as f32
     })
 }
 
-/// Set a parameter's value from AU format (denormalized for indexed parameters).
+/// Set a parameter's value from AU format (actual values, with special handling for indexed).
 ///
 /// For indexed parameters (those with `unit_type == kAudioUnitParameterUnit_Indexed`),
 /// this accepts an index value (0 to step_count) and converts it to normalized (0.0 to 1.0).
-/// For non-indexed parameters, this accepts the normalized value directly.
+/// For all other parameters, this accepts actual (plain) values (e.g., dB, Hz) and converts
+/// to normalized using `plain_to_normalized`.
 ///
 /// This function is designed for use by AU wrappers that receive values
-/// in the format provided by AU hosts, where indexed parameters use integer indices.
+/// in the format provided by AU hosts, where parameters use actual values.
 ///
 /// # Safety
 ///
@@ -1145,21 +1159,27 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
 
         // Find parameter info to check if it's indexed
         let count = store.count();
-        let mut normalized = value;
+        let mut is_indexed = false;
 
         for i in 0..count {
             if let Some(info) = store.info(i) {
                 if info.id == param_id {
                     // For indexed parameters, convert index (0..step_count) to normalized (0..1)
                     if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        normalized = value / info.step_count as f32;
+                        is_indexed = true;
+                        let normalized = value / info.step_count as f32;
+                        store.set_normalized(param_id, normalized as f64);
                     }
                     break;
                 }
             }
         }
 
-        store.set_normalized(param_id, normalized as f64);
+        // For all other parameters, convert actual (plain) value to normalized
+        if !is_indexed {
+            let normalized = store.plain_to_normalized(param_id, value as f64);
+            store.set_normalized(param_id, normalized);
+        }
     })
 }
 

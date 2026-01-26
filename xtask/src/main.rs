@@ -265,7 +265,7 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         return nil;
     }}
 
-    // CRITICAL: Create render block eagerly during init, like JUCE does.
+    // CRITICAL: Create render block eagerly during init.
     // The base class AUAudioUnit may set up MIDI forwarding (wiring
     // scheduleMIDIEventBlock -> realtimeEventListHead) during initialization.
     // If internalRenderBlock doesn't exist at that point, forwarding fails.
@@ -597,7 +597,6 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     // Cache the render block instance. This block is created eagerly during init()
     // to ensure the base class AUAudioUnit can set up MIDI forwarding (wiring
     // scheduleMIDIEventBlock -> realtimeEventListHead) at the right time.
-    // JUCE also creates the render block eagerly during initialization.
     if (_cachedInternalRenderBlock != nil) {{
         return _cachedInternalRenderBlock;
     }}
@@ -735,14 +734,21 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
             }}
         }}
 
-        // For indexed parameters, use integer range (0 to step_count)
-        float paramMin = 0.0f;
-        float paramMax = 1.0f;
-        float paramDefault = info.default_value;
+        // Set parameter range and default based on type
+        float paramMin;
+        float paramMax;
+        float paramDefault;
 
         if (info.unit_type == kAudioUnitParameterUnit_Indexed) {{
+            // For indexed parameters, use integer range (0 to step_count)
+            paramMin = 0.0f;
             paramMax = (float)info.step_count;
             paramDefault = roundf(info.default_value * info.step_count);
+        }} else {{
+            // For continuous parameters, use actual value range (e.g., -60 to +12 dB)
+            paramMin = info.min_value;
+            paramMax = info.max_value;
+            paramDefault = info.default_value;
         }}
 
         AUParameter* param = [AUParameterTree createParameterWithIdentifier:identifier
@@ -854,7 +860,7 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         [strongSelf->_instanceLock lock];
         AUValue result = 0.0f;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            // Use AU-format getter which handles indexed parameter conversion internally
+            // Get actual value from Rust (handles conversion from normalized internally)
             result = beamer_au_get_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address);
         }}
         [strongSelf->_instanceLock unlock];
@@ -869,7 +875,7 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
 
         [strongSelf->_instanceLock lock];
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            // Use AU-format setter which handles indexed parameter conversion internally
+            // Set actual value to Rust (handles conversion to normalized internally)
             beamer_au_set_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address, value);
         }}
         [strongSelf->_instanceLock unlock];
@@ -886,16 +892,20 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         [strongSelf->_instanceLock lock];
         NSString* result = nil;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            // Convert index to normalized for formatting (Rust expects normalized)
-            AUValue formatValue = displayValue;
+            // Convert actual value to normalized for formatting (Rust expects normalized)
+            float normalizedValue = 0.0f;
             if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
-                formatValue = displayValue / param.maxValue;
+                // Indexed: index / step_count = normalized
+                normalizedValue = displayValue / param.maxValue;
+            }} else if (param.maxValue > param.minValue) {{
+                // Continuous: (actual - min) / (max - min) = normalized
+                normalizedValue = (displayValue - param.minValue) / (param.maxValue - param.minValue);
             }}
             char buffer[128];
             uint32_t written = beamer_au_format_parameter_value(
                 strongSelf->_rustInstance,
                 (uint32_t)param.address,
-                formatValue,
+                normalizedValue,
                 buffer,
                 sizeof(buffer)
             );
@@ -917,12 +927,15 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
         [strongSelf->_instanceLock lock];
         AUValue result = param.value;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {{
-            float parsedValue = 0.0f;
-            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedValue)) {{
-                result = parsedValue;
-                // Convert normalized to index for indexed parameters
+            float parsedNormalized = 0.0f;
+            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedNormalized)) {{
+                // Convert normalized to actual value
                 if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {{
-                    result = roundf(parsedValue * param.maxValue);
+                    // Indexed: normalized * step_count = index
+                    result = roundf(parsedNormalized * param.maxValue);
+                }} else {{
+                    // Continuous: min + normalized * (max - min) = actual
+                    result = param.minValue + parsedNormalized * (param.maxValue - param.minValue);
                 }}
             }}
         }}
@@ -971,9 +984,11 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
                 return;
             }}
 
+            // Refresh AUParameter values from Rust to notify host UI.
+            // Use beamer_au_get_parameter_value_au since AUParameters use actual value ranges.
             if (_parameterTree != nil) {{
                 for (AUParameter* param in _parameterTree.allParameters) {{
-                    AUValue newValue = beamer_au_get_parameter_value(_rustInstance, (uint32_t)param.address);
+                    AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)param.address);
                     [param setValue:newValue originator:nil];
                 }}
             }}
@@ -1015,9 +1030,11 @@ static NSUInteger {wrapper_class}InstanceCounter = 0;
     // CRITICAL: Refresh all AUParameter values from Rust to notify host UI.
     // After applying a preset, the parameter values in Rust have changed.
     // We must update the AUParameter objects so the host UI reflects the changes.
+    // Use beamer_au_get_parameter_value_au to get actual values (not normalized)
+    // since AUParameters now use actual value ranges.
     if (_parameterTree != nil) {{
         for (AUParameter* param in _parameterTree.allParameters) {{
-            AUValue newValue = beamer_au_get_parameter_value(_rustInstance, (uint32_t)param.address);
+            AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)param.address);
             [param setValue:newValue originator:nil];
         }}
     }}
@@ -1886,9 +1903,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                     // Map unit type
                     auInfo->unit = bInfo.unit_type;
 
-                    // Normalized range 0-1 (unless indexed)
-                    auInfo->minValue = 0.0f;
-                    auInfo->maxValue = 1.0f;
+                    // Use actual value range from Rust
+                    auInfo->minValue = bInfo.min_value;
+                    auInfo->maxValue = bInfo.max_value;
                     auInfo->defaultValue = bInfo.default_value;
 
                     // Check if indexed parameter (for value strings)
