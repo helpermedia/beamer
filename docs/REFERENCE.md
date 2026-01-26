@@ -1571,13 +1571,17 @@ lto = true
 
 ### 3.4 Plugin Categories
 
+VST3 uses categories for plugin browser organization:
+
 ```rust
 // Audio effect
-PluginConfig::new("My Effect", UID).with_category("Fx")
+Vst3Config::new(uid(...)).with_categories("Fx|Dynamics")
 
 // Instrument
-PluginConfig::new("My Synth", UID).with_category("Instrument")
+Vst3Config::new(uid(...)).with_categories("Instrument|Synth")
 ```
+
+Common VST3 categories: `Fx`, `Instrument`, `Dynamics`, `EQ`, `Filter`, `Delay`, `Reverb`, `Mastering`, etc.
 
 ---
 
@@ -1662,8 +1666,7 @@ use beamer_au::{AuConfig, ComponentType};
 // Shared configuration (format-agnostic metadata)
 pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Dynamics");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 // AU-specific configuration
 pub static AU_CONFIG: AuConfig = AuConfig::new(
@@ -1993,8 +1996,7 @@ use beamer::prelude::*;
 // Shared configuration
 pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Dynamics");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 // VST3 configuration
 #[cfg(feature = "vst3")]
@@ -2002,7 +2004,8 @@ const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
     beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new(COMPONENT_UID);
+    beamer_vst3::Vst3Config::new(COMPONENT_UID)
+        .with_categories("Fx|Dynamics");
 
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
@@ -2084,15 +2087,15 @@ Create a separate test project with a different subtype code:
 // Main plugin (builds as AUv3)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    b"Bmer",
-    b"gain",  // subtype: "gain"
+    "Bmer",
+    "gain",  // subtype: "gain"
 );
 
 // Test plugin (builds as AUv2 with different subtype)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
-    b"Bmer",
-    b"gai2",  // subtype: "gai2" — different!
+    "Bmer",
+    "gai2",  // subtype: "gai2" — different!
 );
 ```
 

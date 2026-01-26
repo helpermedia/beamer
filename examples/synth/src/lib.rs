@@ -27,18 +27,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_category("Instrument")
-    .with_sub_categories("Instrument|Synth");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
-    0xB3A2C1D0,
-    0xE4F5A6B7,
-    0xC8D9E0F1,
-    0x12233445,
-));
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("B3A2C1D0-E4F5-A6B7-C8D9-E0F112233445")
+    .with_categories("Instrument|Synth");
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "synt" for identification

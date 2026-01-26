@@ -341,8 +341,7 @@ use beamer_au::{export_au, AuConfig, ComponentType};
 // Shared configuration (format-agnostic)
 pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Gain");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 // VST3-specific configuration
 #[cfg(feature = "vst3")]
@@ -350,7 +349,8 @@ const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
     beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
 
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID);
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID)
+    .with_categories("Fx|Gain");
 
 // AU-specific configuration (macOS only)
 #[cfg(feature = "au")]

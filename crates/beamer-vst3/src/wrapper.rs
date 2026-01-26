@@ -41,6 +41,11 @@ pub struct Vst3Config {
     /// When `None`, the plugin uses the combined component pattern.
     pub controller_uid: Option<TUID>,
 
+    /// Plugin categories for the VST3 browser.
+    /// Format: pipe-separated string like "Fx|Dynamics|Compressor" or "Instrument|Synth".
+    /// See VST3 SDK documentation for standard category names.
+    pub categories: &'static str,
+
     /// Number of SysEx output slots per process block.
     /// Higher values support more concurrent SysEx messages but use more memory.
     pub sysex_slots: usize,
@@ -51,13 +56,55 @@ pub struct Vst3Config {
 }
 
 impl Vst3Config {
-    /// Create a new VST3 configuration with default values.
+    /// Create a new VST3 configuration from a UUID string.
     ///
     /// Uses combined component architecture (single class for processor + controller).
-    pub const fn new(component_uid: TUID) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// * `uuid` - UUID string in format "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3")
+    ///     .with_categories("Fx|Dynamics");
+    /// ```
+    pub const fn new(uuid: &'static str) -> Self {
+        const fn hex_to_u8(c: u8) -> u8 {
+            match c {
+                b'0'..=b'9' => c - b'0',
+                b'A'..=b'F' => c - b'A' + 10,
+                b'a'..=b'f' => c - b'a' + 10,
+                _ => panic!("Invalid hex character in UUID"),
+            }
+        }
+
+        const fn parse_u32(bytes: &[u8], start: usize) -> u32 {
+            let mut result: u32 = 0;
+            let mut i = 0;
+            while i < 8 {
+                let c = bytes[start + i];
+                if c != b'-' {
+                    result = (result << 4) | (hex_to_u8(c) as u32);
+                }
+                i += 1;
+            }
+            result
+        }
+
+        let bytes = uuid.as_bytes();
+        let part1 = parse_u32(bytes, 0);
+        let part2 = parse_u32(bytes, 9);
+        let part3 = parse_u32(bytes, 19);
+        let part4 = parse_u32(bytes, 28);
+
+        let component_uid = vst3::uid(part1, part2, part3, part4);
+
         Self {
             component_uid,
             controller_uid: None,
+            categories: "Fx",
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
         }
@@ -66,6 +113,15 @@ impl Vst3Config {
     /// Set the controller class UID and enable split component/controller mode.
     pub const fn with_controller(mut self, controller_uid: TUID) -> Self {
         self.controller_uid = Some(controller_uid);
+        self
+    }
+
+    /// Set the plugin categories for the VST3 browser.
+    ///
+    /// Format: pipe-separated string like "Fx|Dynamics|Compressor" or "Instrument|Synth".
+    /// See VST3 SDK documentation for standard category names.
+    pub const fn with_categories(mut self, categories: &'static str) -> Self {
+        self.categories = categories;
         self
     }
 

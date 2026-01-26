@@ -22,17 +22,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Delay");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
-    0xA7B8C9D0,
-    0xE1F2A3B4,
-    0xC5D6E7F8,
-    0x09101112,
-));
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("A7B8C9D0-E1F2-A3B4-C5D6-E7F809101112")
+    .with_categories("Fx|Delay");
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "dlay" for identification
@@ -41,7 +36,8 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     "Bmer",
     "dlay",
-);
+)
+.with_tags(&["Delay"]);
 
 // =============================================================================
 // Enum Types for Parameter Choices

@@ -18,20 +18,15 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Dynamics");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
 /// Note: No .with_controller() - this is a simple plugin without custom GUI.
 /// The host will use its generic parameter UI. For plugins with WebView GUI,
 /// you would add .with_controller(CONTROLLER_UID)
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
-    0xDCDDB4BA,
-    0x2D6A4EC3,
-    0xA526D3E7,
-    0x244FAAE3,
-));
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3")
+    .with_categories("Fx|Dynamics");
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "gain" for identification

@@ -58,15 +58,50 @@ struct BundleConfig {
 }
 
 // =============================================================================
+// UUID Generation
+// =============================================================================
+
+/// Generate a new UUID for plugin identification.
+///
+/// Outputs a UUID in the standard format: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+/// This can be used directly with `Vst3Config::new()` in VST3 configs.
+fn generate_uuid() {
+    let uuid = uuid::Uuid::new_v4();
+    // Format as uppercase without braces, matching uuidgen output
+    println!("{}", uuid.as_hyphenated().to_string().to_uppercase());
+}
+
+// =============================================================================
 // Entry Point
 // =============================================================================
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() < 3 || args[1] != "bundle" {
+    if args.len() < 2 {
         print_usage();
         std::process::exit(1);
+    }
+
+    let command = &args[1];
+
+    match command.as_str() {
+        "generate-uuid" => {
+            generate_uuid();
+            return;
+        }
+        "bundle" => {
+            if args.len() < 3 {
+                print_error("bundle command requires a package name");
+                print_usage();
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            print_error(&format!("unknown command '{}'", command));
+            print_usage();
+            std::process::exit(1);
+        }
     }
 
     let package = &args[2];
@@ -130,10 +165,11 @@ fn main() {
 }
 
 fn print_usage() {
-    eprintln!("Usage: cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean] [--verbose]");
+    eprintln!("Usage: cargo xtask <command> [options]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  bundle    Build and bundle a plugin");
+    eprintln!("  generate-uuid              Generate a new UUID for plugin identification");
+    eprintln!("  bundle <package> [options] Build and bundle a plugin");
     eprintln!();
     eprintln!("Formats:");
     eprintln!("  --vst3    Build VST3 bundle (default if no format specified)");

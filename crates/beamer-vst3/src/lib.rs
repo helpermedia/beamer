@@ -39,10 +39,9 @@
 //! static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
 //!     .with_vendor("My Company");
 //!
-//! // VST3-specific config
-//! static VST3_CONFIG: Vst3Config = Vst3Config::new(
-//!     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
-//! );
+//! // VST3-specific config (generate UUID with: cargo xtask generate-uuid)
+//! static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
+//!     .with_categories("Fx|Dynamics");
 //!
 //! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
 //! ```

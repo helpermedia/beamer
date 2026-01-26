@@ -148,7 +148,7 @@ where
                 copy_cstring("Audio Module Class", &mut info.category);
                 copy_cstring(self.config.name, &mut info.name);
                 info.classFlags = 0;
-                copy_cstring(self.config.sub_categories, &mut info.subCategories);
+                copy_cstring(self.vst3_config.categories, &mut info.subCategories);
                 copy_cstring(self.config.vendor, &mut info.vendor);
                 copy_cstring(self.config.version, &mut info.version);
                 copy_cstring("VST 3.8.0", &mut info.sdkVersion);
@@ -190,7 +190,7 @@ where
                 copy_cstring("Audio Module Class", &mut info.category);
                 copy_wstring(self.config.name, &mut info.name);
                 info.classFlags = 0;
-                copy_cstring(self.config.sub_categories, &mut info.subCategories);
+                copy_cstring(self.vst3_config.categories, &mut info.subCategories);
                 copy_wstring(self.config.vendor, &mut info.vendor);
                 copy_wstring(self.config.version, &mut info.version);
                 copy_wstring("VST 3.8.0", &mut info.sdkVersion);

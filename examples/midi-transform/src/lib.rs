@@ -52,18 +52,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_category("Instrument")
-    .with_sub_categories("Instrument");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
-    0xA1B2C3D4,
-    0xE5F6A7B8,
-    0xC9D0E1F2,
-    0x03040506,
-));
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("A1B2C3D4-E5F6-A7B8-C9D0-E1F203040506")
+    .with_categories("Instrument");
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "mtrn" for identification

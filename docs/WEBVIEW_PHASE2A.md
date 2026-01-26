@@ -143,9 +143,8 @@ unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
 ## Example Plugin
 
 ```rust
-static CONFIG: PluginConfig = PluginConfig::new("WebView Demo", UID)
+static CONFIG: PluginConfig = PluginConfig::new("WebView Demo")
     .with_vendor("Beamer")
-    .with_category("Fx")
     .with_editor();
 ```
 

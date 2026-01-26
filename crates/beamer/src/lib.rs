@@ -51,11 +51,13 @@ pub use beamer_vst3 as vst3_impl;
 
 /// Re-export of vst3 types needed for plugin configuration.
 ///
-/// This allows examples and plugins to use `beamer::vst3::{uid, Steinberg::TUID}`
+/// This allows examples and plugins to use `beamer::vst3::Steinberg::TUID`
 /// without adding a direct dependency on the vst3 crate.
 #[cfg(feature = "vst3")]
 pub mod vst3 {
-    pub use ::vst3::{uid, Steinberg};
+    pub use ::vst3::Steinberg;
+    // Re-export TUID type for convenience
+    pub use ::vst3::Steinberg::TUID;
 }
 
 #[cfg(feature = "au")]

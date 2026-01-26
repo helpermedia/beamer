@@ -38,13 +38,6 @@ pub struct PluginConfig {
     /// Plugin version string.
     pub version: &'static str,
 
-    /// Plugin category (e.g., "Fx", "Instrument").
-    pub category: &'static str,
-
-    /// Sub-categories (e.g., "Dynamics", "EQ").
-    /// Format: pipe-separated string like "Fx|Dynamics|Compressor"
-    pub sub_categories: &'static str,
-
     /// Whether this plugin has an editor/GUI.
     pub has_editor: bool,
 }
@@ -66,8 +59,6 @@ impl PluginConfig {
             url: "",
             email: "",
             version: "1.0.0",
-            category: "Fx",
-            sub_categories: "",
             has_editor: false,
         }
     }
@@ -93,18 +84,6 @@ impl PluginConfig {
     /// Set the version string.
     pub const fn with_version(mut self, version: &'static str) -> Self {
         self.version = version;
-        self
-    }
-
-    /// Set the plugin category.
-    pub const fn with_category(mut self, category: &'static str) -> Self {
-        self.category = category;
-        self
-    }
-
-    /// Set the sub-categories.
-    pub const fn with_sub_categories(mut self, sub_categories: &'static str) -> Self {
-        self.sub_categories = sub_categories;
         self
     }
 

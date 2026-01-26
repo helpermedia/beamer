@@ -8,3 +8,4 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+uuid = { version = "1.11", features = ["v4"] }

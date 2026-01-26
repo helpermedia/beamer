@@ -28,17 +28,12 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_sub_categories("Fx|Dynamics");
+    .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(beamer::vst3::uid(
-    0xB1C2D3E4,
-    0xF5061728,
-    0x394A5B6C,
-    0x7D8E9F00,
-));
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("B1C2D3E4-F506-1728-394A-5B6C7D8E9F00")
+    .with_categories("Fx|Dynamics");
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "comp" for identification
@@ -47,7 +42,8 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     "Bmer",
     "comp",
-);
+)
+.with_tags(&["Dynamics", "Compressor"]);
 
 // =============================================================================
 // Compression Ratio Enum
