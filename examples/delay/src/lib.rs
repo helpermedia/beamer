@@ -12,7 +12,7 @@
 //! 9. Implement `reset()` to clear internal state on playback restart
 
 use beamer::prelude::*;
-use beamer::{EnumParameter, HasParameters, Parameters};
+use beamer::{EnumParameter, HasParameters, Parameters, Presets};
 
 // =============================================================================
 // Plugin Configuration
@@ -111,6 +111,73 @@ pub struct DelayParameters {
     /// Wet/dry mix (0% = dry, 100% = wet) - smoothed to avoid zipper noise
     #[parameter(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
     pub mix: FloatParameter,
+}
+
+// =============================================================================
+// Factory Presets
+// =============================================================================
+
+/// Factory presets for the delay plugin.
+///
+/// These presets demonstrate various delay effects from slapback echo to
+/// ambient textures. The `#[derive(Presets)]` macro generates the
+/// `FactoryPresets` trait implementation.
+///
+/// Note: EnumParameter values use numeric indices based on variant order:
+/// - SyncMode: Free=0, Quarter=1, Eighth=2, Sixteenth=3, ThirtySecond=4
+/// - StereoMode: Stereo=0, PingPong=1
+#[derive(Presets)]
+#[preset(parameters = DelayParameters)]
+pub enum DelayPresets {
+    /// Quick slapback echo - short delay for doubling effect
+    #[preset(
+        name = "Slapback",
+        values(
+            sync_mode = 0,      // Free
+            stereo_mode = 0,    // Stereo
+            time_ms = 80.0,
+            feedback = 0.2,
+            mix = 0.3
+        )
+    )]
+    Slapback,
+
+    /// Eighth note tempo-synced delay with moderate feedback
+    #[preset(
+        name = "Eighth Note",
+        values(
+            sync_mode = 2,      // Eighth
+            stereo_mode = 0,    // Stereo
+            feedback = 0.45,
+            mix = 0.4
+        )
+    )]
+    EighthNote,
+
+    /// Ping-pong stereo delay bouncing between channels
+    #[preset(
+        name = "Ping Pong",
+        values(
+            sync_mode = 1,      // Quarter
+            stereo_mode = 1,    // PingPong
+            feedback = 0.5,
+            mix = 0.5
+        )
+    )]
+    PingPong,
+
+    /// Long ambient delay with high feedback for texture
+    #[preset(
+        name = "Ambient",
+        values(
+            sync_mode = 0,      // Free
+            stereo_mode = 0,    // Stereo
+            time_ms = 750.0,
+            feedback = 0.7,
+            mix = 0.6
+        )
+    )]
+    Ambient,
 }
 
 // =============================================================================
@@ -444,11 +511,11 @@ impl AudioProcessor for DelayProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<DelayPlugin>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<DelayPlugin, DelayPresets>);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, DelayPlugin);
+export_au!(CONFIG, AU_CONFIG, DelayPlugin, DelayPresets);

@@ -5,12 +5,10 @@
 //! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
 //! 3. Implement the two-phase Plugin → AudioProcessor lifecycle
 //! 4. Export using `Vst3Processor<T>` wrapper
-//! 5. Use multi-bus support for sidechain ducking
-//! 6. Access transport info via ProcessContext
-//! 7. Use the `FloatParameter` type for cleaner parameter storage
+//! 5. Use the `FloatParameter` type for cleaner parameter storage
 
 use beamer::prelude::*;
-use beamer::{HasParameters, Parameters, Presets}; // Import the derive macros
+use beamer::{HasParameters, Parameters}; // Import the derive macros
 
 // =============================================================================
 // Plugin Configuration
@@ -71,31 +69,6 @@ pub struct GainParameters {
 
 // No manual `new()` or `Default` impl needed - the macro generates everything!
 
-// =============================================================================
-// Factory Presets
-// =============================================================================
-
-/// Factory presets for the gain plugin.
-///
-/// These presets demonstrate the sparse preset feature - each preset only
-/// specifies the parameters it wants to change. The `#[derive(Presets)]` macro
-/// generates the `FactoryPresets` trait implementation.
-#[derive(Presets)]
-#[preset(parameters = GainParameters)]
-pub enum GainPresets {
-    /// Unity gain - signal passes through unchanged
-    #[preset(name = "Unity", values(gain = 0.0))]
-    Unity,
-
-    /// Quiet - reduce volume by 12 dB (quarter amplitude)
-    #[preset(name = "Quiet", values(gain = -12.0))]
-    Quiet,
-
-    /// Boost - increase volume by 6 dB (double amplitude)
-    #[preset(name = "Boost", values(gain = 6.0))]
-    Boost,
-}
-
 impl GainParameters {
     /// Get the gain as a linear multiplier for DSP calculations.
     ///
@@ -150,22 +123,6 @@ impl Plugin for GainPlugin {
             parameters: self.parameters,
         }
     }
-
-    // =========================================================================
-    // Multi-Bus Configuration
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        2 // Main stereo input + Sidechain input
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        match index {
-            0 => Some(BusInfo::stereo("Input")),
-            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
-            _ => None,
-        }
-    }
 }
 
 // =============================================================================
@@ -192,60 +149,13 @@ impl GainProcessor {
     /// This demonstrates the recommended pattern: write your DSP once
     /// using the Sample trait, then delegate from both process() and
     /// process_f64() to avoid code duplication.
-    fn process_generic<S: Sample>(
-        &mut self,
-        buffer: &mut Buffer<S>,
-        aux: &mut AuxiliaryBuffers<S>,
-        context: &ProcessContext,
-    ) {
+    fn process_generic<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
         let gain = S::from_f32(self.parameters.gain_linear());
-
-        // Example: Access transport info from host
-        // tempo is available when the DAW provides it (most do)
-        let _tempo = context.transport.tempo.unwrap_or(120.0);
-        let _is_playing = context.transport.is_playing;
-
-        // You could use tempo for tempo-synced effects:
-        // let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
-        // let delay_samples = samples_per_beat * 0.25; // 16th note delay
-
-        // =================================================================
-        // Sidechain Ducking
-        // =================================================================
-        // Calculate average RMS level across sidechain channels.
-        // RMS (Root Mean Square) measures the "power" of the signal:
-        //   RMS = sqrt(sum(samples²) / N)
-        //
-        // This gives a more musical/perceptual level than peak detection.
-        let sidechain_level: S = aux
-            .sidechain()
-            .map(|sc| {
-                let mut sum = S::ZERO;
-                for ch in 0..sc.num_channels() {
-                    sum = sum + sc.rms(ch);
-                }
-                if sc.num_channels() > 0 {
-                    sum / S::from_f32(sc.num_channels() as f32)
-                } else {
-                    S::ZERO
-                }
-            })
-            .unwrap_or(S::ZERO);
-
-        // Simple ducking formula:
-        //   duck_amount = clamp(sidechain_level * sensitivity, 0, 1)
-        //   effective_gain = gain * (1 - duck_amount * max_reduction)
-        //
-        // With sensitivity=4.0 and max_reduction=0.8:
-        // - Sidechain at 0.0 → no ducking (gain unchanged)
-        // - Sidechain at 0.25 → full ducking (80% gain reduction)
-        let duck_amount = (sidechain_level * S::from_f32(4.0)).min(S::ONE);
-        let effective_gain = gain * (S::ONE - duck_amount * S::from_f32(0.8));
 
         // Process using zip_channels() iterator for cleaner code
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * effective_gain;
+                *o = *i * gain;
             }
         }
     }
@@ -263,11 +173,11 @@ impl AudioProcessor for GainProcessor {
     fn process(
         &mut self,
         buffer: &mut Buffer,
-        aux: &mut AuxiliaryBuffers,
-        context: &ProcessContext,
+        _aux: &mut AuxiliaryBuffers,
+        _context: &ProcessContext,
     ) {
         // Delegate to generic implementation
-        self.process_generic(buffer, aux, context);
+        self.process_generic(buffer);
     }
 
     // =========================================================================
@@ -281,11 +191,11 @@ impl AudioProcessor for GainProcessor {
     fn process_f64(
         &mut self,
         buffer: &mut Buffer<f64>,
-        aux: &mut AuxiliaryBuffers<f64>,
-        context: &ProcessContext,
+        _aux: &mut AuxiliaryBuffers<f64>,
+        _context: &ProcessContext,
     ) {
         // Delegate to generic implementation - same code works for both f32 and f64!
-        self.process_generic(buffer, aux, context);
+        self.process_generic(buffer);
     }
 
     // =========================================================================
@@ -308,11 +218,11 @@ impl AudioProcessor for GainProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin, GainPresets>);
+export_vst3!(CONFIG, VST3_CONFIG, Vst3Processor<GainPlugin>);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
+export_au!(CONFIG, AU_CONFIG, GainPlugin);
