@@ -832,3 +832,547 @@ where
 {
     Box::new(AuProcessor::<P>::new())
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beamer_core::CachedBusInfo;
+    use crate::render::MidiBuffer;
+    use beamer_core::parameter_groups::{GroupInfo, ParameterGroups};
+    use beamer_core::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
+    use beamer_core::parameter_store::ParameterStore;
+    use beamer_core::parameter_types::{ParameterRef, Parameters};
+    use beamer_core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
+    use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind, PluginResult};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // =========================================================================
+    // Mock Parameter
+    // =========================================================================
+
+    /// A minimal mock parameter for testing.
+    struct MockParameter {
+        id: u32,
+        name: &'static str,
+        value: AtomicU64,
+        info: ParameterInfo,
+    }
+
+    impl MockParameter {
+        fn new(id: u32, name: &'static str, default: f64) -> Self {
+            Self {
+                id,
+                name,
+                value: AtomicU64::new(default.to_bits()),
+                info: ParameterInfo {
+                    id,
+                    name,
+                    short_name: name,
+                    units: "dB",
+                    unit: ParameterUnit::Decibels,
+                    step_count: 0,
+                    default_normalized: default,
+                    flags: ParameterFlags::default(),
+                    group_id: 0,
+                },
+            }
+        }
+    }
+
+    impl ParameterRef for MockParameter {
+        fn id(&self) -> u32 {
+            self.id
+        }
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn short_name(&self) -> &'static str {
+            self.name
+        }
+        fn units(&self) -> &'static str {
+            "dB"
+        }
+        fn flags(&self) -> &ParameterFlags {
+            &self.info.flags
+        }
+        fn default_normalized(&self) -> f64 {
+            self.info.default_normalized
+        }
+        fn step_count(&self) -> i32 {
+            0
+        }
+        fn get_normalized(&self) -> f64 {
+            f64::from_bits(self.value.load(Ordering::Relaxed))
+        }
+        fn set_normalized(&self, value: f64) {
+            self.value.store(value.to_bits(), Ordering::Relaxed);
+        }
+        fn get_plain(&self) -> f64 {
+            self.get_normalized()
+        }
+        fn set_plain(&self, value: f64) {
+            self.set_normalized(value);
+        }
+        fn display_normalized(&self, normalized: f64) -> String {
+            format!("{:.2}", normalized)
+        }
+        fn parse(&self, s: &str) -> Option<f64> {
+            s.parse().ok()
+        }
+        fn normalized_to_plain(&self, normalized: f64) -> f64 {
+            normalized
+        }
+        fn plain_to_normalized(&self, plain: f64) -> f64 {
+            plain
+        }
+        fn info(&self) -> &ParameterInfo {
+            &self.info
+        }
+    }
+
+    // =========================================================================
+    // Mock Parameters Collection
+    // =========================================================================
+
+    struct TestParameters {
+        gain: MockParameter,
+    }
+
+    impl TestParameters {
+        fn new() -> Self {
+            Self {
+                gain: MockParameter::new(fnv1a_hash("gain"), "Gain", 0.5),
+            }
+        }
+    }
+
+    impl ParameterGroups for TestParameters {
+        fn group_count(&self) -> usize {
+            1
+        }
+        fn group_info(&self, index: usize) -> Option<GroupInfo> {
+            if index == 0 {
+                Some(GroupInfo::root())
+            } else {
+                None
+            }
+        }
+    }
+
+    impl Parameters for TestParameters {
+        fn count(&self) -> usize {
+            1
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(std::iter::once(&self.gain as &dyn ParameterRef))
+        }
+        fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
+            if id == self.gain.id {
+                Some(&self.gain)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl ParameterStore for TestParameters {
+        fn count(&self) -> usize {
+            1
+        }
+        fn info(&self, index: usize) -> Option<&ParameterInfo> {
+            if index == 0 {
+                Some(&self.gain.info)
+            } else {
+                None
+            }
+        }
+        fn get_normalized(&self, id: u32) -> f64 {
+            if id == self.gain.id {
+                self.gain.get_normalized()
+            } else {
+                0.0
+            }
+        }
+        fn set_normalized(&self, id: u32, value: f64) {
+            if id == self.gain.id {
+                self.gain.set_normalized(value);
+            }
+        }
+        fn normalized_to_string(&self, id: u32, normalized: f64) -> String {
+            if id == self.gain.id {
+                self.gain.display_normalized(normalized)
+            } else {
+                String::new()
+            }
+        }
+        fn string_to_normalized(&self, id: u32, string: &str) -> Option<f64> {
+            if id == self.gain.id {
+                self.gain.parse(string)
+            } else {
+                None
+            }
+        }
+        fn normalized_to_plain(&self, id: u32, normalized: f64) -> f64 {
+            if id == self.gain.id {
+                self.gain.normalized_to_plain(normalized)
+            } else {
+                0.0
+            }
+        }
+        fn plain_to_normalized(&self, id: u32, plain: f64) -> f64 {
+            if id == self.gain.id {
+                self.gain.plain_to_normalized(plain)
+            } else {
+                0.0
+            }
+        }
+    }
+
+    // =========================================================================
+    // Mock Plugin
+    // =========================================================================
+
+    #[derive(Default)]
+    struct TestPlugin {
+        parameters: TestParameters,
+    }
+
+    impl Default for TestParameters {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl HasParameters for TestPlugin {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+    }
+
+    impl Plugin for TestPlugin {
+        type Setup = ();
+        type Processor = TestProcessor;
+
+        fn prepare(self, _setup: ()) -> Self::Processor {
+            TestProcessor {
+                parameters: self.parameters,
+            }
+        }
+
+        fn input_bus_count(&self) -> usize {
+            1
+        }
+        fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+            if index == 0 {
+                Some(BusInfo::stereo("Input"))
+            } else {
+                None
+            }
+        }
+    }
+
+    // =========================================================================
+    // Mock Processor
+    // =========================================================================
+
+    struct TestProcessor {
+        parameters: TestParameters,
+    }
+
+    impl HasParameters for TestProcessor {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+    }
+
+    impl AudioProcessor for TestProcessor {
+        type Plugin = TestPlugin;
+
+        fn unprepare(self) -> Self::Plugin {
+            TestPlugin {
+                parameters: self.parameters,
+            }
+        }
+
+        fn process(
+            &mut self,
+            _buffer: &mut Buffer,
+            _aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            // No-op for testing
+        }
+
+        fn save_state(&self) -> PluginResult<Vec<u8>> {
+            Ok(vec![])
+        }
+
+        fn load_state(&mut self, _data: &[u8]) -> PluginResult<()> {
+            Ok(())
+        }
+    }
+
+    // =========================================================================
+    // Test Presets
+    // =========================================================================
+    //
+    // Note: MockParameter uses identity mapping (normalized == plain), so preset
+    // plain_values are used directly as normalized values in assertions. This
+    // simplifies the tests since we're testing MIDI PC → preset application flow,
+    // not the actual dB-to-normalized conversion (which is tested in beamer-core).
+
+    struct TestPresets;
+
+    const PRESET_UNITY: &[PresetValue] = &[PresetValue {
+        id: fnv1a_hash("gain"),
+        plain_value: 0.5, // Unity (middle)
+    }];
+
+    const PRESET_QUIET: &[PresetValue] = &[PresetValue {
+        id: fnv1a_hash("gain"),
+        plain_value: 0.25, // Quiet
+    }];
+
+    const PRESET_BOOST: &[PresetValue] = &[PresetValue {
+        id: fnv1a_hash("gain"),
+        plain_value: 0.75, // Boost
+    }];
+
+    impl FactoryPresets for TestPresets {
+        type Parameters = TestParameters;
+
+        fn count() -> usize {
+            3
+        }
+
+        fn info(index: usize) -> Option<PresetInfo> {
+            match index {
+                0 => Some(PresetInfo { name: "Unity" }),
+                1 => Some(PresetInfo { name: "Quiet" }),
+                2 => Some(PresetInfo { name: "Boost" }),
+                _ => None,
+            }
+        }
+
+        fn values(index: usize) -> &'static [PresetValue] {
+            match index {
+                0 => PRESET_UNITY,
+                1 => PRESET_QUIET,
+                2 => PRESET_BOOST,
+                _ => &[],
+            }
+        }
+    }
+
+    // =========================================================================
+    // Test Helpers
+    // =========================================================================
+
+    /// Create a prepared AuProcessor for testing MIDI functionality.
+    fn create_prepared_processor() -> AuProcessor<TestPlugin, TestPresets> {
+        let mut processor = AuProcessor::<TestPlugin, TestPresets>::new();
+
+        let bus_config = CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+        );
+
+        processor
+            .allocate_render_resources(44100.0, 512, &bus_config)
+            .expect("Failed to prepare processor");
+
+        processor
+    }
+
+    /// Get the gain parameter's normalized value.
+    fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
+        let params = processor.parameter_store().unwrap();
+        let gain_id = params.info(0).unwrap().id;
+        params.get_normalized(gain_id)
+    }
+
+    /// Set the gain parameter's normalized value.
+    fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
+        let params = processor.parameter_store().unwrap();
+        let gain_id = params.info(0).unwrap().id;
+        processor
+            .parameter_store_mut()
+            .unwrap()
+            .set_normalized(gain_id, value);
+    }
+
+    // =========================================================================
+    // MIDI Program Change → Factory Preset Tests
+    // =========================================================================
+
+    #[test]
+    fn midi_pc_applies_preset_and_filters() {
+        let mut processor = create_prepared_processor();
+
+        // Set gain to 1.0 (max)
+        set_gain_normalized(&mut processor, 1.0);
+
+        // Send PC 1 (Quiet preset: gain = 0.25)
+        let input = vec![MidiEvent::program_change(0, 0, 1)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // PC event should be filtered out (preset was applied)
+        assert_eq!(output.len(), 0, "PC event should be filtered out");
+
+        // Verify the preset was applied (Quiet = 0.25)
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - 0.25).abs() < 0.01,
+            "Quiet preset should set gain to 0.25, got {}",
+            norm_value
+        );
+    }
+
+    #[test]
+    fn midi_pc_out_of_range_passes_through() {
+        let mut processor = create_prepared_processor();
+
+        // Set initial gain
+        set_gain_normalized(&mut processor, 0.5);
+        let initial_norm = get_gain_normalized(&processor);
+
+        // Send PC 10 (out of range - only 3 presets)
+        let input = vec![MidiEvent::program_change(0, 0, 10)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // Out-of-range PC should pass through
+        assert_eq!(output.len(), 1, "Out-of-range PC should pass through");
+
+        // Verify it's a PC event with correct program number
+        if let MidiEventKind::ProgramChange(pc) = &output.iter().next().unwrap().event {
+            assert_eq!(pc.program, 10);
+        } else {
+            panic!("Expected ProgramChange event");
+        }
+
+        // Parameters should be unchanged
+        let final_norm = get_gain_normalized(&processor);
+        assert!(
+            (final_norm - initial_norm).abs() < 0.001,
+            "Out-of-range PC should not change parameters"
+        );
+    }
+
+    #[test]
+    fn midi_other_events_pass_through() {
+        let mut processor = create_prepared_processor();
+
+        // Send control change events
+        let input = vec![
+            MidiEvent::control_change(0, 0, 1, 0.5),
+            MidiEvent::control_change(10, 0, 7, 0.8),
+            MidiEvent::control_change(20, 0, 10, 0.5),
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // All events should pass through
+        assert_eq!(output.len(), 3, "Non-PC events should pass through");
+    }
+
+    #[test]
+    fn midi_mixed_events_filters_only_valid_pc() {
+        let mut processor = create_prepared_processor();
+
+        // Mix of events: CC, valid PC, CC, invalid PC, CC
+        let input = vec![
+            MidiEvent::control_change(0, 0, 1, 0.5),
+            MidiEvent::program_change(0, 0, 2), // Boost preset (valid)
+            MidiEvent::control_change(10, 0, 7, 0.8),
+            MidiEvent::program_change(20, 0, 50), // Invalid (out of range)
+            MidiEvent::control_change(30, 0, 10, 0.5),
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // 5 input events, but valid PC (program 2) should be filtered
+        // Remaining: CC, CC, PC(50), CC = 4 events
+        assert_eq!(
+            output.len(),
+            4,
+            "Valid PC should be filtered, others pass through"
+        );
+
+        // Verify Boost preset was applied (0.75)
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - 0.75).abs() < 0.01,
+            "Boost preset should set gain to 0.75, got {}",
+            norm_value
+        );
+    }
+
+    #[test]
+    fn midi_pc_zero_applies_first_preset() {
+        let mut processor = create_prepared_processor();
+
+        // Set gain to something other than Unity
+        set_gain_normalized(&mut processor, 0.3);
+
+        // Send PC 0 (Unity preset: gain = 0.5)
+        let input = vec![MidiEvent::program_change(0, 0, 0)];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // PC should be filtered
+        assert_eq!(output.len(), 0);
+
+        // Verify Unity preset was applied (0.5)
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - 0.5).abs() < 0.01,
+            "Unity preset should set gain to 0.5, got {}",
+            norm_value
+        );
+    }
+
+    #[test]
+    fn midi_multiple_pc_events_last_wins() {
+        let mut processor = create_prepared_processor();
+
+        // Send multiple PC events - last valid one should win
+        let input = vec![
+            MidiEvent::program_change(0, 0, 0),  // Unity (0.5)
+            MidiEvent::program_change(10, 0, 1), // Quiet (0.25)
+            MidiEvent::program_change(20, 0, 2), // Boost (0.75) - last, should win
+        ];
+        let mut output = MidiBuffer::with_capacity(16);
+
+        processor.process_midi(&input, &mut output);
+
+        // All PC events should be filtered
+        assert_eq!(output.len(), 0);
+
+        // Last preset (Boost) should be applied
+        let norm_value = get_gain_normalized(&processor);
+        assert!(
+            (norm_value - 0.75).abs() < 0.01,
+            "Last PC (Boost) should set gain to 0.75, got {}",
+            norm_value
+        );
+    }
+}
