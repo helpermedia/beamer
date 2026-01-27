@@ -183,16 +183,16 @@ pub struct CcTransformParameters {
 }
 
 // =============================================================================
-// Top-Level Parameters with Nested Groups
+// Plugin Parameters
 // =============================================================================
 
-/// Main parameter structure with nested groups.
+/// MIDI Transform plugin - defines both parameters and plugin behavior.
 ///
 /// Demonstrates the `#[nested(group = "...")]` attribute for creating
 /// hierarchical parameter organization in the DAW.
-/// Uses **declarative parameter definition** - no manual Default impl needed!
+/// The `#[derive(Parameters)]` macro also generates `HasParameters`.
 #[derive(Parameters)]
-pub struct MidiTransformParameters {
+pub struct MidiTransform {
     /// Global bypass - uses the special `bypass` attribute
     #[parameter(id = "bypass", bypass)]
     pub bypass: BoolParameter,
@@ -206,31 +206,14 @@ pub struct MidiTransformParameters {
     pub cc: CcTransformParameters,
 }
 
-// =============================================================================
-// Plugin (Unprepared State)
-// =============================================================================
-
-/// The MIDI transform plugin in its unprepared state.
-///
-/// This struct holds the parameters before audio configuration is known.
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`MidiTransformProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParameters)]
-pub struct MidiTransformPlugin {
-    #[parameters]
-    parameters: MidiTransformParameters,
-}
-
-impl Plugin for MidiTransformPlugin {
+impl Plugin for MidiTransform {
     type Setup = SampleRate; // Needs sample rate for parameter smoothing
     type Processor = MidiTransformProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> MidiTransformProcessor {
-        self.parameters.set_sample_rate(setup.hz());
+        self.set_sample_rate(setup.hz());
 
-        MidiTransformProcessor {
-            parameters: self.parameters,
-        }
+        MidiTransformProcessor { parameters: self }
     }
 
     fn wants_midi(&self) -> bool {
@@ -248,7 +231,7 @@ impl Plugin for MidiTransformPlugin {
 #[derive(HasParameters)]
 pub struct MidiTransformProcessor {
     #[parameters]
-    parameters: MidiTransformParameters,
+    parameters: MidiTransform,
 }
 
 impl MidiTransformProcessor {
@@ -410,7 +393,7 @@ impl MidiTransformProcessor {
 }
 
 impl AudioProcessor for MidiTransformProcessor {
-    type Plugin = MidiTransformPlugin;
+    type Plugin = MidiTransform;
 
     fn process(
         &mut self,
@@ -500,11 +483,11 @@ impl AudioProcessor for MidiTransformProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MidiTransformPlugin);
+export_vst3!(CONFIG, VST3_CONFIG, MidiTransform);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, MidiTransformPlugin);
+export_au!(CONFIG, AU_CONFIG, MidiTransform);

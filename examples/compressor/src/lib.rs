@@ -9,6 +9,12 @@
 //! 6. Access sidechain input for external key signal
 //! 7. Use `SampleRate` setup for sample-rate-dependent initialization
 //!
+//! ## Architecture
+//!
+//! This plugin uses the simplified 2-struct pattern:
+//! - [`Compressor`] - Parameters struct that IS the plugin (derives `Parameters`)
+//! - [`CompressorProcessor`] - DSP processor with envelope state and bypass handling
+//!
 //! ## DSP Overview
 //!
 //! Classic feed-forward compressor with dB-domain envelope processing:
@@ -86,12 +92,19 @@ impl Ratio {
 }
 
 // =============================================================================
-// Parameters
+// Plugin (Parameters)
 // =============================================================================
 
-/// Parameter collection for the compressor plugin.
+/// The compressor plugin with its parameters.
+///
+/// This struct serves dual purpose:
+/// 1. Defines all plugin parameters via `#[derive(Parameters)]`
+/// 2. Implements `Plugin` trait directly (no separate plugin wrapper needed)
+///
+/// When the host calls `prepare()`, this is transformed into a
+/// [`CompressorProcessor`] for audio processing.
 #[derive(Parameters)]
-pub struct CompressorParameters {
+pub struct Compressor {
     // =========================================================================
     // Compression Controls
     // =========================================================================
@@ -171,6 +184,45 @@ pub struct CompressorParameters {
     pub use_sidechain: BoolParameter,
 }
 
+impl Plugin for Compressor {
+    type Setup = SampleRate; // Compressor needs sample rate for envelope coefficients
+    type Processor = CompressorProcessor;
+
+    fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {
+        // Set sample rate on parameters for smoothing calculations
+        self.set_sample_rate(setup.hz());
+
+        // Calculate bypass ramp samples based on sample rate
+        let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
+
+        CompressorProcessor {
+            parameters: self,
+            bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
+            state: CompressionState {
+                env_db: DC_OFFSET,
+                average_gr_db: 0.0,
+            },
+            sample_rate: setup.hz(),
+        }
+    }
+
+    // =========================================================================
+    // Multi-Bus Configuration (Sidechain)
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        2 // Main stereo input + Sidechain input
+    }
+
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        match index {
+            0 => Some(BusInfo::stereo("Input")),
+            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
+            _ => None,
+        }
+    }
+}
+
 // =============================================================================
 // DSP Helper Functions
 // =============================================================================
@@ -234,73 +286,18 @@ const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
 const DC_OFFSET: f64 = 1e-25;
 
 // =============================================================================
-// Plugin (Unprepared State)
-// =============================================================================
-
-/// The compressor plugin in its unprepared state.
-///
-/// This struct holds the parameters before audio configuration is known.
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`CompressorProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParameters)]
-pub struct CompressorPlugin {
-    /// Plugin parameters
-    #[parameters]
-    parameters: CompressorParameters,
-}
-
-impl Plugin for CompressorPlugin {
-    type Setup = SampleRate; // Compressor needs sample rate for envelope coefficients
-    type Processor = CompressorProcessor;
-
-    fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {
-        // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
-
-        // Calculate bypass ramp samples based on sample rate
-        let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
-
-        CompressorProcessor {
-            parameters: self.parameters,
-            bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
-            state: CompressionState {
-                env_db: DC_OFFSET,
-                average_gr_db: 0.0,
-            },
-            sample_rate: setup.hz(),
-        }
-    }
-
-    // =========================================================================
-    // Multi-Bus Configuration (Sidechain)
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        2 // Main stereo input + Sidechain input
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        match index {
-            0 => Some(BusInfo::stereo("Input")),
-            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
-            _ => None,
-        }
-    }
-}
-
-// =============================================================================
 // Audio Processor (Prepared State)
 // =============================================================================
 
 /// The compressor processor, ready for audio processing.
 ///
-/// This struct is created by [`CompressorPlugin::prepare()`] with valid
+/// This struct is created by [`Compressor::prepare()`] with valid
 /// sample rate configuration. All DSP state is properly initialized.
 #[derive(HasParameters)]
 pub struct CompressorProcessor {
     /// Plugin parameters
     #[parameters]
-    parameters: CompressorParameters,
+    parameters: Compressor,
 
     /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
@@ -352,7 +349,7 @@ impl CompressorProcessor {
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
-    parameters: &mut CompressorParameters,
+    params: &mut Compressor,
     state: &mut CompressionState,
     sample_rate: f64,
 ) {
@@ -364,22 +361,22 @@ fn process_compression_inner<S: Sample>(
     }
 
     // Get parameter values
-    let threshold_db = parameters.threshold.get();
-    let ratio = parameters.ratio.get().to_value();
-    let knee_width = if parameters.soft_knee.get() {
+    let threshold_db = params.threshold.get();
+    let ratio = params.ratio.get().to_value();
+    let knee_width = if params.soft_knee.get() {
         SOFT_KNEE_WIDTH_DB
     } else {
         0.0
     };
 
-    let manual_makeup_db = parameters.makeup_gain.get();
+    let manual_makeup_db = params.makeup_gain.get();
 
     // Only use sidechain when explicitly enabled by parameter and buffer exists
-    let use_sidechain = parameters.use_sidechain.get() && aux.sidechain().is_some();
+    let use_sidechain = params.use_sidechain.get() && aux.sidechain().is_some();
 
     // Pre-calculate envelope coefficients from smoothed attack/release values
-    let attack_ms = parameters.attack.smoothed();
-    let release_ms = parameters.release.smoothed();
+    let attack_ms = params.attack.smoothed();
+    let release_ms = params.release.smoothed();
     let attack_coeff = time_to_coeff(attack_ms, sample_rate);
     let release_coeff = time_to_coeff(release_ms, sample_rate);
 
@@ -456,7 +453,7 @@ fn process_compression_inner<S: Sample>(
         // Update smoothed average gain reduction
         state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
 
-        let auto_makeup_db = if parameters.auto_makeup.get() {
+        let auto_makeup_db = if params.auto_makeup.get() {
             -state.average_gr_db
         } else {
             0.0
@@ -475,7 +472,7 @@ fn process_compression_inner<S: Sample>(
 }
 
 impl AudioProcessor for CompressorProcessor {
-    type Plugin = CompressorPlugin;
+    type Plugin = Compressor;
 
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
@@ -553,11 +550,11 @@ impl AudioProcessor for CompressorProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, CompressorPlugin);
+export_vst3!(CONFIG, VST3_CONFIG, Compressor);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, CompressorPlugin);
+export_au!(CONFIG, AU_CONFIG, Compressor);

@@ -94,13 +94,17 @@ enum EnvelopeStage {
 // Parameters
 // =============================================================================
 
-/// Parameter collection for the synthesizer.
+/// The synthesizer plugin.
 ///
+/// This struct serves as both the parameter collection and the Plugin itself.
 /// Uses declarative parameter definition with `#[derive(Parameters)]`.
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
+///
+/// When the host calls setupProcessing(), it is transformed into a
+/// [`SynthProcessor`] via the [`Plugin::prepare()`] method.
 #[derive(Parameters)]
-pub struct SynthParameters {
+pub struct Synth {
     // =========================================================================
     // Oscillator
     // =========================================================================
@@ -249,7 +253,7 @@ impl Voice {
     /// 3. **Filter** - Apply resonant lowpass filter
     ///
     /// # Arguments
-    /// * `parameters` - Plugin parameters (envelope times, etc.)
+    /// * `params` - Plugin parameters (envelope times, etc.)
     /// * `waveform` - Selected oscillator waveform
     /// * `cutoff` - Filter cutoff frequency in Hz (smoothed)
     /// * `resonance` - Filter resonance 0.0-0.95 (smoothed)
@@ -262,7 +266,7 @@ impl Voice {
     #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
-        parameters: &SynthParameters,
+        params: &Synth,
         waveform: Waveform,
         cutoff: f64,
         resonance: f64,
@@ -321,10 +325,10 @@ impl Voice {
         //   0.0 |_/____________\___
         //        A  D    S    R
         //
-        let attack_samples = (parameters.attack.get() / 1000.0 * sample_rate).max(1.0);
-        let decay_samples = (parameters.decay.get() / 1000.0 * sample_rate).max(1.0);
-        let sustain_level = parameters.sustain.get();
-        let release_samples = (parameters.release.get() / 1000.0 * sample_rate).max(1.0);
+        let attack_samples = (params.attack.get() / 1000.0 * sample_rate).max(1.0);
+        let decay_samples = (params.decay.get() / 1000.0 * sample_rate).max(1.0);
+        let sustain_level = params.sustain.get();
+        let release_samples = (params.release.get() / 1000.0 * sample_rate).max(1.0);
 
         match self.envelope_stage {
             EnvelopeStage::Idle => {}
@@ -388,33 +392,19 @@ impl Voice {
 }
 
 // =============================================================================
-// Plugin (Unprepared State)
+// Plugin Implementation
 // =============================================================================
 
-/// The synthesizer plugin in its unprepared state.
-///
-/// This struct holds the parameters before audio configuration is known.
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`SynthProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParameters)]
-pub struct SynthPlugin {
-    /// Plugin parameters
-    #[parameters]
-    parameters: SynthParameters,
-    // No midi_cc_parameters field needed! Framework manages MIDI CC state.
-}
-
-impl Plugin for SynthPlugin {
+impl Plugin for Synth {
     type Setup = SampleRate; // Synth needs sample rate for filter calculations
     type Processor = SynthProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> SynthProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
+        self.set_sample_rate(setup.hz());
 
         SynthProcessor {
-            parameters: self.parameters,
-            // No midi_cc_parameters to move! Framework manages it.
+            parameters: self,
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: setup.hz(),
             time_counter: 0,
@@ -457,15 +447,14 @@ impl Plugin for SynthPlugin {
 
 /// The synthesizer processor, ready for audio processing.
 ///
-/// This struct is created by [`SynthPlugin::prepare()`] with valid
+/// This struct is created by [`Synth::prepare()`] with valid
 /// sample rate configuration. Manages 8 polyphonic voices with
 /// sample-accurate MIDI timing and oldest-note voice stealing.
 #[derive(HasParameters)]
 pub struct SynthProcessor {
     /// Plugin parameters
     #[parameters]
-    parameters: SynthParameters,
-    // No midi_cc_parameters field needed! Framework manages MIDI CC state.
+    parameters: Synth,
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -683,7 +672,7 @@ impl SynthProcessor {
 }
 
 impl AudioProcessor for SynthProcessor {
-    type Plugin = SynthPlugin;
+    type Plugin = Synth;
 
     fn process(
         &mut self,
@@ -727,11 +716,11 @@ impl AudioProcessor for SynthProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, SynthPlugin);
+export_vst3!(CONFIG, VST3_CONFIG, Synth);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, SynthPlugin);
+export_au!(CONFIG, AU_CONFIG, Synth);

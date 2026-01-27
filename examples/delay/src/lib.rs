@@ -2,7 +2,7 @@
 //!
 //! This plugin shows how to:
 //! 1. Use `EnumParameter` for sync mode (quarter, eighth, 16th, 32nd, free)
-//! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
+//! 2. Use `#[derive(Parameters)]` which generates both parameters and `HasParameters`
 //! 3. Use tempo information from `ProcessContext` for tempo-synced delays
 //! 4. Implement a ring buffer delay line
 //! 5. Apply parameter smoothing to avoid zipper noise
@@ -77,16 +77,19 @@ pub enum StereoMode {
 }
 
 // =============================================================================
-// Parameters
+// Plugin
 // =============================================================================
 
-/// Parameter collection for the delay plugin.
+/// The delay plugin - holds parameters and implements `Plugin`.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
 /// attributes, and the `#[derive(Parameters)]` macro generates everything
-/// including the `Default` implementation!
+/// including the `Default` and `HasParameters` implementations!
+///
+/// This struct IS the plugin directly - when `prepare()` is called,
+/// it transforms into a [`DelayProcessor`] for audio processing.
 #[derive(Parameters)]
-pub struct DelayParameters {
+pub struct Delay {
     /// Sync mode selection (Free, 1/4, 1/8, 1/16, 1/32)
     #[parameter(id = "sync_mode", name = "Sync Mode")]
     pub sync_mode: EnumParameter<SyncMode>,
@@ -122,7 +125,7 @@ pub struct DelayParameters {
 /// - SyncMode: Free=0, Quarter=1, Eighth=2, Sixteenth=3, ThirtySecond=4
 /// - StereoMode: Stereo=0, PingPong=1
 #[derive(Presets)]
-#[preset(parameters = DelayParameters)]
+#[preset(parameters = Delay)]
 pub enum DelayPresets {
     /// Quick slapback echo - short delay for doubling effect
     #[preset(
@@ -252,32 +255,16 @@ impl DelayLine {
     }
 }
 
-// =============================================================================
-// Plugin (Unprepared State)
-// =============================================================================
-
-/// The delay plugin in its unprepared state.
-///
-/// This struct holds the parameters before audio configuration is known.
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`DelayProcessor`] via the [`Plugin::prepare()`] method.
-#[derive(Default, HasParameters)]
-pub struct DelayPlugin {
-    /// Plugin parameters
-    #[parameters]
-    parameters: DelayParameters,
-}
-
-impl Plugin for DelayPlugin {
+impl Plugin for Delay {
     type Setup = SampleRate; // Delay needs sample rate for buffer allocation
     type Processor = DelayProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> DelayProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
+        self.set_sample_rate(setup.hz());
 
         DelayProcessor {
-            parameters: self.parameters,
+            parameters: self,
             delay_l: DelayLine::new(setup.hz()),
             delay_r: DelayLine::new(setup.hz()),
             sample_rate: setup.hz(),
@@ -291,13 +278,13 @@ impl Plugin for DelayPlugin {
 
 /// The delay plugin processor, ready for audio processing.
 ///
-/// This struct is created by [`DelayPlugin::prepare()`] with valid
+/// This struct is created by [`Delay::prepare()`] with valid
 /// sample rate configuration. All fields have real values from the start.
 #[derive(HasParameters)]
 pub struct DelayProcessor {
-    /// Plugin parameters
+    /// Plugin parameters (the `Delay` struct IS the parameters)
     #[parameters]
-    parameters: DelayParameters,
+    parameters: Delay,
     /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
@@ -445,7 +432,7 @@ impl DelayProcessor {
 }
 
 impl AudioProcessor for DelayProcessor {
-    type Plugin = DelayPlugin;
+    type Plugin = Delay;
 
     fn process(
         &mut self,
@@ -490,11 +477,11 @@ impl AudioProcessor for DelayProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, DelayPlugin, DelayPresets);
+export_vst3!(CONFIG, VST3_CONFIG, Delay, DelayPresets);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, DelayPlugin, DelayPresets);
+export_au!(CONFIG, AU_CONFIG, Delay, DelayPresets);

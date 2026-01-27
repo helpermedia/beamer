@@ -15,7 +15,7 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 **No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency - no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
-**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, and DAW automation. Use `#[derive(HasParameters)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
+**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, DAW automation, and parameter access traits. Focus on your DSP, not boilerplate.
 
 **Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools (HTML, CSS, JavaScript) while your audio code stays in safe Rust. Each team does what they do best.
 
@@ -26,42 +26,26 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 ```rust
 use beamer::prelude::*;
 
-// Declarative parameters - macro generates Default, VST3 integration, state persistence
+// Single struct: parameters + plugin + processor in one
+// #[derive(Parameters)] generates Default, HasParameters, VST3 integration, state persistence
 #[derive(Parameters)]
-struct GainParameters {
+struct Gain {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParameter,
 }
 
-// Plugin (unprepared state) - holds parameters before audio config is known
-// HasParameters derive eliminates parameters()/parameters_mut() boilerplate
-#[derive(Default, HasParameters)]
-struct GainPlugin {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Plugin for GainPlugin {
+impl Plugin for Gain {
     type Setup = ();  // Simple gain doesn't need sample rate
-    type Processor = GainProcessor;
+    type Processor = Self;  // Same type for plugin and processor
 
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
-    }
+    fn prepare(self, _: ()) -> Self { self }
 }
 
-// Processor (prepared state) - ready for audio processing
-#[derive(HasParameters)]
-struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl AudioProcessor for GainProcessor {
-    type Plugin = GainPlugin;
+impl AudioProcessor for Gain {
+    type Plugin = Self;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
+        let gain = self.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -224,7 +208,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer-vst3` | VST3 wrapper implementation |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-clap` | CLAP wrapper (planned) |
-| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
+| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

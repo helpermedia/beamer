@@ -4,7 +4,11 @@
 >
 > **Decision:** We chose explicit Plugin and Processor structs. See [ARCHITECTURE.md](../ARCHITECTURE.md#parameter-ownership) for the rationale.
 >
-> **Update:** The boilerplate mentioned in this document has been largely eliminated via default implementations in `AudioProcessor`. The methods `unprepare()`, `save_state()`, and `load_state()` all have sensible defaults now. Additionally, simple plugins without DSP state can use `type Processor = Self` to avoid duplicate struct definitions entirely.
+> **Update:** The boilerplate mentioned in this document has been largely eliminated:
+>
+> 1. `#[derive(Parameters)]` now generates `HasParameters` automatically, so parameters structs can directly implement `Plugin`
+> 2. Default implementations for `unprepare()`, `save_state()`, and `load_state()` in `AudioProcessor`
+> 3. Simple plugins can use `type Processor = Self` with a single struct (no wrapper needed)
 
 ---
 
@@ -447,32 +451,32 @@ Instead of a combined macro, we could add smaller helpers:
 
 This was originally proposed to auto-generate `unprepare()`, `save_state()`, and `load_state()`. These methods now have default implementations in the framework, so no additional macro is required.
 
-### Helper 2: Simple plugin shorthand
+### Helper 2: Simple plugin shorthand (Now even simpler)
 
-For plugins with no processor-specific fields (no DSP state), you can already use a single struct:
+With `#[derive(Parameters)]` now generating `HasParameters` automatically, simple plugins need only one struct:
 
 ```rust
-#[derive(Default, HasParameters)]
-pub struct GainPlugin {
-    #[parameters]
-    parameters: GainParameters,
+#[derive(Parameters)]
+pub struct Gain {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
 }
 
-impl Plugin for GainPlugin {
+impl Plugin for Gain {
     type Setup = ();
     type Processor = Self;  // Same type!
 
     fn prepare(self, _: ()) -> Self { self }
 }
 
-impl AudioProcessor for GainPlugin {
+impl AudioProcessor for Gain {
     type Plugin = Self;
 
     fn process(&mut self, buffer: &mut Buffer, ...) { ... }
 }
 ```
 
-This pattern requires no macro and uses standard Rust. See the gain example for documentation of this approach.
+No wrapper struct needed. The parameters struct IS the plugin. See the gain example for documentation of this approach.
 
 ---
 
@@ -492,7 +496,8 @@ The current explicit approach costs **4 lines of boilerplate** per plugin. The c
 
 | Pattern | Use Case | Status |
 |---------|----------|--------|
-| `type Processor = Self` | Stateless plugins (gain, pan) | Available now - no macro needed |
+| `#[derive(Parameters)]` generates `HasParameters` | All plugins | Implemented |
+| `type Processor = Self` | Stateless plugins (gain, pan) | Available now - no wrapper needed |
 | Default `unprepare()` | All plugins | Implemented |
 | Default `save_state()`/`load_state()` | All plugins | Implemented |
 

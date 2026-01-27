@@ -1,11 +1,13 @@
-//! Beamer Gain - Example gain plugin demonstrating the Beamer framework.
+//! Beamer Gain - Example gain plugin demonstrating the simplest Beamer pattern.
 //!
-//! This plugin shows how to:
-//! 1. Use `#[derive(Parameters)]` macro for automatic trait implementations
-//! 2. Use `#[derive(HasParameters)]` to eliminate parameters() boilerplate
-//! 3. Implement the two-phase Plugin → AudioProcessor lifecycle
-//! 4. Export using `export_vst3!` and `export_au!` macros
-//! 5. Use the `FloatParameter` type for cleaner parameter storage
+//! This plugin shows the **minimal single-struct pattern** where one struct
+//! serves as both Plugin and Processor. This works for plugins without
+//! preparation-time state (like delay buffers that need sample rate).
+//!
+//! Key points:
+//! 1. `#[derive(Parameters)]` generates all parameter traits including `Default`
+//! 2. Single struct implements both `Plugin` and `AudioProcessor`
+//! 3. `type Processor = Self` and `fn prepare(self, _: ()) -> Self { self }`
 
 use beamer::prelude::*;
 
@@ -21,15 +23,11 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
     .with_version(env!("CARGO_PKG_VERSION"));
 
 /// VST3-specific configuration
-/// Note: No .with_controller() - this is a simple plugin without custom GUI.
-/// The host will use its generic parameter UI. For plugins with WebView GUI,
-/// you would add .with_controller(CONTROLLER_UID)
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3")
     .with_categories("Fx|Dynamics");
 
 /// AU-specific configuration
-/// Uses manufacturer code "Bmer" and subtype "gain" for identification
 #[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
@@ -38,131 +36,40 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
 );
 
 // =============================================================================
-// Parameters
+// Gain Plugin (Single-Struct Pattern)
 // =============================================================================
 
-/// Parameter collection for the gain plugin.
+/// A simple gain plugin demonstrating the minimal Beamer pattern.
 ///
-/// Uses **declarative parameter definition**: all configuration is in
-/// attributes, and the `#[derive(Parameters)]` macro generates everything
-/// including the `Default` implementation!
+/// This struct is both the Plugin (unprepared state) and the AudioProcessor
+/// (prepared state). For simple plugins without DSP state that depends on
+/// sample rate or buffer size, this single-struct pattern is recommended.
 ///
-/// The macro generates:
+/// The `#[derive(Parameters)]` macro generates:
 /// - `Parameters` trait (count, iter, by_id, save_state, load_state)
 /// - `ParameterStore` trait (host integration)
+/// - `HasParameters` trait (parameters() and parameters_mut())
 /// - `Default` trait (from attribute values)
-/// - Compile-time hash collision detection
 #[derive(Parameters)]
-pub struct GainParameters {
-    /// Gain parameter using declarative attribute syntax.
-    /// - Default: 0 dB (unity gain)
-    /// - Range: -60 dB to +12 dB
+pub struct Gain {
+    /// Gain parameter: -60 dB to +12 dB, default 0 dB (unity gain)
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-// No manual `new()` or `Default` impl needed - the macro generates everything!
-
-impl GainParameters {
+impl Gain {
     /// Get the gain as a linear multiplier for DSP calculations.
     ///
-    /// Converts the dB value to a linear amplitude multiplier using the formula:
-    ///
-    /// ```text
-    /// linear = 10^(dB / 20)
-    /// ```
-    ///
-    /// # Returns
-    /// Linear amplitude multiplier (always positive)
-    ///
-    /// # Examples
-    /// | dB Value | Linear Multiplier |
-    /// |----------|-------------------|
-    /// | 0 dB     | 1.0 (unity gain)  |
-    /// | -6 dB    | ~0.501 (half)     |
-    /// | +6 dB    | ~1.995 (double)   |
-    /// | -12 dB   | ~0.251 (quarter)  |
-    /// | -∞ dB    | 0.0 (silence)     |
+    /// Converts dB to linear amplitude: `linear = 10^(dB / 20)`
     #[inline]
     pub fn gain_linear(&self) -> f32 {
         self.gain.as_linear() as f32
     }
-}
 
-// =============================================================================
-// Plugin (Unprepared State)
-// =============================================================================
-
-/// The gain plugin in its unprepared state.
-///
-/// This struct holds the parameters before audio configuration is known.
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`GainProcessor`] via the [`Plugin::prepare()`] method.
-///
-/// The `#[derive(HasParameters)]` macro automatically implements `parameters()` and
-/// `parameters_mut()` by looking for the field marked with `#[parameters]`.
-///
-/// # Note: Single-Struct Alternative
-///
-/// For simple plugins like this one (no DSP state, just parameters), you can
-/// use a single struct for both Plugin and Processor:
-///
-/// ```ignore
-/// impl Plugin for GainPlugin {
-///     type Processor = Self;  // Same type!
-///     fn prepare(self, _: ()) -> Self { self }
-/// }
-/// impl AudioProcessor for GainPlugin { ... }
-/// ```
-///
-/// We use separate structs here to demonstrate the general pattern that plugins
-/// with DSP state (delay buffers, sample rate, etc.) require.
-#[derive(Default, HasParameters)]
-pub struct GainPlugin {
-    /// Plugin parameters
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Plugin for GainPlugin {
-    type Setup = (); // Simple gain doesn't need sample rate
-    type Processor = GainProcessor;
-
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor {
-            parameters: self.parameters,
-        }
-    }
-}
-
-// =============================================================================
-// Audio Processor (Prepared State)
-// =============================================================================
-
-/// The gain plugin processor, ready for audio processing.
-///
-/// This struct is created by [`GainPlugin::prepare()`] and contains
-/// everything needed for real-time audio processing.
-///
-/// The `#[derive(HasParameters)]` macro automatically implements `parameters()` and
-/// `parameters_mut()` by looking for the field marked with `#[parameters]`.
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    /// Plugin parameters
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl GainProcessor {
     /// Generic processing implementation for both f32 and f64.
-    ///
-    /// This demonstrates the recommended pattern: write your DSP once
-    /// using the Sample trait, then delegate from both process() and
-    /// process_f64() to avoid code duplication.
     fn process_generic<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
-        let gain = S::from_f32(self.parameters.gain_linear());
+        let gain = S::from_f32(self.gain_linear());
 
-        // Process using zip_channels() iterator for cleaner code
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -171,8 +78,17 @@ impl GainProcessor {
     }
 }
 
-impl AudioProcessor for GainProcessor {
-    type Plugin = GainPlugin;
+impl Plugin for Gain {
+    type Setup = ();
+    type Processor = Self;
+
+    fn prepare(self, _: ()) -> Self {
+        self
+    }
+}
+
+impl AudioProcessor for Gain {
+    type Plugin = Self;
 
     fn process(
         &mut self,
@@ -180,16 +96,11 @@ impl AudioProcessor for GainProcessor {
         _aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
-        // Delegate to generic implementation
         self.process_generic(buffer);
     }
 
-    // =========================================================================
-    // 64-bit Processing Support
-    // =========================================================================
-
     fn supports_double_precision(&self) -> bool {
-        true // This plugin supports native f64 processing
+        true
     }
 
     fn process_f64(
@@ -198,21 +109,16 @@ impl AudioProcessor for GainProcessor {
         _aux: &mut AuxiliaryBuffers<f64>,
         _context: &ProcessContext,
     ) {
-        // Delegate to generic implementation - same code works for both f32 and f64!
         self.process_generic(buffer);
     }
 }
 
 // =============================================================================
-// VST3 Export
+// Plugin Exports
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);
-
-// =============================================================================
-// Audio Unit Export
-// =============================================================================
+export_vst3!(CONFIG, VST3_CONFIG, Gain);
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, GainPlugin);
+export_au!(CONFIG, AU_CONFIG, Gain);

@@ -150,7 +150,7 @@ beamer/
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
 │   ├── beamer-vst3/         # VST3 wrapper implementation
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
-│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(HasParameters)])
+│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
@@ -167,10 +167,10 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`HasParameters`, `Plugin`, `AudioProcessor`), buffer types, MIDI types, shared `PluginConfig` |
+| `beamer-core` | Platform-agnostic traits (`Plugin`, `AudioProcessor`, `HasParameters`), buffer types, MIDI types, shared `PluginConfig` |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
-| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]` proc macros |
+| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
 
@@ -277,19 +277,38 @@ impl Plugin for Delay {
 
 ```rust
 // Two-type approach (Beamer)
-#[derive(Default, HasParameters)]
-struct DelayPlugin {
-    #[parameters]
-    parameters: DelayParameters,
-    // No sample_rate, no buffer - they don't exist yet
+#[derive(Parameters)]
+struct DelayParameters {
+    #[param(range = "0.0..=1.0", default = "0.5")]
+    delay_time: FloatParam,
+    #[param(range = "0.0..=1.0", default = "0.3")]
+    feedback: FloatParam,
 }
 
-#[derive(HasParameters)]
+// Plugin state: just parameters, no DSP state yet
+impl Plugin for DelayParameters {
+    type Processor = DelayProcessor;
+    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+        DelayProcessor {
+            parameters: self,
+            sample_rate: sample_rate.hz(),
+            buffer: vec![0.0; (sample_rate.hz() * 2.0) as usize],
+        }
+    }
+}
+
+// Processor state: parameters + DSP state
 struct DelayProcessor {
-    #[parameters]
     parameters: DelayParameters,
     sample_rate: f64,    // Always valid - provided in prepare()
     buffer: Vec<f64>,    // Always allocated - created in prepare()
+}
+
+impl HasParameters for DelayProcessor {
+    type Parameters = DelayParameters;
+    fn parameters(&self) -> &Self::Parameters { &self.parameters }
+    fn parameters_mut(&mut self) -> &mut Self::Parameters { &mut self.parameters }
+    fn set_parameters(&mut self, params: Self::Parameters) { self.parameters = params; }
 }
 
 impl AudioProcessor for DelayProcessor {
@@ -329,35 +348,70 @@ fn process(&mut self, ...) {
 
 | Aspect | Two-Phase (Beamer) | Single-Type (nih-plug, JUCE) |
 |--------|-------------------|------------------------------|
-| Boilerplate | Two structs for stateful plugins | One struct |
+| Boilerplate | One struct (simple) or two structs (complex) | One struct |
 | `process()` code | Clean, no Option handling | Needs unwrap or Option checks |
 | Compile-time safety | Cannot call process() on wrong type | Framework ensures ordering |
-| Learning curve | Higher (two traits, two types) | Lower (one trait) |
+| Learning curve | Higher (two traits) | Lower (one trait) |
 | Industry alignment | Unique | Matches most frameworks |
 
-**The escape hatch: `type Processor = Self`**
+**Simple plugins: `type Processor = Self`**
 
-For simple plugins without DSP state (gain, pan, simple saturation), both types can be the same:
+For simple plugins without DSP state (gain, pan, simple saturation), one struct does everything:
 
 ```rust
-impl Plugin for GainPlugin {
+#[derive(Parameters)]
+pub struct Gain {
+    #[param(range = "0.0..=2.0", default = "1.0")]
+    gain: FloatParam,
+}
+
+impl Plugin for Gain {
     type Processor = Self;  // Same type for both states
     fn prepare(self, _: ()) -> Self { self }
 }
 
-impl AudioProcessor for GainPlugin {
+impl AudioProcessor for Gain {
     type Plugin = Self;
     fn process(&mut self, ...) { /* ... */ }
 }
 ```
 
-This provides the simplicity of single-type designs when you don't need the safety guarantees.
+With `#[derive(Parameters)]`, the struct automatically implements `HasParameters`, so no wrapper is needed. This provides the simplicity of single-type designs when you don't need separate DSP state.
 
 **Why not just use single-type like everyone else?**
 
 The two-phase design is unusual in the audio plugin ecosystem, but idiomatic for Rust. The compile-time guarantee is modest (frameworks ensure correct call ordering anyway), but the ergonomic benefit of clean `process()` code without `Option<T>` handling is real.
 
 If you're coming from JUCE or nih-plug, the extra struct feels like boilerplate. If you're coming from Rust's type-driven design philosophy, it feels natural. Beamer chose to align with Rust idioms rather than audio industry conventions.
+
+**New simplified pattern:**
+
+With the updated `#[derive(Parameters)]` macro, simple plugins no longer need wrapper structs:
+
+```rust
+// OLD pattern (before): 3 items - Parameters + Plugin wrapper + impl
+#[derive(Parameters)]
+pub struct GainParameters { ... }
+
+#[derive(Default, HasParameters)]
+pub struct GainPlugin {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+// NEW pattern (now): 1 struct does everything
+#[derive(Parameters)]
+pub struct Gain { ... }
+
+impl Plugin for Gain {
+    type Processor = Self;  // or separate processor for complex plugins
+}
+```
+
+The `#[derive(Parameters)]` macro now automatically implements `HasParameters` for the parameters struct itself. This means:
+
+1. **Simple plugins** (gain, pan, saturation): Use 1 struct. Parameters = Plugin = Processor.
+2. **Complex plugins** (delay, reverb, synth): Use 2 structs. Parameters/Plugin + Processor with DSP state.
 
 ### Setup Types
 
@@ -373,7 +427,7 @@ If you're coming from JUCE or nih-plug, the extra struct feels like boilerplate.
 
 | Trait | State | Responsibilities |
 |-------|-------|------------------|
-| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - supertrait of Plugin and AudioProcessor |
+| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - auto-implemented by `#[derive(Parameters)]` |
 | `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
 | `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` (has default impl) |
 
@@ -405,20 +459,38 @@ Both `Plugin` and `AudioProcessor` implement `HasParameters` because the host ne
 - Before `prepare()`: Host queries parameter info, user adjusts values
 - After `prepare()`: Host automates parameters during playback
 
-The `#[derive(HasParameters)]` macro generates accessor methods for any struct with a `#[parameters]` field:
+The `#[derive(Parameters)]` macro automatically implements `HasParameters` for the parameters struct:
 
 ```rust
-#[derive(Default, HasParameters)]
-pub struct MyPlugin {
-    #[parameters]
-    parameters: MyParameters,
+// Simple plugin: Parameters struct IS the Plugin
+#[derive(Parameters)]
+pub struct Gain {
+    #[param(range = "0.0..=2.0", default = "1.0")]
+    gain: FloatParam,
 }
 
-#[derive(HasParameters)]
-pub struct MyProcessor {
-    #[parameters]
-    parameters: MyParameters,
-    // ... DSP state fields
+// HasParameters is auto-implemented by #[derive(Parameters)]
+impl Plugin for Gain {
+    type Processor = Self;
+    fn prepare(self, _: ()) -> Self { self }
+}
+```
+
+For complex plugins with separate DSP state, the processor struct manually implements `HasParameters`:
+
+```rust
+// Complex plugin: separate Processor with DSP state
+struct DelayProcessor {
+    parameters: DelayParameters,  // Moved from Plugin
+    sample_rate: f64,
+    buffer: Vec<f64>,
+}
+
+impl HasParameters for DelayProcessor {
+    type Parameters = DelayParameters;
+    fn parameters(&self) -> &Self::Parameters { &self.parameters }
+    fn parameters_mut(&mut self) -> &mut Self::Parameters { &mut self.parameters }
+    fn set_parameters(&mut self, params: Self::Parameters) { self.parameters = params; }
 }
 ```
 
