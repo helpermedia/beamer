@@ -23,18 +23,18 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ### 1.1 Plugin Trait
 
-The `Plugin` trait represents a plugin in its **unprepared state** — before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into an `AudioProcessor` via the `prepare()` method.
+The `Plugin` trait represents a plugin in its **unprepared state** - before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into an `AudioProcessor` via the `prepare()` method.
 
 ```rust
 pub trait Plugin: HasParameters + Default {
-    /// Setup type for prepare() — determines what info is needed
+    /// Setup type for prepare() - determines what info is needed
     type Setup: PluginSetup;
 
     /// The prepared processor type
     type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
 
     /// Transform into a prepared processor with audio configuration.
-    /// Consumes self — the plugin moves into the prepared state.
+    /// Consumes self - the plugin moves into the prepared state.
     fn prepare(self, setup: Self::Setup) -> Self::Processor;
 
     // Bus configuration (defaults provided)
@@ -71,7 +71,7 @@ Request exactly what your plugin needs using composable types:
 
 | Type | When to Use | Value |
 |------|-------------|-------|
-| `()` | Stateless plugins (gain, pan) | — |
+| `()` | Stateless plugins (gain, pan) | - |
 | `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
 | `MaxBufferSize` | FFT, lookahead | `usize` |
 | `MainInputChannels` | Per-channel input processing | `u32` |
@@ -83,7 +83,7 @@ Request exactly what your plugin needs using composable types:
 Compose multiple types using tuples:
 
 ```rust
-// Simple plugin — no setup needed
+// Simple plugin - no setup needed
 impl Plugin for GainPlugin {
     type Setup = ();
     fn prepare(self, _: ()) -> GainProcessor { /* ... */ }
@@ -108,7 +108,7 @@ impl Plugin for FftPlugin {
 
 ### 1.2 AudioProcessor Trait
 
-The `AudioProcessor` trait represents a plugin in its **prepared state** — ready for real-time audio processing. Created by `Plugin::prepare()`, it can transform back to unprepared state via `unprepare()`.
+The `AudioProcessor` trait represents a plugin in its **prepared state** - ready for real-time audio processing. Created by `Plugin::prepare()`, it can transform back to unprepared state via `unprepare()`.
 
 ```rust
 pub trait AudioProcessor: HasParameters {
@@ -208,7 +208,7 @@ Beamer provides two parameter APIs:
 
 #### Derive Macro (Recommended)
 
-**Declarative Style** — Macro generates everything including `Default`:
+**Declarative Style**: Macro generates everything including `Default`:
 
 ```rust
 use beamer::prelude::*;
@@ -250,14 +250,14 @@ The `#[derive(Parameters)]` macro generates:
 
 **Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
 
-- `db_log` — Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
-- `db_log_offset` — True logarithmic mapping for dB ranges (geometric mean at midpoint)
+- `db_log` - Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
+- `db_log_offset` - True logarithmic mapping for dB ranges (geometric mean at midpoint)
 
 Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter<E>`
 
 #### Parameter Types
 
-**FloatParameter** — Continuous floating-point parameter:
+**FloatParameter**: Continuous floating-point parameter:
 
 ```rust
 // Linear range
@@ -271,19 +271,19 @@ let amplitude = gain.as_linear();  // 0 dB → 1.0, -6 dB → ~0.5
 let db_value = gain.get();         // Returns dB for display
 ```
 
-**IntParameter** — Integer parameter:
+**IntParameter**: Integer parameter:
 
 ```rust
 let voices = IntParameter::new("Voices", 8, 1..=64);
 ```
 
-**BoolParameter** — Toggle parameter:
+**BoolParameter**: Toggle parameter:
 
 ```rust
 let bypass = BoolParameter::new("Bypass", false);
 ```
 
-**EnumParameter** — Discrete choice parameter:
+**EnumParameter**: Discrete choice parameter:
 
 ```rust
 use beamer::EnumParameter as DeriveEnumParameter;
@@ -565,9 +565,9 @@ Parameters are serialized using path-based IDs to support nested groups without 
 Format: [path_len: u8][path: utf8][value: f64]*
 
 Path examples:
-- "gain"              — top-level parameter
-- "filter/cutoff"     — parameter in "Filter" group
-- "osc1/filter/res"   — deeply nested parameter
+- "gain"              - top-level parameter
+- "filter/cutoff"     - parameter in "Filter" group
+- "osc1/filter/res"   - deeply nested parameter
 ```
 
 The same nested struct can be reused in multiple groups without ID collision:
@@ -738,7 +738,7 @@ When a plugin has factory presets, MIDI Program Change (PC) events are automatic
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required—the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
 ### 1.5 Buffer Types
 
@@ -1206,7 +1206,7 @@ pub struct NoteExpressionValue {
 }
 ```
 
-**INoteExpressionController** — Advertise supported expressions:
+**INoteExpressionController**: Advertise supported expressions:
 
 ```rust
 impl Plugin for MyMPESynth {
@@ -1227,7 +1227,7 @@ impl Plugin for MyMPESynth {
 }
 ```
 
-**Physical UI Mapping** — Map MPE controllers to expressions:
+**Physical UI Mapping**: Map MPE controllers to expressions:
 
 ```rust
 fn physical_ui_mappings(&self, _bus: i32, _channel: i16) -> &[PhysicalUIMap] {
@@ -1251,7 +1251,7 @@ MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 
 ### 2.5 MIDI CC Emulation (MidiCcConfig)
 
-VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want—it handles all the state management automatically:
+VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
 
 ```rust
 use beamer::prelude::*;
@@ -1360,7 +1360,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context:
 
 For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 
-**IMidiMapping** — CC to parameter:
+**IMidiMapping**: CC to parameter:
 
 ```rust
 fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
@@ -1415,7 +1415,7 @@ pub mod rpn {
 }
 ```
 
-**RpnTracker** — Real-time safe decoder:
+**RpnTracker**: Real-time safe decoder:
 
 ```rust
 struct MyPlugin {
@@ -1998,13 +1998,10 @@ pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 
-// VST3 configuration
-#[cfg(feature = "vst3")]
-const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
-    beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
+// VST3 configuration (generate UUID with: cargo xtask generate-uuid)
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new(COMPONENT_UID)
+    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
         .with_categories("Fx|Dynamics");
 
 // AU configuration (macOS only)
@@ -2077,7 +2074,7 @@ export_au!(CONFIG, AU_CONFIG, GainPlugin);
 
 When you build the same plugin as both AUv2 and AUv3, macOS bridges them together if they share the same **type/subtype/manufacturer** codes. Hosts like Logic Pro and Reaper will show only one version (typically preferring AUv3).
 
-This is by design—Apple intended AUv3 to be a drop-in replacement for AUv2 with the same identifiers allowing seamless project compatibility.
+This is by design - Apple intended AUv3 to be a drop-in replacement for AUv2 with the same identifiers allowing seamless project compatibility.
 
 **To test both formats side by side during development:**
 
@@ -2095,7 +2092,7 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
     "Bmer",
-    "gai2",  // subtype: "gai2" — different!
+    "gai2",  // subtype: "gai2" - different!
 );
 ```
 
@@ -2277,7 +2274,7 @@ for event in &events.ramps {
 
 **Alternative:** Sub-block processing that splits the buffer at parameter event boundaries. Higher overhead but provides true sample-accuracy.
 
-**Priority:** Low — current behavior matches industry standard (VST3 SDK reference implementation uses same approach) and covers 99%+ of use cases.
+**Priority:** Low - current behavior matches industry standard (VST3 SDK reference implementation uses same approach) and covers 99%+ of use cases.
 
 ---
 
@@ -2328,10 +2325,6 @@ impl GainParameters {
 // =============================================================================
 // Plugin (Unprepared State)
 // =============================================================================
-
-#[cfg(feature = "vst3")]
-const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
-    beamer::vst3::uid(0x12345678, 0x12345678, 0x12345678, 0x12345678);
 
 pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
     .with_vendor("My Company")
@@ -2393,7 +2386,7 @@ impl AudioProcessor for GainProcessor {
 
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new(COMPONENT_UID);
+    beamer_vst3::Vst3Config::new("12345678-1234-5678-1234-567812345678");
 
 #[cfg(feature = "vst3")]
 beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, GainPlugin);

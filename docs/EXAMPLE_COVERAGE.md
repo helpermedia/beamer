@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-01-06
+**Last Updated:** 2026-01-27
 **Current Examples:** gain, delay, synth, midi-transform, compressor
 
 ---
@@ -21,34 +21,35 @@
 
 | Feature Category | Feature | Gain | Delay | Synth | MIDI Transform | Compressor | Notes |
 |-----------------|---------|------|-------|-------|----------------|------------|-------|
-| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | 🚧 | Core parameter type |
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
 | | IntParameter | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synth), note/CC numbers (midi-transform) |
-| | BoolParameter | ❌ | ❌ | ❌ | ✅ | 🚧 | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ✅ | ✅ | 🚧 | Waveform, sync, ratio |
+| | BoolParameter | ❌ | ❌ | ❌ | ✅ | ✅ | Enable toggles, bypass, soft knee |
+| | EnumParameter | ❌ | ✅ | ✅ | ✅ | ✅ | Waveform, sync, ratio |
 | **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ❌ | ❌ | ❌ | 🚧 | Attack/release smoothing |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | 🚧 | Default mapping |
-| | PowerMapper | ❌ | ❌ | ❌ | ❌ | 🚧 | Threshold (db_log) |
+| | Linear | ❌ | ❌ | ❌ | ❌ | ✅ | Attack/release smoothing |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
+| | PowerMapper | ❌ | ❌ | ❌ | ❌ | ✅ | Threshold (db_log) |
 | | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | Available but not used |
 | **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
 | | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ❌ | Synth uses 4 groups (works in Cubase) |
 | | Custom Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | bypass attribute | ❌ | ❌ | ❌ | ✅ | 🚧 | Special bypass parameter marker |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | 🚧 | All support f64 |
+| | bypass attribute | ❌ | ❌ | ❌ | ✅ | ✅ | Special bypass parameter marker |
+| | Factory Presets | ❌ | ✅ | ❌ | ❌ | ❌ | `#[derive(Presets)]` macro |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
 | | tail_samples | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
 | | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | set_active | ❌ | ❌ | ❌ | ❌ | 🚧 | Reset envelope on activation |
-| **Bypass** | BypassHandler | ❌ | ❌ | ❌ | ❌ | 🚧 | Split API (begin/finish) |
-| | CrossfadeCurve | ❌ | ❌ | ❌ | ❌ | 🚧 | EqualPower curve |
-| | bypass_ramp_samples | ❌ | ❌ | ❌ | ❌ | 🚧 | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | 🚧 | All use stereo |
+| | set_active | ❌ | ✅ | ❌ | ❌ | ✅ | Reset state on activation |
+| **Bypass** | BypassHandler | ❌ | ❌ | ❌ | ❌ | ✅ | Split API (begin/finish) |
+| | CrossfadeCurve | ❌ | ❌ | ❌ | ❌ | ✅ | EqualPower curve |
+| | bypass_ramp_samples | ❌ | ❌ | ❌ | ❌ | ✅ | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | All use stereo |
 | | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | Sidechain input (AuxInput) | ✅ | ❌ | ❌ | ❌ | 🚧 | Gain ducking, external key |
+| | Sidechain input (AuxInput) | ❌ | ❌ | ❌ | ❌ | ✅ | External key |
 | | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Transport** | tempo access | ✅ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ✅ | ❌ | ❌ | ❌ | ❌ | Read but unused |
+| **Transport** | tempo access | ❌ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | samples_per_beat | ❌ | ✅ | ❌ | ❌ | ❌ | Delay tempo sync |
 | **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ✅ | ✅ | ❌ | Synth voices |
 | | PitchBend | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
@@ -88,9 +89,9 @@
    - `LogMapper` - Logarithmic parameter scaling
 
 2. **Bypass Handling**
-   - 🚧 `BypassHandler` - Implemented in compressor (split API: begin/finish), needs DAW testing
-   - 🚧 `CrossfadeCurve` - Implemented in compressor (EqualPower), needs DAW testing
-   - 🚧 `bypass_ramp_samples()` - Implemented in compressor, needs DAW testing
+   - ✅ `BypassHandler` - Tested in compressor (split API: begin/finish)
+   - ✅ `CrossfadeCurve` - Tested in compressor (EqualPower)
+   - ✅ `bypass_ramp_samples()` - Tested in compressor
 
 3. **Bus Configuration**
    - Mono buses (all examples use stereo)
@@ -99,7 +100,7 @@
 
 4. **Processing Callbacks**
    - `latency_samples()` - Lookahead reporting
-   - 🚧 `set_active()` - Implemented in compressor (reset envelope on activation), needs DAW testing
+   - ✅ `set_active()` - Tested in delay (clear buffers) and compressor (reset envelope)
 
 ### Medium Priority (Advanced Features)
 
@@ -108,8 +109,8 @@
    - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
    - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synth (**works in Cubase, verified with screenshot**)
    - Custom `Formatter` - Parameter display formatting
-   - 🚧 Linear smoothing - Implemented in compressor (attack/release parameters), needs DAW testing
-   - ✅ ~~`bypass` attribute~~ - Tested in midi-transform; also in compressor (needs DAW testing)
+   - ✅ ~~Linear smoothing~~ - Tested in compressor (attack/release parameters)
+   - ✅ ~~`bypass` attribute~~ - Tested in midi-transform and compressor
 
 6. **MIDI - Message Types**
    - ✅ ~~`PolyPressure`~~ - Tested in midi-transform (event transform) and synth (per-note vibrato)
@@ -152,27 +153,20 @@
 
 ### Priority 1: Core Feature Coverage
 
-#### 1. **Compressor** (High Priority)
-**Goal:** Test bypass, LogMapper, and advanced bus features
+#### 1. **Compressor** ✅ IMPLEMENTED
+**Status:** Complete - all planned features implemented and tested.
 
-**Features to test:**
-- ✅ `IntParameter` - Ratio (2:1, 4:1, 8:1, 10:1, 20:1) - *Also tested in midi-transform*
-- ✅ `BoolParameter` - Auto-makeup gain on/off, Knee type (hard/soft) - *Also tested in midi-transform*
-- ✅ `BypassHandler` - Smooth bypass with equal-power crossfade - **NEW**
-- ✅ `bypass_ramp_samples()` - Proper bypass reporting - **NEW**
+**Features tested:**
+- ✅ `EnumParameter` - Ratio (2:1, 4:1, 8:1, 10:1, 20:1)
+- ✅ `BoolParameter` - Auto-makeup gain, soft knee, bypass, use_sidechain
+- ✅ `BypassHandler` - Smooth bypass with equal-power crossfade
+- ✅ `bypass_ramp_samples()` - Proper bypass reporting
 - ✅ Sidechain input - External sidechain
-- ✅ `set_active()` - Reset envelope followers on activation - **NEW**
-- ✅ `LogMapper` - Threshold and ratio with logarithmic scaling - **NEW**
-- ✅ Linear smoothing - Attack/release time smoothing - **NEW**
+- ✅ `set_active()` - Reset envelope followers on activation
+- ✅ `PowerMapper` - Threshold with `kind = "db_log"` for logarithmic-feel mapping
+- ✅ Linear smoothing - Attack/release time smoothing
 
-**Implementation notes:**
-- Classic compressor with threshold, ratio, attack, release, knee, makeup gain
-- External sidechain input for ducking/pumping
-- Gain reduction metering (could be exposed as output parameter)
-- RMS envelope follower with smoothing
-- Soft/hard knee using BoolParameter or EnumParameter
-
-**Files to create:**
+**Files:**
 - `examples/compressor/src/lib.rs`
 - `examples/compressor/Cargo.toml`
 
@@ -437,7 +431,7 @@
 - [x] midi-transform - MIDI pass-through, CC transformation
 
 ### Phase 2: Advanced Parameters & Processing
-- [x] compressor - BoolParameter, EnumParameter, BypassHandler, PowerMapper, linear smoothing, set_active (implemented, needs DAW testing)
+- [x] compressor - BoolParameter, EnumParameter, BypassHandler, PowerMapper, linear smoothing, set_active, sidechain
 - [ ] eq - Units system, custom Formatter, mono buses
 - [ ] limiter - latency_samples, lookahead processing
 
@@ -584,15 +578,15 @@ Accept that it's a contrived example but serves an important testing purpose:
 
 **Before removing midi-transform, ensure these features are tested elsewhere:**
 
-- [x] IntParameter - ✅ **Added to synth** (transpose parameter)
-- [ ] BoolParameter - Add to another example (compressor, eq)
+- [x] IntParameter - ✅ Tested in synth (transpose parameter)
+- [x] BoolParameter - ✅ Tested in compressor (soft_knee, auto_makeup, bypass, use_sidechain)
 - [ ] Nested parameter groups - Add to another example (eq with bands)
-- [x] PolyPressure - ✅ **Added to synth** (per-note vibrato control)
-- [ ] `bypass` attribute - Add to any effect example
+- [x] PolyPressure - ✅ Tested in synth (per-note vibrato control)
+- [x] `bypass` attribute - ✅ Tested in compressor
 - [ ] Update coverage matrix after migration
 - [ ] Update ARCHITECTURE.md and examples README
 
-**Current Status (Updated 2026-01-06):** midi-transform can now be removed with less impact. IntParameter and PolyPressure are now tested in synth. However, we would still lose BoolParameter, nested groups, and bypass attribute coverage.
+**Current Status (Updated 2026-01-27):** midi-transform can now be removed with minimal impact. Most features are now tested elsewhere: IntParameter in synth, BoolParameter and bypass attribute in compressor, PolyPressure in synth. Only nested parameter groups (`#[nested]`) remain unique to midi-transform.
 
 ---
 

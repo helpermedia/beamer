@@ -25,6 +25,7 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 
 - VST3 plugin support (VST3 3.8, MIT licensed) ✅
 - Audio Unit support (macOS, AUv2 and AUv3) ✅
+- CLAP support (CLAP 1.2, MIT licensed)
 - WebView GUI using OS-native engines
 - Cross-platform: Windows, macOS, Linux
 - Tauri-inspired IPC (invoke/emit pattern)
@@ -35,7 +36,7 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 
 ### Non-Goals
 
-- CLAP/AAX support (can be added later)
+- AAX support (can be added later)
 - Bundled browser engine (no Electron/CEF)
 - Built-in UI components/widgets
 
@@ -77,29 +78,29 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runtime compatibility, with all DSP in Rust via C-ABI bridge. Both AUv2 (`.component`) and AUv3 (`.appex`) formats are supported through the same C-ABI bridge layer.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DAW Host (macOS)                             │
-├─────────────────────────────────────────────────────────────────┤
-│     AUv2 API (.component)       │      AUv3 API (.appex)        │
-│     AudioComponentPlugInInterface│      AUAudioUnit subclass     │
-├────────────────────────────────┬┴───────────────────────────────┤
-│                                │                                │
-│    Audio Thread                │         Main Thread            │
-│    ┌──────────────┐            │         ┌──────────────────┐   │
-│    │              │            │         │  Native ObjC     │   │
-│    │ Render Call  │◄───────────┼────────►│  Wrapper Layer   │   │
-│    │  (AUv2/v3)   │   C-ABI    │         │                  │   │
-│    │              │   calls    │         └────────┬─────────┘   │
-│    └──────┬───────┘            │                  │             │
-│           │                    │                  │ NSView      │
-│           │ beamer_au_render() │         ┌────────▼─────────┐   │
-│    ┌──────▼───────┐            │         │                  │   │
-│    │ bridge.rs    │            │         │  WebView Window  │   │
-│    │ RenderBlock  │            │         │   (WKWebView)    │   │
-│    │ AuProcessor  │            │         │                  │   │
-│    └──────────────┘            │         └──────────────────┘   │
-│                                │                                │
-└────────────────────────────────┴────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                     DAW Host (macOS)                             │
+├──────────────────────────────────────────────────────────────────┤
+│   AUv2 API (.component)         │     AUv3 API (.appex)          │
+│   AudioComponentPlugInInterface │     AUAudioUnit subclass       │
+├─────────────────────────────────┼────────────────────────────────┤
+│                                 │                                │
+│   Audio Thread                  │         Main Thread            │
+│   ┌──────────────┐              │         ┌──────────────────┐   │
+│   │              │              │         │  Native ObjC     │   │
+│   │ Render Call  │◄─────────────┼────────►│  Wrapper Layer   │   │
+│   │  (AUv2/v3)   │   C-ABI      │         │                  │   │
+│   │              │   calls      │         └────────┬─────────┘   │
+│   └──────┬───────┘              │                  │             │
+│          │                      │                  │ NSView      │
+│          │ beamer_au_render()   │         ┌────────▼─────────┐   │
+│   ┌──────▼───────┐              │         │                  │   │
+│   │ bridge.rs    │              │         │  WebView Window  │   │
+│   │ RenderBlock  │              │         │   (WKWebView)    │   │
+│   │ AuProcessor  │              │         │                  │   │
+│   └──────────────┘              │         └──────────────────┘   │
+│                                 │                                │
+└─────────────────────────────────┴────────────────────────────────┘
 ```
 
 **Why Hybrid?** Native Objective-C integrates naturally with Apple's frameworks, provides better debuggability with Apple's tools, and avoids the complexity of Rust FFI bindings for `AUAudioUnit` subclassing. The hybrid approach guarantees Apple compatibility while keeping all audio processing in Rust.
@@ -210,7 +211,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 
 ### Why Two Phases?
 
-Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. The traditional pattern used placeholder values:
+Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The traditional pattern used placeholder values:
 
 ```rust
 // ❌ Old pattern - placeholder values cause bugs
@@ -240,7 +241,7 @@ impl Plugin for MyPlugin {
 
 | Type | Use Case | Value |
 |------|----------|-------|
-| `()` | Stateless plugins (gain, pan) | — |
+| `()` | Stateless plugins (gain, pan) | - |
 | `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
 | `MaxBufferSize` | FFT, lookahead | `usize` |
 | `MainOutputChannels` | Per-channel state | `u32` |
@@ -267,14 +268,14 @@ Plugin                          AudioProcessor
        parameters →                 ← parameters back
 ```
 
-This is the **type-state pattern**—a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File`, builder APIs, and session types.
+This is the **type-state pattern** - a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File`, builder APIs, and session types.
 
 **Why ownership instead of shared references?**
 
-1. **Zero overhead** — Direct field access: `self.parameters.gain.get()`
-2. **No synchronization** — Owned data needs no Arc, Mutex, or atomics for internal access
-3. **Clear lifecycle** — Parameters exist exactly where they're used
-4. **Smoother mutation** — Smoothers advance state each sample; ownership makes this natural
+1. **Zero overhead**: Direct field access: `self.parameters.gain.get()`
+2. **No synchronization**: Owned data needs no Arc, Mutex, or atomics for internal access
+3. **Clear lifecycle**: Parameters exist exactly where they're used
+4. **Smoother mutation**: Smoothers advance state each sample; ownership makes this natural
 
 **The `HasParameters` trait:**
 
@@ -311,7 +312,7 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 ┌────────────────────────────────────────────────────────────────┐
 │                      beamer-core                               │
 │                                                                │
-│  PluginConfig (shared metadata)                               │
+│  PluginConfig (shared metadata)                                │
 │  • name, vendor, version                                       │
 │  • category, sub_categories                                    │
 │  • url, email, has_editor                                      │
@@ -343,13 +344,9 @@ pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 
-// VST3-specific configuration
+// VST3-specific configuration (generate UUID with: cargo xtask generate-uuid)
 #[cfg(feature = "vst3")]
-const COMPONENT_UID: beamer::vst3::Steinberg::TUID =
-    beamer::vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890);
-
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID)
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
     .with_categories("Fx|Gain");
 
 // AU-specific configuration (macOS only)
@@ -410,7 +407,7 @@ If no presets type is specified, `NoPresets` is used automatically.
 1. **Shared metadata** - Write plugin name, vendor, version once
 2. **Format requirements** - VST3 needs UIDs, AU needs FourCC codes
 3. **Conditional compilation** - AU export only compiles on macOS
-4. **Future extensibility** - Easy to add CLAP, AAX without affecting core
+4. **Future extensibility** - Possible to add AAX, LV2 without affecting core
 
 ### Building Multi-Format Plugins
 
@@ -629,7 +626,7 @@ pub struct ProcessBufferStorage<S: Sample> {
 
 **Plugin-Declared Capacity** (VST3-specific):
 ```rust
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new(COMPONENT_UID)
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
     .with_sysex_slots(64)         // Default: 16
     .with_sysex_buffer_size(4096); // Default: 512 bytes
 ```
@@ -675,9 +672,9 @@ Plugin Load (creates Plugin in Unprepared state)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ process() [audio thread, called repeatedly]                 │
-│   • storage.clear() — sets len=0, no deallocation           │
-│   • storage.push(ptr) — into reserved capacity, no alloc    │
-│   • .take(MAX_CHANNELS) — bounds check even if host lies    │
+│   • storage.clear() - sets len=0, no deallocation           │
+│   • storage.push(ptr) - into reserved capacity, no alloc    │
+│   • .take(MAX_CHANNELS) - bounds check even if host lies    │
 │   • Build Buffer/AuxiliaryBuffers from pointers             │
 │   • Call AudioProcessor::process()                          │
 └─────────────────────────────────────────────────────────────┘

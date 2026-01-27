@@ -1,190 +1,309 @@
 # CLAP Support Analysis
 
-This document analyzes the feasibility of adding CLAP format support to Beamer, given the current VST3-focused architecture.
+This document analyzes the feasibility of adding CLAP format support to Beamer.
 
 ## Executive Summary
 
-Adding CLAP support requires **moderate refactoring, not a rewrite**. The core abstractions (two-phase lifecycle, buffers, MIDI) are genuinely format-agnostic. The parameter system has the right *shape* but wrong *names* - VST3 terminology is embedded in what should be the abstraction layer.
-
-**Recommendation:** Rename `Vst3Parameters` → `PluginParameters` before wider adoption to minimize breaking changes.
+Adding CLAP support requires **creating a new wrapper crate, not refactoring the core**. The core abstractions are already format-agnostic, as proven by the existing `beamer-vst3` and `beamer-au` implementations.
 
 ---
 
-## Current State
+## CLAP Ecosystem Overview
 
-### What's Format-Agnostic (Good)
+### Current Adoption (2025)
 
-| Component | Status |
-|-----------|--------|
-| Two-phase lifecycle (`Plugin` → `AudioProcessor`) | ✅ Works for any format |
-| `Buffer`, `AuxiliaryBuffers` | ✅ Generic audio I/O |
-| `Sample` trait (f32/f64) | ✅ Format-independent |
-| `MidiEvent`, `MidiBuffer` | ✅ Generic MIDI types |
-| `ProcessContext`, `Transport` | ✅ Generic context |
-| `BusInfo`, `BusLayout` | ✅ Generic bus config |
+| Metric | Count |
+|--------|-------|
+| DAWs with CLAP support | ~15-17 |
+| Plugin producers | 93+ |
+| Available plugins | 400-525+ |
 
-### What's VST3-Specific (Needs Work)
+### DAWs with CLAP Support
 
-| Component | Issue | Fix |
-|-----------|-------|-----|
-| `Vst3Parameters` trait | Name implies VST3, but interface is generic | Rename to `PluginParameters` |
-| `HasParameters` bound | Requires `Vst3Parameters` | Use renamed trait |
-| `Units` / `UnitId` | VST3's parameter grouping system | Make optional or abstract |
-| `PluginConfig` with TUIDs | VST3 component IDs | Format-specific configs |
-| FNV-1a hash to u32 | VST3's parameter ID scheme | CLAP also uses u32, compatible |
+| DAW | Developer | Notes |
+|-----|-----------|-------|
+| Bitwig Studio | Bitwig | Co-creator, full support since 4.3 |
+| REAPER | Cockos | Early adopter since 6.71 |
+| FL Studio | Image-Line | Added in FL Studio 2024 (v21.3+) |
+| Fender Studio Pro | PreSonus (Fender) | Basic support since v7, continues in v8 |
+| MultitrackStudio | Bremmers Audio | Full support |
+| Carla | falkTX | Open-source plugin host |
+| Qtractor, Zrythm | Various | Linux DAWs |
+
+### DAWs Without CLAP Support
+
+| DAW | Reason |
+|-----|--------|
+| Ableton Live | Under consideration, historically slow to adopt formats |
+| Logic Pro | Apple owns AU format, unlikely to ever support CLAP |
+| Cubase/Nuendo | Steinberg owns VST format |
+| Pro Tools | AAX-only ecosystem |
+
+### Notable Plugin Developers with CLAP Support
+
+- **u-he**: Diva, Zebra2, Repro (co-creator of CLAP)
+- **FabFilter**: Pro-Q, Pro-L, Pro-C (full support since late 2023)
+- **TAL Software**: TAL-U-NO-LX, TAL-Reverb
+- **Surge XT**: Major open-source synthesizer
+- **Vital/Vitalium**: Popular wavetable synth
 
 ---
 
-## The `Vst3Parameters` Trait
+## Technical Advantages Over VST3
 
-Despite its name, the trait interface is mostly format-agnostic:
+### Threading Model
 
-```rust
-pub trait Vst3Parameters: Send + Sync {
-    fn count(&self) -> usize;
-    fn info(&self, index: usize) -> Option<&ParameterInfo>;
-    fn get_normalized(&self, id: ParameterId) -> ParameterValue;
-    fn set_normalized(&self, id: ParameterId, value: ParameterValue);
-    fn normalized_to_string(&self, id: ParameterId, normalized: ParameterValue) -> String;
-    fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue>;
-    fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue;
-    fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue;
-}
+| Aspect | CLAP | VST3 |
+|--------|------|------|
+| Thread management | Host-managed thread pool | Plugin-managed |
+| Multicore efficiency | 20-25% improvement | Baseline |
+| Context switches | Minimized by host | Plugins compete |
+
+CLAP's `thread-pool` extension allows the host to coordinate parallel processing across all plugins, reducing CPU spikes.
+
+### Polyphonic Modulation
+
+| Feature | CLAP | VST3 |
+|---------|------|------|
+| Per-note automation | Full support | Limited |
+| Per-note modulation | Full support | Not available |
+| MIDI 2.0 | Native support | Partial |
+
+### API Design
+
+| Aspect | CLAP | VST3 |
+|--------|------|------|
+| Language | Pure C ABI | C++ with COM-like interfaces |
+| License | MIT (no fees) | Proprietary (licensing required) |
+| FFI complexity | Simple | Complex |
+
+---
+
+## CLAP API Structure
+
+### Entry Point
+
+```c
+// Required export symbol
+CLAP_EXPORT extern const clap_plugin_entry_t clap_entry;
+
+typedef struct clap_plugin_entry {
+    clap_version_t clap_version;
+    bool (*init)(const char *plugin_path);
+    void (*deinit)(void);
+    const void *(*get_factory)(const char *factory_id);
+} clap_plugin_entry_t;
 ```
 
-Compare to CLAP's `clap_plugin_params`:
+### Plugin Lifecycle
 
-| Beamer | CLAP | Match |
-|--------|------|-------|
-| `count()` | `count()` | ✅ |
-| `info()` | `get_info()` | ✅ |
-| `get_normalized()` | `get_value()` | ✅ |
-| `set_normalized()` | (via events) | ⚠️ Different mechanism |
-| `normalized_to_string()` | `value_to_text()` | ✅ |
-| `string_to_normalized()` | `text_to_value()` | ✅ |
+```c
+typedef struct clap_plugin {
+    bool (*init)(const clap_plugin_t *plugin);
+    void (*destroy)(const clap_plugin_t *plugin);
+    bool (*activate)(const clap_plugin_t *plugin, double sample_rate,
+                     uint32_t min_frames, uint32_t max_frames);
+    void (*deactivate)(const clap_plugin_t *plugin);
+    bool (*start_processing)(const clap_plugin_t *plugin);
+    void (*stop_processing)(const clap_plugin_t *plugin);
+    clap_process_status (*process)(const clap_plugin_t *plugin,
+                                   const clap_process_t *process);
+    const void *(*get_extension)(const clap_plugin_t *plugin, const char *id);
+} clap_plugin_t;
+```
 
-The core parameter interface translates directly.
+### Core Extensions
 
----
+| Extension | Purpose |
+|-----------|---------|
+| `params` | Parameter management and automation |
+| `state` | Plugin state save/load |
+| `audio-ports` | Audio I/O configuration |
+| `note-ports` | MIDI/note event routing |
+| `gui` | GUI window creation (Win32, Cocoa, X11) |
+| `latency` | Latency reporting |
+| `tail` | Audio tail length |
 
-## Required Changes
+### Advanced Extensions
 
-### Phase 1: Core Refactoring
-
-1. **Rename `Vst3Parameters` → `PluginParameters`**
-   - Location: `beamer-core/src/parameters.rs`
-   - Update all references in `beamer-core`
-   - Update `HasParameters` trait bound
-
-2. **Make `Units` trait optional**
-   - CLAP doesn't have the same unit hierarchy
-   - Could be a VST3-specific extension or use a feature flag
-
-3. **Abstract `PluginConfig`**
-   - Create format-agnostic `PluginMetadata` (name, vendor, version, categories)
-   - Format-specific configs extend with their requirements (TUIDs for VST3, etc.)
-
-4. **Update derive macros**
-   - `#[derive(Parameters)]` already generates generic code
-   - Minimal changes needed after trait rename
-
-### Phase 2: CLAP Wrapper
-
-1. **Create `beamer-clap` crate**
-   - Structure mirrors `beamer-vst3`
-   - Implement CLAP plugin entry points
-   - Map `PluginParameters` to `clap_plugin_params`
-
-2. **CLAP-specific considerations**
-   - Event-based parameter changes (vs. direct `set_normalized`)
-   - CLAP extensions (state, GUI, etc.)
-   - Different threading model documentation
-
-3. **Export macro**
-   - `export_clap!(CONFIG, ClapProcessor<MyPlugin>)`
-   - Or unified: `export_plugin!(CONFIG, MyPlugin, formats: [vst3, clap])`
+| Extension | Purpose |
+|-----------|---------|
+| `voice-info` | Polyphony info for per-voice modulation |
+| `remote-controls` | Hardware controller mapping |
+| `preset-discovery` | Host-side preset indexing |
+| `thread-pool` | Host-managed multicore processing |
+| `surround` | Surround formats up to 7.1.4 |
 
 ---
 
-## Effort Estimate
+## Beamer Architecture Mapping
+
+### Lifecycle Mapping
+
+| Beamer | CLAP |
+|--------|------|
+| `Plugin::prepare()` | `clap_plugin::activate()` |
+| `AudioProcessor::process()` | `clap_plugin::process()` |
+| `AudioProcessor::unprepare()` | `clap_plugin::deactivate()` |
+| `AudioProcessor::set_active()` | `start_processing()` / `stop_processing()` |
+
+### Trait Mapping
+
+| Beamer Trait | CLAP Extension |
+|--------------|----------------|
+| `ParameterStore` | `CLAP_EXT_PARAMS` |
+| `ParameterGroups` | Parameter grouping in `clap_param_info` |
+| `BusInfo` / `BusLayout` | `CLAP_EXT_AUDIO_PORTS` |
+| `MidiEvent` / `MidiBuffer` | `CLAP_EXT_NOTE_PORTS` |
+| `save_state()` / `load_state()` | `CLAP_EXT_STATE` |
+| `latency_samples()` | `CLAP_EXT_LATENCY` |
+| `tail_samples()` | `CLAP_EXT_TAIL` |
+
+### Parameter Mapping
+
+| Beamer `ParameterStore` | CLAP `clap_plugin_params` |
+|-------------------------|---------------------------|
+| `count()` | `count()` |
+| `info()` | `get_info()` |
+| `get_normalized()` | `get_value()` |
+| `set_normalized()` | Via `CLAP_EVENT_PARAM_VALUE` events |
+| `normalized_to_string()` | `value_to_text()` |
+| `string_to_normalized()` | `text_to_value()` |
+
+---
+
+## Rust Implementation Options
+
+### clap-sys (Recommended)
+
+Low-level Rust FFI bindings for the CLAP C API.
+
+- **Crate:** [clap-sys](https://crates.io/crates/clap-sys) v0.5.0
+- **License:** MIT/Apache-2.0 (no GPL concerns)
+- **Approach:** Hand-written bindings (not bindgen)
+- **Dependencies:** Zero runtime dependencies
+
+```toml
+[dependencies]
+beamer-core = { path = "../beamer-core" }
+clap-sys = "0.5"
+```
+
+### Reference Implementations
+
+| Project | Notes |
+|---------|-------|
+| [nih-plug](https://github.com/robbert-vdh/nih-plug) | High-level framework with VST3 + CLAP |
+| [coupler](https://github.com/coupler-rs/coupler) | Framework with VST3 + CLAP (early development) |
+| [clack](https://github.com/prokopyl/clack) | Safe wrapper library (not yet on crates.io) |
+
+---
+
+## Implementation Plan
+
+### Crate Structure
+
+```
+crates/beamer-clap/
+├── src/
+│   ├── lib.rs           # Public API, ClapConfig
+│   ├── config.rs        # Plugin metadata configuration
+│   ├── export.rs        # export_clap! macro
+│   ├── factory.rs       # clap_plugin_factory implementation
+│   ├── instance.rs      # clap_plugin wrapper
+│   ├── processor.rs     # Audio processing bridge
+│   ├── extensions/
+│   │   ├── params.rs    # CLAP_EXT_PARAMS
+│   │   ├── audio_ports.rs
+│   │   ├── note_ports.rs
+│   │   ├── state.rs
+│   │   └── latency.rs
+│   └── util.rs
+└── Cargo.toml
+```
+
+### Configuration Pattern
+
+Following `beamer-vst3` conventions:
+
+```rust
+pub struct ClapConfig {
+    pub id: &'static str,           // "com.vendor.plugin-name"
+    pub name: &'static str,
+    pub vendor: &'static str,
+    pub url: &'static str,
+    pub version: &'static str,
+    pub description: Option<&'static str>,
+    pub features: &'static [ClapFeature],
+}
+
+// Export macro
+export_clap!(CONFIG, CLAP_CONFIG, MyPlugin);
+```
+
+### Key Implementation Tasks
+
+1. **Plugin Entry Point**: `clap_entry` symbol with factory
+2. **Audio Processing**: Map `clap_process` to `AudioProcessor::process()`
+3. **Parameters**: Translate parameter events to/from `set_normalized()`
+4. **State**: Map `save_state()`/`load_state()` to `clap_plugin_state`
+5. **xtask Bundling**: Install to correct locations per platform
+
+### Plugin Installation Locations
+
+| Platform | Location |
+|----------|----------|
+| macOS | `~/Library/Audio/Plug-ins/CLAP/` |
+| Windows | `C:\Program Files\Common Files\CLAP\` |
+| Linux | `~/.clap` or `/usr/lib/clap` |
+
+---
+
+## CLAP-Specific Features
+
+Optional extensions that could be added later:
+
+| Feature | Priority | Notes |
+|---------|----------|-------|
+| Polyphonic modulation | Low | CLAP's standout feature, complex |
+| Voice info | Low | Per-voice parameter modulation |
+| Remote controls | Low | Hardware controller mapping |
+| Preset discovery | Medium | Host preset browser integration |
+| GUI (Cocoa/Win32/X11) | Medium | Different from VST3/AU |
+
+These don't require core changes - they'd be CLAP-specific extensions in `beamer-clap`.
+
+---
+
+## Effort Assessment
 
 | Task | Scope |
 |------|-------|
-| Rename `Vst3Parameters` | Small - find/replace + update bounds |
-| Abstract `Units` | Small - make optional or feature-gated |
-| Create `PluginMetadata` | Medium - design format-agnostic config |
-| Create `beamer-clap` | Large - new wrapper crate |
-| Update macros | Small - mostly naming changes |
-| Testing & validation | Medium - verify both formats work |
+| Create `beamer-clap` crate structure | Small |
+| Implement plugin factory/instance | Medium |
+| Audio processing bridge | Medium |
+| Parameter extension | Small |
+| State extension | Small |
+| xtask bundling support | Small |
+| Testing & validation | Medium |
 
-**Total:** Medium
-
----
-
-## Alternatives Considered
-
-### Option A: Separate Trait Per Format
-
-```rust
-// beamer-core
-pub trait PluginParameters { ... }
-
-// beamer-vst3
-pub trait Vst3Parameters: PluginParameters { ... }
-
-// beamer-clap
-pub trait ClapParameters: PluginParameters { ... }
-```
-
-**Pros:** Clean separation
-**Cons:** Plugins need to implement both if targeting multiple formats
-
-### Option B: Feature Flags
-
-```rust
-#[cfg(feature = "vst3")]
-impl Vst3Parameters for MyParams { ... }
-
-#[cfg(feature = "clap")]
-impl ClapParameters for MyParams { ... }
-```
-
-**Pros:** Compile-time format selection
-**Cons:** Complexity, harder to test both formats together
-
-### Option C: Single Unified Trait (Recommended)
-
-```rust
-// beamer-core
-pub trait PluginParameters { ... }  // Current Vst3Parameters, renamed
-
-// Format wrappers adapt this trait to their specific APIs
-```
-
-**Pros:** Simple, minimal duplication, macros generate once
-**Cons:** May need escape hatches for format-specific features
+**Total:** Medium - comparable to the AU implementation effort.
 
 ---
 
-## CLAP-Specific Features to Consider
+## References
 
-| Feature | Notes |
-|---------|-------|
-| Polyphonic modulation | CLAP's killer feature, needs explicit support |
-| Voice info | Per-voice parameter modulation |
-| Remote controls | CLAP's surface control API |
-| Preset discovery | CLAP's preset browser integration |
-| GUI scaling | Different from VST3's approach |
+### Official Resources
+- [CLAP Specification](https://github.com/free-audio/clap) - Official repository
+- [CLever Audio Plugin](https://cleveraudio.org/) - Official website
+- [CLAP Database](https://clapdb.tech/) - Plugin/DAW tracking
 
-Some of these could be added as optional traits/extensions without affecting the core API.
+### Rust Implementations
+- [nih-plug](https://github.com/robbert-vdh/nih-plug) - Rust plugin framework (VST3 + CLAP)
+- [coupler](https://github.com/coupler-rs/coupler) - Rust plugin framework (VST3 + CLAP)
+- [clap-sys](https://crates.io/crates/clap-sys) - Rust FFI bindings (MIT/Apache-2.0)
+- [clack](https://github.com/prokopyl/clack) - Safe Rust wrapper
 
----
-
-## Recommendation
-
-1. **Do the rename now** - `Vst3Parameters` → `PluginParameters` while at version 0.1.x
-2. **Keep `Units` as-is** - it's harmless for CLAP (just returns empty)
-3. **Defer CLAP wrapper** - until core WebView UI is complete (higher priority)
-4. **Design for extensibility** - format-specific features as optional trait extensions
-
-The architecture is sound. The main issue is naming, not structure.
+### Beamer References
+- [beamer-au](../crates/beamer-au/) - Reference for wrapper patterns
+- [ROADMAP_MULTI_FORMAT.md](ROADMAP_MULTI_FORMAT.md) - Overall format strategy

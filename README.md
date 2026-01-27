@@ -1,23 +1,23 @@
 # BEAMER
 
-A Rust framework for building VST3 and Audio Unit (AU) audio plugins.
+A Rust framework for building VST3, Audio Unit (AU), and CLAP audio plugins.
 
-Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms) and AU (macOS).
+Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms), AU (macOS), and CLAP (planned).
 
 > [!NOTE]
 > Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
 
 ## Why Beamer?
 
-Audio plugin development has traditionally meant wrestling with C++ memory management, threading bugs, and cryptic SDK interfaces—time spent debugging instead of creating. Beamer changes this.
+Audio plugin development has traditionally meant wrestling with C++ memory management, threading bugs, and cryptic SDK interfaces - time spent debugging instead of creating. Beamer changes this.
 
 **Built on Rust's guarantees.** Memory leaks, dangling pointers, and data races are caught at compile time, not discovered during a live session. Your plugin won't crash someone's mix because of a subtle threading bug.
 
-**No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency—no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
+**No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency - no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
 
 **Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, and DAW automation. Use `#[derive(HasParameters)]` to eliminate repetitive accessor boilerplate. Focus on your DSP, not boilerplate.
 
-**Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools—HTML, CSS, JavaScript—while your audio code stays in safe Rust. Each team does what they do best.
+**Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools (HTML, CSS, JavaScript) while your audio code stays in safe Rust. Each team does what they do best.
 
 **For creative developers.** Whether you're an audio engineer learning Rust or a Rust developer exploring audio, Beamer handles the plugin format plumbing so you can focus on what matters: making something that sounds great.
 
@@ -91,7 +91,7 @@ Plugin::default() → Plugin (unprepared, holds parameters)
                     Plugin (parameters preserved)
 ```
 
-**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing—but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
+**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
 
 | Setup Type | Use Case |
 |------------|----------|
@@ -173,7 +173,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Features
 
-- **Multi-format** - VST3 (all platforms) and AU (macOS, both AUv2 and AUv3)
+- **Multi-format** - VST3 (all platforms), AU (macOS), and CLAP (planned)
 - **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
@@ -185,9 +185,9 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 
 ## Documentation
 
-- [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) — Design decisions, threading model, guarantees
-- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) — Detailed API reference
-- [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) — Example testing roadmap and feature coverage matrix
+- [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
+- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - Detailed API reference
+- [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) - Example testing roadmap and feature coverage matrix
 
 ## Platform Support
 
@@ -205,6 +205,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer-core` | Platform-agnostic traits and types |
 | `beamer-vst3` | VST3 wrapper implementation |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
+| `beamer-clap` | CLAP wrapper (planned) |
 | `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(HasParameters)]`, `#[derive(EnumParameter)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
