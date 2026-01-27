@@ -33,8 +33,8 @@
 //! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
 use beamer_core::{
-    AudioProcessor, BusLayout, CachedBusConfig, ConversionBuffers, HasParameters, Plugin,
-    PluginSetup,
+    AudioProcessor, BusLayout, CachedBusConfig, ConversionBuffers, HasParameters, MidiCcConfig,
+    Plugin, PluginSetup,
 };
 use log;
 
@@ -190,6 +190,62 @@ fn build_setup<S: PluginSetup>(sample_rate: f64, max_frames: u32, layout: &BusLa
     S::extract(&host_setup)
 }
 
+/// Allocate processing resources (conversion buffers, MIDI state) for a processor.
+///
+/// This is shared between initial preparation and re-preparation paths to avoid
+/// code duplication.
+fn allocate_processing_resources(
+    supports_f64: bool,
+    midi_cc_config: Option<MidiCcConfig>,
+    max_frames: u32,
+    layout: &BusLayout,
+    bus_config: &CachedBusConfig,
+) -> (
+    Option<ConversionBuffers>,
+    Option<Box<beamer_core::MidiCcState>>,
+    Box<beamer_core::MidiBuffer>,
+) {
+    // Pre-allocate conversion buffers if processor doesn't support f64
+    let conversion_buffers = if !supports_f64 {
+        let input_channels = layout.main_input_channels as usize;
+        let output_channels = layout.main_output_channels as usize;
+
+        // Build aux bus channel counts from CachedBusConfig
+        // Skip main bus (index 0) to get aux buses only
+        let aux_input_channels: Vec<usize> = bus_config
+            .input_buses
+            .iter()
+            .skip(1)
+            .map(|bus_info| bus_info.channel_count)
+            .collect();
+        let aux_output_channels: Vec<usize> = bus_config
+            .output_buses
+            .iter()
+            .skip(1)
+            .map(|bus_info| bus_info.channel_count)
+            .collect();
+
+        Some(ConversionBuffers::allocate(
+            input_channels,
+            output_channels,
+            &aux_input_channels,
+            &aux_output_channels,
+            max_frames as usize,
+        ))
+    } else {
+        None
+    };
+
+    // Initialize MIDI CC state from plugin config
+    let midi_cc_state =
+        midi_cc_config.map(|cfg| Box::new(beamer_core::MidiCcState::from_config(&cfg)));
+
+    // Pre-allocate MIDI output buffer for process_midi()
+    let midi_output_buffer = Box::new(beamer_core::MidiBuffer::new());
+
+    (conversion_buffers, midi_cc_state, midi_output_buffer)
+}
+
 impl<P: Plugin> AuState<P> {
     /// Transition from Unprepared to Prepared.
     ///
@@ -226,43 +282,14 @@ impl<P: Plugin> AuState<P> {
                     processor.parameters_mut().reset_smoothing();
                 }
 
-                // Pre-allocate conversion buffers if processor doesn't support f64
-                let conversion_buffers = if !processor.supports_double_precision() {
-                    let input_channels = layout.main_input_channels as usize;
-                    let output_channels = layout.main_output_channels as usize;
-
-                    // Build aux bus channel counts from CachedBusConfig
-                    // Skip main bus (index 0) to get aux buses only
-                    let aux_input_channels: Vec<usize> = bus_config
-                        .input_buses
-                        .iter()
-                        .skip(1)
-                        .map(|bus_info| bus_info.channel_count)
-                        .collect();
-                    let aux_output_channels: Vec<usize> = bus_config
-                        .output_buses
-                        .iter()
-                        .skip(1)
-                        .map(|bus_info| bus_info.channel_count)
-                        .collect();
-
-                    Some(ConversionBuffers::allocate(
-                        input_channels,
-                        output_channels,
-                        &aux_input_channels,
-                        &aux_output_channels,
-                        max_frames as usize,
-                    ))
-                } else {
-                    None
-                };
-
-                // Initialize MIDI CC state from plugin config
-                let midi_cc_state =
-                    midi_cc_config.map(|cfg| Box::new(beamer_core::MidiCcState::from_config(&cfg)));
-
-                // Pre-allocate MIDI output buffer for process_midi()
-                let midi_output_buffer = Box::new(beamer_core::MidiBuffer::new());
+                let (conversion_buffers, midi_cc_state, midi_output_buffer) =
+                    allocate_processing_resources(
+                        processor.supports_double_precision(),
+                        midi_cc_config,
+                        max_frames,
+                        &layout,
+                        bus_config,
+                    );
 
                 *self = Self::Prepared {
                     processor,
@@ -286,43 +313,14 @@ impl<P: Plugin> AuState<P> {
                 let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout);
                 let new_processor = plugin.prepare(plugin_setup);
 
-                // Pre-allocate conversion buffers if processor doesn't support f64
-                let conversion_buffers = if !new_processor.supports_double_precision() {
-                    let input_channels = layout.main_input_channels as usize;
-                    let output_channels = layout.main_output_channels as usize;
-
-                    // Build aux bus channel counts from CachedBusConfig
-                    // Skip main bus (index 0) to get aux buses only
-                    let aux_input_channels: Vec<usize> = bus_config
-                        .input_buses
-                        .iter()
-                        .skip(1)
-                        .map(|bus_info| bus_info.channel_count)
-                        .collect();
-                    let aux_output_channels: Vec<usize> = bus_config
-                        .output_buses
-                        .iter()
-                        .skip(1)
-                        .map(|bus_info| bus_info.channel_count)
-                        .collect();
-
-                    Some(ConversionBuffers::allocate(
-                        input_channels,
-                        output_channels,
-                        &aux_input_channels,
-                        &aux_output_channels,
-                        max_frames as usize,
-                    ))
-                } else {
-                    None
-                };
-
-                // Initialize MIDI CC state from plugin config
-                let midi_cc_state =
-                    midi_cc_config.map(|cfg| Box::new(beamer_core::MidiCcState::from_config(&cfg)));
-
-                // Pre-allocate MIDI output buffer for process_midi()
-                let midi_output_buffer = Box::new(beamer_core::MidiBuffer::new());
+                let (conversion_buffers, midi_cc_state, midi_output_buffer) =
+                    allocate_processing_resources(
+                        new_processor.supports_double_precision(),
+                        midi_cc_config,
+                        max_frames,
+                        &layout,
+                        bus_config,
+                    );
 
                 *self = Self::Prepared {
                     processor: new_processor,
