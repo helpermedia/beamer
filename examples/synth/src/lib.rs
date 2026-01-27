@@ -685,13 +685,6 @@ impl SynthProcessor {
 impl AudioProcessor for SynthProcessor {
     type Plugin = SynthPlugin;
 
-    fn unprepare(self) -> SynthPlugin {
-        // Return parameters; voices and DSP state are discarded
-        // They'll be reallocated on next prepare()
-        // No midi_cc_parameters to move - framework manages it!
-        SynthPlugin { parameters: self.parameters }
-    }
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

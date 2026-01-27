@@ -101,6 +101,22 @@ impl GainParameters {
 ///
 /// The `#[derive(HasParameters)]` macro automatically implements `parameters()` and
 /// `parameters_mut()` by looking for the field marked with `#[parameters]`.
+///
+/// # Note: Single-Struct Alternative
+///
+/// For simple plugins like this one (no DSP state, just parameters), you can
+/// use a single struct for both Plugin and Processor:
+///
+/// ```ignore
+/// impl Plugin for GainPlugin {
+///     type Processor = Self;  // Same type!
+///     fn prepare(self, _: ()) -> Self { self }
+/// }
+/// impl AudioProcessor for GainPlugin { ... }
+/// ```
+///
+/// We use separate structs here to demonstrate the general pattern that plugins
+/// with DSP state (delay buffers, sample rate, etc.) require.
 #[derive(Default, HasParameters)]
 pub struct GainPlugin {
     /// Plugin parameters
@@ -157,12 +173,6 @@ impl GainProcessor {
 
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
-
-    fn unprepare(self) -> GainPlugin {
-        GainPlugin {
-            parameters: self.parameters,
-        }
-    }
 
     fn process(
         &mut self,

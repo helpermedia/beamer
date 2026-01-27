@@ -53,17 +53,23 @@ use crate::process_context::ProcessContext;
 /// }
 /// ```
 ///
-/// This eliminates the boilerplate of implementing `parameters()` and `parameters_mut()`
-/// on both your Plugin and Processor types.
+/// This eliminates the boilerplate of implementing `parameters()`, `parameters_mut()`,
+/// and `set_parameters()` on both your Plugin and Processor types.
 pub trait HasParameters: Send + 'static {
     /// The parameter collection type.
-    type Parameters: ParameterStore + ParameterGroups + crate::parameter_types::Parameters;
+    type Parameters: ParameterStore + ParameterGroups + crate::parameter_types::Parameters + Default;
 
     /// Returns a reference to the parameters.
     fn parameters(&self) -> &Self::Parameters;
 
     /// Returns a mutable reference to the parameters.
     fn parameters_mut(&mut self) -> &mut Self::Parameters;
+
+    /// Sets the parameters, replacing any existing values.
+    ///
+    /// This is used by the default [`AudioProcessor::unprepare()`] implementation
+    /// to transfer parameters from the processor back to the plugin.
+    fn set_parameters(&mut self, params: Self::Parameters);
 }
 
 // =============================================================================
@@ -613,7 +619,16 @@ pub trait AudioProcessor: HasParameters {
     /// parameters preserved. The wrapper can then call `prepare()` again
     /// with the new configuration.
     ///
-    /// # Example
+    /// # Default Implementation
+    ///
+    /// The default implementation creates a new `Plugin::default()` and
+    /// transfers the parameters from this processor to it. This works for
+    /// most plugins where the Plugin struct only holds parameters.
+    ///
+    /// Override this method if your Plugin has additional state beyond
+    /// parameters that needs to be preserved across unprepare/prepare cycles.
+    ///
+    /// # Example (custom implementation)
     ///
     /// ```ignore
     /// impl AudioProcessor for DelayProcessor {
@@ -627,9 +642,15 @@ pub trait AudioProcessor: HasParameters {
     ///     }
     /// }
     /// ```
-    fn unprepare(self) -> Self::Plugin
+    fn unprepare(mut self) -> Self::Plugin
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        let params = std::mem::take(self.parameters_mut());
+        let mut plugin = Self::Plugin::default();
+        plugin.set_parameters(params);
+        plugin
+    }
 
     // Note: `parameters()` and `parameters_mut()` are provided by the `HasParameters` supertrait.
     // Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation to implement them.

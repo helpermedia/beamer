@@ -4,7 +4,7 @@
 >
 > **Decision:** We chose explicit Plugin and Processor structs. See [ARCHITECTURE.md](../ARCHITECTURE.md#parameter-ownership) for the rationale.
 >
-> **Update:** The `save_state()`/`load_state()` boilerplate mentioned in this document has been eliminated via default implementations in `AudioProcessor`. These methods now automatically delegate to `Parameters::save_state()`/`load_state()`.
+> **Update:** The boilerplate mentioned in this document has been largely eliminated via default implementations in `AudioProcessor`. The methods `unprepare()`, `save_state()`, and `load_state()` all have sensible defaults now. Additionally, simple plugins without DSP state can use `type Processor = Self` to avoid duplicate struct definitions entirely.
 
 ---
 
@@ -54,13 +54,9 @@ pub struct MyProcessor {
 impl AudioProcessor for MyProcessor {
     type Plugin = MyPlugin;
 
-    fn unprepare(self) -> MyPlugin {
-        MyPlugin { parameters: self.parameters }
-    }
-
     fn process(&mut self, buffer: &mut Buffer, ...) { ... }
 
-    // save_state/load_state: automatically handled by default implementations
+    // unprepare, save_state, load_state: automatically handled by default implementations
 }
 ```
 
@@ -142,18 +138,7 @@ pub struct MyProcessor {
 impl AudioProcessor for MyProcessor {
     type Plugin = MyPlugin;
 
-    fn unprepare(self) -> MyPlugin {
-        MyPlugin { parameters: self.parameters }
-    }
-
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
-
+    // unprepare, save_state, load_state use default implementations
     // process() NOT generated - user must implement
 }
 ```
@@ -180,7 +165,7 @@ pub fn define_plugin(input: TokenStream) -> TokenStream {
     // - Plugin struct with #[derive(Default, HasParameters)]
     // - Plugin impl with prepare()
     // - Processor struct with #[derive(HasParameters)]
-    // - Partial AudioProcessor impl (unprepare, save_state, load_state)
+    // - AudioProcessor impl with type Plugin (defaults handle the rest)
 }
 ```
 
@@ -251,7 +236,7 @@ processor_fields: {
 
 ## Code Comparison
 
-### Delay Plugin - Current (~80 lines for boilerplate)
+### Delay Plugin - Current (~55 lines)
 
 ```rust
 #[derive(Parameters)]
@@ -299,21 +284,11 @@ pub struct DelayProcessor {
 impl AudioProcessor for DelayProcessor {
     type Plugin = DelayPlugin;
 
-    fn unprepare(self) -> DelayPlugin {
-        DelayPlugin { parameters: self.parameters }
-    }
-
     fn process(&mut self, buffer: &mut Buffer, ...) {
         // DSP code
     }
 
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
+    // unprepare, save_state, load_state use default implementations
 }
 ```
 
@@ -359,7 +334,7 @@ impl DelayProcessor {
 }
 ```
 
-**Savings: ~30 lines (38% reduction)**
+**Savings: ~5 lines (9% reduction)** - Much less compelling now that defaults handle the boilerplate.
 
 ---
 
@@ -368,7 +343,7 @@ impl DelayProcessor {
 ### 1. Less Boilerplate
 
 - No duplicate struct definitions
-- No manual `unprepare()` implementation
+- ~~No manual `unprepare()` implementation~~ (Now solved via default implementation)
 - ~~No manual `save_state()`/`load_state()` implementations~~ (Now solved via default implementations)
 - Single source of truth for field names
 
@@ -429,9 +404,11 @@ Current boilerplate per plugin:
 
 | Plugin Type | Current Boilerplate | Macro Savings | Worth It? |
 |-------------|--------------------:|---------------:|-----------|
-| **Simple (gain)** | ~15 lines | ~8 lines | Maybe |
-| **Medium (delay)** | ~25 lines | ~12 lines | Maybe |
-| **Complex (synth)** | ~35 lines | ~15 lines | Probably not |
+| **Simple (gain)** | ~4 lines | ~4 lines | No - can use `type Processor = Self` instead |
+| **Medium (delay)** | ~4 lines | ~4 lines | No |
+| **Complex (synth)** | ~4 lines | ~4 lines | No |
+
+With default implementations for `unprepare()`, `save_state()`, and `load_state()`, the actual boilerplate is now just the struct definitions and derive attributes. For simple plugins, the single-struct pattern (`type Processor = Self`) eliminates even that.
 
 For complex plugins, the custom `prepare()` logic dominates. The macro's `prepare:` block would be nearly as verbose as the current explicit implementation.
 
@@ -466,35 +443,36 @@ The boilerplate being eliminated (`#[derive(HasParameters)]`, `#[parameters]`) i
 
 Instead of a combined macro, we could add smaller helpers:
 
-### Helper 1: Default AudioProcessor impl
+### Helper 1: Default AudioProcessor impl (No longer needed)
 
-```rust
-// Macro that implements unprepare + save/load
-#[derive(HasParameters, DefaultAudioProcessor)]
-#[audio_processor(plugin = MyPlugin)]
-pub struct MyProcessor {
-    #[parameters]
-    parameters: MyParameters,
-    sample_rate: f64,
-}
-
-// User only implements process()
-impl AudioProcessor for MyProcessor {
-    fn process(&mut self, ...) { ... }
-}
-```
+This was originally proposed to auto-generate `unprepare()`, `save_state()`, and `load_state()`. These methods now have default implementations in the framework, so no additional macro is required.
 
 ### Helper 2: Simple plugin shorthand
 
-```rust
-// For plugins with no processor fields
-beamer::simple_plugin!(GainPlugin, GainProcessor, GainParameters);
+For plugins with no processor-specific fields (no DSP state), you can already use a single struct:
 
-// Generates both structs with just parameters field
-// User implements process() on GainProcessor
+```rust
+#[derive(Default, HasParameters)]
+pub struct GainPlugin {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Plugin for GainPlugin {
+    type Setup = ();
+    type Processor = Self;  // Same type!
+
+    fn prepare(self, _: ()) -> Self { self }
+}
+
+impl AudioProcessor for GainPlugin {
+    type Plugin = Self;
+
+    fn process(&mut self, buffer: &mut Buffer, ...) { ... }
+}
 ```
 
-These targeted helpers provide most of the benefit without the complexity of a full combined macro.
+This pattern requires no macro and uses standard Rust. See the gain example for documentation of this approach.
 
 ---
 
@@ -510,16 +488,15 @@ The combined macro approach:
 
 The current explicit approach costs **4 lines of boilerplate** per plugin. The cognitive overhead of a complex macro exceeds this cost.
 
-**Recommendation:** Keep explicit structs. The targeted helpers are the right approach:
+**Recommendation:** Keep explicit structs. The default implementations and single-struct pattern have eliminated most boilerplate:
 
-| Helper | Use Case | Value |
-|--------|----------|-------|
-| `simple_plugin!` | Stateless plugins (gain, pan) | High - eliminates real repetition |
-| `#[derive(DefaultAudioProcessor)]` | Any plugin | ~~Medium - auto-generates `unprepare`, `save_state`, `load_state`~~ (save_state/load_state now have defaults) |
+| Pattern | Use Case | Status |
+|---------|----------|--------|
+| `type Processor = Self` | Stateless plugins (gain, pan) | Available now - no macro needed |
+| Default `unprepare()` | All plugins | Implemented |
+| Default `save_state()`/`load_state()` | All plugins | Implemented |
 
-These helpers address actual repetitive code without hiding struct definitions or requiring users to learn new syntax.
-
-> **Note:** As of the current version, `save_state()`/`load_state()` have default implementations that delegate to `Parameters`, so the `#[derive(DefaultAudioProcessor)]` helper would only need to generate `unprepare()`.
+No additional macros are needed. The current approach provides minimal boilerplate with maximum clarity.
 
 ---
 

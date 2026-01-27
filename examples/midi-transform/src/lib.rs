@@ -412,12 +412,6 @@ impl MidiTransformProcessor {
 impl AudioProcessor for MidiTransformProcessor {
     type Plugin = MidiTransformPlugin;
 
-    fn unprepare(self) -> MidiTransformPlugin {
-        MidiTransformPlugin {
-            parameters: self.parameters,
-        }
-    }
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

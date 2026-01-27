@@ -447,14 +447,6 @@ impl DelayProcessor {
 impl AudioProcessor for DelayProcessor {
     type Plugin = DelayPlugin;
 
-    fn unprepare(self) -> DelayPlugin {
-        // Return just the parameters; delay buffers are discarded
-        // They'll be reallocated with correct size on next prepare()
-        DelayPlugin {
-            parameters: self.parameters,
-        }
-    }
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

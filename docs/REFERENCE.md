@@ -49,9 +49,10 @@ pub trait Plugin: HasParameters + Default {
 
 // HasParameters supertrait provides parameter access
 pub trait HasParameters: Send + 'static {
-    type Parameters: Parameters + Units + Parameters;
+    type Parameters: Parameters + Units + Parameters + Default;
     fn parameters(&self) -> &Self::Parameters;
     fn parameters_mut(&mut self) -> &mut Self::Parameters;
+    fn set_parameters(&mut self, params: Self::Parameters);
 }
 ```
 
@@ -116,8 +117,9 @@ pub trait AudioProcessor: HasParameters {
     type Plugin: Plugin<Processor = Self, Parameters = Self::Parameters>;
 
     /// Transform back to unprepared state.
-    /// Called when host calls setProcessing(false).
-    fn unprepare(self) -> Self::Plugin;
+    /// Default implementation transfers parameters to a new Plugin::default().
+    /// Override only if Plugin has additional state beyond parameters.
+    fn unprepare(self) -> Self::Plugin { /* default impl */ }
 
     // Note: parameters() and parameters_mut() are provided by HasParameters supertrait
 
@@ -198,6 +200,10 @@ The plugin transitions between states based on host actions:
                     │  (unprepared)   │
                     └─────────────────┘
 ```
+
+This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `AudioProcessor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale-why-this-matters-for-rust) for detailed rationale and comparison with single-type frameworks.
+
+**Simple plugins** can use `type Processor = Self` to collapse both types into one when no DSP state is needed.
 
 ### 1.3 Parameters
 
@@ -1298,11 +1304,6 @@ struct MySynthProcessor {
 impl AudioProcessor for MySynthProcessor {
     type Plugin = MySynthPlugin;
 
-    fn unprepare(self) -> MySynthPlugin {
-        MySynthPlugin { parameters: self.parameters }
-        // No midi_cc to move back!
-    }
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         // Access CC values directly via ProcessContext
         if let Some(cc) = context.midi_cc() {
@@ -2043,9 +2044,7 @@ pub struct GainProcessor {
 
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
-    fn unprepare(self) -> GainPlugin {
-        GainPlugin { parameters: self.parameters }
-    }
+
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -2054,7 +2053,7 @@ impl AudioProcessor for GainProcessor {
             }
         }
     }
-    // save_state/load_state: automatically handled by default implementations
+    // unprepare/save_state/load_state: automatically handled by default implementations
 }
 
 // Format-specific exports
@@ -2353,10 +2352,6 @@ pub struct GainProcessor {
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
 
-    fn unprepare(self) -> GainPlugin {
-        GainPlugin { parameters: self.parameters }
-    }
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.parameters.gain_linear();
         for (input, output) in buffer.zip_channels() {
@@ -2365,7 +2360,7 @@ impl AudioProcessor for GainProcessor {
             }
         }
     }
-    // save_state/load_state: automatically handled by default implementations
+    // unprepare/save_state/load_state: automatically handled by default implementations
 }
 
 // =============================================================================

@@ -1055,6 +1055,9 @@ mod tests {
         fn parameters_mut(&mut self) -> &mut Self::Parameters {
             &mut self.parameters
         }
+        fn set_parameters(&mut self, params: Self::Parameters) {
+            self.parameters = params;
+        }
     }
 
     impl Plugin for TestPlugin {
@@ -1095,16 +1098,13 @@ mod tests {
         fn parameters_mut(&mut self) -> &mut Self::Parameters {
             &mut self.parameters
         }
+        fn set_parameters(&mut self, params: Self::Parameters) {
+            self.parameters = params;
+        }
     }
 
     impl AudioProcessor for TestProcessor {
         type Plugin = TestPlugin;
-
-        fn unprepare(self) -> Self::Plugin {
-            TestPlugin {
-                parameters: self.parameters,
-            }
-        }
 
         fn process(
             &mut self,

@@ -91,6 +91,10 @@ pub fn derive_has_parameters_impl(input: DeriveInput) -> syn::Result<TokenStream
             fn parameters_mut(&mut self) -> &mut Self::Parameters {
                 &mut self.#field_name
             }
+
+            fn set_parameters(&mut self, params: Self::Parameters) {
+                self.#field_name = params;
+            }
         }
     })
 }

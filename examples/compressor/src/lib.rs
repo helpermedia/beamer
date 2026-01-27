@@ -477,14 +477,6 @@ fn process_compression_inner<S: Sample>(
 impl AudioProcessor for CompressorProcessor {
     type Plugin = CompressorPlugin;
 
-    fn unprepare(self) -> CompressorPlugin {
-        // Return just the parameters; DSP state is discarded
-        // It'll be reallocated on next prepare()
-        CompressorPlugin {
-            parameters: self.parameters,
-        }
-    }
-
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
         if active {

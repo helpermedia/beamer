@@ -237,6 +237,128 @@ impl Plugin for MyPlugin {
 }
 ```
 
+### Design Rationale: Why This Matters for Rust
+
+Beamer's two-phase design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern**, where different types represent different states, and the compiler enforces valid transitions.
+
+**The same pattern appears throughout Rust:**
+- `std::fs::File` - you cannot have an "unopened file"; `File::open()` returns `Result<File>`
+- `std::net::TcpListener` vs `TcpStream` - different types for different connection states
+- Builder pattern - `Builder::new().with_x().build()` returns a different type
+
+**Comparison with single-type frameworks:**
+
+Most audio plugin frameworks (nih-plug, JUCE, CLAP) use a single type with lifecycle methods:
+
+```rust
+// Single-type approach (nih-plug style)
+#[derive(Default)]
+struct Delay {
+    params: Arc<DelayParams>,
+    sample_rate: f32,           // Starts at 0.0
+    buffer: Vec<f32>,           // Starts empty
+}
+
+impl Plugin for Delay {
+    fn initialize(&mut self, config: &Config) -> bool {
+        self.sample_rate = config.sample_rate;
+        self.buffer = vec![0.0; self.max_delay_samples()];
+        true
+    }
+
+    fn process(&mut self, buffer: &mut Buffer) {
+        // sample_rate was 0.0 before initialize() - hope nobody called process() early!
+        // In practice, the framework ensures correct ordering, but the type doesn't.
+    }
+}
+```
+
+**Beamer's two-type approach:**
+
+```rust
+// Two-type approach (Beamer)
+#[derive(Default, HasParameters)]
+struct DelayPlugin {
+    #[parameters]
+    parameters: DelayParameters,
+    // No sample_rate, no buffer - they don't exist yet
+}
+
+#[derive(HasParameters)]
+struct DelayProcessor {
+    #[parameters]
+    parameters: DelayParameters,
+    sample_rate: f64,    // Always valid - provided in prepare()
+    buffer: Vec<f64>,    // Always allocated - created in prepare()
+}
+
+impl AudioProcessor for DelayProcessor {
+    fn process(&mut self, buffer: &mut Buffer, ...) {
+        // self.sample_rate is guaranteed valid
+        // self.buffer is guaranteed allocated
+        // No Option<T>, no .expect(), no placeholder checks
+    }
+}
+```
+
+**The key ergonomic benefit: cleaner process() code**
+
+In single-type designs, DSP state fields need `Option<T>` wrappers:
+
+```rust
+// Single-type: every process() needs unwrapping
+fn process(&mut self, ...) {
+    let buffer = self.delay_buffer.as_mut().expect("not prepared");
+    let sample_rate = self.sample_rate.expect("not prepared");
+    // ... actual DSP code
+}
+```
+
+In Beamer, the processor type is always fully initialized:
+
+```rust
+// Beamer: clean DSP code
+fn process(&mut self, ...) {
+    // Just use the fields directly - they're always valid
+    let delay_samples = (self.delay_time * self.sample_rate) as usize;
+    self.buffer[self.write_pos] = input;
+}
+```
+
+**Trade-offs:**
+
+| Aspect | Two-Phase (Beamer) | Single-Type (nih-plug, JUCE) |
+|--------|-------------------|------------------------------|
+| Boilerplate | Two structs for stateful plugins | One struct |
+| `process()` code | Clean, no Option handling | Needs unwrap or Option checks |
+| Compile-time safety | Cannot call process() on wrong type | Framework ensures ordering |
+| Learning curve | Higher (two traits, two types) | Lower (one trait) |
+| Industry alignment | Unique | Matches most frameworks |
+
+**The escape hatch: `type Processor = Self`**
+
+For simple plugins without DSP state (gain, pan, simple saturation), both types can be the same:
+
+```rust
+impl Plugin for GainPlugin {
+    type Processor = Self;  // Same type for both states
+    fn prepare(self, _: ()) -> Self { self }
+}
+
+impl AudioProcessor for GainPlugin {
+    type Plugin = Self;
+    fn process(&mut self, ...) { /* ... */ }
+}
+```
+
+This provides the simplicity of single-type designs when you don't need the safety guarantees.
+
+**Why not just use single-type like everyone else?**
+
+The two-phase design is unusual in the audio plugin ecosystem, but idiomatic for Rust. The compile-time guarantee is modest (frameworks ensure correct call ordering anyway), but the ergonomic benefit of clean `process()` code without `Option<T>` handling is real.
+
+If you're coming from JUCE or nih-plug, the extra struct feels like boilerplate. If you're coming from Rust's type-driven design philosophy, it feels natural. Beamer chose to align with Rust idioms rather than audio industry conventions.
+
 ### Setup Types
 
 | Type | Use Case | Value |
@@ -251,9 +373,9 @@ impl Plugin for MyPlugin {
 
 | Trait | State | Responsibilities |
 |-------|-------|------------------|
-| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`) - supertrait of Plugin and AudioProcessor |
+| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - supertrait of Plugin and AudioProcessor |
 | `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
-| `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` |
+| `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` (has default impl) |
 
 ### Parameter Ownership
 

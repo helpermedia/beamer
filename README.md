@@ -60,10 +60,6 @@ struct GainProcessor {
 impl AudioProcessor for GainProcessor {
     type Plugin = GainPlugin;
 
-    fn unprepare(self) -> GainPlugin {
-        GainPlugin { parameters: self.parameters }
-    }
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -77,7 +73,7 @@ impl AudioProcessor for GainProcessor {
 
 ## Two-Phase Lifecycle
 
-Beamer uses a type-safe two-phase initialization that eliminates placeholder values:
+Beamer uses a type-safe two-phase design that follows the Rust principle of **making invalid states unrepresentable**:
 
 ```text
 Plugin::default() → Plugin (unprepared, holds parameters)
@@ -91,7 +87,29 @@ Plugin::default() → Plugin (unprepared, holds parameters)
                     Plugin (parameters preserved)
 ```
 
-**Why?** Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. A common approach is using placeholder values, with Beamer `Plugin` holds parameters, `prepare()` transforms it into an `AudioProcessor` with real configuration. No placeholders.
+**Why two types?** Audio plugins need sample rate for buffer allocation, but sample rate isn't known until the host calls `setupProcessing()`. Other frameworks use a single type with `Option<T>` fields or placeholder values. Beamer uses separate types so the compiler enforces correctness:
+
+```rust
+// Other frameworks: Option<T> or placeholders
+struct Delay {
+    buffer: Option<Vec<f32>>,  // None until prepare
+}
+fn process(&mut self, ...) {
+    let buffer = self.buffer.as_mut().expect("not prepared");  // Every call
+}
+
+// Beamer: AudioProcessor is always valid
+struct DelayProcessor {
+    buffer: Vec<f32>,  // Always allocated
+}
+fn process(&mut self, ...) {
+    self.buffer.do_something();  // Always safe
+}
+```
+
+This is the **typestate pattern**, the same approach used in `std::fs::File`, builder APIs, and session types. It trades some boilerplate for cleaner `process()` code and compile-time guarantees.
+
+**Simple plugins** can use `type Processor = Self` to collapse both types into one when no DSP state is needed. See [ARCHITECTURE.md](ARCHITECTURE.md#two-phase-plugin-lifecycle) for detailed rationale.
 
 | Setup Type | Use Case |
 |------------|----------|
