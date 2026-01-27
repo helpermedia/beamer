@@ -47,6 +47,7 @@ pub mod plugin;
 pub mod preset;
 pub mod process_context;
 pub mod sample;
+pub mod setup;
 pub mod smoothing;
 pub mod sysex_pool;
 pub mod types;

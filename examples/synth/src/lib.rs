@@ -396,7 +396,9 @@ impl Voice {
 // =============================================================================
 
 impl Plugin for Synth {
-    type Setup = SampleRate; // Synth needs sample rate for filter calculations
+    // Synth needs sample rate for filter calculations.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
     type Processor = SynthProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> SynthProcessor {

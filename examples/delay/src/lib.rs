@@ -256,7 +256,9 @@ impl DelayLine {
 }
 
 impl Plugin for Delay {
-    type Setup = SampleRate; // Delay needs sample rate for buffer allocation
+    // Delay needs sample rate for buffer allocation.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
     type Processor = DelayProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> DelayProcessor {

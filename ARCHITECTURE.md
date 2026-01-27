@@ -423,6 +423,8 @@ The `#[derive(Parameters)]` macro now automatically implements `HasParameters` f
 | `MainOutputChannels` | Per-channel state | `u32` |
 | `(A, B, ...)` | Combine multiple types | Tuples up to 5 elements |
 
+For IDE autocomplete, use `beamer::setup::*` to import all available types.
+
 ### Trait Responsibilities
 
 | Trait | State | Responsibilities |

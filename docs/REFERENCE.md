@@ -136,6 +136,8 @@ Request exactly what your plugin needs using composable types:
 | `AuxOutputCount` | Multi-bus output | `usize` |
 | `ProcessMode` | Offline quality settings | enum |
 
+For IDE autocomplete, use `beamer::setup::*` to import all available types.
+
 Compose multiple types using tuples:
 
 ```rust

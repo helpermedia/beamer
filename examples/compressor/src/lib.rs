@@ -185,7 +185,9 @@ pub struct Compressor {
 }
 
 impl Plugin for Compressor {
-    type Setup = SampleRate; // Compressor needs sample rate for envelope coefficients
+    // Compressor needs sample rate for envelope coefficients.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
     type Processor = CompressorProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {

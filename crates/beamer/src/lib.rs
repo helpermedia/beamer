@@ -46,6 +46,11 @@
 // Re-export sub-crates
 pub use beamer_core as core;
 
+/// Plugin setup types for declaring host information requirements.
+///
+/// See [`beamer_core::setup`] for documentation and examples.
+pub use beamer_core::setup;
+
 #[cfg(feature = "vst3")]
 pub use beamer_vst3 as vst3_impl;
 

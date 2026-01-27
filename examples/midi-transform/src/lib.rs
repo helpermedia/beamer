@@ -207,7 +207,9 @@ pub struct MidiTransform {
 }
 
 impl Plugin for MidiTransform {
-    type Setup = SampleRate; // Needs sample rate for parameter smoothing
+    // Needs sample rate for parameter smoothing.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
     type Processor = MidiTransformProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> MidiTransformProcessor {

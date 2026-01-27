@@ -102,6 +102,8 @@ This is the **typestate pattern**, the same approach used in `std::fs::File`, bu
 | `(SampleRate, MaxBufferSize)` | FFT, lookahead |
 | `(SampleRate, MainOutputChannels)` | Surround, per-channel state |
 
+For IDE autocomplete of all available types, use `beamer::setup::*`.
+
 ## Examples
 
 ### Effects
