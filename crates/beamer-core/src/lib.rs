@@ -27,6 +27,7 @@
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod buffer;
+pub mod buffer_storage;
 pub mod bus_config;
 pub mod bypass;
 pub mod conversion_buffers;
@@ -52,6 +53,7 @@ pub mod types;
 
 // Re-exports for convenience
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
+pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
 pub use config::PluginConfig;
 pub use conversion_buffers::ConversionBuffers;

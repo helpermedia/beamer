@@ -117,7 +117,7 @@ impl HostSetup {
 ///
 /// | Type | Value | Use Case |
 /// |------|-------|----------|
-/// | `()` | — | Stateless plugins (gain, pan) |
+/// | `()` | - | Stateless plugins (gain, pan) |
 /// | [`SampleRate`] | `f64` | Time-based DSP (delay, filter, envelope) |
 /// | [`MaxBufferSize`] | `usize` | FFT, lookahead buffers |
 /// | [`MainInputChannels`] | `u32` | Per-channel input processing |

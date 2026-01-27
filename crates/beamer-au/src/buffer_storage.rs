@@ -1,8 +1,8 @@
 //! Pre-allocated buffer storage for real-time safe audio processing.
 //!
-//! This module provides `ProcessBufferStorage`, which pre-allocates capacity
-//! for channel pointers during `allocateRenderResources`. The storage is then
-//! reused for each render call without allocations.
+//! This module re-exports [`ProcessBufferStorage`] from `beamer-core` and provides
+//! the [`ProcessBufferStorageAuExt`] trait with AU-specific methods for collecting
+//! pointers from `AudioBufferList`.
 //!
 //! # Pattern
 //!
@@ -21,14 +21,6 @@
 //! - **Lazy aux allocation**: No heap allocation for aux buses if plugin doesn't use them
 //! - **Asymmetric support**: Mono input can have stereo output (allocates 1 + 2, not 2 + 2)
 //!
-//! Examples:
-//! - Mono plugin (1in/1out): Allocates 2 pointers (16 bytes on 64-bit)
-//! - Stereo plugin (2in/2out): Allocates 4 pointers (32 bytes on 64-bit)
-//! - Stereo with sidechain (2+2in/2out): Allocates 6 pointers (48 bytes on 64-bit)
-//! - Worst-case (32ch x 16 buses): Would be MAX_CHANNELS * MAX_BUSES = 512 pointers (4KB)
-//!
-//! This means simple plugins use **32x less memory** than worst-case allocation.
-//!
 //! # Real-Time Safety
 //!
 //! - `clear()` is O(1) - only sets Vec lengths to 0
@@ -37,206 +29,23 @@
 //! - All allocations happen in `allocate_from_config()` (non-real-time)
 
 use crate::buffers::AudioBufferList;
-use beamer_core::{CachedBusConfig, Sample};
+use beamer_core::Sample;
+
+// Re-export ProcessBufferStorage from beamer-core
+pub use beamer_core::ProcessBufferStorage;
+
 #[cfg(test)]
-use beamer_core::{BusType, CachedBusInfo, MAX_CHANNELS};
-use std::slice;
+use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, MAX_CHANNELS};
 
 // =============================================================================
-// ProcessBufferStorage
+// AU-specific extensions for ProcessBufferStorage
 // =============================================================================
 
-/// Pre-allocated storage for AU audio processing.
+/// AU-specific extension methods for ProcessBufferStorage.
 ///
-/// Stores channel pointers collected from `AudioBufferList` during render.
-/// The Vecs have pre-allocated capacity matching the **actual** bus configuration,
-/// ensuring no allocations occur during audio callbacks while minimizing memory usage.
-///
-/// # Memory Layout
-///
-/// The storage is optimized based on the actual plugin configuration:
-/// - `main_inputs`: Capacity = actual input channel count (e.g., 1 for mono, 2 for stereo)
-/// - `main_outputs`: Capacity = actual output channel count (e.g., 1 for mono, 2 for stereo)
-/// - `aux_inputs`: Only allocated if plugin declares aux input buses
-/// - `aux_outputs`: Only allocated if plugin declares aux output buses
-///
-/// This means a simple stereo plugin uses only 32 bytes (4 pointers × 8 bytes),
-/// not the worst-case 4KB (MAX_CHANNELS × MAX_BUSES × pointer size).
-///
-/// # Type Parameter
-///
-/// `S` is the sample type (`f32` or `f64`).
-#[derive(Clone)]
-pub struct ProcessBufferStorage<S: Sample> {
-    /// Main input channel pointers (capacity = actual channel count)
-    pub main_inputs: Vec<*const S>,
-    /// Main output channel pointers (capacity = actual channel count)
-    pub main_outputs: Vec<*mut S>,
-    /// Auxiliary input buses (only allocated if plugin uses them)
-    pub aux_inputs: Vec<Vec<*const S>>,
-    /// Auxiliary output buses (only allocated if plugin uses them)
-    pub aux_outputs: Vec<Vec<*mut S>>,
-    /// Internal output buffers for instruments (when host provides null pointers).
-    /// Only allocated for plugins with no input buses (instruments/generators).
-    /// When a host provides null output pointers, `collect_outputs` will use these
-    /// buffers and update the AudioBufferList to point to them.
-    internal_output_buffers: Option<Vec<Vec<S>>>,
-    /// Max frames for internal buffers (set during allocation).
-    /// Used to validate that num_samples doesn't exceed buffer capacity.
-    max_frames: usize,
-}
-
-impl<S: Sample> ProcessBufferStorage<S> {
-    /// Create storage from cached bus configuration (recommended).
-    ///
-    /// This is the preferred way to allocate storage as it automatically
-    /// extracts the correct channel counts from the bus configuration.
-    /// Should be called during `allocateRenderResources` (non-real-time).
-    ///
-    /// # Memory Optimization
-    ///
-    /// This method implements smart allocation strategies:
-    /// - Allocates only for channels actually present in the config
-    /// - No pre-allocation for aux buses if plugin doesn't use them
-    /// - Uses actual channel counts, not MAX_CHANNELS worst-case
-    /// - Zero heap allocation for simple mono/stereo plugins without aux buses
-    ///
-    /// # Arguments
-    ///
-    /// * `bus_config` - Cached bus configuration from AU
-    /// * `max_frames` - Maximum frames per render call (for internal buffer allocation)
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let config = extract_bus_config_from_au(au)?;
-    /// validate_bus_limits_from_config(&config)?;
-    /// let storage = ProcessBufferStorage::allocate_from_config(&config, 4096);
-    /// ```
-    pub fn allocate_from_config(bus_config: &CachedBusConfig, max_frames: usize) -> Self {
-        // Extract main bus channel counts (bus 0)
-        let main_in_channels = bus_config
-            .input_bus_info(0)
-            .map(|b| b.channel_count)
-            .unwrap_or(0);
-        let main_out_channels = bus_config
-            .output_bus_info(0)
-            .map(|b| b.channel_count)
-            .unwrap_or(0);
-
-        // Count auxiliary buses (all buses except main bus 0)
-        let aux_in_buses = bus_config.input_bus_count.saturating_sub(1);
-        let aux_out_buses = bus_config.output_bus_count.saturating_sub(1);
-
-        // Optimization: Only allocate aux bus storage if actually needed.
-        // For simple plugins (mono/stereo with no aux), this avoids any
-        // heap allocation for the outer Vec containers.
-        let aux_inputs = if aux_in_buses > 0 {
-            let mut vec = Vec::with_capacity(aux_in_buses);
-            for i in 1..=aux_in_buses {
-                let channels = bus_config
-                    .input_bus_info(i)
-                    .map(|b| b.channel_count)
-                    .unwrap_or(0);
-                vec.push(Vec::with_capacity(channels));
-            }
-            vec
-        } else {
-            Vec::new() // Zero-capacity allocation - no heap memory
-        };
-
-        let aux_outputs = if aux_out_buses > 0 {
-            let mut vec = Vec::with_capacity(aux_out_buses);
-            for i in 1..=aux_out_buses {
-                let channels = bus_config
-                    .output_bus_info(i)
-                    .map(|b| b.channel_count)
-                    .unwrap_or(0);
-                vec.push(Vec::with_capacity(channels));
-            }
-            vec
-        } else {
-            Vec::new() // Zero-capacity allocation - no heap memory
-        };
-
-        // For instruments (no input buses), allocate internal output buffers.
-        // Some hosts (Logic Pro, Reaper) may provide null output buffer pointers,
-        // expecting the AU to use its own buffers.
-        let internal_output_buffers = if main_in_channels == 0 && main_out_channels > 0 {
-            let mut buffers = Vec::with_capacity(main_out_channels);
-            for _ in 0..main_out_channels {
-                buffers.push(vec![S::ZERO; max_frames]);
-            }
-            Some(buffers)
-        } else {
-            None
-        };
-
-        Self {
-            main_inputs: Vec::with_capacity(main_in_channels),
-            main_outputs: Vec::with_capacity(main_out_channels),
-            aux_inputs,
-            aux_outputs,
-            internal_output_buffers,
-            max_frames,
-        }
-    }
-
-    /// Create new storage with pre-allocated capacity (manual).
-    ///
-    /// This is a lower-level method for manual capacity specification.
-    /// Prefer `allocate_from_config()` when possible as it's less error-prone.
-    ///
-    /// # Arguments
-    ///
-    /// * `main_in_channels` - Number of main input channels
-    /// * `main_out_channels` - Number of main output channels
-    /// * `aux_in_buses` - Number of auxiliary input buses
-    /// * `aux_out_buses` - Number of auxiliary output buses
-    /// * `aux_channels` - Channels per aux bus (assumes uniform)
-    pub fn allocate(
-        main_in_channels: usize,
-        main_out_channels: usize,
-        aux_in_buses: usize,
-        aux_out_buses: usize,
-        aux_channels: usize,
-    ) -> Self {
-        let mut aux_inputs = Vec::with_capacity(aux_in_buses);
-        for _ in 0..aux_in_buses {
-            aux_inputs.push(Vec::with_capacity(aux_channels));
-        }
-
-        let mut aux_outputs = Vec::with_capacity(aux_out_buses);
-        for _ in 0..aux_out_buses {
-            aux_outputs.push(Vec::with_capacity(aux_channels));
-        }
-
-        Self {
-            main_inputs: Vec::with_capacity(main_in_channels),
-            main_outputs: Vec::with_capacity(main_out_channels),
-            aux_inputs,
-            aux_outputs,
-            internal_output_buffers: None, // Manual allocation doesn't set up internal buffers
-            max_frames: 0,
-        }
-    }
-
-    /// Clear all pointer storage without deallocating.
-    ///
-    /// This is O(1) - it only sets Vec lengths to 0 while preserving capacity.
-    /// Call this at the start of each render call.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.main_inputs.clear();
-        self.main_outputs.clear();
-        for bus in &mut self.aux_inputs {
-            bus.clear();
-        }
-        for bus in &mut self.aux_outputs {
-            bus.clear();
-        }
-    }
-
+/// This trait provides methods for collecting pointers from AU's `AudioBufferList` type.
+/// Import this trait to use these methods on `ProcessBufferStorage`.
+pub trait ProcessBufferStorageAuExt<S: Sample> {
     /// Collect input pointers from an AudioBufferList.
     ///
     /// # Safety
@@ -244,8 +53,51 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
     /// - num_samples must not exceed actual buffer sizes
+    unsafe fn collect_inputs(&mut self, buffer_list: *const AudioBufferList, num_samples: usize);
+
+    /// Collect output pointers from an AudioBufferList.
+    ///
+    /// For instruments (plugins with no inputs), if the host provides null buffer pointers,
+    /// this function will use internal buffers and update the AudioBufferList to point to them.
+    /// This is necessary because some hosts (Logic Pro, Reaper) expect the AU to provide buffers.
+    ///
+    /// # Safety
+    ///
+    /// - `buffer_list` must be a valid pointer
+    /// - Pointers are only valid for the current render call
+    /// - num_samples must not exceed actual buffer sizes or max_frames
+    unsafe fn collect_outputs(&mut self, buffer_list: *mut AudioBufferList, num_samples: usize);
+
+    /// Collect auxiliary input pointers from multiple AudioBufferLists.
+    ///
+    /// # Safety
+    ///
+    /// - `buffer_lists` must be a valid slice of valid pointers
+    /// - Each pointer is only valid for the current render call
+    /// - num_samples must not exceed actual buffer sizes
+    unsafe fn collect_aux_inputs(
+        &mut self,
+        buffer_lists: &[*const AudioBufferList],
+        num_samples: usize,
+    );
+
+    /// Collect auxiliary output pointers from multiple AudioBufferLists.
+    ///
+    /// # Safety
+    ///
+    /// - `buffer_lists` must be a valid slice of valid pointers
+    /// - Each pointer is only valid for the current render call
+    /// - num_samples must not exceed actual buffer sizes
+    unsafe fn collect_aux_outputs(
+        &mut self,
+        buffer_lists: &[*mut AudioBufferList],
+        num_samples: usize,
+    );
+}
+
+impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
     #[inline]
-    pub unsafe fn collect_inputs(
+    unsafe fn collect_inputs(
         &mut self,
         buffer_list: *const AudioBufferList,
         num_samples: usize,
@@ -272,19 +124,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
         }
     }
 
-    /// Collect output pointers from an AudioBufferList.
-    ///
-    /// For instruments (plugins with no inputs), if the host provides null buffer pointers,
-    /// this function will use internal buffers and update the AudioBufferList to point to them.
-    /// This is necessary because some hosts (Logic Pro, Reaper) expect the AU to provide buffers.
-    ///
-    /// # Safety
-    ///
-    /// - `buffer_list` must be a valid pointer
-    /// - Pointers are only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes or max_frames
     #[inline]
-    pub unsafe fn collect_outputs(
+    unsafe fn collect_outputs(
         &mut self,
         buffer_list: *mut AudioBufferList,
         num_samples: usize,
@@ -332,73 +173,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
         }
     }
 
-    /// Build input slices from collected pointers.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collect_*
     #[inline]
-    pub unsafe fn input_slices(&self, num_samples: usize) -> Vec<&[S]> {
-        self.main_inputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
-            .collect()
-    }
-
-    /// Build output slices from collected pointers.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collect_*
-    ///
-    /// # Clippy Allow: mut_from_ref
-    ///
-    /// Returns `&mut [S]` from `&self` because we're converting raw pointers stored in the struct,
-    /// not mutating `self`. This is a common and safe FFI pattern where:
-    /// - Raw pointers (`*mut S`) are stored during collection
-    /// - Those pointers are then converted back to safe references
-    /// - The mutable references are to the external buffer memory, not to `self`
-    /// - AU guarantees single-threaded render access, preventing aliasing
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn output_slices(&self, num_samples: usize) -> Vec<&mut [S]> {
-        self.main_outputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
-            .collect()
-    }
-
-    /// Get the number of input channels collected.
-    #[inline]
-    pub fn input_channel_count(&self) -> usize {
-        self.main_inputs.len()
-    }
-
-    /// Get the number of output channels collected.
-    #[inline]
-    pub fn output_channel_count(&self) -> usize {
-        self.main_outputs.len()
-    }
-
-    /// Collect auxiliary input pointers from multiple AudioBufferLists.
-    ///
-    /// This method collects channel pointers from auxiliary input buses
-    /// (buses 1 and above) for processing sidechain inputs, etc.
-    ///
-    /// # Safety
-    ///
-    /// - `buffer_lists` must be a valid slice of valid pointers
-    /// - Each pointer is only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer_lists` - Slice of AudioBufferList pointers (one per aux bus)
-    /// * `num_samples` - Number of samples in each buffer
-    #[inline]
-    pub unsafe fn collect_aux_inputs(
+    unsafe fn collect_aux_inputs(
         &mut self,
         buffer_lists: &[*const AudioBufferList],
         num_samples: usize,
@@ -428,20 +204,8 @@ impl<S: Sample> ProcessBufferStorage<S> {
         }
     }
 
-    /// Collect auxiliary output pointers from multiple AudioBufferLists.
-    ///
-    /// # Safety
-    ///
-    /// - `buffer_lists` must be a valid slice of valid pointers
-    /// - Each pointer is only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer_lists` - Slice of AudioBufferList pointers (one per aux bus)
-    /// * `num_samples` - Number of samples in each buffer
     #[inline]
-    pub unsafe fn collect_aux_outputs(
+    unsafe fn collect_aux_outputs(
         &mut self,
         buffer_lists: &[*mut AudioBufferList],
         num_samples: usize,
@@ -470,70 +234,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
             }
         }
     }
-
-    /// Build auxiliary input slices from collected pointers.
-    ///
-    /// Returns an iterator over buses, where each bus is an iterator over channel slices.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collect_aux_inputs
-    #[inline]
-    pub unsafe fn aux_input_slices(&self, num_samples: usize) -> Vec<Vec<&[S]>> {
-        self.aux_inputs
-            .iter()
-            .map(|bus| {
-                bus.iter()
-                    .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// Build auxiliary output slices from collected pointers.
-    ///
-    /// Returns an iterator over buses, where each bus is an iterator over channel slices.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collect_aux_outputs
-    ///
-    /// # Clippy Allow: mut_from_ref
-    ///
-    /// Same justification as `output_slices` - converts raw pointers to mutable references.
-    /// See `output_slices` documentation for detailed explanation of this FFI pattern.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn aux_output_slices(&self, num_samples: usize) -> Vec<Vec<&mut [S]>> {
-        self.aux_outputs
-            .iter()
-            .map(|bus| {
-                bus.iter()
-                    .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// Get the number of auxiliary input buses.
-    #[inline]
-    pub fn aux_input_bus_count(&self) -> usize {
-        self.aux_inputs.len()
-    }
-
-    /// Get the number of auxiliary output buses.
-    #[inline]
-    pub fn aux_output_bus_count(&self) -> usize {
-        self.aux_outputs.len()
-    }
 }
-
-// SAFETY: The raw pointers are only used within a single render call
-// where AU guarantees single-threaded access.
-unsafe impl<S: Sample> Send for ProcessBufferStorage<S> {}
-unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
 
 #[cfg(test)]
 mod tests {

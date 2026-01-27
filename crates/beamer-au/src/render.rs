@@ -34,7 +34,7 @@ use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::buffer_storage::ProcessBufferStorage;
+use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
 use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;

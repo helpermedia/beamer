@@ -27,13 +27,13 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     AudioProcessor, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
-    BusType as CoreBusType, CachedBusConfig as CoreCachedBusConfig, ChordInfo, ConversionBuffers,
+    BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
     FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState, MidiEvent,
     MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin, PluginConfig,
-    PluginSetup, ProcessContext as CoreProcessContext, ScaleInfo, SysEx, SysExOutputPool,
-    Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE,
-    MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
+    PluginSetup, ProcessBufferStorage, ProcessContext as CoreProcessContext, ScaleInfo, SysEx,
+    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
+    MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
 use crate::factory::ComponentFactory;
@@ -163,109 +163,6 @@ fn validate_speaker_arrangement(arrangement: SpeakerArrangement) -> Result<(), S
     Ok(())
 }
 
-// =============================================================================
-// ProcessBufferStorage - Pre-allocated channel pointer storage
-// =============================================================================
-
-use beamer_core::sample::Sample;
-
-/// Pre-allocated storage for channel pointers during audio processing.
-///
-/// This struct holds Vec storage with pre-reserved capacity based on the
-/// plugin's BusInfo declarations. During process(), we use clear()+push()
-/// which is O(1) and never allocates since capacity is pre-reserved.
-///
-/// Generic over sample type S (f32 or f64) to avoid code duplication.
-///
-/// # Real-Time Safety
-///
-/// After `allocate()` is called in `setupProcessing()`:
-/// - `clear()` is O(1), sets len=0 without deallocating
-/// - `push()` never allocates because capacity is sufficient
-/// - No heap operations occur in the audio processing path
-struct ProcessBufferStorage<S: Sample> {
-    /// Main bus input channel pointers
-    main_inputs: Vec<*const S>,
-    /// Main bus output channel pointers
-    main_outputs: Vec<*mut S>,
-    /// Auxiliary bus input channel pointers (per-bus Vec)
-    aux_inputs: Vec<Vec<*const S>>,
-    /// Auxiliary bus output channel pointers (per-bus Vec)
-    aux_outputs: Vec<Vec<*mut S>>,
-}
-
-// Safety: ProcessBufferStorage is Send because:
-// - Raw pointers point to host-owned audio buffers valid only during process()
-// - The struct is only accessed from the audio thread
-// - Pointers are never dereferenced outside the process() call scope
-unsafe impl<S: Sample> Send for ProcessBufferStorage<S> {}
-
-// Safety: ProcessBufferStorage is Sync because:
-// - Raw pointers are only populated and cleared during process()
-// - VST3 guarantees process() is called from one thread at a time
-// - No shared mutable state is accessed across threads
-unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
-
-impl<S: Sample> ProcessBufferStorage<S> {
-    /// Create empty storage (no capacity reserved).
-    fn new() -> Self {
-        Self {
-            main_inputs: Vec::new(),
-            main_outputs: Vec::new(),
-            aux_inputs: Vec::new(),
-            aux_outputs: Vec::new(),
-        }
-    }
-
-    /// Pre-allocate storage based on cached bus configuration.
-    ///
-    /// Reserves Vec capacity for the exact channel counts declared by the plugin.
-    /// This ensures that subsequent push() calls in process() never allocate.
-    fn allocate_from_buses(input_buses: &[CoreBusInfo], output_buses: &[CoreBusInfo]) -> Self {
-        // Get main bus channel counts
-        let main_in_channels = input_buses.first().map(|b| b.channel_count as usize).unwrap_or(0);
-        let main_out_channels = output_buses.first().map(|b| b.channel_count as usize).unwrap_or(0);
-
-        // Pre-allocate main bus storage
-        let main_inputs = Vec::with_capacity(main_in_channels);
-        let main_outputs = Vec::with_capacity(main_out_channels);
-
-        // Pre-allocate auxiliary bus storage (skip main bus at index 0)
-        let aux_inputs: Vec<Vec<*const S>> = input_buses
-            .iter()
-            .skip(1)
-            .map(|info| Vec::with_capacity(info.channel_count as usize))
-            .collect();
-
-        let aux_outputs: Vec<Vec<*mut S>> = output_buses
-            .iter()
-            .skip(1)
-            .map(|info| Vec::with_capacity(info.channel_count as usize))
-            .collect();
-
-        Self {
-            main_inputs,
-            main_outputs,
-            aux_inputs,
-            aux_outputs,
-        }
-    }
-
-    /// Clear all pointer storage for reuse.
-    ///
-    /// O(1) operation - does not deallocate, just sets len to 0.
-    #[inline]
-    fn clear(&mut self) {
-        self.main_inputs.clear();
-        self.main_outputs.clear();
-        for bus in &mut self.aux_inputs {
-            bus.clear();
-        }
-        for bus in &mut self.aux_outputs {
-            bus.clear();
-        }
-    }
-}
 
 // =============================================================================
 // Setup Extraction
@@ -1512,7 +1409,7 @@ where
                 let bus_layout = BusLayout::from_plugin(plugin);
 
                 // Validate plugin's bus configuration against compile-time limits
-                if let Err(msg) = CoreCachedBusConfig::from_plugin(plugin).validate() {
+                if let Err(msg) = CachedBusConfig::from_plugin(plugin).validate() {
                     log::error!("Plugin bus configuration exceeds limits: {}", msg);
                     return kResultFalse;
                 }
@@ -1536,10 +1433,15 @@ where
                 }
 
                 // Pre-allocate buffer storage based on bus config
+                let bus_config = CachedBusConfig::new(
+                    input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+                    output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+                );
+                let max_frames = setup.maxSamplesPerBlock as usize;
                 *self.buffer_storage_f32.get() =
-                    ProcessBufferStorage::allocate_from_buses(&input_buses, &output_buses);
+                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
                 *self.buffer_storage_f64.get() =
-                    ProcessBufferStorage::allocate_from_buses(&input_buses, &output_buses);
+                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
 
                 // Pre-allocate conversion buffers for f64→f32 processing
                 if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32

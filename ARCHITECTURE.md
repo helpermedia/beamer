@@ -609,18 +609,22 @@ This section documents the invariants that Beamer enforces. These are API contra
 
 ### Buffer Management Contracts
 
-**ProcessBufferStorage**:
+**ProcessBufferStorage** (defined in `beamer-core`, with format-specific extensions):
 ```rust
 pub struct ProcessBufferStorage<S: Sample> {
-    input_ptrs: Vec<*const S>,
-    output_ptrs: Vec<*mut S>,
-    aux_input_ptrs: Vec<Vec<*const S>>,
-    aux_output_ptrs: Vec<Vec<*mut S>>,
+    pub main_inputs: Vec<*const S>,
+    pub main_outputs: Vec<*mut S>,
+    pub aux_inputs: Vec<Vec<*const S>>,
+    pub aux_outputs: Vec<Vec<*mut S>>,
+    pub internal_output_buffers: Option<Vec<Vec<S>>>,
+    pub max_frames: usize,
 }
 ```
 
-- Pre-allocated in `setupProcessing()` based on plugin's declared bus configuration
-- Capacity reserved for `MAX_CHANNELS` per bus, `MAX_BUSES` total
+- Pre-allocated in `setupProcessing()` based on plugin's **actual** bus configuration (not worst-case)
+- Config-based allocation: stereo plugin uses 32 bytes, not 4KB worst-case
+- Lazy aux allocation: no heap allocation for plugins without aux buses
+- Internal output buffers allocated only for instruments (hosts may provide null pointers)
 - `clear()` resets length to 0 without deallocating
 - `push()` into reserved capacity never allocates
 
