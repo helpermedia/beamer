@@ -3,6 +3,8 @@
 > **Status:** Not planned. This document exists for future reference.
 >
 > **Decision:** We chose explicit Plugin and Processor structs. See [ARCHITECTURE.md](../ARCHITECTURE.md#parameter-ownership) for the rationale.
+>
+> **Update:** The `save_state()`/`load_state()` boilerplate mentioned in this document has been eliminated via default implementations in `AudioProcessor`. These methods now automatically delegate to `Parameters::save_state()`/`load_state()`.
 
 ---
 
@@ -58,8 +60,7 @@ impl AudioProcessor for MyProcessor {
 
     fn process(&mut self, buffer: &mut Buffer, ...) { ... }
 
-    fn save_state(&self) -> PluginResult<Vec<u8>> { ... }
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> { ... }
+    // save_state/load_state: automatically handled by default implementations
 }
 ```
 
@@ -368,7 +369,7 @@ impl DelayProcessor {
 
 - No duplicate struct definitions
 - No manual `unprepare()` implementation
-- No manual `save_state()`/`load_state()` implementations
+- ~~No manual `save_state()`/`load_state()` implementations~~ (Now solved via default implementations)
 - Single source of truth for field names
 
 ### 2. Reduced Error Surface
@@ -514,9 +515,11 @@ The current explicit approach costs **4 lines of boilerplate** per plugin. The c
 | Helper | Use Case | Value |
 |--------|----------|-------|
 | `simple_plugin!` | Stateless plugins (gain, pan) | High - eliminates real repetition |
-| `#[derive(DefaultAudioProcessor)]` | Any plugin | Medium - auto-generates `unprepare`, `save_state`, `load_state` |
+| `#[derive(DefaultAudioProcessor)]` | Any plugin | ~~Medium - auto-generates `unprepare`, `save_state`, `load_state`~~ (save_state/load_state now have defaults) |
 
 These helpers address actual repetitive code without hiding struct definitions or requiring users to learn new syntax.
+
+> **Note:** As of the current version, `save_state()`/`load_state()` have default implementations that delegate to `Parameters`, so the `#[derive(DefaultAudioProcessor)]` helper would only need to generate `unprepare()`.
 
 ---
 

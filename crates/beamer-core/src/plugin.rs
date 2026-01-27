@@ -13,7 +13,7 @@
 //! until proper configuration is available.
 
 use crate::buffer::{AuxiliaryBuffers, Buffer};
-use crate::error::PluginResult;
+use crate::error::{PluginError, PluginResult};
 use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
     NoteExpressionTypeInfo, PhysicalUIMap,
@@ -21,6 +21,7 @@ use crate::midi::{
 use crate::midi_cc_config::MidiCcConfig;
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_store::ParameterStore;
+use crate::parameter_types::Parameters;
 use crate::process_context::ProcessContext;
 
 // =============================================================================
@@ -832,9 +833,11 @@ pub trait AudioProcessor: HasParameters {
     /// bytes should contain all state needed to restore the plugin to its
     /// current configuration.
     ///
-    /// Default returns an empty vector.
+    /// The default implementation delegates to `Parameters::save_state()`,
+    /// which serializes all parameter values. Override this method if you
+    /// need to save additional state beyond parameters.
     fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(Vec::new())
+        Ok(self.parameters().save_state())
     }
 
     /// Load the plugin state from bytes.
@@ -842,9 +845,13 @@ pub trait AudioProcessor: HasParameters {
     /// This is called when the DAW loads a project or preset. The data is
     /// the same bytes returned from a previous `save_state` call.
     ///
-    /// Default does nothing.
-    fn load_state(&mut self, _data: &[u8]) -> PluginResult<()> {
-        Ok(())
+    /// The default implementation delegates to `Parameters::load_state()`,
+    /// which restores all parameter values. Override this method if you
+    /// need to load additional state beyond parameters.
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
+        self.parameters_mut()
+            .load_state(data)
+            .map_err(PluginError::StateError)
     }
 
     // =========================================================================

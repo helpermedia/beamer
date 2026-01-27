@@ -554,18 +554,6 @@ impl AudioProcessor for CompressorProcessor {
             }
         }
     }
-
-    // =========================================================================
-    // State Persistence
-    // =========================================================================
-
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
 }
 
 // =============================================================================

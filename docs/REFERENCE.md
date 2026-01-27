@@ -166,9 +166,9 @@ pub trait AudioProcessor: HasParameters {
     /// MIDI CC configuration for CC emulation (see §2.5).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 
-    /// State persistence
-    fn save_state(&self) -> PluginResult<Vec<u8>>;
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()>;
+    /// State persistence (default: delegates to Parameters trait)
+    fn save_state(&self) -> PluginResult<Vec<u8>> { Ok(self.parameters().save_state()) }
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> { ... }
 }
 ```
 
@@ -2054,12 +2054,7 @@ impl AudioProcessor for GainProcessor {
             }
         }
     }
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
+    // save_state/load_state: automatically handled by default implementations
 }
 
 // Format-specific exports
@@ -2370,14 +2365,7 @@ impl AudioProcessor for GainProcessor {
             }
         }
     }
-
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
+    // save_state/load_state: automatically handled by default implementations
 }
 
 // =============================================================================

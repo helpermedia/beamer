@@ -191,20 +191,6 @@ impl AudioProcessor for GainProcessor {
         // Delegate to generic implementation - same code works for both f32 and f64!
         self.process_generic(buffer);
     }
-
-    // =========================================================================
-    // State Persistence
-    // =========================================================================
-
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        // Delegate to the macro-generated save_state which uses string-based IDs
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        // Delegate to the macro-generated load_state
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
 }
 
 // =============================================================================

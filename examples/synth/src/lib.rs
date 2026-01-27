@@ -727,16 +727,6 @@ impl AudioProcessor for SynthProcessor {
         // Return max release time in samples (5 seconds)
         (5.0 * self.sample_rate) as u32
     }
-
-    // No midi_cc_parameters() method needed - framework manages MIDI CC state!
-
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters.save_state())
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters.load_state(data).map_err(PluginError::StateError)
-    }
 }
 
 // =============================================================================
