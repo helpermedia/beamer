@@ -377,7 +377,7 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
 
 /// Creates the Info.plist content for the appex with NSExtension.
 fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
-    let manufacturer = config.manufacturer.unwrap_or("Bemr");
+    let manufacturer = config.manufacturer.unwrap_or("Bmer");
     let subtype = config
         .subtype
         .map(|s| s.to_string())

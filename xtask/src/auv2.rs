@@ -182,11 +182,10 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
             "aufx".to_string()
         };
 
-        // Detect manufacturer and subtype from fourcc!(b"xxxx") patterns
-        // Pattern: AuConfig::new(type, fourcc!(b"manu"), fourcc!(b"subt"))
+        // Detect manufacturer and subtype from AuConfig::new()
         let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
 
-        // Detect plugin name and vendor from PluginConfig
+        // Detect plugin name and vendor from Config::new()
         let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
 
         (component_type, manufacturer, subtype, plugin_name, vendor_name)
@@ -198,39 +197,53 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
 
 /// Extract AU fourcc codes (manufacturer and subtype) from plugin source code.
 ///
-/// Looks for the pattern `fourcc!(b"xxxx")` which appears in
-/// `AuConfig::new(ComponentType::..., fourcc!(b"manu"), fourcc!(b"subt"))`.
+/// Detects string literal format: `AuConfig::new(ComponentType::..., "manu", "subt")`
 ///
 /// Returns (manufacturer, subtype) as Options.
 fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
-    // Find all fourcc!(b"xxxx") patterns
-    let mut fourcc_codes: Vec<String> = Vec::new();
+    // Detect string literal format in AuConfig::new(...)
+    // Pattern: AuConfig::new(ComponentType::XXX, "manu", "subt")
+    let Some(start) = content.find("AuConfig::new(") else {
+        return (None, None);
+    };
 
-    let mut remaining = content;
-    while let Some(start) = remaining.find("fourcc!(b\"") {
-        let after_prefix = &remaining[start + 10..]; // Skip "fourcc!(b\""
-        if let Some(end) = after_prefix.find('"') {
-            let code = &after_prefix[..end];
-            if code.len() == 4 && code.is_ascii() {
-                fourcc_codes.push(code.to_string());
+    let after_new = &content[start..];
+    // Find the closing paren or .with_ chain
+    let Some(end) = after_new.find(')').or_else(|| after_new.find(".with_")) else {
+        return (None, None);
+    };
+
+    let config_args = &after_new[..end];
+    // Extract string literals from the AuConfig::new(...) call
+    let mut string_literals: Vec<String> = Vec::new();
+    let mut remaining = config_args;
+
+    while let Some(quote_start) = remaining.find('"') {
+        let after_quote = &remaining[quote_start + 1..];
+        if let Some(quote_end) = after_quote.find('"') {
+            let literal = &after_quote[..quote_end];
+            // Only collect 4-char ASCII codes (fourcc format)
+            if literal.len() == 4 && literal.is_ascii() {
+                string_literals.push(literal.to_string());
             }
+            remaining = &after_quote[quote_end + 1..];
+        } else {
+            break;
         }
-        // Move past this match to find next
-        remaining = &remaining[start + 10..];
     }
 
     // In AuConfig::new(type, manufacturer, subtype):
-    // - First fourcc! is manufacturer
-    // - Second fourcc! is subtype
-    let manufacturer = fourcc_codes.first().cloned();
-    let subtype = fourcc_codes.get(1).cloned();
+    // - First 4-char string is manufacturer
+    // - Second 4-char string is subtype
+    let manufacturer = string_literals.first().cloned();
+    let subtype = string_literals.get(1).cloned();
     (manufacturer, subtype)
 }
 
-/// Extract plugin name and vendor from PluginConfig in source code.
+/// Extract plugin name and vendor from Config in source code.
 ///
 /// Looks for patterns:
-/// - `PluginConfig::new("Plugin Name")`
+/// - `Config::new("Plugin Name")`
 /// - `.with_vendor("Vendor Name")`
 ///
 /// Returns (plugin_name, vendor_name) as Options.
@@ -238,9 +251,9 @@ fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
     let mut plugin_name = None;
     let mut vendor_name = None;
 
-    // Find PluginConfig::new("name")
-    if let Some(start) = content.find("PluginConfig::new(\"") {
-        let after_prefix = &content[start + 19..]; // Skip "PluginConfig::new(\""
+    // Find Config::new("name")
+    if let Some(start) = content.find("Config::new(\"") {
+        let after_prefix = &content[start + 13..]; // Skip "Config::new(\""
         if let Some(end) = after_prefix.find('"') {
             plugin_name = Some(after_prefix[..end].to_string());
         }
@@ -258,7 +271,7 @@ fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
 }
 
 fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
-    let manufacturer = config.manufacturer.unwrap_or("Bemr");
+    let manufacturer = config.manufacturer.unwrap_or("Bmer");
     let subtype = config
         .subtype
         .map(|s| s.to_string())

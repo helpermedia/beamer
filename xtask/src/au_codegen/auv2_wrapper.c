@@ -573,10 +573,14 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = true;
             return noErr;
 
-        // Factory presets
+        // Factory presets - only supported when plugin has presets
         case kAudioUnitProperty_FactoryPresets:
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
+            }
+            // Only report as supported if we actually have presets
+            if (inst->presetCount == 0) {
+                return kAudioUnitErr_InvalidProperty;
             }
             if (outDataSize) *outDataSize = sizeof(CFArrayRef);
             if (outWritable) *outWritable = false;  // Factory presets are read-only
@@ -1067,6 +1071,10 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
         case kAudioUnitProperty_FactoryPresets: {
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
+            }
+            // Only supported when plugin has presets
+            if (inst->presetCount == 0) {
+                return kAudioUnitErr_InvalidProperty;
             }
             if (!outData || !ioDataSize || *ioDataSize < sizeof(CFArrayRef)) {
                 return kAudioUnitErr_InvalidPropertyValue;
