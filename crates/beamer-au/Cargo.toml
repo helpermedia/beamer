@@ -18,7 +18,7 @@ sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 cc = "1.0"
 
 [dependencies]
-beamer-core = { path = "../beamer-core" }
+beamer-core = { workspace = true }
 log = { workspace = true }
 
 # Note: The hybrid ObjC/Rust AU architecture uses native Objective-C (BeamerAuWrapper.m)

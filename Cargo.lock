@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "beamer"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer-au",
  "beamer-core",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-au"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer-core",
  "cc",
@@ -24,14 +24,14 @@ dependencies = [
 
 [[package]]
 name = "beamer-core"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer-utils",
 ]
 
 [[package]]
 name = "beamer-macros"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer-utils",
  "proc-macro2",
@@ -41,11 +41,11 @@ dependencies = [
 
 [[package]]
 name = "beamer-utils"
-version = "0.1.6"
+version = "0.2.0"
 
 [[package]]
 name = "beamer-vst3"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer-core",
  "com-scrape-types",
@@ -83,14 +83,14 @@ checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "compressor"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer",
 ]
 
 [[package]]
 name = "delay"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer",
 ]
@@ -103,7 +103,7 @@ checksum = "f449e6c6c08c865631d4890cfacf252b3d396c9bcc83adb6623cdb02a8336c41"
 
 [[package]]
 name = "gain"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer",
 ]
@@ -144,7 +144,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "midi-transform"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer",
 ]
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "synth"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "beamer",
 ]
