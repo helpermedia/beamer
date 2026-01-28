@@ -3,7 +3,7 @@
 //! This crate provides the `#[derive(Parameters)]` macro for generating parameter
 //! trait implementations automatically.
 //!
-//! # Declarative Parameter Definition
+//! # Declarative Parameter Descriptor
 //!
 //! Parameters can be defined entirely through attributes - the macro generates
 //! the `Default` impl automatically:
@@ -174,7 +174,7 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 ///
 /// This macro generates the `HasParameters` implementation for structs that hold
 /// parameter collections. It eliminates the boilerplate of implementing
-/// `parameters()` and `parameters_mut()` on both Plugin and Processor types.
+/// `parameters()` and `parameters_mut()` on both Descriptor and Processor types.
 ///
 /// # Usage
 ///

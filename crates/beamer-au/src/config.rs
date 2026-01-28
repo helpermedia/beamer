@@ -1,7 +1,7 @@
 //! AU-specific plugin configuration.
 //!
 //! This module provides Audio Unit-specific configuration that complements
-//! the shared [`beamer_core::PluginConfig`].
+//! the shared [`beamer_core::Config`].
 
 /// AU component type (4-character code).
 ///
@@ -158,15 +158,15 @@ macro_rules! fourcc {
 /// AU-specific plugin configuration.
 ///
 /// This struct holds Audio Unit-specific metadata. Use in combination with
-/// [`beamer_core::PluginConfig`] for complete plugin configuration.
+/// [`beamer_core::Config`] for complete plugin configuration.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use beamer_core::PluginConfig;
+/// use beamer_core::Config;
 /// use beamer_au::{AuConfig, ComponentType};
 ///
-/// pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
+/// pub static CONFIG: Config = Config::new("Beamer Gain")
 ///     .with_vendor("Beamer Framework")
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///

@@ -1,21 +1,24 @@
 //! Beamer Compressor - Example compressor plugin demonstrating the Beamer framework.
 //!
-//! This plugin shows how to:
-//! 1. Use `BypassHandler` with `CrossfadeCurve::EqualPower` for smooth bypass
-//! 2. Implement `bypass_ramp_samples()` to report ramp duration to host
-//! 3. Implement `set_active()` to reset DSP state on plugin activation
-//! 4. Use `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
-//! 5. Use linear smoothing (`smoothing = "linear:50.0"`)
-//! 6. Access sidechain input for external key signal
-//! 7. Use `SampleRate` setup for sample-rate-dependent initialization
+//! # Three-Struct Pattern
 //!
-//! ## Architecture
+//! Beamer plugins use three structs for clear separation of concerns:
 //!
-//! This plugin uses the simplified 2-struct pattern:
-//! - [`Compressor`] - Parameters struct that IS the plugin (derives `Parameters`)
-//! - [`CompressorProcessor`] - DSP processor with envelope state and bypass handling
+//! 1. **`CompressorParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+//! 2. **`CompressorDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+//! 3. **`CompressorProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
 //!
-//! ## DSP Overview
+//! # Features Demonstrated
+//!
+//! - `BypassHandler` with `CrossfadeCurve::EqualPower` for smooth bypass
+//! - `bypass_ramp_samples()` to report ramp duration to host
+//! - `set_active()` to reset DSP state on plugin activation
+//! - `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
+//! - Linear smoothing (`smoothing = "linear:50.0"`)
+//! - Sidechain input for external key signal
+//! - `SampleRate` setup for sample-rate-dependent initialization
+//!
+//! # DSP Overview
 //!
 //! Classic feed-forward compressor with dB-domain envelope processing:
 //! - Envelope tracks overshoot above threshold
@@ -30,7 +33,7 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Compressor")
+pub static CONFIG: Config = Config::new("Beamer Compressor")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -92,19 +95,15 @@ impl Ratio {
 }
 
 // =============================================================================
-// Plugin (Parameters)
+// Parameters
 // =============================================================================
 
-/// The compressor plugin with its parameters.
+/// Compressor plugin parameters.
 ///
-/// This struct serves dual purpose:
-/// 1. Defines all plugin parameters via `#[derive(Parameters)]`
-/// 2. Implements `Plugin` trait directly (no separate plugin wrapper needed)
-///
-/// When the host calls `prepare()`, this is transformed into a
-/// [`CompressorProcessor`] for audio processing.
+/// All configuration is in attributes, and the `#[derive(Parameters)]` macro
+/// generates everything including the `Default` implementation.
 #[derive(Parameters)]
-pub struct Compressor {
+pub struct CompressorParameters {
     // =========================================================================
     // Compression Controls
     // =========================================================================
@@ -184,7 +183,21 @@ pub struct Compressor {
     pub use_sidechain: BoolParameter,
 }
 
-impl Plugin for Compressor {
+// =============================================================================
+// Descriptor
+// =============================================================================
+
+/// Compressor plugin descriptor (unprepared state).
+///
+/// Holds parameters and describes the plugin to the host before audio
+/// configuration is known. Transforms into `CompressorProcessor` via `prepare()`.
+#[derive(Default, HasParameters)]
+pub struct CompressorDescriptor {
+    #[parameters]
+    pub parameters: CompressorParameters,
+}
+
+impl Descriptor for CompressorDescriptor {
     // Compressor needs sample rate for envelope coefficients.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
@@ -192,13 +205,13 @@ impl Plugin for Compressor {
 
     fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.set_sample_rate(setup.hz());
+        self.parameters.set_sample_rate(setup.hz());
 
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
-            parameters: self,
+            parameters: self.parameters,
             bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
             state: CompressionState {
                 env_db: DC_OFFSET,
@@ -288,18 +301,18 @@ const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
 const DC_OFFSET: f64 = 1e-25;
 
 // =============================================================================
-// Audio Processor (Prepared State)
+// Processor
 // =============================================================================
 
-/// The compressor processor, ready for audio processing.
+/// Compressor plugin processor (prepared state).
 ///
-/// This struct is created by [`Compressor::prepare()`] with valid
-/// sample rate configuration. All DSP state is properly initialized.
+/// Ready for audio processing. Created by `CompressorDescriptor::prepare()`
+/// with valid sample rate configuration. All DSP state is properly initialized.
 #[derive(HasParameters)]
 pub struct CompressorProcessor {
     /// Plugin parameters
     #[parameters]
-    parameters: Compressor,
+    parameters: CompressorParameters,
 
     /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
@@ -351,7 +364,7 @@ impl CompressorProcessor {
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
-    params: &mut Compressor,
+    params: &mut CompressorParameters,
     state: &mut CompressionState,
     sample_rate: f64,
 ) {
@@ -473,8 +486,8 @@ fn process_compression_inner<S: Sample>(
     }
 }
 
-impl AudioProcessor for CompressorProcessor {
-    type Plugin = Compressor;
+impl Processor for CompressorProcessor {
+    type Descriptor = CompressorDescriptor;
 
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
@@ -548,15 +561,11 @@ impl AudioProcessor for CompressorProcessor {
 }
 
 // =============================================================================
-// VST3 Export
+// Plugin Exports
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Compressor);
-
-// =============================================================================
-// Audio Unit Export
-// =============================================================================
+export_vst3!(CONFIG, VST3_CONFIG, CompressorDescriptor);
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, Compressor);
+export_au!(CONFIG, AU_CONFIG, CompressorDescriptor);

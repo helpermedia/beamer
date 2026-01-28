@@ -9,11 +9,7 @@ Named after the beams that connect notes in sheet music, Beamer links your DSP l
 
 ## Why Beamer?
 
-Audio plugin development has traditionally meant wrestling with C++ memory management, threading bugs, and cryptic SDK interfaces - time spent debugging instead of creating. Beamer changes this.
-
-**Built on Rust's guarantees.** Memory leaks, dangling pointers, and data races are caught at compile time, not discovered during a live session. Your plugin won't crash someone's mix because of a subtle threading bug.
-
-**No SDK hassle.** The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is now MIT licensed (as of v3.8), making it available as a standard Rust dependency - no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for Rust bindings.
+**Built on Rust's guarantees.** Where most plugin frameworks use C++, Beamer uses Rust. Memory and threading bugs become compile-time errors, not runtime crashes.
 
 **Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, DAW automation, and parameter access traits. Focus on your DSP, not boilerplate.
 
@@ -23,29 +19,46 @@ Audio plugin development has traditionally meant wrestling with C++ memory manag
 
 ## Quick Start
 
+Beamer plugins use three structs for clear separation of concerns:
+
 ```rust
 use beamer::prelude::*;
 
-// Single struct: parameters + plugin + processor in one
-// #[derive(Parameters)] generates Default, HasParameters, VST3 integration, state persistence
+// 1. Parameters - pure data with derive macros
 #[derive(Parameters)]
-struct Gain {
+struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParameter,
 }
 
-impl Plugin for Gain {
-    type Setup = ();  // Simple gain doesn't need sample rate
-    type Processor = Self;  // Same type for plugin and processor
-
-    fn prepare(self, _: ()) -> Self { self }
+// 2. Descriptor - holds parameters (and optional state), describes plugin to host
+#[derive(Default, HasParameters)]
+struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
 }
 
-impl AudioProcessor for Gain {
-    type Plugin = Self;
+impl Descriptor for GainDescriptor {
+    type Setup = ();  // Simple gain doesn't need sample rate
+    type Processor = GainProcessor;
+
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// 3. Processor - prepared state, ready for audio
+#[derive(HasParameters)]
+struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.gain.as_linear() as f32;
+        let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -55,45 +68,33 @@ impl AudioProcessor for Gain {
 }
 ```
 
+## Three-Struct Pattern
+
+Beamer plugins use three structs for clear separation of concerns:
+
+1. **`*Parameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
+
 ## Two-Phase Lifecycle
 
 Beamer uses a type-safe two-phase design that follows the Rust principle of **making invalid states unrepresentable**:
 
 ```text
-Plugin::default() → Plugin (unprepared, holds parameters)
-                         │
-                         ▼  prepare(setup)
-                         │
-                    AudioProcessor (prepared, ready for audio)
-                         │
-                         ▼  unprepare()
-                         │
-                    Plugin (parameters preserved)
+Descriptor::default() → Descriptor (unprepared, holds parameters)
+                            │
+                            ▼  prepare(setup)
+                            │
+                        Processor (prepared, ready for audio)
+                            │
+                            ▼  unprepare()
+                            │
+                        Descriptor (parameters preserved)
 ```
 
-**Why two types?** Audio plugins need sample rate for buffer allocation, but sample rate isn't known until the host calls `setupProcessing()`. Other frameworks use a single type with `Option<T>` fields or placeholder values. Beamer uses separate types so the compiler enforces correctness:
+**Why two types?** Sample rate isn't known until the host calls `setupProcessing()`, but buffer allocation depends on it. Descriptor describes the plugin (parameters, bus layout, MIDI mappings); Processor is that description prepared for audio with allocated buffers. The compiler enforces that `prepare()` happens before `process()`.
 
-```rust
-// Other frameworks: Option<T> or placeholders
-struct Delay {
-    buffer: Option<Vec<f32>>,  // None until prepare
-}
-fn process(&mut self, ...) {
-    let buffer = self.buffer.as_mut().expect("not prepared");  // Every call
-}
-
-// Beamer: AudioProcessor is always valid
-struct DelayProcessor {
-    buffer: Vec<f32>,  // Always allocated
-}
-fn process(&mut self, ...) {
-    self.buffer.do_something();  // Always safe
-}
-```
-
-This is the **typestate pattern**, the same approach used in `std::fs::File`, builder APIs, and session types. It trades some boilerplate for cleaner `process()` code and compile-time guarantees.
-
-**Simple plugins** can use `type Processor = Self` to collapse both types into one when no DSP state is needed. See [ARCHITECTURE.md](ARCHITECTURE.md#two-phase-plugin-lifecycle) for detailed rationale.
+See [ARCHITECTURE.md](ARCHITECTURE.md#two-phase-plugin-lifecycle) for detailed rationale.
 
 | Setup Type | Use Case |
 |------------|----------|
@@ -110,7 +111,7 @@ For IDE autocomplete of all available types, use `beamer::setup::*`.
 
 | Example | Description |
 |---------|-------------|
-| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain with sidechain ducking. Demonstrates `#[derive(Parameters)]`, dB scaling, and multi-bus audio. |
+| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin. Demonstrates the three-struct pattern, `#[derive(Parameters)]`, and dB scaling. |
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, and parameter smoothing. |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
 
@@ -210,7 +211,7 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | `beamer-vst3` | VST3 wrapper implementation |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-clap` | CLAP wrapper (planned) |
-| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`) |
+| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`, `#[derive(Presets)]`) |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

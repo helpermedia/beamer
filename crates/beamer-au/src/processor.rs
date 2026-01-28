@@ -1,7 +1,7 @@
 //! Generic AU processor wrapper for type erasure.
 //!
 //! This module provides `AuProcessor<P>`, a generic wrapper that bridges any
-//! `beamer_core::Plugin` implementation to the AU API through the `AuPluginInstance`
+//! `beamer_core::Descriptor` implementation to the AU API through the `AuPluginInstance`
 //! trait. This enables a single Objective-C class to work with any plugin type
 //! via dynamic dispatch.
 //!
@@ -15,7 +15,7 @@
 //! # Lifecycle Management
 //!
 //! The processor manages two lifecycle states via `AuState<P>`:
-//! - **Unprepared**: Plugin created, parameters available, no audio resources
+//! - **Unprepared**: Descriptor created, parameters available, no audio resources
 //! - **Prepared**: Resources allocated, ready for `process()` calls
 //!
 //! Transitions are triggered by `allocate_render_resources()` and
@@ -25,7 +25,7 @@
 //!
 //! The `process()` method constructs the proper `Buffer`, `AuxiliaryBuffers`,
 //! and `ProcessContext` from input/output slices, then delegates to the plugin's
-//! `AudioProcessor::process()` method. Transport information comes from the host
+//! `Processor::process()` method. Transport information comes from the host
 //! via the render callback (currently placeholder).
 
 use std::marker::PhantomData;
@@ -34,22 +34,22 @@ use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
 use crate::lifecycle::AuState;
 use beamer_core::{
-    AudioProcessor, AuxiliaryBuffers, Buffer, CachedBusConfig, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ParameterGroups, ParameterStore, Plugin, ProcessContext, Transport,
+    AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
+    MidiEvent, NoPresets, ParameterGroups, ParameterStore, ProcessContext, Processor, Transport,
 };
 
 /// Generic AU processor wrapper.
 ///
-/// Mirrors `Vst3Processor<P>` - wraps any `Plugin` implementation
+/// Mirrors `Vst3Processor<P>` - wraps any `Descriptor` implementation
 /// and implements `AuPluginInstance` for type erasure.
 ///
 /// # Type Parameters
 ///
-/// * `P` - The plugin type implementing `beamer_core::Plugin`
+/// * `P` - The plugin type implementing `beamer_core::Descriptor`
 /// * `Presets` - Optional factory presets collection (default: `NoPresets`)
 pub struct AuProcessor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
 where
-    P: Plugin,
+    P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     state: AuState<P>,
@@ -58,7 +58,7 @@ where
 
 impl<P, Presets> AuProcessor<P, Presets>
 where
-    P: Plugin,
+    P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     /// Create a new AU processor.
@@ -76,7 +76,7 @@ where
 
 impl<P, Presets> Default for AuProcessor<P, Presets>
 where
-    P: Plugin,
+    P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     fn default() -> Self {
@@ -86,7 +86,7 @@ where
 
 impl<P, Presets> AuPluginInstance for AuProcessor<P, Presets>
 where
-    P: Plugin + 'static,
+    P: Descriptor + 'static,
     P::Processor: HasParameters<Parameters = P::Parameters>,
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -827,7 +827,7 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// This is used by the export_au! macro.
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
-    P: Plugin + 'static,
+    P: Descriptor + 'static,
     P::Processor: HasParameters<Parameters = P::Parameters>,
 {
     Box::new(AuProcessor::<P>::new())
@@ -1060,7 +1060,7 @@ mod tests {
         }
     }
 
-    impl Plugin for TestPlugin {
+    impl Descriptor for TestPlugin {
         type Setup = ();
         type Processor = TestProcessor;
 
@@ -1103,8 +1103,8 @@ mod tests {
         }
     }
 
-    impl AudioProcessor for TestProcessor {
-        type Plugin = TestPlugin;
+    impl Processor for TestProcessor {
+        type Descriptor = TestPlugin;
 
         fn process(
             &mut self,

@@ -326,7 +326,7 @@ impl Transport {
 ///
 /// Contains sample rate, buffer size, transport/timing information, and
 /// optional MIDI CC state for direct access to controller values.
-/// Passed as the third parameter to [`AudioProcessor::process()`].
+/// Passed as the third parameter to [`Processor::process()`].
 ///
 /// # Lifetime
 ///
@@ -336,7 +336,7 @@ impl Transport {
 /// # Example
 ///
 /// ```ignore
-/// impl AudioProcessor for MyDelayPlugin {
+/// impl Processor for MyDelayPlugin {
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
 ///         // Calculate tempo-synced delay time
 ///         let delay_samples = if let Some(tempo) = context.transport.tempo {
@@ -364,7 +364,7 @@ impl Transport {
 pub struct ProcessContext<'a> {
     /// Current sample rate in Hz.
     ///
-    /// Same value passed to [`AudioProcessor::setup()`], provided here
+    /// Same value passed to [`Processor::setup()`], provided here
     /// for convenience during processing.
     pub sample_rate: f64,
 

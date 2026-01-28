@@ -27,7 +27,7 @@ Simple stereo gain effect with minimal complexity.
 | **Gain** | Volume adjustment from -60 dB (silent) to +12 dB (boost). 0 dB = no change. |
 
 **Demonstrates:**
-- Two-phase lifecycle: `Plugin` → `AudioProcessor` via `prepare()`
+- Two-phase lifecycle: `Descriptor` → `Processor` via `prepare()`
 - `#[derive(Parameters)]` with declarative attributes
 - `#[derive(HasParameters)]` for parameters access boilerplate
 - `()` setup for plugins without sample-rate-dependent state

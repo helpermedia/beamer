@@ -18,18 +18,18 @@
 ///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`beamer_core::PluginConfig`] containing shared plugin metadata
+/// * `$config` - A static reference to [`beamer_core::Config`] containing shared plugin metadata
 /// * `$au_config` - A static reference to [`AuConfig`] containing AU-specific configuration
-/// * `$plugin` - The plugin type implementing the [`beamer_core::Plugin`] trait
+/// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use beamer_core::PluginConfig;
+/// use beamer_core::Config;
 /// use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
 ///
-/// static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+/// static CONFIG: Config = Config::new("My Plugin")
 ///     .with_vendor("My Company");
 ///
 /// static AU_CONFIG: AuConfig = AuConfig::new(

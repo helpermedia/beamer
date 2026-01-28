@@ -142,10 +142,10 @@ typedef struct clap_plugin {
 
 | Beamer | CLAP |
 |--------|------|
-| `Plugin::prepare()` | `clap_plugin::activate()` |
-| `AudioProcessor::process()` | `clap_plugin::process()` |
-| `AudioProcessor::unprepare()` | `clap_plugin::deactivate()` |
-| `AudioProcessor::set_active()` | `start_processing()` / `stop_processing()` |
+| `Descriptor::prepare()` | `clap_plugin::activate()` |
+| `Processor::process()` | `clap_plugin::process()` |
+| `Processor::unprepare()` | `clap_plugin::deactivate()` |
+| `Processor::set_active()` | `start_processing()` / `stop_processing()` |
 
 ### Trait Mapping
 
@@ -244,7 +244,7 @@ export_clap!(CONFIG, CLAP_CONFIG, MyPlugin);
 ### Key Implementation Tasks
 
 1. **Plugin Entry Point**: `clap_entry` symbol with factory
-2. **Audio Processing**: Map `clap_process` to `AudioProcessor::process()`
+2. **Audio Processing**: Map `clap_process` to `Processor::process()`
 3. **Parameters**: Translate parameter events to/from `set_normalized()`
 4. **State**: Map `save_state()`/`load_state()` to `clap_plugin_state`
 5. **xtask Bundling**: Install to correct locations per platform

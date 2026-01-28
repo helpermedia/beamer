@@ -19,64 +19,95 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ## 1. Core API
 
-> **Note**: Many API behaviors depend on VST3 host requirements. See [Section 3: VST3 Integration](#3-vst3-integration) for critical constraints like entry point naming, bundle structure, and parameter flag mapping.
+### 1.1 Plugin Configuration
 
-### 1.1 Plugin Trait
-
-The `Plugin` trait represents a plugin in its **unprepared state** - before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into an `AudioProcessor` via the `prepare()` method.
+Every plugin requires a `Config` struct containing format-agnostic metadata. This is shared across all plugin formats (VST3, AU, CLAP).
 
 ```rust
-pub trait Plugin: HasParameters + Default {
-    /// Setup type for prepare() - determines what info is needed
-    type Setup: PluginSetup;
+use beamer::prelude::*;
 
-    /// The prepared processor type
-    type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
-
-    /// Transform into a prepared processor with audio configuration.
-    /// Consumes self - the plugin moves into the prepared state.
-    fn prepare(self, setup: Self::Setup) -> Self::Processor;
-
-    // Bus configuration (defaults provided)
-    fn input_bus_count(&self) -> usize { 1 }
-    fn output_bus_count(&self) -> usize { 1 }
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
-    fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
-
-    /// Whether this plugin processes MIDI events (queried before prepare).
-    fn wants_midi(&self) -> bool { false }
-}
-
-// HasParameters supertrait provides parameter access
-pub trait HasParameters: Send + 'static {
-    type Parameters: Parameters + Units + Parameters + Default;
-    fn parameters(&self) -> &Self::Parameters;
-    fn parameters_mut(&mut self) -> &mut Self::Parameters;
-    fn set_parameters(&mut self, params: Self::Parameters);
-}
+pub static CONFIG: Config = Config::new("My Plugin")
+    .with_vendor("My Company")
+    .with_url("https://example.com")
+    .with_email("support@example.com")
+    .with_version(env!("CARGO_PKG_VERSION"));
 ```
 
-**HasParameters via Parameters Derive:** The `#[derive(Parameters)]` macro automatically generates `impl HasParameters` with `type Parameters = Self`. This enables two simplified patterns:
+**Fields:**
 
-**Simple plugins (no DSP state):** The Parameters struct IS the Plugin and Processor:
+| Field | Method | Description |
+|-------|--------|-------------|
+| `name` | `Config::new(name)` | Plugin name displayed in DAW |
+| `vendor` | `.with_vendor(...)` | Company/developer name |
+| `url` | `.with_url(...)` | Vendor website |
+| `email` | `.with_email(...)` | Support email |
+| `version` | `.with_version(...)` | Version string (use `env!("CARGO_PKG_VERSION")`) |
+| `has_editor` | `.with_editor()` | Whether plugin has a GUI (Phase 2) |
+
+Format-specific configurations (`Vst3Config`, `AuConfig`) are defined separately. See [Section 3: VST3 Integration](#3-vst3-integration) and [Section 4: Audio Unit Integration](#4-audio-unit-integration).
+
+### 1.2 Three-Struct Pattern
+
+Beamer plugins use three structs for clear separation of concerns:
+
+| Struct | Derive | Purpose |
+|--------|--------|---------|
+| `*Parameters` | `#[derive(Parameters)]` | Pure parameter definitions with declarative attributes |
+| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds parameters, describes plugin to host before audio config |
+| `*Processor` | `#[derive(HasParameters)]` | Prepared state with DSP logic, created by `prepare()` |
+
+**Lifecycle:**
+
+```
+Parameters (data) ──owns──▶ Descriptor (unprepared)
+                                │
+                                ▼ prepare(setup)
+                                │
+                            Processor (prepared, ready for audio)
+                                │
+                                ▼ unprepare()
+                                │
+                            Descriptor (parameters preserved)
+```
+
+**Minimal Example:**
 
 ```rust
+use beamer::prelude::*;
+
+// 1. Parameters - pure data with derive macros
 #[derive(Parameters)]
-pub struct Gain {
+pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-impl Plugin for Gain {
-    type Setup = ();
-    type Processor = Self;  // Same type!
-    fn prepare(self, _: ()) -> Self { self }
+// 2. Descriptor - holds parameters, describes plugin to host
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
 }
 
-impl AudioProcessor for Gain {
-    type Plugin = Self;
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// 3. Processor - prepared state, ready for audio
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
     fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
-        let gain = self.gain.as_linear() as f32;
+        let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -86,184 +117,7 @@ impl AudioProcessor for Gain {
 }
 ```
 
-**Complex plugins (with DSP state):** The Parameters struct IS the Plugin, separate Processor holds DSP state:
-
-```rust
-#[derive(Parameters)]
-pub struct Delay {
-    #[parameter(id = "time", name = "Time", default = 100.0, range = 1.0..=1000.0, kind = "ms")]
-    pub time: FloatParameter,
-}
-
-impl Plugin for Delay {
-    type Setup = SampleRate;
-    type Processor = DelayProcessor;
-    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
-        DelayProcessor {
-            parameters: self,
-            buffer: vec![0.0; (sample_rate.hz() as usize)],  // DSP state
-            write_pos: 0,
-        }
-    }
-}
-
-pub struct DelayProcessor {
-    parameters: Delay,  // Parameters moved here
-    buffer: Vec<f32>,   // DSP state
-    write_pos: usize,
-}
-
-impl HasParameters for DelayProcessor {
-    type Parameters = Delay;
-    fn parameters(&self) -> &Delay { &self.parameters }
-    fn parameters_mut(&mut self) -> &mut Delay { &mut self.parameters }
-    fn set_parameters(&mut self, params: Delay) { self.parameters = params; }
-}
-```
-
-#### PluginSetup Types
-
-Request exactly what your plugin needs using composable types:
-
-| Type | When to Use | Value |
-|------|-------------|-------|
-| `()` | Stateless plugins (gain, pan) | - |
-| `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
-| `MaxBufferSize` | FFT, lookahead | `usize` |
-| `MainInputChannels` | Per-channel input processing | `u32` |
-| `MainOutputChannels` | Per-channel output state | `u32` |
-| `AuxInputCount` | Sidechain-aware processing | `usize` |
-| `AuxOutputCount` | Multi-bus output | `usize` |
-| `ProcessMode` | Offline quality settings | enum |
-
-For IDE autocomplete, use `beamer::setup::*` to import all available types.
-
-Compose multiple types using tuples:
-
-```rust
-// Simple plugin - no setup needed (1-struct pattern)
-impl Plugin for Gain {
-    type Setup = ();
-    type Processor = Self;
-    fn prepare(self, _: ()) -> Self { self }
-}
-
-// Plugin needing sample rate (2-struct pattern: delays, filters, smoothing)
-impl Plugin for Delay {
-    type Setup = SampleRate;
-    type Processor = DelayProcessor;
-    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
-        DelayProcessor { parameters: self, /* DSP state... */ }
-    }
-}
-
-// Plugin needing multiple setup values
-impl Plugin for Fft {
-    type Setup = (SampleRate, MaxBufferSize);
-    type Processor = FftProcessor;
-    fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
-        FftProcessor { parameters: self, /* DSP state... */ }
-    }
-}
-```
-
-### 1.2 AudioProcessor Trait
-
-The `AudioProcessor` trait represents a plugin in its **prepared state** - ready for real-time audio processing. Created by `Plugin::prepare()`, it can transform back to unprepared state via `unprepare()`.
-
-```rust
-pub trait AudioProcessor: HasParameters {
-    /// The unprepared plugin type this processor came from
-    type Plugin: Plugin<Processor = Self, Parameters = Self::Parameters>;
-
-    /// Transform back to unprepared state.
-    /// Default implementation transfers parameters to a new Plugin::default().
-    /// Override only if Plugin has additional state beyond parameters.
-    fn unprepare(self) -> Self::Plugin { /* default impl */ }
-
-    // Note: parameters() and parameters_mut() are provided by HasParameters supertrait
-
-    /// Process audio. Called on the audio thread.
-    fn process(
-        &mut self,
-        buffer: &mut Buffer,
-        aux: &mut AuxiliaryBuffers,
-        context: &ProcessContext,
-    );
-
-    /// Process MIDI events. Called before process() each block.
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
-        // Default: pass through
-        for event in input {
-            output.push(*event);
-        }
-    }
-
-    /// Whether this plugin wants MIDI input.
-    fn wants_midi(&self) -> bool { false }
-
-    /// Tail length in samples (for reverbs, delays).
-    fn tail_samples(&self) -> u32 { 0 }
-
-    /// Called when plugin is activated/deactivated.
-    /// Reset DSP state when active == true.
-    fn set_active(&mut self, active: bool) { }
-
-    /// Bypass crossfade duration in samples.
-    fn bypass_ramp_samples(&self) -> u32 { 64 }
-
-    /// Whether this plugin supports f64 processing natively.
-    fn supports_double_precision(&self) -> bool { false }
-
-    /// Process audio in f64. Only called if supports_double_precision() is true.
-    fn process_f64(
-        &mut self,
-        buffer: &mut Buffer<f64>,
-        aux: &mut AuxiliaryBuffers<f64>,
-        context: &ProcessContext,
-    ) {
-        // Default: no-op (framework converts via f32 path)
-    }
-
-    /// MIDI CC configuration for CC emulation (see §2.5).
-    fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
-
-    /// State persistence (default: delegates to Parameters trait)
-    fn save_state(&self) -> PluginResult<Vec<u8>> { Ok(self.parameters().save_state()) }
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> { ... }
-}
-```
-
-**When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
-
-#### Two-Phase Lifecycle
-
-The plugin transitions between states based on host actions:
-
-```
-                    ┌─────────────────┐
-                    │  Plugin         │
-                    │  (unprepared)   │
-                    └────────┬────────┘
-                             │ setupProcessing(true)
-                             │ + prepare(config)
-                             ▼
-                    ┌─────────────────┐
-                    │  AudioProcessor │
-                    │  (prepared)     │◄───── process() calls
-                    └────────┬────────┘
-                             │ setProcessing(false)
-                             │ + unprepare()
-                             ▼
-                    ┌─────────────────┐
-                    │  Plugin         │
-                    │  (unprepared)   │
-                    └─────────────────┘
-```
-
-This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `AudioProcessor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale-why-this-matters-for-rust) for detailed rationale and comparison with single-type frameworks.
-
-**Simple plugins** can use `type Processor = Self` to collapse both types into one when no DSP state is needed.
+The following sections cover: Parameters (§1.3), Descriptor trait (§1.4), Processor trait (§1.5).
 
 ### 1.3 Parameters
 
@@ -294,14 +148,13 @@ pub struct GainParameters {
 
 The `#[derive(Parameters)]` macro generates:
 - `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
-- `HasParameters` trait implementation with `type Parameters = Self`
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present)
 - Compile-time FNV-1a hash constants: `PARAM_GAIN_ID`, `PARAM_BYPASS_ID`
 - Compile-time collision detection for duplicate IDs
 
-This means a Parameters struct can directly implement `Plugin` and `AudioProcessor` without needing wrapper structs, enabling the 1-struct pattern for simple plugins.
+Use `#[derive(HasParameters)]` separately on Descriptor and Processor structs to generate parameter access methods.
 
 #### Declarative Attributes
 
@@ -384,7 +237,7 @@ impl Default for FilterParameters {
     }
 }
 
-// In DSP code (1-struct pattern):
+// In DSP code:
 match self.filter_type.get() {
     FilterType::LowPass => { /* ... */ }
     FilterType::HighPass => { /* ... */ }
@@ -485,14 +338,17 @@ let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
 Call `set_sample_rate()` in `prepare()` to initialize smoothers:
 
 ```rust
-// 2-struct pattern: Plugin with smoothing needs SampleRate
-impl Plugin for MyPlugin {
+// Initialize smoothers in prepare()
+impl Descriptor for MyDescriptor {
     type Setup = SampleRate;
     type Processor = MyProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> MyProcessor {
-        self.set_sample_rate(setup.hz());  // Initialize smoothers
-        MyProcessor { parameters: self, /* DSP state... */ }
+        self.parameters.set_sample_rate(setup.hz());  // Initialize smoothers
+        MyProcessor {
+            parameters: self.parameters,
+            sample_rate: setup.hz(),
+        }
     }
 }
 ```
@@ -692,7 +548,252 @@ impl ParameterInfo {
 }
 ```
 
-### 1.4 Factory Presets
+### 1.4 Descriptor Trait
+
+The `Descriptor` trait represents a plugin in its **unprepared state** - before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into a `Processor` via the `prepare()` method.
+
+```rust
+pub trait Descriptor: HasParameters + Default {
+    /// Setup type for prepare() - determines what info is needed
+    type Setup: PluginSetup;
+
+    /// The prepared processor type
+    type Processor: Processor<Descriptor = Self, Parameters = Self::Parameters>;
+
+    /// Transform into a prepared processor with audio configuration.
+    /// Consumes self - the plugin moves into the prepared state.
+    fn prepare(self, setup: Self::Setup) -> Self::Processor;
+
+    // Bus configuration (defaults provided)
+    fn input_bus_count(&self) -> usize { 1 }
+    fn output_bus_count(&self) -> usize { 1 }
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
+    fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
+
+    /// Whether this plugin processes MIDI events (queried before prepare).
+    fn wants_midi(&self) -> bool { false }
+}
+
+// HasParameters supertrait provides parameter access
+pub trait HasParameters: Send + 'static {
+    type Parameters: Parameters + ParameterGroups + Parameters + Default;
+    fn parameters(&self) -> &Self::Parameters;
+    fn parameters_mut(&mut self) -> &mut Self::Parameters;
+    fn set_parameters(&mut self, params: Self::Parameters);
+}
+```
+
+**HasParameters via Derive Macro:** Use `#[derive(HasParameters)]` on both Descriptor and Processor structs with a `#[parameters]` field annotation:
+
+```rust
+// 1. Parameters - pure data with derive macros
+#[derive(Parameters)]
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
+}
+
+// 2. Descriptor - holds parameters, describes plugin to host
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// 3. Processor - prepared state, ready for audio
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
+    fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
+        let gain = self.parameters.gain.as_linear() as f32;
+        for (input, output) in buffer.zip_channels() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                *o = *i * gain;
+            }
+        }
+    }
+}
+```
+
+**Plugins with DSP state** add fields to the Processor:
+
+```rust
+#[derive(HasParameters)]
+pub struct DelayProcessor {
+    #[parameters]
+    parameters: DelayParameters,
+    sample_rate: f64,    // Always valid
+    buffer: Vec<f64>,    // Always allocated
+    write_pos: usize,
+}
+```
+
+#### PluginSetup Types
+
+Request exactly what your plugin needs using composable types:
+
+| Type | When to Use | Value |
+|------|-------------|-------|
+| `()` | Stateless plugins (gain, pan) | - |
+| `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
+| `MaxBufferSize` | FFT, lookahead | `usize` |
+| `MainInputChannels` | Per-channel input processing | `u32` |
+| `MainOutputChannels` | Per-channel output state | `u32` |
+| `AuxInputCount` | Sidechain-aware processing | `usize` |
+| `AuxOutputCount` | Multi-bus output | `usize` |
+| `ProcessMode` | Offline quality settings | enum |
+
+For IDE autocomplete, use `beamer::setup::*` to import all available types.
+
+Compose multiple types using tuples:
+
+```rust
+// Simple plugin - no setup needed
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// Plugin needing sample rate (delays, filters, smoothing)
+impl Descriptor for DelayDescriptor {
+    type Setup = SampleRate;
+    type Processor = DelayProcessor;
+    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+        DelayProcessor {
+            parameters: self.parameters,
+            sample_rate: sample_rate.hz(),
+            /* DSP state... */
+        }
+    }
+}
+
+// Plugin needing multiple setup values
+impl Descriptor for FftDescriptor {
+    type Setup = (SampleRate, MaxBufferSize);
+    type Processor = FftProcessor;
+    fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+        FftProcessor {
+            parameters: self.parameters,
+            sample_rate: sr.hz(),
+            fft_buffer: vec![0.0; mbs.0],
+        }
+    }
+}
+```
+
+### 1.5 Processor Trait
+
+The `Processor` trait represents a plugin in its **prepared state** - ready for real-time audio processing. Created by `Descriptor::prepare()`, it can transform back to unprepared state via `unprepare()`.
+
+```rust
+pub trait Processor: HasParameters {
+    /// The unprepared definition type this processor came from
+    type Descriptor: Descriptor<Processor = Self, Parameters = Self::Parameters>;
+
+    /// Transform back to unprepared state.
+    /// Default implementation transfers parameters to a new Descriptor::default().
+    /// Override only if Descriptor has additional state beyond parameters.
+    fn unprepare(self) -> Self::Descriptor { /* default impl */ }
+
+    // Note: parameters() and parameters_mut() are provided by HasParameters supertrait
+
+    /// Process audio. Called on the audio thread.
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        aux: &mut AuxiliaryBuffers,
+        context: &ProcessContext,
+    );
+
+    /// Process MIDI events. Called before process() each block.
+    fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
+        // Default: pass through
+        for event in input {
+            output.push(*event);
+        }
+    }
+
+    /// Whether this plugin wants MIDI input.
+    fn wants_midi(&self) -> bool { false }
+
+    /// Tail length in samples (for reverbs, delays).
+    fn tail_samples(&self) -> u32 { 0 }
+
+    /// Called when plugin is activated/deactivated.
+    /// Reset DSP state when active == true.
+    fn set_active(&mut self, active: bool) { }
+
+    /// Bypass crossfade duration in samples.
+    fn bypass_ramp_samples(&self) -> u32 { 64 }
+
+    /// Whether this plugin supports f64 processing natively.
+    fn supports_double_precision(&self) -> bool { false }
+
+    /// Process audio in f64. Only called if supports_double_precision() is true.
+    fn process_f64(
+        &mut self,
+        buffer: &mut Buffer<f64>,
+        aux: &mut AuxiliaryBuffers<f64>,
+        context: &ProcessContext,
+    ) {
+        // Default: no-op (framework converts via f32 path)
+    }
+
+    /// MIDI CC configuration for CC emulation (see §2.5).
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
+
+    /// State persistence (default: delegates to Parameters trait)
+    fn save_state(&self) -> PluginResult<Vec<u8>> { Ok(self.parameters().save_state()) }
+    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> { ... }
+}
+```
+
+**When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
+
+#### Two-Phase Lifecycle
+
+The plugin transitions between states based on host actions:
+
+```
+                    ┌─────────────────┐
+                    │  Descriptor     │
+                    │  (unprepared)   │
+                    └────────┬────────┘
+                             │ setupProcessing(true)
+                             │ + prepare(config)
+                             ▼
+                    ┌─────────────────┐
+                    │  Processor      │
+                    │  (prepared)     │◄───── process() calls
+                    └────────┬────────┘
+                             │ setProcessing(false)
+                             │ + unprepare()
+                             ▼
+                    ┌─────────────────┐
+                    │  Descriptor     │
+                    │  (unprepared)   │
+                    └─────────────────┘
+```
+
+This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `Processor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale-why-this-matters-for-rust) for detailed rationale.
+
+### 1.6 Factory Presets
 
 Factory presets let plugins provide built-in presets that appear in host preset menus (e.g., Logic's preset browser, VST3 program changes). Users can browse and load these presets without needing separate preset files.
 
@@ -811,7 +912,7 @@ When a plugin has factory presets, MIDI Program Change (PC) events are automatic
 
 This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
-### 1.5 Buffer Types
+### 1.7 Buffer Types
 
 Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
 
@@ -888,7 +989,7 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
 
 The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't allow lifetime shortening. The solution uses `'borrow` for the outer reference and `'data` for the inner data, allowing the borrow to be shorter while preserving safety.
 
-### 1.6 ProcessContext and Transport
+### 1.8 ProcessContext and Transport
 
 The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size, and detailed DAW transport state for tempo-synced effects, sequencers, and time-based processing.
 
@@ -959,7 +1060,7 @@ pub enum FrameRate {
 }
 ```
 
-### 1.7 Sample Trait (f32/f64)
+### 1.9 Sample Trait (f32/f64)
 
 The `Sample` trait lets you write DSP code once and support both `f32` and `f64` processing. This is the recommended pattern for plugins that want to offer native double-precision support.
 
@@ -993,14 +1094,36 @@ pub trait Sample:
 **Pattern: Write generic DSP code once**
 
 ```rust
-// 1-struct pattern works here since no DSP state beyond parameters
+// Parameters
 #[derive(Parameters)]
-pub struct MyGain {
+pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-impl MyGain {
+// Descriptor
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// Processor with generic processing method
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl GainProcessor {
     // Generic processing - works for both f32 and f64
     fn process_generic<S: Sample>(
         &mut self,
@@ -1008,7 +1131,7 @@ impl MyGain {
         _aux: &mut AuxiliaryBuffers<S>,
         _context: &ProcessContext,
     ) {
-        let gain = S::from_f32(self.gain.as_linear() as f32);
+        let gain = S::from_f32(self.parameters.gain.as_linear() as f32);
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -1017,15 +1140,8 @@ impl MyGain {
     }
 }
 
-impl Plugin for MyGain {
-    type Setup = ();
-    type Processor = Self;
-    fn prepare(self, _: ()) -> Self { self }
-}
-
-// Delegate from both AudioProcessor methods
-impl AudioProcessor for MyGain {
-    type Plugin = Self;
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
@@ -1053,7 +1169,7 @@ impl AudioProcessor for MyGain {
 - Most dynamics processors
 - Synthesizers (often limited by oscillator precision anyway)
 
-### 1.8 Soft Bypass
+### 1.10 Soft Bypass
 
 ```rust
 pub enum BypassState {
@@ -1093,18 +1209,20 @@ impl BypassHandler {
 }
 ```
 
-**Usage (2-struct pattern - processor has bypass_handler state):**
+**Usage:**
 
 ```rust
 // Processor struct holds parameters + DSP state
+#[derive(HasParameters)]
 struct ReverbProcessor {
-    parameters: ReverbParams,
+    #[parameters]
+    parameters: ReverbParameters,
     bypass_handler: BypassHandler,
     // ... other reverb state
 }
 
-impl AudioProcessor for ReverbProcessor {
-    type Plugin = ReverbParams;
+impl Processor for ReverbProcessor {
+    type Descriptor = ReverbDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let is_bypassed = self.parameters.bypass.get();
@@ -1126,6 +1244,10 @@ impl AudioProcessor for ReverbProcessor {
 ```
 
 **Why Split API?** The split pattern (begin/finish) avoids Rust borrow checker conflicts that occur with closure-based APIs when your DSP code needs to access `&mut self`.
+
+---
+
+> **See Also:** For format-specific details on plugin export, bundle structure, and host requirements, see [Section 3: VST3 Integration](#3-vst3-integration) and [Section 4: Audio Unit Integration](#4-audio-unit-integration).
 
 ---
 
@@ -1271,7 +1393,7 @@ impl MidiBuffer {
 **Plugin-Declared Capacity:**
 
 ```rust
-pub static CONFIG: PluginConfig = PluginConfig::new("My Sampler", UID)
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
     .with_sysex_slots(64)         // Default: 16
     .with_sysex_buffer_size(4096); // Default: 512
 ```
@@ -1302,7 +1424,7 @@ pub struct NoteExpressionValue {
 **INoteExpressionController**: Advertise supported expressions:
 
 ```rust
-impl Plugin for MyMPESynth {
+impl Descriptor for MyMPESynth {
     fn note_expression_count(&self, _bus: i32, _channel: i16) -> usize { 3 }
 
     fn note_expression_info(&self, _bus: i32, _channel: i16, index: usize)
@@ -1349,26 +1471,32 @@ VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most D
 ```rust
 use beamer::prelude::*;
 
-// Parameters struct IS the Plugin (new simplified pattern)
+// 1. Parameters
 #[derive(Parameters)]
-struct MySynth {
+struct SynthParameters {
     #[parameter(id = "volume", name = "Volume", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub volume: FloatParameter,
 }
 
-impl Plugin for MySynth {
-    type Setup = SampleRate;
-    type Processor = MySynthProcessor;
+// 2. Descriptor
+#[derive(Default, HasParameters)]
+struct SynthDescriptor {
+    #[parameters]
+    parameters: SynthParameters,
+}
 
-    fn prepare(self, sample_rate: SampleRate) -> MySynthProcessor {
-        MySynthProcessor {
-            parameters: self,
+impl Descriptor for SynthDescriptor {
+    type Setup = SampleRate;
+    type Processor = SynthProcessor;
+
+    fn prepare(self, sample_rate: SampleRate) -> SynthProcessor {
+        SynthProcessor {
+            parameters: self.parameters,
             sample_rate: sample_rate.hz(),
-            // No midi_cc to move - framework manages it!
         }
     }
 
-    // Just return configuration - framework handles state
+    // Return configuration - framework handles state
     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
         // Use a preset for common configurations
         Some(MidiCcConfig::SYNTH_BASIC)
@@ -1381,21 +1509,16 @@ impl Plugin for MySynth {
     }
 }
 
-// Processor holds parameters + DSP state
-struct MySynthProcessor {
-    parameters: MySynth,
+// 3. Processor
+#[derive(HasParameters)]
+struct SynthProcessor {
+    #[parameters]
+    parameters: SynthParameters,
     sample_rate: f64,
 }
 
-impl HasParameters for MySynthProcessor {
-    type Parameters = MySynth;
-    fn parameters(&self) -> &MySynth { &self.parameters }
-    fn parameters_mut(&mut self) -> &mut MySynth { &mut self.parameters }
-    fn set_parameters(&mut self, params: MySynth) { self.parameters = params; }
-}
-
-impl AudioProcessor for MySynthProcessor {
-    type Plugin = MySynth;
+impl Processor for SynthProcessor {
+    type Descriptor = SynthDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         // Access CC values directly via ProcessContext
@@ -1611,7 +1734,67 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 ## 3. VST3 Integration
 
-### 3.1 Bundle Structure
+Beamer supports VST3 plugins on all platforms through the `beamer-vst3` crate. VST3 plugins share the same core traits (`Descriptor`, `Processor`, `Parameters`) as other formats, allowing you to target all formats from a single codebase.
+
+### 3.1 Configuration
+
+The `Vst3Config` struct contains VST3-specific identifiers and settings:
+
+```rust
+use beamer::prelude::*;
+
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
+    .with_categories("Fx|Dynamics");
+```
+
+**Fields:**
+
+| Field | Method | Description |
+|-------|--------|-------------|
+| `component_uid` | `Vst3Config::new(uuid)` | Unique UUID for plugin identification |
+| `controller_uid` | `.with_controller(uid)` | Optional separate controller UID (advanced) |
+| `categories` | `.with_categories(...)` | Plugin categories for DAW browser |
+| `sysex_slots` | `.with_sysex_slots(n)` | SysEx output slots per block (default: 16) |
+| `sysex_buffer_size` | `.with_sysex_buffer_size(n)` | Max SysEx message size (default: 512) |
+
+**UUID Generation:**
+
+Each plugin needs a unique UUID. Generate one using:
+
+```bash
+uuidgen  # macOS/Linux
+```
+
+The UUID format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
+
+### 3.2 Export Macro
+
+The `export_vst3!` macro generates platform-specific entry points:
+
+```rust
+use beamer::prelude::*;
+
+// Without presets
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor);
+
+// With factory presets
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor, MyPresets);
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `CONFIG` | Static reference to `Config` (format-agnostic metadata) |
+| `VST3_CONFIG` | Static reference to `Vst3Config` (VST3-specific settings) |
+| `MyDescriptor` | The Descriptor type implementing `Descriptor` trait |
+| `MyPresets` | (Optional) Presets type implementing `FactoryPresets` |
+
+The macro generates `GetPluginFactory` and platform-specific entry points (`bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows, `ModuleEntry`/`ModuleExit` on Linux).
+
+### 3.3 Bundle Structure
 
 **macOS:**
 ```
@@ -1639,10 +1822,10 @@ MyPlugin.vst3/
 │       └── MyPlugin.so
 ```
 
-### 3.2 Build System
+### 3.4 Build System
 
 ```bash
-cargo xtask bundle gain --release
+cargo xtask bundle gain --vst3 --release
 ```
 
 **Cargo.toml:**
@@ -1655,7 +1838,7 @@ crate-type = ["cdylib"]
 lto = true
 ```
 
-### 3.3 Install Locations
+### 3.5 Install Locations
 
 | Platform | Location |
 |----------|----------|
@@ -1663,7 +1846,7 @@ lto = true
 | Windows | `C:\Program Files\Common Files\VST3\` |
 | Linux | `~/.vst3/` |
 
-### 3.4 Plugin Categories
+### 3.6 Plugin Categories
 
 VST3 uses categories for plugin browser organization:
 
@@ -1681,7 +1864,7 @@ Common VST3 categories: `Fx`, `Instrument`, `Dynamics`, `EQ`, `Filter`, `Delay`,
 
 ## 4. Audio Unit Integration
 
-Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Plugin`, `AudioProcessor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
+Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Descriptor`, `Processor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
 
 ### 4.1 Architecture Overview
 
@@ -1711,7 +1894,7 @@ The hybrid architecture guarantees Apple compatibility while keeping all audio p
 │   AuProcessor, RenderBlock, factory        │
 ├─────────────────────────────────────────────┤
 │              beamer-core traits             │
-│   Plugin, AudioProcessor, Parameters        │
+│   Descriptor, Processor, Parameters         │
 └─────────────────────────────────────────────┘
 ```
 
@@ -1751,14 +1934,14 @@ crates/beamer-au/
 
 ### 4.2 Configuration
 
-Audio Unit plugins require two configuration objects: the shared `PluginConfig` (from `beamer-core`) and the AU-specific `AuConfig`.
+Audio Unit plugins require two configuration objects: the shared `Config` (from `beamer-core`) and the AU-specific `AuConfig`.
 
 ```rust
-use beamer_core::PluginConfig;
+use beamer_core::Config;
 use beamer_au::{AuConfig, ComponentType};
 
 // Shared configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+pub static CONFIG: Config = Config::new("My Plugin")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 
@@ -1809,7 +1992,7 @@ use beamer_au::{export_au, AuConfig, ComponentType};
 use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared config
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
+pub static CONFIG: Config = Config::new("Beamer Gain")
     .with_vendor("Beamer Framework")
     .with_version(env!("CARGO_PKG_VERSION"));
 
@@ -2088,7 +2271,7 @@ ls ~/Library/Audio/Plug-Ins/Components/
 use beamer::prelude::*;
 
 // Shared configuration
-pub static CONFIG: PluginConfig = PluginConfig::new("Universal Gain")
+pub static CONFIG: Config = Config::new("Universal Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 
@@ -2108,25 +2291,42 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
     "gain",
 );
 
-// Plugin implementation (format-agnostic)
-// Simple 1-struct pattern: Parameters IS the Plugin and Processor
+// Plugin implementation (format-agnostic, three-struct pattern)
+
+// 1. Parameters
 #[derive(Parameters)]
-pub struct Gain {
+pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-impl Plugin for Gain {
-    type Setup = ();
-    type Processor = Self;  // Same type - no separate processor needed
-    fn prepare(self, _: ()) -> Self { self }
+// 2. Descriptor
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
 }
 
-impl AudioProcessor for Gain {
-    type Plugin = Self;
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// 3. Processor
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.gain.as_linear() as f32;
+        let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -2138,10 +2338,10 @@ impl AudioProcessor for Gain {
 
 // Format-specific exports
 #[cfg(not(target_os = "macos"))]
-export_vst3!(CONFIG, VST3_CONFIG, Gain);
+export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 
 #[cfg(target_os = "macos")]
-export_au!(CONFIG, AU_CONFIG, Gain);
+export_au!(CONFIG, AU_CONFIG, GainDescriptor);
 ```
 
 ### 4.9 Development: Testing Both AUv2 and AUv3
@@ -2377,7 +2577,7 @@ cargo clippy
 
 ### B. Example: Simple Gain
 
-This example demonstrates the **1-struct pattern** for simple plugins without DSP state. The `Gain` struct serves as Parameters, Plugin, AND Processor.
+This example demonstrates the **three-struct pattern** for Beamer plugins.
 
 ```rust
 use beamer::prelude::*;
@@ -2386,7 +2586,7 @@ use beamer::prelude::*;
 // Configuration
 // =============================================================================
 
-pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
+pub static CONFIG: Config = Config::new("My Gain")
     .with_vendor("My Company")
     .with_version("1.0.0");
 
@@ -2395,29 +2595,49 @@ pub static VST3_CONFIG: beamer_vst3::Vst3Config =
     beamer_vst3::Vst3Config::new("12345678-1234-5678-1234-567812345678");
 
 // =============================================================================
-// Plugin (1-struct pattern: Parameters IS the Plugin and Processor)
+// 1. Parameters
 // =============================================================================
 
-/// Gain is both the Plugin AND the Processor.
-/// derive(Parameters) generates HasParameters with type Parameters = Self.
 #[derive(Parameters)]
-pub struct Gain {
+pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-impl Plugin for Gain {
-    type Setup = ();  // Simple gain doesn't need sample rate
-    type Processor = Self;  // Same type - no separate processor needed!
+// =============================================================================
+// 2. Descriptor
+// =============================================================================
 
-    fn prepare(self, _: ()) -> Self { self }
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
 }
 
-impl AudioProcessor for Gain {
-    type Plugin = Self;
+impl Descriptor for GainDescriptor {
+    type Setup = ();  // Simple gain doesn't need sample rate
+    type Processor = GainProcessor;
+
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// =============================================================================
+// 3. Processor
+// =============================================================================
+
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.gain.as_linear() as f32;
+        let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -2432,7 +2652,7 @@ impl AudioProcessor for Gain {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, Gain);
+beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 ```
 
 ### C. Example: Sidechain Compressor

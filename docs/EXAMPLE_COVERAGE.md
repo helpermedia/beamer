@@ -614,7 +614,7 @@ This raises questions:
 **In the framework:**
 ```rust
 // beamer-vst3/src/processor.rs
-impl<P: Plugin> IUnitInfoTrait for Vst3Processor<P> {
+impl<P: Descriptor> IUnitInfoTrait for Vst3Processor<P> {
     unsafe fn getUnitCount(&self) -> i32 { ... }
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult { ... }
 }

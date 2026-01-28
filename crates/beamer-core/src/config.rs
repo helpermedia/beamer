@@ -9,12 +9,11 @@
 //! # Example
 //!
 //! ```ignore
-//! use beamer_core::PluginConfig;
+//! use beamer_core::Config;
 //!
-//! pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+//! pub static CONFIG: Config = Config::new("My Plugin")
 //!     .with_vendor("My Company")
-//!     .with_version("1.0.0")
-//!     .with_sub_categories("Fx|Dynamics");
+//!     .with_version("1.0.0");
 //! ```
 
 /// Format-agnostic plugin configuration.
@@ -22,7 +21,7 @@
 /// Contains metadata shared across all plugin formats. Format-specific
 /// configurations (like VST3 UIDs or AU FourCC codes) are defined separately.
 #[derive(Debug, Clone)]
-pub struct PluginConfig {
+pub struct Config {
     /// Plugin name displayed in the DAW.
     pub name: &'static str,
 
@@ -42,13 +41,13 @@ pub struct PluginConfig {
     pub has_editor: bool,
 }
 
-impl PluginConfig {
+impl Config {
     /// Create a new plugin configuration with default values.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+    /// pub static CONFIG: Config = Config::new("My Plugin")
     ///     .with_vendor("My Company")
     ///     .with_version(env!("CARGO_PKG_VERSION"));
     /// ```

@@ -8,8 +8,8 @@
 //!
 //! ## Main Traits
 //!
-//! - [`Plugin`] - Complete plugin trait combining DSP and parameters
-//! - [`AudioProcessor`] - Core DSP processing trait
+//! - [`Descriptor`] - Plugin definition (unprepared state, holds parameters)
+//! - [`Processor`] - Core DSP processing trait (prepared state)
 //! - [`Parameters`] - Parameter collection trait
 //! - [`EditorDelegate`] - GUI configuration and callbacks
 //!
@@ -56,7 +56,7 @@ pub mod types;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
-pub use config::PluginConfig;
+pub use config::Config;
 pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
@@ -97,9 +97,9 @@ pub use smoothing::{Smoother, SmoothingStyle};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AudioProcessor, AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType, HasParameters,
+    AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType, Descriptor, HasParameters,
     HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
-    Midi2Assignment, MidiControllerAssignment, Plugin, PluginSetup, ProcessMode, SampleRate,
+    Midi2Assignment, MidiControllerAssignment, PluginSetup, ProcessMode, Processor, SampleRate,
 };
 pub use preset::{fnv1a_hash, FactoryPresets, NoPresets, PresetInfo, PresetValue};
 pub use process_context::{FrameRate, ProcessContext, Transport};

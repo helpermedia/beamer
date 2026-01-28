@@ -20,7 +20,6 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
     let parameters_impl = generate_parameters_impl(ir);
     let set_group_ids_impl = generate_set_group_ids(ir);
     let default_impl = generate_default_impl(ir);
-    let has_parameters_impl = generate_has_parameters_impl(ir);
 
     quote! {
         #const_ids
@@ -31,34 +30,6 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
         #parameters_impl
         #set_group_ids_impl
         #default_impl
-        #has_parameters_impl
-    }
-}
-
-/// Generate the `HasParameters` trait implementation.
-///
-/// This allows structs deriving `Parameters` to be used directly as `Plugin` types,
-/// eliminating the need for wrapper structs.
-fn generate_has_parameters_impl(ir: &ParametersIR) -> TokenStream {
-    let struct_name = &ir.struct_name;
-    let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
-
-    quote! {
-        impl #impl_generics ::beamer::core::plugin::HasParameters for #struct_name #ty_generics #where_clause {
-            type Parameters = Self;
-
-            fn parameters(&self) -> &Self::Parameters {
-                self
-            }
-
-            fn parameters_mut(&mut self) -> &mut Self::Parameters {
-                self
-            }
-
-            fn set_parameters(&mut self, params: Self::Parameters) {
-                *self = params;
-            }
-        }
     }
 }
 

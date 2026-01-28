@@ -2,10 +2,16 @@
 
 VST3 implementation layer for the Beamer framework.
 
-This crate provides the VST3 SDK integration that bridges `beamer-core` abstractions to the VST3 plugin format:
+This crate provides the VST3 SDK integration that bridges `beamer-core` abstractions to the VST3 plugin format.
+
+## VST3 SDK
+
+The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is MIT licensed (as of v3.8), making it available as a standard Rust dependency - no separate SDK downloads or licensing agreements required. Beamer uses [Coupler's vst3 crate](https://github.com/coupler-rs/vst3-rs) for the Rust bindings.
+
+## Features
 
 - **VST3 factory**: Plugin registration and entry points
-- **Two-phase lifecycle**: Plugin ↔ AudioProcessor state machine (prepare/unprepare)
+- **Two-phase lifecycle**: Descriptor ↔ Processor state machine (prepare/unprepare)
 - **Edit controller**: Parameter management and host communication
 - **MIDI conversion**: Bidirectional mapping between Beamer and VST3 MIDI events
 - **Real-time buffer management**: Zero-allocation audio processing

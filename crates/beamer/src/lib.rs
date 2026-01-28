@@ -8,7 +8,7 @@
 //! ## Architecture
 //!
 //! ```text
-//! Your Plugin (implements Plugin trait)
+//! Your Plugin (implements Descriptor trait)
 //!        ↓
 //! Vst3Processor<P> (generic VST3 wrapper)
 //!        ↓
@@ -24,21 +24,21 @@
 //! // Define your plugin
 //! struct MyGain { parameters: MyParameters }
 //!
-//! impl AudioProcessor for MyGain {
+//! impl Processor for MyGain {
 //!     fn setup(&mut self, _: f64, _: usize) {}
 //!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 //!         // Your DSP here
 //!     }
 //! }
 //!
-//! impl Plugin for MyGain {
+//! impl Descriptor for MyGain {
 //!     type Parameters = MyParameters;
 //!     fn parameters(&self) -> &Self::Parameters { &self.parameters }
 //!     fn create() -> Self { Self { parameters: MyParameters::new() } }
 //! }
 //!
 //! // Export
-//! static CONFIG: PluginConfig = PluginConfig::new("MyGain");
+//! static CONFIG: Config = Config::new("MyGain");
 //! static VST3_CONFIG: Vst3Config = Vst3Config::new(vst3::uid(...));
 //! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
 //! ```
@@ -94,7 +94,7 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        AudioProcessor, EditorDelegate, HasParameters, Plugin,
+        Descriptor, EditorDelegate, HasParameters, Processor,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         AuxInputCount, AuxOutputCount, ProcessMode,
@@ -128,7 +128,7 @@ pub mod prelude {
     };
 
     // Shared plugin configuration (format-agnostic)
-    pub use beamer_core::PluginConfig;
+    pub use beamer_core::Config;
 
     // VST3 implementation (only when feature enabled)
     #[cfg(feature = "vst3")]

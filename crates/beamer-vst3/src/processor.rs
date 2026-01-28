@@ -26,12 +26,12 @@ use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
-    AudioProcessor, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
+    AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
-    FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState, MidiEvent,
-    MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
-    NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Plugin, PluginConfig,
-    PluginSetup, ProcessBufferStorage, ProcessContext as CoreProcessContext, ScaleInfo, SysEx,
+    Descriptor, FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState,
+    MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
+    NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
+    ProcessBufferStorage, ProcessContext as CoreProcessContext, Processor, ScaleInfo, SysEx,
     SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
@@ -203,15 +203,15 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 /// Internal state machine for plugin lifecycle.
 ///
 /// The wrapper manages two states:
-/// - **Unprepared**: Plugin exists, but audio config (sample rate) is unknown
+/// - **Unprepared**: Descriptor exists, but audio config (sample rate) is unknown
 /// - **Prepared**: Processor exists with valid audio config, ready for processing
 ///
 /// This enables the type-safe prepare/unprepare cycle where processors cannot
 /// be used until they have valid configuration.
-enum PluginState<P: Plugin> {
-    /// Before setupProcessing() - plugin exists but no audio config yet.
+enum PluginState<P: Descriptor> {
+    /// Before setupProcessing() - definition exists but no audio config yet.
     Unprepared {
-        /// The unprepared plugin (holds parameters)
+        /// The unprepared definition (holds parameters)
         plugin: P,
         /// State data received before prepare (deferred loading)
         pending_state: Option<Vec<u8>>,
@@ -220,9 +220,9 @@ enum PluginState<P: Plugin> {
     Prepared {
         /// The prepared processor (ready for audio)
         processor: P::Processor,
-        /// Cached input bus info (since Plugin is consumed)
+        /// Cached input bus info (since Descriptor is consumed)
         input_buses: Vec<CoreBusInfo>,
-        /// Cached output bus info (since Plugin is consumed)
+        /// Cached output bus info (since Descriptor is consumed)
         output_buses: Vec<CoreBusInfo>,
     },
 }
@@ -231,7 +231,7 @@ enum PluginState<P: Plugin> {
 // Vst3Processor Wrapper
 // =============================================================================
 
-/// Generic VST3 processor wrapping any [`Plugin`] implementation.
+/// Generic VST3 processor wrapping any [`Descriptor`] implementation.
 ///
 /// This struct implements the VST3 combined component pattern, providing
 /// `IComponent`, `IAudioProcessor`, and `IEditController` interfaces that
@@ -243,9 +243,9 @@ enum PluginState<P: Plugin> {
 ///
 /// ```text
 /// Vst3Processor::new()
-///     ↓ creates Plugin::default()
+///     ↓ creates Descriptor::default()
 /// PluginState::Unprepared { plugin }
-///     ↓ setupProcessing() calls plugin.prepare(config)
+///     ↓ setupProcessing() calls definition.prepare(config)
 /// PluginState::Prepared { processor }
 ///     ↓ sample rate change: processor.unprepare()
 /// PluginState::Unprepared { plugin }
@@ -256,16 +256,16 @@ enum PluginState<P: Plugin> {
 /// # Usage
 ///
 /// ```ignore
-/// use beamer_vst3::{export_vst3, Vst3Processor, PluginConfig};
+/// use beamer_vst3::{export_vst3, Vst3Processor, Config};
 ///
 /// #[derive(Default)]
 /// struct MyPlugin { parameters: MyParameters }
-/// impl Plugin for MyPlugin { /* ... */ }
+/// impl Descriptor for MyPlugin { /* ... */ }
 ///
 /// struct MyProcessor { parameters: MyParameters, sample_rate: f64 }
-/// impl AudioProcessor for MyProcessor { /* ... */ }
+/// impl Processor for MyProcessor { /* ... */ }
 ///
-/// static CONFIG: PluginConfig = PluginConfig::new("MyPlugin");
+/// static CONFIG: Config = Config::new("MyPlugin");
 /// static VST3_CONFIG: Vst3Config = Vst3Config::new(MY_UID);
 /// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 /// ```
@@ -277,7 +277,7 @@ enum PluginState<P: Plugin> {
 /// interface only provides `&self`.
 pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
 where
-    P: Plugin,
+    P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     /// The plugin state machine (Unprepared or Prepared)
@@ -316,10 +316,10 @@ where
 }
 
 // Safety: Vst3Processor is Send because:
-// - Plugin: Send is required by the Plugin trait
-// - AudioProcessor: Send is required by the AudioProcessor trait
+// - Descriptor: Send is required by the Descriptor trait
+// - Processor: Send is required by the Processor trait
 // - UnsafeCell contents are only accessed from VST3's guaranteed single-threaded contexts
-unsafe impl<P: Plugin, Presets> Send for Vst3Processor<P, Presets>
+unsafe impl<P: Descriptor, Presets> Send for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -328,13 +328,13 @@ where
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
 // - Parameter access through Parameters trait requires Sync
-unsafe impl<P: Plugin, Presets> Sync for Vst3Processor<P, Presets>
+unsafe impl<P: Descriptor, Presets> Sync for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
 }
 
-impl<P: Plugin + 'static, Presets> Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -342,7 +342,7 @@ where
     ///
     /// The wrapper starts in the Unprepared state with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
-    pub fn new(_config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
+    pub fn new(_config: &'static Config, vst3_config: &'static Vst3Config) -> Self {
         let plugin = P::default();
 
         // Create MidiCcState from plugin's config (framework-managed)
@@ -561,12 +561,12 @@ where
     }
 
     // =========================================================================
-    // AudioProcessor Method Access (works in both states)
+    // Processor Method Access (works in both states)
     // =========================================================================
 
     /// Check if plugin wants MIDI (works in both states).
     ///
-    /// Queries both Plugin (unprepared) and AudioProcessor (prepared) for MIDI support.
+    /// Queries both Descriptor (unprepared) and Processor (prepared) for MIDI support.
     #[inline]
     unsafe fn wants_midi(&self) -> bool {
         match &*self.state.get() {
@@ -990,16 +990,16 @@ where
     }
 }
 
-impl<P: Plugin + 'static, Presets> ComponentFactory for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> ComponentFactory for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
-    fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
+    fn create(config: &'static Config, vst3_config: &'static Vst3Config) -> Self {
         Self::new(config, vst3_config)
     }
 }
 
-impl<P: Plugin + 'static, Presets> Class for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> Class for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -1024,7 +1024,7 @@ where
 // IPluginBase implementation
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -1041,7 +1041,7 @@ where
 // IComponent implementation
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IComponentTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IComponentTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -1277,7 +1277,7 @@ where
 // IAudioProcessor implementation
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -1646,7 +1646,7 @@ where
         }
         // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
-        // Process MIDI events (process_midi is on AudioProcessor)
+        // Process MIDI events (process_midi is on Processor)
         let processor = self.processor_mut();
         processor.process_midi(midi_input.as_slice(), midi_output);
 
@@ -1706,7 +1706,7 @@ where
     }
 
     unsafe fn getTailSamples(&self) -> u32 {
-        // tail_samples and bypass_ramp_samples are on AudioProcessor
+        // tail_samples and bypass_ramp_samples are on Processor
         match &*self.state.get() {
             PluginState::Unprepared { .. } => 0,
             PluginState::Prepared { processor, .. } => {
@@ -1716,7 +1716,7 @@ where
     }
 }
 
-impl<P: Plugin + 'static, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -1752,7 +1752,7 @@ where
 // IEditController implementation
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2082,7 +2082,7 @@ where
 // IUnitInfo implementation (VST3 Unit/Group hierarchy)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2221,7 +2221,7 @@ where
 // IMidiMapping implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2262,7 +2262,7 @@ where
 // IMidiLearn implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2286,7 +2286,7 @@ where
 // IMidiMapping2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2396,7 +2396,7 @@ where
 // IMidiLearn2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2438,7 +2438,7 @@ where
 // INoteExpressionController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2532,7 +2532,7 @@ where
 // IKeyswitchController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2579,7 +2579,7 @@ where
 // INoteExpressionPhysicalUIMapping implementation (VST3 SDK 3.6.11)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
@@ -2617,7 +2617,7 @@ where
 // IVst3WrapperMPESupport implementation (VST3 SDK 3.6.12)
 // =============================================================================
 
-impl<P: Plugin + 'static, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
+impl<P: Descriptor + 'static, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {

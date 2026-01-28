@@ -1,7 +1,7 @@
 //! VST3-specific plugin configuration.
 //!
 //! This module provides VST3-specific configuration that complements
-//! the shared [`beamer_core::PluginConfig`].
+//! the shared [`beamer_core::Config`].
 
 use vst3::Steinberg::TUID;
 
@@ -14,18 +14,18 @@ pub const DEFAULT_SYSEX_BUFFER_SIZE: usize = 512;
 /// VST3-specific plugin configuration.
 ///
 /// This struct holds VST3-specific metadata. Use in combination with
-/// [`beamer_core::PluginConfig`] for complete plugin configuration.
+/// [`beamer_core::Config`] for complete plugin configuration.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use beamer_core::PluginConfig;
+/// use beamer_core::Config;
 /// use beamer_vst3::{Vst3Config, vst3};
 ///
 /// const COMPONENT_UID: vst3::Steinberg::TUID =
 ///     vst3::uid(0xDCDDB4BA, 0x2D6A4EC3, 0xA526D3E7, 0x244FAAE3);
 ///
-/// pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Gain")
+/// pub static CONFIG: Config = Config::new("Beamer Gain")
 ///     .with_vendor("Beamer Framework")
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///

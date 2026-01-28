@@ -5,7 +5,7 @@ Derive macros for the Beamer VST3 framework.
 This crate provides procedural macros that generate boilerplate code for plugins:
 
 - **`#[derive(Parameters)]`**: Generates parameter traits, VST3 integration, state persistence, and `Default` implementation
-- **`#[derive(HasParameters)]`**: Generates `parameters()`, `parameters_mut()`, and `set_parameters()` accessors for Plugin and AudioProcessor types
+- **`#[derive(HasParameters)]`**: Generates `parameters()`, `parameters_mut()`, and `set_parameters()` accessors for Descriptor and Processor types
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
 - **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`
 - **Compile-time validation**: ID collision detection and hash generation

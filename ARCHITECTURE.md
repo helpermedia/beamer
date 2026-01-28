@@ -112,8 +112,8 @@ Both formats share the same core traits and processing logic:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       beamer-core                               │
-│  • Plugin trait (unprepared state)                              │
-│  • AudioProcessor trait (prepared state)                        │
+│  • Descriptor trait (unprepared state)                          │
+│  • Processor trait (prepared state)                             │
 │  • Buffer, AuxiliaryBuffers, MidiBuffer                         │
 │  • Parameters trait, ParameterStore                             │
 │  • ProcessContext, Transport                                    │
@@ -150,7 +150,7 @@ beamer/
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
 │   ├── beamer-vst3/         # VST3 wrapper implementation
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
-│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)])
+│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)], #[derive(Presets)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   └── beamer-webview/      # WebView per platform (Phase 2)
 ├── examples/
@@ -167,10 +167,10 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`Plugin`, `AudioProcessor`, `HasParameters`), buffer types, MIDI types, shared `PluginConfig` |
+| `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, shared `Config` |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
-| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]` proc macros |
+| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`, `#[derive(Presets)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-webview` | Platform-native WebView embedding (Phase 2) |
 
@@ -182,7 +182,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Plugin (Unprepared)                         │
+│                     Descriptor (Unprepared)                     │
 │  • Created via Default::default()                               │
 │  • Holds parameters and bus configuration                       │
 │  • No sample rate or audio state                                │
@@ -192,7 +192,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
                                   │ [setupProcessing]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   AudioProcessor (Prepared)                     │
+│                   Processor (Prepared)                          │
 │  • Created with real sample rate and buffer size                │
 │  • Allocates DSP state (delay buffers, filter coefficients)     │
 │  • Ready for process() calls                                    │
@@ -202,7 +202,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
                                   │ [sample rate change]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Plugin (Unprepared)                         │
+│                     Descriptor (Unprepared)                     │
 │  • Parameters preserved                                         │
 │  • DSP state discarded                                          │
 │  • Ready for prepare() with new config                          │
@@ -211,107 +211,29 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 
 ### Why Two Phases?
 
-Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The traditional pattern used placeholder values:
+Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The two-phase design ensures DSP state is only created with valid configuration:
 
 ```rust
-// ❌ Old pattern - placeholder values cause bugs
-struct MyPlugin {
-    sample_rate: f64,  // 44100.0 placeholder, overwritten later
-    buffer: Vec<f64>,  // Allocated with wrong size!
-}
-```
-
-Beamer's solution makes it impossible to process audio without valid configuration:
-
-```rust
-// ✅ New pattern - type system enforces correctness
-impl Plugin for MyPlugin {
+impl Descriptor for MyPlugin {
     type Setup = SampleRate;
 
     fn prepare(self, setup: SampleRate) -> MyProcessor {
         MyProcessor {
-            sample_rate: setup.hz(),  // Real value from start!
-            buffer: vec![0.0; (setup.hz() * 2.0) as usize],  // Correct size!
+            sample_rate: setup.hz(),
+            buffer: vec![0.0; (setup.hz() * 2.0) as usize],
         }
     }
 }
 ```
 
-### Design Rationale: Why This Matters for Rust
+### Design Rationale
 
-Beamer's two-phase design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern**, where different types represent different states, and the compiler enforces valid transitions.
+Beamer's two-phase design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states, and the compiler enforces valid transitions.
 
-**The same pattern appears throughout Rust:**
-- `std::fs::File` - you cannot have an "unopened file"; `File::open()` returns `Result<File>`
-- `std::net::TcpListener` vs `TcpStream` - different types for different connection states
-- Builder pattern - `Builder::new().with_x().build()` returns a different type
-
-**Comparison with single-type frameworks:**
-
-Most audio plugin frameworks (nih-plug, JUCE, CLAP) use a single type with lifecycle methods:
+The `Processor` type is always fully initialized, so `process()` code is clean:
 
 ```rust
-// Single-type approach (nih-plug style)
-#[derive(Default)]
-struct Delay {
-    params: Arc<DelayParams>,
-    sample_rate: f32,           // Starts at 0.0
-    buffer: Vec<f32>,           // Starts empty
-}
-
-impl Plugin for Delay {
-    fn initialize(&mut self, config: &Config) -> bool {
-        self.sample_rate = config.sample_rate;
-        self.buffer = vec![0.0; self.max_delay_samples()];
-        true
-    }
-
-    fn process(&mut self, buffer: &mut Buffer) {
-        // sample_rate was 0.0 before initialize() - hope nobody called process() early!
-        // In practice, the framework ensures correct ordering, but the type doesn't.
-    }
-}
-```
-
-**Beamer's two-type approach:**
-
-```rust
-// Two-type approach (Beamer)
-#[derive(Parameters)]
-struct DelayParameters {
-    #[param(range = "0.0..=1.0", default = "0.5")]
-    delay_time: FloatParam,
-    #[param(range = "0.0..=1.0", default = "0.3")]
-    feedback: FloatParam,
-}
-
-// Plugin state: just parameters, no DSP state yet
-impl Plugin for DelayParameters {
-    type Processor = DelayProcessor;
-    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
-        DelayProcessor {
-            parameters: self,
-            sample_rate: sample_rate.hz(),
-            buffer: vec![0.0; (sample_rate.hz() * 2.0) as usize],
-        }
-    }
-}
-
-// Processor state: parameters + DSP state
-struct DelayProcessor {
-    parameters: DelayParameters,
-    sample_rate: f64,    // Always valid - provided in prepare()
-    buffer: Vec<f64>,    // Always allocated - created in prepare()
-}
-
-impl HasParameters for DelayProcessor {
-    type Parameters = DelayParameters;
-    fn parameters(&self) -> &Self::Parameters { &self.parameters }
-    fn parameters_mut(&mut self) -> &mut Self::Parameters { &mut self.parameters }
-    fn set_parameters(&mut self, params: Self::Parameters) { self.parameters = params; }
-}
-
-impl AudioProcessor for DelayProcessor {
+impl Processor for DelayProcessor {
     fn process(&mut self, buffer: &mut Buffer, ...) {
         // self.sample_rate is guaranteed valid
         // self.buffer is guaranteed allocated
@@ -320,98 +242,62 @@ impl AudioProcessor for DelayProcessor {
 }
 ```
 
-**The key ergonomic benefit: cleaner process() code**
+### Three-Struct Pattern
 
-In single-type designs, DSP state fields need `Option<T>` wrappers:
+Beamer plugins use three structs for clear separation of concerns:
 
-```rust
-// Single-type: every process() needs unwrapping
-fn process(&mut self, ...) {
-    let buffer = self.delay_buffer.as_mut().expect("not prepared");
-    let sample_rate = self.sample_rate.expect("not prepared");
-    // ... actual DSP code
-}
-```
-
-In Beamer, the processor type is always fully initialized:
+1. **`*Parameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
 
 ```rust
-// Beamer: clean DSP code
-fn process(&mut self, ...) {
-    // Just use the fields directly - they're always valid
-    let delay_samples = (self.delay_time * self.sample_rate) as usize;
-    self.buffer[self.write_pos] = input;
-}
-```
-
-**Trade-offs:**
-
-| Aspect | Two-Phase (Beamer) | Single-Type (nih-plug, JUCE) |
-|--------|-------------------|------------------------------|
-| Boilerplate | One struct (simple) or two structs (complex) | One struct |
-| `process()` code | Clean, no Option handling | Needs unwrap or Option checks |
-| Compile-time safety | Cannot call process() on wrong type | Framework ensures ordering |
-| Learning curve | Higher (two traits) | Lower (one trait) |
-| Industry alignment | Unique | Matches most frameworks |
-
-**Simple plugins: `type Processor = Self`**
-
-For simple plugins without DSP state (gain, pan, simple saturation), one struct does everything:
-
-```rust
+// 1. Parameters - pure data
 #[derive(Parameters)]
-pub struct Gain {
-    #[param(range = "0.0..=2.0", default = "1.0")]
-    gain: FloatParam,
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
 }
 
-impl Plugin for Gain {
-    type Processor = Self;  // Same type for both states
-    fn prepare(self, _: ()) -> Self { self }
-}
-
-impl AudioProcessor for Gain {
-    type Plugin = Self;
-    fn process(&mut self, ...) { /* ... */ }
-}
-```
-
-With `#[derive(Parameters)]`, the struct automatically implements `HasParameters`, so no wrapper is needed. This provides the simplicity of single-type designs when you don't need separate DSP state.
-
-**Why not just use single-type like everyone else?**
-
-The two-phase design is unusual in the audio plugin ecosystem, but idiomatic for Rust. The compile-time guarantee is modest (frameworks ensure correct call ordering anyway), but the ergonomic benefit of clean `process()` code without `Option<T>` handling is real.
-
-If you're coming from JUCE or nih-plug, the extra struct feels like boilerplate. If you're coming from Rust's type-driven design philosophy, it feels natural. Beamer chose to align with Rust idioms rather than audio industry conventions.
-
-**New simplified pattern:**
-
-With the updated `#[derive(Parameters)]` macro, simple plugins no longer need wrapper structs:
-
-```rust
-// OLD pattern (before): 3 items - Parameters + Plugin wrapper + impl
-#[derive(Parameters)]
-pub struct GainParameters { ... }
-
+// 2. Descriptor - holds parameters, describes plugin to host
 #[derive(Default, HasParameters)]
-pub struct GainPlugin {
+pub struct GainDescriptor {
     #[parameters]
     parameters: GainParameters,
 }
 
-// NEW pattern (now): 1 struct does everything
-#[derive(Parameters)]
-pub struct Gain { ... }
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
 
-impl Plugin for Gain {
-    type Processor = Self;  // or separate processor for complex plugins
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
+
+// 3. Processor - prepared state, ready for audio
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
+
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
+    fn process(&mut self, buffer: &mut Buffer, ...) { /* ... */ }
 }
 ```
 
-The `#[derive(Parameters)]` macro now automatically implements `HasParameters` for the parameters struct itself. This means:
+**Plugins with DSP state** add fields to the Processor:
 
-1. **Simple plugins** (gain, pan, saturation): Use 1 struct. Parameters = Plugin = Processor.
-2. **Complex plugins** (delay, reverb, synth): Use 2 structs. Parameters/Plugin + Processor with DSP state.
+```rust
+#[derive(HasParameters)]
+struct DelayProcessor {
+    #[parameters]
+    parameters: DelayParameters,
+    sample_rate: f64,    // Always valid
+    buffer: Vec<f64>,    // Always allocated
+}
+```
 
 ### Setup Types
 
@@ -429,16 +315,16 @@ For IDE autocomplete, use `beamer::setup::*` to import all available types.
 
 | Trait | State | Responsibilities |
 |-------|-------|------------------|
-| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - auto-implemented by `#[derive(Parameters)]` |
-| `Plugin` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
-| `AudioProcessor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` (has default impl) |
+| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - use `#[derive(HasParameters)]` |
+| `Descriptor` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
+| `Processor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` (has default impl) |
 
 ### Parameter Ownership
 
-Parameters are **owned** by both `Plugin` and `AudioProcessor`, moving between them during state transitions:
+Parameters are **owned** by both `Descriptor` and `Processor`, moving between them during state transitions:
 
 ```
-Plugin                          AudioProcessor
+Descriptor                       Processor
 ┌─────────────────────┐        ┌─────────────────────┐
 │ parameters ─────────┼──────► │ parameters          │
 └─────────────────────┘        └─────────────────────┘
@@ -457,44 +343,30 @@ This is the **type-state pattern** - a Rust idiom for encoding state machines at
 
 **The `HasParameters` trait:**
 
-Both `Plugin` and `AudioProcessor` implement `HasParameters` because the host needs parameter access in both states:
+Both `Descriptor` and `Processor` implement `HasParameters` because the host needs parameter access in both states:
 - Before `prepare()`: Host queries parameter info, user adjusts values
 - After `prepare()`: Host automates parameters during playback
 
-The `#[derive(Parameters)]` macro automatically implements `HasParameters` for the parameters struct:
+Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on both Descriptor and Processor:
 
 ```rust
-// Simple plugin: Parameters struct IS the Plugin
-#[derive(Parameters)]
-pub struct Gain {
-    #[param(range = "0.0..=2.0", default = "1.0")]
-    gain: FloatParam,
+// Descriptor with HasParameters
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
 }
 
-// HasParameters is auto-implemented by #[derive(Parameters)]
-impl Plugin for Gain {
-    type Processor = Self;
-    fn prepare(self, _: ()) -> Self { self }
+// Processor with HasParameters
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+    // Additional DSP state...
 }
 ```
 
-For complex plugins with separate DSP state, the processor struct manually implements `HasParameters`:
-
-```rust
-// Complex plugin: separate Processor with DSP state
-struct DelayProcessor {
-    parameters: DelayParameters,  // Moved from Plugin
-    sample_rate: f64,
-    buffer: Vec<f64>,
-}
-
-impl HasParameters for DelayProcessor {
-    type Parameters = DelayParameters;
-    fn parameters(&self) -> &Self::Parameters { &self.parameters }
-    fn parameters_mut(&mut self) -> &mut Self::Parameters { &mut self.parameters }
-    fn set_parameters(&mut self, params: Self::Parameters) { self.parameters = params; }
-}
-```
+The derive macro generates the `parameters()`, `parameters_mut()`, and `set_parameters()` methods automatically.
 
 ---
 
@@ -508,7 +380,7 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 ┌────────────────────────────────────────────────────────────────┐
 │                      beamer-core                               │
 │                                                                │
-│  PluginConfig (shared metadata)                                │
+│  Config (shared metadata)                                │
 │  • name, vendor, version                                       │
 │  • category, sub_categories                                    │
 │  • url, email, has_editor                                      │
@@ -536,7 +408,7 @@ use beamer_vst3::{export_vst3, Vst3Config};
 use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared configuration (format-agnostic)
-pub static CONFIG: PluginConfig = PluginConfig::new("My Gain")
+pub static CONFIG: Config = Config::new("My Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 
@@ -577,7 +449,7 @@ If no presets type is specified, `NoPresets` is used automatically.
 
 ### Configuration Fields
 
-**PluginConfig** (shared):
+**Config** (shared):
 - `name` - Display name in DAW
 - `vendor` - Company/developer name
 - `version` - Semantic version string
@@ -836,7 +708,7 @@ pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF
 The buffer allocation flow ensures all memory is reserved before audio processing begins:
 
 ```
-Plugin Load (creates Plugin in Unprepared state)
+Plugin Load (creates Descriptor in Unprepared state)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -857,8 +729,8 @@ Plugin Load (creates Plugin in Unprepared state)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
-│   • Plugin::prepare(config) → AudioProcessor                │
-│     - Plugin consumed, AudioProcessor created               │
+│   • Descriptor::prepare(config) → Processor                 │
+│     - Descriptor consumed, Processor created                │
 │     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate()                        │
 │     - input_ptrs.reserve(main_channels)                     │
@@ -876,15 +748,15 @@ Plugin Load (creates Plugin in Unprepared state)
 │   • storage.push(ptr) - into reserved capacity, no alloc    │
 │   • .take(MAX_CHANNELS) - bounds check even if host lies    │
 │   • Build Buffer/AuxiliaryBuffers from pointers             │
-│   • Call AudioProcessor::process()                          │
+│   • Call Processor::process()                               │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼ (on sample rate change)
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing() with new config                           │
-│   • AudioProcessor::unprepare() → Plugin                    │
+│   • Processor::unprepare() → Descriptor                     │
 │     - Parameters preserved, DSP state discarded             │
-│   • Plugin::prepare(new_config) → AudioProcessor            │
+│   • Descriptor::prepare(new_config) → Processor             │
 │     - DSP state reallocated for new sample rate             │
 └─────────────────────────────────────────────────────────────┘
 ```

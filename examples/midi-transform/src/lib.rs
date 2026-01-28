@@ -1,26 +1,34 @@
 //! Beamer MIDI Transform - Example VST3 instrument demonstrating advanced parameter features.
 //!
 //! This plugin showcases the Beamer parameter system and MIDI event handling:
+//! - **Three-struct pattern**: Parameters, Descriptor, Processor
 //! - **Nested parameter groups** with `#[nested(group = "...")]`
 //! - **EnumParameter** for discrete choices (transform modes)
 //! - **IntParameter** for note/CC number selection
 //! - **BoolParameter** for enable toggles
 //! - **FloatParameter** for velocity/value scaling
-//! - **Two-phase Plugin → AudioProcessor lifecycle**
 //! - **Clean MIDI event modification** with the `with()` method
+//!
+//! # Three-Struct Pattern
+//!
+//! Beamer plugins use three structs for clear separation of concerns:
+//!
+//! 1. **`MidiTransformParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+//! 2. **`MidiTransformDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+//! 3. **`MidiTransformProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
 //!
 //! # Features
 //!
 //! **Note Transform Group:**
 //! - Enable/disable note processing
 //! - Multiple transform modes (Transpose, Octave shifts, Remap, Invert)
-//! - Note remapping (Note In → Note Out)
+//! - Note remapping (Note In -> Note Out)
 //! - Velocity scaling
 //!
 //! **CC Transform Group:**
 //! - Enable/disable CC processing
 //! - Multiple CC modes (Remap, Scale, Invert)
-//! - CC number remapping (CC X → CC Y)
+//! - CC number remapping (CC X -> CC Y)
 //! - Value scaling
 //!
 //! # MIDI Event Handling
@@ -48,7 +56,7 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer MIDI Transform")
+pub static CONFIG: Config = Config::new("Beamer MIDI Transform")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -186,13 +194,13 @@ pub struct CcTransformParameters {
 // Plugin Parameters
 // =============================================================================
 
-/// MIDI Transform plugin - defines both parameters and plugin behavior.
+/// MIDI Transform plugin parameters.
 ///
 /// Demonstrates the `#[nested(group = "...")]` attribute for creating
 /// hierarchical parameter organization in the DAW.
 /// The `#[derive(Parameters)]` macro also generates `HasParameters`.
 #[derive(Parameters)]
-pub struct MidiTransform {
+pub struct MidiTransformParameters {
     /// Global bypass - uses the special `bypass` attribute
     #[parameter(id = "bypass", bypass)]
     pub bypass: BoolParameter,
@@ -206,16 +214,34 @@ pub struct MidiTransform {
     pub cc: CcTransformParameters,
 }
 
-impl Plugin for MidiTransform {
+// =============================================================================
+// Plugin Descriptor
+// =============================================================================
+
+/// MIDI Transform plugin descriptor.
+///
+/// This struct implements the `Descriptor` trait and holds the plugin's
+/// parameters. It is the entry point for the plugin - the host creates
+/// this struct and calls `prepare()` to get a `MidiTransformProcessor`.
+#[derive(Default, HasParameters)]
+pub struct MidiTransformDescriptor {
+    /// Plugin parameters
+    #[parameters]
+    pub parameters: MidiTransformParameters,
+}
+
+impl Descriptor for MidiTransformDescriptor {
     // Needs sample rate for parameter smoothing.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
     type Processor = MidiTransformProcessor;
 
     fn prepare(mut self, setup: SampleRate) -> MidiTransformProcessor {
-        self.set_sample_rate(setup.hz());
+        self.parameters.set_sample_rate(setup.hz());
 
-        MidiTransformProcessor { parameters: self }
+        MidiTransformProcessor {
+            parameters: self.parameters,
+        }
     }
 
     fn wants_midi(&self) -> bool {
@@ -230,10 +256,11 @@ impl Plugin for MidiTransform {
 /// MIDI transformer processor, ready for audio/MIDI processing.
 ///
 /// Transforms MIDI notes and CC messages based on parameter settings.
+/// Created by `MidiTransformDescriptor::prepare()`.
 #[derive(HasParameters)]
 pub struct MidiTransformProcessor {
     #[parameters]
-    parameters: MidiTransform,
+    parameters: MidiTransformParameters,
 }
 
 impl MidiTransformProcessor {
@@ -394,8 +421,8 @@ impl MidiTransformProcessor {
     }
 }
 
-impl AudioProcessor for MidiTransformProcessor {
-    type Plugin = MidiTransform;
+impl Processor for MidiTransformProcessor {
+    type Descriptor = MidiTransformDescriptor;
 
     fn process(
         &mut self,
@@ -485,11 +512,11 @@ impl AudioProcessor for MidiTransformProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MidiTransform);
+export_vst3!(CONFIG, VST3_CONFIG, MidiTransformDescriptor);
 
 // =============================================================================
 // Audio Unit Export
 // =============================================================================
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, MidiTransform);
+export_au!(CONFIG, AU_CONFIG, MidiTransformDescriptor);

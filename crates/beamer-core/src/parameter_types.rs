@@ -415,7 +415,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Set sample rate for all smoothers in this parameter collection.
     ///
-    /// Call this from `AudioProcessor::setup()` to initialize smoothers
+    /// Call this from `Processor::setup()` to initialize smoothers
     /// with the correct sample rate.
     ///
     /// **Oversampling:** If your plugin uses oversampling, pass the actual
@@ -424,7 +424,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// # Example
     ///
     /// ```ignore
-    /// impl AudioProcessor for MyPlugin {
+    /// impl Processor for MyPlugin {
     ///     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
     ///         self.parameters.set_sample_rate(sample_rate);
     ///     }
@@ -1090,7 +1090,7 @@ impl FloatParameter {
 
     /// Set sample rate for smoothing.
     ///
-    /// Call this from `AudioProcessor::setup()`. If using oversampling,
+    /// Call this from `Processor::setup()`. If using oversampling,
     /// pass `sample_rate * oversampling_factor`.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         let current_value = self.get();

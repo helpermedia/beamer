@@ -4,7 +4,7 @@
 //! extracted from the plugin or host. This avoids repeated queries and provides
 //! fast access during audio processing.
 
-use crate::plugin::{BusInfo, BusLayout, BusType, Plugin};
+use crate::plugin::{BusInfo, BusLayout, BusType, Descriptor};
 use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// Lightweight bus information for caching.
@@ -83,7 +83,7 @@ impl CachedBusConfig {
     }
 
     /// Create from a plugin's bus configuration.
-    pub fn from_plugin<P: Plugin>(plugin: &P) -> Self {
+    pub fn from_plugin<P: Descriptor>(plugin: &P) -> Self {
         let input_bus_count = plugin.input_bus_count();
         let output_bus_count = plugin.output_bus_count();
 

@@ -968,7 +968,7 @@ impl RpnChannelState {
 ///     rpn_tracker: RpnTracker,
 /// }
 ///
-/// impl AudioProcessor for MyPlugin {
+/// impl Processor for MyPlugin {
 ///     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 ///         for event in input {
 ///             if let MidiEventKind::ControlChange(cc) = &event.event {

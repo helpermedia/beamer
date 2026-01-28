@@ -1,6 +1,6 @@
 //! Plugin setup types for declaring host information requirements.
 //!
-//! Use these types with [`Plugin::Setup`](crate::Plugin::Setup) to specify what
+//! Use these types with [`Descriptor::Setup`](crate::Descriptor::Setup) to specify what
 //! information your plugin needs from the host during preparation.
 //!
 //! # Quick Reference
@@ -32,13 +32,13 @@
 //! use beamer::setup::*;
 //!
 //! // Stateless plugin (gain, pan)
-//! impl Plugin for Gain {
+//! impl Descriptor for Gain {
 //!     type Setup = ();
 //!     fn prepare(self, _: ()) -> Self { self }
 //! }
 //!
 //! // Time-based DSP (delay, filter, envelope, smoothing)
-//! impl Plugin for Delay {
+//! impl Descriptor for Delay {
 //!     type Setup = SampleRate;
 //!     fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
 //!         let buffer_size = (2.0 * sample_rate.hz()) as usize;
@@ -47,7 +47,7 @@
 //! }
 //!
 //! // FFT or lookahead processing
-//! impl Plugin for Fft {
+//! impl Descriptor for Fft {
 //!     type Setup = (SampleRate, MaxBufferSize);
 //!     fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 //!         FftProcessor { fft_buffer: vec![0.0; mbs.0], /* ... */ }

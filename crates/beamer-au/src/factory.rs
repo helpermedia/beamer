@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-use beamer_core::PluginConfig;
+use beamer_core::Config;
 
 use crate::config::AuConfig;
 use crate::instance::AuPluginInstance;
@@ -17,7 +17,7 @@ pub type PluginFactory = fn() -> Box<dyn AuPluginInstance>;
 /// Configuration bundle stored with the factory.
 #[derive(Debug)]
 pub struct FactoryConfig {
-    pub plugin_config: &'static PluginConfig,
+    pub plugin_config: &'static Config,
     pub au_config: &'static AuConfig,
 }
 
@@ -37,7 +37,7 @@ static FACTORY_CONFIG: OnceLock<FactoryConfig> = OnceLock::new();
 /// plugins in the same binary, which is not supported).
 pub fn register_factory(
     factory: PluginFactory,
-    plugin_config: &'static PluginConfig,
+    plugin_config: &'static Config,
     au_config: &'static AuConfig,
 ) {
     PLUGIN_FACTORY
@@ -67,7 +67,7 @@ pub fn create_instance() -> Option<Box<dyn AuPluginInstance>> {
 }
 
 /// Get the plugin configuration.
-pub fn plugin_config() -> Option<&'static PluginConfig> {
+pub fn plugin_config() -> Option<&'static Config> {
     FACTORY_CONFIG.get().map(|c| c.plugin_config)
 }
 

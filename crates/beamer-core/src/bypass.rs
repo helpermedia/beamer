@@ -21,7 +21,7 @@
 //!     gain: f32,
 //! }
 //!
-//! impl AudioProcessor for MyPlugin {
+//! impl Processor for MyPlugin {
 //!     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
 //!         let is_bypassed = self.parameters.bypass.get();
 //!

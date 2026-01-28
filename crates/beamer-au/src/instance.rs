@@ -20,18 +20,18 @@ use beamer_core::{CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, P
 /// Type-erased interface for AU plugin instances.
 ///
 /// This trait enables the ObjC wrapper (`BeamerAuWrapper`) to work with
-/// any `Plugin` implementation through dynamic dispatch.
+/// any `Descriptor` implementation through dynamic dispatch.
 ///
 /// # Implementation
 ///
-/// This trait is implemented by `AuProcessor<P>` for any `P: Plugin`.
+/// This trait is implemented by `AuProcessor<P>` for any `P: Descriptor`.
 /// Plugin authors don't implement this directly - they implement the
-/// `beamer_core::Plugin` trait instead.
+/// `beamer_core::Descriptor` trait instead.
 pub trait AuPluginInstance: Send + 'static {
     /// Allocate render resources (prepare for audio processing).
     ///
     /// Called when AU host calls `allocateRenderResourcesAndReturnError:`.
-    /// This triggers the Plugin → AudioProcessor transition.
+    /// This triggers the Descriptor → Processor transition.
     ///
     /// # Arguments
     /// * `sample_rate` - The sample rate in Hz
@@ -47,7 +47,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Deallocate render resources (return to unprepared state).
     ///
     /// Called when AU host calls `deallocateRenderResources`.
-    /// This triggers the AudioProcessor → Plugin transition.
+    /// This triggers the Processor → Descriptor transition.
     fn deallocate_render_resources(&mut self);
 
     /// Check if currently in prepared state (render resources allocated).
@@ -330,7 +330,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Get reference to MIDI CC state (if configured).
     ///
     /// Returns `None` if the plugin didn't configure MIDI CC tracking via
-    /// `PluginConfig::midi_cc_config()`. When `Some`, the state contains
+    /// `Config::midi_cc_config()`. When `Some`, the state contains
     /// current values for all enabled MIDI controllers (CC, pitch bend, aftertouch).
     ///
     /// The framework automatically updates this state from incoming MIDI events

@@ -30,7 +30,7 @@
 //! - **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
 //!
 //! ```text
-//! User Plugin (implements beamer_core::Plugin)
+//! User Plugin (implements beamer_core::Descriptor)
 //!        ↓
 //! AuProcessor<P> (generic AU wrapper)
 //!        ↓
@@ -45,15 +45,15 @@
 //!
 //! ## Usage
 //!
-//! 1. Implement `beamer_core::Plugin` for your plugin type
+//! 1. Implement `beamer_core::Descriptor` for your plugin type
 //! 2. Use `export_au!` macro to generate AU entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::PluginConfig;
+//! use beamer_core::Config;
 //! use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
 //!
 //! // Shared plugin config
-//! static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+//! static CONFIG: Config = Config::new("My Plugin")
 //!     .with_vendor("My Company");
 //!
 //! // AU-specific config
@@ -93,8 +93,8 @@ pub mod error;
 pub use config::{AuConfig, ComponentType, FourCharCode};
 pub use error::{PluginError, PluginResult};
 
-// Re-export shared PluginConfig from beamer-core
-pub use beamer_core::PluginConfig;
+// Re-export shared Config from beamer-core
+pub use beamer_core::Config;
 
 // =============================================================================
 // macOS-only modules

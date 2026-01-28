@@ -10,19 +10,19 @@
 ///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`beamer_core::PluginConfig`] containing shared plugin metadata
+/// * `$config` - A static reference to [`beamer_core::Config`] containing shared plugin metadata
 /// * `$vst3_config` - A static reference to [`Vst3Config`] containing VST3-specific configuration
-/// * `$plugin` - The plugin type implementing the [`beamer_core::Plugin`] trait
+/// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use beamer_core::PluginConfig;
+/// use beamer_core::Config;
 /// use beamer_vst3::{export_vst3, Vst3Config, vst3};
 ///
 /// // Shared plugin configuration
-/// static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+/// static CONFIG: Config = Config::new("My Plugin")
 ///     .with_vendor("My Company");
 ///
 /// // VST3-specific configuration

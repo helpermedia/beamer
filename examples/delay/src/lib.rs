@@ -1,15 +1,23 @@
 //! Beamer Delay - Example tempo-synced delay plugin demonstrating the Beamer framework.
 //!
-//! This plugin shows how to:
-//! 1. Use `EnumParameter` for sync mode (quarter, eighth, 16th, 32nd, free)
-//! 2. Use `#[derive(Parameters)]` which generates both parameters and `HasParameters`
-//! 3. Use tempo information from `ProcessContext` for tempo-synced delays
-//! 4. Implement a ring buffer delay line
-//! 5. Apply parameter smoothing to avoid zipper noise
-//! 6. Support both simple stereo and ping-pong modes
-//! 7. Declare proper tail length for delay decay
-//! 8. Use `SampleRate` setup for sample-rate-dependent initialization
-//! 9. Implement `reset()` to clear internal state on playback restart
+//! # Three-Struct Pattern
+//!
+//! Beamer plugins use three structs for clear separation of concerns:
+//!
+//! 1. **`DelayParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+//! 2. **`DelayDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+//! 3. **`DelayProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//!
+//! # Features Demonstrated
+//!
+//! - `EnumParameter` for sync mode (quarter, eighth, 16th, 32nd, free)
+//! - Tempo information from `ProcessContext` for tempo-synced delays
+//! - Ring buffer delay line implementation
+//! - Parameter smoothing to avoid zipper noise
+//! - Both simple stereo and ping-pong modes
+//! - Proper tail length declaration for delay decay
+//! - `SampleRate` setup for sample-rate-dependent initialization
+//! - `reset()` to clear internal state on playback restart
 
 use beamer::prelude::*;
 
@@ -18,7 +26,7 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Delay")
+pub static CONFIG: Config = Config::new("Beamer Delay")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -77,19 +85,16 @@ pub enum StereoMode {
 }
 
 // =============================================================================
-// Plugin
+// Parameters
 // =============================================================================
 
-/// The delay plugin - holds parameters and implements `Plugin`.
+/// Delay plugin parameters.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
 /// attributes, and the `#[derive(Parameters)]` macro generates everything
-/// including the `Default` and `HasParameters` implementations!
-///
-/// This struct IS the plugin directly - when `prepare()` is called,
-/// it transforms into a [`DelayProcessor`] for audio processing.
+/// including the `Default` implementation.
 #[derive(Parameters)]
-pub struct Delay {
+pub struct DelayParameters {
     /// Sync mode selection (Free, 1/4, 1/8, 1/16, 1/32)
     #[parameter(id = "sync_mode", name = "Sync Mode")]
     pub sync_mode: EnumParameter<SyncMode>,
@@ -125,7 +130,7 @@ pub struct Delay {
 /// - SyncMode: Free=0, Quarter=1, Eighth=2, Sixteenth=3, ThirtySecond=4
 /// - StereoMode: Stereo=0, PingPong=1
 #[derive(Presets)]
-#[preset(parameters = Delay)]
+#[preset(parameters = DelayParameters)]
 pub enum DelayPresets {
     /// Quick slapback echo - short delay for doubling effect
     #[preset(
@@ -249,13 +254,26 @@ impl DelayLine {
     }
 
     /// Clear the buffer (e.g., on parameter changes that could cause feedback issues)
-    #[allow(dead_code)]
     fn clear(&mut self) {
         self.buffer.fill(0.0);
     }
 }
 
-impl Plugin for Delay {
+// =============================================================================
+// Descriptor
+// =============================================================================
+
+/// Delay plugin descriptor (unprepared state).
+///
+/// Holds parameters and describes the plugin to the host before audio
+/// configuration is known. Transforms into `DelayProcessor` via `prepare()`.
+#[derive(Default, HasParameters)]
+pub struct DelayDescriptor {
+    #[parameters]
+    pub parameters: DelayParameters,
+}
+
+impl Descriptor for DelayDescriptor {
     // Delay needs sample rate for buffer allocation.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
@@ -263,10 +281,10 @@ impl Plugin for Delay {
 
     fn prepare(mut self, setup: SampleRate) -> DelayProcessor {
         // Set sample rate on parameters for smoothing calculations
-        self.set_sample_rate(setup.hz());
+        self.parameters.set_sample_rate(setup.hz());
 
         DelayProcessor {
-            parameters: self,
+            parameters: self.parameters,
             delay_l: DelayLine::new(setup.hz()),
             delay_r: DelayLine::new(setup.hz()),
             sample_rate: setup.hz(),
@@ -275,18 +293,18 @@ impl Plugin for Delay {
 }
 
 // =============================================================================
-// Audio Processor (Prepared State)
+// Processor
 // =============================================================================
 
-/// The delay plugin processor, ready for audio processing.
+/// Delay plugin processor (prepared state).
 ///
-/// This struct is created by [`Delay::prepare()`] with valid
-/// sample rate configuration. All fields have real values from the start.
+/// Ready for audio processing. Created by `DelayDescriptor::prepare()`
+/// with valid sample rate configuration. All fields have real values from the start.
 #[derive(HasParameters)]
 pub struct DelayProcessor {
-    /// Plugin parameters (the `Delay` struct IS the parameters)
+    /// Plugin parameters
     #[parameters]
-    parameters: Delay,
+    parameters: DelayParameters,
     /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
@@ -433,8 +451,8 @@ impl DelayProcessor {
     }
 }
 
-impl AudioProcessor for DelayProcessor {
-    type Plugin = Delay;
+impl Processor for DelayProcessor {
+    type Descriptor = DelayDescriptor;
 
     fn process(
         &mut self,
@@ -475,15 +493,11 @@ impl AudioProcessor for DelayProcessor {
 }
 
 // =============================================================================
-// VST3 Export
+// Plugin Exports
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Delay, DelayPresets);
-
-// =============================================================================
-// Audio Unit Export
-// =============================================================================
+export_vst3!(CONFIG, VST3_CONFIG, DelayDescriptor, DelayPresets);
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, Delay, DelayPresets);
+export_au!(CONFIG, AU_CONFIG, DelayDescriptor, DelayPresets);

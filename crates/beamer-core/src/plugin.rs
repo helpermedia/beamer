@@ -2,12 +2,12 @@
 //!
 //! This module defines the two-phase plugin lifecycle:
 //!
-//! - **[`Plugin`]** (unprepared state): Holds parameters, created before audio config is known.
-//!   Transforms into a processor via [`Plugin::prepare()`] when configuration arrives.
+//! - **[`Descriptor`]** (unprepared state): Holds parameters, created before audio config is known.
+//!   Transforms into a processor via [`Descriptor::prepare()`] when configuration arrives.
 //!
-//! - **[`AudioProcessor`]** (prepared state): Ready for audio processing with real sample rate
-//!   and buffer configuration. Created by [`Plugin::prepare()`], can return to unprepared
-//!   state via [`AudioProcessor::unprepare()`] for sample rate changes.
+//! - **[`Processor`]** (prepared state): Ready for audio processing with real sample rate
+//!   and buffer configuration. Created by [`Descriptor::prepare()`], can return to unprepared
+//!   state via [`Processor::unprepare()`] for sample rate changes.
 //!
 //! This design eliminates placeholder values by making it impossible to process audio
 //! until proper configuration is available.
@@ -31,7 +31,7 @@ use crate::process_context::ProcessContext;
 /// Trait for types that hold parameters.
 ///
 /// This trait provides a common interface for parameter access, shared between
-/// [`Plugin`] (unprepared state) and [`AudioProcessor`] (prepared state).
+/// [`Descriptor`] (unprepared state) and [`Processor`] (prepared state).
 /// Both traits require `HasParameters` as a supertrait.
 ///
 /// # Derive Macro
@@ -67,8 +67,8 @@ pub trait HasParameters: Send + 'static {
 
     /// Sets the parameters, replacing any existing values.
     ///
-    /// This is used by the default [`AudioProcessor::unprepare()`] implementation
-    /// to transfer parameters from the processor back to the plugin.
+    /// This is used by the default [`Processor::unprepare()`] implementation
+    /// to transfer parameters from the processor back to the definition.
     fn set_parameters(&mut self, params: Self::Parameters);
 }
 
@@ -106,7 +106,7 @@ impl HostSetup {
 
 /// Trait for plugin setup requirements.
 ///
-/// Plugins declare what host information they need via [`Plugin::Setup`].
+/// Plugins declare what host information they need via [`Descriptor::Setup`].
 /// The framework extracts only the requested data from the host.
 ///
 /// # Composable Setup Types
@@ -146,7 +146,7 @@ pub trait PluginSetup: Clone + Send + 'static {
 /// # Example
 ///
 /// ```ignore
-/// impl Plugin for GainPlugin {
+/// impl Descriptor for GainPlugin {
 ///     type Setup = ();
 ///     fn prepare(self, _: ()) -> GainProcessor {
 ///         GainProcessor { parameters: self.parameters }
@@ -169,7 +169,7 @@ impl PluginSetup for () {
 /// # Example
 ///
 /// ```ignore
-/// impl Plugin for DelayPlugin {
+/// impl Descriptor for DelayPlugin {
 ///     type Setup = SampleRate;
 ///     fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * sample_rate.0) as usize;
@@ -205,7 +205,7 @@ impl PluginSetup for SampleRate {
 /// # Example
 ///
 /// ```ignore
-/// impl Plugin for FftPlugin {
+/// impl Descriptor for FftPlugin {
 ///     type Setup = (SampleRate, MaxBufferSize);
 ///     fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 ///         FftProcessor {
@@ -245,7 +245,7 @@ impl PluginSetup for MainInputChannels {
 /// # Example
 ///
 /// ```ignore
-/// impl Plugin for SurroundPlugin {
+/// impl Descriptor for SurroundPlugin {
 ///     type Setup = (SampleRate, MainOutputChannels);
 ///     fn prepare(self, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
 ///         SurroundProcessor {
@@ -298,14 +298,14 @@ impl PluginSetup for AuxOutputCount {
 /// # Example
 ///
 /// ```ignore
-/// impl Plugin for OversamplingPlugin {
+/// impl Descriptor for OversamplingPlugin {
 ///     type Setup = (SampleRate, ProcessMode);
-///     fn prepare(self, (sr, mode): (SampleRate, ProcessMode)) -> Processor {
+///     fn prepare(self, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
 ///         let oversampling = match mode {
 ///             ProcessMode::Realtime => 2,
 ///             ProcessMode::Offline => 8,
 ///         };
-///         Processor { sample_rate: sr.0, oversampling }
+///         OversamplingProcessor { sample_rate: sr.0, oversampling }
 ///     }
 /// }
 /// ```
@@ -408,7 +408,7 @@ impl BusLayout {
     }
 
     /// Create a layout from a plugin's bus configuration.
-    pub fn from_plugin<P: Plugin>(plugin: &P) -> Self {
+    pub fn from_plugin<P: Descriptor>(plugin: &P) -> Self {
         Self {
             main_input_channels: plugin
                 .input_bus_info(0)
@@ -495,7 +495,7 @@ impl BusInfo {
 }
 
 // =============================================================================
-// AudioProcessor Trait
+// Processor Trait
 // =============================================================================
 
 /// The prepared processor - ready for audio processing.
@@ -505,7 +505,7 @@ impl BusInfo {
 /// meaning the same implementation can be wrapped for VST3, CLAP, or other
 /// plugin formats.
 ///
-/// An `AudioProcessor` is created by calling [`Plugin::prepare()`] with the
+/// A `Processor` is created by calling [`Descriptor::prepare()`] with the
 /// audio configuration. Unlike the old design where `setup()` was called
 /// after construction, here the processor is created with valid configuration
 /// from the start - no placeholder values.
@@ -513,17 +513,17 @@ impl BusInfo {
 /// # Lifecycle
 ///
 /// ```text
-/// Plugin::default() -> Plugin (unprepared, holds parameters)
+/// Descriptor::default() -> Descriptor (unprepared, holds parameters)
 ///                      |
-///                      v  Plugin::prepare(config)
-///                      |
-///                      v
-///                AudioProcessor (prepared, ready for audio)
-///                      |
-///                      v  AudioProcessor::unprepare()
+///                      v  Descriptor::prepare(config)
 ///                      |
 ///                      v
-///                 Plugin (unprepared, parameters preserved)
+///                Processor (prepared, ready for audio)
+///                      |
+///                      v  Processor::unprepare()
+///                      |
+///                      v
+///                 Descriptor (unprepared, parameters preserved)
 /// ```
 ///
 /// # Thread Safety
@@ -537,15 +537,15 @@ impl BusInfo {
 ///
 /// # Note on HasParameters
 ///
-/// The `AudioProcessor` trait requires [`HasParameters`] as a supertrait, which provides
+/// The `Processor` trait requires [`HasParameters`] as a supertrait, which provides
 /// the `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
 /// `#[parameters]` field annotation to implement this automatically.
-pub trait AudioProcessor: HasParameters {
-    /// The unprepared plugin type that created this processor.
+pub trait Processor: HasParameters {
+    /// The unprepared definition type that created this processor.
     ///
-    /// Used by [`AudioProcessor::unprepare()`] to return to the unprepared state.
-    /// The Parameters type must match the plugin's Parameters type.
-    type Plugin: Plugin<Processor = Self, Parameters = Self::Parameters>;
+    /// Used by [`Processor::unprepare()`] to return to the unprepared state.
+    /// The Parameters type must match the definition's Parameters type.
+    type Descriptor: Descriptor<Processor = Self, Parameters = Self::Parameters>;
 
     /// Process an audio buffer with transport context.
     ///
@@ -612,27 +612,27 @@ pub trait AudioProcessor: HasParameters {
     /// ```
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext);
 
-    /// Return to the unprepared plugin state.
+    /// Return to the unprepared definition state.
     ///
     /// This is used when sample rate or buffer configuration changes.
-    /// The processor is consumed and returns the original plugin with
+    /// The processor is consumed and returns the original definition with
     /// parameters preserved. The wrapper can then call `prepare()` again
     /// with the new configuration.
     ///
     /// # Default Implementation
     ///
-    /// The default implementation creates a new `Plugin::default()` and
+    /// The default implementation creates a new `Descriptor::default()` and
     /// transfers the parameters from this processor to it. This works for
-    /// most plugins where the Plugin struct only holds parameters.
+    /// most plugins where the Descriptor struct only holds parameters.
     ///
-    /// Override this method if your Plugin has additional state beyond
+    /// Override this method if your Descriptor has additional state beyond
     /// parameters that needs to be preserved across unprepare/prepare cycles.
     ///
     /// # Example (custom implementation)
     ///
     /// ```ignore
-    /// impl AudioProcessor for DelayProcessor {
-    ///     type Plugin = DelayPlugin;
+    /// impl Processor for DelayProcessor {
+    ///     type Descriptor = DelayPlugin;
     ///
     ///     fn unprepare(self) -> DelayPlugin {
     ///         DelayPlugin {
@@ -642,14 +642,14 @@ pub trait AudioProcessor: HasParameters {
     ///     }
     /// }
     /// ```
-    fn unprepare(mut self) -> Self::Plugin
+    fn unprepare(mut self) -> Self::Descriptor
     where
         Self: Sized,
     {
         let params = std::mem::take(self.parameters_mut());
-        let mut plugin = Self::Plugin::default();
-        plugin.set_parameters(params);
-        plugin
+        let mut definition = Self::Descriptor::default();
+        definition.set_parameters(params);
+        definition
     }
 
     // Note: `parameters()` and `parameters_mut()` are provided by the `HasParameters` supertrait.
@@ -920,30 +920,30 @@ pub trait AudioProcessor: HasParameters {
 }
 
 // =============================================================================
-// Plugin Trait
+// Descriptor Trait
 // =============================================================================
 
-/// The unprepared plugin - holds parameters before audio config is known.
+/// The unprepared plugin definition - holds parameters before audio config is known.
 ///
 /// This is the primary trait that plugin authors implement to create a complete
 /// audio plugin. It holds parameters and configuration that doesn't depend on
-/// sample rate, and transforms into an [`AudioProcessor`] via [`Plugin::prepare()`]
+/// sample rate, and transforms into a [`Processor`] via [`Descriptor::prepare()`]
 /// when audio configuration becomes available.
 ///
 /// # Two-Phase Lifecycle
 ///
 /// ```text
-/// Plugin::default() -> Plugin (unprepared, holds parameters)
+/// Descriptor::default() -> Descriptor (unprepared, holds parameters)
 ///                      |
-///                      v  Plugin::prepare(config)
-///                      |
-///                      v
-///                AudioProcessor (prepared, ready for audio)
-///                      |
-///                      v  AudioProcessor::unprepare()
+///                      v  Descriptor::prepare(config)
 ///                      |
 ///                      v
-///                 Plugin (unprepared, parameters preserved)
+///                Processor (prepared, ready for audio)
+///                      |
+///                      v  Processor::unprepare()
+///                      |
+///                      v
+///                 Descriptor (unprepared, parameters preserved)
 /// ```
 ///
 /// # Example: Simple Gain (no setup)
@@ -955,7 +955,7 @@ pub trait AudioProcessor: HasParameters {
 ///     parameters: GainParameters,
 /// }
 ///
-/// impl Plugin for GainPlugin {
+/// impl Descriptor for GainPlugin {
 ///     type Setup = ();
 ///     type Processor = GainProcessor;
 ///
@@ -970,8 +970,8 @@ pub trait AudioProcessor: HasParameters {
 ///     parameters: GainParameters,
 /// }
 ///
-/// impl AudioProcessor for GainProcessor {
-///     type Plugin = GainPlugin;
+/// impl Processor for GainProcessor {
+///     type Descriptor = GainPlugin;
 ///
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 ///         let gain = self.parameters.gain_linear();
@@ -997,7 +997,7 @@ pub trait AudioProcessor: HasParameters {
 ///     parameters: DelayParameters,
 /// }
 ///
-/// impl Plugin for DelayPlugin {
+/// impl Descriptor for DelayPlugin {
 ///     type Setup = SampleRate;
 ///     type Processor = DelayProcessor;
 ///
@@ -1014,10 +1014,10 @@ pub trait AudioProcessor: HasParameters {
 ///
 /// # Note on HasParameters
 ///
-/// The `Plugin` trait requires [`HasParameters`] as a supertrait, which provides the
+/// The `Descriptor` trait requires [`HasParameters`] as a supertrait, which provides the
 /// `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
 /// `#[parameters]` field annotation to implement this automatically.
-pub trait Plugin: HasParameters + Default {
+pub trait Descriptor: HasParameters + Default {
     /// The setup information this plugin needs to prepare.
     ///
     /// Request exactly what you need:
@@ -1029,13 +1029,13 @@ pub trait Plugin: HasParameters + Default {
     /// See [`PluginSetup`] for all available types.
     type Setup: PluginSetup;
 
-    /// The prepared processor type created by [`Plugin::prepare()`].
-    type Processor: AudioProcessor<Plugin = Self, Parameters = Self::Parameters>;
+    /// The prepared processor type created by [`Descriptor::prepare()`].
+    type Processor: Processor<Descriptor = Self, Parameters = Self::Parameters>;
 
-    /// Transform this plugin into a prepared processor.
+    /// Transform this definition into a prepared processor.
     ///
     /// This is called when audio configuration becomes available (in VST3,
-    /// during `setupProcessing()`). The plugin is consumed and transformed
+    /// during `setupProcessing()`). The definition is consumed and transformed
     /// into a processor with valid configuration - no placeholder values.
     ///
     /// # Arguments
@@ -1092,7 +1092,7 @@ pub trait Plugin: HasParameters + Default {
     /// Override to return `true` if your plugin needs MIDI input/output.
     /// This is used by the host to determine event bus configuration.
     ///
-    /// **Note:** This method is also on [`AudioProcessor`], but the Plugin
+    /// **Note:** This method is also on [`Processor`], but the Descriptor
     /// version is queried during bus configuration (before prepare).
     /// Both should return the same value.
     ///
@@ -1154,7 +1154,7 @@ pub trait Plugin: HasParameters + Default {
     /// # Example
     ///
     /// ```ignore
-    /// impl Plugin for MySynth {
+    /// impl Descriptor for MySynth {
     ///     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
     ///         Some(MidiCcConfig::new()
     ///             .with_pitch_bend()

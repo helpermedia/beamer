@@ -1,20 +1,29 @@
 //! Beamer Synth - Example polyphonic synthesizer demonstrating the Beamer framework.
 //!
-//! This plugin shows how to:
-//! 1. Handle MIDI note events with sample-accurate timing
-//! 2. Implement 8-voice polyphony with voice stealing
-//! 3. Build an ADSR envelope generator
-//! 4. Create naive waveform oscillators (sine, saw, square, triangle)
-//! 5. Implement a simple one-pole lowpass filter with resonance
-//! 6. Use `EnumParameter` for waveform selection
-//! 7. Use `IntParameter` for transpose (±2 octaves)
-//! 8. Use flat parameter groups (`group = "..."`)
-//! 9. Apply parameter smoothing for filter cutoff/resonance
-//! 10. Handle pitch bend messages (±2 semitones)
-//! 11. Use mod wheel (CC 1) to control vibrato depth and filter cutoff
-//! 12. Handle polyphonic aftertouch (per-note vibrato control)
-//! 13. Handle channel aftertouch (global vibrato control)
-//! 14. Use `SampleRate` setup for sample-rate-dependent initialization
+//! # Three-Struct Pattern
+//!
+//! Beamer plugins use three structs for clear separation of concerns:
+//!
+//! 1. **`SynthParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+//! 2. **`SynthDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+//! 3. **`SynthProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//!
+//! # Features Demonstrated
+//!
+//! - MIDI note events with sample-accurate timing
+//! - 8-voice polyphony with voice stealing
+//! - ADSR envelope generator
+//! - Naive waveform oscillators (sine, saw, square, triangle)
+//! - Simple one-pole lowpass filter with resonance
+//! - `EnumParameter` for waveform selection
+//! - `IntParameter` for transpose (+-2 octaves)
+//! - Flat parameter groups (`group = "..."`)
+//! - Parameter smoothing for filter cutoff/resonance
+//! - Pitch bend messages (+-2 semitones)
+//! - Mod wheel (CC 1) to control vibrato depth and filter cutoff
+//! - Polyphonic aftertouch (per-note vibrato control)
+//! - Channel aftertouch (global vibrato control)
+//! - `SampleRate` setup for sample-rate-dependent initialization
 
 use beamer::prelude::*;
 
@@ -23,7 +32,7 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: PluginConfig = PluginConfig::new("Beamer Synth")
+pub static CONFIG: Config = Config::new("Beamer Synth")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -94,17 +103,17 @@ enum EnvelopeStage {
 // Parameters
 // =============================================================================
 
-/// The synthesizer plugin.
+/// Synthesizer plugin parameters.
 ///
-/// This struct serves as both the parameter collection and the Plugin itself.
-/// Uses declarative parameter definition with `#[derive(Parameters)]`.
+/// The `#[derive(Parameters)]` macro generates:
+/// - `Parameters` trait (count, iter, by_id, save_state, load_state)
+/// - `ParameterStore` trait (host integration)
+/// - `Default` trait (from attribute values)
+///
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
-///
-/// When the host calls setupProcessing(), it is transformed into a
-/// [`SynthProcessor`] via the [`Plugin::prepare()`] method.
 #[derive(Parameters)]
-pub struct Synth {
+pub struct SynthParameters {
     // =========================================================================
     // Oscillator
     // =========================================================================
@@ -156,6 +165,68 @@ pub struct Synth {
     /// Master output gain in dB
     #[parameter(id = "gain", name = "Gain", default = -6.0, range = -60.0..=6.0, kind = "db", group = "Global")]
     pub gain: FloatParameter,
+}
+
+// =============================================================================
+// Descriptor
+// =============================================================================
+
+/// Synthesizer plugin descriptor (unprepared state).
+///
+/// Holds parameters and describes the plugin to the host before audio
+/// configuration is known. Transforms into `SynthProcessor` via `prepare()`.
+#[derive(Default, HasParameters)]
+pub struct SynthDescriptor {
+    #[parameters]
+    pub parameters: SynthParameters,
+}
+
+impl Descriptor for SynthDescriptor {
+    // Synth needs sample rate for filter calculations.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
+    type Processor = SynthProcessor;
+
+    fn prepare(mut self, setup: SampleRate) -> SynthProcessor {
+        // Set sample rate on parameters for smoothing calculations
+        self.parameters.set_sample_rate(setup.hz());
+
+        SynthProcessor {
+            parameters: self.parameters,
+            voices: [Voice::new(); NUM_VOICES],
+            sample_rate: setup.hz(),
+            time_counter: 0,
+            pending_events: Vec::with_capacity(64),
+            pitch_bend: 0.0,
+            mod_wheel: 0.0,
+            vibrato_phase: 0.0,
+            channel_pressure: 0.0,
+        }
+    }
+
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> {
+        // Use the SYNTH_FULL preset which includes pitch bend, aftertouch,
+        // mod wheel, breath, volume, pan, expression, and sustain.
+        // This solves the VST3 MIDI input problem where most DAWs don't send
+        // raw MIDI CC events - instead they use IMidiMapping (hidden parameters).
+        Some(MidiCcConfig::SYNTH_FULL)
+    }
+
+    // =========================================================================
+    // Bus Configuration
+    // =========================================================================
+
+    fn input_bus_count(&self) -> usize {
+        0 // Synth has no audio input
+    }
+
+    fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
+        None // No inputs
+    }
+
+    fn wants_midi(&self) -> bool {
+        true // Synth needs MIDI input
+    }
 }
 
 // =============================================================================
@@ -266,7 +337,7 @@ impl Voice {
     #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
-        params: &Synth,
+        params: &SynthParameters,
         waveform: Waveform,
         cutoff: f64,
         resonance: f64,
@@ -392,71 +463,19 @@ impl Voice {
 }
 
 // =============================================================================
-// Plugin Implementation
+// Processor
 // =============================================================================
 
-impl Plugin for Synth {
-    // Synth needs sample rate for filter calculations.
-    // See `beamer::setup` for all available types.
-    type Setup = SampleRate;
-    type Processor = SynthProcessor;
-
-    fn prepare(mut self, setup: SampleRate) -> SynthProcessor {
-        // Set sample rate on parameters for smoothing calculations
-        self.set_sample_rate(setup.hz());
-
-        SynthProcessor {
-            parameters: self,
-            voices: [Voice::new(); NUM_VOICES],
-            sample_rate: setup.hz(),
-            time_counter: 0,
-            pending_events: Vec::with_capacity(64),
-            pitch_bend: 0.0,
-            mod_wheel: 0.0,
-            vibrato_phase: 0.0,
-            channel_pressure: 0.0,
-        }
-    }
-
-    fn midi_cc_config(&self) -> Option<MidiCcConfig> {
-        // Use the SYNTH_FULL preset which includes pitch bend, aftertouch,
-        // mod wheel, breath, volume, pan, expression, and sustain.
-        // This solves the VST3 MIDI input problem where most DAWs don't send
-        // raw MIDI CC events - instead they use IMidiMapping (hidden parameters).
-        Some(MidiCcConfig::SYNTH_FULL)
-    }
-
-    // =========================================================================
-    // Bus Configuration
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        0 // Synth has no audio input
-    }
-
-    fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
-        None // No inputs
-    }
-
-    fn wants_midi(&self) -> bool {
-        true // Synth needs MIDI input
-    }
-}
-
-// =============================================================================
-// Audio Processor (Prepared State)
-// =============================================================================
-
-/// The synthesizer processor, ready for audio processing.
+/// Synthesizer plugin processor (prepared state).
 ///
-/// This struct is created by [`Synth::prepare()`] with valid
-/// sample rate configuration. Manages 8 polyphonic voices with
-/// sample-accurate MIDI timing and oldest-note voice stealing.
+/// Ready for audio processing. Created by `SynthDescriptor::prepare()`.
+/// Manages 8 polyphonic voices with sample-accurate MIDI timing and
+/// oldest-note voice stealing.
 #[derive(HasParameters)]
 pub struct SynthProcessor {
     /// Plugin parameters
     #[parameters]
-    parameters: Synth,
+    parameters: SynthParameters,
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -673,8 +692,8 @@ impl SynthProcessor {
     }
 }
 
-impl AudioProcessor for SynthProcessor {
-    type Plugin = Synth;
+impl Processor for SynthProcessor {
+    type Descriptor = SynthDescriptor;
 
     fn process(
         &mut self,
@@ -714,15 +733,11 @@ impl AudioProcessor for SynthProcessor {
 }
 
 // =============================================================================
-// VST3 Export
+// Plugin Exports
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, Synth);
-
-// =============================================================================
-// Audio Unit Export
-// =============================================================================
+export_vst3!(CONFIG, VST3_CONFIG, SynthDescriptor);
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, Synth);
+export_au!(CONFIG, AU_CONFIG, SynthDescriptor);

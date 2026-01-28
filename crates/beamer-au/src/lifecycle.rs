@@ -33,8 +33,8 @@
 //! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
 use beamer_core::{
-    AudioProcessor, BusLayout, CachedBusConfig, ConversionBuffers, HasParameters, MidiCcConfig,
-    Plugin, PluginSetup,
+    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, HasParameters, MidiCcConfig,
+    PluginSetup, Processor,
 };
 use log;
 
@@ -42,7 +42,7 @@ use log;
 ///
 /// This mirrors the VST3 state machine and maps directly to AU's
 /// `allocateRenderResources` / `deallocateRenderResources` lifecycle.
-pub(crate) enum AuState<P: Plugin> {
+pub(crate) enum AuState<P: Descriptor> {
     /// Plugin created but not prepared for audio.
     ///
     /// In this state:
@@ -81,7 +81,7 @@ pub(crate) enum AuState<P: Plugin> {
     Transitioning,
 }
 
-impl<P: Plugin> AuState<P> {
+impl<P: Descriptor> AuState<P> {
     /// Create a new state machine in unprepared state.
     pub fn new() -> Self {
         Self::Unprepared {
@@ -165,7 +165,7 @@ impl<P: Plugin> AuState<P> {
     }
 }
 
-impl<P: Plugin> Default for AuState<P> {
+impl<P: Descriptor> Default for AuState<P> {
     fn default() -> Self {
         Self::new()
     }
@@ -246,7 +246,7 @@ fn allocate_processing_resources(
     (conversion_buffers, midi_cc_state, midi_output_buffer)
 }
 
-impl<P: Plugin> AuState<P> {
+impl<P: Descriptor> AuState<P> {
     /// Transition from Unprepared to Prepared.
     ///
     /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for

@@ -8,9 +8,9 @@
 //! # Usage
 //!
 //! ```ignore
-//! use beamer_core::{Plugin, MidiCcConfig};
+//! use beamer_core::{Descriptor, MidiCcConfig};
 //!
-//! impl Plugin for MySynth {
+//! impl Descriptor for MySynth {
 //!     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
 //!         // Use a preset for common configurations
 //!         Some(MidiCcConfig::SYNTH_BASIC)

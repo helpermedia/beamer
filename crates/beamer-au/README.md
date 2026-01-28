@@ -31,7 +31,7 @@ Audio Units are macOS-exclusive. This crate will not compile on other platforms.
 
 ## Features
 
-Audio Unit plugins share the same `Plugin` and `AudioProcessor` traits as VST3, allowing multi-format builds from a single codebase.
+Audio Unit plugins share the same `Descriptor` and `Processor` traits as VST3, allowing multi-format builds from a single codebase.
 
 ### Production Ready
 
@@ -88,7 +88,7 @@ Beamer AU provides dual-format support through a shared C-ABI bridge layer:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Rust Plugin Implementation                    │
 │  ─────────────────────────────────────────────────────────────  │
-│  Plugin trait + AudioProcessor trait                            │
+│  Descriptor trait + Processor trait                             │
 │  Same code as VST3                                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -113,7 +113,7 @@ use beamer::prelude::*;
 use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared configuration
-pub static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+pub static CONFIG: Config = Config::new("My Plugin")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
 

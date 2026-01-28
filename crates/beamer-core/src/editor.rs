@@ -64,6 +64,6 @@ pub trait EditorDelegate: Send {
 /// Trait for plugins that don't need an editor.
 ///
 /// Implement this for plugins that don't have a GUI. This is the default
-/// for the basic `AudioProcessor` trait, but can be explicitly implemented
+/// for the basic `Processor` trait, but can be explicitly implemented
 /// to opt out of editor support.
 pub trait NoEditor {}

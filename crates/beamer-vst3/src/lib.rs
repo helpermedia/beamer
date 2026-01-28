@@ -16,7 +16,7 @@
 //! used by most audio plugin frameworks.
 //!
 //! ```text
-//! User Plugin (implements beamer_core::Plugin)
+//! User Plugin (implements beamer_core::Descriptor)
 //!        ↓
 //! Vst3Processor<P> (generic VST3 wrapper)
 //!        ↓
@@ -25,18 +25,18 @@
 //!
 //! ## Usage
 //!
-//! 1. Implement `beamer_core::Plugin` for your plugin type
+//! 1. Implement `beamer_core::Descriptor` for your plugin type
 //! 2. Use `export_vst3!` macro to generate entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::{Plugin, AudioProcessor, Buffer, PluginConfig};
+//! use beamer_core::{Descriptor, Processor, Buffer, Config};
 //! use beamer_vst3::{export_vst3, Vst3Processor, Vst3Config, vst3};
 //!
 //! // Define your plugin
 //! struct MyGain { parameters: MyParameters }
 //!
 //! // Shared plugin config
-//! static CONFIG: PluginConfig = PluginConfig::new("My Plugin")
+//! static CONFIG: Config = Config::new("My Plugin")
 //!     .with_vendor("My Company");
 //!
 //! // VST3-specific config (generate UUID with: cargo xtask generate-uuid)
@@ -62,7 +62,7 @@ pub use processor::Vst3Processor;
 pub use wrapper::Vst3Config;
 
 // Re-export shared types from beamer-core
-pub use beamer_core::PluginConfig;
+pub use beamer_core::Config;
 pub use beamer_core::{FactoryPresets, HasParameters, NoPresets};
 
 // Re-export vst3 crate for use in macros and UIDs

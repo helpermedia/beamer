@@ -5,7 +5,7 @@
 use std::ffi::c_void;
 use std::marker::PhantomData;
 
-use beamer_core::PluginConfig;
+use beamer_core::Config;
 use vst3::com_scrape_types::MakeHeader;
 use vst3::{Class, ComWrapper, Steinberg::*};
 
@@ -17,14 +17,14 @@ use crate::wrapper::Vst3Config;
 /// Generic over the component type C. Creates combined component instances
 /// (IComponent + IEditController in one object).
 pub struct Factory<C> {
-    config: &'static PluginConfig,
+    config: &'static Config,
     vst3_config: &'static Vst3Config,
     _marker: PhantomData<C>,
 }
 
 impl<C> Factory<C> {
     /// Create a new factory with the given configuration.
-    pub const fn new(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self {
+    pub const fn new(config: &'static Config, vst3_config: &'static Vst3Config) -> Self {
         Self {
             config,
             vst3_config,
@@ -35,7 +35,7 @@ impl<C> Factory<C> {
 
 /// Trait implemented by component types that can be constructed from plugin configs.
 pub trait ComponentFactory: Class {
-    fn create(config: &'static PluginConfig, vst3_config: &'static Vst3Config) -> Self;
+    fn create(config: &'static Config, vst3_config: &'static Vst3Config) -> Self;
 }
 
 impl<C> Class for Factory<C>
