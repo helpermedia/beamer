@@ -83,10 +83,12 @@ impl Vst3Config {
         const fn parse_u32(bytes: &[u8], start: usize) -> u32 {
             let mut result: u32 = 0;
             let mut i = 0;
-            while i < 8 {
+            let mut hex_count = 0;
+            while hex_count < 8 {
                 let c = bytes[start + i];
                 if c != b'-' {
                     result = (result << 4) | (hex_to_u8(c) as u32);
+                    hex_count += 1;
                 }
                 i += 1;
             }
