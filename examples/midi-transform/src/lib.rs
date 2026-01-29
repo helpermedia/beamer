@@ -1,13 +1,4 @@
-//! Beamer MIDI Transform - Example VST3 instrument demonstrating advanced parameter features.
-//!
-//! This plugin showcases the Beamer parameter system and MIDI event handling:
-//! - **Three-struct pattern**: Parameters, Descriptor, Processor
-//! - **Nested parameter groups** with `#[nested(group = "...")]`
-//! - **EnumParameter** for discrete choices (transform modes)
-//! - **IntParameter** for note/CC number selection
-//! - **BoolParameter** for enable toggles
-//! - **FloatParameter** for velocity/value scaling
-//! - **Clean MIDI event modification** with the `with()` method
+//! Beamer MIDI Transform - Example MIDI effect demonstrating the Beamer framework.
 //!
 //! # Three-Struct Pattern
 //!
@@ -17,37 +8,27 @@
 //! 2. **`MidiTransformDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
 //! 3. **`MidiTransformProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
 //!
-//! # Features
+//! # Features Demonstrated
 //!
-//! **Note Transform Group:**
-//! - Enable/disable note processing
-//! - Multiple transform modes (Transpose, Octave shifts, Remap, Invert)
-//! - Note remapping (Note In -> Note Out)
-//! - Velocity scaling
+//! - Nested parameter groups with `#[nested(group = "...")]`
+//! - `EnumParameter` for discrete choices (transform modes)
+//! - `IntParameter` for note/CC number selection
+//! - `BoolParameter` for enable toggles
+//! - `FloatParameter` for velocity/value scaling
+//! - `process_midi()` for MIDI-only processing
+//! - MIDI event modification with the `with()` method
 //!
-//! **CC Transform Group:**
-//! - Enable/disable CC processing
-//! - Multiple CC modes (Remap, Scale, Invert)
-//! - CC number remapping (CC X -> CC Y)
-//! - Value scaling
+//! # MIDI Event Modification
 //!
-//! # MIDI Event Handling
-//!
-//! Use the `with()` method to transform MIDI events while preserving timing.
-//! Combined with Rust's struct update syntax (`..`), this is clean and safe:
+//! The `with()` method transforms events while preserving timing:
 //!
 //! ```ignore
-//! MidiEventKind::NoteOn(note_on) => {
-//!     output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
-//!         pitch: new_pitch,
-//!         velocity: new_velocity,
-//!         ..*note_on  // Copy channel, note_id, tuning, length
-//!     })));
-//! }
+//! output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+//!     pitch: new_pitch,
+//!     velocity: new_velocity,
+//!     ..*note_on
+//! })));
 //! ```
-//!
-//! The `with()` method automatically preserves `sample_offset`, so you only
-//! need to specify what changes.
 
 use beamer::prelude::*;
 

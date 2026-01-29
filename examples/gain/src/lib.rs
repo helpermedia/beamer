@@ -7,6 +7,12 @@
 //! 1. **`GainParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
 //! 2. **`GainDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
 //! 3. **`GainProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//!
+//! # Features Demonstrated
+//!
+//! - `FloatParameter` with dB scaling via `kind = "db"`
+//! - `()` setup for plugins without sample-rate-dependent state
+//! - Generic f32/f64 processing via `Sample` trait
 
 use beamer::prelude::*;
 
