@@ -412,7 +412,7 @@ Use `group = "..."` for visual grouping in the DAW without nested structs:
 
 ```rust
 #[derive(Parameters)]
-pub struct SynthParameters {
+pub struct SynthesizerParameters {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
     pub cutoff: FloatParameter,
 
@@ -444,7 +444,7 @@ Use `#[nested]` to organize parameters into separate structs with VST3 units:
 
 ```rust
 #[derive(Parameters)]
-pub struct SynthParameters {
+pub struct SynthesizerParameters {
     #[parameter(id = "master", name = "Master", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub master: FloatParameter,
 
@@ -1416,7 +1416,7 @@ pub struct NoteExpressionValue {
 **INoteExpressionController**: Advertise supported expressions:
 
 ```rust
-impl Descriptor for MyMPESynth {
+impl Descriptor for MyMPESynthesizer{
     fn note_expression_count(&self, _bus: i32, _channel: i16) -> usize { 3 }
 
     fn note_expression_info(&self, _bus: i32, _channel: i16, index: usize)
@@ -1465,24 +1465,24 @@ use beamer::prelude::*;
 
 // 1. Parameters
 #[derive(Parameters)]
-struct SynthParameters {
+struct SynthesizerParameters {
     #[parameter(id = "volume", name = "Volume", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub volume: FloatParameter,
 }
 
 // 2. Descriptor
 #[derive(Default, HasParameters)]
-struct SynthDescriptor {
+struct SynthesizerDescriptor {
     #[parameters]
-    parameters: SynthParameters,
+    parameters: SynthesizerParameters,
 }
 
-impl Descriptor for SynthDescriptor {
+impl Descriptor for SynthesizerDescriptor {
     type Setup = SampleRate;
-    type Processor = SynthProcessor;
+    type Processor = SynthesizerProcessor;
 
-    fn prepare(self, sample_rate: SampleRate) -> SynthProcessor {
-        SynthProcessor {
+    fn prepare(self, sample_rate: SampleRate) -> SynthesizerProcessor {
+        SynthesizerProcessor {
             parameters: self.parameters,
             sample_rate: sample_rate.hz(),
         }
@@ -1503,14 +1503,14 @@ impl Descriptor for SynthDescriptor {
 
 // 3. Processor
 #[derive(HasParameters)]
-struct SynthProcessor {
+struct SynthesizerProcessor {
     #[parameters]
-    parameters: SynthParameters,
+    parameters: SynthesizerParameters,
     sample_rate: f64,
 }
 
-impl Processor for SynthProcessor {
-    type Descriptor = SynthDescriptor;
+impl Processor for SynthesizerProcessor {
+    type Descriptor = SynthesizerDescriptor;
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         // Access CC values directly via ProcessContext
@@ -2502,7 +2502,7 @@ gain.endEdit();
 
 ### 5.4 Phase 5: Examples & Polish
 
-- Real-world examples (EQ, compressor, synth)
+- Real-world examples (EQ, compressor, synthesizer)
 - Performance profiling and optimization
 - Cross-DAW validation (Cubase, Ableton, Logic, REAPER, Bitwig)
 

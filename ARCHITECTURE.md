@@ -157,7 +157,7 @@ beamer/
 │   ├── gain/                # Audio effect example
 │   ├── delay/               # Delay effect with tempo sync
 │   ├── compressor/          # Dynamics compressor
-│   ├── synth/               # Polyphonic synthesizer with MIDI CC emulation
+│   ├── synthesizer/         # Polyphonic synthesizer with MIDI CC emulation
 │   └── midi-transform/      # MIDI effect example
 └── xtask/                   # Build tooling (bundle, install)
 ```

@@ -9,7 +9,7 @@ members = [
     "examples/gain",
     "examples/midi-transform",
     "examples/delay",
-    "examples/synth",
+    "examples/synthesizer",
     "examples/compressor",
     "xtask",
 ]

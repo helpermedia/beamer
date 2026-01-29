@@ -1,5 +1,5 @@
 [package]
-name = "synth"
+name = "synthesizer"
 description = "Example polyphonic synthesizer using the Beamer framework"
 version.workspace = true
 edition.workspace = true

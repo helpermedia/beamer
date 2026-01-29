@@ -121,7 +121,7 @@ For IDE autocomplete of all available types, use `beamer::setup::*`.
 
 | Example | Description |
 |---------|-------------|
-| **[synth](https://github.com/helpermedia/beamer/tree/main/examples/synth)** | 8-voice polyphonic synthesizer with full ADSR envelope and lowpass filter. Features expressive MIDI: polyphonic aftertouch for per-note vibrato, channel aftertouch, pitch bend, and mod wheel controlling both vibrato depth and filter brightness. |
+| **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synthesizer with full ADSR envelope and lowpass filter. Features expressive MIDI: polyphonic aftertouch for per-note vibrato, channel aftertouch, pitch bend, and mod wheel controlling both vibrato depth and filter brightness. |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI processor that transforms notes and CC messages. Shows nested parameter groups, `process_midi()`, and various transform modes (transpose, remap, invert). |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.

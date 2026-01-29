@@ -1,12 +1,12 @@
-//! Beamer Synth - Example polyphonic synthesizer demonstrating the Beamer framework.
+//! Beamer Synthesizer - Example polyphonic synthesizer demonstrating the Beamer framework.
 //!
 //! # Three-Struct Pattern
 //!
 //! Beamer plugins use three structs for clear separation of concerns:
 //!
-//! 1. **`SynthParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`SynthDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`SynthProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`SynthesizerParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
+//! 2. **`SynthesizerDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
+//! 3. **`SynthesizerProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -32,7 +32,7 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Synth")
+pub static CONFIG: Config = Config::new("Beamer Synthesizer")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
@@ -113,7 +113,7 @@ enum EnvelopeStage {
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
 #[derive(Parameters)]
-pub struct SynthParameters {
+pub struct  SynthesizerParameters {
     // =========================================================================
     // Oscillator
     // =========================================================================
@@ -176,22 +176,22 @@ pub struct SynthParameters {
 /// Holds parameters and describes the plugin to the host before audio
 /// configuration is known. Transforms into `SynthProcessor` via `prepare()`.
 #[derive(Default, HasParameters)]
-pub struct SynthDescriptor {
+pub struct SynthesizerDescriptor {
     #[parameters]
-    pub parameters: SynthParameters,
+    pub parameters: SynthesizerParameters,
 }
 
-impl Descriptor for SynthDescriptor {
-    // Synth needs sample rate for filter calculations.
+impl Descriptor for SynthesizerDescriptor {
+    // Synthesizer needs sample rate for filter calculations.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
-    type Processor = SynthProcessor;
+    type Processor = SynthesizerProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> SynthProcessor {
+    fn prepare(mut self, setup: SampleRate) -> SynthesizerProcessor {
         // Set sample rate on parameters for smoothing calculations
         self.parameters.set_sample_rate(setup.hz());
 
-        SynthProcessor {
+        SynthesizerProcessor {
             parameters: self.parameters,
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: setup.hz(),
@@ -217,7 +217,7 @@ impl Descriptor for SynthDescriptor {
     // =========================================================================
 
     fn input_bus_count(&self) -> usize {
-        0 // Synth has no audio input
+        0 // Synthesizer has no audio input
     }
 
     fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
@@ -225,7 +225,7 @@ impl Descriptor for SynthDescriptor {
     }
 
     fn wants_midi(&self) -> bool {
-        true // Synth needs MIDI input
+        true // Synthesizer needs MIDI input
     }
 }
 
@@ -337,7 +337,7 @@ impl Voice {
     #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
-        params: &SynthParameters,
+        params: &SynthesizerParameters,
         waveform: Waveform,
         cutoff: f64,
         resonance: f64,
@@ -468,14 +468,14 @@ impl Voice {
 
 /// Synthesizer plugin processor (prepared state).
 ///
-/// Ready for audio processing. Created by `SynthDescriptor::prepare()`.
+/// Ready for audio processing. Created by `SynthesizerDescriptor::prepare()`.
 /// Manages 8 polyphonic voices with sample-accurate MIDI timing and
 /// oldest-note voice stealing.
 #[derive(HasParameters)]
-pub struct SynthProcessor {
+pub struct SynthesizerProcessor {
     /// Plugin parameters
     #[parameters]
-    parameters: SynthParameters,
+    parameters: SynthesizerParameters,
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -494,7 +494,7 @@ pub struct SynthProcessor {
     channel_pressure: f64,
 }
 
-impl SynthProcessor {
+impl SynthesizerProcessor {
     /// Handle a note-on event with voice allocation.
     ///
     /// # Voice Allocation Strategy
@@ -692,8 +692,8 @@ impl SynthProcessor {
     }
 }
 
-impl Processor for SynthProcessor {
-    type Descriptor = SynthDescriptor;
+impl Processor for SynthesizerProcessor {
+    type Descriptor = SynthesizerDescriptor;
 
     fn process(
         &mut self,
@@ -737,7 +737,7 @@ impl Processor for SynthProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, SynthDescriptor);
+export_vst3!(CONFIG, VST3_CONFIG, SynthesizerDescriptor);
 
 #[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, SynthDescriptor);
+export_au!(CONFIG, AU_CONFIG, SynthesizerDescriptor);

@@ -391,7 +391,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let extension_class = format!("Beamer{}AuExtension", pascal_name);
 
     // Create the plugin display name from vendor and plugin name
-    // Format: "Vendor: Plugin Name" (e.g., "Beamer Framework: Beamer Synth")
+    // Format: "Vendor: Plugin Name" (e.g., "Beamer Framework: Beamer Synthesizer")
     let plugin_display_name = match (config.vendor_name, config.plugin_name) {
         (Some(vendor), Some(name)) => format!("{}: {}", vendor, name),
         (None, Some(name)) => format!("Beamer: {}", name),

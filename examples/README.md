@@ -115,7 +115,7 @@ cargo xtask bundle compressor --release --install
 
 ---
 
-### [Synth](synth/)
+### [Synthesizer](synthesizer/)
 
 8-voice polyphonic synthesizer with expressive MIDI controls and parameter groups.
 
@@ -169,7 +169,7 @@ cargo xtask bundle compressor --release --install
 - Generic f32/f64 processing
 
 ```bash
-cargo xtask bundle synth --release --install
+cargo xtask bundle synthesizer --release --install
 ```
 ---
 
