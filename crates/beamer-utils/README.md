@@ -1,6 +1,6 @@
 # beamer-utils
 
-Internal utilities for the Beamer VST3 framework.
+Internal utilities for the Beamer audio plugin framework.
 
 This crate provides low-level, zero-dependency utilities shared between
 `beamer-core` and `beamer-macros`. All functions are compile-time safe

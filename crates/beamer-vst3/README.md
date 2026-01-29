@@ -15,6 +15,7 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is MIT licensed (as of
 - **Edit controller**: Parameter management and host communication
 - **MIDI conversion**: Bidirectional mapping between Beamer and VST3 MIDI events
 - **Real-time buffer management**: Zero-allocation audio processing
+- **Optional**: `sysex-heap-fallback` cargo feature for heap-backed SysEx overflow (breaks real-time guarantee)
 
 ## Usage
 
@@ -23,10 +24,6 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is MIT licensed (as of
 Use `beamer-vst3` directly only if you're:
 - Implementing a custom plugin wrapper
 - Building tooling that needs VST3-specific functionality
-
-## Features
-
-- `sysex-heap-fallback`: Enable heap-backed overflow for SysEx messages (breaks real-time guarantee)
 
 ## Documentation
 

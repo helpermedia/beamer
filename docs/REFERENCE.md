@@ -121,18 +121,19 @@ The following sections cover: Parameters (§1.3), Descriptor trait (§1.4), Proc
 
 ### 1.3 Parameters
 
-Beamer provides two parameter APIs:
-- **`Parameters` trait**: Low-level VST3 integration (manual implementation)
-- **`Parameters` trait + derive macro**: High-level ergonomic API (recommended)
-- **Parameter smoothing**: Opt-in smoothing to avoid zipper noise during automation
+Use `#[derive(Parameters)]` to define plugin parameters with declarative attributes. The macro generates all required trait implementations automatically.
 
-#### Derive Macro (Recommended)
+**Features:**
+- Declarative parameter definitions with compile-time validation
+- Automatic state serialization/deserialization
+- Parameter smoothing to avoid zipper noise during automation
+
+#### Derive Macro
 
 **Declarative Style**: Macro generates everything including `Default`:
 
 ```rust
 use beamer::prelude::*;
-use beamer::Parameters;
 
 #[derive(Parameters)]
 pub struct GainParameters {
@@ -208,9 +209,9 @@ let bypass = BoolParameter::new("Bypass", false);
 **EnumParameter**: Discrete choice parameter:
 
 ```rust
-use beamer::EnumParameter as DeriveEnumParameter;
+use beamer::prelude::*;
 
-#[derive(Copy, Clone, PartialEq, DeriveEnumParameter)]
+#[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum FilterType {
     #[name = "Low Pass"]
     LowPass,
@@ -224,21 +225,12 @@ pub enum FilterType {
 
 #[derive(Parameters)]
 pub struct FilterParameters {
-    #[parameter(id = "filter_type")]
+    #[parameter(id = "filter_type", name = "Filter Type")]
     pub filter_type: EnumParameter<FilterType>,
 }
 
-impl Default for FilterParameters {
-    fn default() -> Self {
-        Self {
-            // Uses HighPass (from #[default]) as the default value
-            filter_type: EnumParameter::new("Filter Type",
-        }
-    }
-}
-
 // In DSP code:
-match self.filter_type.get() {
+match self.parameters.filter_type.get() {
     FilterType::LowPass => { /* ... */ }
     FilterType::HighPass => { /* ... */ }
     FilterType::BandPass => { /* ... */ }
@@ -576,7 +568,7 @@ pub trait Descriptor: HasParameters + Default {
 
 // HasParameters supertrait provides parameter access
 pub trait HasParameters: Send + 'static {
-    type Parameters: Parameters + ParameterGroups + Parameters + Default;
+    type Parameters: Parameters + ParameterGroups + Default;
     fn parameters(&self) -> &Self::Parameters;
     fn parameters_mut(&mut self) -> &mut Self::Parameters;
     fn set_parameters(&mut self, params: Self::Parameters);
@@ -1906,9 +1898,9 @@ crates/beamer-au/
 ├── objc/
 │   ├── BeamerAuBridge.h        # C-ABI function declarations
 │   ├── BeamerAuWrapper.h       # ObjC class interface
-│   └── BeamerAuWrapper.m       # Native AUAudioUnit subclass (~700 lines)
+│   └── BeamerAuWrapper.m       # Native AUAudioUnit subclass
 └── src/
-    ├── bridge.rs               # C-ABI implementations (~1100 lines)
+    ├── bridge.rs               # C-ABI implementations
     ├── factory.rs              # Plugin factory registration
     ├── processor.rs            # AuProcessor<P> wrapper (lifecycle, state)
     ├── render.rs               # RenderBlock (audio, MIDI, parameters)
@@ -1986,17 +1978,13 @@ The `export_au!` macro creates the necessary entry points for Audio Unit discove
 
 ```rust
 use beamer::prelude::*;
-use beamer_au::{export_au, AuConfig, ComponentType};
-
-#[cfg(target_os = "macos")]
-use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared config
 pub static CONFIG: Config = Config::new("Beamer Gain")
     .with_vendor("Beamer Framework")
     .with_version(env!("CARGO_PKG_VERSION"));
 
-// AU config
+// AU config (macOS only)
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     ComponentType::Effect,
@@ -2012,11 +2000,12 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 **Multi-Format Export:**
 
 ```rust
-// Export both VST3 and AU from the same plugin
-#[cfg(not(target_os = "macos"))]
+// VST3 on all platforms
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 
-#[cfg(target_os = "macos")]
+// AU on macOS only
+#[cfg(all(feature = "au", target_os = "macos"))]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
 ```
 
@@ -2337,10 +2326,10 @@ impl Processor for GainProcessor {
 }
 
 // Format-specific exports
-#[cfg(not(target_os = "macos"))]
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "au", target_os = "macos"))]
 export_au!(CONFIG, AU_CONFIG, GainDescriptor);
 ```
 
@@ -2591,8 +2580,8 @@ pub static CONFIG: Config = Config::new("My Gain")
     .with_version("1.0.0");
 
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new("12345678-1234-5678-1234-567812345678");
+pub static VST3_CONFIG: Vst3Config =
+    Vst3Config::new("12345678-1234-5678-1234-567812345678");
 
 // =============================================================================
 // 1. Parameters
@@ -2615,7 +2604,8 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
-    type Setup = ();  // Simple gain doesn't need sample rate
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
+    type Setup = ();
     type Processor = GainProcessor;
 
     fn prepare(self, _: ()) -> GainProcessor {
@@ -2652,7 +2642,7 @@ impl Processor for GainProcessor {
 // =============================================================================
 
 #[cfg(feature = "vst3")]
-beamer_vst3::export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
+export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 ```
 
 ### C. Example: Sidechain Compressor

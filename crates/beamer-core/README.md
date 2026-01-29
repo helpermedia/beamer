@@ -1,8 +1,8 @@
 # beamer-core
 
-Core abstractions for the Beamer VST3 framework.
+Format-agnostic core abstractions for building audio plugins with Beamer.
 
-This crate provides platform-agnostic traits and types for building VST3 audio plugins in Rust:
+This crate provides the shared traits and types used by all plugin formats (VST3, AU):
 
 - **Plugin traits**: `Descriptor`, `Processor`, `HasParameters`, `Parameters`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
@@ -12,11 +12,15 @@ This crate provides platform-agnostic traits and types for building VST3 audio p
 
 ## Usage
 
-**Most users should use the [`beamer`](https://crates.io/crates/beamer) crate instead**, which re-exports everything from `beamer-core` along with the VST3 integration layer.
+**Most users should use the [`beamer`](https://crates.io/crates/beamer) crate instead**, which re-exports everything from `beamer-core` along with the format-specific integration layers.
 
 Use `beamer-core` directly only if you're:
-- Building a plugin format adapter for a non-VST3 format
+- Building a plugin format adapter (e.g., for CLAP or AAX)
 - Creating a custom plugin framework on top of Beamer's abstractions
+
+## Advanced: Manual Parameters Implementation
+
+Most plugins should use `#[derive(Parameters)]`. However, the `Parameters` trait can be implemented manually for advanced scenarios like dynamic parameter counts, custom storage strategies, or shared parameter pools across plugin instances.
 
 ## Documentation
 

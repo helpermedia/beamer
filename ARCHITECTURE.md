@@ -25,7 +25,7 @@ A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-b
 
 - VST3 plugin support (VST3 3.8, MIT licensed) ✅
 - Audio Unit support (macOS, AUv2 and AUv3) ✅
-- CLAP support (CLAP 1.2, MIT licensed)
+- CLAP support (CLAP 1.2, MIT licensed, planned)
 - WebView GUI using OS-native engines
 - Cross-platform: Windows, macOS, Linux
 - Tauri-inspired IPC (invoke/emit pattern)
@@ -211,20 +211,7 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 
 ### Why Two Phases?
 
-Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The two-phase design ensures DSP state is only created with valid configuration:
-
-```rust
-impl Descriptor for MyPlugin {
-    type Setup = SampleRate;
-
-    fn prepare(self, setup: SampleRate) -> MyProcessor {
-        MyProcessor {
-            sample_rate: setup.hz(),
-            buffer: vec![0.0; (setup.hz() * 2.0) as usize],
-        }
-    }
-}
-```
+Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The two-phase design ensures DSP state is only created with valid configuration.
 
 ### Design Rationale
 
@@ -495,10 +482,10 @@ cargo xtask bundle my-plugin --auv3 --release
 cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --release
 
 # Install to system plugin directories
-cargo xtask bundle my-plugin --vst3 --auv2 --release --install
+cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --release --install
 
 # Universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --vst3 --auv2 --arch universal --release
+cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --arch universal --release
 ```
 
 **Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
@@ -516,8 +503,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Uses combined component pattern (processor + controller in one class)
 - Direct function pointer vtables for interface calls
 
-**Key Files** (~3,800 lines):
-- [processor.rs](crates/beamer-vst3/src/processor.rs) - Main wrapper (3,238 lines)
+**Key Files**:
+- [processor.rs](crates/beamer-vst3/src/processor.rs) - Main wrapper
 - [factory.rs](crates/beamer-vst3/src/factory.rs) - COM factory registration
 - [export.rs](crates/beamer-vst3/src/export.rs) - Platform entry points
 
@@ -543,19 +530,19 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Render blocks call into Rust via `beamer_au_render()`
 - Full feature parity with VST3 wrapper
 
-**Key Files** (~6,500 lines total):
+**Key Files**:
 
 *Objective-C Layer:*
-- [objc/BeamerAuWrapper.m](crates/beamer-au/objc/BeamerAuWrapper.m) - Native AUAudioUnit subclass (~700 lines)
-- [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations (~400 lines)
+- [objc/BeamerAuWrapper.m](crates/beamer-au/objc/BeamerAuWrapper.m) - Native AUAudioUnit subclass
+- [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations
 - [build.rs](crates/beamer-au/build.rs) - ObjC compilation via `cc` crate
 
 *Rust Layer:*
-- [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations (~1,100 lines)
-- [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion (~650 lines)
-- [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events (~1,400 lines)
-- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare (~350 lines)
-- [sysex_pool.rs](crates/beamer-au/src/sysex_pool.rs) - SysEx output pool (~120 lines)
+- [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations
+- [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
+- [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
+- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
+- [sysex_pool.rs](crates/beamer-au/src/sysex_pool.rs) - SysEx output pool
 
 **MIDI**: UMP MIDI 1.0/2.0 → `beamer-core::MidiEvent`
 - Universal MIDI Packet format (32-bit packets)
@@ -587,7 +574,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Platform** | Windows, macOS, Linux | macOS only |
 | **API Style** | COM (C++ style) | Hybrid ObjC/Rust via C-ABI |
 | **Language** | Rust + vst3-sys | ObjC + Rust + cc crate |
-| **Code Size** | ~3,800 lines (1 file) | ~6,500 lines (ObjC + Rust) |
+| **Code Size** | Single file | Multiple files (ObjC + Rust) |
 | **MIDI Format** | VST3 Event union | UMP MIDI 1.0/2.0 |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
@@ -618,7 +605,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Different parameter models
 - Different state serialization
 
-The format wrappers are **thin translation layers** (~3,500-3,800 lines each) that adapt the platform API to `beamer-core` abstractions.
+The format wrappers are **thin translation layers** that adapt the platform API to `beamer-core` abstractions.
 
 ---
 

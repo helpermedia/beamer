@@ -19,8 +19,6 @@ Named after the beams that connect notes in sheet music, Beamer links your DSP l
 
 ## Quick Start
 
-Beamer plugins use three structs for clear separation of concerns:
-
 ```rust
 use beamer::prelude::*;
 
@@ -39,7 +37,9 @@ struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
-    type Setup = ();  // Simple gain doesn't need sample rate
+    // No setup needed for simple effects,
+    // but for more complex plugins use SampleRate or MaxBufferSize here
+    type Setup = ();
     type Processor = GainProcessor;
 
     fn prepare(self, _: ()) -> GainProcessor {
@@ -66,6 +66,8 @@ impl Processor for GainProcessor {
         }
     }
 }
+
+// Export with: export_vst3!(GainDescriptor, "Gain", "Bmer");
 ```
 
 ## Three-Struct Pattern
@@ -112,7 +114,7 @@ For IDE autocomplete of all available types, use `beamer::setup::*`.
 | Example | Description |
 |---------|-------------|
 | **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin. Demonstrates the three-struct pattern, `#[derive(Parameters)]`, and dB scaling. |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, and parameter smoothing. |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, parameter smoothing, and factory presets. |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
 
 ### Instruments
@@ -153,7 +155,7 @@ The `#[parameter(...)]` attribute supports:
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) |
 | `bypass` | Mark as bypass parameter (BoolParameter only) |
 
-### Visual Grouping
+## Parameter Grouping
 
 Use `group = "..."` for flat parameter access with DAW grouping:
 
@@ -202,6 +204,8 @@ For nested structs with separate parameter groups, use `#[nested(group = "...")]
 | Windows | Untested |
 | Linux | Untested |
 
+Contributions for testing and fixes on Windows and Linux are welcome.
+
 ## Crates
 
 | Crate | Description |
@@ -229,11 +233,14 @@ cargo xtask bundle gain --vst3 --release
 # Bundle AUv2 plugin (macOS only)
 cargo xtask bundle gain --auv2 --release
 
-# Bundle both formats and install to system plugin folders
-cargo xtask bundle gain --vst3 --auv2 --release --install
+# Bundle AUv3 plugin (macOS only)
+cargo xtask bundle gain --auv3 --release
+
+# Bundle all formats and install to system plugin folders
+cargo xtask bundle gain --vst3 --auv2 --auv3 --release --install
 
 # Bundle universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle gain --vst3 --auv2 --arch universal --release
+cargo xtask bundle gain --vst3 --auv2 --auv3 --arch universal --release
 
 # Validate AU plugin (macOS)
 auval -v aufx gain Bmer
