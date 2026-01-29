@@ -114,8 +114,9 @@ For IDE autocomplete of all available types, use `beamer::setup::*`.
 | Example | Description |
 |---------|-------------|
 | **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin. Demonstrates the three-struct pattern, `#[derive(Parameters)]`, and dB scaling. |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, parameter smoothing, and factory presets. |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
+| **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ with low shelf, mid peak, and high shelf. Shows `kind = "hz"` for frequency parameters, flat parameter groups, and mono bus configuration. |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, parameter smoothing, and factory presets. |
 
 ### Instruments
 

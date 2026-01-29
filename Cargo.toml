@@ -7,10 +7,11 @@ members = [
     "crates/beamer-macros",
     "crates/beamer",
     "examples/gain",
-    "examples/midi-transform",
+    "examples/compressor",
+    "examples/equalizer",
     "examples/delay",
     "examples/synthesizer",
-    "examples/compressor",
+    "examples/midi-transform",
     "xtask",
 ]
 resolver = "2"

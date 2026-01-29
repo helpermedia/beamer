@@ -40,42 +40,6 @@ cargo xtask bundle gain --release --install
 
 ---
 
-### [Delay](delay/)
-
-Tempo-synced stereo delay with ping-pong mode and factory presets.
-
-**Parameters:**
-
-| Parameter | Description |
-|-----------|-------------|
-| **Sync Mode** | How delay time is determined. "Free" uses manual time; note values (1/4, 1/8, 1/16, 1/32) lock to DAW tempo. |
-| **Stereo Mode** | "Stereo" delays both channels equally. "Ping-Pong" bounces echoes between left and right for a wider sound. |
-| **Time** | Delay time in milliseconds (1-2000ms). Only active when Sync Mode is "Free". |
-| **Feedback** | Controls how many repeats you hear. 0% = single echo, higher = more repeats. |
-| **Mix** | Blend between dry (original) and wet (delayed) signal. 0% = no effect, 100% = only echoes. |
-
-**Factory Presets:**
-- **Slapback**: Quick 80ms echo for doubling effect
-- **Eighth Note**: Tempo-synced 1/8 note delay with moderate feedback
-- **Ping Pong**: Quarter note bouncing between channels
-- **Ambient**: Long 750ms delay with high feedback for textures
-
-**Demonstrates:**
-- `SampleRate` setup for sample-rate-dependent initialization
-- `set_active()` for clearing delay buffers on reset
-- `EnumParameter` for sync mode and stereo mode
-- Tempo sync using `ProcessContext.samples_per_beat()`
-- Declarative parameter smoothing with `smoothing = "exp:5.0"`
-- Ring buffer delay line implementation
-- Proper tail length via `tail_samples()`
-- `#[derive(Presets)]` with factory presets for enum parameters
-
-```bash
-cargo xtask bundle delay --release --install
-```
-
----
-
 ### [Compressor](compressor/)
 
 Feed-forward compressor with soft/hard knee and sidechain input.
@@ -111,6 +75,78 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 
 ```bash
 cargo xtask bundle compressor --release --install
+```
+
+---
+
+### [Equalizer](equalizer/)
+
+3-band parametric EQ with low shelf, mid peak, and high shelf filters.
+
+**Parameters:**
+
+| Group | Parameter | Description |
+|-------|-----------|-------------|
+| **Low** | Frequency | Low shelf center frequency (20-2000 Hz) |
+| | Gain | Low shelf boost/cut (-12 to +12 dB) |
+| **Mid** | Frequency | Mid peak center frequency (200-8000 Hz) |
+| | Gain | Mid peak boost/cut (-12 to +12 dB) |
+| | Q | Mid peak bandwidth (0.1-10.0, higher = narrower) |
+| **High** | Frequency | High shelf center frequency (2000-20000 Hz) |
+| | Gain | High shelf boost/cut (-12 to +12 dB) |
+
+**Typical Settings:**
+- **Presence boost**: Mid frequency 3000 Hz, gain +3 dB, Q 1.0
+- **Warmth**: Low frequency 200 Hz, gain +2 dB; High frequency 8000 Hz, gain -2 dB
+- **Air**: High frequency 12000 Hz, gain +4 dB
+- **Mud cut**: Mid frequency 300 Hz, gain -4 dB, Q 2.0
+
+**Demonstrates:**
+- `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
+- `FloatParameter` with dB scaling via `kind = "db"`
+- Flat parameter groups via `group = "..."` attribute
+- Mono bus configuration via `input_bus_info()` / `output_bus_info()` overrides
+- Biquad filters using standard bilinear transform
+- Generic f32/f64 processing via `Sample` trait
+
+```bash
+cargo xtask bundle equalizer --release --install
+```
+
+---
+
+### [Delay](delay/)
+
+Tempo-synced stereo delay with ping-pong mode and factory presets.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Sync Mode** | How delay time is determined. "Free" uses manual time; note values (1/4, 1/8, 1/16, 1/32) lock to DAW tempo. |
+| **Stereo Mode** | "Stereo" delays both channels equally. "Ping-Pong" bounces echoes between left and right for a wider sound. |
+| **Time** | Delay time in milliseconds (1-2000ms). Only active when Sync Mode is "Free". |
+| **Feedback** | Controls how many repeats you hear. 0% = single echo, higher = more repeats. |
+| **Mix** | Blend between dry (original) and wet (delayed) signal. 0% = no effect, 100% = only echoes. |
+
+**Factory Presets:**
+- **Slapback**: Quick 80ms echo for doubling effect
+- **Eighth Note**: Tempo-synced 1/8 note delay with moderate feedback
+- **Ping Pong**: Quarter note bouncing between channels
+- **Ambient**: Long 750ms delay with high feedback for textures
+
+**Demonstrates:**
+- `SampleRate` setup for sample-rate-dependent initialization
+- `set_active()` for clearing delay buffers on reset
+- `EnumParameter` for sync mode and stereo mode
+- Tempo sync using `ProcessContext.samples_per_beat()`
+- Declarative parameter smoothing with `smoothing = "exp:5.0"`
+- Ring buffer delay line implementation
+- Proper tail length via `tail_samples()`
+- `#[derive(Presets)]` with factory presets for enum parameters
+
+```bash
+cargo xtask bundle delay --release --install
 ```
 
 ---

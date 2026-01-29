@@ -2,8 +2,8 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-01-27
-**Current Examples:** gain, delay, synthesizer, midi-transform, compressor
+**Last Updated:** 2026-01-30
+**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform
 
 ---
 
@@ -19,58 +19,59 @@
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Delay | Synthesizer | MIDI Transform | Compressor | Notes |
-|-----------------|---------|------|-------|-------|----------------|------------|-------|
-| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
-| | IntParameter | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
-| | BoolParameter | ❌ | ❌ | ❌ | ✅ | ✅ | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ✅ | ✅ | ✅ | Waveform, sync, ratio |
-| **Smoothing** | Exponential | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ❌ | ❌ | ❌ | ✅ | Attack/release smoothing |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
-| | PowerMapper | ❌ | ❌ | ❌ | ❌ | ✅ | Threshold (db_log) |
-| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | Available but not used |
-| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
-| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ❌ | Synthesizer uses 4 groups (works in Cubase) |
-| | Custom Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | bypass attribute | ❌ | ❌ | ❌ | ✅ | ✅ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ✅ | ❌ | ❌ | ❌ | `#[derive(Presets)]` macro |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
-| | tail_samples | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | set_active | ❌ | ✅ | ❌ | ❌ | ✅ | Reset state on activation |
-| **Bypass** | BypassHandler | ❌ | ❌ | ❌ | ❌ | ✅ | Split API (begin/finish) |
-| | CrossfadeCurve | ❌ | ❌ | ❌ | ❌ | ✅ | EqualPower curve |
-| | bypass_ramp_samples | ❌ | ❌ | ❌ | ❌ | ✅ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | All use stereo |
-| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | Sidechain input (AuxInput) | ❌ | ❌ | ❌ | ❌ | ✅ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Transport** | tempo access | ❌ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | samples_per_beat | ❌ | ✅ | ❌ | ❌ | ❌ | Delay tempo sync |
-| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ✅ | ✅ | ❌ | Synthesizer voices |
-| | PitchBend | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
-| | ControlChange (CC) | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
-| | MidiCcConfig | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ✅ | ✅ | ❌ | Per-note vibrato, transform |
-| | ChannelPressure | ❌ | ❌ | ✅ | ❌ | ❌ | Global vibrato (synthesizer) |
-| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
-| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
-| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Notes |
+|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
+| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Transpose (synthesizer), note/CC numbers (midi-transform) |
+| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Enable toggles, bypass, soft knee |
+| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Waveform, sync, ratio |
+| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Feedback, mix, cutoff |
+| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
+| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
+| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
+| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | VST3 units (works in Cubase, see notes) |
+| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Rust code organization only? |
+| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
+| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
+| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Special bypass parameter marker |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | `#[derive(Presets)]` macro |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
+| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Delay decay, envelope release |
+| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Reset state on activation |
+| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
+| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
+| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | Most use stereo |
+| | Mono bus | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer uses mono I/O |
+| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | External key |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Delay tempo sync |
+| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Synthesizer voices |
+| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Synth ±2 semitones |
+| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Mod wheel, transform |
+| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | VST3 CC emulation |
+| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Per-note vibrato, transform |
+| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Global vibrato (synthesizer) |
+| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
+| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
+| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 
 **Legend:**
 - ✅ Tested/Used
@@ -86,7 +87,7 @@
 1. **Parameter Types**
    - ✅ ~~`IntParameter`~~ - Tested in midi-transform
    - ✅ ~~`BoolParameter`~~ - Tested in midi-transform
-   - `LogMapper` - Logarithmic parameter scaling
+   - ✅ ~~`LogMapper`~~ - Tested in equalizer (frequency parameters via kind = "hz")
 
 2. **Bypass Handling**
    - ✅ `BypassHandler` - Tested in compressor (split API: begin/finish)
@@ -94,7 +95,7 @@
    - ✅ `bypass_ramp_samples()` - Tested in compressor
 
 3. **Bus Configuration**
-   - Mono buses (all examples use stereo)
+   - ✅ ~~Mono buses~~ - Tested in equalizer (mono in/out)
    - `AuxOutput` - Auxiliary output buses
    - Multiple aux buses
 
@@ -105,10 +106,11 @@
 ### Medium Priority (Advanced Features)
 
 5. **Parameter Organization**
-   - ✅ ~~Units system~~ - Tested in synthesizer (4 flat groups: Oscillator, Envelope, Filter, Global - **works in Cubase**)
+   - ✅ ~~Units system~~ - Tested in synthesizer (4 flat groups) and equalizer (3 flat groups)
    - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
-   - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synthesizer (**works in Cubase, verified with screenshot**)
-   - Custom `Formatter` - Parameter display formatting
+   - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synthesizer and equalizer (**works in Cubase**)
+   - ✅ ~~Hz Formatter~~ - Tested in equalizer (via `kind = "hz"`)
+   - Custom `Formatter` - User-defined parameter display formatting (not yet tested)
    - ✅ ~~Linear smoothing~~ - Tested in compressor (attack/release parameters)
    - ✅ ~~`bypass` attribute~~ - Tested in midi-transform and compressor
 
@@ -172,24 +174,24 @@
 
 ---
 
-#### 2. **Equalizer** (High Priority)
-**Goal:** Test Units system, custom formatting, mono buses
+#### 2. **Equalizer** ✅ IMPLEMENTED
+**Status:** Complete - all planned features implemented and tested.
 
-**Features to test:**
-- ✅ Units system - Group parameters by band (Low/Mid/High units)
-- ✅ Custom `Formatter` - Frequency display (e.g., "1.2k", "440 Hz")
-- ✅ Mono bus option - Mono in/out for certain use cases
-- ✅ `LogMapper` - Frequency parameters with logarithmic mapping
-- ✅ `IntParameter` - Filter type selection (bell, shelf, notch)
+**Features tested:**
+- ✅ Flat parameter groups - Low, Mid, High bands via `group = "..."`
+- ✅ Hz Formatter - Frequency display via `kind = "hz"` (built-in formatter)
+- ✅ Mono bus configuration - Mono in/out via `input_bus_info()` / `output_bus_info()` overrides
+- ✅ `LogMapper` - Frequency parameters with logarithmic mapping via `kind = "hz"`
+- ✅ dB scaling - Gain parameters via `kind = "db"`
+- ✅ Biquad filters - Low shelf, parametric peak, high shelf
 
 **Implementation notes:**
-- 3-band parameteretric EQ (low shelf, mid bell, high shelf)
-- Each band: frequency, gain, Q factor
-- Organize parameters into units: Low Band, Mid Band, High Band
-- Custom frequency formatter: "20 Hz", "1.5k", "10k"
-- Biquad filters (or simple one-pole for demo)
+- 3-band parametric EQ (low shelf, mid peak with Q, high shelf)
+- Each band: frequency and gain; mid band also has Q factor
+- Parameters organized into flat groups: Low, Mid, High
+- Uses standard bilinear transform biquad coefficients
 
-**Files to create:**
+**Files:**
 - `examples/equalizer/src/lib.rs`
 - `examples/equalizer/Cargo.toml`
 
@@ -432,7 +434,7 @@
 
 ### Phase 2: Advanced Parameters & Processing
 - [x] compressor - BoolParameter, EnumParameter, BypassHandler, PowerMapper, linear smoothing, set_active, sidechain
-- [ ] equalizer - Units system, custom Formatter, mono buses
+- [x] equalizer - Flat groups, Hz formatter, LogMapper, mono buses, biquad filters
 - [ ] limiter - latency_samples, lookahead processing
 
 ### Phase 3: Advanced MIDI

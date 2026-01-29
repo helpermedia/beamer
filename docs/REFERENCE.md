@@ -2502,7 +2502,7 @@ gain.endEdit();
 
 ### 5.4 Phase 5: Examples & Polish
 
-- Real-world examples (EQ, compressor, synthesizer)
+- Real-world examples (equalizer, compressor, synthesizer)
 - Performance profiling and optimization
 - Cross-DAW validation (Cubase, Ableton, Logic, REAPER, Bitwig)
 

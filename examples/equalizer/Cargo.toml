@@ -1,6 +1,6 @@
 [package]
-name = "gain"
-description = "Example gain plugin using the Beamer framework"
+name = "equalizer"
+description = "Example equalizer plugin using the Beamer framework"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
