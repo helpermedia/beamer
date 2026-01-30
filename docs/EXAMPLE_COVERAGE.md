@@ -7,16 +7,6 @@
 
 ---
 
-## Table of Contents
-
-- [Feature Coverage Matrix](#feature-coverage-matrix)
-- [Untested Features](#untested-features)
-- [Planned Examples](#planned-examples)
-- [Example Enhancement Opportunities](#example-enhancement-opportunities)
-- [Testing Strategy](#testing-strategy)
-
----
-
 ## Feature Coverage Matrix
 
 | Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Notes |
@@ -45,8 +35,8 @@
 | **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
 | | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | Most use stereo |
-| | Mono bus | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer uses mono I/O |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All use stereo |
+| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | External key |
 | | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Used for tempo sync |
@@ -80,124 +70,9 @@
 
 ---
 
-## Untested Features
-
-### High Priority (Core Functionality)
-
-1. **Parameter Types**
-   - ✅ ~~`IntParameter`~~ - Tested in midi-transform
-   - ✅ ~~`BoolParameter`~~ - Tested in midi-transform
-   - ✅ ~~`LogMapper`~~ - Tested in equalizer (frequency parameters via kind = "hz")
-
-2. **Bypass Handling**
-   - ✅ `BypassHandler` - Tested in compressor (split API: begin/finish)
-   - ✅ `CrossfadeCurve` - Tested in compressor (EqualPower)
-   - ✅ `bypass_ramp_samples()` - Tested in compressor
-
-3. **Bus Configuration**
-   - ✅ ~~Mono buses~~ - Tested in equalizer (mono in/out)
-   - `AuxOutput` - Auxiliary output buses
-   - Multiple aux buses
-
-4. **Processing Callbacks**
-   - `latency_samples()` - Lookahead reporting
-   - ✅ `set_active()` - Tested in delay (clear buffers) and compressor (reset envelope)
-
-### Medium Priority (Advanced Features)
-
-5. **Parameter Organization**
-   - ✅ ~~Units system~~ - Tested in synthesizer (4 flat groups) and equalizer (3 flat groups)
-   - ✅ ~~Nested groups~~ - Tested in midi-transform (`#[nested]` - **may be just Rust organization, not DAW-visible**)
-   - ✅ ~~Flat groups (`group = "..."`)~~ - Tested in synthesizer and equalizer (**works in Cubase**)
-   - ✅ ~~Hz Formatter~~ - Tested in equalizer (via `kind = "hz"`)
-   - Custom `Formatter` - User-defined parameter display formatting (not yet tested)
-   - ✅ ~~Linear smoothing~~ - Tested in compressor (attack/release parameters)
-   - ✅ ~~`bypass` attribute~~ - Tested in midi-transform and compressor
-
-6. **MIDI - Message Types**
-   - ✅ ~~`PolyPressure`~~ - Tested in midi-transform (event transform) and synthesizer (per-note vibrato)
-   - ✅ ~~`ChannelPressure`~~ - Tested in synthesizer (global vibrato control)
-   - `ProgramChange` - Patch selection
-   - `SysEx` - System exclusive messages
-
-7. **MIDI - Utilities**
-   - `RpnTracker` - RPN/NRPN message assembly
-   - 14-bit CC utilities
-   - `ChordInfo`, `ScaleInfo` - VST3 chord/scale events
-
-### Low Priority (Specialized Features)
-
-8. **MPE & Note Expression**
-   - Note Expression Controller (per-note volume, pan, tuning)
-   - Physical UI Mapping (MPE controller mappings)
-   - MPE Support methods
-   - Multi-dimensional per-note control
-
-9. **MIDI - Learning & Mapping**
-   - MIDI Learn (`on_midi_learn`, `on_midi1_learn`, `on_midi2_learn`)
-   - MIDI Mapping (`midi_cc_to_parameter`, assignments)
-
-10. **Orchestral Features**
-    - Keyswitch Controller - Articulation switching
-
-11. **MIDI 2.0**
-    - `Midi2Controller` support
-    - `Midi2Assignment`
-    - MIDI 2.0 event handling
-
-12. **Editor/GUI**
-    - `EditorDelegate` - WebView-based GUI
-    - `EditorConstraints` - GUI sizing
-
----
-
 ## Planned Examples
 
-### Priority 1: Core Feature Coverage
-
-#### 1. **Compressor** ✅ IMPLEMENTED
-**Status:** Complete - all planned features implemented and tested.
-
-**Features tested:**
-- ✅ `EnumParameter` - Ratio (2:1, 4:1, 8:1, 10:1, 20:1)
-- ✅ `BoolParameter` - Auto-makeup gain, soft knee, bypass, use_sidechain
-- ✅ `BypassHandler` - Smooth bypass with equal-power crossfade
-- ✅ `bypass_ramp_samples()` - Proper bypass reporting
-- ✅ Sidechain input - External sidechain
-- ✅ `set_active()` - Reset envelope followers on activation
-- ✅ `PowerMapper` - Threshold with `kind = "db_log"` for logarithmic-feel mapping
-- ✅ Linear smoothing - Attack/release time smoothing
-
-**Files:**
-- `examples/compressor/src/lib.rs`
-- `examples/compressor/Cargo.toml`
-
----
-
-#### 2. **Equalizer** ✅ IMPLEMENTED
-**Status:** Complete - all planned features implemented and tested.
-
-**Features tested:**
-- ✅ Flat parameter groups - Low, Mid, High bands via `group = "..."`
-- ✅ Hz Formatter - Frequency display via `kind = "hz"` (built-in formatter)
-- ✅ Mono bus configuration - Mono in/out via `input_bus_info()` / `output_bus_info()` overrides
-- ✅ `LogMapper` - Frequency parameters with logarithmic mapping via `kind = "hz"`
-- ✅ dB scaling - Gain parameters via `kind = "db"`
-- ✅ Biquad filters - Low shelf, parametric peak, high shelf
-
-**Implementation notes:**
-- 3-band parametric EQ (low shelf, mid peak with Q, high shelf)
-- Each band: frequency and gain; mid band also has Q factor
-- Parameters organized into flat groups: Low, Mid, High
-- Uses standard bilinear transform biquad coefficients
-
-**Files:**
-- `examples/equalizer/src/lib.rs`
-- `examples/equalizer/Cargo.toml`
-
----
-
-#### 3. **Lookahead Limiter** (Medium Priority)
+#### Lookahead Limiter
 **Goal:** Test latency reporting and advanced dynamics
 
 **Features to test:**
@@ -218,9 +93,7 @@
 
 ---
 
-### Priority 2: MIDI Advanced Features
-
-#### 4. **MPE Synthesizer** (Medium Priority)
+#### MPE Synthesizer
 **Goal:** Test MPE, note expression, physical UI mapping
 
 **Features to test:**
@@ -243,7 +116,7 @@
 
 ---
 
-#### 5. **Orchestral Sampler** (Low Priority)
+#### Orchestral Sampler
 **Goal:** Test keyswitch controller, program change
 
 **Features to test:**
@@ -264,7 +137,7 @@
 
 ---
 
-#### 6. **MIDI Processor** (Medium Priority)
+#### MIDI Processor
 **Goal:** Test RPN/NRPN, 14-bit CC, MIDI learn, PolyPressure
 
 **Features to test:**
@@ -290,9 +163,7 @@
 
 ---
 
-### Priority 3: GUI & Advanced
-
-#### 7. **WebView Plugin** (Low Priority - Phase 2)
+#### WebView Plugin
 **Goal:** Test EditorDelegate, WebView GUI
 
 **Features to test:**
@@ -316,7 +187,7 @@
 
 ---
 
-#### 8. **Multi-Bus Router** (Low Priority)
+#### Multi-Bus Router
 **Goal:** Test multiple aux buses, AuxOutput
 
 **Features to test:**
@@ -337,403 +208,10 @@
 
 ---
 
-## Example Enhancement Opportunities
-
-### Existing Examples - Potential Improvements
-
-#### **gain** (Current)
-**Could add:**
-- ✅ `BypassHandler` - Add smooth bypass instead of just gain control
-- ✅ `BoolParameter` - Add "Invert Phase" toggle
-- ✅ `IntParameter` - Add "Oversampling" (1x, 2x, 4x, 8x) selector
-- ✅ Units - Group "Input" and "Output" parameters
-
-#### **delay** (Current)
-**Could add:**
-- ✅ `BoolParameter` - Add "Freeze" mode (infinite feedback)
-- ✅ `IntParameter` - Add "Tap Count" for multi-tap delay
-- ✅ `BypassHandler` - Add smooth bypass
-- ✅ `latency_samples()` - Report minimum delay time as latency
-
-#### **synthesizer** (Current)
-**Recently added:**
-- ✅ `IntParameter` - Transpose parameter (±2 octaves, -24 to +24 semitones)
-- ✅ Flat parameter groups - "Oscillator", "Envelope", "Filter", "Global" groups (works in Cubase)
-- ✅ `PolyPressure` - Per-note aftertouch → vibrato depth (polyphonic expression)
-- ✅ `ChannelPressure` - Channel aftertouch → vibrato depth (global expression)
-- ✅ Mod wheel - Controls both vibrato depth AND filter cutoff modulation
-
-**Could still add:**
-- ❌ `BoolParameter` - Add "Legato Mode" toggle
-- ❌ "Voice Count" parameter (1-16 voices) using IntParameter
-
-#### **midi-transform** (Current)
-**Could add:**
-- ✅ `RpnTracker` - Track and display RPN/NRPN messages
-- ✅ 14-bit CC - Demonstrate 14-bit CC MSB/LSB handling
-- ✅ `ProgramChange` - Add program change filtering/remapping
-
-#### **compressor** (Current)
-**Could add:**
-- ❌ Look-ahead option - Professional limiters use look-ahead to catch transients before they happen. Requires delay buffer and `latency_samples()` for delay compensation reporting to host.
-- ❌ RMS detection mode - Add toggle for RMS averaging instead of peak detection. RMS provides smoother, more musical compression that's less sensitive to individual transients.
-- ❌ Gain reduction metering - Expose GR as an output parameter for DAW metering display.
-
----
-
-## Testing Strategy
-
-### Integration Testing via Examples
-
-**Philosophy:** Examples serve dual purpose:
-1. **Documentation** - Show developers how to use features
-2. **Integration Tests** - Validate features work in real-world scenarios
-
-**Benefits of example-driven testing:**
-- ✅ Bugs discovered during implementation
-- ✅ Real-world usage patterns validated
-- ✅ Documentation stays in sync with code
-- ✅ Examples can be bundled and tested by users
-
-### Development Workflow
-
-1. **Identify Untested Feature** - Review coverage matrix
-2. **Design Example** - Choose plugin that naturally uses feature
-3. **Implement Example** - Build plugin using feature
-4. **Discover Bugs** - Find and fix framework issues
-5. **Document** - Update this file and REFERENCE.md
-6. **Update Matrix** - Mark feature as tested
-
-### Coverage Goals
-
-- **Phase 1 (Current):** Core parameter types, basic MIDI, audio processing
-  - Target: 60% feature coverage
-  - Focus: FloatParameter, EnumParameter, basic MIDI, f32/f64
-
-- **Phase 2 (Next):** Advanced parameters, bypass, buses
-  - Target: 80% feature coverage
-  - Focus: IntParameter, BoolParameter, BypassHandler, Units, multi-bus
-
-- **Phase 3 (Future):** MPE, advanced MIDI, GUI
-  - Target: 95% feature coverage
-  - Focus: Note Expression, MPE, Keyswitch, WebView
-
-- **Phase 4 (Complete):** Edge cases, MIDI 2.0
-  - Target: 100% feature coverage
-  - Focus: MIDI 2.0, RPN/NRPN, SysEx, advanced mapping
-
----
-
-## Implementation Checklist
-
-### Phase 1: Core Coverage (Current)
-- [x] gain - FloatParameter, f32/f64, multi-bus, transport
-- [x] delay - EnumParameter, smoothing, tempo sync, tail_samples
-- [x] synthesizer - MIDI basics, MidiCcConfig, polyphony
-- [x] midi-transform - MIDI pass-through, CC transformation
-
-### Phase 2: Advanced Parameters & Processing
-- [x] compressor - BoolParameter, EnumParameter, BypassHandler, PowerMapper, linear smoothing, set_active, sidechain
-- [x] equalizer - Flat groups, Hz formatter, LogMapper, mono buses, biquad filters
-- [ ] limiter - latency_samples, lookahead processing
-
-### Phase 3: Advanced MIDI
-- [ ] mpe-synthesizer - Note Expression, Physical UI, MPE Support
-- [ ] orchestral-sampler - Keyswitch Controller, ProgramChange
-- [ ] midi-processor - RpnTracker, 14-bit CC, MIDI Learn, Poly/Channel Pressure
-
-### Phase 4: GUI & Advanced Routing
-- [ ] webview-demo - EditorDelegate, WebView GUI
-- [ ] router - AuxOutput, multiple aux buses
-
-### Documentation Updates
-- [ ] Update REFERENCE.md with tested features
-- [ ] Add "Used By" column showing which examples use each feature
-- [ ] Create example comparison table
-- [ ] Document common patterns discovered
-
----
-
 ## Notes
 
-- **Bug Discovery:** As of 2026-01-05, implementing examples has already helped find bugs in MidiCcConfig and smoothing
+- **Bug Discovery:** Implementing examples has helped find bugs in MidiCcConfig and smoothing
 - **Real-World Testing:** Examples should reflect actual use cases, not contrived scenarios
 - **Keep Simple:** Examples should be minimal while demonstrating features effectively
 - **Cross-Reference:** Link examples in REFERENCE.md feature documentation
-
----
-
-## Appendix A: midi-transform Example - Feature Analysis
-
-### Should We Remove midi-transform?
-
-The midi-transform example may seem "odd" as it's a somewhat contrived MIDI processor, but it currently provides **critical test coverage** for features not used anywhere else.
-
-### Unique Features Only in midi-transform
-
-#### 1. **IntParameter** ⚠️ CRITICAL
-```rust
-#[parameter(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
-pub transpose: IntParameter,
-```
-**Used for:** Transpose amount, note numbers (0-127), CC numbers (0-127)
-- ❌ Not used in: gain, delay, synthesizer
-
-#### 2. **BoolParameter** ⚠️ CRITICAL
-```rust
-#[parameter(id = "note_enabled", name = "Enabled", default = true)]
-pub enabled: BoolParameter,
-
-#[parameter(id = "bypass", bypass)]
-pub bypass: BoolParameter,
-```
-**Used for:** Enable/disable toggles, bypass parameter
-- ❌ Not used in: gain, delay, synthesizer
-
-#### 3. **Nested Parameter Groups** ⚠️ QUESTIONABLE VALUE
-```rust
-#[nested(group = "Note Transform")]
-pub note: NoteTransformParameters,
-
-#[nested(group = "CC Transform")]
-pub cc: CcTransformParameters,
-```
-**Demonstrates:** Hierarchical parameter organization (`#[nested]` attribute)
-- ❌ Not used in: gain, delay, synthesizer
-
-**⚠️ Reality Check:** While the framework implements VST3 `IUnitInfo` for parameter grouping, it's unclear if DAWs actually display these groups. The practical value may be limited to:
-- Rust code organization (`parameters.filter.cutoff` vs `parameters.cutoff`)
-- State serialization path-based IDs (`"filter/cutoff"`)
-- Reusable parameter structs (same struct in multiple groups)
-
-**Needs investigation:** Test in multiple DAWs (Reaper, Logic, Cubase, etc.) to verify if groups are actually visible to users.
-
-#### 4. **PolyPressure (Polyphonic Aftertouch)** ✅ TESTED
-```rust
-MidiEventKind::PolyPressure(poly) => {
-    if let Some(new_pitch) = self.transform_pitch(poly.pitch) {
-        output.push(MidiEvent::poly_pressure(
-            event.sample_offset,
-            poly.channel,
-            new_pitch,
-            poly.pressure,
-            poly.note_id,
-        ));
-    }
-}
-```
-- ✅ **Also used in synthesizer** - Per-note vibrato depth control via polyphonic aftertouch
-- ❌ Not used in: gain, delay
-
-#### 5. **Special `bypass` Attribute**
-```rust
-#[parameter(id = "bypass", bypass)]
-pub bypass: BoolParameter,
-```
-**Marks parameter as the official bypass parameter**
-- ❌ Not used in: gain, delay, synthesizer
-
-#### 6. **`buffer.copy_to_output()`**
-```rust
-fn process(&mut self, buffer: &mut Buffer, ...) {
-    buffer.copy_to_output();
-}
-```
-**Used for:** Pass-through audio processing (MIDI-only plugin)
-- ✅ Also used in gain (in bypass handler context)
-
-### Coverage Summary
-
-**If midi-transform is removed, we lose test coverage for:**
-- ✅ IntParameter - **Now also tested in synthesizer** (transpose parameter)
-- ✅ BoolParameter - **Still unique to midi-transform** (would lose coverage)
-- ⚠️ Nested parameter groups (`#[nested]`) - **Still unique to midi-transform** (Rust-only organization)
-- ✅ PolyPressure - **Now also tested in synthesizer** (per-note vibrato control)
-- ✅ `bypass` attribute - **Still unique to midi-transform** (would lose coverage)
-
-### Recommendations
-
-#### Option 1: Keep and Enhance
-Make midi-transform more useful while preserving features:
-- Rename to "midi-utility"
-- Add MIDI channel filtering
-- Add velocity curve remapping
-- Add MIDI event logging/display
-- Keep all IntParameter, BoolParameter, nested group usage
-
-#### Option 2: Move Features to Compressor
-Migrate unique features to the planned **compressor** example:
-- Use `IntParameter` for ratio selection (2:1, 4:1, 8:1, 10:1, 20:1)
-- Use `BoolParameter` for auto-makeup gain, hard/soft knee toggle
-- Use nested groups: "Input", "Compression", "Output" sections
-- Use `bypass` attribute for compressor bypass
-- **Then** remove midi-transform
-- **Note:** Would still lose PolyPressure test coverage
-
-#### Option 3: Keep As-Is
-Accept that it's a contrived example but serves an important testing purpose:
-- Document clearly that it's a "parameter showcase" example
-- Value test coverage over "real-world usefulness"
-- Keep until features are tested elsewhere
-
-### Migration Checklist
-
-**Before removing midi-transform, ensure these features are tested elsewhere:**
-
-- [x] IntParameter - ✅ Tested in synthesizer (transpose parameter)
-- [x] BoolParameter - ✅ Tested in compressor (soft_knee, auto_makeup, bypass, use_sidechain)
-- [ ] Nested parameter groups - Add to another example (equalizer with bands)
-- [x] PolyPressure - ✅ Tested in synthesizer (per-note vibrato control)
-- [x] `bypass` attribute - ✅ Tested in compressor
-- [ ] Update coverage matrix after migration
-- [ ] Update ARCHITECTURE.md and examples README
-
-**Current Status (Updated 2026-01-27):** midi-transform can now be removed with minimal impact. Most features are now tested elsewhere: IntParameter in synthesizer, BoolParameter and bypass attribute in compressor, PolyPressure in synthesizer. Only nested parameter groups (`#[nested]`) remain unique to midi-transform.
-
----
-
-## Appendix B: VST3 Units & Parameter Grouping - Investigation Needed
-
-### The Claim
-
-The framework implements VST3 parameter grouping via `IUnitInfo`:
-- **Flat groups:** `group = "..."` attribute creates VST3 units for "DAW visual grouping"
-- **Nested groups:** `#[nested(group = "...")]` creates VST3 units + Rust struct organization
-
-Documentation claims: *"DAW shows collapsible 'Filter' and 'Output' groups"*
-
-### The Reality Check
-
-**Current observation:** Groups are **not visible** in tested DAWs (as of 2026-01-05).
-
-This raises questions:
-1. Do ANY DAWs actually display VST3 units as parameter groups?
-2. Is the `IUnitInfo` implementation correct/complete?
-3. Is this feature documented but unsupported by real-world DAWs?
-
-### What's Actually Implemented
-
-**In the framework:**
-```rust
-// beamer-vst3/src/processor.rs
-impl<P: Descriptor> IUnitInfoTrait for Vst3Processor<P> {
-    unsafe fn getUnitCount(&self) -> i32 { ... }
-    unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult { ... }
-}
-```
-
-**The VST3 spec supports:**
-- Hierarchical parameter organization via `IUnitInfo`
-- Parent/child unit relationships
-- Unit names and IDs
-
-**But does anyone use it?**
-
-### Investigation Findings (2026-01-05)
-
-**Research into JUCE and VST3 official docs reveals:**
-
-#### Confirmed Working (from Steinberg VST3 docs):
-- ✅ **Cubase** - Steinberg's DAW, full VST3 units support (MultibandCompressor example)
-- ✅ **Cakewalk** - Shows HALion Sonic SE unit structure in automation lists
-- ✅ **PluginTestHost** - Steinberg's test host displays units correctly
-
-#### Confirmed NOT Working:
-- ❌ **Logic Pro (AU format)** - JUCE forum: "AUs and AUv3s in Logic are problematic" - parameters sort alphabetically, ignoring group structure
-
-#### Unknown/Untested:
-- ❓ **Reaper** - No documentation found
-- ❓ **Ableton Live** - No documentation found
-- ❓ **Bitwig** - No documentation found
-- ❓ **FL Studio** - No documentation found
-- ❓ **Logic Pro (VST3)** - May differ from AU behavior, untested
-
-#### Industry Consensus (from JUCE):
-- Parameter groups work in **some** VST3 hosts (notably Cubase)
-- Support is **inconsistent** across DAWs
-- VST3 spec says hosts **"can"** implement units, not **"must"**
-- Even major frameworks like JUCE have the same issues
-- Developers use workarounds (separator strings like " | ") for unsupported hosts
-
-**Sources:**
-- [JUCE Forum: Plug-in parameter groups](https://forum.juce.com/t/plug-in-parameter-groups/29409)
-- [VST3 Developer Portal: Units](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical+Documentation/VST+3+Units/Index.html)
-
-### Actual Outcome: Scenario 3 (Partial Support) ✅
-
-**Reality:** VST3 units work in **some** DAWs (Cubase, Cakewalk), but not universally.
-
-This matches the industry standard - even JUCE has the same limitations. The VST3 spec makes units optional for hosts.
-
-**What This Means:**
-- Beamer's `IUnitInfo` implementation is **correct**
-- Lack of universal DAW support is **not a Beamer bug**
-- This is a **VST3 ecosystem limitation**
-
-**Action Items:**
-- ✅ Keep the feature (it works in major DAWs like Cubase)
-- ✅ Update documentation to set realistic expectations
-- ✅ Clearly state which DAWs support it
-- ✅ Emphasize code organization benefits of `#[nested]`
-
-### Current Practical Value (Assuming Groups Don't Show)
-
-**Flat groups (`group = "..."`):**
-- ❌ No visual grouping in DAW
-- ❌ No code organization benefit
-- ❌ No practical value
-- **Verdict:** Consider deprecating/removing
-
-**Nested groups (`#[nested]`):**
-- ✅ Rust code organization (`parameters.filter.cutoff`)
-- ✅ Reusable parameter structs
-- ✅ Path-based state serialization prevents ID collisions
-- ❌ No visual grouping in DAW
-- **Verdict:** Useful for large plugins, but not for DAW grouping reasons
-
-### Recommendation
-
-**Immediate action:**
-1. Test `#[nested]` in at least 2-3 major DAWs
-2. Document findings in this file
-3. Update REFERENCE.md to reflect reality
-4. Adjust claims about "DAW visual grouping"
-
-**Updated Recommendations (based on research):**
-
-1. **Keep both features** - They work in Cubase/Cakewalk, which is industry-standard support level
-2. **Update documentation** to honestly reflect DAW support:
-   ```markdown
-   ## Parameter Groups (VST3 Units)
-
-   Beamer supports VST3 units for parameter organization:
-
-   **Code Organization (Always Works):**
-   - `#[nested]` creates separate structs (parameters.filter.cutoff)
-   - Reusable parameter groups
-   - Path-based state serialization
-
-   **DAW Visual Grouping (Partial Support):**
-   - ✅ Cubase: Full support
-   - ✅ Cakewalk: Full support
-   - ❌ Logic (AU): Does not work
-   - ❓ Other DAWs: May or may not display groups
-
-   If DAW grouping is critical, test in your target DAW.
-   ```
-3. **Set expectations** - This is a "nice to have" feature, not guaranteed across all DAWs
-4. **Document benefits** - Emphasize code organization even if DAW doesn't show groups
-
-**Related files to update:**
-- [docs/REFERENCE.md](REFERENCE.md) - Claims "DAW shows collapsible groups"
-- [README.md](../README.md) - Visual grouping claims
-- [examples/README.md](../examples/README.md) - midi-transform description
-
----
-
-**Document Maintenance:**
-- Update coverage matrix after each new example
-- Review and prioritize untested features quarterly
-- Add new features to matrix as framework expands
-- Track bugs discovered through example development
-- **NEW:** Track VST3 unit grouping investigation results
+- **Document Maintenance:** Update coverage matrix after each new example

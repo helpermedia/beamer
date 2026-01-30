@@ -134,7 +134,7 @@ Contributions for testing and fixes on Windows and Linux are welcome.
 | `beamer-vst3` | VST3 wrapper implementation |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-clap` | CLAP wrapper (planned) |
-| `beamer-macros` | Derive macros (`#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`, `#[derive(Presets)]`) |
+| `beamer-macros` | Derive macros for parameters and presets |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 
 ## Building & Installation

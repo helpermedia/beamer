@@ -13,7 +13,7 @@
 //! - `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
 //! - `FloatParameter` with dB scaling via `kind = "db"`
 //! - Flat parameter groups via `group = "..."` attribute
-//! - Mono bus configuration via `input_bus_info()` / `output_bus_info()` overrides
+//! - Stereo bus configuration via `input_bus_info()` / `output_bus_info()` overrides
 //! - Biquad filters using standard bilinear transform mathematics
 //! - Generic f32/f64 processing via `Sample` trait
 
@@ -42,9 +42,6 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(ComponentType::Effect, "Bmer", "e
 
 /// Pi constant for filter calculations
 const PI: f64 = std::f64::consts::PI;
-
-/// Shelf slope parameter (S = 0.9 for gentle slope transition)
-const SHELF_SLOPE: f64 = 0.9;
 
 // =============================================================================
 // Biquad Filter
@@ -102,13 +99,6 @@ impl Default for BiquadCoeffs {
     }
 }
 
-/// Shelf filter type for the shared calculation helper.
-#[derive(Clone, Copy)]
-enum ShelfType {
-    Low,
-    High,
-}
-
 impl BiquadCoeffs {
     /// Clamp frequency to prevent instability near Nyquist.
     ///
@@ -118,80 +108,6 @@ impl BiquadCoeffs {
     #[inline]
     fn clamp_frequency(freq: f64, sample_rate: f64) -> f64 {
         freq.min(sample_rate * 0.49)
-    }
-
-    /// Calculate shelf filter coefficients (shared implementation).
-    ///
-    /// Derived from bilinear transform of analog shelf prototype.
-    /// Uses `SHELF_SLOPE` constant for smooth transition.
-    fn shelf(shelf_type: ShelfType, freq: f64, gain_db: f64, sample_rate: f64) -> Self {
-        // Clamp frequency to prevent instability near Nyquist
-        let freq = Self::clamp_frequency(freq, sample_rate);
-
-        // Convert dB gain to linear amplitude
-        // A = 10^(dB/40) for peaking/shelving filters
-        let a = 10.0_f64.powf(gain_db / 40.0);
-
-        // Angular frequency (radians per sample)
-        let w0 = 2.0 * PI * freq / sample_rate;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-
-        // Shelf slope parameter
-        // alpha = sin(w0)/2 * sqrt((A + 1/A) * (1/S - 1) + 2)
-        let alpha = sin_w0 / 2.0 * ((a + 1.0 / a) * (1.0 / SHELF_SLOPE - 1.0) + 2.0).sqrt();
-
-        // Intermediate terms
-        let a_plus_1 = a + 1.0;
-        let a_minus_1 = a - 1.0;
-        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
-
-        // The difference between low and high shelf is the sign applied to
-        // a_minus_1 * cos_w0 terms in certain positions
-        match shelf_type {
-            ShelfType::Low => {
-                // Normalizing coefficient for low shelf
-                let a0 = a_plus_1 + a_minus_1 * cos_w0 + two_sqrt_a_alpha;
-
-                Self {
-                    b0: (a * (a_plus_1 - a_minus_1 * cos_w0 + two_sqrt_a_alpha)) / a0,
-                    b1: (2.0 * a * (a_minus_1 - a_plus_1 * cos_w0)) / a0,
-                    b2: (a * (a_plus_1 - a_minus_1 * cos_w0 - two_sqrt_a_alpha)) / a0,
-                    a1: (-2.0 * (a_minus_1 + a_plus_1 * cos_w0)) / a0,
-                    a2: (a_plus_1 + a_minus_1 * cos_w0 - two_sqrt_a_alpha) / a0,
-                }
-            }
-            ShelfType::High => {
-                // Normalizing coefficient for high shelf
-                let a0 = a_plus_1 - a_minus_1 * cos_w0 + two_sqrt_a_alpha;
-
-                Self {
-                    b0: (a * (a_plus_1 + a_minus_1 * cos_w0 + two_sqrt_a_alpha)) / a0,
-                    b1: (-2.0 * a * (a_minus_1 + a_plus_1 * cos_w0)) / a0,
-                    b2: (a * (a_plus_1 + a_minus_1 * cos_w0 - two_sqrt_a_alpha)) / a0,
-                    a1: (2.0 * (a_minus_1 - a_plus_1 * cos_w0)) / a0,
-                    a2: (a_plus_1 - a_minus_1 * cos_w0 - two_sqrt_a_alpha) / a0,
-                }
-            }
-        }
-    }
-
-    /// Calculate low shelf filter coefficients.
-    ///
-    /// Derived from bilinear transform of analog low shelf prototype.
-    /// Shelf slope S = 0.9 provides smooth transition.
-    /// Frequency is clamped to 49% of sample rate to prevent Nyquist instability.
-    fn low_shelf(freq: f64, gain_db: f64, sample_rate: f64) -> Self {
-        Self::shelf(ShelfType::Low, freq, gain_db, sample_rate)
-    }
-
-    /// Calculate high shelf filter coefficients.
-    ///
-    /// Derived from bilinear transform of analog high shelf prototype.
-    /// Shelf slope S = 0.9 provides smooth transition.
-    /// Frequency is clamped to 49% of sample rate to prevent Nyquist instability.
-    fn high_shelf(freq: f64, gain_db: f64, sample_rate: f64) -> Self {
-        Self::shelf(ShelfType::High, freq, gain_db, sample_rate)
     }
 
     /// Calculate peaking (bell) filter coefficients.
@@ -233,21 +149,23 @@ impl BiquadCoeffs {
 
 /// Equalizer plugin parameters.
 ///
-/// 3-band parametric EQ with:
-/// - Low shelf (20-2000 Hz)
-/// - Mid peak with adjustable Q (200-8000 Hz)
-/// - High shelf (2000-20000 Hz)
+/// 3-band parametric EQ with peak (bell) filters:
+/// - Low band (20-2000 Hz)
+/// - Mid band (200-8000 Hz)
+/// - High band (2000-20000 Hz)
 ///
+/// Each band has frequency, gain, and width controls.
+/// Width controls bandwidth (higher = wider = more audible).
 /// Parameters are organized into flat groups for DAW display.
 #[derive(Parameters)]
 pub struct EqualizerParameters {
     // =========================================================================
-    // Low Band (Low Shelf)
+    // Low Band (Peak)
     // =========================================================================
-    /// Low shelf center frequency
+    /// Low band center frequency
     #[parameter(
         id = "low_freq",
-        name = "Frequency",
+        name = "Low - Frequency",
         default = 200.0,
         range = 20.0..=2000.0,
         kind = "hz",
@@ -255,10 +173,10 @@ pub struct EqualizerParameters {
     )]
     pub low_freq: FloatParameter,
 
-    /// Low shelf gain in dB
+    /// Low band gain in dB
     #[parameter(
         id = "low_gain",
-        name = "Gain",
+        name = "Low - Gain",
         default = 0.0,
         range = -12.0..=12.0,
         kind = "db",
@@ -266,13 +184,23 @@ pub struct EqualizerParameters {
     )]
     pub low_gain: FloatParameter,
 
+    /// Low band width (higher = wider = more audible)
+    #[parameter(
+        id = "low_width",
+        name = "Low - Width",
+        default = 1.0,
+        range = 0.1..=10.0,
+        group = "Low"
+    )]
+    pub low_width: FloatParameter,
+
     // =========================================================================
-    // Mid Band (Peak/Bell)
+    // Mid Band (Peak)
     // =========================================================================
-    /// Mid peak center frequency
+    /// Mid band center frequency
     #[parameter(
         id = "mid_freq",
-        name = "Frequency",
+        name = "Mid - Frequency",
         default = 1000.0,
         range = 200.0..=8000.0,
         kind = "hz",
@@ -280,10 +208,10 @@ pub struct EqualizerParameters {
     )]
     pub mid_freq: FloatParameter,
 
-    /// Mid peak gain in dB
+    /// Mid band gain in dB
     #[parameter(
         id = "mid_gain",
-        name = "Gain",
+        name = "Mid - Gain",
         default = 0.0,
         range = -12.0..=12.0,
         kind = "db",
@@ -291,23 +219,23 @@ pub struct EqualizerParameters {
     )]
     pub mid_gain: FloatParameter,
 
-    /// Mid peak Q (bandwidth control)
+    /// Mid band width (higher = wider = more audible)
     #[parameter(
-        id = "mid_q",
-        name = "Q",
+        id = "mid_width",
+        name = "Mid - Width",
         default = 1.0,
         range = 0.1..=10.0,
         group = "Mid"
     )]
-    pub mid_q: FloatParameter,
+    pub mid_width: FloatParameter,
 
     // =========================================================================
-    // High Band (High Shelf)
+    // High Band (Peak)
     // =========================================================================
-    /// High shelf center frequency
+    /// High band center frequency
     #[parameter(
         id = "high_freq",
-        name = "Frequency",
+        name = "High - Frequency",
         default = 4000.0,
         range = 2000.0..=20000.0,
         kind = "hz",
@@ -315,16 +243,26 @@ pub struct EqualizerParameters {
     )]
     pub high_freq: FloatParameter,
 
-    /// High shelf gain in dB
+    /// High band gain in dB
     #[parameter(
         id = "high_gain",
-        name = "Gain",
+        name = "High - Gain",
         default = 0.0,
         range = -12.0..=12.0,
         kind = "db",
         group = "High"
     )]
     pub high_gain: FloatParameter,
+
+    /// High band width (higher = wider = more audible)
+    #[parameter(
+        id = "high_width",
+        name = "High - Width",
+        default = 1.0,
+        range = 0.1..=10.0,
+        group = "High"
+    )]
+    pub high_width: FloatParameter,
 }
 
 // =============================================================================
@@ -333,7 +271,7 @@ pub struct EqualizerParameters {
 
 /// Equalizer plugin descriptor (unprepared state).
 ///
-/// Configures mono I/O buses and transforms into processor when prepared.
+/// Configures stereo I/O buses and transforms into processor when prepared.
 #[derive(Default, HasParameters)]
 pub struct EqualizerDescriptor {
     #[parameters]
@@ -348,9 +286,9 @@ impl Descriptor for EqualizerDescriptor {
         EqualizerProcessor {
             parameters: self.parameters,
             sample_rate: sample_rate.hz(),
-            low_state: BiquadState::default(),
-            mid_state: BiquadState::default(),
-            high_state: BiquadState::default(),
+            low_state: [BiquadState::default(); 2],
+            mid_state: [BiquadState::default(); 2],
+            high_state: [BiquadState::default(); 2],
             low_coeffs: BiquadCoeffs::default(),
             mid_coeffs: BiquadCoeffs::default(),
             high_coeffs: BiquadCoeffs::default(),
@@ -358,7 +296,7 @@ impl Descriptor for EqualizerDescriptor {
     }
 
     // =========================================================================
-    // Mono Bus Configuration
+    // Stereo Bus Configuration
     // =========================================================================
 
     fn input_bus_count(&self) -> usize {
@@ -370,11 +308,11 @@ impl Descriptor for EqualizerDescriptor {
     }
 
     fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        (index == 0).then(|| BusInfo::mono("Input"))
+        (index == 0).then(|| BusInfo::stereo("Input"))
     }
 
     fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
-        (index == 0).then(|| BusInfo::mono("Output"))
+        (index == 0).then(|| BusInfo::stereo("Output"))
     }
 }
 
@@ -393,10 +331,10 @@ pub struct EqualizerProcessor {
     /// Sample rate in Hz
     sample_rate: f64,
 
-    /// Filter states (mono, one per band)
-    low_state: BiquadState,
-    mid_state: BiquadState,
-    high_state: BiquadState,
+    /// Filter states (stereo, one per band per channel)
+    low_state: [BiquadState; 2],
+    mid_state: [BiquadState; 2],
+    high_state: [BiquadState; 2],
 
     /// Filter coefficients (recalculated when parameters change)
     low_coeffs: BiquadCoeffs,
@@ -406,23 +344,27 @@ pub struct EqualizerProcessor {
 
 impl EqualizerProcessor {
     /// Update filter coefficients from current parameter values.
+    ///
+    /// Width is converted to Q via `Q = 1/width`, so higher width = lower Q = wider band.
     fn update_coefficients(&mut self) {
-        self.low_coeffs = BiquadCoeffs::low_shelf(
+        self.low_coeffs = BiquadCoeffs::peak(
             self.parameters.low_freq.get(),
             self.parameters.low_gain.get(),
+            1.0 / self.parameters.low_width.get(),
             self.sample_rate,
         );
 
         self.mid_coeffs = BiquadCoeffs::peak(
             self.parameters.mid_freq.get(),
             self.parameters.mid_gain.get(),
-            self.parameters.mid_q.get(),
+            1.0 / self.parameters.mid_width.get(),
             self.sample_rate,
         );
 
-        self.high_coeffs = BiquadCoeffs::high_shelf(
+        self.high_coeffs = BiquadCoeffs::peak(
             self.parameters.high_freq.get(),
             self.parameters.high_gain.get(),
+            1.0 / self.parameters.high_width.get(),
             self.sample_rate,
         );
     }
@@ -432,15 +374,15 @@ impl EqualizerProcessor {
         // Update coefficients at the start of each block
         self.update_coefficients();
 
-        // Process mono buffer: chain filters low -> mid -> high
-        for (input, output) in buffer.zip_channels() {
+        // Process stereo buffer: chain filters low -> mid -> high per channel
+        for (ch, (input, output)) in buffer.zip_channels().enumerate() {
             for (in_sample, out_sample) in input.iter().zip(output.iter_mut()) {
                 let sample = in_sample.to_f64();
 
-                // Chain the three EQ bands
-                let sample = self.low_state.process(sample, &self.low_coeffs);
-                let sample = self.mid_state.process(sample, &self.mid_coeffs);
-                let sample = self.high_state.process(sample, &self.high_coeffs);
+                // Chain the three EQ bands (using per-channel state)
+                let sample = self.low_state[ch].process(sample, &self.low_coeffs);
+                let sample = self.mid_state[ch].process(sample, &self.mid_coeffs);
+                let sample = self.high_state[ch].process(sample, &self.high_coeffs);
 
                 *out_sample = S::from_f64(sample);
             }

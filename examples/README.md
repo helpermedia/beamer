@@ -81,32 +81,35 @@ cargo xtask bundle compressor --release --install
 
 ### [Equalizer](equalizer/)
 
-3-band parametric EQ with low shelf, mid peak, and high shelf filters.
+3-band parametric EQ with peak (bell) filters.
 
 **Parameters:**
 
 | Group | Parameter | Description |
 |-------|-----------|-------------|
-| **Low** | Frequency | Low shelf center frequency (20-2000 Hz) |
-| | Gain | Low shelf boost/cut (-12 to +12 dB) |
-| **Mid** | Frequency | Mid peak center frequency (200-8000 Hz) |
-| | Gain | Mid peak boost/cut (-12 to +12 dB) |
-| | Q | Mid peak bandwidth (0.1-10.0, higher = narrower) |
-| **High** | Frequency | High shelf center frequency (2000-20000 Hz) |
-| | Gain | High shelf boost/cut (-12 to +12 dB) |
+| **Low** | Frequency | Center frequency (20-2000 Hz) |
+| | Gain | Boost/cut (-12 to +12 dB) |
+| | Width | Bandwidth (0.1-10.0, higher = wider = more audible) |
+| **Mid** | Frequency | Center frequency (200-8000 Hz) |
+| | Gain | Boost/cut (-12 to +12 dB) |
+| | Width | Bandwidth (0.1-10.0, higher = wider = more audible) |
+| **High** | Frequency | Center frequency (2000-20000 Hz) |
+| | Gain | Boost/cut (-12 to +12 dB) |
+| | Width | Bandwidth (0.1-10.0, higher = wider = more audible) |
 
 **Typical Settings:**
-- **Presence boost**: Mid frequency 3000 Hz, gain +3 dB, Q 1.0
-- **Warmth**: Low frequency 200 Hz, gain +2 dB; High frequency 8000 Hz, gain -2 dB
-- **Air**: High frequency 12000 Hz, gain +4 dB
-- **Mud cut**: Mid frequency 300 Hz, gain -4 dB, Q 2.0
+- **Presence boost**: Mid frequency 3000 Hz, gain +3 dB, width 1.0
+- **Warmth**: Low frequency 200 Hz, gain +2 dB, width 2.0
+- **Air**: High frequency 12000 Hz, gain +4 dB, width 3.0
+- **Mud cut**: Mid frequency 300 Hz, gain -4 dB, width 0.5
 
 **Demonstrates:**
 - `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
 - `FloatParameter` with dB scaling via `kind = "db"`
 - Flat parameter groups via `group = "..."` attribute
-- Mono bus configuration via `input_bus_info()` / `output_bus_info()` overrides
-- Biquad filters using standard bilinear transform
+- Stereo bus configuration via `input_bus_info()` / `output_bus_info()` overrides
+- Biquad peak filters using standard bilinear transform
+- Width parameter (inverted Q: higher = wider = more audible)
 - Generic f32/f64 processing via `Sample` trait
 
 ```bash
