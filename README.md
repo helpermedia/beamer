@@ -70,42 +70,11 @@ impl Processor for GainProcessor {
 // Export with: export_vst3!(GainDescriptor, "Gain", "Bmer");
 ```
 
-## Three-Struct Pattern
+## Plugin Structure
 
-Beamer plugins use three structs for clear separation of concerns:
+Beamer plugins use three structs: **Parameters** (data), **Descriptor** (configuration), and **Processor** (audio). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
 
-1. **`*Parameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
-
-## Two-Phase Lifecycle
-
-Beamer uses a type-safe two-phase design that follows the Rust principle of **making invalid states unrepresentable**:
-
-```text
-Descriptor::default() → Descriptor (unprepared, holds parameters)
-                            │
-                            ▼  prepare(setup)
-                            │
-                        Processor (prepared, ready for audio)
-                            │
-                            ▼  unprepare()
-                            │
-                        Descriptor (parameters preserved)
-```
-
-**Why two types?** Sample rate isn't known until the host calls `setupProcessing()`, but buffer allocation depends on it. Descriptor describes the plugin (parameters, bus layout, MIDI mappings); Processor is that description prepared for audio with allocated buffers. The compiler enforces that `prepare()` happens before `process()`.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md#two-phase-plugin-lifecycle) for detailed rationale.
-
-| Setup Type | Use Case |
-|------------|----------|
-| `()` | Stateless plugins (gain, pan) |
-| `SampleRate` | Most plugins (delay, filter, envelope) |
-| `(SampleRate, MaxBufferSize)` | FFT, lookahead |
-| `(SampleRate, MainOutputChannels)` | Surround, per-channel state |
-
-For IDE autocomplete of all available types, use `beamer::setup::*`.
+See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
 ## Examples
 
@@ -113,76 +82,25 @@ For IDE autocomplete of all available types, use `beamer::setup::*`.
 
 | Example | Description |
 |---------|-------------|
-| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin. Demonstrates the three-struct pattern, `#[derive(Parameters)]`, and dB scaling. |
-| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with soft/hard knee and sidechain input. Demonstrates `BypassHandler` with equal-power crossfade, `set_active()` for state reset, and auto makeup gain. |
-| **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ with low shelf, mid peak, and high shelf. Shows `kind = "hz"` for frequency parameters, flat parameter groups, and mono bus configuration. |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode. Shows `EnumParameter`, tempo sync via `ProcessContext`, parameter smoothing, and factory presets. |
+| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin |
+| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with sidechain input |
+| **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode |
 
 ### Instruments
 
 | Example | Description |
 |---------|-------------|
-| **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synthesizer with full ADSR envelope and lowpass filter. Features expressive MIDI: polyphonic aftertouch for per-note vibrato, channel aftertouch, pitch bend, and mod wheel controlling both vibrato depth and filter brightness. |
-| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI processor that transforms notes and CC messages. Shows nested parameter groups, `process_midi()`, and various transform modes (transpose, remap, invert). |
+| **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI processor for note/CC transformation |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
-
-## MIDI Support
-
-Beamer provides comprehensive MIDI support:
-
-- Note On/Off with velocity, tuning, and note length
-- Control Change with 14-bit resolution helpers
-- Pitch Bend, Channel Pressure, Poly Pressure
-- Program Change
-- SysEx (configurable buffer size)
-- Note Expression (MPE)
-- RPN/NRPN decoding
-- Chord and Scale info from DAW
-- **VST3 CC emulation** via `MidiCcConfig` - receive MIDI CC in DAWs that don't send raw CC events
-
-## Parameter Attributes
-
-The `#[parameter(...)]` attribute supports:
-
-| Attribute | Description |
-|-----------|-------------|
-| `id = "..."` | Required. String ID (hashed to u32 internally) |
-| `name = "..."` | Display name in DAW |
-| `default = <value>` | Default value |
-| `range = start..=end` | Value range |
-| `kind = "..."` | Unit type: `db`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones` |
-| `group = "..."` | Visual grouping in DAW (flat access, grouped display) |
-| `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) |
-| `bypass` | Mark as bypass parameter (BoolParameter only) |
-
-## Parameter Grouping
-
-Use `group = "..."` for flat parameter access with DAW grouping:
-
-```rust
-#[derive(Parameters)]
-struct SynthParameters {
-    #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
-    cutoff: FloatParameter,
-
-    #[parameter(id = "reso", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
-    resonance: FloatParameter,
-
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db", group = "Output")]
-    gain: FloatParameter,
-}
-
-// Access: parameters.cutoff, parameters.resonance, parameters.gain (flat)
-// DAW shows collapsible "Filter" and "Output" groups
-```
-
-For nested structs with separate parameter groups, use `#[nested(group = "...")]`.
 
 ## Features
 
 - **Multi-format** - VST3 (all platforms), AU (macOS), and CLAP (planned)
-- **Type-safe initialization** - Two-phase lifecycle eliminates placeholder values and sample-rate bugs
+- **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing, and more
+- **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
 - **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
@@ -222,32 +140,11 @@ Contributions for testing and fixes on Windows and Linux are welcome.
 ## Building & Installation
 
 ```bash
-# Build all crates
-cargo build
-
-# Build release
-cargo build --release
-
-# Bundle VST3 plugin (native architecture, fastest for development)
-cargo xtask bundle gain --vst3 --release
-
-# Bundle AUv2 plugin (macOS only)
-cargo xtask bundle gain --auv2 --release
-
-# Bundle AUv3 plugin (macOS only)
-cargo xtask bundle gain --auv3 --release
-
-# Bundle all formats and install to system plugin folders
-cargo xtask bundle gain --vst3 --auv2 --auv3 --release --install
-
-# Bundle universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle gain --vst3 --auv2 --auv3 --arch universal --release
-
-# Validate AU plugin (macOS)
-auval -v aufx gain Bmer
+cargo xtask bundle gain --vst3 --release            # Build VST3
+cargo xtask bundle gain --vst3 --release --install  # Build and install
 ```
 
-By default, plugins are built for the native architecture (e.g., arm64 on Apple Silicon). Use `--arch universal` when building for distribution to support both Intel and Apple Silicon Macs.
+For AU formats, add `--auv2` or `--auv3`. For universal binaries (x86_64 + arm64), add `--arch universal`.
 
 ## License
 

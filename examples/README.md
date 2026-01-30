@@ -27,7 +27,7 @@ Simple stereo gain effect with minimal complexity.
 | **Gain** | Volume adjustment from -60 dB (silent) to +12 dB (boost). 0 dB = no change. |
 
 **Demonstrates:**
-- Two-phase lifecycle: `Descriptor` → `Processor` via `prepare()`
+- `Descriptor` → `Processor` lifecycle via `prepare()`
 - `#[derive(Parameters)]` with declarative attributes
 - `#[derive(HasParameters)]` for parameters access boilerplate
 - `()` setup for plugins without sample-rate-dependent state
@@ -192,7 +192,7 @@ cargo xtask bundle delay --release --install
 **Demonstrates:**
 - `SampleRate` setup for sample-rate-dependent filter calculations
 - `IntParameter` for transpose (±2 octaves in semitones)
-- Flat parameter groups (`group = "..."`) - works in Cubase
+- Flat parameter groups (`group = "..."`) for organizing automation lanes
 - `MidiCcConfig` for pitch bend/mod wheel via IMidiMapping (framework manages state)
 - Polyphonic aftertouch (PolyPressure) for per-note vibrato
 - Channel aftertouch (ChannelPressure) for global vibrato

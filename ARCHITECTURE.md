@@ -177,9 +177,9 @@ beamer/
 
 ---
 
-## Two-Phase Plugin Lifecycle
+## Plugin Lifecycle
 
-Beamer uses a type-safe two-phase initialization that eliminates placeholder values:
+Beamer uses type-safe initialization via `prepare()` that eliminates placeholder values:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -210,13 +210,13 @@ Beamer uses a type-safe two-phase initialization that eliminates placeholder val
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Why Two Phases?
+### Why This Design?
 
-Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The two-phase design ensures DSP state is only created with valid configuration.
+Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The `prepare()` design ensures DSP state is only created with valid configuration.
 
 ### Design Rationale
 
-Beamer's two-phase design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states, and the compiler enforces valid transitions.
+Beamer's design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states, and the compiler enforces valid transitions.
 
 The `Processor` type is always fully initialized, so `process()` code is clean:
 

@@ -406,9 +406,9 @@ Smoothing methods require `&mut self` and run on the audio thread only. The unde
 
 The framework automatically calls `reset_smoothing()` after loading state to prevent unwanted ramps to loaded parameter values.
 
-#### Flat Visual Grouping
+#### Flat Parameter Grouping
 
-Use `group = "..."` for visual grouping in the DAW without nested structs:
+Use `group = "..."` to organize parameters into logical groups without nested structs:
 
 ```rust
 #[derive(Parameters)]
@@ -424,7 +424,8 @@ pub struct SynthesizerParameters {
 }
 
 // Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
-// DAW shows collapsible "Filter" and "Output" groups
+// Groups appear in DAW automation lanes and parameter lists (e.g., Cubase Quick Controls)
+// Note: Most DAWs don't display groups in the main plugin UI
 ```
 
 **Flat vs Nested Grouping:**
@@ -758,7 +759,7 @@ pub trait Processor: HasParameters {
 
 **When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
 
-#### Two-Phase Lifecycle
+#### Plugin Lifecycle
 
 The plugin transitions between states based on host actions:
 
