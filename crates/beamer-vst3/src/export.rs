@@ -70,18 +70,6 @@ macro_rules! export_vst3 {
             true
         }
 
-        #[cfg(target_os = "linux")]
-        #[no_mangle]
-        extern "system" fn ModuleEntry(_library_handle: *mut std::ffi::c_void) -> bool {
-            true
-        }
-
-        #[cfg(target_os = "linux")]
-        #[no_mangle]
-        extern "system" fn ModuleExit() -> bool {
-            true
-        }
-
         // Plugin factory export
         #[no_mangle]
         extern "system" fn GetPluginFactory() -> *mut std::ffi::c_void {
