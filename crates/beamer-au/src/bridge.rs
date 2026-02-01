@@ -454,14 +454,20 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
     if desc.is_null() {
         return;
     }
-    if let Some(config) = factory::au_config() {
-        // AudioComponentDescription layout: type, subtype, manufacturer, flags, mask
-        *desc.add(0) = config.component_type.as_u32();
-        *desc.add(1) = u32::from_be_bytes(config.subtype.0);
-        *desc.add(2) = u32::from_be_bytes(config.manufacturer.0);
-        *desc.add(3) = 0; // componentFlags
-        *desc.add(4) = 0; // componentFlagsMask
-    }
+    let au_config = match factory::au_config() {
+        Some(c) => c,
+        None => return,
+    };
+    let plugin_config = match factory::plugin_config() {
+        Some(c) => c,
+        None => return,
+    };
+    // AudioComponentDescription layout: type, subtype, manufacturer, flags, mask
+    *desc.add(0) = plugin_config.category.to_au_component_type();
+    *desc.add(1) = u32::from_be_bytes(au_config.subtype.0);
+    *desc.add(2) = u32::from_be_bytes(au_config.manufacturer.0);
+    *desc.add(3) = 0; // componentFlags
+    *desc.add(4) = 0; // componentFlagsMask
 }
 
 // =============================================================================
@@ -1893,11 +1899,10 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
     main_output_channels: u32,
 ) -> bool {
     use beamer_core::MAX_CHANNELS;
-    use crate::config::ComponentType;
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Get the AU config to check the component type
-        let config = match factory::au_config() {
+        // Get the plugin config to check the plugin type
+        let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
@@ -1907,8 +1912,8 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
             return false;
         }
 
-        match config.component_type {
-            ComponentType::Effect | ComponentType::MidiProcessor => {
+        match config.category {
+            beamer_core::config::Category::Effect | beamer_core::config::Category::MidiEffect => {
                 // Effects and MIDI processors: validate against declared MAIN bus channels.
                 // For plugins with sidechain, we only check the main bus (bus 0).
                 let (declared_input, declared_output) = if instance.is_null() {
@@ -1934,8 +1939,8 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
                 // Validate channels match the declared configuration
                 main_input_channels == declared_input && main_output_channels == declared_output
             }
-            ComponentType::MusicDevice => {
-                // Instruments: must have 0 input channels
+            beamer_core::config::Category::Instrument | beamer_core::config::Category::Generator => {
+                // Instruments and generators: must have 0 input channels
                 if main_input_channels != 0 {
                     return false;
                 }
@@ -1992,15 +1997,13 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
     instance: BeamerAuInstanceHandle,
     out_capabilities: *mut BeamerAuChannelCapabilities,
 ) -> bool {
-    use crate::config::ComponentType;
-
     if out_capabilities.is_null() {
         return false;
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Get the AU config to check component type
-        let config = match factory::au_config() {
+        // Get the plugin config to check plugin type
+        let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
@@ -2008,8 +2011,8 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
         let capabilities = unsafe { &mut *out_capabilities };
         *capabilities = BeamerAuChannelCapabilities::default();
 
-        match config.component_type {
-            ComponentType::Effect | ComponentType::MidiProcessor => {
+        match config.category {
+            beamer_core::config::Category::Effect | beamer_core::config::Category::MidiEffect => {
                 // Query the declared MAIN bus channel counts from the plugin.
                 // For plugins with sidechain (multiple input buses), we only report
                 // the main bus capability. Sidechain channels are handled separately.
@@ -2042,8 +2045,8 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
                     output_channels: output_ch,
                 };
             }
-            ComponentType::MusicDevice => {
-                // Instruments: query the declared output channel count from the plugin
+            beamer_core::config::Category::Instrument | beamer_core::config::Category::Generator => {
+                // Instruments and generators: query the declared output channel count from the plugin
                 if instance.is_null() {
                     // No instance, fall back to stereo
                     capabilities.count = 1;
@@ -2076,7 +2079,7 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
 
                 capabilities.count = 1;
                 capabilities.capabilities[0] = BeamerAuChannelCapability {
-                    input_channels: 0, // Instruments have no audio input
+                    input_channels: 0, // Instruments and generators have no audio input
                     output_channels,
                 };
             }
@@ -2100,18 +2103,14 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_accepts_midi(_instance: BeamerAuInstanceHandle) -> bool {
-    // Check component type from AU config
+    // Check plugin type from plugin config
     let result = catch_unwind(|| {
-        let config = match factory::au_config() {
+        let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
 
-        use crate::config::ComponentType;
-        matches!(
-            config.component_type,
-            ComponentType::MusicDevice | ComponentType::MidiProcessor
-        )
+        config.category.accepts_midi()
     });
 
     result.unwrap_or(false)
@@ -2125,18 +2124,14 @@ pub extern "C" fn beamer_au_accepts_midi(_instance: BeamerAuInstanceHandle) -> b
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> bool {
-    // Check component type from AU config
+    // Check plugin type from plugin config
     let result = catch_unwind(|| {
-        let config = match factory::au_config() {
+        let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
 
-        use crate::config::ComponentType;
-        matches!(
-            config.component_type,
-            ComponentType::MusicDevice | ComponentType::MidiProcessor
-        )
+        config.category.produces_midi()
     });
 
     result.unwrap_or(false)

@@ -21,24 +21,20 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Gain")
+pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect)
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"));
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3")
-    .with_categories("Fx|Dynamics");
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 
 /// AU-specific configuration
 #[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
-    "Bmer",
-    "gain",
-);
+pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "gain");
+
+/// VST3-specific configuration
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3");
 
 // =============================================================================
 // Parameters
@@ -148,8 +144,8 @@ impl Processor for GainProcessor {
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
-
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, GainDescriptor);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);

@@ -139,12 +139,12 @@ fn main() {
         }
     }
 
-    // Default to VST3 if no format specified
-    let (build_vst3, build_auv2, build_auv3) = if !build_vst3 && !build_auv2 && !build_auv3 {
-        (true, false, false)
-    } else {
-        (build_vst3, build_auv2, build_auv3)
-    };
+    // Require at least one format flag
+    if !build_vst3 && !build_auv2 && !build_auv3 {
+        print_error("at least one format flag is required (--auv2, --auv3, or --vst3)");
+        print_usage();
+        std::process::exit(1);
+    }
 
     let config = BundleConfig {
         package: package.to_string(),
@@ -171,10 +171,10 @@ fn print_usage() {
     eprintln!("  generate-uuid              Generate a new UUID for plugin identification");
     eprintln!("  bundle <package> [options] Build and bundle a plugin");
     eprintln!();
-    eprintln!("Formats:");
-    eprintln!("  --vst3    Build VST3 bundle (default if no format specified)");
+    eprintln!("Formats (at least one required):");
     eprintln!("  --auv2    Build AUv2 .component bundle (simple distribution, works with all DAWs)");
     eprintln!("  --auv3    Build AUv3 .app/.appex bundle (App Store distribution)");
+    eprintln!("  --vst3    Build VST3 bundle");
     eprintln!();
     eprintln!("Architecture:");
     eprintln!("  --arch <arch>  Target architecture (default: native)");
@@ -188,17 +188,18 @@ fn print_usage() {
     eprintln!("  --install    Install to system plugin directories");
     eprintln!("               AUv2: ~/Library/Audio/Plug-Ins/Components/");
     eprintln!("               AUv3: ~/Applications/");
+    eprintln!("               VST3: ~/Library/Audio/Plug-Ins/VST3/");
     eprintln!("  --clean      Clean build caches before building (forces full rebuild)");
     eprintln!("               Removes beamer-au cc cache and previous bundles.");
     eprintln!("               Use when ObjC/header changes aren't being picked up.");
     eprintln!("  --verbose    Show detailed build output (default: quiet)");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  cargo xtask bundle gain --vst3 --release --install");
     eprintln!("  cargo xtask bundle gain --auv2 --release --install");
     eprintln!("  cargo xtask bundle gain --auv3 --release --install");
+    eprintln!("  cargo xtask bundle gain --vst3 --release --install");
     eprintln!("  cargo xtask bundle gain --auv2 --auv3 --arch universal    # Both AU formats");
-    eprintln!("  cargo xtask bundle gain --vst3 --auv2 --arch universal    # VST3 + AUv2");
+    eprintln!("  cargo xtask bundle gain --auv2 --vst3 --arch universal    # AUv2 + VST3");
 }
 
 // =============================================================================

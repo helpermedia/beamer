@@ -37,26 +37,22 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer MIDI Transform")
+/// Note: Category::MidiEffect maps to AU's aumi (MIDI processor) and VST3's "Fx"
+pub static CONFIG: Config = Config::new("Beamer MIDI Transform", Category::MidiEffect)
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"));
 
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("A1B2C3D4-E5F6-A7B8-C9D0-E1F203040506")
-    .with_categories("Instrument");
-
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "mtrn" for identification
 /// MidiProcessor type indicates this processes MIDI data
 #[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::MidiProcessor,
-    "Bmer",
-    "mtrn",
-);
+pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "mtrn");
+
+/// VST3-specific configuration
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("A1B2C3D4-E5F6-A7B8-C9D0-E1F203040506");
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -489,15 +485,11 @@ impl Processor for MidiTransformProcessor {
 }
 
 // =============================================================================
-// VST3 Export
-// =============================================================================
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MidiTransformDescriptor);
-
-// =============================================================================
-// Audio Unit Export
+// Plugin Exports
 // =============================================================================
 
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MidiTransformDescriptor);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MidiTransformDescriptor);

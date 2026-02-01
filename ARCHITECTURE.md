@@ -373,10 +373,10 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 │    beamer-au     │      │   beamer-vst3    │
 │                  │      │                  │
 │  AuConfig        │      │  Vst3Config      │
-│  • component_type│      │  • component_uid │
-│  • manufacturer  │      │  • controller_uid│
-│  • subtype       │      │  • sysex_slots   │
-│  • bus_config    │      │  • sysex_buffer  │
+│  • manufacturer  │      │  • component_uid │
+│  • subtype       │      │  • controller_uid│
+│  • bus_config    │      │  • sysex_slots   │
+│                  │      │  • sysex_buf_size│
 └──────────────────┘      └──────────────────┘
 ```
 
@@ -386,28 +386,30 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 use beamer::prelude::*;
 
 // Shared configuration (format-agnostic)
-pub static CONFIG: Config = Config::new("My Gain")
+// Category is required and determines AU component type and VST3 base category
+pub static CONFIG: Config = Config::new("My Gain", Category::Effect)
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"));
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 
 // AU-specific configuration (macOS only)
 #[cfg(feature = "au")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
     "Demo",  // Manufacturer code (4 chars)
     "gain",  // Subtype code (4 chars)
 );
 
 // VST3-specific configuration (generate UUID with: cargo xtask generate-uuid)
+// Subcategories are derived from Config, or override with .with_subcategories()
 #[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-    .with_categories("Fx|Gain");
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890");
 
 // Export Audio Unit plugin (macOS only)
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
 
 // Export VST3 plugin
+#[cfg(feature = "vst3")]
 export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 ```
 
@@ -428,23 +430,24 @@ If no presets type is specified, `NoPresets` is used automatically.
 ### Configuration Fields
 
 **Config** (shared):
-- `name` - Display name in DAW
+- `name` - Display name in DAW (required, constructor param)
+- `category` - Plugin type: `Category::Effect`, `Instrument`, `MidiEffect`, or `Generator` (required, constructor param)
 - `vendor` - Company/developer name
 - `version` - Semantic version string
-- `category` - Main category ("Fx", "Instrument")
-- `sub_categories` - Pipe-separated subcategories ("Dynamics|Compressor")
+- `subcategories` - Array of `Subcategory` values (e.g., `&[Subcategory::Dynamics]`)
 - `url`, `email` - Contact information
 - `has_editor` - GUI enabled flag
 
 **AuConfig** (AU-specific):
-- `component_type` - AU type: `Effect`, `MusicDevice`, or `MidiProcessor`
 - `manufacturer` - 4-character manufacturer code (FourCC)
 - `subtype` - 4-character plugin subtype code (FourCC)
+- `tags` - Optional AU tags (derived from `Config.subcategories` if not set)
 - `bus_config` - Optional custom bus configuration
 
 **Vst3Config** (VST3-specific):
 - `component_uid` - 128-bit unique identifier (TUID)
 - `controller_uid` - Optional separate controller UID (for split architecture)
+- `subcategories` - Optional override (derived from `Config` if not set)
 - `sysex_slots` - Number of SysEx output buffers
 - `sysex_buffer_size` - Size of each SysEx buffer
 

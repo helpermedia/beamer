@@ -128,11 +128,11 @@ pub mod prelude {
     };
 
     // Shared plugin configuration (format-agnostic)
-    pub use beamer_core::Config;
+    pub use beamer_core::{Config, config::Category, config::Subcategory};
 
     // AU implementation (only when feature enabled)
     #[cfg(feature = "au")]
-    pub use beamer_au::{export_au, AuConfig, AuProcessor, ComponentType, fourcc};
+    pub use beamer_au::{export_au, AuConfig, AuProcessor, fourcc};
 
     // VST3 implementation (only when feature enabled)
     #[cfg(feature = "vst3")]

@@ -9,8 +9,8 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-vst3 = ["beamer/vst3"]
 au = ["beamer/au"]
+vst3 = ["beamer/vst3"]
 
 [dependencies]
 beamer = { workspace = true }

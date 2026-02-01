@@ -32,26 +32,22 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Synthesizer")
+pub static CONFIG: Config = Config::new("Beamer Synthesizer", Category::Instrument)
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"));
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("B3A2C1D0-E4F5-A6B7-C8D9-E0F112233445")
-    .with_categories("Instrument|Synth");
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Synth]);
 
 /// AU-specific configuration
 /// Uses manufacturer code "Bmer" and subtype "synt" for identification
 /// MusicDevice type indicates this is an instrument/synthesizer
 #[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::MusicDevice,
-    "Bmer",
-    "synt",
-);
+pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "synt");
+
+/// VST3-specific configuration
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("B3A2C1D0-E4F5-A6B7-C8D9-E0F112233445");
 
 /// Number of polyphonic voices
 const NUM_VOICES: usize = 8;
@@ -736,8 +732,8 @@ impl Processor for SynthesizerProcessor {
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, SynthesizerDescriptor);
-
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, SynthesizerDescriptor);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, SynthesizerDescriptor);

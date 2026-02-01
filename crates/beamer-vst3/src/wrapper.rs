@@ -41,11 +41,6 @@ pub struct Vst3Config {
     /// When `None`, the plugin uses the combined component pattern.
     pub controller_uid: Option<TUID>,
 
-    /// Plugin categories for the VST3 browser.
-    /// Format: pipe-separated string like "Fx|Dynamics|Compressor" or "Instrument|Synth".
-    /// See VST3 SDK documentation for standard category names.
-    pub categories: &'static str,
-
     /// Number of SysEx output slots per process block.
     /// Higher values support more concurrent SysEx messages but use more memory.
     pub sysex_slots: usize,
@@ -67,8 +62,7 @@ impl Vst3Config {
     /// # Example
     ///
     /// ```rust,ignore
-    /// pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3")
-    ///     .with_categories("Fx|Dynamics");
+    /// pub static VST3_CONFIG: Vst3Config = Vst3Config::new("DCDDB4BA-2D6A-4EC3-A526-D3E7244FAAE3");
     /// ```
     pub const fn new(uuid: &'static str) -> Self {
         const fn hex_to_u8(c: u8) -> u8 {
@@ -106,7 +100,6 @@ impl Vst3Config {
         Self {
             component_uid,
             controller_uid: None,
-            categories: "Fx",
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
         }
@@ -115,15 +108,6 @@ impl Vst3Config {
     /// Set the controller class UID and enable split component/controller mode.
     pub const fn with_controller(mut self, controller_uid: TUID) -> Self {
         self.controller_uid = Some(controller_uid);
-        self
-    }
-
-    /// Set the plugin categories for the VST3 browser.
-    ///
-    /// Format: pipe-separated string like "Fx|Dynamics|Compressor" or "Instrument|Synth".
-    /// See VST3 SDK documentation for standard category names.
-    pub const fn with_categories(mut self, categories: &'static str) -> Self {
-        self.categories = categories;
         self
     }
 

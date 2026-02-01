@@ -90,7 +90,7 @@ pub mod config;
 pub mod error;
 
 // Re-exports
-pub use config::{AuConfig, ComponentType, FourCharCode};
+pub use config::{AuConfig, FourCharCode};
 pub use error::{PluginError, PluginResult};
 
 // Re-export shared Config from beamer-core

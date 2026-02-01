@@ -3,73 +3,6 @@
 //! This module provides Audio Unit-specific configuration that complements
 //! the shared [`beamer_core::Config`].
 
-/// AU component type (4-character code).
-///
-/// This determines how the host categorizes and uses the plugin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComponentType {
-    /// Audio effect (aufx) - processes audio, no MIDI input.
-    /// Used for EQs, compressors, reverbs, delays, etc.
-    Effect,
-
-    /// Music device/instrument (aumu) - generates audio from MIDI.
-    /// Used for synthesizers, samplers, drum machines, etc.
-    MusicDevice,
-
-    /// MIDI processor (aumi) - processes MIDI, may or may not process audio.
-    /// Used for MIDI effects, arpeggiators, chord generators, etc.
-    MidiProcessor,
-}
-
-impl ComponentType {
-    /// Get the component type as a 32-bit FourCC value (big-endian).
-    pub const fn as_u32(&self) -> u32 {
-        match self {
-            Self::Effect => u32::from_be_bytes(*b"aufx"),
-            Self::MusicDevice => u32::from_be_bytes(*b"aumu"),
-            Self::MidiProcessor => u32::from_be_bytes(*b"aumi"),
-        }
-    }
-
-    /// Get the component type as a 4-character string.
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Effect => "aufx",
-            Self::MusicDevice => "aumu",
-            Self::MidiProcessor => "aumi",
-        }
-    }
-
-    /// Check if this component type supports MIDI output.
-    ///
-    /// MIDI output is supported via `scheduleMIDIEventBlock` for:
-    /// - `aumu` (Music Device/Instrument): Yes - instruments typically output MIDI
-    /// - `aumi` (MIDI Processor): Yes - MIDI effects transform/generate MIDI
-    /// - `aufx` (Effect): No - effects typically don't output MIDI
-    ///
-    /// Note: Even if a component type supports MIDI output, the host must
-    /// provide the `scheduleMIDIEventBlock` for it to work. Some hosts may
-    /// not provide this block even for supported types.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use beamer_au::ComponentType;
-    ///
-    /// let synth = ComponentType::MusicDevice;
-    /// assert!(synth.supports_midi_output());
-    ///
-    /// let effect = ComponentType::Effect;
-    /// assert!(!effect.supports_midi_output());
-    /// ```
-    pub const fn supports_midi_output(&self) -> bool {
-        match self {
-            Self::MusicDevice | Self::MidiProcessor => true,
-            Self::Effect => false,
-        }
-    }
-}
-
 /// Four-character code (FourCC) for AU identifiers.
 ///
 /// Used for manufacturer codes and subtype codes in AU registration.
@@ -163,15 +96,14 @@ macro_rules! fourcc {
 /// # Example
 ///
 /// ```ignore
-/// use beamer_core::Config;
-/// use beamer_au::{AuConfig, ComponentType};
+/// use beamer_core::{Config, Category};
+/// use beamer_au::AuConfig;
 ///
-/// pub static CONFIG: Config = Config::new("Beamer Gain")
+/// pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect)
 ///     .with_vendor("Beamer Framework")
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///
 /// pub static AU_CONFIG: AuConfig = AuConfig::new(
-///     ComponentType::Effect,
 ///     "Demo",  // Manufacturer
 ///     "gain",  // Subtype
 /// );
@@ -180,9 +112,6 @@ macro_rules! fourcc {
 /// ```
 #[derive(Debug)]
 pub struct AuConfig {
-    /// Component type (aufx, aumu, aumi).
-    pub component_type: ComponentType,
-
     /// Manufacturer code (4-character identifier for your company/brand).
     /// Should be unique across all AU developers.
     /// Apple recommends registering codes with them.
@@ -191,10 +120,6 @@ pub struct AuConfig {
     /// Subtype code (4-character identifier for this specific plugin).
     /// Should be unique within your manufacturer namespace.
     pub subtype: FourCharCode,
-
-    /// Optional tags for additional categorization.
-    /// Used in macOS 10.11+ for search and filtering.
-    pub tags: &'static [&'static str],
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -212,7 +137,6 @@ impl AuConfig {
     ///
     /// # Arguments
     ///
-    /// * `component_type` - The AU component type (Effect, MusicDevice, MidiProcessor)
     /// * `manufacturer` - Your 4-character manufacturer code (e.g., `"Demo"`)
     /// * `subtype` - Your 4-character plugin subtype code (e.g., `"gain"`)
     ///
@@ -222,34 +146,13 @@ impl AuConfig {
     /// # Example
     ///
     /// ```ignore
-    /// AuConfig::new(ComponentType::Effect, "Bmer", "gain")
+    /// AuConfig::new("Bmer", "gain")
     /// ```
-    pub const fn new(
-        component_type: ComponentType,
-        manufacturer: &str,
-        subtype: &str,
-    ) -> Self {
+    pub const fn new(manufacturer: &str, subtype: &str) -> Self {
         Self {
-            component_type,
             manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer)),
             subtype: FourCharCode::new(&str_to_four_bytes(subtype)),
-            tags: &[],
         }
-    }
-
-    /// Add tags for additional categorization.
-    ///
-    /// Tags help users find plugins in hosts that support AU tag searching.
-    /// Common tags include: "Delay", "Reverb", "Compressor", "EQ", "Filter",
-    /// "Distortion", "Synth", "Sampler", etc.
-    pub const fn with_tags(mut self, tags: &'static [&'static str]) -> Self {
-        self.tags = tags;
-        self
-    }
-
-    /// Get the full AudioComponentDescription type as a u32.
-    pub const fn component_type_u32(&self) -> u32 {
-        self.component_type.as_u32()
     }
 
     /// Get the manufacturer code as a u32.

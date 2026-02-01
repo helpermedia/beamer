@@ -26,22 +26,25 @@ Every plugin requires a `Config` struct containing format-agnostic metadata. Thi
 ```rust
 use beamer::prelude::*;
 
-pub static CONFIG: Config = Config::new("My Plugin")
+pub static CONFIG: Config = Config::new("My Plugin", Category::Effect)
     .with_vendor("My Company")
     .with_url("https://example.com")
     .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"));
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 ```
 
 **Fields:**
 
 | Field | Method | Description |
 |-------|--------|-------------|
-| `name` | `Config::new(name)` | Plugin name displayed in DAW |
+| `name` | `Config::new(name, category)` | Plugin name displayed in DAW |
+| `category` | `Config::new(name, category)` | Plugin type: `Category::Effect`, `Instrument`, `MidiEffect`, or `Generator` |
 | `vendor` | `.with_vendor(...)` | Company/developer name |
 | `url` | `.with_url(...)` | Vendor website |
 | `email` | `.with_email(...)` | Support email |
 | `version` | `.with_version(...)` | Version string (use `env!("CARGO_PKG_VERSION")`) |
+| `subcategories` | `.with_subcategories(&[...])` | Array of `Subcategory` values for DAW browser organization |
 | `has_editor` | `.with_editor()` | Whether plugin has a GUI (Phase 2) |
 
 Format-specific configurations (`AuConfig`, `Vst3Config`) are defined separately. See [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
@@ -1803,25 +1806,29 @@ Audio Unit plugins require two configuration objects: the shared `Config` (from 
 use beamer::prelude::*;
 
 // Shared configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("My Plugin")
+// Category determines the AU component type (aufx, aumu, aumi, augn)
+pub static CONFIG: Config = Config::new("My Plugin", Category::Effect)
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"));
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 
-// AU-specific configuration
+// AU-specific configuration (FourCC codes only)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect, // Effect, MusicEffect, or Generator
     "Myco", // Manufacturer code (4 chars)
     "mypg", // Subtype code (4 chars, unique)
 );
 ```
 
-#### Component Types
+#### Plugin Categories
 
-| Type | Description | Use For |
-|------|-------------|---------|
-| `ComponentType::Effect` | Standard audio effect | EQ, compressor, reverb |
-| `ComponentType::MusicEffect` | Musical effects receiving MIDI | Arpeggiator, harmonizer |
-| `ComponentType::Generator` | Instrument/synthesizer | Synths, samplers, drums |
+The plugin category is set in `Config` and automatically maps to AU component types:
+
+| Category | AU Component Type | Use For |
+|----------|-------------------|---------|
+| `Category::Effect` | `aufx` | EQ, compressor, reverb |
+| `Category::MidiEffect` | `aumi` | Arpeggiator, harmonizer, MIDI effects |
+| `Category::Instrument` | `aumu` | Synths, samplers, drum machines |
+| `Category::Generator` | `augn` | Test tones, noise generators |
 
 #### FourCC Codes
 
@@ -1849,17 +1856,17 @@ The `export_au!` macro creates the necessary entry points for Audio Unit discove
 ```rust
 use beamer::prelude::*;
 
-// Shared config
-pub static CONFIG: Config = Config::new("Beamer Gain")
+// Shared config (category determines AU component type)
+pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect)
     .with_vendor("Beamer Framework")
-    .with_version(env!("CARGO_PKG_VERSION"));
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 
 // AU config (macOS only)
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
-    "Demo",
-    "gain",
+    "Demo",  // Manufacturer code
+    "gain",  // Subtype code
 );
 
 // Export for macOS only
@@ -1936,13 +1943,14 @@ MyPlugin.app/
 </array>
 ```
 
-**Component Type Codes:**
+**Category to AU Type Codes:**
 
-| ComponentType | Type Code | Description |
-|--------------|-----------|-------------|
-| `Effect` | `aufx` | Audio effect |
-| `MusicEffect` | `aumf` | Musical effect (receives MIDI) |
-| `Generator` | `aumu` | Instrument/generator |
+| Category | Type Code | Description |
+|----------|-----------|-------------|
+| `Category::Effect` | `aufx` | Audio effect |
+| `Category::MidiEffect` | `aumi` | MIDI effect (receives/produces MIDI) |
+| `Category::Instrument` | `aumu` | Instrument/synthesizer |
+| `Category::Generator` | `augn` | Audio generator |
 
 ### 3.5 Build System
 
@@ -2086,26 +2094,24 @@ bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 ```rust
 use beamer::prelude::*;
 
-// Shared configuration
-pub static CONFIG: Config = Config::new("Universal Gain")
+// Shared configuration (category determines AU component type and VST3 base category)
+pub static CONFIG: Config = Config::new("Universal Gain", Category::Effect)
     .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"));
+    .with_version(env!("CARGO_PKG_VERSION"))
+    .with_subcategories(&[Subcategory::Dynamics]);
 
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
-use beamer_au::{AuConfig, ComponentType};
-#[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
-    "Myco",
-    "gain",
+    "Myco",  // Manufacturer code
+    "gain",  // Subtype code
 );
 
 // VST3 configuration (generate UUID with: cargo xtask generate-uuid)
+// Subcategories derived from Config, or override with .with_subcategories()
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-        .with_categories("Fx|Dynamics");
+    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890");
 
 // Plugin implementation (format-agnostic, three-struct pattern)
 
@@ -2173,14 +2179,12 @@ Create a separate test project with a different subtype code:
 ```rust
 // Main plugin (builds as AUv3)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
     "Bmer",
     "gain",  // subtype: "gain"
 );
 
 // Test plugin (builds as AUv2 with different subtype)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,
     "Bmer",
     "gai2",  // subtype: "gai2" - different!
 );
@@ -2203,8 +2207,8 @@ The `Vst3Config` struct contains VST3-specific identifiers and settings:
 ```rust
 use beamer::prelude::*;
 
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-    .with_categories("Fx|Dynamics");
+// Subcategories are derived from Config automatically
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX");
 ```
 
 **Fields:**
@@ -2213,7 +2217,6 @@ pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XX
 |-------|--------|-------------|
 | `component_uid` | `Vst3Config::new(uuid)` | Unique UUID for plugin identification |
 | `controller_uid` | `.with_controller(uid)` | Optional separate controller UID (advanced) |
-| `categories` | `.with_categories(...)` | Plugin categories for DAW browser |
 | `sysex_slots` | `.with_sysex_slots(n)` | SysEx output slots per block (default: 16) |
 | `sysex_buffer_size` | `.with_sysex_buffer_size(n)` | Max SysEx message size (default: 512) |
 
@@ -2299,17 +2302,21 @@ lto = true
 
 ### 4.6 Plugin Categories
 
-VST3 uses categories for plugin browser organization:
+VST3 subcategories are derived automatically from `Config`:
 
 ```rust
-// Audio effect
-Vst3Config::new(uid(...)).with_categories("Fx|Dynamics")
+// Category::Effect with Subcategory::Dynamics becomes "Fx|Dynamics"
+pub static CONFIG: Config = Config::new("My Compressor", Category::Effect)
+    .with_subcategories(&[Subcategory::Dynamics]);
 
-// Instrument
-Vst3Config::new(uid(...)).with_categories("Instrument|Synth")
+// Category::Instrument with Subcategory::Synth becomes "Instrument|Synth"
+pub static CONFIG: Config = Config::new("My Synth", Category::Instrument)
+    .with_subcategories(&[Subcategory::Synth]);
 ```
 
-Common VST3 categories: `Fx`, `Instrument`, `Dynamics`, `EQ`, `Filter`, `Delay`, `Reverb`, `Mastering`, etc.
+You can override with `.with_subcategories()` on `Vst3Config` if needed.
+
+Common subcategories: `Subcategory::Dynamics`, `Eq`, `Filter`, `Delay`, `Reverb`, `Modulation`, `Distortion`, `Synth`, `Sampler`, etc.
 
 ---
 
@@ -2522,9 +2529,10 @@ use beamer::prelude::*;
 // Configuration
 // =============================================================================
 
-pub static CONFIG: Config = Config::new("My Gain")
+pub static CONFIG: Config = Config::new("My Gain", Category::Effect)
     .with_vendor("My Company")
-    .with_version("1.0.0");
+    .with_version("1.0.0")
+    .with_subcategories(&[Subcategory::Dynamics]);
 
 #[cfg(feature = "vst3")]
 pub static VST3_CONFIG: Vst3Config =
