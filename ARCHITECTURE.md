@@ -11,67 +11,31 @@ For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EX
 
 ### What Is Beamer?
 
-A Rust framework for building audio plugins (VST3 and Audio Unit) with WebView-based GUIs. Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together. Inspired by Tauri's architecture but focused specifically on the audio plugin context.
+A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-based GUIs. Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together. Inspired by Tauri's architecture but focused specifically on the audio plugin context.
 
 ### Why?
 
 - **Rust for audio**: Memory safety, performance, no GC pauses
 - **WebView for UI**: Leverage modern web technologies (React, Svelte, Vue, etc.)
-- **Multi-format**: VST3 and Audio Unit support from a single codebase
+- **Multi-format**: Audio Unit and VST3 support from a single codebase
 - **Lightweight**: Use OS-native WebViews, no bundled browser engine
-- **Cross-platform**: Windows, macOS (both Intel and Apple Silicon), Linux
+- **Cross-platform**: macOS (Intel and Apple Silicon) and Windows
 
 ### Goals
 
-- VST3 plugin support (VST3 3.8, MIT licensed) ✅
 - Audio Unit support (macOS, AUv2 and AUv3) ✅
-- CLAP support (CLAP 1.2, MIT licensed, planned)
+- VST3 plugin support (VST3 3.8, MIT licensed) ✅
 - WebView GUI using OS-native engines
-- Cross-platform: Windows, macOS, Linux
+- Cross-platform: macOS and Windows
 - Tauri-inspired IPC (invoke/emit pattern)
 - Optional parameter binding helpers
 - Developer-friendly: hot reload in dev mode
 - Framework-agnostic frontend (React, Svelte, Vue, vanilla JS)
 - MIDI event processing (instruments and MIDI effects)
 
-### Non-Goals
-
-- AAX support (can be added later)
-- Bundled browser engine (no Electron/CEF)
-- Built-in UI components/widgets
-
 ---
 
 ## Architecture Diagrams
-
-### VST3 Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         DAW Host                                │
-├─────────────────────────────────────────────────────────────────┤
-│                      VST3 Interface                             │
-│              (IComponent, IAudioProcessor, IEditController)     │
-├────────────────────────────────┬────────────────────────────────┤
-│                                │                                │
-│    Audio Thread                │         UI Thread              │
-│    ┌──────────────┐            │         ┌──────────────────┐   │
-│    │              │            │         │                  │   │
-│    │  Processor   │◄───────────┼────────►│  EditController  │   │
-│    │  (DSP code)  │  lock-free │         │                  │   │
-│    │              │  queue     │         └────────┬─────────┘   │
-│    └──────────────┘            │                  │             │
-│                                │                  │ IPlugView   │
-│                                │         ┌────────▼─────────┐   │
-│                                │         │                  │   │
-│                                │         │  WebView Window  │   │
-│                                │         │  (WKWebView /    │   │
-│                                │         │   WebView2 /     │   │
-│                                │         │   WebKitGTK)     │   │
-│                                │         │                  │   │
-│                                │         └──────────────────┘   │
-└────────────────────────────────┴────────────────────────────────┘
-```
 
 ### Audio Unit Architecture (Hybrid ObjC/Rust)
 
@@ -105,6 +69,34 @@ The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runt
 
 **Why Hybrid?** Native Objective-C integrates naturally with Apple's frameworks, provides better debuggability with Apple's tools, and avoids the complexity of Rust FFI bindings for `AUAudioUnit` subclassing. The hybrid approach guarantees Apple compatibility while keeping all audio processing in Rust.
 
+### VST3 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         DAW Host                                │
+├─────────────────────────────────────────────────────────────────┤
+│                      VST3 Interface                             │
+│              (IComponent, IAudioProcessor, IEditController)     │
+├────────────────────────────────┬────────────────────────────────┤
+│                                │                                │
+│    Audio Thread                │         UI Thread              │
+│    ┌──────────────┐            │         ┌──────────────────┐   │
+│    │              │            │         │                  │   │
+│    │  Processor   │◄───────────┼────────►│  EditController  │   │
+│    │  (DSP code)  │  lock-free │         │                  │   │
+│    │              │  queue     │         └────────┬─────────┘   │
+│    └──────────────┘            │                  │             │
+│                                │                  │ IPlugView   │
+│                                │         ┌────────▼─────────┐   │
+│                                │         │                  │   │
+│                                │         │  WebView Window  │   │
+│                                │         │  (WKWebView /    │   │
+│                                │         │   WebView2)      │   │
+│                                │         │                  │   │
+│                                │         └──────────────────┘   │
+└────────────────────────────────┴────────────────────────────────┘
+```
+
 ### Unified Core
 
 Both formats share the same core traits and processing logic:
@@ -120,12 +112,12 @@ Both formats share the same core traits and processing logic:
 └──────────────────────┬──────────────────┬───────────────────────┘
                        │                  │
          ┌─────────────▼──────┐  ┌────────▼─────────────┐
-         │   beamer-vst3      │  │    beamer-au         │
+         │    beamer-au       │  │   beamer-vst3        │
          │                    │  │                      │
-         │ • Vst3Processor<P> │  │ • AuProcessor<P>     │
-         │ • COM interfaces   │  │ • C-ABI bridge       │
-         │ • VST3 MIDI        │  │ • Native ObjC wrapper│
-         │ • Factory          │  │ • UMP MIDI           │
+         │ • AuProcessor<P>   │  │ • Vst3Processor<P>   │
+         │ • C-ABI bridge     │  │ • COM interfaces     │
+         │ • Native ObjC wrap │  │ • VST3 MIDI          │
+         │ • UMP MIDI         │  │ • Factory            │
          └────────────────────┘  └──────────────────────┘
 ```
 
@@ -148,11 +140,11 @@ beamer/
 ├── crates/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
-│   ├── beamer-vst3/         # VST3 wrapper implementation
-│   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
 │   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)], #[derive(Presets)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
-│   └── beamer-webview/      # WebView per platform (Phase 2)
+│   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
+│   ├── beamer-vst3/         # VST3 wrapper implementation
+│   └── beamer-webview/      # WebView per platform (planned)
 ├── examples/
 │   ├── gain/                # Audio effect example
 │   ├── compressor/          # Dynamics compressor
@@ -169,11 +161,11 @@ beamer/
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, shared `Config` |
-| `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
-| `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
 | `beamer-macros` | `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`, `#[derive(Presets)]` proc macros |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
-| `beamer-webview` | Platform-native WebView embedding (Phase 2) |
+| `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
+| `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
+| `beamer-webview` | Platform-native WebView embedding (planned) |
 
 ---
 
@@ -368,7 +360,7 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 ┌────────────────────────────────────────────────────────────────┐
 │                      beamer-core                               │
 │                                                                │
-│  Config (shared metadata)                                │
+│  Config (shared metadata)                                      │
 │  • name, vendor, version                                       │
 │  • category, sub_categories                                    │
 │  • url, email, has_editor                                      │
@@ -378,13 +370,13 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
        │                            │
        ▼                            ▼
 ┌──────────────────┐      ┌──────────────────┐
-│   beamer-vst3    │      │    beamer-au     │
+│    beamer-au     │      │   beamer-vst3    │
 │                  │      │                  │
-│  Vst3Config      │      │  AuConfig        │
-│  • component_uid │      │  • component_type│
-│  • controller_uid│      │  • manufacturer  │
-│  • sysex_slots   │      │  • subtype       │
-│  • sysex_buffer  │      │  • bus_config    │
+│  AuConfig        │      │  Vst3Config      │
+│  • component_type│      │  • component_uid │
+│  • manufacturer  │      │  • controller_uid│
+│  • subtype       │      │  • sysex_slots   │
+│  • bus_config    │      │  • sysex_buffer  │
 └──────────────────┘      └──────────────────┘
 ```
 
@@ -392,18 +384,11 @@ Beamer uses a **split configuration model** to separate format-agnostic metadata
 
 ```rust
 use beamer::prelude::*;
-use beamer_vst3::{export_vst3, Vst3Config};
-use beamer_au::{export_au, AuConfig, ComponentType};
 
 // Shared configuration (format-agnostic)
 pub static CONFIG: Config = Config::new("My Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
-
-// VST3-specific configuration (generate UUID with: cargo xtask generate-uuid)
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-    .with_categories("Fx|Gain");
 
 // AU-specific configuration (macOS only)
 #[cfg(feature = "au")]
@@ -413,12 +398,17 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
     "gain",  // Subtype code (4 chars)
 );
 
-// Export VST3 plugin
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+// VST3-specific configuration (generate UUID with: cargo xtask generate-uuid)
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
+    .with_categories("Fx|Gain");
 
 // Export Audio Unit plugin (macOS only)
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
+
+// Export VST3 plugin
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 ```
 
 ### Factory Presets
@@ -426,11 +416,11 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 Both export macros support an optional presets parameter for plugins that provide factory presets:
 
 ```rust
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainPlugin, GainPresets);
-
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, GainPlugin, GainPresets);
 ```
 
 If no presets type is specified, `NoPresets` is used automatically.
@@ -446,47 +436,47 @@ If no presets type is specified, `NoPresets` is used automatically.
 - `url`, `email` - Contact information
 - `has_editor` - GUI enabled flag
 
-**Vst3Config** (VST3-specific):
-- `component_uid` - 128-bit unique identifier (TUID)
-- `controller_uid` - Optional separate controller UID (for split architecture)
-- `sysex_slots` - Number of SysEx output buffers
-- `sysex_buffer_size` - Size of each SysEx buffer
-
 **AuConfig** (AU-specific):
 - `component_type` - AU type: `Effect`, `MusicDevice`, or `MidiProcessor`
 - `manufacturer` - 4-character manufacturer code (FourCC)
 - `subtype` - 4-character plugin subtype code (FourCC)
 - `bus_config` - Optional custom bus configuration
 
+**Vst3Config** (VST3-specific):
+- `component_uid` - 128-bit unique identifier (TUID)
+- `controller_uid` - Optional separate controller UID (for split architecture)
+- `sysex_slots` - Number of SysEx output buffers
+- `sysex_buffer_size` - Size of each SysEx buffer
+
 ### Why Split Configuration?
 
 1. **Shared metadata** - Write plugin name, vendor, version once
-2. **Format requirements** - VST3 needs UIDs, AU needs FourCC codes
+2. **Format requirements** - AU needs FourCC codes, VST3 needs UIDs
 3. **Conditional compilation** - AU export only compiles on macOS
-4. **Future extensibility** - Possible to add AAX, LV2 without affecting core
+4. **Future extensibility** - Possible to add CLAP, AAX, LV2 without affecting core
 
 ### Building Multi-Format Plugins
 
 Use `xtask` to build both formats:
 
 ```bash
-# VST3 only (native architecture)
-cargo xtask bundle my-plugin --vst3 --release
-
 # AUv2 only (macOS, native architecture)
 cargo xtask bundle my-plugin --auv2 --release
 
 # AUv3 only (macOS, native architecture)
 cargo xtask bundle my-plugin --auv3 --release
 
+# VST3 only (native architecture)
+cargo xtask bundle my-plugin --vst3 --release
+
 # All formats (macOS)
-cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --release
+cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --release
 
 # Install to system plugin directories
-cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --release --install
+cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --release --install
 
 # Universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --arch universal --release
+cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --arch universal --release
 ```
 
 **Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
@@ -496,30 +486,6 @@ cargo xtask bundle my-plugin --vst3 --auv2 --auv3 --arch universal --release
 ## Format-Specific Implementation Details
 
 While both formats share the same `beamer-core` abstractions, they differ significantly in their platform APIs.
-
-### VST3 Implementation
-
-**Architecture**: COM-based (Component Object Model)
-- Single `Vst3Processor<P>` class implements 15+ COM interfaces
-- Uses combined component pattern (processor + controller in one class)
-- Direct function pointer vtables for interface calls
-
-**Key Files**:
-- [processor.rs](crates/beamer-vst3/src/processor.rs) - Main wrapper
-- [factory.rs](crates/beamer-vst3/src/factory.rs) - COM factory registration
-- [export.rs](crates/beamer-vst3/src/export.rs) - Platform entry points
-
-**MIDI**: VST3 `Event` union → `beamer-core::MidiEvent`
-- 16+ event types (NoteOn, NoteOff, MIDI CC, PolyPressure, etc.)
-- Supports VST3-specific events (NoteExpression, Chord, Scale)
-- Legacy MIDI CC output for host compatibility
-
-**Parameters**: Pull model via COM methods
-- `getParameterInfo()` - Host queries parameter metadata
-- `setParamNormalized()` - Host sets parameter value
-- `getParamNormalized()` - Host reads parameter value
-
-**State**: Binary blob via `IBStream`
 
 ### Audio Unit Implementation
 
@@ -568,28 +534,52 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Pre-allocated MIDI/SysEx buffers
 - No heap allocation in render path
 
+### VST3 Implementation
+
+**Architecture**: COM-based (Component Object Model)
+- Single `Vst3Processor<P>` class implements 15+ COM interfaces
+- Uses combined component pattern (processor + controller in one class)
+- Direct function pointer vtables for interface calls
+
+**Key Files**:
+- [processor.rs](crates/beamer-vst3/src/processor.rs) - Main wrapper
+- [factory.rs](crates/beamer-vst3/src/factory.rs) - COM factory registration
+- [export.rs](crates/beamer-vst3/src/export.rs) - Platform entry points
+
+**MIDI**: VST3 `Event` union → `beamer-core::MidiEvent`
+- 16+ event types (NoteOn, NoteOff, MIDI CC, PolyPressure, etc.)
+- Supports VST3-specific events (NoteExpression, Chord, Scale)
+- Legacy MIDI CC output for host compatibility
+
+**Parameters**: Pull model via COM methods
+- `getParameterInfo()` - Host queries parameter metadata
+- `setParamNormalized()` - Host sets parameter value
+- `getParamNormalized()` - Host reads parameter value
+
+**State**: Binary blob via `IBStream`
+
 ### Comparison Table
 
-| Feature | VST3 | Audio Unit |
-|---------|------|------------|
-| **Platform** | Windows, macOS, Linux | macOS only |
-| **API Style** | COM (C++ style) | Hybrid ObjC/Rust via C-ABI |
-| **Language** | Rust + vst3-sys | ObjC + Rust + cc crate |
-| **Code Size** | Single file | Multiple files (ObjC + Rust) |
-| **MIDI Format** | VST3 Event union | UMP MIDI 1.0/2.0 |
+| Feature | Audio Unit | VST3 |
+|---------|------------|------|
+| **Platform** | macOS only | macOS and Windows |
+| **API Style** | Hybrid ObjC/Rust via C-ABI | COM (C++ style) |
+| **Language** | ObjC + Rust + cc crate | Rust + vst3-sys |
+| **Code Size** | Multiple files (ObjC + Rust) | Single file |
+| **MIDI Format** | UMP MIDI 1.0/2.0 | VST3 Event union |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
-| **MIDI Output** | ✓ | ✓ (instruments/MIDI effects only) |
+| **MIDI Output** | ✓ (instruments/MIDI effects only) | ✓ |
 | **SysEx Output** | ✓ (pool) | ✓ (pool) |
-| **Parameter Sync** | Pull (COM methods) | Push (KVO callbacks) |
+| **Parameter Sync** | Push (KVO callbacks) | Pull (COM methods) |
 | **Param Automation** | Buffer-quantized + smoothing | Buffer-quantized + smoothing |
-| **Audio Buffers** | `float**` arrays | `AudioBufferList` |
+| **Audio Buffers** | `AudioBufferList` | `float**` arrays |
 | **f64 Conversion** | Pre-allocated | Pre-allocated |
-| **State Format** | Binary blob | NSDictionary |
+| **State Format** | NSDictionary | Binary blob |
 | **Processor State** | ✓ | ✓ |
-| **Bundle Type** | `.vst3` | `.component` (AUv2) / `.appex` (AUv3) |
-| **Registration** | `GetPluginFactory()` | ObjC factory + module init |
-| **Feature Parity** | Reference | ✓ Full parity |
+| **Bundle Type** | `.component` (AUv2) / `.appex` (AUv3) | `.vst3` |
+| **Registration** | ObjC factory + module init | `GetPluginFactory()` |
+| **Feature Parity** | ✓ Full parity | Reference |
 
 ### Code Reuse Statistics
 
@@ -758,9 +748,9 @@ Plugin Load (creates Descriptor in Unprepared state)
 | Project | |
 |---------|---|
 | [Tauri](https://tauri.app) | WebView integration, IPC patterns |
+| [Apple AUv3](https://developer.apple.com/documentation/audiotoolbox/audio_unit_v3_plug-ins) | Audio Unit v3 specification |
+| [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) | VST3 specification and reference |
+| [Coupler](https://github.com/coupler-rs/coupler) | VST3 Rust bindings (dependency) |
+| [nih-plug](https://github.com/robbert-vdh/nih-plug) | Rust plugin framework reference |
 | [iPlug2](https://github.com/iPlug2/iPlug2) | C++ plugin framework reference |
 | [JUCE](https://juce.com) | C++ plugin framework reference |
-| [nih-plug](https://github.com/robbert-vdh/nih-plug) | Rust plugin framework reference |
-| [Coupler](https://github.com/coupler-rs/coupler) | VST3 Rust bindings (dependency) |
-| [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) | VST3 specification and reference |
-| [Apple AUv3](https://developer.apple.com/documentation/audiotoolbox/audio_unit_v3_plug-ins) | Audio Unit v3 specification |

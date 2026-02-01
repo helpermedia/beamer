@@ -2,7 +2,7 @@
 
 Format-agnostic core abstractions for building audio plugins with Beamer.
 
-This crate provides the shared traits and types used by all plugin formats (VST3, AU):
+This crate provides the shared traits and types used by all plugin formats (AU, VST3):
 
 - **Plugin traits**: `Descriptor`, `Processor`, `HasParameters`, `Parameters`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees

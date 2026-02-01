@@ -1,6 +1,6 @@
 [package]
 name = "beamer-macros"
-description = "Derive macros for the Beamer VST3 framework"
+description = "Derive macros for the Beamer audio plugin (AU, VST3) framework"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

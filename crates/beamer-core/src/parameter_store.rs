@@ -37,7 +37,7 @@ use crate::types::{ParameterId, ParameterValue};
 /// Low-level trait for plugin parameter collections (host interface).
 ///
 /// Implement this trait to declare your plugin's parameters. The format wrappers
-/// (VST3, AU, CLAP) use this to communicate parameter information and values to the host.
+/// (AU, VST3) use this to communicate parameter information and values to the host.
 ///
 /// # Example
 ///

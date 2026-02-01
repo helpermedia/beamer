@@ -1,8 +1,8 @@
 # BEAMER
 
-A Rust framework for building VST3, Audio Unit (AU), and CLAP audio plugins.
+A Rust framework for building Audio Unit (AU) and VST3 audio plugins.
 
-Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to VST3 (all platforms), AU (macOS), and CLAP (planned).
+Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to AU (macOS) and VST3 (all platforms).
 
 > [!NOTE]
 > Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
@@ -98,7 +98,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 ## Features
 
-- **Multi-format** - VST3 (all platforms), AU (macOS), and CLAP (planned)
+- **Multi-format** - AU (macOS) and VST3 (all platforms)
 - **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing, and more
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
@@ -119,11 +119,10 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 | Platform | Status |
 |----------|--------|
-| macOS (arm64) | Tested |
+| macOS | Tested (arm64) |
 | Windows | Untested |
-| Linux | Untested |
 
-Contributions for testing and fixes on Windows and Linux are welcome.
+Contributions for testing and fixes on Windows are welcome.
 
 ## Crates
 
@@ -131,20 +130,19 @@ Contributions for testing and fixes on Windows and Linux are welcome.
 |-------|-------------|
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
-| `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
-| `beamer-clap` | CLAP wrapper (planned) |
 | `beamer-macros` | Derive macros for parameters and presets |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
+| `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
+| `beamer-vst3` | VST3 wrapper implementation |
 
 ## Building & Installation
 
 ```bash
-cargo xtask bundle gain --vst3 --release            # Build VST3
-cargo xtask bundle gain --vst3 --release --install  # Build and install
+cargo xtask bundle gain --auv3 --vst3 --release            # Build both formats
+cargo xtask bundle gain --auv3 --vst3 --release --install  # Build and install
 ```
 
-For AU formats, add `--auv2` or `--auv3`. For universal binaries (x86_64 + arm64), add `--arch universal`.
+Use `--auv2` for AUv2 instead of AUv3. For universal binaries (x86_64 + arm64), add `--arch universal`.
 
 ## License
 

@@ -1,7 +1,7 @@
 //! Shared plugin configuration.
 //!
 //! This module provides format-agnostic plugin metadata that is shared
-//! across all plugin formats (VST3, AU, CLAP, etc.).
+//! across all plugin formats (AU, VST3).
 //!
 //! Format-specific configurations (UIDs, FourCC codes, etc.) are defined
 //! in their respective crates.

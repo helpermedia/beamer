@@ -1,6 +1,6 @@
 [package]
 name = "beamer-core"
-description = "Core abstractions for the Beamer VST3 WebView framework"
+description = "Core abstractions for the Beamer audio plugin (AU, VST3) framework"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

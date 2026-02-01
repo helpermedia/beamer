@@ -1,6 +1,6 @@
 [package]
 name = "beamer"
-description = "VST3 framework for Rust - convenience re-exports"
+description = "Audio plugin (AU, VST3) framework for Rust"
 readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
@@ -12,12 +12,12 @@ default = ["derive"]
 derive = ["beamer-macros"]
 
 # Plugin format features - controlled by bundler via --features flag
-vst3 = ["dep:beamer-vst3", "dep:vst3"]
 au = ["dep:beamer-au"]
+vst3 = ["dep:beamer-vst3", "dep:vst3"]
 
 [dependencies]
 beamer-core = { workspace = true }
+beamer-macros = { workspace = true, optional = true }
+beamer-au = { workspace = true, optional = true }
 beamer-vst3 = { workspace = true, optional = true }
 vst3 = { workspace = true, optional = true }
-beamer-au = { workspace = true, optional = true }
-beamer-macros = { workspace = true, optional = true }

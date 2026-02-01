@@ -502,7 +502,7 @@ impl BusInfo {
 ///
 /// This trait defines the DSP (Digital Signal Processing) interface that
 /// plugin implementations must provide. It is designed to be format-agnostic,
-/// meaning the same implementation can be wrapped for VST3, CLAP, or other
+/// meaning the same implementation can be wrapped for AU, VST3 or other
 /// plugin formats.
 ///
 /// A `Processor` is created by calling [`Descriptor::prepare()`] with the
@@ -803,9 +803,8 @@ pub trait Processor: HasParameters {
         //
         // NOTE: This is a fallback implementation that allocates memory.
         // In practice, this method is rarely called because:
-        // - The VST3 wrapper handles conversion with pre-allocated buffers
-        //   (see `process_audio_f64_converted` in beamer-vst3/src/processor.rs)
-        // - Future format wrappers (CLAP, etc.) should also pre-allocate
+        // - Format wrappers (AU, VST3) handle conversion with pre-allocated buffers
+        //   (see respective processor implementations)
         //
         // If you're implementing a custom wrapper, ensure you handle
         // f64→f32 conversion with pre-allocated buffers for real-time safety.

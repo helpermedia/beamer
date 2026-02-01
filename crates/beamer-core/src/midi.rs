@@ -1493,7 +1493,7 @@ impl MidiEvent {
     /// Parse a MIDI 1.0 channel voice message from raw bytes.
     ///
     /// This is the standard way to convert raw MIDI bytes (as received from
-    /// Audio Units, CLAP, LV2, or hardware MIDI) into beamer's `MidiEvent` format.
+    /// plugin hosts or hardware MIDI) into beamer's `MidiEvent` format.
     ///
     /// # Arguments
     ///

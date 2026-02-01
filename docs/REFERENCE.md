@@ -10,8 +10,8 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 1. [Core API](#1-core-api)
 2. [MIDI Reference](#2-midi-reference)
-3. [VST3 Integration](#3-vst3-integration)
-4. [Audio Unit Integration](#4-audio-unit-integration)
+3. [Audio Unit Integration](#3-audio-unit-integration)
+4. [VST3 Integration](#4-vst3-integration)
 5. [Future Phases](#5-future-phases)
 6. [Appendices](#appendices)
 
@@ -21,7 +21,7 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ### 1.1 Plugin Configuration
 
-Every plugin requires a `Config` struct containing format-agnostic metadata. This is shared across all plugin formats (VST3, AU, CLAP).
+Every plugin requires a `Config` struct containing format-agnostic metadata. This is shared across all plugin formats (AU and VST3).
 
 ```rust
 use beamer::prelude::*;
@@ -44,7 +44,7 @@ pub static CONFIG: Config = Config::new("My Plugin")
 | `version` | `.with_version(...)` | Version string (use `env!("CARGO_PKG_VERSION")`) |
 | `has_editor` | `.with_editor()` | Whether plugin has a GUI (Phase 2) |
 
-Format-specific configurations (`Vst3Config`, `AuConfig`) are defined separately. See [Section 3: VST3 Integration](#3-vst3-integration) and [Section 4: Audio Unit Integration](#4-audio-unit-integration).
+Format-specific configurations (`AuConfig`, `Vst3Config`) are defined separately. See [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
 
 ### 1.2 Three-Struct Pattern
 
@@ -846,20 +846,20 @@ pub enum MyPresets {
 Pass the presets type as the final argument to export macros:
 
 ```rust
-// VST3 with factory presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
-
 // AU with factory presets
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin, MyPresets);
 
-// Without factory presets (uses NoPresets internally)
+// VST3 with factory presets
 #[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
 
+// Without factory presets (uses NoPresets internally)
 #[cfg(feature = "au")]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 ```
 
 #### FactoryPresets Trait
@@ -1240,7 +1240,7 @@ impl Processor for ReverbProcessor {
 
 ---
 
-> **See Also:** For format-specific details on plugin export, bundle structure, and host requirements, see [Section 3: VST3 Integration](#3-vst3-integration) and [Section 4: Audio Unit Integration](#4-audio-unit-integration).
+> **See Also:** For format-specific details on plugin export, bundle structure, and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
 
 ---
 
@@ -1349,7 +1349,7 @@ MidiEvent::note_expression_value(offset, note_id, type_id, value)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
 
-// Raw MIDI 1.0 byte parsing (used by AU, future CLAP/LV2)
+// Raw MIDI 1.0 byte parsing (used by AU)
 MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<MidiEvent>
 ```
 
@@ -1725,141 +1725,11 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 ---
 
-## 3. VST3 Integration
-
-Beamer supports VST3 plugins on all platforms through the `beamer-vst3` crate. VST3 plugins share the same core traits (`Descriptor`, `Processor`, `Parameters`) as other formats, allowing you to target all formats from a single codebase.
-
-### 3.1 Configuration
-
-The `Vst3Config` struct contains VST3-specific identifiers and settings:
-
-```rust
-use beamer::prelude::*;
-
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-    .with_categories("Fx|Dynamics");
-```
-
-**Fields:**
-
-| Field | Method | Description |
-|-------|--------|-------------|
-| `component_uid` | `Vst3Config::new(uuid)` | Unique UUID for plugin identification |
-| `controller_uid` | `.with_controller(uid)` | Optional separate controller UID (advanced) |
-| `categories` | `.with_categories(...)` | Plugin categories for DAW browser |
-| `sysex_slots` | `.with_sysex_slots(n)` | SysEx output slots per block (default: 16) |
-| `sysex_buffer_size` | `.with_sysex_buffer_size(n)` | Max SysEx message size (default: 512) |
-
-**UUID Generation:**
-
-Each plugin needs a unique UUID. Generate one using:
-
-```bash
-uuidgen  # macOS/Linux
-```
-
-The UUID format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
-
-### 3.2 Export Macro
-
-The `export_vst3!` macro generates platform-specific entry points:
-
-```rust
-use beamer::prelude::*;
-
-// Without presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor);
-
-// With factory presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor, MyPresets);
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `CONFIG` | Static reference to `Config` (format-agnostic metadata) |
-| `VST3_CONFIG` | Static reference to `Vst3Config` (VST3-specific settings) |
-| `MyDescriptor` | The Descriptor type implementing `Descriptor` trait |
-| `MyPresets` | (Optional) Presets type implementing `FactoryPresets` |
-
-The macro generates `GetPluginFactory` and platform-specific entry points (`bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows, `ModuleEntry`/`ModuleExit` on Linux).
-
-### 3.3 Bundle Structure
-
-**macOS:**
-```
-MyPlugin.vst3/
-├── Contents/
-│   ├── Info.plist
-│   ├── MacOS/
-│   │   └── MyPlugin
-│   └── PkgInfo
-```
-
-**Windows:**
-```
-MyPlugin.vst3/
-├── Contents/
-│   └── x86_64-win/
-│       └── MyPlugin.vst3
-```
-
-**Linux:**
-```
-MyPlugin.vst3/
-├── Contents/
-│   └── x86_64-linux/
-│       └── MyPlugin.so
-```
-
-### 3.4 Build System
-
-```bash
-cargo xtask bundle gain --vst3 --release
-```
-
-**Cargo.toml:**
-
-```toml
-[lib]
-crate-type = ["cdylib"]
-
-[profile.release]
-lto = true
-```
-
-### 3.5 Install Locations
-
-| Platform | Location |
-|----------|----------|
-| macOS | `~/Library/Audio/Plug-Ins/VST3/` |
-| Windows | `C:\Program Files\Common Files\VST3\` |
-| Linux | `~/.vst3/` |
-
-### 3.6 Plugin Categories
-
-VST3 uses categories for plugin browser organization:
-
-```rust
-// Audio effect
-Vst3Config::new(uid(...)).with_categories("Fx|Dynamics")
-
-// Instrument
-Vst3Config::new(uid(...)).with_categories("Instrument|Synth")
-```
-
-Common VST3 categories: `Fx`, `Instrument`, `Dynamics`, `EQ`, `Filter`, `Delay`, `Reverb`, `Mastering`, etc.
-
----
-
-## 4. Audio Unit Integration
+## 3. Audio Unit Integration
 
 Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Descriptor`, `Processor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
 
-### 4.1 Architecture Overview
+### 3.1 Architecture Overview
 
 The `beamer-au` crate uses a **hybrid Objective-C/Rust architecture**:
 - **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
@@ -1884,7 +1754,7 @@ The hybrid architecture guarantees Apple compatibility while keeping all audio p
 │   objc/BeamerAuBridge.h ↔ src/bridge.rs     │
 ├─────────────────────────────────────────────┤
 │           beamer-au (Rust)                  │
-│   AuProcessor, RenderBlock, factory        │
+│   AuProcessor, RenderBlock, factory         │
 ├─────────────────────────────────────────────┤
 │              beamer-core traits             │
 │   Descriptor, Processor, Parameters         │
@@ -1925,13 +1795,12 @@ crates/beamer-au/
 - Transport information (tempo, beat position, playback state)
 - Real-time safe: no heap allocation in render path
 
-### 4.2 Configuration
+### 3.2 Configuration
 
 Audio Unit plugins require two configuration objects: the shared `Config` (from `beamer-core`) and the AU-specific `AuConfig`.
 
 ```rust
-use beamer_core::Config;
-use beamer_au::{AuConfig, ComponentType};
+use beamer::prelude::*;
 
 // Shared configuration (format-agnostic metadata)
 pub static CONFIG: Config = Config::new("My Plugin")
@@ -1940,9 +1809,9 @@ pub static CONFIG: Config = Config::new("My Plugin")
 
 // AU-specific configuration
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    ComponentType::Effect,      // Effect, MusicEffect, or Generator
-    "Myco",           // Manufacturer code (4 chars)
-    "mypg",           // Subtype code (4 chars, unique)
+    ComponentType::Effect, // Effect, MusicEffect, or Generator
+    "Myco", // Manufacturer code (4 chars)
+    "mypg", // Subtype code (4 chars, unique)
 );
 ```
 
@@ -1960,7 +1829,7 @@ Audio Units use FourCharCode identifiers:
 
 ```rust
 // Using the fourcc! macro
-fourcc!(b"Demo")  // Compile-time constant
+fourcc!(b"Demo") // Compile-time constant
 
 // Or at runtime
 FourCharCode::from_bytes(*b"Demo")
@@ -1973,7 +1842,7 @@ FourCharCode::from_str("Demo")
 - Avoid conflicts: Check [Apple's registry](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
 - Use lowercase for effects, MixedCase for instruments (convention)
 
-### 4.3 Export Macro
+### 3.3 Export Macro
 
 The `export_au!` macro creates the necessary entry points for Audio Unit discovery and instantiation:
 
@@ -2001,16 +1870,16 @@ export_au!(CONFIG, AU_CONFIG, MyPlugin);
 **Multi-Format Export:**
 
 ```rust
-// VST3 on all platforms
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
-
 // AU on macOS only
 #[cfg(all(feature = "au", target_os = "macos"))]
 export_au!(CONFIG, AU_CONFIG, MyPlugin);
+
+// VST3 on macOS and Windows
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
 ```
 
-### 4.4 Bundle Structure
+### 3.4 Bundle Structure
 
 #### AUv2 Bundle (`.component`)
 
@@ -2075,7 +1944,7 @@ MyPlugin.app/
 | `MusicEffect` | `aumf` | Musical effect (receives MIDI) |
 | `Generator` | `aumu` | Instrument/generator |
 
-### 4.5 Build System
+### 3.5 Build System
 
 Use `cargo xtask` to build and bundle Audio Unit plugins:
 
@@ -2089,8 +1958,8 @@ cargo xtask bundle my-plugin --auv3 --release
 # Build and install to system location
 cargo xtask bundle my-plugin --auv2 --release --install
 
-# Build VST3 and AUv2
-cargo xtask bundle my-plugin --vst3 --auv2 --release --install
+# Build AUv2 and VST3
+cargo xtask bundle my-plugin --auv2 --vst3 --release --install
 
 # Build universal binary for distribution (x86_64 + arm64)
 cargo xtask bundle my-plugin --auv2 --arch universal --release
@@ -2111,9 +1980,9 @@ cargo xtask bundle my-plugin --auv2 --arch universal --release
 **Install Locations:**
 
 ```
-VST3: ~/Library/Audio/Plug-Ins/VST3/
 AUv2: ~/Library/Audio/Plug-Ins/Components/
 AUv3: ~/Applications/
+VST3: ~/Library/Audio/Plug-Ins/VST3/
 ```
 
 **Code Signing:**
@@ -2130,7 +1999,7 @@ codesign --force --deep --sign "Developer ID Application: Your Name" MyPlugin.co
 
 The `xtask` tool automatically performs ad-hoc signing during bundling.
 
-### 4.6 C-ABI Bridge Interface
+### 3.6 C-ABI Bridge Interface
 
 The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between the native wrappers (both AUv2 and AUv3) and Rust. Both formats share the same 40+ bridge functions:
 
@@ -2212,50 +2081,7 @@ bool beamer_au_accepts_midi(BeamerAuInstanceHandle instance);
 bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 ```
 
-### 4.7 Current Status
-
-**Implementation Status: Complete**
-
-Both AUv2 and AUv3 formats are fully implemented with full VST3 feature parity.
-
-**Implemented (VST3 Parity):**
-- ✅ Audio effects (all bus configurations)
-- ✅ Instruments/generators (MIDI input + output)
-- ✅ MIDI effects (MIDI input + output)
-- ✅ Sidechain/auxiliary buses
-- ✅ Parameter automation (KVO for AUv3, properties for AUv2)
-- ✅ State persistence (save/load presets)
-- ✅ f32 and f64 processing
-- ✅ Transport information (tempo, beat, playback state)
-- ✅ Real-time safe render path (no allocations, panic catching)
-- ✅ Thread-safe parameter access (RwLock for render block)
-
-**Architecture Features:**
-- AUv2: `AudioComponentPlugInInterface` with selector-based dispatch
-- AUv3: Native Objective-C `AUAudioUnit` subclass
-- Shared C-ABI bridge with 40+ functions for wrapper ↔ Rust communication
-- Pre-allocated buffers for audio processing
-- Weak/strong self pattern in parameter callbacks (prevents use-after-free)
-- Comprehensive null pointer validation
-
-**Limitations:**
-- No custom UI (uses host generic parameter UI)
-- MIDI output only for instruments/MIDI effects (not audio effects)
-- macOS only (Audio Units are Apple-exclusive)
-
-**Validation Commands:**
-```bash
-# Build and install AUv2
-cargo xtask bundle gain --auv2 --release --install
-
-# Validate with Apple's auval tool
-auval -v aufx gain Bmer
-
-# Check installed location
-ls ~/Library/Audio/Plug-Ins/Components/
-```
-
-### 4.8 Example: Multi-Format Plugin
+### 3.7 Example: Multi-Format Plugin
 
 ```rust
 use beamer::prelude::*;
@@ -2264,12 +2090,6 @@ use beamer::prelude::*;
 pub static CONFIG: Config = Config::new("Universal Gain")
     .with_vendor("My Company")
     .with_version(env!("CARGO_PKG_VERSION"));
-
-// VST3 configuration (generate UUID with: cargo xtask generate-uuid)
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-        .with_categories("Fx|Dynamics");
 
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
@@ -2280,6 +2100,12 @@ pub static AU_CONFIG: AuConfig = AuConfig::new(
     "Myco",
     "gain",
 );
+
+// VST3 configuration (generate UUID with: cargo xtask generate-uuid)
+#[cfg(feature = "vst3")]
+pub static VST3_CONFIG: beamer_vst3::Vst3Config =
+    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
+        .with_categories("Fx|Dynamics");
 
 // Plugin implementation (format-agnostic, three-struct pattern)
 
@@ -2327,14 +2153,14 @@ impl Processor for GainProcessor {
 }
 
 // Format-specific exports
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
-
 #[cfg(all(feature = "au", target_os = "macos"))]
 export_au!(CONFIG, AU_CONFIG, GainDescriptor);
+
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 ```
 
-### 4.9 Development: Testing Both AUv2 and AUv3
+### 3.8 Development: Testing Both AUv2 and AUv3
 
 When you build the same plugin as both AUv2 and AUv3, macOS bridges them together if they share the same **type/subtype/manufacturer** codes. Hosts like Logic Pro and Reaper will show only one version (typically preferring AUv3).
 
@@ -2366,6 +2192,127 @@ With different subtype codes, hosts treat them as separate plugins and both will
 
 ---
 
+## 4. VST3 Integration
+
+Beamer supports VST3 plugins on macOS and Windows through the `beamer-vst3` crate. VST3 plugins share the same core traits (`Descriptor`, `Processor`, `Parameters`) as other formats, allowing you to target all formats from a single codebase.
+
+### 4.1 Configuration
+
+The `Vst3Config` struct contains VST3-specific identifiers and settings:
+
+```rust
+use beamer::prelude::*;
+
+pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
+    .with_categories("Fx|Dynamics");
+```
+
+**Fields:**
+
+| Field | Method | Description |
+|-------|--------|-------------|
+| `component_uid` | `Vst3Config::new(uuid)` | Unique UUID for plugin identification |
+| `controller_uid` | `.with_controller(uid)` | Optional separate controller UID (advanced) |
+| `categories` | `.with_categories(...)` | Plugin categories for DAW browser |
+| `sysex_slots` | `.with_sysex_slots(n)` | SysEx output slots per block (default: 16) |
+| `sysex_buffer_size` | `.with_sysex_buffer_size(n)` | Max SysEx message size (default: 512) |
+
+**UUID Generation:**
+
+Each plugin needs a unique UUID. Generate one using:
+
+```bash
+cargo xtask generate-uuid
+```
+
+The UUID format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
+
+### 4.2 Export Macro
+
+The `export_vst3!` macro generates platform-specific entry points:
+
+```rust
+use beamer::prelude::*;
+
+// Without presets
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor);
+
+// With factory presets
+#[cfg(feature = "vst3")]
+export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor, MyPresets);
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `CONFIG` | Static reference to `Config` (format-agnostic metadata) |
+| `VST3_CONFIG` | Static reference to `Vst3Config` (VST3-specific settings) |
+| `MyDescriptor` | The Descriptor type implementing `Descriptor` trait |
+| `MyPresets` | (Optional) Presets type implementing `FactoryPresets` |
+
+The macro generates `GetPluginFactory` and platform-specific entry points (`bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows).
+
+### 4.3 Bundle Structure
+
+**macOS:**
+```
+MyPlugin.vst3/
+├── Contents/
+│   ├── Info.plist
+│   ├── MacOS/
+│   │   └── MyPlugin
+│   └── PkgInfo
+```
+
+**Windows:**
+```
+MyPlugin.vst3/
+├── Contents/
+│   └── x86_64-win/
+│       └── MyPlugin.vst3
+```
+
+### 4.4 Build System
+
+```bash
+cargo xtask bundle gain --vst3 --release
+```
+
+**Cargo.toml:**
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+```
+
+### 4.5 Install Locations
+
+| Platform | Location |
+|----------|----------|
+| macOS | `~/Library/Audio/Plug-Ins/VST3/` |
+| Windows | `C:\Program Files\Common Files\VST3\` |
+
+### 4.6 Plugin Categories
+
+VST3 uses categories for plugin browser organization:
+
+```rust
+// Audio effect
+Vst3Config::new(uid(...)).with_categories("Fx|Dynamics")
+
+// Instrument
+Vst3Config::new(uid(...)).with_categories("Instrument|Synth")
+```
+
+Common VST3 categories: `Fx`, `Instrument`, `Dynamics`, `EQ`, `Filter`, `Delay`, `Reverb`, `Mastering`, etc.
+
+---
+
 ## 5. Future Phases
 
 ### 5.1 Phase 2: WebView Integration
@@ -2376,9 +2323,8 @@ Add platform-native WebView embedding to plugin windows.
 
 | Platform | Backend | Rust Approach |
 |----------|---------|---------------|
-| Windows | WebView2 (Edge/Chromium) | `webview2` crate or direct COM |
 | macOS | WKWebView | `objc2` + `icrate` |
-| Linux | WebKitGTK | `webkit2gtk` crate |
+| Windows | WebView2 (Edge/Chromium) | `webview2` crate or direct COM |
 
 #### IPlugView Implementation
 
@@ -2421,13 +2367,13 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      JavaScript                              │
+│                      JavaScript                             │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  window.__PLUGIN__ = {                              │    │
 │  │    invoke(cmd, args) → Promise                      │    │
 │  │    on(event, callback)                              │    │
 │  │    emit(event, data)                                │    │
-│  │    getParameter(id) → ParameterState                        │    │
+│  │    getParameter(id) → ParameterState                │    │
 │  │  }                                                  │    │
 │  └─────────────────────────────────────────────────────┘    │
 │              │                         ▲                    │
@@ -2437,7 +2383,7 @@ Tauri-style bidirectional communication between Rust and JavaScript.
 └──────────────┼─────────────────────────┼────────────────────┘
                │                         │
 ┌──────────────▼─────────────────────────┼────────────────────┐
-│                       Rust                                   │
+│                       Rust                                  │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  IpcHandler {                                       │    │
 │  │    fn handle_invoke(cmd, args) → Result<Value>      │    │

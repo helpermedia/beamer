@@ -4,13 +4,12 @@ Platform-native WebView embedding for VST3 plugin GUIs.
 
 ## Approach
 
-Direct platform APIs (not `wry`) — VST3 requires attaching to host-provided window handles.
+Direct platform APIs (not `wry`) - VST3 requires attaching to host-provided window handles.
 
 | Platform | Backend | Crate | Phase |
 |----------|---------|-------|-------|
 | macOS | WKWebView | `objc2` + `icrate` | 2A |
 | Windows | WebView2 | `windows` | 2A |
-| Linux | TBD | TBD | 2D |
 
 ## Phases
 
@@ -31,10 +30,6 @@ Direct platform APIs (not `wry`) — VST3 requires attaching to host-provided wi
 - Event emission (Rust → JS)
 - Parameter synchronization
 
-### Phase 2D: Linux Support
-- Evaluate GTK conflict mitigation
-- IPC-isolated process vs WebKitGTK
-
 ## Crate Structure
 
 ```
@@ -44,18 +39,17 @@ beamer-webview/
 │   ├── platform/
 │   │   ├── macos.rs
 │   │   ├── windows.rs
-│   │   └── linux.rs
 │   ├── view.rs         # IPlugView wrapper
 │   └── resources.rs
 ```
 
 ## References
 
-- [REFERENCE.md §4](./REFERENCE.md#4-future-phases) — WebView API details
+- [REFERENCE.md §4](./REFERENCE.md#4-future-phases) - WebView API details
 - [VST3 IPlugView](https://steinbergmedia.github.io/vst3_doc/base/classSteinberg_1_1IPlugView.html)
 - [vstwebview](https://github.com/rdaum/vstwebview)
 
 ## Status
 
 **Current**: Planning
-**Next**: Phase 2A — [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)
+**Next**: Phase 2A - [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)

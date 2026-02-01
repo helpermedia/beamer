@@ -1,6 +1,6 @@
 [package]
 name = "beamer-vst3"
-description = "VST3 implementation layer for the Beamer framework"
+description = "VST3 implementation layer for the Beamer audio plugin framework"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

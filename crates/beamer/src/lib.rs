@@ -130,13 +130,13 @@ pub mod prelude {
     // Shared plugin configuration (format-agnostic)
     pub use beamer_core::Config;
 
-    // VST3 implementation (only when feature enabled)
-    #[cfg(feature = "vst3")]
-    pub use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
-
     // AU implementation (only when feature enabled)
     #[cfg(feature = "au")]
     pub use beamer_au::{export_au, AuConfig, AuProcessor, ComponentType, fourcc};
+
+    // VST3 implementation (only when feature enabled)
+    #[cfg(feature = "vst3")]
+    pub use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
 
     // Derive macros for parameters (when feature enabled)
     // These share names with the traits/types they implement, which is allowed
