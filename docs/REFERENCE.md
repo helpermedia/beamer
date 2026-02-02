@@ -13,7 +13,6 @@ This document provides detailed API documentation for Beamer. For high-level arc
 3. [Audio Unit Integration](#3-audio-unit-integration)
 4. [VST3 Integration](#4-vst3-integration)
 5. [Future Phases](#5-future-phases)
-6. [Appendices](#appendices)
 
 ---
 
@@ -93,6 +92,7 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self, _: ()) -> GainProcessor {
@@ -193,8 +193,8 @@ let freq = FloatParameter::new("Frequency", 1000.0, 20.0..=20000.0);
 let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
 
 // In DSP code:
-let amplitude = gain.as_linear();  // 0 dB → 1.0, -6 dB → ~0.5
-let db_value = gain.get();         // Returns dB for display
+let amplitude = gain.as_linear(); // 0 dB → 1.0, -6 dB → ~0.5
+let db_value = gain.get(); // Returns dB for display
 ```
 
 **IntParameter**: Integer parameter:
@@ -223,7 +223,7 @@ pub enum FilterType {
     HighPass,
     #[name = "Band Pass"]
     BandPass,
-    Notch,  // Uses "Notch" as display name
+    Notch, // Uses "Notch" as display name
 }
 
 #[derive(Parameters)]
@@ -290,15 +290,15 @@ All parameter types support builder methods for customization. Chain these after
 ```rust
 // High-precision gain for mastering plugins
 let gain = FloatParameter::db("Output", 0.0, -12.0..=12.0)
-    .with_precision(2);  // Shows "-0.50 dB" instead of "-0.5 dB"
+    .with_precision(2); // Shows "-0.50 dB" instead of "-0.5 dB"
 
 // Milliseconds with integer display
 let attack = FloatParameter::ms("Attack", 10.0, 0.1..=100.0)
-    .with_precision(0);  // Shows "10" instead of "10.0"
+    .with_precision(0); // Shows "10" instead of "10.0"
 
 // Completely custom formatter
 let ratio = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
-    .with_formatter(Formatter::Ratio { precision: 1 });  // Shows "4.0:1"
+    .with_formatter(Formatter::Ratio { precision: 1 }); // Shows "4.0:1"
 
 // Chain multiple builder methods
 let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
@@ -500,7 +500,7 @@ The same nested struct can be reused in multiple groups without ID collision:
 pub osc1: OscParameters,
 
 #[nested(group = "Osc 2")]
-pub osc2: OscParameters,  // Same struct, different paths: "osc1/attack" vs "osc2/attack"
+pub osc2: OscParameters, // Same struct, different paths: "osc1/attack" vs "osc2/attack"
 ```
 
 #### Low-Level Parameters Trait
@@ -527,15 +527,15 @@ pub struct ParameterInfo {
     pub default_normalized: f64,
     pub step_count: i32,
     pub flags: ParameterFlags,
-    pub group_id: GroupId,  // Parameter group (0 = root)
+    pub group_id: GroupId, // Parameter group (0 = root)
 }
 
 pub struct ParameterFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
-    pub is_bypass: bool,   // Maps to VST3 kIsBypass (see §3.2)
-    pub is_list: bool,     // Display as dropdown list (for enums)
-    pub is_hidden: bool,   // Hide from DAW parameter list (used by MIDI CC emulation)
+    pub is_bypass: bool, // Maps to VST3 kIsBypass (see §3.2)
+    pub is_list: bool, // Display as dropdown list (for enums)
+    pub is_hidden: bool, // Hide from DAW parameter list (used by MIDI CC emulation)
 }
 
 impl ParameterInfo {
@@ -597,6 +597,7 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self, _: ()) -> GainProcessor {
@@ -631,8 +632,8 @@ impl Processor for GainProcessor {
 pub struct DelayProcessor {
     #[parameters]
     parameters: DelayParameters,
-    sample_rate: f64,    // Always valid
-    buffer: Vec<f64>,    // Always allocated
+    sample_rate: f64, // Always valid
+    buffer: Vec<f64>, // Always allocated
     write_pos: usize,
 }
 ```
@@ -1105,6 +1106,7 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self, _: ()) -> GainProcessor {
@@ -1177,15 +1179,15 @@ pub enum BypassState {
 
 /// What action the plugin should take for this buffer.
 pub enum BypassAction {
-    Passthrough,          // Fully bypassed - copy input to output
-    Process,              // Fully active - run DSP normally
-    ProcessAndCrossfade,  // Transitioning - run DSP, then call finish()
+    Passthrough, // Fully bypassed - copy input to output
+    Process, // Fully active - run DSP normally
+    ProcessAndCrossfade, // Transitioning - run DSP, then call finish()
 }
 
 pub enum CrossfadeCurve {
-    Linear,      // Slight loudness dip at center
-    EqualPower,  // Constant loudness (recommended)
-    SCurve,      // Faster start/end, smoother middle
+    Linear, // Slight loudness dip at center
+    EqualPower, // Constant loudness (recommended)
+    SCurve, // Faster start/end, smoother middle
 }
 
 pub struct BypassHandler { /* ... */ }
@@ -1287,12 +1289,12 @@ pub enum MidiEventKind {
 
 ```rust
 pub struct NoteOn {
-    pub channel: MidiChannel,  // 0-15
-    pub pitch: MidiNote,       // 0-127
-    pub velocity: f32,         // 0.0-1.0
-    pub note_id: NoteId,       // For tracking
-    pub tuning: f32,           // Cents (±120.0) for MPE/microtonal
-    pub length: i32,           // Samples (0 = unknown)
+    pub channel: MidiChannel, // 0-15
+    pub pitch: MidiNote, // 0-127
+    pub velocity: f32, // 0.0-1.0
+    pub note_id: NoteId, // For tracking
+    pub tuning: f32, // Cents (±120.0) for MPE/microtonal
+    pub length: i32, // Samples (0 = unknown)
 }
 
 pub struct NoteOff {
@@ -1316,13 +1318,13 @@ pub struct PolyPressure {
 ```rust
 pub struct ControlChange {
     pub channel: MidiChannel,
-    pub controller: u8,   // 0-127
-    pub value: f32,       // 0.0-1.0
+    pub controller: u8, // 0-127
+    pub value: f32, // 0.0-1.0
 }
 
 pub struct PitchBend {
     pub channel: MidiChannel,
-    pub value: f32,       // -1.0 to 1.0
+    pub value: f32, // -1.0 to 1.0
 }
 
 pub struct ChannelPressure {
@@ -1375,7 +1377,35 @@ impl MidiBuffer {
 }
 ```
 
-### 2.3 SysEx Handling
+### 2.3 Event Modification
+
+Use `event.with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
+
+```rust
+fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
+    for event in input {
+        match &event.event {
+            MidiEventKind::NoteOn(note) => {
+                output.push(event.with(MidiEventKind::NoteOn(NoteOn {
+                    pitch: note.pitch.saturating_add(2).min(127),
+                    ..*note // copies channel, velocity, note_id, tuning, length
+                })));
+            }
+            MidiEventKind::NoteOff(note) => {
+                output.push(event.with(MidiEventKind::NoteOff(NoteOff {
+                    pitch: note.pitch.saturating_add(2).min(127),
+                    ..*note // copies channel, velocity, note_id, tuning
+                })));
+            }
+            _ => output.push(*event),
+        }
+    }
+}
+
+fn wants_midi(&self) -> bool { true }
+```
+
+### 2.4 SysEx Handling
 
 **Buffer Size (Cargo features):**
 
@@ -1397,7 +1427,7 @@ pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XX
 **Heap Fallback (optional feature: `sysex-heap-fallback`):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.
 
-### 2.4 Note Expression (MPE)
+### 2.5 Note Expression (MPE)
 
 ```rust
 pub mod note_expression {
@@ -1460,7 +1490,7 @@ MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
 MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 ```
 
-### 2.5 MIDI CC Emulation (MidiCcConfig)
+### 2.6 MIDI CC Emulation (MidiCcConfig)
 
 VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
 
@@ -1569,7 +1599,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context:
 }
 ```
 
-### 2.6 Manual MIDI Mapping
+### 2.7 Manual MIDI Mapping
 
 For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 
@@ -1600,7 +1630,7 @@ fn on_midi_learn(&mut self, _bus: i32, _channel: i16, cc: u8) -> bool {
 
 **MIDI 2.0:** `midi1_assignments()`, `midi2_assignments()`, `on_midi2_learn()`
 
-### 2.7 Keyswitch Controller
+### 2.8 Keyswitch Controller
 
 ```rust
 fn keyswitch_count(&self, _bus: i32, _channel: i16) -> usize { 4 }
@@ -1614,7 +1644,7 @@ fn keyswitch_info(&self, _bus: i32, _channel: i16, index: usize) -> Option<Keysw
 }
 ```
 
-### 2.8 RPN/NRPN Helpers
+### 2.9 RPN/NRPN Helpers
 
 **Constants:**
 
@@ -1654,7 +1684,7 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 ```rust
 pub struct ParameterNumberMessage {
     pub channel: MidiChannel,
-    pub kind: ParameterNumberKind,  // Rpn or Nrpn
+    pub kind: ParameterNumberKind, // Rpn or Nrpn
     pub parameter: u16,
     pub value: f32,
     pub is_increment: bool,
@@ -1662,7 +1692,7 @@ pub struct ParameterNumberMessage {
 }
 ```
 
-### 2.9 CC Utilities
+### 2.10 CC Utilities
 
 **Constants:**
 
@@ -1708,7 +1738,7 @@ let combined = combine_14bit_raw(msb, lsb);  // → 0-16383
 let (msb, lsb) = split_14bit_raw(combined);
 ```
 
-### 2.10 VST3 Event Mapping
+### 2.11 VST3 Event Mapping
 
 | Beamer Type | VST3 Event ID | Direction |
 |------------|---------------|-----------|
@@ -1784,10 +1814,10 @@ crates/beamer-au/
 
 **Why two files vs VST3's single `processor.rs`?** Unlike VST3 (which implements a single COM interface in Rust), AU's render callback crosses an FFI boundary from Objective-C. `processor.rs` handles plugin lifecycle on the main thread, while `render.rs` contains the `RenderBlock` for real-time audio processing on the audio thread. This separation reflects the different threading contexts and the ObjC/Rust boundary.
 
-**Key Features (Full VST3 Parity):**
+**Key Features:**
 - Both AUv2 and AUv3 formats supported (macOS 10.11+)
 - Full parameter automation via `AUParameterTree` (AUv3) and properties (AUv2)
-- Parameter automation with smoother interpolation (buffer-quantized, matches VST3)
+- Parameter automation with smoother interpolation (buffer-quantized)
 - MIDI input (legacy MIDI 1.0 and MIDI 2.0 UMP, 1024 event buffer)
 - MIDI output via `scheduleMIDIEventBlock` (instruments/MIDI effects only)
 - MIDI CC state tracking (`MidiCcState` for mod wheel, pitch bend, etc.)
@@ -1865,8 +1895,8 @@ pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect)
 // AU config (macOS only)
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Demo",  // Manufacturer code
-    "gain",  // Subtype code
+    "Demo", // Manufacturer code
+    "gain", // Subtype code
 );
 
 // Export for macOS only
@@ -2103,8 +2133,8 @@ pub static CONFIG: Config = Config::new("Universal Gain", Category::Effect)
 // AU configuration (macOS only)
 #[cfg(target_os = "macos")]
 pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Myco",  // Manufacturer code
-    "gain",  // Subtype code
+    "Myco", // Manufacturer code
+    "gain", // Subtype code
 );
 
 // VST3 configuration (generate UUID with: cargo xtask generate-uuid)
@@ -2130,6 +2160,7 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self, _: ()) -> GainProcessor {
@@ -2180,13 +2211,13 @@ Create a separate test project with a different subtype code:
 // Main plugin (builds as AUv3)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     "Bmer",
-    "gain",  // subtype: "gain"
+    "gain", // subtype: "gain"
 );
 
 // Test plugin (builds as AUv2 with different subtype)
 pub static AU_CONFIG: AuConfig = AuConfig::new(
     "Bmer",
-    "gai2",  // subtype: "gai2" - different!
+    "gai2", // subtype: "gai2" - different!
 );
 ```
 
@@ -2492,156 +2523,3 @@ for event in &events.ramps {
 **Alternative:** Sub-block processing that splits the buffer at parameter event boundaries. Higher overhead but provides true sample-accuracy.
 
 **Priority:** Low - current behavior matches industry standard (VST3 SDK reference implementation uses same approach) and covers 99%+ of use cases.
-
----
-
-## 6. Appendices
-
-### A. Quick Reference
-
-**Commands:**
-
-```bash
-cargo build --release
-cargo xtask bundle gain --release
-cargo test
-cargo clippy
-```
-
-**Constants:**
-
-| Constant | Value |
-|----------|-------|
-| `MAX_CHANNELS` | 32 |
-| `MAX_BUSES` | 16 |
-| `MAX_AUX_BUSES` | 15 |
-| `MIDI_BUFFER_CAPACITY` | 1024 |
-| `MAX_SYSEX_SIZE` | 512 (default) |
-
-### B. Example: Simple Gain
-
-This example demonstrates the **three-struct pattern** for Beamer plugins.
-
-```rust
-use beamer::prelude::*;
-
-// =============================================================================
-// Configuration
-// =============================================================================
-
-pub static CONFIG: Config = Config::new("My Gain", Category::Effect)
-    .with_vendor("My Company")
-    .with_version("1.0.0")
-    .with_subcategories(&[Subcategory::Dynamics]);
-
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config =
-    Vst3Config::new("12345678-1234-5678-1234-567812345678");
-
-// =============================================================================
-// 1. Parameters
-// =============================================================================
-
-#[derive(Parameters)]
-pub struct GainParameters {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParameter,
-}
-
-// =============================================================================
-// 2. Descriptor
-// =============================================================================
-
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Descriptor for GainDescriptor {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
-    type Setup = ();
-    type Processor = GainProcessor;
-
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
-    }
-}
-
-// =============================================================================
-// 3. Processor
-// =============================================================================
-
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
-            }
-        }
-    }
-    // unprepare/save_state/load_state: automatically handled by default implementations
-}
-
-// =============================================================================
-// Export
-// =============================================================================
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
-```
-
-### C. Example: Sidechain Compressor
-
-```rust
-fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    let key_level = aux.sidechain().map(|sc| sc.rms(0)).unwrap_or(0.0);
-    let reduction = self.compute_gain_reduction(key_level);
-    buffer.copy_to_output();
-    buffer.apply_output_gain(reduction);
-}
-```
-
-### D. Example: MIDI Transpose
-
-```rust
-fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
-    for event in input {
-        match &event.event {
-            MidiEventKind::NoteOn(note) => {
-                output.push(MidiEvent::note_on(
-                    event.sample_offset,
-                    note.channel,
-                    note.pitch.saturating_add(2).min(127),
-                    note.velocity,
-                    note.note_id,
-                    note.tuning,
-                    note.length,
-                ));
-            }
-            MidiEventKind::NoteOff(note) => {
-                output.push(MidiEvent::note_off(
-                    event.sample_offset,
-                    note.channel,
-                    note.pitch.saturating_add(2).min(127),
-                    note.velocity,
-                    note.note_id,
-                    note.tuning,
-                ));
-            }
-            _ => output.push(*event),
-        }
-    }
-}
-
-fn wants_midi(&self) -> bool { true }
-```

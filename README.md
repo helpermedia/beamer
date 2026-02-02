@@ -2,7 +2,7 @@
 
 A Rust framework for building Audio Unit (AU) and VST3 audio plugins.
 
-Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together, then projects them onto any surface through modern web UI. Write your plugin once, export to AU (macOS) and VST3 (all platforms).
+Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS, Windows) through modern web UI (planned) from a single codebase.
 
 > [!NOTE]
 > Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
@@ -11,11 +11,9 @@ Named after the beams that connect notes in sheet music, Beamer links your DSP l
 
 **Built on Rust's guarantees.** Where most plugin frameworks use C++, Beamer uses Rust. Memory and threading bugs become compile-time errors, not runtime crashes.
 
-**Derive macros do the heavy lifting.** Define your parameters with `#[derive(Parameters)]` and Beamer generates host integration, state persistence, DAW automation, and parameter access traits. Focus on your DSP, not boilerplate.
+**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation, and parameter access traits automatically.
 
-**Web developers build your UI.** Beamer's WebView architecture (planned) lets frontend developers create modern plugin interfaces using familiar tools (HTML, CSS, JavaScript) while your audio code stays in safe Rust. Each team does what they do best.
-
-**For creative developers.** Whether you're an audio engineer learning Rust or a Rust developer exploring audio, Beamer handles the plugin format plumbing so you can focus on what matters: making something that sounds great.
+**Clean separation of concerns.** DSP code stays in safe Rust while the planned WebView architecture enables modern interfaces with HTML, CSS, and JavaScript. Beamer bridges them together and handles plugin format complexity.
 
 ## Quick Start
 
@@ -37,8 +35,7 @@ struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
-    // No setup needed for simple effects,
-    // but for more complex plugins use SampleRate or MaxBufferSize here
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
 
@@ -67,7 +64,7 @@ impl Processor for GainProcessor {
     }
 }
 
-// Export with: export_vst3!(GainDescriptor, "Gain", "Bmer");
+// Export with: export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
 ```
 
 ## Plugin Structure
@@ -87,18 +84,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 | **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ |
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode |
 
-### Instruments
+### Instruments & MIDI
 
 | Example | Description |
 |---------|-------------|
 | **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
-| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI processor for note/CC transformation |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 
 ## Features
 
-- **Multi-format** - AU (macOS) and VST3 (all platforms)
+- **Multi-format** - AU (macOS) and VST3 (macOS, Windows)
 - **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing, and more
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics

@@ -71,6 +71,8 @@ The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runt
 
 ### VST3 Architecture
 
+The VST3 wrapper uses COM (Component Object Model) interfaces implemented directly in Rust. A single `Vst3Processor<P>` class implements all required interfaces, with the processor handling audio on the audio thread and the edit controller managing parameters on the UI thread.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         DAW Host                                │
@@ -96,6 +98,8 @@ The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runt
 │                                │         └──────────────────┘   │
 └────────────────────────────────┴────────────────────────────────┘
 ```
+
+**Why COM in Rust?** The VST3 SDK is C++ based, but Rust can implement COM interfaces directly using vtable pointers. This avoids C++ interop complexity while maintaining full compatibility with VST3 hosts.
 
 ### Unified Core
 
@@ -246,6 +250,7 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
+    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
 
