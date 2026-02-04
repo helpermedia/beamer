@@ -96,7 +96,9 @@ unsafe fn extract_transport(context_ptr: *const ProcessContext) -> Transport {
         return Transport::default();
     }
 
-    let context = &*context_ptr;
+    // SAFETY: Validated context_ptr is non-null above. Caller guarantees it points to
+    // a valid ProcessContext for the duration of this call.
+    let context = unsafe { &*context_ptr };
     let state = context.state;
 
     // VST3 ProcessContext state flags
@@ -384,7 +386,8 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     unsafe fn processor(&self) -> &P::Processor {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Prepared { processor, .. } => processor,
             PluginState::Unprepared { .. } => {
                 panic!("Attempted to access processor before setupProcessing()")
@@ -404,7 +407,8 @@ where
     #[inline]
     #[allow(clippy::mut_from_ref)]
     unsafe fn processor_mut(&self) -> &mut P::Processor {
-        match &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        match unsafe { &mut *self.state.get() } {
             PluginState::Prepared { processor, .. } => processor,
             PluginState::Unprepared { .. } => {
                 panic!("Attempted to access processor before setupProcessing()")
@@ -422,7 +426,8 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     unsafe fn unprepared_plugin(&self) -> &P {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin,
             PluginState::Prepared { .. } => {
                 panic!("Attempted to access unprepared plugin after setupProcessing()")
@@ -441,7 +446,8 @@ where
     #[allow(dead_code)] // API method for potential future use
     #[allow(clippy::mut_from_ref)]
     unsafe fn unprepared_plugin_mut(&self) -> &mut P {
-        match &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &mut *self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin,
             PluginState::Prepared { .. } => {
                 panic!("Attempted to access unprepared plugin after setupProcessing()")
@@ -453,7 +459,8 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     unsafe fn is_prepared(&self) -> bool {
-        matches!(&*self.state.get(), PluginState::Prepared { .. })
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        matches!(unsafe { &*self.state.get() }, PluginState::Prepared { .. })
     }
 
     /// Try to get a reference to the unprepared plugin.
@@ -462,7 +469,8 @@ where
     /// Use this for Plugin methods that might be called in either state.
     #[inline]
     unsafe fn try_plugin(&self) -> Option<&P> {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => Some(plugin),
             PluginState::Prepared { .. } => None,
         }
@@ -474,7 +482,8 @@ where
     #[inline]
     #[allow(clippy::mut_from_ref)]
     unsafe fn try_plugin_mut(&self) -> Option<&mut P> {
-        match &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &mut *self.state.get() } {
             PluginState::Unprepared { plugin, .. } => Some(plugin),
             PluginState::Prepared { .. } => None,
         }
@@ -487,7 +496,8 @@ where
     /// Get input bus count (works in both states).
     #[inline]
     unsafe fn input_bus_count(&self) -> usize {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.input_bus_count(),
             PluginState::Prepared { input_buses, .. } => input_buses.len(),
         }
@@ -496,7 +506,8 @@ where
     /// Get output bus count (works in both states).
     #[inline]
     unsafe fn output_bus_count(&self) -> usize {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.output_bus_count(),
             PluginState::Prepared { output_buses, .. } => output_buses.len(),
         }
@@ -506,7 +517,8 @@ where
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     unsafe fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
             PluginState::Prepared { input_buses, .. } => input_buses.get(index).cloned(),
         }
@@ -516,7 +528,8 @@ where
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     unsafe fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
             PluginState::Prepared { output_buses, .. } => output_buses.get(index).cloned(),
         }
@@ -532,12 +545,13 @@ where
     /// Must only be called when no mutable reference exists.
     #[inline]
     unsafe fn parameters(&self) -> &P::Parameters {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.parameters(),
             PluginState::Prepared { processor, .. } => {
                 // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
                 // Pointer cast through *const _ lets compiler verify type equality.
-                &*(processor.parameters() as *const _)
+                unsafe { &*(processor.parameters() as *const _) }
             }
         }
     }
@@ -550,12 +564,13 @@ where
     #[allow(dead_code)] // API method for potential future use
     #[allow(clippy::mut_from_ref)]
     unsafe fn parameters_mut(&self) -> &mut P::Parameters {
-        match &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &mut *self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.parameters_mut(),
             PluginState::Prepared { processor, .. } => {
                 // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
                 // Pointer cast through *mut _ lets compiler verify type equality.
-                &mut *(processor.parameters_mut() as *mut _)
+                unsafe { &mut *(processor.parameters_mut() as *mut _) }
             }
         }
     }
@@ -569,7 +584,8 @@ where
     /// Queries both Descriptor (unprepared) and Processor (prepared) for MIDI support.
     #[inline]
     unsafe fn wants_midi(&self) -> bool {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.wants_midi(),
             PluginState::Prepared { processor, .. } => processor.wants_midi(),
         }
@@ -580,7 +596,8 @@ where
     /// Returns 0 when unprepared (conservative default), processor's value when prepared.
     #[inline]
     unsafe fn latency_samples(&self) -> u32 {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { .. } => 0,
             PluginState::Prepared { processor, .. } => processor.latency_samples(),
         }
@@ -592,7 +609,8 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     unsafe fn tail_samples(&self) -> u32 {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { .. } => 0,
             PluginState::Prepared { processor, .. } => processor.tail_samples(),
         }
@@ -604,7 +622,8 @@ where
     #[inline]
     #[allow(dead_code)] // API method for potential future use
     unsafe fn supports_double_precision(&self) -> bool {
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { .. } => false,
             PluginState::Prepared { processor, .. } => processor.supports_double_precision(),
         }
@@ -648,18 +667,22 @@ where
         processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
-        // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
-        let storage = &mut *self.buffer_storage_f32.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let storage = unsafe { &mut *self.buffer_storage_f32.get() };
         storage.clear();
 
         // Collect main input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let bus = &*process_data.inputs;
+            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
+            let bus = unsafe { &*process_data.inputs };
             let num_channels = bus.numChannels as usize;
             let max_channels = storage.main_inputs.capacity();
-            if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                let channel_ptrs =
-                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+            // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
+                let channel_ptrs = unsafe {
+                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
+                };
                 for &ptr in channel_ptrs.iter().take(max_channels) {
                     if !ptr.is_null() {
                         storage.main_inputs.push(ptr);
@@ -670,12 +693,16 @@ where
 
         // Collect main output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let bus = &*process_data.outputs;
+            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
+            let bus = unsafe { &*process_data.outputs };
             let num_channels = bus.numChannels as usize;
             let max_channels = storage.main_outputs.capacity();
-            if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                let channel_ptrs =
-                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+            // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
+                let channel_ptrs = unsafe {
+                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
+                };
                 for &ptr in channel_ptrs.iter().take(max_channels) {
                     if !ptr.is_null() {
                         storage.main_outputs.push(ptr);
@@ -686,15 +713,20 @@ where
 
         // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 1 && !process_data.inputs.is_null() {
-            let input_buses =
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
+            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
+            let input_buses = unsafe {
+                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize)
+            };
             for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
                 if aux_idx < storage.aux_inputs.len() {
                     let num_channels = bus.numChannels as usize;
                     let max_channels = storage.aux_inputs[aux_idx].capacity();
-                    if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                        let channel_ptrs =
-                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                    // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid.
+                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+                        // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
+                        let channel_ptrs = unsafe {
+                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
+                        };
                         for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
                                 storage.aux_inputs[aux_idx].push(ptr);
@@ -707,15 +739,20 @@ where
 
         // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
-            let output_buses =
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
+            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
+            let output_buses = unsafe {
+                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize)
+            };
             for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
                 if aux_idx < storage.aux_outputs.len() {
                     let num_channels = bus.numChannels as usize;
                     let max_channels = storage.aux_outputs[aux_idx].capacity();
-                    if num_channels > 0 && !bus.__field0.channelBuffers32.is_null() {
-                        let channel_ptrs =
-                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels);
+                    // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid.
+                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+                        // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
+                        let channel_ptrs = unsafe {
+                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
+                        };
                         for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
                                 storage.aux_outputs[aux_idx].push(ptr);
@@ -726,23 +763,29 @@ where
             }
         }
 
-        // Create slices from pointers (safe: ProcessData lifetime covers this scope)
-        let main_in_iter = storage
-            .main_inputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts(ptr, num_samples));
-        let main_out_iter = storage
-            .main_outputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples));
+        // Create slices from pointers
+        // SAFETY: Host guarantees channel pointers valid for num_samples elements
+        // for the duration of process().
+        let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
+            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+            unsafe { slice::from_raw_parts(ptr, num_samples) }
+        });
+        let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
+            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+            unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+        });
 
         let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-            bus.iter()
-                .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+            bus.iter().map(|&ptr| {
+                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+                unsafe { slice::from_raw_parts(ptr, num_samples) }
+            })
         });
         let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-            bus.iter()
-                .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+            bus.iter().map(|&ptr| {
+                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+            })
         });
 
         // Construct buffers and process
@@ -764,18 +807,22 @@ where
         processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
-        // Get pre-allocated storage and clear for reuse (O(1), no deallocation)
-        let storage = &mut *self.buffer_storage_f64.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let storage = unsafe { &mut *self.buffer_storage_f64.get() };
         storage.clear();
 
         // Collect main input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let bus = &*process_data.inputs;
+            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
+            let bus = unsafe { &*process_data.inputs };
             let num_channels = bus.numChannels as usize;
             let max_channels = storage.main_inputs.capacity();
-            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                let channel_ptrs =
-                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                let channel_ptrs = unsafe {
+                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
+                };
                 for &ptr in channel_ptrs.iter().take(max_channels) {
                     if !ptr.is_null() {
                         storage.main_inputs.push(ptr);
@@ -786,12 +833,16 @@ where
 
         // Collect main output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let bus = &*process_data.outputs;
+            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
+            let bus = unsafe { &*process_data.outputs };
             let num_channels = bus.numChannels as usize;
             let max_channels = storage.main_outputs.capacity();
-            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                let channel_ptrs =
-                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                let channel_ptrs = unsafe {
+                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
+                };
                 for &ptr in channel_ptrs.iter().take(max_channels) {
                     if !ptr.is_null() {
                         storage.main_outputs.push(ptr);
@@ -802,15 +853,20 @@ where
 
         // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
         if process_data.numInputs > 1 && !process_data.inputs.is_null() {
-            let input_buses =
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize);
+            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
+            let input_buses = unsafe {
+                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize)
+            };
             for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
                 if aux_idx < storage.aux_inputs.len() {
                     let num_channels = bus.numChannels as usize;
                     let max_channels = storage.aux_inputs[aux_idx].capacity();
-                    if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                        let channel_ptrs =
-                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                    // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid.
+                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                        // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                        let channel_ptrs = unsafe {
+                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
+                        };
                         for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
                                 storage.aux_inputs[aux_idx].push(ptr);
@@ -823,15 +879,20 @@ where
 
         // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
         if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
-            let output_buses =
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize);
+            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
+            let output_buses = unsafe {
+                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize)
+            };
             for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
                 if aux_idx < storage.aux_outputs.len() {
                     let num_channels = bus.numChannels as usize;
                     let max_channels = storage.aux_outputs[aux_idx].capacity();
-                    if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                        let channel_ptrs =
-                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                    // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid.
+                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                        // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                        let channel_ptrs = unsafe {
+                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
+                        };
                         for &ptr in channel_ptrs.iter().take(max_channels) {
                             if !ptr.is_null() {
                                 storage.aux_outputs[aux_idx].push(ptr);
@@ -842,23 +903,29 @@ where
             }
         }
 
-        // Create slices from pointers (safe: ProcessData lifetime covers this scope)
-        let main_in_iter = storage
-            .main_inputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts(ptr, num_samples));
-        let main_out_iter = storage
-            .main_outputs
-            .iter()
-            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples));
+        // Create slices from pointers
+        // SAFETY: Host guarantees channel pointers valid for num_samples elements
+        // for the duration of process().
+        let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
+            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+            unsafe { slice::from_raw_parts(ptr, num_samples) }
+        });
+        let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
+            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+            unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+        });
 
         let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-            bus.iter()
-                .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+            bus.iter().map(|&ptr| {
+                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+                unsafe { slice::from_raw_parts(ptr, num_samples) }
+            })
         });
         let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-            bus.iter()
-                .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+            bus.iter().map(|&ptr| {
+                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
+                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+            })
         });
 
         // Construct buffers and process
@@ -881,18 +948,23 @@ where
         processor: &mut P::Processor,
         context: &CoreProcessContext,
     ) {
-        let conv = &mut *self.conversion_buffers.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let conv = unsafe { &mut *self.conversion_buffers.get() };
 
         // Convert main input f64 → f32
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            let input_buses = slice::from_raw_parts(process_data.inputs, 1);
+            // SAFETY: inputs is non-null and host guarantees validity.
+            let input_buses = unsafe { slice::from_raw_parts(process_data.inputs, 1) };
             let bus = &input_buses[0];
             let num_channels = (bus.numChannels as usize).min(conv.main_input_f32.len());
-            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                let channel_ptrs = slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
                 for (ch, &ptr) in channel_ptrs.iter().enumerate() {
                     if !ptr.is_null() && ch < conv.main_input_f32.len() {
-                        let src = slice::from_raw_parts(ptr, num_samples);
+                        // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                        let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
                         for (i, &s) in src.iter().enumerate() {
                             conv.main_input_f32[ch][i] = s as f32;
                         }
@@ -905,17 +977,23 @@ where
         for (bus_idx, aux_bus) in conv.aux_input_f32.iter_mut().enumerate() {
             let vst_bus_idx = bus_idx + 1; // aux buses start at index 1
             if process_data.numInputs as usize > vst_bus_idx && !process_data.inputs.is_null() {
-                let input_buses = slice::from_raw_parts(
-                    process_data.inputs,
-                    process_data.numInputs as usize,
-                );
+                // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
+                let input_buses = unsafe {
+                    slice::from_raw_parts(
+                        process_data.inputs,
+                        process_data.numInputs as usize,
+                    )
+                };
                 let bus = &input_buses[vst_bus_idx];
                 let num_channels = (bus.numChannels as usize).min(aux_bus.len());
-                if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                    let channel_ptrs = slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+                if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                    // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                    let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
                     for (ch, &ptr) in channel_ptrs.iter().enumerate() {
                         if !ptr.is_null() && ch < aux_bus.len() {
-                            let src = slice::from_raw_parts(ptr, num_samples);
+                            // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                            let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
                             for (i, &s) in src.iter().enumerate() {
                                 aux_bus[ch][i] = s as f32;
                             }
@@ -948,14 +1026,18 @@ where
 
         // Convert main output f32 → f64
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            let output_buses = slice::from_raw_parts(process_data.outputs, 1);
+            // SAFETY: outputs is non-null and host guarantees validity.
+            let output_buses = unsafe { slice::from_raw_parts(process_data.outputs, 1) };
             let bus = &output_buses[0];
             let num_channels = (bus.numChannels as usize).min(conv.main_output_f32.len());
-            if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                let channel_ptrs = slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
                 for (ch, &ptr) in channel_ptrs.iter().enumerate() {
                     if !ptr.is_null() && ch < conv.main_output_f32.len() {
-                        let dst = slice::from_raw_parts_mut(ptr, num_samples);
+                        // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                        let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
                         for (i, sample) in conv.main_output_f32[ch][..num_samples].iter().enumerate() {
                             dst[i] = *sample as f64;
                         }
@@ -968,17 +1050,23 @@ where
         for (bus_idx, aux_bus) in conv.aux_output_f32.iter().enumerate() {
             let vst_bus_idx = bus_idx + 1;
             if process_data.numOutputs as usize > vst_bus_idx && !process_data.outputs.is_null() {
-                let output_buses = slice::from_raw_parts(
-                    process_data.outputs,
-                    process_data.numOutputs as usize,
-                );
+                // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
+                let output_buses = unsafe {
+                    slice::from_raw_parts(
+                        process_data.outputs,
+                        process_data.numOutputs as usize,
+                    )
+                };
                 let bus = &output_buses[vst_bus_idx];
                 let num_channels = (bus.numChannels as usize).min(aux_bus.len());
-                if num_channels > 0 && !bus.__field0.channelBuffers64.is_null() {
-                    let channel_ptrs = slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels);
+                // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
+                if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
+                    // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
+                    let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
                     for (ch, &ptr) in channel_ptrs.iter().enumerate() {
                         if !ptr.is_null() && ch < aux_bus.len() {
-                            let dst = slice::from_raw_parts_mut(ptr, num_samples);
+                            // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                            let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
                             for (i, sample) in aux_bus[ch][..num_samples].iter().enumerate() {
                                 dst[i] = *sample as f64;
                             }
@@ -1052,7 +1140,8 @@ where
 
         // For combined component, return the controller UID if set, otherwise kNotImplemented
         if let Some(controller) = self.vst3_config.controller_uid {
-            *class_id = controller;
+            // SAFETY: Validated class_id is non-null above. Host guarantees validity.
+            unsafe { *class_id = controller };
             kResultOk
         } else {
             kNotImplemented
@@ -1066,13 +1155,20 @@ where
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => self.input_bus_count() as i32,
-                BusDirections_::kOutput => self.output_bus_count() as i32,
+                BusDirections_::kInput => {
+                    // SAFETY: VST3 guarantees single-threaded access for this call.
+                    (unsafe { self.input_bus_count() }) as i32
+                }
+                BusDirections_::kOutput => {
+                    // SAFETY: VST3 guarantees single-threaded access for this call.
+                    (unsafe { self.output_bus_count() }) as i32
+                }
                 _ => 0,
             },
             MediaTypes_::kEvent => {
                 // Return 1 event bus in each direction if plugin wants MIDI
-                if self.wants_midi() {
+                // SAFETY: VST3 guarantees single-threaded access for this call.
+                if unsafe { self.wants_midi() } {
                     1
                 } else {
                     0
@@ -1096,13 +1192,20 @@ where
         match media_type as MediaTypes {
             MediaTypes_::kAudio => {
                 let info = match dir as BusDirections {
-                    BusDirections_::kInput => self.core_input_bus_info(index as usize),
-                    BusDirections_::kOutput => self.core_output_bus_info(index as usize),
+                    BusDirections_::kInput => {
+                        // SAFETY: VST3 guarantees single-threaded access for this call.
+                        unsafe { self.core_input_bus_info(index as usize) }
+                    }
+                    BusDirections_::kOutput => {
+                        // SAFETY: VST3 guarantees single-threaded access for this call.
+                        unsafe { self.core_output_bus_info(index as usize) }
+                    }
                     _ => None,
                 };
 
                 if let Some(info) = info {
-                    let bus = &mut *bus;
+                    // SAFETY: Validated bus is non-null above. Host guarantees validity.
+                    let bus = unsafe { &mut *bus };
                     bus.mediaType = MediaTypes_::kAudio as MediaType;
                     bus.direction = dir;
                     bus.channelCount = info.channel_count as i32;
@@ -1123,11 +1226,13 @@ where
             }
             MediaTypes_::kEvent => {
                 // Only index 0 for event bus, and only if plugin wants MIDI
-                if index != 0 || !self.wants_midi() {
+                // SAFETY: VST3 guarantees single-threaded access for this call.
+                if index != 0 || !unsafe { self.wants_midi() } {
                     return kInvalidArgument;
                 }
 
-                let bus = &mut *bus;
+                // SAFETY: Validated bus is non-null above. Host guarantees validity.
+                let bus = unsafe { &mut *bus };
                 bus.mediaType = MediaTypes_::kEvent as MediaType;
                 bus.direction = dir;
                 bus.channelCount = 1; // Single event channel
@@ -1165,7 +1270,8 @@ where
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
         // set_active is only meaningful when prepared (processor exists)
-        if let PluginState::Prepared { processor, .. } = &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        if let PluginState::Prepared { processor, .. } = unsafe { &mut *self.state.get() } {
             processor.set_active(state != 0);
         }
         // When unprepared, silently succeed (host may call this before setupProcessing)
@@ -1177,7 +1283,8 @@ where
             return kInvalidArgument;
         }
 
-        let stream = match ComRef::from_raw(state) {
+        // SAFETY: state is non-null and host guarantees it points to valid IBStream.
+        let stream = match unsafe { ComRef::from_raw(state) } {
             Some(s) => s,
             None => return kInvalidArgument,
         };
@@ -1187,11 +1294,14 @@ where
         let mut chunk = [0u8; 4096];
         loop {
             let mut bytes_read: i32 = 0;
-            let result = stream.read(
-                chunk.as_mut_ptr() as *mut c_void,
-                chunk.len() as i32,
-                &mut bytes_read,
-            );
+            // SAFETY: stream is valid ComRef, chunk is valid buffer.
+            let result = unsafe {
+                stream.read(
+                    chunk.as_mut_ptr() as *mut c_void,
+                    chunk.len() as i32,
+                    &mut bytes_read,
+                )
+            };
 
             if result != kResultOk || bytes_read <= 0 {
                 break;
@@ -1205,7 +1315,8 @@ where
         }
 
         // Load state based on current state
-        match &mut *self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &mut *self.state.get() } {
             PluginState::Unprepared { pending_state, .. } => {
                 // Store for deferred loading when prepare() is called
                 *pending_state = Some(buffer);
@@ -1216,7 +1327,8 @@ where
                     Ok(()) => {
                         // Apply current sample rate and reset smoothers
                         use beamer_core::parameter_types::Parameters;
-                        let sample_rate = *self.sample_rate.get();
+                        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                        let sample_rate = unsafe { *self.sample_rate.get() };
                         if sample_rate > 0.0 {
                             processor.parameters_mut().set_sample_rate(sample_rate);
                         }
@@ -1235,7 +1347,8 @@ where
         }
 
         // Get state from processor (only available when prepared)
-        let data: Vec<u8> = match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        let data: Vec<u8> = match unsafe { &*self.state.get() } {
             PluginState::Unprepared { .. } => {
                 // When unprepared, we can't save processor state
                 // Return empty success (some hosts call this before prepare)
@@ -1254,16 +1367,20 @@ where
         }
 
         // Write to IBStream
-        let stream = match ComRef::from_raw(state) {
+        // SAFETY: state is non-null and host guarantees it points to valid IBStream.
+        let stream = match unsafe { ComRef::from_raw(state) } {
             Some(s) => s,
             None => return kInvalidArgument,
         };
         let mut bytes_written: i32 = 0;
-        let result = stream.write(
-            data.as_ptr() as *mut c_void,
-            data.len() as i32,
-            &mut bytes_written,
-        );
+        // SAFETY: stream is valid ComRef, data is valid slice.
+        let result = unsafe {
+            stream.write(
+                data.as_ptr() as *mut c_void,
+                data.len() as i32,
+                &mut bytes_written,
+            )
+        };
 
         if result == kResultOk && bytes_written == data.len() as i32 {
             kResultOk
@@ -1303,21 +1420,25 @@ where
         }
 
         // Check if the requested arrangement matches our bus configuration
-        if num_ins as usize != self.input_bus_count()
-            || num_outs as usize != self.output_bus_count()
-        {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let input_count = unsafe { self.input_bus_count() };
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let output_count = unsafe { self.output_bus_count() };
+        if num_ins as usize != input_count || num_outs as usize != output_count {
             return kResultFalse;
         }
 
         // Validate each input bus
         for i in 0..num_ins as usize {
             // Early rejection: channel count exceeds compile-time limits
-            let requested = *inputs.add(i);
+            // SAFETY: inputs is non-null (checked above) and host guarantees validity for num_ins.
+            let requested = unsafe { *inputs.add(i) };
             if validate_speaker_arrangement(requested).is_err() {
                 return kResultFalse;
             }
 
-            if let Some(info) = self.core_input_bus_info(i) {
+            // SAFETY: VST3 guarantees single-threaded access for this call.
+            if let Some(info) = unsafe { self.core_input_bus_info(i) } {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1328,12 +1449,14 @@ where
         // Validate each output bus
         for i in 0..num_outs as usize {
             // Early rejection: channel count exceeds compile-time limits
-            let requested = *outputs.add(i);
+            // SAFETY: outputs is non-null (checked above) and host guarantees validity for num_outs.
+            let requested = unsafe { *outputs.add(i) };
             if validate_speaker_arrangement(requested).is_err() {
                 return kResultFalse;
             }
 
-            if let Some(info) = self.core_output_bus_info(i) {
+            // SAFETY: VST3 guarantees single-threaded access for this call.
+            if let Some(info) = unsafe { self.core_output_bus_info(i) } {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1355,13 +1478,20 @@ where
         }
 
         let info = match dir as BusDirections {
-            BusDirections_::kInput => self.core_input_bus_info(index as usize),
-            BusDirections_::kOutput => self.core_output_bus_info(index as usize),
+            BusDirections_::kInput => {
+                // SAFETY: VST3 guarantees single-threaded access for this call.
+                unsafe { self.core_input_bus_info(index as usize) }
+            }
+            BusDirections_::kOutput => {
+                // SAFETY: VST3 guarantees single-threaded access for this call.
+                unsafe { self.core_output_bus_info(index as usize) }
+            }
             _ => None,
         };
 
         if let Some(info) = info {
-            *arr = channel_count_to_speaker_arrangement(info.channel_count);
+            // SAFETY: arr is non-null (checked above) and host guarantees validity.
+            unsafe { *arr = channel_count_to_speaker_arrangement(info.channel_count) };
             kResultOk
         } else {
             kInvalidArgument
@@ -1377,7 +1507,8 @@ where
     }
 
     unsafe fn getLatencySamples(&self) -> u32 {
-        self.latency_samples()
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.latency_samples() }
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
@@ -1385,15 +1516,20 @@ where
             return kInvalidArgument;
         }
 
-        let setup = &*setup;
+        // SAFETY: setup is non-null and host guarantees it points to valid ProcessSetup.
+        let setup = unsafe { &*setup };
 
         // Store setup parameters
-        *self.sample_rate.get() = setup.sampleRate;
-        *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
-        *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
+        // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
+        unsafe {
+            *self.sample_rate.get() = setup.sampleRate;
+            *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
+            *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
+        }
 
         // Handle state transition
-        let state = &mut *self.state.get();
+        // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
+        let state = unsafe { &mut *self.state.get() };
         match state {
             PluginState::Unprepared { plugin, pending_state } => {
                 // Cache bus info before consuming the plugin
@@ -1438,17 +1574,23 @@ where
                     output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
                 );
                 let max_frames = setup.maxSamplesPerBlock as usize;
-                *self.buffer_storage_f32.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-                *self.buffer_storage_f64.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                unsafe {
+                    *self.buffer_storage_f32.get() =
+                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                    *self.buffer_storage_f64.get() =
+                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                }
 
                 // Pre-allocate conversion buffers for f64→f32 processing
                 if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
                     && !processor.supports_double_precision()
                 {
-                    *self.conversion_buffers.get() =
-                        ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, setup.maxSamplesPerBlock as usize);
+                    // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                    unsafe {
+                        *self.conversion_buffers.get() =
+                            ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, setup.maxSamplesPerBlock as usize);
+                    }
                 }
 
                 // Update state to Prepared
@@ -1460,7 +1602,8 @@ where
             }
             PluginState::Prepared { processor, input_buses, output_buses } => {
                 // Already prepared - check if sample rate changed
-                let current_sample_rate = *self.sample_rate.get();
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                let current_sample_rate = unsafe { *self.sample_rate.get() };
                 if (current_sample_rate - setup.sampleRate).abs() > 0.001 {
                     // Sample rate changed - unprepare and re-prepare
                     let bus_layout = BusLayout {
@@ -1477,9 +1620,9 @@ where
                     };
 
                     // Take ownership of the processor
+                    // SAFETY: mem::zeroed is used as a placeholder that will be immediately overwritten.
                     let old_processor = std::mem::replace(
                         processor,
-                        // This placeholder will be overwritten
                         unsafe { std::mem::zeroed() },
                     );
 
@@ -1494,8 +1637,11 @@ where
                     if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
                         && !new_processor.supports_double_precision()
                     {
-                        *self.conversion_buffers.get() =
-                            ConversionBuffers::allocate_from_buses(input_buses, output_buses, setup.maxSamplesPerBlock as usize);
+                        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                        unsafe {
+                            *self.conversion_buffers.get() =
+                                ConversionBuffers::allocate_from_buses(input_buses, output_buses, setup.maxSamplesPerBlock as usize);
+                        }
                     }
 
                     *processor = new_processor;
@@ -1516,7 +1662,8 @@ where
             return kInvalidArgument;
         }
 
-        let process_data = &*data;
+        // SAFETY: data is non-null and host guarantees it points to valid ProcessData.
+        let process_data = unsafe { &*data };
         let num_samples = process_data.numSamples as usize;
 
         if num_samples == 0 {
@@ -1524,20 +1671,27 @@ where
         }
 
         // 1. Handle incoming parameter changes from host
-        if let Some(parameter_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
-            let parameters = self.parameters();
-            let parameter_count = parameter_changes.getParameterCount();
+        // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
+        if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
+            // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+            let parameters = unsafe { self.parameters() };
+            // SAFETY: parameter_changes is valid ComRef.
+            let parameter_count = unsafe { parameter_changes.getParameterCount() };
 
             for i in 0..parameter_count {
-                if let Some(queue) = ComRef::from_raw(parameter_changes.getParameterData(i)) {
-                    let parameter_id = queue.getParameterId();
-                    let point_count = queue.getPointCount();
+                // SAFETY: getParameterData may return null; ComRef::from_raw handles this.
+                if let Some(queue) = unsafe { ComRef::from_raw(parameter_changes.getParameterData(i)) } {
+                    // SAFETY: queue is valid ComRef.
+                    let parameter_id = unsafe { queue.getParameterId() };
+                    // SAFETY: queue is valid ComRef.
+                    let point_count = unsafe { queue.getPointCount() };
 
                     if point_count > 0 {
                         let mut sample_offset = 0;
                         let mut value = 0.0;
                         // Get the last value in the queue (simplest approach)
-                        if queue.getPoint(point_count - 1, &mut sample_offset, &mut value)
+                        // SAFETY: queue is valid, sample_offset and value are valid pointers.
+                        if unsafe { queue.getPoint(point_count - 1, &mut sample_offset, &mut value) }
                             == kResultTrue
                         {
                             parameters.set_normalized(parameter_id, value);
@@ -1548,16 +1702,22 @@ where
         }
 
         // 2. Handle MIDI events (reuse pre-allocated buffer to avoid stack overflow)
-        let midi_input = &mut *self.midi_input.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let midi_input = unsafe { &mut *self.midi_input.get() };
         midi_input.clear();
 
-        if let Some(event_list) = ComRef::from_raw(process_data.inputEvents) {
-            let event_count = event_list.getEventCount();
+        // SAFETY: inputEvents may be null; ComRef::from_raw handles this.
+        if let Some(event_list) = unsafe { ComRef::from_raw(process_data.inputEvents) } {
+            // SAFETY: event_list is valid ComRef.
+            let event_count = unsafe { event_list.getEventCount() };
 
             for i in 0..event_count {
-                let mut event: Event = std::mem::zeroed();
-                if event_list.getEvent(i, &mut event) == kResultOk {
-                    if let Some(midi_event) = convert_vst3_to_midi(&event) {
+                // SAFETY: zeroed Event is valid for VST3 Event union type.
+                let mut event: Event = unsafe { std::mem::zeroed() };
+                // SAFETY: event_list is valid, event is valid mutable pointer.
+                if unsafe { event_list.getEvent(i, &mut event) } == kResultOk {
+                    // SAFETY: event is valid Event populated by getEvent.
+                    if let Some(midi_event) = unsafe { convert_vst3_to_midi(&event) } {
                         midi_input.push(midi_event);
                     }
                 }
@@ -1568,25 +1728,31 @@ where
         // This handles the VST3 IMidiMapping flow where DAWs send CC/pitch bend
         // as parameter changes instead of raw MIDI events.
         // Uses framework-owned MidiCcState.
-        if let Some(parameter_changes) = ComRef::from_raw(process_data.inputParameterChanges) {
+        // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
+        if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
             if let Some(cc_state) = self.midi_cc_state.as_ref() {
-                let parameter_count = parameter_changes.getParameterCount();
+                // SAFETY: parameter_changes is valid ComRef.
+                let parameter_count = unsafe { parameter_changes.getParameterCount() };
 
                 for i in 0..parameter_count {
-                    if let Some(queue) = ComRef::from_raw(parameter_changes.getParameterData(i)) {
-                        let parameter_id = queue.getParameterId();
+                    // SAFETY: getParameterData may return null; ComRef::from_raw handles this.
+                    if let Some(queue) = unsafe { ComRef::from_raw(parameter_changes.getParameterData(i)) } {
+                        // SAFETY: queue is valid ComRef.
+                        let parameter_id = unsafe { queue.getParameterId() };
 
                         // Check if this is a MIDI CC parameter
                         if let Some(controller) = MidiCcState::parameter_id_to_controller(parameter_id) {
                             if cc_state.has_controller(controller) {
-                                let point_count = queue.getPointCount();
+                                // SAFETY: queue is valid ComRef.
+                                let point_count = unsafe { queue.getPointCount() };
 
                                 // Process all points for sample-accurate timing
                                 for j in 0..point_count {
                                     let mut sample_offset: i32 = 0;
                                     let mut value: f64 = 0.0;
 
-                                    if queue.getPoint(j, &mut sample_offset, &mut value) == kResultOk {
+                                    // SAFETY: queue is valid, sample_offset and value are valid pointers.
+                                    if unsafe { queue.getPoint(j, &mut sample_offset, &mut value) } == kResultOk {
                                         let midi_event = convert_cc_parameter_to_midi(
                                             controller,
                                             value as f32,
@@ -1611,9 +1777,11 @@ where
         }
 
         // Clear and prepare MIDI output buffer and SysEx pool
-        let midi_output = &mut *self.midi_output.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let midi_output = unsafe { &mut *self.midi_output.get() };
         midi_output.clear();
-        let sysex_pool = &mut *self.sysex_output_pool.get();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let sysex_pool = unsafe { &mut *self.sysex_output_pool.get() };
 
         // Clear pool FIRST so next_slot is reset to 0 before draining fallback
         sysex_pool.clear();
@@ -1622,11 +1790,13 @@ where
         // These allocate slots starting from 0; new plugin output will append after them.
         #[cfg(feature = "sysex-heap-fallback")]
         if sysex_pool.has_fallback() {
-            if let Some(event_list) = ComRef::from_raw(process_data.outputEvents) {
+            // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
+            if let Some(event_list) = unsafe { ComRef::from_raw(process_data.outputEvents) } {
                 for sysex_data in sysex_pool.take_fallback() {
                     // Allocate from pool (succeeds since we just cleared it)
                     if let Some((ptr, len)) = sysex_pool.allocate(&sysex_data) {
-                        let mut event: Event = std::mem::zeroed();
+                        // SAFETY: zeroed Event is valid for VST3 Event union type.
+                        let mut event: Event = unsafe { std::mem::zeroed() };
                         event.busIndex = 0;
                         event.sampleOffset = 0; // Delayed message, emit at start of block
                         event.ppqPosition = 0.0;
@@ -1635,7 +1805,8 @@ where
                         event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
                         event.__field0.data.size = len as u32;
                         event.__field0.data.bytes = ptr;
-                        let _ = event_list.addEvent(&mut event);
+                        // SAFETY: event_list is valid ComRef, event is valid mutable pointer.
+                        let _ = unsafe { event_list.addEvent(&mut event) };
                     }
                 }
             }
@@ -1647,14 +1818,17 @@ where
         // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
         // Process MIDI events (process_midi is on Processor)
-        let processor = self.processor_mut();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let processor = unsafe { self.processor_mut() };
         processor.process_midi(midi_input.as_slice(), midi_output);
 
         // Write output MIDI events
-        if let Some(event_list) = ComRef::from_raw(process_data.outputEvents) {
+        // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
+        if let Some(event_list) = unsafe { ComRef::from_raw(process_data.outputEvents) } {
             for midi_event in midi_output.iter() {
                 if let Some(mut vst3_event) = convert_midi_to_vst3(midi_event, sysex_pool) {
-                    let _ = event_list.addEvent(&mut vst3_event);
+                    // SAFETY: event_list is valid ComRef, vst3_event is valid mutable pointer.
+                    let _ = unsafe { event_list.addEvent(&mut vst3_event) };
                 }
             }
         }
@@ -1676,8 +1850,10 @@ where
         }
 
         // 3. Extract transport info from VST3 ProcessContext
-        let transport = extract_transport(process_data.processContext);
-        let sample_rate = *self.sample_rate.get();
+        // SAFETY: processContext may be null; extract_transport handles this.
+        let transport = unsafe { extract_transport(process_data.processContext) };
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let sample_rate = unsafe { *self.sample_rate.get() };
         let context = if let Some(cc_state) = self.midi_cc_state.as_ref() {
             CoreProcessContext::with_midi_cc(sample_rate, num_samples, transport, cc_state)
         } else {
@@ -1685,21 +1861,26 @@ where
         };
 
         // 4. Process audio based on sample size
-        let symbolic_sample_size = *self.symbolic_sample_size.get();
-        let processor = self.processor_mut();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let symbolic_sample_size = unsafe { *self.symbolic_sample_size.get() };
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let processor = unsafe { self.processor_mut() };
 
         if symbolic_sample_size == SymbolicSampleSizes_::kSample64 as i32 {
             // 64-bit processing path
             if processor.supports_double_precision() {
                 // Native f64: extract f64 buffers and call process_f64()
-                self.process_audio_f64_native(process_data, num_samples, processor, &context);
+                // SAFETY: process_data is valid, processor is valid mutable reference.
+                unsafe { self.process_audio_f64_native(process_data, num_samples, processor, &context) };
             } else {
                 // Conversion: f64→f32, process, f32→f64
-                self.process_audio_f64_converted(process_data, num_samples, processor, &context);
+                // SAFETY: process_data is valid, processor is valid mutable reference.
+                unsafe { self.process_audio_f64_converted(process_data, num_samples, processor, &context) };
             }
         } else {
             // 32-bit processing path (default)
-            self.process_audio_f32(process_data, num_samples, processor, &context);
+            // SAFETY: process_data is valid, processor is valid mutable reference.
+            unsafe { self.process_audio_f32(process_data, num_samples, processor, &context) };
         }
 
         kResultOk
@@ -1707,7 +1888,8 @@ where
 
     unsafe fn getTailSamples(&self) -> u32 {
         // tail_samples and bypass_ramp_samples are on Processor
-        match &*self.state.get() {
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        match unsafe { &*self.state.get() } {
             PluginState::Unprepared { .. } => 0,
             PluginState::Prepared { processor, .. } => {
                 processor.tail_samples().saturating_add(processor.bypass_ramp_samples())
@@ -1770,7 +1952,8 @@ where
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        let user_parameters = self.parameters().count();
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let user_parameters = unsafe { self.parameters() }.count();
         // MIDI CC state is framework-owned, always available
         let cc_parameters = self
             .midi_cc_state
@@ -1787,13 +1970,15 @@ where
             return kInvalidArgument;
         }
 
-        let parameters = self.parameters();
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let parameters = unsafe { self.parameters() };
         let user_parameter_count = parameters.count();
 
         // User-defined parameters first
         if (parameter_index as usize) < user_parameter_count {
             if let Some(parameter_info) = parameters.info(parameter_index as usize) {
-                let info = &mut *info;
+                // SAFETY: info is non-null (checked above) and host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.id = parameter_info.id;
                 copy_wstring(parameter_info.name, &mut info.title);
                 copy_wstring(parameter_info.short_name, &mut info.shortTitle);
@@ -1835,7 +2020,8 @@ where
             let cc_index = (parameter_index as usize) - user_parameter_count;
             if cc_index < cc_parameter_count {
                 if let Some(parameter_info) = cc_state.info(cc_index) {
-                    let info = &mut *info;
+                    // SAFETY: info is non-null (checked above) and host guarantees validity.
+                    let info = unsafe { &mut *info };
                     info.id = parameter_info.id;
                     copy_wstring(parameter_info.name, &mut info.title);
                     copy_wstring(parameter_info.short_name, &mut info.shortTitle);
@@ -1856,7 +2042,8 @@ where
         if preset_count > 0 {
             let preset_param_index = user_parameter_count + cc_parameter_count;
             if parameter_index as usize == preset_param_index {
-                let info = &mut *info;
+                // SAFETY: info is non-null (checked above) and host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.id = PROGRAM_CHANGE_PARAM_ID;
                 copy_wstring("Program", &mut info.title);
                 copy_wstring("Prg", &mut info.shortTitle);
@@ -1894,17 +2081,21 @@ where
                 let preset_index = preset_index.min(preset_count - 1);
 
                 if let Some(preset_info) = Presets::info(preset_index) {
-                    copy_wstring(preset_info.name, &mut *string);
+                    // SAFETY: string is non-null (checked above) and host guarantees validity.
+                    copy_wstring(preset_info.name, unsafe { &mut *string });
                     return kResultOk;
                 }
             }
-            copy_wstring("", &mut *string);
+            // SAFETY: string is non-null (checked above) and host guarantees validity.
+            copy_wstring("", unsafe { &mut *string });
             return kResultOk;
         }
 
-        let parameters = self.parameters();
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let parameters = unsafe { self.parameters() };
         let display = parameters.normalized_to_string(id, value_normalized);
-        copy_wstring(&display, &mut *string);
+        // SAFETY: string is non-null (checked above) and host guarantees validity.
+        copy_wstring(&display, unsafe { &mut *string });
         kResultOk
     }
 
@@ -1918,8 +2109,10 @@ where
             return kInvalidArgument;
         }
 
-        let len = len_wstring(string as *const TChar);
-        if let Ok(s) = String::from_utf16(slice::from_raw_parts(string as *const u16, len)) {
+        // SAFETY: string is non-null (checked above) and is null-terminated.
+        let len = unsafe { len_wstring(string as *const TChar) };
+        // SAFETY: string is valid for len elements (len_wstring counts to null terminator).
+        if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string as *const u16, len) }) {
             // Handle program change parameter (preset name to value)
             if id == PROGRAM_CHANGE_PARAM_ID {
                 let preset_count = Presets::count();
@@ -1928,7 +2121,8 @@ where
                     if let Some(preset_info) = Presets::info(i) {
                         if preset_info.name == s {
                             let step_count = (preset_count - 1).max(1) as f64;
-                            *value_normalized = (i as f64) / step_count;
+                            // SAFETY: value_normalized is non-null (checked above).
+                            unsafe { *value_normalized = (i as f64) / step_count };
                             return kResultOk;
                         }
                     }
@@ -1936,9 +2130,11 @@ where
                 return kInvalidArgument;
             }
 
-            let parameters = self.parameters();
+            // SAFETY: VST3 guarantees single-threaded access for this call.
+            let parameters = unsafe { self.parameters() };
             if let Some(value) = parameters.string_to_normalized(id, &s) {
-                *value_normalized = value;
+                // SAFETY: value_normalized is non-null (checked above).
+                unsafe { *value_normalized = value };
                 return kResultOk;
             }
         }
@@ -1955,7 +2151,8 @@ where
             }
             return 0.0;
         }
-        self.parameters().normalized_to_plain(id, value_normalized)
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.parameters() }.normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
@@ -1968,7 +2165,8 @@ where
             }
             return 0.0;
         }
-        self.parameters().plain_to_normalized(id, plain_value)
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.parameters() }.plain_to_normalized(id, plain_value)
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
@@ -1983,7 +2181,8 @@ where
         if id == PROGRAM_CHANGE_PARAM_ID {
             let preset_count = Presets::count();
             if preset_count > 1 {
-                let current_index = *self.current_preset_index.get();
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                let current_index = unsafe { *self.current_preset_index.get() };
                 let step_count = (preset_count - 1) as f64;
                 return (current_index as f64) / step_count;
             } else if preset_count == 1 {
@@ -1992,7 +2191,8 @@ where
             return 0.0;
         }
 
-        self.parameters().get_normalized(id)
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.parameters() }.get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
@@ -2018,18 +2218,24 @@ where
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
                 // when it's already selected), and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
-                Presets::apply(preset_index, self.parameters());
+                // SAFETY: VST3 guarantees single-threaded access for this call.
+                Presets::apply(preset_index, unsafe { self.parameters() });
 
                 // Store the current preset index
-                *self.current_preset_index.get() = preset_index as i32;
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                unsafe { *self.current_preset_index.get() = preset_index as i32 };
 
                 // Notify host that parameter values changed so UI refreshes
-                let handler = *self.component_handler.get();
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                let handler = unsafe { *self.component_handler.get() };
                 if !handler.is_null() {
-                    ((*(*handler).vtbl).restartComponent)(
-                        handler,
-                        RestartFlags_::kParamValuesChanged,
-                    );
+                    // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+                    unsafe {
+                        ((*(*handler).vtbl).restartComponent)(
+                            handler,
+                            RestartFlags_::kParamValuesChanged,
+                        );
+                    }
                 }
 
                 return kResultOk;
@@ -2037,27 +2243,32 @@ where
             return kInvalidArgument;
         }
 
-        self.parameters().set_normalized(id, value);
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.parameters() }.set_normalized(id, value);
         kResultOk
     }
 
     unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
         let handler_ptr = self.component_handler.get();
-        let old_handler = *handler_ptr;
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        let old_handler = unsafe { *handler_ptr };
 
         // Release old handler if present
         if !old_handler.is_null() {
             let unknown = old_handler as *mut FUnknown;
-            ((*(*unknown).vtbl).release)(unknown);
+            // SAFETY: old_handler is non-null and is valid COM pointer with valid vtbl.
+            unsafe { ((*(*unknown).vtbl).release)(unknown) };
         }
 
         // Store and AddRef new handler if present
         if !handler.is_null() {
             let unknown = handler as *mut FUnknown;
-            ((*(*unknown).vtbl).addRef)(unknown);
+            // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+            unsafe { ((*(*unknown).vtbl).addRef)(unknown) };
         }
 
-        *handler_ptr = handler;
+        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+        unsafe { *handler_ptr = handler };
         kResultOk
     }
 
@@ -2067,7 +2278,8 @@ where
         }
 
         // Check if this is an "editor" view request
-        let name_str = std::ffi::CStr::from_ptr(name).to_str().unwrap_or("");
+        // SAFETY: name is non-null (checked above) and is null-terminated C string.
+        let name_str = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().unwrap_or("");
         if name_str != "editor" {
             return std::ptr::null_mut();
         }
@@ -2088,7 +2300,8 @@ where
 {
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::parameter_groups::ParameterGroups;
-        self.parameters().group_count() as i32
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.parameters() }.group_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2097,10 +2310,12 @@ where
         }
 
         use beamer_core::parameter_groups::ParameterGroups;
-        let parameters = self.parameters();
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let parameters = unsafe { self.parameters() };
 
         if let Some(group_info) = parameters.group_info(unit_index as usize) {
-            let info = &mut *info;
+            // SAFETY: info is non-null (checked above) and host guarantees validity.
+            let info = unsafe { &mut *info };
             info.id = group_info.id;
             info.parentUnitId = group_info.parent_id;
             // Assign program list to root unit if we have presets
@@ -2138,7 +2353,8 @@ where
             return kInvalidArgument;
         }
 
-        let info = &mut *info;
+        // SAFETY: info is non-null (checked above) and host guarantees validity.
+        let info = unsafe { &mut *info };
         info.id = FACTORY_PRESETS_LIST_ID;
         info.programCount = Presets::count() as i32;
         copy_wstring("Factory Presets", &mut info.name);
@@ -2157,7 +2373,8 @@ where
         }
 
         if let Some(preset_info) = Presets::info(program_index as usize) {
-            copy_wstring(preset_info.name, &mut *name);
+            // SAFETY: name is non-null (checked above) and host guarantees validity.
+            copy_wstring(preset_info.name, unsafe { &mut *name });
             kResultOk
         } else {
             kInvalidArgument
@@ -2239,9 +2456,11 @@ where
         let controller = midi_controller_number as u8;
 
         // 1. First check plugin's custom mappings (only available in unprepared state)
-        if let Some(plugin) = self.try_plugin() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin() } {
             if let Some(parameter_id) = plugin.midi_cc_to_parameter(bus_index, channel, controller) {
-                *id = parameter_id;
+                // SAFETY: id is non-null (checked above) and host guarantees validity.
+                unsafe { *id = parameter_id };
                 return kResultOk;
             }
         }
@@ -2249,7 +2468,8 @@ where
         // 2. Check framework-owned MIDI CC state (omni channel - ignore channel parameter)
         if let Some(cc_state) = self.midi_cc_state.as_ref() {
             if cc_state.has_controller(controller) {
-                *id = MidiCcState::parameter_id(controller);
+                // SAFETY: id is non-null (checked above) and host guarantees validity.
+                unsafe { *id = MidiCcState::parameter_id(controller) };
                 return kResultOk;
             }
         }
@@ -2273,7 +2493,8 @@ where
         midi_cc: i16,
     ) -> tresult {
         // on_midi_learn is on Plugin, only available in unprepared state
-        if let Some(plugin) = self.try_plugin_mut() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
             if plugin.on_midi_learn(bus_index, channel, midi_cc as u8) {
                 return kResultOk;
             }
@@ -2296,7 +2517,8 @@ where
             return 0;
         }
         // midi1_assignments is on Plugin, only available in unprepared state
-        self.try_plugin()
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.try_plugin() }
             .map(|p| p.midi1_assignments().len() as u32)
             .unwrap_or(0)
     }
@@ -2311,11 +2533,13 @@ where
         }
 
         // midi1_assignments is on Plugin, only available in unprepared state
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kResultFalse;
         };
         let assignments = plugin.midi1_assignments();
-        let list_ref = &*list;
+        // SAFETY: list is non-null (checked above) and host guarantees validity.
+        let list_ref = unsafe { &*list };
 
         if (list_ref.count as usize) < assignments.len() {
             return kResultFalse;
@@ -2325,7 +2549,8 @@ where
             return kResultOk;
         }
 
-        let map = slice::from_raw_parts_mut(list_ref.map, assignments.len());
+        // SAFETY: list_ref.map is valid for list_ref.count elements per host contract.
+        let map = unsafe { slice::from_raw_parts_mut(list_ref.map, assignments.len()) };
         for (i, a) in assignments.iter().enumerate() {
             map[i] = Midi1ControllerParamIDAssignment {
                 pId: a.assignment.parameter_id,
@@ -2344,7 +2569,8 @@ where
             return 0;
         }
         // midi2_assignments is on Plugin, only available in unprepared state
-        self.try_plugin()
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.try_plugin() }
             .map(|p| p.midi2_assignments().len() as u32)
             .unwrap_or(0)
     }
@@ -2359,11 +2585,13 @@ where
         }
 
         // midi2_assignments is on Plugin, only available in unprepared state
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kResultFalse;
         };
         let assignments = plugin.midi2_assignments();
-        let list_ref = &*list;
+        // SAFETY: list is non-null (checked above) and host guarantees validity.
+        let list_ref = unsafe { &*list };
 
         if (list_ref.count as usize) < assignments.len() {
             return kResultFalse;
@@ -2373,7 +2601,8 @@ where
             return kResultOk;
         }
 
-        let map = slice::from_raw_parts_mut(list_ref.map, assignments.len());
+        // SAFETY: list_ref.map is valid for list_ref.count elements per host contract.
+        let map = unsafe { slice::from_raw_parts_mut(list_ref.map, assignments.len()) };
         for (i, a) in assignments.iter().enumerate() {
             map[i] = Midi2ControllerParamIDAssignment {
                 pId: a.assignment.parameter_id,
@@ -2406,7 +2635,8 @@ where
         channel: u8,
         midi_cc: i16,
     ) -> tresult {
-        if let Some(plugin) = self.try_plugin_mut() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
             if plugin.on_midi1_learn(bus_index, channel, midi_cc as u8) {
                 return kResultOk;
             }
@@ -2420,7 +2650,8 @@ where
         channel: u8,
         midi_cc: Midi2Controller,
     ) -> tresult {
-        if let Some(plugin) = self.try_plugin_mut() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
             let controller = beamer_core::Midi2Controller {
                 bank: midi_cc.bank,
                 registered: midi_cc.registered != 0,
@@ -2443,7 +2674,8 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
-        self.try_plugin()
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.try_plugin() }
             .map(|p| p.note_expression_count(bus_index, channel) as i32)
             .unwrap_or(0)
     }
@@ -2459,13 +2691,15 @@ where
             return kInvalidArgument;
         }
 
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kInvalidArgument;
         };
         if let Some(expr_info) =
             plugin.note_expression_info(bus_index, channel, note_expression_index as usize)
         {
-            let vst_info = &mut *info;
+            // SAFETY: info is non-null (checked above) and host guarantees validity.
+            let vst_info = unsafe { &mut *info };
             vst_info.typeId = expr_info.type_id;
             copy_wstring(expr_info.title_str(), &mut vst_info.title);
             copy_wstring(expr_info.short_title_str(), &mut vst_info.shortTitle);
@@ -2495,11 +2729,13 @@ where
             return kInvalidArgument;
         }
 
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kInvalidArgument;
         };
         let display = plugin.note_expression_value_to_string(bus_index, channel, id, value_normalized);
-        copy_wstring(&display, &mut *string);
+        // SAFETY: string is non-null (checked above) and host guarantees validity.
+        copy_wstring(&display, unsafe { &mut *string });
         kResultOk
     }
 
@@ -2515,11 +2751,15 @@ where
             return kInvalidArgument;
         }
 
-        let len = len_wstring(string);
-        if let Ok(s) = String::from_utf16(slice::from_raw_parts(string, len)) {
-            if let Some(plugin) = self.try_plugin() {
+        // SAFETY: string is non-null (checked above) and is null-terminated.
+        let len = unsafe { len_wstring(string) };
+        // SAFETY: string is valid for len elements.
+        if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string, len) }) {
+            // SAFETY: VST3 guarantees single-threaded access for this call.
+            if let Some(plugin) = unsafe { self.try_plugin() } {
                 if let Some(value) = plugin.note_expression_string_to_value(bus_index, channel, id, &s) {
-                    *value_normalized = value;
+                    // SAFETY: value_normalized is non-null (checked above).
+                    unsafe { *value_normalized = value };
                     return kResultOk;
                 }
             }
@@ -2537,7 +2777,8 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
-        self.try_plugin()
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        unsafe { self.try_plugin() }
             .map(|p| p.keyswitch_count(bus_index, channel) as i32)
             .unwrap_or(0)
     }
@@ -2553,13 +2794,15 @@ where
             return kInvalidArgument;
         }
 
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kInvalidArgument;
         };
         if let Some(ks_info) =
             plugin.keyswitch_info(bus_index, channel, keyswitch_index as usize)
         {
-            let vst_info = &mut *info;
+            // SAFETY: info is non-null (checked above) and host guarantees validity.
+            let vst_info = unsafe { &mut *info };
             vst_info.typeId = ks_info.type_id;
             copy_wstring(ks_info.title_str(), &mut vst_info.title);
             copy_wstring(ks_info.short_title_str(), &mut vst_info.shortTitle);
@@ -2593,16 +2836,19 @@ where
             return kInvalidArgument;
         }
 
-        let Some(plugin) = self.try_plugin() else {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        let Some(plugin) = (unsafe { self.try_plugin() }) else {
             return kInvalidArgument;
         };
         let mappings = plugin.physical_ui_mappings(bus_index, channel);
-        let list_ref = &mut *list;
+        // SAFETY: list is non-null (checked above) and host guarantees validity.
+        let list_ref = unsafe { &mut *list };
 
         // Fill in the mappings up to the provided count
         let fill_count = (list_ref.count as usize).min(mappings.len());
         if fill_count > 0 && !list_ref.map.is_null() {
-            let map_slice = slice::from_raw_parts_mut(list_ref.map, fill_count);
+            // SAFETY: list_ref.map is valid for list_ref.count elements per host contract.
+            let map_slice = unsafe { slice::from_raw_parts_mut(list_ref.map, fill_count) };
             for (i, mapping) in mappings.iter().take(fill_count).enumerate() {
                 map_slice[i].physicalUITypeID = mapping.physical_ui_type_id;
                 map_slice[i].noteExpressionTypeID = mapping.note_expression_type_id;
@@ -2622,7 +2868,8 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
-        if let Some(plugin) = self.try_plugin_mut() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
             if plugin.enable_mpe_input_processing(state != 0) {
                 return kResultOk;
             }
@@ -2636,7 +2883,8 @@ where
         member_begin_channel: i32,
         member_end_channel: i32,
     ) -> tresult {
-        if let Some(plugin) = self.try_plugin_mut() {
+        // SAFETY: VST3 guarantees single-threaded access for this call.
+        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
             let settings = beamer_core::MpeInputDeviceSettings {
                 master_channel,
                 member_begin_channel,
@@ -2754,7 +3002,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
 
     match event.r#type {
         K_NOTE_ON_EVENT => {
-            let note_on = &event.__field0.noteOn;
+            // SAFETY: event.type == K_NOTE_ON_EVENT, so noteOn is active variant.
+            let note_on = unsafe { &event.__field0.noteOn };
             // Use pitch as note_id when host sends -1
             let note_id = if note_on.noteId == -1 {
                 note_on.pitch as i32
@@ -2772,7 +3021,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             ))
         }
         K_NOTE_OFF_EVENT => {
-            let note_off = &event.__field0.noteOff;
+            // SAFETY: event.type == K_NOTE_OFF_EVENT, so noteOff is active variant.
+            let note_off = unsafe { &event.__field0.noteOff };
             // Use pitch as note_id when host sends -1
             let note_id = if note_off.noteId == -1 {
                 note_off.pitch as i32
@@ -2789,7 +3039,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             ))
         }
         K_POLY_PRESSURE_EVENT => {
-            let poly = &event.__field0.polyPressure;
+            // SAFETY: event.type == K_POLY_PRESSURE_EVENT, so polyPressure is active variant.
+            let poly = unsafe { &event.__field0.polyPressure };
             // Use pitch as note_id when host sends -1
             let note_id = if poly.noteId == -1 {
                 poly.pitch as i32
@@ -2805,13 +3056,15 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             ))
         }
         K_DATA_EVENT => {
-            let data_event = &event.__field0.data;
+            // SAFETY: event.type == K_DATA_EVENT, so data is active variant.
+            let data_event = unsafe { &event.__field0.data };
             // Only handle SysEx data type
             if data_event.r#type == DATA_TYPE_MIDI_SYSEX {
                 let mut sysex = SysEx::new();
                 let copy_len = (data_event.size as usize).min(MAX_SYSEX_SIZE);
                 if copy_len > 0 && !data_event.bytes.is_null() {
-                    let src = std::slice::from_raw_parts(data_event.bytes, copy_len);
+                    // SAFETY: bytes is non-null and host guarantees validity for size bytes.
+                    let src = unsafe { std::slice::from_raw_parts(data_event.bytes, copy_len) };
                     sysex.data[..copy_len].copy_from_slice(src);
                     sysex.len = copy_len as u16;
                 }
@@ -2824,7 +3077,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             }
         }
         K_NOTE_EXPRESSION_VALUE_EVENT => {
-            let expr = &event.__field0.noteExpressionValue;
+            // SAFETY: event.type == K_NOTE_EXPRESSION_VALUE_EVENT, so noteExpressionValue is active.
+            let expr = unsafe { &event.__field0.noteExpressionValue };
             Some(MidiEvent {
                 sample_offset,
                 event: MidiEventKind::NoteExpressionValue(CoreNoteExpressionValue {
@@ -2835,7 +3089,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             })
         }
         K_NOTE_EXPRESSION_INT_VALUE_EVENT => {
-            let expr = &event.__field0.noteExpressionIntValue;
+            // SAFETY: event.type == K_NOTE_EXPRESSION_INT_VALUE_EVENT, so noteExpressionIntValue is active.
+            let expr = unsafe { &event.__field0.noteExpressionIntValue };
             Some(MidiEvent {
                 sample_offset,
                 event: MidiEventKind::NoteExpressionInt(NoteExpressionInt {
@@ -2846,7 +3101,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             })
         }
         K_NOTE_EXPRESSION_TEXT_EVENT => {
-            let expr = &event.__field0.noteExpressionText;
+            // SAFETY: event.type == K_NOTE_EXPRESSION_TEXT_EVENT, so noteExpressionText is active.
+            let expr = unsafe { &event.__field0.noteExpressionText };
             let mut text_event = NoteExpressionText {
                 note_id: expr.noteId,
                 expression_type: expr.typeId,
@@ -2856,7 +3112,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             // Convert UTF-16 to UTF-8
             let text_len = expr.textLen as usize;
             if !expr.text.is_null() && text_len > 0 {
-                let text_slice = std::slice::from_raw_parts(expr.text, text_len);
+                // SAFETY: text is non-null and host guarantees validity for textLen elements.
+                let text_slice = unsafe { std::slice::from_raw_parts(expr.text, text_len) };
                 let utf8_len = utf16_to_utf8(text_slice, &mut text_event.text);
                 text_event.text_len = utf8_len as u8;
             }
@@ -2866,7 +3123,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             })
         }
         K_CHORD_EVENT => {
-            let chord = &event.__field0.chord;
+            // SAFETY: event.type == K_CHORD_EVENT, so chord is active variant.
+            let chord = unsafe { &event.__field0.chord };
             let mut info = ChordInfo {
                 root: chord.root as i8,
                 bass_note: chord.bassNote as i8,
@@ -2877,7 +3135,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             // Convert UTF-16 to UTF-8
             let text_len = chord.textLen as usize;
             if !chord.text.is_null() && text_len > 0 {
-                let text_slice = std::slice::from_raw_parts(chord.text, text_len);
+                // SAFETY: text is non-null and host guarantees validity for textLen elements.
+                let text_slice = unsafe { std::slice::from_raw_parts(chord.text, text_len) };
                 let utf8_len = utf16_to_utf8(text_slice, &mut info.name);
                 info.name_len = utf8_len as u8;
             }
@@ -2887,7 +3146,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             })
         }
         K_SCALE_EVENT => {
-            let scale = &event.__field0.scale;
+            // SAFETY: event.type == K_SCALE_EVENT, so scale is active variant.
+            let scale = unsafe { &event.__field0.scale };
             let mut info = ScaleInfo {
                 root: scale.root as i8,
                 mask: scale.mask as u16,
@@ -2897,7 +3157,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             // Convert UTF-16 to UTF-8
             let text_len = scale.textLen as usize;
             if !scale.text.is_null() && text_len > 0 {
-                let text_slice = std::slice::from_raw_parts(scale.text, text_len);
+                // SAFETY: text is non-null and host guarantees validity for textLen elements.
+                let text_slice = unsafe { std::slice::from_raw_parts(scale.text, text_len) };
                 let utf8_len = utf16_to_utf8(text_slice, &mut info.name);
                 info.name_len = utf8_len as u8;
             }
@@ -2907,7 +3168,8 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             })
         }
         K_LEGACY_MIDI_CC_OUT_EVENT => {
-            let cc_event = &event.__field0.midiCCOut;
+            // SAFETY: event.type == K_LEGACY_MIDI_CC_OUT_EVENT, so midiCCOut is active variant.
+            let cc_event = unsafe { &event.__field0.midiCCOut };
             let channel = cc_event.channel as u8;
 
             match cc_event.controlNumber {
@@ -2954,6 +3216,7 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
 /// Note: ChordInfo, ScaleInfo, and NoteExpressionText are primarily input events
 /// (DAW → plugin) and are not output.
 fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> Option<Event> {
+    // SAFETY: Event is a C struct with no invalid bit patterns; zeroed is a valid state.
     let mut event: Event = unsafe { std::mem::zeroed() };
     event.busIndex = 0;
     event.sampleOffset = midi.sample_offset as i32;

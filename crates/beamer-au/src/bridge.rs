@@ -94,8 +94,11 @@ macro_rules! with_instance {
         if $instance.is_null() {
             return $default;
         }
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            let $handle = &*$instance;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: Instance pointer validated non-null above. The ObjC side is
+            // responsible for passing valid pointers. Instance remains valid for
+            // the duration of the FFI call.
+            let $handle = unsafe { &*$instance };
             $body
         }))
         .unwrap_or($default)
@@ -111,8 +114,11 @@ macro_rules! with_instance_void {
         if $instance.is_null() {
             return;
         }
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            let $handle = &*$instance;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: Instance pointer validated non-null above. The ObjC side is
+            // responsible for passing valid pointers. Instance remains valid for
+            // the duration of the FFI call.
+            let $handle = unsafe { &*$instance };
             $body
         }));
     }};
@@ -352,6 +358,8 @@ pub struct BeamerInstanceHandle {
 // - `render_block` is wrapped in RwLock to prevent data races
 // - Other fields are only modified during allocate/deallocate which holds exclusive access
 unsafe impl Send for BeamerInstanceHandle {}
+
+// SAFETY: Same as Send impl above. All mutable state is protected by Mutex or RwLock.
 unsafe impl Sync for BeamerInstanceHandle {}
 
 /// Type alias for the opaque handle pointer.
@@ -463,11 +471,16 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
         None => return,
     };
     // AudioComponentDescription layout: type, subtype, manufacturer, flags, mask
-    *desc.add(0) = plugin_config.category.to_au_component_type();
-    *desc.add(1) = u32::from_be_bytes(au_config.subtype.0);
-    *desc.add(2) = u32::from_be_bytes(au_config.manufacturer.0);
-    *desc.add(3) = 0; // componentFlags
-    *desc.add(4) = 0; // componentFlagsMask
+    // SAFETY: desc was validated non-null above. Caller guarantees desc points to
+    // a valid AudioComponentDescription struct with at least 5 u32 fields.
+    // The pointer arithmetic accesses consecutive fields in the struct.
+    unsafe {
+        *desc.add(0) = plugin_config.category.to_au_component_type();
+        *desc.add(1) = u32::from_be_bytes(au_config.subtype.0);
+        *desc.add(2) = u32::from_be_bytes(au_config.manufacturer.0);
+        *desc.add(3) = 0; // componentFlags
+        *desc.add(4) = 0; // componentFlagsMask
+    }
 }
 
 // =============================================================================
@@ -532,8 +545,11 @@ pub extern "C" fn beamer_au_destroy_instance(instance: BeamerAuInstanceHandle) {
         return;
     }
 
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let _ = Box::from_raw(instance);
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees it was
+        // returned by beamer_au_create_instance and not previously destroyed.
+        // Box::from_raw takes ownership and will drop the instance.
+        let _ = unsafe { Box::from_raw(instance) };
     }));
 }
 
@@ -606,9 +622,11 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &mut *instance;
-        let c_bus_config = &*bus_config;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null at function start. Caller guarantees valid pointer.
+        let handle = unsafe { &mut *instance };
+        // SAFETY: bus_config validated non-null at function start.
+        let c_bus_config = unsafe { &*bus_config };
 
         // Store configuration
         handle.sample_format = sample_format;
@@ -718,8 +736,10 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         return;
     }
 
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let handle = &mut *instance;
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer
+        // from beamer_au_create_instance that hasn't been destroyed.
+        let handle = unsafe { &mut *instance };
 
         // Use try_write() to avoid blocking if render is in progress.
         // This prevents a TOCTOU race condition where we could deallocate
@@ -860,6 +880,8 @@ pub extern "C" fn beamer_au_render(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer
+        // from beamer_au_create_instance. Instance remains valid during render.
         let handle = unsafe { &*instance };
 
         // Validate frame count against maximum set during allocate_render_resources
@@ -987,8 +1009,8 @@ pub extern "C" fn beamer_au_get_parameter_info(
         };
 
         // Fill output struct
-        // SAFETY: out_info was validated as non-null above
-        let out = &mut *out_info;
+        // SAFETY: out_info was validated as non-null at function start.
+        let out = unsafe { &mut *out_info };
         out.id = param_info.id;
         copy_str_to_char_array(param_info.name, &mut out.name);
         copy_str_to_char_array(param_info.units, &mut out.units);
@@ -1226,12 +1248,15 @@ pub extern "C" fn beamer_au_format_parameter_value(
         };
 
         // Copy to buffer
-        // SAFETY: out_buffer and buffer_len were validated above
         let bytes = string.as_bytes();
         let copy_len = bytes.len().min(buffer_len as usize - 1);
 
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
-        *out_buffer.add(copy_len) = 0; // Null terminator
+        // SAFETY: out_buffer and buffer_len were validated at function start.
+        // copy_len < buffer_len ensures we don't overflow.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
+            *out_buffer.add(copy_len) = 0; // Null terminator
+        }
 
         copy_len as u32
     })
@@ -1262,8 +1287,8 @@ pub extern "C" fn beamer_au_parse_parameter_value(
     }
 
     with_instance!(instance, false, |handle| {
-        // SAFETY: string was validated as non-null above
-        let rust_string = match CStr::from_ptr(string).to_str() {
+        // SAFETY: string was validated as non-null at function start.
+        let rust_string = match unsafe { CStr::from_ptr(string) }.to_str() {
             Ok(s) => s,
             Err(_) => return false,
         };
@@ -1276,8 +1301,8 @@ pub extern "C" fn beamer_au_parse_parameter_value(
         match plugin.parameter_store() {
             Ok(store) => match store.string_to_normalized(param_id, rust_string) {
                 Some(value) => {
-                    // SAFETY: out_value was validated as non-null above
-                    *out_value = value as f32;
+                    // SAFETY: out_value was validated as non-null at function start.
+                    unsafe { *out_value = value as f32 };
                     true
                 }
                 None => false,
@@ -1407,12 +1432,15 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
         let display_string = store.normalized_to_string(param_id, normalized);
 
         // Copy to output buffer
-        // SAFETY: out_string and max_length were validated above
         let bytes = display_string.as_bytes();
         let copy_len = bytes.len().min(max_length as usize - 1);
 
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out_string as *mut u8, copy_len);
-        *out_string.add(copy_len) = 0; // Null terminator
+        // SAFETY: out_string and max_length were validated at function start.
+        // copy_len < max_length ensures we don't overflow.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out_string as *mut u8, copy_len);
+            *out_string.add(copy_len) = 0; // Null terminator
+        }
 
         true
     })
@@ -1487,8 +1515,8 @@ pub extern "C" fn beamer_au_get_group_info(
             None => return false,
         };
 
-        // SAFETY: out_info was validated as non-null above
-        let out = &mut *out_info;
+        // SAFETY: out_info was validated as non-null at function start.
+        let out = unsafe { &mut *out_info };
         out.id = group_info.id;
         out.parent_id = group_info.parent_id;
         copy_str_to_char_array(group_info.name, &mut out.name);
@@ -1553,8 +1581,8 @@ pub extern "C" fn beamer_au_get_state(
         let copy_len = state.len().min(size as usize);
 
         if copy_len > 0 {
-            // SAFETY: buffer was validated as non-null above, and copy_len <= size
-            ptr::copy_nonoverlapping(state.as_ptr(), buffer, copy_len);
+            // SAFETY: buffer was validated as non-null at function start, copy_len <= size.
+            unsafe { ptr::copy_nonoverlapping(state.as_ptr(), buffer, copy_len) };
         }
 
         copy_len as u32
@@ -1584,9 +1612,9 @@ pub extern "C" fn beamer_au_set_state(
     }
 
     with_instance!(instance, os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER, |handle| {
-        // SAFETY: buffer is validated above (either non-null or size is 0)
         let state_slice = if size > 0 {
-            std::slice::from_raw_parts(buffer, size as usize)
+            // SAFETY: buffer is validated non-null at function start when size > 0.
+            unsafe { std::slice::from_raw_parts(buffer, size as usize) }
         } else {
             &[]
         };
@@ -1701,7 +1729,7 @@ pub extern "C" fn beamer_au_get_name(
         return 0;
     }
 
-    let result = catch_unwind(|| unsafe {
+    let result = catch_unwind(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return 0,
@@ -1710,8 +1738,12 @@ pub extern "C" fn beamer_au_get_name(
         let bytes = config.name.as_bytes();
         let copy_len = bytes.len().min(buffer_len as usize - 1);
 
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
-        *out_buffer.add(copy_len) = 0;
+        // SAFETY: out_buffer validated non-null above. Caller guarantees buffer_len
+        // bytes are writable. copy_len < buffer_len ensures we don't overflow.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
+            *out_buffer.add(copy_len) = 0;
+        }
 
         copy_len as u32
     });
@@ -1740,7 +1772,7 @@ pub extern "C" fn beamer_au_get_vendor(
         return 0;
     }
 
-    let result = catch_unwind(|| unsafe {
+    let result = catch_unwind(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return 0,
@@ -1749,8 +1781,12 @@ pub extern "C" fn beamer_au_get_vendor(
         let bytes = config.vendor.as_bytes();
         let copy_len = bytes.len().min(buffer_len as usize - 1);
 
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
-        *out_buffer.add(copy_len) = 0;
+        // SAFETY: out_buffer validated non-null above. Caller guarantees buffer_len
+        // bytes are writable. copy_len < buffer_len ensures we don't overflow.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
+            *out_buffer.add(copy_len) = 0;
+        }
 
         copy_len as u32
     });
@@ -1919,6 +1955,8 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
                 let (declared_input, declared_output) = if instance.is_null() {
                     (2, 2) // Default to stereo
                 } else {
+                    // SAFETY: instance validated non-null in the else branch.
+                    // Caller guarantees valid pointer from beamer_au_create_instance.
                     let handle = unsafe { &*instance };
                     match lock_plugin(handle) {
                         Ok(plugin) => {
@@ -1950,6 +1988,8 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
                     // No instance available, accept stereo as default
                     2
                 } else {
+                    // SAFETY: instance validated non-null in the else branch.
+                    // Caller guarantees valid pointer from beamer_au_create_instance.
                     let handle = unsafe { &*instance };
                     match lock_plugin(handle) {
                         Ok(plugin) => plugin
@@ -2008,6 +2048,8 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
             None => return false,
         };
 
+        // SAFETY: out_capabilities validated non-null above. Caller guarantees
+        // the pointer is valid and writable.
         let capabilities = unsafe { &mut *out_capabilities };
         *capabilities = BeamerAuChannelCapabilities::default();
 
@@ -2021,6 +2063,8 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
                 let (input_ch, output_ch) = if instance.is_null() {
                     (2, 2) // Default to stereo
                 } else {
+                    // SAFETY: instance validated non-null in the else branch.
+                    // Caller guarantees valid pointer from beamer_au_create_instance.
                     let handle = unsafe { &*instance };
                     match lock_plugin(handle) {
                         Ok(plugin) => {
@@ -2057,6 +2101,8 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
                     return true;
                 }
 
+                // SAFETY: instance validated non-null (handled in if branch above).
+                // Caller guarantees valid pointer from beamer_au_create_instance.
                 let handle = unsafe { &*instance };
                 let plugin = match lock_plugin(handle) {
                     Ok(guard) => guard,
@@ -2207,8 +2253,8 @@ pub extern "C" fn beamer_au_get_preset_info(
         };
 
         if let Some((number, name)) = plugin.preset_info(index) {
-            // SAFETY: out_info was validated as non-null above
-            let out = &mut *out_info;
+            // SAFETY: out_info was validated as non-null at function start.
+            let out = unsafe { &mut *out_info };
             out.number = number;
             copy_str_to_char_array(name, &mut out.name);
             true

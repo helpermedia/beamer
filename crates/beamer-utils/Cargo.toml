@@ -7,5 +7,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # No external dependencies - pure Rust utilities for compile-time and runtime use

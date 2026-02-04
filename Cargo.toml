@@ -39,6 +39,12 @@ beamer-utils = { version = "0.2.1", path = "crates/beamer-utils" }
 beamer-au = { version = "0.2.1", path = "crates/beamer-au" }
 beamer-vst3 = { version = "0.2.1", path = "crates/beamer-vst3" }
 
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
 [profile.release]
 lto = true
 codegen-units = 1

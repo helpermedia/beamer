@@ -361,7 +361,11 @@ impl<S: Sample> ProcessBufferStorage<S> {
     pub unsafe fn input_slices(&self, num_samples: usize) -> Vec<&[S]> {
         self.main_inputs
             .iter()
-            .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+            .map(|&ptr| {
+                // SAFETY: Caller guarantees pointers are valid for `num_samples` elements
+                // and remain valid for the lifetime of the returned slices (within render call).
+                unsafe { slice::from_raw_parts(ptr, num_samples) }
+            })
             .collect()
     }
 
@@ -385,7 +389,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
     pub unsafe fn output_slices(&self, num_samples: usize) -> Vec<&mut [S]> {
         self.main_outputs
             .iter()
-            .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+            .map(|&ptr| {
+                // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
+                // remain valid for the returned slice lifetime, and do not alias.
+                // Host guarantees single-threaded render access.
+                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+            })
             .collect()
     }
 
@@ -403,7 +412,11 @@ impl<S: Sample> ProcessBufferStorage<S> {
             .iter()
             .map(|bus| {
                 bus.iter()
-                    .map(|&ptr| slice::from_raw_parts(ptr, num_samples))
+                    .map(|&ptr| {
+                        // SAFETY: Caller guarantees pointers are valid for `num_samples` elements
+                        // and remain valid for the lifetime of the returned slices (within render call).
+                        unsafe { slice::from_raw_parts(ptr, num_samples) }
+                    })
                     .collect()
             })
             .collect()
@@ -428,7 +441,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
             .iter()
             .map(|bus| {
                 bus.iter()
-                    .map(|&ptr| slice::from_raw_parts_mut(ptr, num_samples))
+                    .map(|&ptr| {
+                        // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
+                        // remain valid for the returned slice lifetime, and do not alias.
+                        // Host guarantees single-threaded render access.
+                        unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
+                    })
                     .collect()
             })
             .collect()
@@ -477,12 +495,15 @@ impl<S: Sample> Default for ProcessBufferStorage<S> {
 // SAFETY: The raw pointers are only used within a single render call
 // where the host guarantees single-threaded access.
 unsafe impl<S: Sample> Send for ProcessBufferStorage<S> {}
+// SAFETY: The raw pointers are only used within a single render call
+// where the host guarantees single-threaded access.
 unsafe impl<S: Sample> Sync for ProcessBufferStorage<S> {}
 
 #[cfg(test)]
+#[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use super::*;
-    use crate::bus_config::{CachedBusInfo};
+    use crate::bus_config::CachedBusInfo;
     use crate::plugin::BusType;
     use crate::types::MAX_CHANNELS;
 

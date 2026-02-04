@@ -56,7 +56,8 @@ where
             return kInvalidArgument;
         }
 
-        let info = &mut *info;
+        // SAFETY: Validated info is non-null above. Host guarantees validity for call duration.
+        let info = unsafe { &mut *info };
         copy_cstring(self.config.vendor, &mut info.vendor);
         copy_cstring(self.config.url, &mut info.url);
         copy_cstring(self.config.email, &mut info.email);
@@ -80,7 +81,8 @@ where
 
         match index {
             0 => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
@@ -88,7 +90,8 @@ where
                 kResultOk
             }
             1 if self.vst3_config.has_controller() => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);
@@ -109,7 +112,8 @@ where
             return kInvalidArgument;
         }
 
-        let requested_cid = &*(cid as *const TUID);
+        // SAFETY: Validated cid is non-null above. Host guarantees it points to valid TUID.
+        let requested_cid = unsafe { &*(cid as *const TUID) };
 
         // Check if request matches component or controller UID
         if *requested_cid != self.vst3_config.component_uid {
@@ -126,7 +130,9 @@ where
         let component = ComWrapper::new(C::create(self.config, self.vst3_config));
         let unknown = component.as_com_ref::<FUnknown>().unwrap();
         let ptr = unknown.as_ptr();
-        ((*(*ptr).vtbl).queryInterface)(ptr, iid as *const TUID, obj)
+        // SAFETY: ptr is valid COM pointer from ComWrapper. vtbl and queryInterface
+        // are guaranteed valid by COM contract.
+        unsafe { ((*(*ptr).vtbl).queryInterface)(ptr, iid as *const TUID, obj) }
     }
 }
 
@@ -142,7 +148,8 @@ where
 
         match index {
             0 => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
@@ -157,7 +164,8 @@ where
                 kResultOk
             }
             1 if self.vst3_config.has_controller() => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);
@@ -186,7 +194,8 @@ where
 
         match index {
             0 => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.component_uid;
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Audio Module Class", &mut info.category);
@@ -201,7 +210,8 @@ where
                 kResultOk
             }
             1 if self.vst3_config.has_controller() => {
-                let info = &mut *info;
+                // SAFETY: Validated info is non-null above. Host guarantees validity.
+                let info = unsafe { &mut *info };
                 info.cid = self.vst3_config.controller_uid.unwrap();
                 info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
                 copy_cstring("Component Controller Class", &mut info.category);

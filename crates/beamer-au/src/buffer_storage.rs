@@ -106,11 +106,13 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
             return;
         }
 
-        let list = &*buffer_list;
+        // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
+        let list = unsafe { &*buffer_list };
         let max_channels = self.main_inputs.capacity();
 
         for i in 0..list.number_buffers.min(max_channels as u32) {
-            let buffer = list.buffer_at(i);
+            // SAFETY: We iterate only up to number_buffers, so index is always valid.
+            let buffer = unsafe { list.buffer_at(i) };
             if !buffer.data.is_null() && buffer.number_channels == 1 {
                 // Non-interleaved: one channel per buffer
                 let data_ptr = buffer.data as *const S;
@@ -134,11 +136,13 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
             return;
         }
 
-        let list = &mut *buffer_list;
+        // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
+        let list = unsafe { &mut *buffer_list };
         let max_channels = self.main_outputs.capacity();
 
         for i in 0..list.number_buffers.min(max_channels as u32) {
-            let buffer = list.buffer_at_mut(i);
+            // SAFETY: We iterate only up to number_buffers, so index is always valid.
+            let buffer = unsafe { list.buffer_at_mut(i) };
 
             // Skip interleaved buffers (number_channels > 1)
             if buffer.number_channels != 1 {
@@ -184,11 +188,13 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                 continue;
             }
 
-            let list = &*buffer_list;
+            // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
+            let list = unsafe { &*buffer_list };
             let max_channels = self.aux_inputs[aux_idx].capacity();
 
             for i in 0..list.number_buffers.min(max_channels as u32) {
-                let buffer = list.buffer_at(i);
+                // SAFETY: We iterate only up to number_buffers, so index is always valid.
+                let buffer = unsafe { list.buffer_at(i) };
                 if !buffer.data.is_null() && buffer.number_channels == 1 {
                     // Non-interleaved: one channel per buffer
                     let data_ptr = buffer.data as *const S;
@@ -215,11 +221,13 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                 continue;
             }
 
-            let list = &mut *buffer_list;
+            // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
+            let list = unsafe { &mut *buffer_list };
             let max_channels = self.aux_outputs[aux_idx].capacity();
 
             for i in 0..list.number_buffers.min(max_channels as u32) {
-                let buffer = list.buffer_at_mut(i);
+                // SAFETY: We iterate only up to number_buffers, so index is always valid.
+                let buffer = unsafe { list.buffer_at_mut(i) };
                 if !buffer.data.is_null() && buffer.number_channels == 1 {
                     // Non-interleaved: one channel per buffer
                     let data_ptr = buffer.data as *mut S;
@@ -237,6 +245,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
 }
 
 #[cfg(test)]
+#[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use super::*;
 

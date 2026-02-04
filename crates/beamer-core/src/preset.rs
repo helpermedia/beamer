@@ -134,8 +134,9 @@ impl<P: Parameters + 'static> FactoryPresets for NoPresets<P> {
     }
 }
 
-// Ensure NoPresets is Send + Sync
+// SAFETY: NoPresets contains only PhantomData<P> which is always Send + Sync.
 unsafe impl<P> Send for NoPresets<P> {}
+// SAFETY: NoPresets contains only PhantomData<P> which is always Send + Sync.
 unsafe impl<P> Sync for NoPresets<P> {}
 
 /// Compute the FNV-1a hash of a string at compile time.

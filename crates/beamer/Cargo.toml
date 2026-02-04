@@ -15,6 +15,9 @@ derive = ["beamer-macros"]
 au = ["dep:beamer-au"]
 vst3 = ["dep:beamer-vst3", "dep:vst3"]
 
+[lints]
+workspace = true
+
 [dependencies]
 beamer-core = { workspace = true }
 beamer-macros = { workspace = true, optional = true }

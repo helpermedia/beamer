@@ -125,18 +125,27 @@ pub unsafe fn extract_transport_from_au(
     // Alternative approach:
     // - Use the `block2` crate for proper Objective-C block handling (adds dependency)
     // - This would eliminate the transmute but requires understanding block2's API
-    let invoke = objc_block::invoke_ptr(musical_context_block);
-    let block_fn: MusicalContextBlockFn = std::mem::transmute(invoke);
+    //
+    // SAFETY: invoke_ptr extracts the function pointer from the Objective-C block.
+    // Caller guarantees musical_context_block is a valid AUHostMusicalContextBlock.
+    let invoke = unsafe { objc_block::invoke_ptr(musical_context_block) };
+    // SAFETY: Transmute is sound because invoke pointer has the exact signature
+    // documented in Apple's AU API. See detailed SAFETY comment above.
+    let block_fn: MusicalContextBlockFn = unsafe { std::mem::transmute(invoke) };
 
-    let result = block_fn(
-        musical_context_block,
-        &mut tempo,
-        &mut time_sig_numerator,
-        &mut time_sig_denominator,
-        &mut beat_position,
-        &mut sample_offset_to_next_beat,
-        &mut measure_downbeat_position,
-    );
+    // SAFETY: All output pointers are valid stack variables. The block is called
+    // on the AU render thread as required by Apple's threading model.
+    let result = unsafe {
+        block_fn(
+            musical_context_block,
+            &mut tempo,
+            &mut time_sig_numerator,
+            &mut time_sig_denominator,
+            &mut beat_position,
+            &mut sample_offset_to_next_beat,
+            &mut measure_downbeat_position,
+        )
+    };
 
     // If the call succeeded (result == 0), populate Transport
     if result == 0 {

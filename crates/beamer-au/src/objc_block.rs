@@ -25,5 +25,8 @@ pub(crate) struct ObjCBlockLiteral {
 /// `block` must be a valid Objective-C block object pointer.
 #[inline]
 pub(crate) unsafe fn invoke_ptr(block: *const c_void) -> *const c_void {
-    (*(block as *const ObjCBlockLiteral)).invoke
+    // SAFETY: Caller guarantees `block` is a valid Objective-C block object.
+    // Block layout is stable ABI: isa, flags, reserved, invoke, descriptor.
+    // We only read the invoke pointer at the known offset.
+    unsafe { (*(block as *const ObjCBlockLiteral)).invoke }
 }

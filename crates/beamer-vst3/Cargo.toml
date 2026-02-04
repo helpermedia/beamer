@@ -20,6 +20,9 @@ default = []
 ## accept occasional allocations in the audio thread.
 sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 
+[lints]
+workspace = true
+
 [dependencies]
 beamer-core = { workspace = true }
 vst3 = { workspace = true }

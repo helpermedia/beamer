@@ -167,6 +167,7 @@ impl Default for SysExOutputPool {
 }
 
 #[cfg(test)]
+#[allow(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use super::*;
 

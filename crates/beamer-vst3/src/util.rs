@@ -61,7 +61,9 @@ pub unsafe fn len_wstring(string: *const TChar) -> usize {
     }
 
     let mut len = 0;
-    while *string.add(len) != 0 {
+    // SAFETY: Caller guarantees string points to valid null-terminated wide string.
+    // We iterate until we find the null terminator.
+    while unsafe { *string.add(len) } != 0 {
         len += 1;
     }
     len
@@ -76,7 +78,10 @@ pub unsafe fn wstring_to_string(string: *const TChar) -> Option<String> {
         return None;
     }
 
-    let len = len_wstring(string);
-    let slice = std::slice::from_raw_parts(string, len);
+    // SAFETY: len_wstring requires a valid null-terminated wide string, which
+    // the caller guarantees.
+    let len = unsafe { len_wstring(string) };
+    // SAFETY: Caller guarantees string is valid for at least `len` elements.
+    let slice = unsafe { std::slice::from_raw_parts(string, len) };
     String::from_utf16(slice).ok()
 }

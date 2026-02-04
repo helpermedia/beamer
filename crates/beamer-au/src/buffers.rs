@@ -73,7 +73,10 @@ impl AudioBufferList {
     #[inline]
     pub unsafe fn buffer_at(&self, index: u32) -> &AudioBuffer {
         let buffers_ptr = self.buffers.as_ptr();
-        &*buffers_ptr.add(index as usize)
+        // SAFETY: Caller guarantees index < number_buffers. AudioBufferList is a
+        // flexible array member struct where buffers follow the header contiguously.
+        // The pointer arithmetic accesses valid memory within the allocated block.
+        unsafe { &*buffers_ptr.add(index as usize) }
     }
 
     /// Get a mutable reference to the buffer at the given index.
@@ -84,7 +87,11 @@ impl AudioBufferList {
     #[inline]
     pub unsafe fn buffer_at_mut(&mut self, index: u32) -> &mut AudioBuffer {
         let buffers_ptr = self.buffers.as_mut_ptr();
-        &mut *buffers_ptr.add(index as usize)
+        // SAFETY: Caller guarantees index < number_buffers. AudioBufferList is a
+        // flexible array member struct where buffers follow the header contiguously.
+        // The pointer arithmetic accesses valid memory within the allocated block.
+        // Caller ensures exclusive mutable access to the buffer.
+        unsafe { &mut *buffers_ptr.add(index as usize) }
     }
 }
 
@@ -138,11 +145,14 @@ pub unsafe fn input_buffer_list_to_slices<'a>(
         return Vec::new();
     }
 
-    let list = &*buffer_list;
+    // SAFETY: Caller guarantees buffer_list is a valid pointer to an AudioBufferList.
+    // The list remains valid for the duration of this function call.
+    let list = unsafe { &*buffer_list };
     let mut channels = Vec::with_capacity(list.number_buffers as usize);
 
     for i in 0..list.number_buffers {
-        let buffer = list.buffer_at(i);
+        // SAFETY: We iterate only up to number_buffers, so index is always valid.
+        let buffer = unsafe { list.buffer_at(i) };
 
         // Validate alignment and size
         if !validate_f32_buffer(buffer.data, buffer.data_byte_size) {
@@ -154,7 +164,10 @@ pub unsafe fn input_buffer_list_to_slices<'a>(
             let data_ptr = buffer.data as *const f32;
             let actual_samples =
                 (buffer.data_byte_size as usize / std::mem::size_of::<f32>()).min(num_samples);
-            channels.push(slice::from_raw_parts(data_ptr, actual_samples));
+            // SAFETY: data_ptr was validated by validate_f32_buffer for alignment
+            // and non-null. actual_samples is bounded by data_byte_size and num_samples.
+            // Caller guarantees audio data remains valid for lifetime 'a.
+            channels.push(unsafe { slice::from_raw_parts(data_ptr, actual_samples) });
         } else if buffer.number_channels > 1 {
             // Interleaved audio: not supported
             // Log warning only once to avoid spam
@@ -194,11 +207,14 @@ pub unsafe fn output_buffer_list_to_slices<'a>(
         return Vec::new();
     }
 
-    let list = &mut *buffer_list;
+    // SAFETY: Caller guarantees buffer_list is a valid pointer to an AudioBufferList.
+    // The list remains valid for the duration of this function call.
+    let list = unsafe { &mut *buffer_list };
     let mut channels = Vec::with_capacity(list.number_buffers as usize);
 
     for i in 0..list.number_buffers {
-        let buffer = list.buffer_at_mut(i);
+        // SAFETY: We iterate only up to number_buffers, so index is always valid.
+        let buffer = unsafe { list.buffer_at_mut(i) };
 
         // Validate alignment and size
         if !validate_f32_buffer(buffer.data, buffer.data_byte_size) {
@@ -210,7 +226,11 @@ pub unsafe fn output_buffer_list_to_slices<'a>(
             let data_ptr = buffer.data as *mut f32;
             let actual_samples =
                 (buffer.data_byte_size as usize / std::mem::size_of::<f32>()).min(num_samples);
-            channels.push(slice::from_raw_parts_mut(data_ptr, actual_samples));
+            // SAFETY: data_ptr was validated by validate_f32_buffer for alignment
+            // and non-null. actual_samples is bounded by data_byte_size and num_samples.
+            // Caller guarantees audio data remains valid for lifetime 'a and has
+            // exclusive access.
+            channels.push(unsafe { slice::from_raw_parts_mut(data_ptr, actual_samples) });
         } else if buffer.number_channels > 1 {
             // Interleaved audio: not supported
             // Log warning only once to avoid spam

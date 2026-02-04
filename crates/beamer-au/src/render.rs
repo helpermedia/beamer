@@ -382,10 +382,16 @@ impl MIDIEventPacket {
     /// Caller must ensure `word_count` is valid and memory is readable.
     #[inline]
     pub unsafe fn words(&self) -> &[u32] {
-        let words_ptr = (self as *const Self as *const u8)
-            .add(std::mem::size_of::<u64>() + std::mem::size_of::<u32>())
-            as *const u32;
-        std::slice::from_raw_parts(words_ptr, self.word_count as usize)
+        // SAFETY: Caller guarantees word_count is valid and memory is readable.
+        // MIDIEventPacket layout: time_stamp (u64) + word_count (u32) + words[].
+        // We skip past the header to get to the words array.
+        let words_ptr = unsafe {
+            (self as *const Self as *const u8)
+                .add(std::mem::size_of::<u64>() + std::mem::size_of::<u32>())
+                as *const u32
+        };
+        // SAFETY: words_ptr points to word_count valid u32 values per caller contract.
+        unsafe { std::slice::from_raw_parts(words_ptr, self.word_count as usize) }
     }
 
     /// Get pointer to the next packet.
@@ -394,10 +400,17 @@ impl MIDIEventPacket {
     /// Caller must ensure there is a valid next packet.
     #[inline]
     pub unsafe fn next(&self) -> *const MIDIEventPacket {
-        let words_ptr = (self as *const Self as *const u8)
-            .add(std::mem::size_of::<u64>() + std::mem::size_of::<u32>());
-        words_ptr.add(self.word_count as usize * std::mem::size_of::<u32>())
-            as *const MIDIEventPacket
+        // SAFETY: Caller guarantees there is a valid next packet.
+        // We calculate the next packet address by skipping past this packet's words.
+        let words_ptr = unsafe {
+            (self as *const Self as *const u8)
+                .add(std::mem::size_of::<u64>() + std::mem::size_of::<u32>())
+        };
+        // SAFETY: Skip past word_count words to reach the next packet.
+        unsafe {
+            words_ptr.add(self.word_count as usize * std::mem::size_of::<u32>())
+                as *const MIDIEventPacket
+        }
     }
 }
 
@@ -645,14 +658,18 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
 
     while !event_ptr.is_null() && iterations < MAX_EVENTS_PER_BUFFER {
         iterations += 1;
-        let event = &*event_ptr;
-        let event_type = event.head.event_type;
+        // SAFETY: event_ptr validated non-null above, iterations bounded by MAX_EVENTS_PER_BUFFER.
+        // Linked list provided by AU host, valid for this render callback.
+        let event = unsafe { &*event_ptr };
+        // SAFETY: head field is always safe to access in AURenderEvent union per AU API.
+        let event_type = unsafe { event.head.event_type };
 
         match event_type {
             // Legacy MIDI 1.0 event
             8 => {
                 // AURenderEventType::Midi
-                let midi_event = &event.midi;
+                // SAFETY: event_type == 8 (Midi), so midi field is the active union variant.
+                let midi_event = unsafe { &event.midi };
                 if midi_event.length >= 1 {
                     let sample_offset = midi_event.event_sample_time as u32;
                     let status = midi_event.data[0] & 0xF0;
@@ -678,21 +695,31 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
             // MIDI 2.0 UMP event list
             10 => {
                 // AURenderEventType::MidiEventList
-                let sample_offset = event.head.event_sample_time as u32;
+                // SAFETY: head is always safe to access.
+                let sample_offset = unsafe { event.head.event_sample_time as u32 };
                 // Get pointer to MIDIEventList (immediately after AUMIDIEventList header)
-                let event_list_ptr = (event_ptr as *const u8)
-                    .add(std::mem::size_of::<AUMIDIEventList>())
-                    as *const MIDIEventList;
-                let midi_list = &*event_list_ptr;
+                // SAFETY: For MidiEventList events, the MIDIEventList follows the header.
+                let event_list_ptr = unsafe {
+                    (event_ptr as *const u8)
+                        .add(std::mem::size_of::<AUMIDIEventList>())
+                        as *const MIDIEventList
+                };
+                // SAFETY: event_list_ptr is valid for MidiEventList events.
+                let midi_list = unsafe { &*event_list_ptr };
 
                 // Get first packet
-                let mut packet_ptr = (midi_list as *const MIDIEventList as *const u8)
-                    .add(std::mem::size_of::<u32>() * 2)
-                    as *const MIDIEventPacket;
+                // SAFETY: MIDIEventList layout: protocol (u32) + num_packets (u32) + packets[].
+                let mut packet_ptr = unsafe {
+                    (midi_list as *const MIDIEventList as *const u8)
+                        .add(std::mem::size_of::<u32>() * 2)
+                        as *const MIDIEventPacket
+                };
 
                 for _ in 0..midi_list.num_packets {
-                    let packet = &*packet_ptr;
-                    let words = packet.words();
+                    // SAFETY: We iterate only up to num_packets, which is provided by AU host.
+                    let packet = unsafe { &*packet_ptr };
+                    // SAFETY: words() requires valid word_count, which is set by AU host.
+                    let words = unsafe { packet.words() };
 
                     // Parse UMP words
                     for &word in words {
@@ -712,7 +739,8 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
                         }
                     }
 
-                    packet_ptr = packet.next();
+                    // SAFETY: next() is safe when there are more packets to iterate.
+                    packet_ptr = unsafe { packet.next() };
                 }
             }
             _ => {
@@ -720,7 +748,8 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
             }
         }
 
-        event_ptr = event.head.next;
+        // SAFETY: head.next is always safe to access and points to next event or null.
+        event_ptr = unsafe { event.head.next };
     }
 
     if iterations >= MAX_EVENTS_PER_BUFFER {
@@ -797,13 +826,17 @@ pub unsafe fn extract_parameter_events(
 
     while !event_ptr.is_null() && iterations < MAX_EVENTS_PER_BUFFER {
         iterations += 1;
-        let event = &*event_ptr;
-        let event_type = event.head.event_type;
+        // SAFETY: event_ptr validated non-null above, iterations bounded by MAX_EVENTS_PER_BUFFER.
+        // Linked list provided by AU host, valid for this render callback.
+        let event = unsafe { &*event_ptr };
+        // SAFETY: head field is always safe to access in AURenderEvent union per AU API.
+        let event_type = unsafe { event.head.event_type };
 
         match event_type {
             // AU_RENDER_EVENT_PARAMETER (type 1)
             1 => {
-                let param_event = &event.parameter;
+                // SAFETY: event_type == 1 (Parameter), so parameter field is the active variant.
+                let param_event = unsafe { &event.parameter };
                 buffer.immediate.push(AuParameterEvent {
                     sample_offset: param_event.event_sample_time as u32,
                     parameter_address: param_event.parameter_address,
@@ -812,7 +845,8 @@ pub unsafe fn extract_parameter_events(
             }
             // AU_RENDER_EVENT_PARAMETER_RAMP (type 2)
             2 => {
-                let ramp_event = &event.ramp;
+                // SAFETY: event_type == 2 (ParameterRamp), so ramp field is the active variant.
+                let ramp_event = unsafe { &event.ramp };
                 buffer.ramps.push(AuParameterRampEvent {
                     sample_offset: ramp_event.event_sample_time as u32,
                     parameter_address: ramp_event.parameter_address,
@@ -826,7 +860,8 @@ pub unsafe fn extract_parameter_events(
             }
         }
 
-        event_ptr = event.head.next;
+        // SAFETY: head.next is always safe to access and points to next event or null.
+        event_ptr = unsafe { event.head.next };
     }
 
     if iterations >= MAX_EVENTS_PER_BUFFER {
@@ -938,6 +973,9 @@ pub struct RenderBlock<S: Sample> {
 // SAFETY: The raw pointers are only used within a single render call
 // where AU guarantees single-threaded access.
 unsafe impl<S: Sample> Send for RenderBlock<S> {}
+
+// SAFETY: Same as Send impl. Raw pointers in UnsafeCell are accessed only during
+// render callbacks which AU guarantees are single-threaded.
 unsafe impl<S: Sample> Sync for RenderBlock<S> {}
 
 // =============================================================================
@@ -1338,10 +1376,12 @@ impl<S: Sample> RenderBlock<S> {
         midi_buffer.clear();
 
         // Clear MIDI output buffer for new block
+        // SAFETY: AU guarantees single-threaded render calls. No aliasing possible.
         let midi_output = unsafe { &mut *self.midi_output.get() };
         midi_output.clear();
 
         // Clear SysEx pool for new block
+        // SAFETY: AU guarantees single-threaded render calls. No aliasing possible.
         let sysex_pool = unsafe { &mut *self.sysex_output_pool.get() };
         sysex_pool.clear();
 
@@ -1356,6 +1396,8 @@ impl<S: Sample> RenderBlock<S> {
         // AU's eventSampleTime is an ABSOLUTE sample position (like the transport).
         // We need to subtract the timestamp's sample_time (the buffer start position)
         // to get a relative offset within [0, frame_count).
+        // SAFETY: timestamp is valid for this render call (provided by AU host).
+        // We check for null before dereferencing.
         let buffer_start_sample = unsafe {
             if !timestamp.is_null() {
                 (*timestamp).sample_time as i64
@@ -1676,9 +1718,14 @@ impl<S: Sample> RenderBlock<S> {
         // NOTE: these helper methods currently allocate Vecs, but only once per render call.
         // We avoid per-sub-block allocations by converting to raw pointer lists once and
         // rebuilding slice views for each sub-block.
+        // SAFETY: Pointers in storage are valid for this render call (collected from AU host buffers).
+        // num_samples matches the frame_count provided by the host.
         let input_refs = unsafe { storage.input_slices(num_samples) };
+        // SAFETY: Same as above, outputs were collected from valid AU buffers.
         let mut output_refs = unsafe { storage.output_slices(num_samples) };
+        // SAFETY: Same as above, aux inputs were collected from valid AU buffers.
         let aux_input_refs = unsafe { storage.aux_input_slices(num_samples) };
+        // SAFETY: Same as above, aux outputs were collected from valid AU buffers.
         let mut aux_output_refs = unsafe { storage.aux_output_slices(num_samples) };
 
         let input_ptrs: Vec<*const S> = input_refs.iter().map(|s| s.as_ptr()).collect();
@@ -1792,6 +1839,7 @@ impl<S: Sample> RenderBlock<S> {
                 let bus = &mut segment_aux_inputs[bus_idx];
                 bus.clear();
                 for &ptr in bus_ptrs {
+                    // SAFETY: ptr is valid for render call; block_start+block_len within num_samples.
                     let ch = unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) };
                     bus.push(ch);
                 }
@@ -1800,6 +1848,7 @@ impl<S: Sample> RenderBlock<S> {
                 let bus = &mut segment_aux_outputs[bus_idx];
                 bus.clear();
                 for &ptr in bus_ptrs {
+                    // SAFETY: ptr is valid for render call; block_start+block_len within num_samples.
                     let ch = unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) };
                     bus.push(ch);
                 }
@@ -1832,6 +1881,8 @@ impl<S: Sample> RenderBlock<S> {
             }
 
             let context = if let Some(cc_ptr) = cc_state_ptr {
+                // SAFETY: cc_ptr obtained from plugin_guard earlier in this function.
+                // MidiCcState uses atomics internally and is safe to read.
                 let cc_state = unsafe { &*cc_ptr };
                 ProcessContext::with_midi_cc(self.sample_rate, block_len, seg_transport, cc_state)
             } else {
@@ -1985,14 +2036,20 @@ impl<S: Sample> RenderBlock<S> {
         midi_events: &[MidiEvent],
         context: &ProcessContext,
     ) -> i32 {
-        // SAFETY: The dispatch_sample_type! macro performs the TypeId check, guaranteeing
-        // that S matches f32 or f64 before the respective branch executes. The transmutes
-        // are safe because buffer slice layouts are identical regardless of sample type.
+        // dispatch_sample_type! performs a runtime TypeId check that guarantees S == f32
+        // or S == f64 in the respective branch. The transmutes are sound because slice
+        // and Vec layouts are identical regardless of the inner type.
         dispatch_sample_type!(S,
             f32 => {
+                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
+                // &[&[S]] and &[&[f32]] have identical layouts when S == f32.
                 let inputs_f32: &[&[f32]] = unsafe { std::mem::transmute(inputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
                 let outputs_f32: &mut [&mut [f32]] = unsafe { std::mem::transmute(outputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
+                // Vec<&[S]> and Vec<&[f32]> have identical layouts when S == f32.
                 let aux_inputs_f32: &[Vec<&[f32]>] = unsafe { std::mem::transmute(aux_inputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
                 let aux_outputs_f32: &mut [Vec<&mut [f32]>] =
                     unsafe { std::mem::transmute(aux_outputs) };
                 plugin.process_with_midi(
@@ -2005,9 +2062,15 @@ impl<S: Sample> RenderBlock<S> {
                 )
             },
             f64 => {
+                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
+                // &[&[S]] and &[&[f64]] have identical layouts when S == f64.
                 let inputs_f64: &[&[f64]] = unsafe { std::mem::transmute(inputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
                 let outputs_f64: &mut [&mut [f64]] = unsafe { std::mem::transmute(outputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
+                // Vec<&[S]> and Vec<&[f64]> have identical layouts when S == f64.
                 let aux_inputs_f64: &[Vec<&[f64]>] = unsafe { std::mem::transmute(aux_inputs) };
+                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
                 let aux_outputs_f64: &mut [Vec<&mut [f64]>] =
                     unsafe { std::mem::transmute(aux_outputs) };
                 plugin.process_with_midi_f64(
