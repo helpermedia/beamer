@@ -7,9 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::auv2::detect_au_component_info;
 use crate::build::get_version_info;
-use crate::util::{codesign_bundle, combine_or_rename_binaries, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt};
 use crate::AppexPlistConfig;
 
 /// Creates an AUv3 app extension bundle from a compiled dylib.

@@ -285,6 +285,103 @@ pub fn install_bundle(
     Ok(dest)
 }
 
+// =============================================================================
+// AU Plugin Metadata Detection (from source code)
+// =============================================================================
+
+/// Detect AU component info by parsing plugin source code.
+///
+/// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name).
+/// Used by both AUv2 and AUv3 bundlers.
+pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
+    // Try to find the lib.rs for this package
+    let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
+
+    if let Ok(content) = fs::read_to_string(&lib_path) {
+        // Detect component type from Category enum in Config::new()
+        let component_type = if content.contains("Category::Instrument")
+            || content.contains("Category::Generator")
+        {
+            "aumu".to_string()
+        } else if content.contains("Category::MidiEffect") {
+            "aumi".to_string()
+        } else {
+            // Default to effect (aufx)
+            "aufx".to_string()
+        };
+
+        // Detect manufacturer and subtype from AuConfig::new()
+        let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
+
+        // Detect plugin name and vendor from Config::new()
+        let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
+
+        (component_type, manufacturer, subtype, plugin_name, vendor_name)
+    } else {
+        // Default to effect if we can't read the file
+        ("aufx".to_string(), None, None, None, None)
+    }
+}
+
+/// Extract AU fourcc codes (manufacturer and subtype) from plugin source code.
+///
+/// Parses `AuConfig::new("manu", "subt")` string literals.
+fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
+    let Some(start) = content.find("AuConfig::new(") else {
+        return (None, None);
+    };
+
+    let after_new = &content[start..];
+    let Some(end) = after_new.find(')').or_else(|| after_new.find(".with_")) else {
+        return (None, None);
+    };
+
+    let config_args = &after_new[..end];
+    let mut string_literals: Vec<String> = Vec::new();
+    let mut remaining = config_args;
+
+    while let Some(quote_start) = remaining.find('"') {
+        let after_quote = &remaining[quote_start + 1..];
+        if let Some(quote_end) = after_quote.find('"') {
+            let literal = &after_quote[..quote_end];
+            if literal.len() == 4 && literal.is_ascii() {
+                string_literals.push(literal.to_string());
+            }
+            remaining = &after_quote[quote_end + 1..];
+        } else {
+            break;
+        }
+    }
+
+    let manufacturer = string_literals.first().cloned();
+    let subtype = string_literals.get(1).cloned();
+    (manufacturer, subtype)
+}
+
+/// Extract plugin name and vendor from Config in source code.
+///
+/// Parses `Config::new("Plugin Name")` and `.with_vendor("Vendor Name")`.
+fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
+    let mut plugin_name = None;
+    let mut vendor_name = None;
+
+    if let Some(start) = content.find("Config::new(\"") {
+        let after_prefix = &content[start + 13..];
+        if let Some(end) = after_prefix.find('"') {
+            plugin_name = Some(after_prefix[..end].to_string());
+        }
+    }
+
+    if let Some(start) = content.find(".with_vendor(\"") {
+        let after_prefix = &content[start + 14..];
+        if let Some(end) = after_prefix.find('"') {
+            vendor_name = Some(after_prefix[..end].to_string());
+        }
+    }
+
+    (plugin_name, vendor_name)
+}
+
 /// Recursively copy a directory, preserving symlinks.
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("Failed to create dir: {}", e))?;

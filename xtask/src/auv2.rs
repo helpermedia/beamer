@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::get_version_info;
-use crate::util::{codesign_bundle, combine_or_rename_binaries, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt};
 use crate::ComponentPlistConfig;
 
 // AUv2 C code generation template (large embedded C implementation)
@@ -161,113 +161,6 @@ pub fn bundle_auv2(
     }
 
     Ok(())
-}
-
-pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
-    // Try to find the lib.rs for this package
-    let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
-
-    if let Ok(content) = fs::read_to_string(&lib_path) {
-        // Detect component type
-        let component_type = if content.contains("ComponentType::MusicDevice")
-            || content.contains("ComponentType::Generator")
-        {
-            "aumu".to_string()
-        } else if content.contains("ComponentType::MidiProcessor") {
-            "aumi".to_string()
-        } else if content.contains("ComponentType::MusicEffect") {
-            "aumf".to_string()
-        } else {
-            // Default to effect (aufx)
-            "aufx".to_string()
-        };
-
-        // Detect manufacturer and subtype from AuConfig::new()
-        let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
-
-        // Detect plugin name and vendor from Config::new()
-        let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
-
-        (component_type, manufacturer, subtype, plugin_name, vendor_name)
-    } else {
-        // Default to effect if we can't read the file
-        ("aufx".to_string(), None, None, None, None)
-    }
-}
-
-/// Extract AU fourcc codes (manufacturer and subtype) from plugin source code.
-///
-/// Detects string literal format: `AuConfig::new(ComponentType::..., "manu", "subt")`
-///
-/// Returns (manufacturer, subtype) as Options.
-fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
-    // Detect string literal format in AuConfig::new(...)
-    // Pattern: AuConfig::new(ComponentType::XXX, "manu", "subt")
-    let Some(start) = content.find("AuConfig::new(") else {
-        return (None, None);
-    };
-
-    let after_new = &content[start..];
-    // Find the closing paren or .with_ chain
-    let Some(end) = after_new.find(')').or_else(|| after_new.find(".with_")) else {
-        return (None, None);
-    };
-
-    let config_args = &after_new[..end];
-    // Extract string literals from the AuConfig::new(...) call
-    let mut string_literals: Vec<String> = Vec::new();
-    let mut remaining = config_args;
-
-    while let Some(quote_start) = remaining.find('"') {
-        let after_quote = &remaining[quote_start + 1..];
-        if let Some(quote_end) = after_quote.find('"') {
-            let literal = &after_quote[..quote_end];
-            // Only collect 4-char ASCII codes (fourcc format)
-            if literal.len() == 4 && literal.is_ascii() {
-                string_literals.push(literal.to_string());
-            }
-            remaining = &after_quote[quote_end + 1..];
-        } else {
-            break;
-        }
-    }
-
-    // In AuConfig::new(type, manufacturer, subtype):
-    // - First 4-char string is manufacturer
-    // - Second 4-char string is subtype
-    let manufacturer = string_literals.first().cloned();
-    let subtype = string_literals.get(1).cloned();
-    (manufacturer, subtype)
-}
-
-/// Extract plugin name and vendor from Config in source code.
-///
-/// Looks for patterns:
-/// - `Config::new("Plugin Name")`
-/// - `.with_vendor("Vendor Name")`
-///
-/// Returns (plugin_name, vendor_name) as Options.
-fn detect_plugin_metadata(content: &str) -> (Option<String>, Option<String>) {
-    let mut plugin_name = None;
-    let mut vendor_name = None;
-
-    // Find Config::new("name")
-    if let Some(start) = content.find("Config::new(\"") {
-        let after_prefix = &content[start + 13..]; // Skip "Config::new(\""
-        if let Some(end) = after_prefix.find('"') {
-            plugin_name = Some(after_prefix[..end].to_string());
-        }
-    }
-
-    // Find .with_vendor("name")
-    if let Some(start) = content.find(".with_vendor(\"") {
-        let after_prefix = &content[start + 14..]; // Skip ".with_vendor(\""
-        if let Some(end) = after_prefix.find('"') {
-            vendor_name = Some(after_prefix[..end].to_string());
-        }
-    }
-
-    (plugin_name, vendor_name)
 }
 
 fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
