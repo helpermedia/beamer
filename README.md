@@ -89,6 +89,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 | Example | Description |
 |---------|-------------|
 | **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
+| **[drums](https://github.com/helpermedia/beamer/tree/main/examples/drums)** | Drum synthesizer with multi-output buses |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.

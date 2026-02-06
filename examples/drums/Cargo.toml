@@ -1,0 +1,19 @@
+[package]
+name = "drums"
+description = "Example drum synthesizer demonstrating multi-output buses in the Beamer framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+au = ["beamer/au"]
+vst3 = ["beamer/vst3"]
+
+[lints]
+workspace = true
+
+[dependencies]
+beamer = { workspace = true }

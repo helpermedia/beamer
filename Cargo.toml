@@ -12,6 +12,7 @@ members = [
     "examples/delay",
     "examples/synthesizer",
     "examples/midi-transform",
+    "examples/drums",
     "xtask",
 ]
 resolver = "2"

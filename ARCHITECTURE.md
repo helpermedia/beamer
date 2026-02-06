@@ -155,6 +155,7 @@ beamer/
 │   ├── equalizer/           # 3-band parametric EQ
 │   ├── delay/               # Delay effect with tempo sync
 │   ├── synthesizer/         # Polyphonic synthesizer with MIDI CC emulation
+│   ├── drums/               # Drum synthesizer with multi-output buses
 │   └── midi-transform/      # MIDI effect example
 └── xtask/                   # Build tooling (bundle, install)
 ```

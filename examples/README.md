@@ -6,12 +6,12 @@ Working Beamer plugins demonstrating framework features.
 
 ## Running Examples
 
-```bash
-# Build and install to user VST3 folder
-cargo xtask bundle <example> --release --install
+A format flag is required: `--auv2`, `--auv3`, or `--vst3`.
 
-# Or just build (output: target/release/<Name>.vst3)
-cargo xtask bundle <example> --release
+```bash
+cargo xtask bundle <example> --auv2 --release --install
+cargo xtask bundle <example> --vst3 --release --install
+cargo xtask bundle <example> --auv2 --vst3 --release    # Multiple formats at once
 ```
 
 ## Available Examples
@@ -33,10 +33,6 @@ Simple stereo gain effect with minimal complexity.
 - `()` setup for plugins without sample-rate-dependent state
 - `FloatParameter` with dB scaling
 - Generic f32/f64 processing via `Sample` trait
-
-```bash
-cargo xtask bundle gain --release --install
-```
 
 ---
 
@@ -73,10 +69,6 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - Multi-bus audio (main + sidechain input)
 - dB-domain envelope processing
 
-```bash
-cargo xtask bundle compressor --release --install
-```
-
 ---
 
 ### [Equalizer](equalizer/)
@@ -112,10 +104,6 @@ cargo xtask bundle compressor --release --install
 - Width parameter (inverted Q: higher = wider = more audible)
 - Generic f32/f64 processing via `Sample` trait
 
-```bash
-cargo xtask bundle equalizer --release --install
-```
-
 ---
 
 ### [Delay](delay/)
@@ -147,10 +135,6 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - Ring buffer delay line implementation
 - Proper tail length via `tail_samples()`
 - `#[derive(Presets)]` with factory presets for enum parameters
-
-```bash
-cargo xtask bundle delay --release --install
-```
 
 ---
 
@@ -207,9 +191,40 @@ cargo xtask bundle delay --release --install
 - Parameter smoothing (exponential for filter cutoff/resonance)
 - Generic f32/f64 processing
 
-```bash
-cargo xtask bundle synthesizer --release --install
-```
+---
+
+### [Drums](drums/)
+
+MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes to its own mono output bus for independent mixing in the DAW.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Kick** | Kick output level (-60 to +6 dB) |
+| **Snare** | Snare output level (-60 to +6 dB) |
+| **Hi-Hat** | Hi-hat output level (-60 to +6 dB) |
+| **Crash** | Crash cymbal output level (-60 to +6 dB) |
+
+**MIDI Note Mapping (GM Standard):**
+
+| MIDI Note | Drum |
+|-----------|------|
+| 36 (C1) | Kick |
+| 38 (D1) | Snare |
+| 42 (F#1) | Hi-Hat |
+| 49 (C#2) | Crash |
+
+**Demonstrates:**
+- Multi-output auxiliary buses (`output_bus_count()`, `output_bus_info()`, `AuxiliaryBuffers`)
+- Mono bus configuration via `BusInfo::mono()` and `BusInfo::aux()`
+- `wants_midi()` for MIDI instrument plugins
+- `process_midi()` with sample-accurate note triggering
+- 16-voice polyphony (4 per drum type) with oldest-note stealing
+- Per-drum synthesis algorithms (sine, triangle, noise, metallic oscillators)
+- Velocity-sensitive response
+- Generic f32/f64 processing
+
 ---
 
 ### [MIDI Transform](midi-transform/)
@@ -258,7 +273,3 @@ MIDI instrument that transforms notes and CC messages.
 - `IntParameter` for note/CC selection
 - `BoolParameter` for enable toggles
 - `process_midi()` for MIDI processing
-
-```bash
-cargo xtask bundle midi-transform --release --install
-```

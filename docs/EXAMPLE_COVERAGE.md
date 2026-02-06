@@ -2,66 +2,66 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-01-30
-**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform
+**Last Updated:** 2026-02-05
+**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums
 
 ---
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Notes |
-|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|
-| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
-| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Transpose (synthesizer), note/CC numbers (midi-transform) |
-| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Waveform, sync, ratio |
-| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
-| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
-| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
-| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | VST3 units (works in Cubase, see notes) |
-| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
-| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
-| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | `#[derive(Presets)]` macro |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
-| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Reset state on activation |
-| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
-| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
-| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All use stereo |
-| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Delay tempo sync |
-| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Synthesizer voices |
-| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Synth ±2 semitones |
-| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Mod wheel, transform |
-| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Per-note vibrato, transform |
-| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Global vibrato (synthesizer) |
-| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
-| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
-| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drums | Notes |
+|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|-------|
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
+| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
+| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Enable toggles, bypass, soft knee |
+| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | Waveform, sync, ratio |
+| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
+| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
+| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
+| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
+| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
+| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
+| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
+| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
+| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Special bypass parameter marker |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | `#[derive(Presets)]` macro |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
+| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
+| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Reset state on activation |
+| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
+| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
+| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Drums uses mono |
+| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | 4 mono outputs (drums) |
+| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | 3 mono aux buses (drums) |
+| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Delay tempo sync |
+| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Synthesizer voices, drum triggering |
+| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
+| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
+| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
+| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Per-note vibrato, transform |
+| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Global vibrato (synthesizer) |
+| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
+| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
+| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 
 **Legend:**
 - ✅ Tested/Used
@@ -188,10 +188,10 @@
 ---
 
 #### Multi-Bus Router
-**Goal:** Test multiple aux buses, AuxOutput
+**Goal:** Test multiple aux buses with stereo outputs and complex routing
 
 **Features to test:**
-- ✅ `AuxOutput` - Multiple output buses
+- ✅ `AuxOutput` - Multiple output buses (mono tested in drums, stereo needed)
 - ✅ Multiple aux input/output buses
 - ✅ Complex bus routing
 - ✅ `output_bus_info()` - Custom output configuration
@@ -199,8 +199,9 @@
 **Implementation notes:**
 - Audio router with multiple inputs and outputs
 - Route/mix any input to any output
-- Demonstrates complex bus configurations
+- Demonstrates complex bus configurations with stereo aux buses
 - Gain control per route
+- **Note:** Mono aux outputs already tested in drums example
 
 **Files to create:**
 - `examples/router/src/lib.rs`
