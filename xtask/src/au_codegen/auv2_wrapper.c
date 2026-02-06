@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 // Include the bridge header for Rust plugin access
 #include "BeamerAuBridge.h"
@@ -20,6 +21,7 @@
 
 #define MAX_PROPERTY_LISTENERS 64
 #define MAX_RENDER_NOTIFY 32
+#define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
 
 // =============================================================================
 // MARK: - Data Structures
@@ -53,9 +55,9 @@ typedef struct BeamerAuv2Instance {
     bool initialized;
     bool bypassed;
 
-    // Stream formats for input/output scope, element 0
-    AudioStreamBasicDescription inputFormat;
-    AudioStreamBasicDescription outputFormat;
+    // Stream formats per bus (indexed by element number)
+    AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
+    AudioStreamBasicDescription outputFormats[BEAMER_AU_MAX_BUSES];
 
     // Input handling - either callback or connection
     AURenderCallbackStruct inputCallback;
@@ -83,6 +85,11 @@ typedef struct BeamerAuv2Instance {
     AUPreset* presetStorage;           // Backing storage for preset structs
     uint32_t presetCount;              // Number of factory presets
     int32_t currentPresetIndex;        // -1 = no preset, >=0 = factory preset index
+
+    // MIDI event ring buffer (lock-free SPSC: MIDIEvent produces, Render consumes)
+    AURenderEvent midiRingBuffer[BEAMER_AU_MAX_MIDI_EVENTS];
+    _Atomic UInt32 midiWriteHead; // only written by producer (MIDIEvent)
+    _Atomic UInt32 midiReadHead; // only written by consumer (Render)
 } BeamerAuv2Instance;
 
 // =============================================================================
@@ -117,6 +124,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitElement element);
 static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
+static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame);
 
 // =============================================================================
 // MARK: - Helper Functions
@@ -247,16 +255,20 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         return kAudioUnitErr_FailedInitialization;
     }
 
-    // Query bus configuration from Rust and set up default formats
-    uint32_t inputChannels = beamer_au_get_input_bus_channel_count(inst->rustInstance, 0);
-    uint32_t outputChannels = beamer_au_get_output_bus_channel_count(inst->rustInstance, 0);
+    // Query bus configuration from Rust and set up default formats per bus
+    uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
+    uint32_t outputBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
 
-    // Default to stereo if plugin reports 0 (shouldn't happen)
-    if (inputChannels == 0 && beamer_au_get_input_bus_count(inst->rustInstance) > 0) inputChannels = 2;
-    if (outputChannels == 0 && beamer_au_get_output_bus_count(inst->rustInstance) > 0) outputChannels = 2;
-
-    InitDefaultFormat(&inst->inputFormat, inst->sampleRate, inputChannels);
-    InitDefaultFormat(&inst->outputFormat, inst->sampleRate, outputChannels);
+    for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        uint32_t ch = beamer_au_get_input_bus_channel_count(inst->rustInstance, i);
+        if (ch == 0) ch = 2; // Default to stereo
+        InitDefaultFormat(&inst->inputFormats[i], inst->sampleRate, ch);
+    }
+    for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        uint32_t ch = beamer_au_get_output_bus_channel_count(inst->rustInstance, i);
+        if (ch == 0) ch = 2; // Default to stereo
+        InitDefaultFormat(&inst->outputFormats[i], inst->sampleRate, ch);
+    }
 
     // Build factory presets cache
     uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
@@ -371,6 +383,8 @@ static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector) {
             return (AudioComponentMethod)BeamerAuv2AddRenderNotify;
         case kAudioUnitRemoveRenderNotifySelect:
             return (AudioComponentMethod)BeamerAuv2RemoveRenderNotify;
+        case kMusicDeviceMIDIEventSelect:
+            return (AudioComponentMethod)BeamerAuv2MIDIEvent;
         default:
             return NULL;
     }
@@ -400,28 +414,31 @@ static OSStatus BeamerAuv2Initialize(void* self) {
     uint32_t inputChannels = 0;
     uint32_t outputChannels = 0;
 
+    for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        busConfig.input_buses[i].channel_count = inst->inputFormats[i].mChannelsPerFrame;
+        busConfig.input_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+    }
     if (inputBusCount > 0) {
-        inputChannels = inst->inputFormat.mChannelsPerFrame;
-        busConfig.input_buses[0].channel_count = inputChannels;
-        busConfig.input_buses[0].bus_type = BeamerAuBusTypeMain;
+        inputChannels = inst->inputFormats[0].mChannelsPerFrame;
+    }
+
+    for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        busConfig.output_buses[i].channel_count = inst->outputFormats[i].mChannelsPerFrame;
+        busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
     }
     if (outputBusCount > 0) {
-        outputChannels = inst->outputFormat.mChannelsPerFrame;
-        busConfig.output_buses[0].channel_count = outputChannels;
-        busConfig.output_buses[0].bus_type = BeamerAuBusTypeMain;
+        outputChannels = inst->outputFormats[0].mChannelsPerFrame;
     }
 
     // Validate channel configuration before proceeding
     bool configValid = beamer_au_is_channel_config_valid(inst->rustInstance, inputChannels, outputChannels);
-    NSLog(@"AUv2 Initialize: input=%u output=%u valid=%d", inputChannels, outputChannels, configValid);
     if (!configValid) {
-        NSLog(@"AUv2 Initialize: Rejecting invalid channel config");
         return kAudioUnitErr_FormatNotSupported;
     }
 
     // Determine sample format
     BeamerAuSampleFormat format = BeamerAuSampleFormatFloat32;
-    if (inst->outputFormat.mBitsPerChannel == 64) {
+    if (outputBusCount > 0 && inst->outputFormats[0].mBitsPerChannel == 64) {
         format = BeamerAuSampleFormatFloat64;
     }
 
@@ -437,9 +454,13 @@ static OSStatus BeamerAuv2Initialize(void* self) {
     if (status == noErr) {
         inst->initialized = true;
 
+        // Reset MIDI ring buffer
+        atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+
         // Pre-allocate input buffer if we have input buses
         if (inputBusCount > 0) {
-            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inst->maxFramesPerSlice);
+            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inst->maxFramesPerSlice);
         }
     }
 
@@ -452,6 +473,10 @@ static OSStatus BeamerAuv2Uninitialize(void* self) {
     if (inst->initialized) {
         beamer_au_deallocate_render_resources(inst->rustInstance);
         inst->initialized = false;
+
+        // Reset MIDI ring buffer
+        atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
     }
 
     return noErr;
@@ -470,8 +495,15 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
     if (outWritable) *outWritable = false;
 
     switch (propID) {
-        // Stream format
+        // Stream format (only valid for existing buses)
         case kAudioUnitProperty_StreamFormat:
+            if (scope == kAudioUnitScope_Input) {
+                if (element >= beamer_au_get_input_bus_count(inst->rustInstance))
+                    return kAudioUnitErr_InvalidElement;
+            } else if (scope == kAudioUnitScope_Output) {
+                if (element >= beamer_au_get_output_bus_count(inst->rustInstance))
+                    return kAudioUnitErr_InvalidElement;
+            }
             if (outDataSize) *outDataSize = sizeof(AudioStreamBasicDescription);
             if (outWritable) *outWritable = true;
             return noErr;
@@ -675,9 +707,13 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             }
             AudioStreamBasicDescription* desc = (AudioStreamBasicDescription*)outData;
             if (scope == kAudioUnitScope_Input) {
-                *desc = inst->inputFormat;
+                if (element >= beamer_au_get_input_bus_count(inst->rustInstance))
+                    return kAudioUnitErr_InvalidElement;
+                *desc = inst->inputFormats[element];
             } else if (scope == kAudioUnitScope_Output) {
-                *desc = inst->outputFormat;
+                if (element >= beamer_au_get_output_bus_count(inst->rustInstance))
+                    return kAudioUnitErr_InvalidElement;
+                *desc = inst->outputFormats[element];
             } else {
                 return kAudioUnitErr_InvalidScope;
             }
@@ -1124,8 +1160,18 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_FormatNotSupported;
             }
 
-            // Validate scope first
-            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+            // Validate scope and element (bus must exist)
+            if (scope == kAudioUnitScope_Input) {
+                uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
+                if (element >= inputBusCount) {
+                    return kAudioUnitErr_InvalidElement;
+                }
+            } else if (scope == kAudioUnitScope_Output) {
+                uint32_t outputBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
+                if (element >= outputBusCount) {
+                    return kAudioUnitErr_InvalidElement;
+                }
+            } else {
                 return kAudioUnitErr_InvalidScope;
             }
 
@@ -1152,9 +1198,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
 
             // Apply the format change
             if (scope == kAudioUnitScope_Input) {
-                inst->inputFormat = *desc;
+                inst->inputFormats[element] = *desc;
             } else {
-                inst->outputFormat = *desc;
+                inst->outputFormats[element] = *desc;
             }
             inst->sampleRate = desc->mSampleRate;
 
@@ -1167,8 +1213,14 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
             inst->sampleRate = *(Float64*)inData;
-            inst->inputFormat.mSampleRate = inst->sampleRate;
-            inst->outputFormat.mSampleRate = inst->sampleRate;
+            uint32_t inBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
+            uint32_t outBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
+            for (uint32_t i = 0; i < inBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+                inst->inputFormats[i].mSampleRate = inst->sampleRate;
+            }
+            for (uint32_t i = 0; i < outBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+                inst->outputFormats[i].mSampleRate = inst->sampleRate;
+            }
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }
@@ -1438,7 +1490,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         // Pull input first
         AudioBufferList* inputData = NULL;
         if (inst->inputCallback.inputProc) {
-            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
             AudioUnitRenderActionFlags pullFlags = 0;
             OSStatus pullStatus = inst->inputCallback.inputProc(
                 inst->inputCallback.inputProcRefCon,
@@ -1447,7 +1499,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 inputData = inst->inputBufferList;
             }
         } else if (inst->inputConnection.sourceAU) {
-            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
             AudioUnitRenderActionFlags pullFlags = 0;
             OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
                 &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
@@ -1491,7 +1543,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 
     if (inputBusCount > 0) {
         if (inst->inputCallback.inputProc) {
-            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
             AudioUnitRenderActionFlags pullFlags = 0;
             OSStatus pullStatus = inst->inputCallback.inputProc(
                 inst->inputCallback.inputProcRefCon,
@@ -1500,7 +1552,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 inputData = inst->inputBufferList;
             }
         } else if (inst->inputConnection.sourceAU) {
-            EnsureInputBufferList(inst, inst->inputFormat.mChannelsPerFrame, inNumberFrames);
+            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
             AudioUnitRenderActionFlags pullFlags = 0;
             OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
                 &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
@@ -1511,8 +1563,24 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
     }
 
+    // Drain MIDI ring buffer and build AURenderEvent linked list
+    const AURenderEvent* midiEventList = NULL;
+    UInt32 midiRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
+    UInt32 midiWrite = atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire);
+    if (midiRead != midiWrite) {
+        AURenderEvent* prev = NULL;
+        UInt32 idx = midiRead;
+        while (idx != midiWrite) {
+            AURenderEvent* ev = &inst->midiRingBuffer[idx];
+            ev->head.next = NULL;
+            if (prev) prev->head.next = ev;
+            else midiEventList = ev;
+            prev = ev;
+            idx = (idx + 1) & MIDI_RING_MASK;
+        }
+    }
+
     // Call Rust render function
-    // Note: AUv2 doesn't have AURenderEvent, so we pass NULL for events and blocks
     OSStatus status = beamer_au_render(
         inst->rustInstance,
         ioActionFlags,
@@ -1520,13 +1588,18 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         inNumberFrames,
         inOutputBusNumber,
         ioData,
-        NULL,  // events (AUv2 doesn't use AURenderEvent linked list)
+        midiEventList,
         NULL,  // pull_input_block (we pre-pulled via callback/connection)
         inputData,
         NULL,  // musical_context_block (TODO: wrap host callbacks)
         NULL,  // transport_state_block (TODO: wrap host callbacks)
         NULL   // schedule_midi_block
     );
+
+    // Release consumed MIDI events back to the ring buffer
+    if (midiRead != midiWrite) {
+        atomic_store_explicit(&inst->midiReadHead, midiWrite, memory_order_release);
+    }
 
     // Call post-render notifications
     pthread_mutex_lock(&inst->renderNotifyMutex);
@@ -1541,6 +1614,34 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 }
 
 // =============================================================================
+// MARK: - MIDI (MusicDevice)
+// =============================================================================
+
+static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    UInt32 write = atomic_load_explicit(&inst->midiWriteHead, memory_order_relaxed);
+    UInt32 read = atomic_load_explicit(&inst->midiReadHead, memory_order_acquire);
+    UInt32 next = (write + 1) & MIDI_RING_MASK;
+    if (next == read) {
+        return noErr; // Ring buffer full, drop event
+    }
+
+    AURenderEvent* event = &inst->midiRingBuffer[write];
+    memset(event, 0, sizeof(AURenderEvent));
+    event->MIDI.eventType = AURenderEventMIDI;
+    event->MIDI.eventSampleTime = (AUEventSampleTime)inOffsetSampleFrame;
+    event->MIDI.cable = 0;
+    event->MIDI.length = 3;
+    event->MIDI.data[0] = (uint8_t)(inStatus & 0xFF);
+    event->MIDI.data[1] = (uint8_t)(inData1 & 0xFF);
+    event->MIDI.data[2] = (uint8_t)(inData2 & 0xFF);
+
+    atomic_store_explicit(&inst->midiWriteHead, next, memory_order_release);
+    return noErr;
+}
+
+// =============================================================================
 // MARK: - Reset
 // =============================================================================
 
@@ -1550,6 +1651,11 @@ static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitEleme
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
     beamer_au_reset(inst->rustInstance);
+
+    // Flush any pending MIDI events
+    atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
+    atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+
     return noErr;
 }
 
