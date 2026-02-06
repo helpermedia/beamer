@@ -968,6 +968,16 @@ pub struct RenderBlock<S: Sample> {
     /// This counter ensures each RenderBlock instance independently silences its
     /// first 4 renders, even after channel config changes that recreate the instance.
     warmup_count: AtomicUsize,
+    /// Pre-allocated cache for auxiliary output bus data.
+    ///
+    /// AU hosts call the render block once per output bus. On bus 0, the plugin
+    /// processes all audio and aux outputs are written here. On bus N>0, cached
+    /// data is copied to the host's output buffers.
+    /// Layout: `[aux_bus_index][channel_index][sample_data]`
+    aux_output_cache: UnsafeCell<Vec<Vec<Vec<S>>>>,
+    /// Sample time of the last full render (bus 0), used to detect new render cycles.
+    /// Initialized to NaN so it never matches on the first call.
+    last_render_sample_time: UnsafeCell<f64>,
 }
 
 // SAFETY: The raw pointers are only used within a single render call
@@ -1064,6 +1074,19 @@ impl<S: Sample> RenderBlock<S> {
             aux_input_buffer_lists.push(buffer_list);
         }
 
+        // Pre-allocate cache for auxiliary output buses (render-once, copy-on-aux-bus pattern).
+        // AU hosts call the render block once per output bus. On bus 0 we render everything
+        // and cache aux output data here. On bus N>0 we copy from cache to host buffers.
+        let aux_output_bus_count = storage.aux_output_bus_count();
+        let mut aux_output_cache = Vec::with_capacity(aux_output_bus_count);
+        for bus_idx in 0..aux_output_bus_count {
+            let channels = storage.aux_output_capacity(bus_idx);
+            let mut bus_cache = Vec::with_capacity(channels);
+            for _ in 0..channels {
+                bus_cache.push(vec![S::ZERO; max_frames as usize]);
+            }
+            aux_output_cache.push(bus_cache);
+        }
         Self {
             plugin,
             storage: UnsafeCell::new(storage),
@@ -1077,7 +1100,99 @@ impl<S: Sample> RenderBlock<S> {
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::new()),
             schedule_midi_event_block,
             warmup_count: AtomicUsize::new(0),
+            aux_output_cache: UnsafeCell::new(aux_output_cache),
+            last_render_sample_time: UnsafeCell::new(f64::NAN),
         }
+    }
+
+    /// Copy cached auxiliary output data to the host's output AudioBufferList.
+    ///
+    /// Called when the AU host requests an auxiliary output bus (bus N>0) that was
+    /// already rendered and cached during the bus 0 render call.
+    ///
+    /// # Safety
+    ///
+    /// - `output_data` must be a valid, non-null AudioBufferList pointer
+    /// - `num_samples` must not exceed the cache buffer capacity
+    unsafe fn copy_aux_cache_to_output(
+        &self,
+        aux_idx: usize,
+        output_data: *mut AudioBufferList,
+        num_samples: usize,
+    ) {
+        // SAFETY: AU hosts call render sequentially per instance, always completing
+        // bus 0 before calling bus N>0. Cache is written during bus 0 and only read here.
+        let cache = unsafe { &*self.aux_output_cache.get() };
+        if aux_idx >= cache.len() {
+            // Out-of-bounds aux bus requested - zero the output to avoid stale data.
+            // SAFETY: Caller guarantees output_data is a valid, non-null pointer.
+            unsafe { Self::zero_output(output_data, num_samples) };
+            return;
+        }
+
+        let bus_cache = &cache[aux_idx];
+        debug_assert!(
+            bus_cache.first().is_none_or(|ch| num_samples <= ch.len()),
+            "num_samples ({num_samples}) exceeds cache capacity"
+        );
+        // SAFETY: Caller guarantees output_data is a valid, non-null pointer.
+        let list = unsafe { &mut *output_data };
+
+        for ch in 0..list.number_buffers.min(bus_cache.len() as u32) {
+            // SAFETY: ch is within number_buffers bounds.
+            let buffer = unsafe { list.buffer_at_mut(ch) };
+            if buffer.data.is_null() || buffer.number_channels != 1 {
+                continue;
+            }
+            let available = buffer.data_byte_size as usize / std::mem::size_of::<S>();
+            let copy_count = num_samples.min(available);
+            let dst = buffer.data as *mut S;
+            let src = bus_cache[ch as usize].as_ptr();
+            // SAFETY: dst points to host buffer valid for `available` elements.
+            // src points to pre-allocated cache with capacity >= max_frames >= num_samples.
+            // We copy min(num_samples, available) to avoid out-of-bounds writes.
+            unsafe {
+                std::ptr::copy_nonoverlapping(src, dst, copy_count);
+            }
+        }
+    }
+
+    /// Zero the host's output AudioBufferList (for edge case where aux bus
+    /// is requested before the main bus has been rendered).
+    ///
+    /// # Safety
+    ///
+    /// - `output_data` must be a valid, non-null AudioBufferList pointer
+    unsafe fn zero_output(output_data: *mut AudioBufferList, num_samples: usize) {
+        // SAFETY: Caller guarantees output_data is a valid, non-null pointer.
+        let list = unsafe { &mut *output_data };
+        for i in 0..list.number_buffers {
+            // SAFETY: i is within number_buffers bounds.
+            let buffer = unsafe { list.buffer_at_mut(i) };
+            if !buffer.data.is_null() && buffer.data_byte_size > 0 {
+                let byte_count = num_samples * std::mem::size_of::<S>();
+                // SAFETY: buffer.data is non-null (checked above), and we clamp to
+                // data_byte_size to avoid out-of-bounds access.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        buffer.data as *mut u8,
+                        byte_count.min(buffer.data_byte_size as usize),
+                    )
+                };
+                bytes.fill(0);
+            }
+        }
+    }
+
+    /// Extract the sample time from an AudioTimeStamp pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `timestamp` must be a valid, non-null AudioTimeStamp pointer
+    ///   (bridge.rs validates non-null before calling process_impl).
+    unsafe fn sample_time_from(timestamp: *const AudioTimeStamp) -> f64 {
+        // SAFETY: bridge.rs rejects null timestamps before reaching process_impl.
+        unsafe { (*timestamp).sample_time }
     }
 
     /// Output a MIDI event to the host via scheduleMIDIEventBlock.
@@ -1339,12 +1454,46 @@ impl<S: Sample> RenderBlock<S> {
         action_flags: *mut u32,
         timestamp: *const AudioTimeStamp,
         frame_count: u32,
-        _output_bus_number: i32,
+        output_bus_number: i32,
         output_data: *mut AudioBufferList,
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
     ) -> i32 {
+        let num_samples = frame_count as usize;
+
+        // AU multi-output bus handling: the host calls render once per output bus.
+        // Bus 0 triggers a full render; bus N>0 copies cached aux output data.
+        if output_bus_number > 0 {
+            // SAFETY: AU hosts call render sequentially per instance, always
+            // completing bus 0 before calling bus N>0.
+            let last_time = unsafe { *self.last_render_sample_time.get() };
+            // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
+            let current_time = unsafe { Self::sample_time_from(timestamp) };
+
+            let aux_idx = (output_bus_number - 1) as usize;
+
+            // to_bits(): bitwise comparison so NaN == NaN works correctly,
+            // ensuring the NaN-initialized last_render_sample_time never
+            // matches a real timestamp on the first call.
+            if current_time.to_bits() == last_time.to_bits() {
+                // Same render cycle - copy cached data to host's output buffers
+                // SAFETY: output_data validated non-null by caller (bridge.rs).
+                // aux_idx bounds checked inside copy_aux_cache_to_output.
+                unsafe {
+                    self.copy_aux_cache_to_output(aux_idx, output_data, num_samples);
+                }
+            } else {
+                // Aux bus requested before bus 0 was rendered (edge case) - output silence
+                // SAFETY: output_data validated non-null by caller.
+                unsafe {
+                    Self::zero_output(output_data, num_samples);
+                }
+            }
+            return os_status::NO_ERR;
+        }
+
+        // Bus 0: full render path
         // Real-time safety: use try_lock to avoid blocking
         let mut plugin_guard = match self.plugin.try_lock() {
             Ok(guard) => guard,
@@ -1358,8 +1507,6 @@ impl<S: Sample> RenderBlock<S> {
         if !plugin_guard.is_prepared() {
             return os_status::K_AUDIO_UNIT_ERR_UNINITIALIZED;
         }
-
-        let num_samples = frame_count as usize;
 
         // Use pre-allocated storage instead of Vec allocations
         // SAFETY: We have exclusive access via &self, and AU guarantees
@@ -1396,15 +1543,8 @@ impl<S: Sample> RenderBlock<S> {
         // AU's eventSampleTime is an ABSOLUTE sample position (like the transport).
         // We need to subtract the timestamp's sample_time (the buffer start position)
         // to get a relative offset within [0, frame_count).
-        // SAFETY: timestamp is valid for this render call (provided by AU host).
-        // We check for null before dereferencing.
-        let buffer_start_sample = unsafe {
-            if !timestamp.is_null() {
-                (*timestamp).sample_time as i64
-            } else {
-                0
-            }
-        };
+        // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
+        let buffer_start_sample = unsafe { (*timestamp).sample_time as i64 };
 
         for event in midi_buffer.events.iter_mut() {
             let absolute_time = event.sample_offset as i64;
@@ -1524,11 +1664,8 @@ impl<S: Sample> RenderBlock<S> {
                 None => false, // No transport state block, default to stopped
             };
 
-            let sample_position = if !timestamp.is_null() {
-                (*timestamp).sample_time as i64
-            } else {
-                0
-            };
+            // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
+            let sample_position = (*timestamp).sample_time as i64;
 
             match self.musical_context_block {
                 Some(block) => extract_transport_from_au(block, sample_position, is_playing),
@@ -1604,6 +1741,23 @@ impl<S: Sample> RenderBlock<S> {
 
             // Now collect output pointers (after in-place fixup)
             storage.collect_outputs(output_data, num_samples);
+
+            // Collect auxiliary output pointers from pre-allocated cache buffers.
+            // AU calls render per-bus, so we render aux outputs into our cache on
+            // bus 0 and copy them out when the host requests bus N>0.
+            // Note: storage.clear() above resets aux_outputs, so push() here repopulates
+            // from a clean state each render cycle (no unbounded growth).
+            let aux_cache = &mut *self.aux_output_cache.get();
+            debug_assert_eq!(aux_cache.len(), storage.aux_outputs.len());
+            for (bus_cache, aux_output) in
+                aux_cache.iter_mut().zip(storage.aux_outputs.iter_mut())
+            {
+                for ch_buf in bus_cache.iter_mut() {
+                    // Zero the cache before rendering into it
+                    ch_buf[..num_samples].fill(S::ZERO);
+                    aux_output.push(ch_buf.as_mut_ptr());
+                }
+            }
 
             // Note: We do NOT zero output buffers here because:
             // 1. For in-place processing, output now points to input data which we need
@@ -1963,6 +2117,17 @@ impl<S: Sample> RenderBlock<S> {
                 "SysEx output pool overflow: {} slots exhausted, some SysEx messages were dropped",
                 sysex_pool.capacity()
             );
+        }
+
+        // Record the sample time for this render cycle so that subsequent
+        // aux bus calls (output_bus_number > 0) can detect they belong to
+        // the same cycle and copy cached data instead of re-rendering.
+        // SAFETY: AU hosts call render sequentially per instance, always
+        // completing bus 0 before calling bus N>0. Written here at the end of
+        // bus 0, read at the top of bus N>0.
+        // bridge.rs validates timestamp non-null before calling process_impl.
+        unsafe {
+            *self.last_render_sample_time.get() = Self::sample_time_from(timestamp);
         }
 
         result
