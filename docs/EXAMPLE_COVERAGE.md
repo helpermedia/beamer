@@ -22,7 +22,7 @@
 | | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
 | | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
-| | Nested groups (#[nested]) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
+| | Nested groups (`#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Special bypass parameter marker |

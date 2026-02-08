@@ -788,7 +788,7 @@ The plugin transitions between states based on host actions:
                     └─────────────────┘
 ```
 
-This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `Processor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale-why-this-matters-for-rust) for detailed rationale.
+This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `Processor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale) for detailed rationale.
 
 ### 1.6 Factory Presets
 

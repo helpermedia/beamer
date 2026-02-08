@@ -509,16 +509,17 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 **Key Files**:
 
 *Objective-C Layer:*
-- [objc/BeamerAuWrapper.m](crates/beamer-au/objc/BeamerAuWrapper.m) - Native AUAudioUnit subclass
 - [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations
-- [build.rs](crates/beamer-au/build.rs) - ObjC compilation via `cc` crate
+- [xtask/src/au_codegen/auv3_wrapper.m](xtask/src/au_codegen/auv3_wrapper.m) - AUv3 wrapper template (generated per-plugin by xtask)
+- [xtask/src/au_codegen/auv2_wrapper.c](xtask/src/au_codegen/auv2_wrapper.c) - AUv2 wrapper template (generated per-plugin by xtask)
+- [build.rs](crates/beamer-au/build.rs) - Framework linking (ObjC compilation is handled by xtask)
 
 *Rust Layer:*
 - [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
-- [sysex_pool.rs](crates/beamer-au/src/sysex_pool.rs) - SysEx output pool
+- [sysex_pool.rs](crates/beamer-core/src/sysex_pool.rs) - SysEx output pool (in beamer-core, shared with VST3)
 
 **MIDI**: UMP MIDI 1.0/2.0 → `beamer-core::MidiEvent`
 - Universal MIDI Packet format (32-bit packets)
