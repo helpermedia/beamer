@@ -1,0 +1,7 @@
+name = "Beamer MIDI Transform"
+category = "midi_effect"
+manufacturer_code = "Bmer"
+plugin_code = "mtrn"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

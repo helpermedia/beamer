@@ -11,9 +11,9 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 
 **Built on Rust's guarantees.** Where most plugin frameworks use C++, Beamer uses Rust. Memory and threading bugs become compile-time errors, not runtime crashes.
 
-**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation, and parameter access traits automatically.
+**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation, and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
 
-**Clean separation of concerns.** DSP code stays in safe Rust while the planned WebView architecture enables modern interfaces with HTML, CSS, and JavaScript. Beamer bridges them together and handles plugin format complexity.
+**Clean separation of concerns.** DSP code stays in safe Rust while the planned WebView architecture enables modern interfaces with HTML, CSS, and JavaScript. Plugin configuration lives in TOML files. Beamer bridges them together and handles plugin format complexity.
 
 ## Quick Start
 
@@ -28,6 +28,7 @@ struct GainParameters {
 }
 
 // 2. Descriptor - holds parameters (and optional state), describes plugin to host
+#[beamer::export]
 #[derive(Default, HasParameters)]
 struct GainDescriptor {
     #[parameters]
@@ -63,8 +64,18 @@ impl Processor for GainProcessor {
         }
     }
 }
+```
 
-// Export with: export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
+**Config.toml** (place in crate root next to Cargo.toml):
+```toml
+name = "My Gain Plugin"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Manu"
+plugin_code = "gain"
+vendor = "My Company"
+url = "https://example.com"
+email = "support@example.com"
 ```
 
 ## Plugin Structure

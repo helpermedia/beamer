@@ -1,9 +1,10 @@
 # beamer-macros
 
-Derive macros for building audio plugins with Beamer.
+Derive macros and attribute macros for building audio plugins with Beamer.
 
 This crate provides procedural macros that generate boilerplate code for plugins:
 
+- **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration, factory presets (from `Presets.toml`), and format-specific entry points
 - **`#[derive(Parameters)]`**: Generates parameter traits, host integration, state persistence, and `Default` implementation
 - **`#[derive(HasParameters)]`**: Generates `parameters()`, `parameters_mut()`, and `set_parameters()` accessors for Descriptor and Processor types
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
@@ -14,6 +15,16 @@ This crate provides procedural macros that generate boilerplate code for plugins
 
 **Most users should use the [`beamer`](https://crates.io/crates/beamer) crate instead**, which re-exports these macros with the `derive` feature (enabled by default).
 
+**Config.toml** (place in crate root):
+```toml
+name = "My Gain Plugin"
+category = "effect"
+manufacturer_code = "Myco"
+plugin_code = "gain"
+vendor = "My Company"
+```
+
+**Rust code:**
 ```rust
 use beamer::prelude::*;
 
@@ -23,12 +34,19 @@ struct GainParameters {
     gain: FloatParameter,
 }
 
+#[beamer::export]
 #[derive(Default, HasParameters)]
-struct GainPlugin {
+struct GainDescriptor {
     #[parameters]
     parameters: GainParameters,
 }
+
+impl Descriptor for GainDescriptor {
+    // implementation...
+}
 ```
+
+The `#[beamer::export]` macro reads `Config.toml` and generates the plugin configuration and entry points.
 
 ## Documentation
 

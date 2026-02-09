@@ -1,0 +1,8 @@
+name = "Beamer Equalizer"
+category = "effect"
+subcategories = ["eq"]
+manufacturer_code = "Bmer"
+plugin_code = "eqlz"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

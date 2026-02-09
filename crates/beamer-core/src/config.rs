@@ -469,11 +469,11 @@ impl Config {
     ///
     /// * `name` - Plugin name displayed in the DAW
     /// * `category` - Plugin category (effect, instrument, etc.)
-    /// * `manufacturer` - 4-character manufacturer code (e.g., "Bmer")
-    /// * `subtype` - 4-character plugin subtype code (e.g., "gain")
+    /// * `manufacturer_code` - 4-character manufacturer code (e.g., "Bmer")
+    /// * `plugin_code` - 4-character plugin code (e.g., "gain")
     ///
     /// # Panics
-    /// Panics at compile time if manufacturer or subtype are not exactly 4 ASCII characters.
+    /// Panics at compile time if manufacturer_code or plugin_code are not exactly 4 ASCII characters.
     ///
     /// # Example
     ///
@@ -482,7 +482,7 @@ impl Config {
     ///     .with_vendor("My Company")
     ///     .with_version(env!("CARGO_PKG_VERSION"));
     /// ```
-    pub const fn new(name: &'static str, category: Category, manufacturer: &str, subtype: &str) -> Self {
+    pub const fn new(name: &'static str, category: Category, manufacturer_code: &str, plugin_code: &str) -> Self {
         Self {
             name,
             category,
@@ -492,8 +492,8 @@ impl Config {
             version: "1.0.0",
             has_editor: false,
             subcategories: &[],
-            manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer)),
-            subtype: FourCharCode::new(&str_to_four_bytes(subtype)),
+            manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer_code)),
+            subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
             vst3_id: None,
             vst3_controller_id: None,
             vst3_sysex_slots: DEFAULT_SYSEX_SLOTS,

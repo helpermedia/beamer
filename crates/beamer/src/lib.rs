@@ -65,7 +65,7 @@ pub use beamer_macros::EnumParameter;
 #[cfg(feature = "derive")]
 pub use beamer_macros::HasParameters;
 #[cfg(feature = "derive")]
-pub use beamer_macros::Presets;
+pub use beamer_macros::export;
 
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///
@@ -237,5 +237,5 @@ pub mod prelude {
     // These share names with the traits/types they implement, which is allowed
     // because traits and derive macros live in different namespaces.
     #[cfg(feature = "derive")]
-    pub use beamer_macros::{EnumParameter, HasParameters, Parameters, Presets};
+    pub use beamer_macros::{EnumParameter, HasParameters, Parameters};
 }

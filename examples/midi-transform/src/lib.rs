@@ -33,18 +33,6 @@
 use beamer::prelude::*;
 
 // =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Plugin configuration
-/// Note: Category::MidiEffect maps to AU's aumi (MIDI processor) and VST3's "Fx"
-pub static CONFIG: Config = Config::new("Beamer MIDI Transform", Category::MidiEffect, "Bmer", "mtrn")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"));
-
-// =============================================================================
 // Enum Types for Parameter Choices
 // =============================================================================
 
@@ -190,6 +178,7 @@ pub struct MidiTransformParameters {
 /// This struct implements the `Descriptor` trait and holds the plugin's
 /// parameters. It is the entry point for the plugin - the host creates
 /// this struct and calls `prepare()` to get a `MidiTransformProcessor`.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct MidiTransformDescriptor {
     /// Plugin parameters
@@ -473,9 +462,3 @@ impl Processor for MidiTransformProcessor {
         true
     }
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, MidiTransformDescriptor);

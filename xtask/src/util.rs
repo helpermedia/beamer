@@ -4,6 +4,18 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
+/// Simplified plugin config from Config.toml for xtask use.
+#[derive(Deserialize)]
+struct ConfigFile {
+    name: String,
+    category: String,
+    manufacturer_code: String,
+    plugin_code: String,
+    vendor: Option<String>,
+}
+
 /// Extension trait for converting paths to strings with proper error handling.
 pub trait PathExt {
     /// Convert path to string, returning an error if the path contains invalid UTF-8.
@@ -289,12 +301,37 @@ pub fn install_bundle(
 // AU Plugin Metadata Detection (from source code)
 // =============================================================================
 
-/// Detect AU component info by parsing plugin source code.
+/// Detect AU component info by reading Config.toml or parsing plugin source code.
 ///
 /// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name).
 /// Used by both AUv2 and AUv3 bundlers.
+///
+/// Tries to read `examples/{package}/Config.toml` first. Falls back to
+/// parsing the source code in `examples/{package}/src/lib.rs` if the TOML
+/// file is missing or cannot be parsed.
 pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
-    // Try to find the lib.rs for this package
+    // Try Config.toml first
+    let config_path = workspace_root.join("examples").join(package).join("Config.toml");
+    if let Ok(toml_str) = fs::read_to_string(&config_path) {
+        if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
+            let component_type = match config.category.as_str() {
+                "instrument" | "generator" => "aumu",
+                "midi_effect" => "aumi",
+                _ => "aufx",
+            }
+            .to_string();
+
+            return (
+                component_type,
+                Some(config.manufacturer_code),
+                Some(config.plugin_code),
+                Some(config.name),
+                config.vendor,
+            );
+        }
+    }
+
+    // Fall back to source code parsing
     let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
 
     if let Ok(content) = fs::read_to_string(&lib_path) {
@@ -310,7 +347,7 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
             "aufx".to_string()
         };
 
-        // Detect manufacturer and subtype from AuConfig::new()
+        // Detect manufacturer and subtype from Config::new()
         let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
 
         // Detect plugin name and vendor from Config::new()
@@ -325,9 +362,10 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
 
 /// Extract AU fourcc codes (manufacturer and subtype) from plugin source code.
 ///
-/// Parses `AuConfig::new("manu", "subt")` string literals.
+/// Parses `Config::new("name", Category::Effect, "mfgr", "subt")` to find
+/// the 4-character manufacturer and subtype string literals.
 fn detect_au_fourcc_codes(content: &str) -> (Option<String>, Option<String>) {
-    let Some(start) = content.find("AuConfig::new(") else {
+    let Some(start) = content.find("Config::new(") else {
         return (None, None);
     };
 

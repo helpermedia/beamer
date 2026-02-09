@@ -134,7 +134,7 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
 - Ring buffer delay line implementation
 - Proper tail length via `tail_samples()`
-- `#[derive(Presets)]` with factory presets for enum parameters
+- Factory presets via `Presets.toml` file
 
 ---
 

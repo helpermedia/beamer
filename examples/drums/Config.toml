@@ -1,0 +1,8 @@
+name = "Beamer Drums"
+category = "instrument"
+subcategories = ["drum"]
+manufacturer_code = "Bmer"
+plugin_code = "drum"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

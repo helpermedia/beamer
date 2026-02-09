@@ -55,18 +55,6 @@
 
 use beamer::prelude::*;
 
-// =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Plugin configuration
-pub static CONFIG: Config = Config::new("Beamer Drums", Category::Instrument, "Bmer", "drum")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Drum]);
-
 /// Number of voices per drum type
 const VOICES_PER_DRUM: usize = 4;
 
@@ -224,6 +212,7 @@ impl DrumVoice {
 // =============================================================================
 
 /// Plugin descriptor implementing the Descriptor trait.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct DrumsDescriptor {
     #[parameters]
@@ -659,9 +648,3 @@ fn one_pole_lowpass(input: f64, state: &mut f64, cutoff: f64, sample_rate: f64) 
     *state += alpha * (input - *state);
     *state
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, DrumsDescriptor);

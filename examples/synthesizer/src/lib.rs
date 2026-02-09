@@ -27,18 +27,6 @@
 
 use beamer::prelude::*;
 
-// =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Plugin configuration
-pub static CONFIG: Config = Config::new("Beamer Synthesizer", Category::Instrument, "Bmer", "synt")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Synth]);
-
 /// Number of polyphonic voices
 const NUM_VOICES: usize = 8;
 
@@ -161,6 +149,7 @@ pub struct  SynthesizerParameters {
 ///
 /// Holds parameters and describes the plugin to the host before audio
 /// configuration is known. Transforms into `SynthProcessor` via `prepare()`.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct SynthesizerDescriptor {
     #[parameters]
@@ -717,9 +706,3 @@ impl Processor for SynthesizerProcessor {
         (5.0 * self.sample_rate) as u32
     }
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, SynthesizerDescriptor);

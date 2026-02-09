@@ -18,3 +18,5 @@ syn = { workspace = true }
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
 beamer-utils = { workspace = true }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }

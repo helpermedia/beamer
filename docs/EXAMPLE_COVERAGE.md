@@ -26,7 +26,7 @@
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | `#[derive(Presets)]` macro |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Presets.toml file |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
 | | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |

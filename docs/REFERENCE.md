@@ -20,33 +20,47 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ### 1.1 Plugin Configuration
 
-Every plugin requires a `Config` struct containing format-agnostic metadata. This is shared across all plugin formats (AU and VST3).
+Every plugin requires a `Config.toml` file in the crate root (next to `Cargo.toml`) containing format-agnostic metadata. This configuration is read at compile time by the `#[beamer::export]` macro and applies to all plugin formats (AU and VST3).
 
-```rust
-use beamer::prelude::*;
+**Config.toml:**
 
-pub static CONFIG: Config = Config::new("My Plugin", Category::Effect)
-    .with_vendor("My Company")
-    .with_url("https://example.com")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
+```toml
+name = "My Plugin"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Myco"
+plugin_code = "mypg"
+vendor = "My Company"
+url = "https://example.com"
+email = "support@example.com"
 ```
 
-**Fields:**
+**Required Fields:**
 
-| Field | Method | Description |
-|-------|--------|-------------|
-| `name` | `Config::new(name, category)` | Plugin name displayed in DAW |
-| `category` | `Config::new(name, category)` | Plugin type: `Category::Effect`, `Instrument`, `MidiEffect`, or `Generator` |
-| `vendor` | `.with_vendor(...)` | Company/developer name |
-| `url` | `.with_url(...)` | Vendor website |
-| `email` | `.with_email(...)` | Support email |
-| `version` | `.with_version(...)` | Version string (use `env!("CARGO_PKG_VERSION")`) |
-| `subcategories` | `.with_subcategories(&[...])` | Array of `Subcategory` values for DAW browser organization |
-| `has_editor` | `.with_editor()` | Whether plugin has a GUI (Phase 2) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | String | Plugin name displayed in DAW |
+| `category` | String | Plugin type: `"effect"`, `"instrument"`, `"midi_effect"`, or `"generator"` |
+| `manufacturer_code` | String | 4-character manufacturer code (e.g., `"Myco"`) |
+| `plugin_code` | String | 4-character plugin code (e.g., `"mypg"`) |
 
-Format-specific configurations (`AuConfig`, `Vst3Config`) are defined separately. See [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
+**Optional Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `vendor` | String | Company/developer name |
+| `url` | String | Vendor website |
+| `email` | String | Support email |
+| `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
+| `has_editor` | Boolean | Whether plugin has a GUI (default: `false`) |
+| `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
+
+**Notes:**
+
+- Version is automatically read from `CARGO_PKG_VERSION`
+- VST3 UUID is auto-derived from `manufacturer_code` and `plugin_code` unless `vst3_id` is specified
+- The 4-character codes are used for both AU FourCC identifiers and VST3 UUID derivation
+- `category` determines the AU component type (`aufx`, `aumu`, `aumi`, `augn`)
 
 ### 1.2 Three-Struct Pattern
 
@@ -85,6 +99,7 @@ pub struct GainParameters {
 }
 
 // 2. Descriptor - holds parameters, describes plugin to host
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
@@ -119,6 +134,15 @@ impl Processor for GainProcessor {
     }
 }
 ```
+
+**Plugin Export:**
+
+The `#[beamer::export]` macro on the descriptor struct reads `Config.toml` from the crate root at compile time and generates:
+- `pub static CONFIG: Config` from the TOML configuration
+- Optional factory presets from `Presets.toml` (if present)
+- Format-specific plugin entry points for AU and VST3
+
+See [Section 1.1](#11-plugin-configuration) for Config.toml format and [Section 1.6](#16-factory-presets) for Presets.toml.
 
 The following sections cover: Parameters (§1.3), Descriptor trait (§1.4), Processor trait (§1.5).
 
@@ -794,77 +818,69 @@ This is the **typestate pattern**, a Rust idiom for encoding state machines at t
 
 Factory presets let plugins provide built-in presets that appear in host preset menus (e.g., Logic's preset browser, VST3 program changes). Users can browse and load these presets without needing separate preset files.
 
-#### Derive Macro
+#### Presets.toml Format
 
-Use `#[derive(Presets)]` on an enum to define factory presets:
+Factory presets are defined in a `Presets.toml` file in the crate root (next to `Config.toml`). The `#[beamer::export]` macro automatically detects and loads this file.
 
-```rust
-use beamer::prelude::*;
-use beamer::Presets;
+**Presets.toml:**
 
-#[derive(Presets)]
-#[preset(parameters = GainParameters)]
-pub enum GainPresets {
-    #[preset(name = "Default", values(gain = 0.0))]
-    Default,
+```toml
+[[preset]]
+name = "Default"
+gain = 0.0
 
-    #[preset(name = "Subtle", values(gain = -6.0))]
-    Subtle,
+[[preset]]
+name = "Subtle"
+gain = -6.0
 
-    #[preset(name = "Boost", values(gain = 6.0))]
-    Boost,
-}
+[[preset]]
+name = "Boost"
+gain = 6.0
 ```
 
-#### Attributes
-
-| Attribute | Location | Description |
-|-----------|----------|-------------|
-| `#[preset(parameters = Type)]` | Enum | Links to the Parameters type for validation |
-| `#[preset(name = "...", values(...))]` | Variant | Defines preset name and parameter values |
-
-**Values syntax:** `values(param_id = value, ...)` where:
-- `param_id` matches the parameter's `id` attribute (e.g., `gain` for `#[parameter(id = "gain", ...)]`)
-- `value` is the plain/display value (e.g., `-6.0` for dB), not normalized
+**Format:**
+- Each preset is defined with `[[preset]]` (TOML array of tables)
+- `name` field specifies the display name in the DAW
+- Other fields are parameter IDs with their plain values (e.g., `-6.0` for dB)
+- Parameter IDs match the `id` attribute from `#[parameter(id = "gain", ...)]`
 
 #### Sparse Presets
 
 Presets can specify only a subset of parameters. Unspecified parameters retain their current values:
 
-```rust
-#[derive(Presets)]
-#[preset(parameters = MyParameters)]
-pub enum MyPresets {
-    // Full preset: sets all parameters
-    #[preset(name = "Initialize", values(gain = 0.0, mix = 1.0, bypass = false))]
-    Init,
+```toml
+# Full preset: sets all parameters
+[[preset]]
+name = "Initialize"
+gain = 0.0
+mix = 1.0
+bypass = false
 
-    // Sparse preset: only changes gain, mix and bypass unchanged
-    #[preset(name = "Quiet", values(gain = -12.0))]
-    Quiet,
-}
+# Sparse preset: only changes gain, mix and bypass unchanged
+[[preset]]
+name = "Quiet"
+gain = -12.0
 ```
 
-#### Integration with Export Macros
+#### Integration with Export Macro
 
-Pass the presets type as the final argument to export macros:
+The `#[beamer::export]` macro automatically detects and loads `Presets.toml` from the crate root:
 
-```rust
-// AU with factory presets
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, MyPlugin, MyPresets);
+**Presets.toml:**
 
-// VST3 with factory presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
+```toml
+[[preset]]
+name = "Init"
+gain = 0.0
+tone = 0.5
 
-// Without factory presets (uses NoPresets internally)
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, MyPlugin);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+[[preset]]
+name = "Warm"
+gain = 3.0
+tone = 0.7
 ```
+
+The macro generates the preset implementation automatically. No manual preset struct or trait implementation needed.
 
 #### FactoryPresets Trait
 
@@ -1418,11 +1434,7 @@ fn wants_midi(&self) -> bool { true }
 
 **Plugin-Declared Capacity:**
 
-```rust
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-    .with_sysex_slots(64)         // Default: 16
-    .with_sysex_buffer_size(4096); // Default: 512
-```
+SysEx configuration is currently an advanced feature not exposed via `Config.toml`. The defaults (16 slots, 512 bytes per message) work for most plugins. For custom SysEx configuration, you would need to manually modify the generated `CONFIG` static (advanced usage).
 
 **Heap Fallback (optional feature: `sysex-heap-fallback`):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.
@@ -1830,91 +1842,79 @@ crates/beamer-au/
 
 ### 3.2 Configuration
 
-Audio Unit plugins require two configuration objects: the shared `Config` (from `beamer-core`) and the AU-specific `AuConfig`.
+Audio Unit plugins are configured via `Config.toml` in the crate root. The configuration is shared across all plugin formats.
 
-```rust
-use beamer::prelude::*;
+**Config.toml:**
 
-// Shared configuration (format-agnostic metadata)
-// Category determines the AU component type (aufx, aumu, aumi, augn)
-pub static CONFIG: Config = Config::new("My Plugin", Category::Effect)
-    .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
-
-// AU-specific configuration (FourCC codes only)
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Myco", // Manufacturer code (4 chars)
-    "mypg", // Subtype code (4 chars, unique)
-);
+```toml
+name = "My Plugin"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Myco"
+plugin_code = "mypg"
+vendor = "My Company"
 ```
 
 #### Plugin Categories
 
-The plugin category is set in `Config` and automatically maps to AU component types:
+The `category` field in `Config.toml` determines the AU component type:
 
 | Category | AU Component Type | Use For |
 |----------|-------------------|---------|
-| `Category::Effect` | `aufx` | EQ, compressor, reverb |
-| `Category::MidiEffect` | `aumi` | Arpeggiator, harmonizer, MIDI effects |
-| `Category::Instrument` | `aumu` | Synths, samplers, drum machines |
-| `Category::Generator` | `augn` | Test tones, noise generators |
+| `"effect"` | `aufx` | EQ, compressor, reverb |
+| `"midi_effect"` | `aumi` | Arpeggiator, harmonizer, MIDI effects |
+| `"instrument"` | `aumu` | Synths, samplers, drum machines |
+| `"generator"` | `augn` | Test tones, noise generators |
 
 #### FourCC Codes
 
-Audio Units use FourCharCode identifiers:
-
-```rust
-// Using the fourcc! macro
-fourcc!(b"Demo") // Compile-time constant
-
-// Or at runtime
-FourCharCode::from_bytes(*b"Demo")
-FourCharCode::from_str("Demo")
-```
+The `manufacturer_code` and `plugin_code` fields in `Config.toml` specify the 4-character FourCC identifiers used by Audio Units:
 
 **Best Practices:**
-- Manufacturer code: Use your company/product abbreviation
-- Subtype code: Unique identifier for this specific plugin
+- `manufacturer_code`: Use your company/product abbreviation (4 ASCII chars)
+- `plugin_code`: Unique identifier for this specific plugin (4 ASCII chars)
 - Avoid conflicts: Check [Apple's registry](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
 - Use lowercase for effects, MixedCase for instruments (convention)
 
 ### 3.3 Export Macro
 
-The `export_au!` macro creates the necessary entry points for Audio Unit discovery and instantiation:
+The `#[beamer::export]` attribute macro on your descriptor struct automatically generates AU (and VST3) plugin entry points at compile time.
+
+**Config.toml** (place in crate root next to Cargo.toml):
+
+```toml
+name = "Beamer Gain"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Bmer"
+plugin_code = "gain"
+vendor = "Beamer Framework"
+```
+
+**Rust code:**
 
 ```rust
 use beamer::prelude::*;
 
-// Shared config (category determines AU component type)
-pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect)
-    .with_vendor("Beamer Framework")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
+#[beamer::export]
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    pub parameters: GainParameters,
+}
 
-// AU config (macOS only)
-#[cfg(target_os = "macos")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Demo", // Manufacturer code
-    "gain", // Subtype code
-);
-
-// Export for macOS only
-#[cfg(target_os = "macos")]
-export_au!(CONFIG, AU_CONFIG, MyPlugin);
+impl Descriptor for GainDescriptor {
+    // implementation...
+}
 ```
 
-**Multi-Format Export:**
+The macro reads `Config.toml` and generates:
+- `pub static CONFIG: Config` from the TOML fields
+- AU entry points (macOS only, when `au` feature is enabled)
+- VST3 entry points (when `vst3` feature is enabled)
+- Optional factory presets from `Presets.toml` if present
 
-```rust
-// AU on macOS only
-#[cfg(all(feature = "au", target_os = "macos"))]
-export_au!(CONFIG, AU_CONFIG, MyPlugin);
-
-// VST3 on macOS and Windows
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
-```
+No manual `export_au!` or `export_vst3!` calls needed.
 
 ### 3.4 Bundle Structure
 
@@ -2121,29 +2121,21 @@ bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 
 ### 3.7 Example: Multi-Format Plugin
 
+**Config.toml** (place in crate root next to Cargo.toml):
+
+```toml
+name = "Universal Gain"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Myco"
+plugin_code = "gain"
+vendor = "My Company"
+```
+
+**Rust code** (src/lib.rs):
+
 ```rust
 use beamer::prelude::*;
-
-// Shared configuration (category determines AU component type and VST3 base category)
-pub static CONFIG: Config = Config::new("Universal Gain", Category::Effect)
-    .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
-
-// AU configuration (macOS only)
-#[cfg(target_os = "macos")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Myco", // Manufacturer code
-    "gain", // Subtype code
-);
-
-// VST3 configuration (generate UUID with: cargo xtask generate-uuid)
-// Subcategories derived from Config, or override with .with_subcategories()
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: beamer_vst3::Vst3Config =
-    beamer_vst3::Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890");
-
-// Plugin implementation (format-agnostic, three-struct pattern)
 
 // 1. Parameters
 #[derive(Parameters)]
@@ -2153,6 +2145,7 @@ pub struct GainParameters {
 }
 
 // 2. Descriptor
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
@@ -2160,7 +2153,6 @@ pub struct GainDescriptor {
 }
 
 impl Descriptor for GainDescriptor {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self, _: ()) -> GainProcessor {
@@ -2186,15 +2178,20 @@ impl Processor for GainProcessor {
             }
         }
     }
-    // unprepare/save_state/load_state: automatically handled by default implementations
 }
+```
 
-// Format-specific exports
-#[cfg(all(feature = "au", target_os = "macos"))]
-export_au!(CONFIG, AU_CONFIG, GainDescriptor);
+The `#[beamer::export]` macro generates entry points for both AU (macOS) and VST3 when their respective features are enabled. Use Cargo features in your build commands:
 
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainDescriptor);
+```bash
+# Build AU only (macOS)
+cargo build --features au
+
+# Build VST3 only
+cargo build --features vst3
+
+# Build both formats
+cargo build --features au,vst3
 ```
 
 ### 3.8 Development: Testing Both AUv2 and AUv3
@@ -2205,23 +2202,21 @@ This is by design - Apple intended AUv3 to be a drop-in replacement for AUv2 wit
 
 **To test both formats side by side during development:**
 
-Create a separate test project with a different subtype code:
+Create a separate test project with a different `plugin_code`:
 
-```rust
-// Main plugin (builds as AUv3)
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Bmer",
-    "gain", // subtype: "gain"
-);
+```toml
+# Main plugin Config.toml (builds as AUv3)
+name = "Beamer Gain"
+manufacturer_code = "Bmer"
+plugin_code = "gain"
 
-// Test plugin (builds as AUv2 with different subtype)
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Bmer",
-    "gai2", // subtype: "gai2" - different!
-);
+# Test plugin Config.toml (builds as AUv2 with different code)
+name = "Beamer Gain (Test)"
+manufacturer_code = "Bmer"
+plugin_code = "gai2"  # Different plugin code
 ```
 
-With different subtype codes, hosts treat them as separate plugins and both will appear in the plugin list.
+With different plugin codes, hosts treat them as separate plugins and both will appear in the plugin list.
 
 **Alternative:** Uninstall one format before testing the other, then run `killall -9 AudioComponentRegistrar` to refresh the host's plugin cache.
 
@@ -2233,60 +2228,79 @@ Beamer supports VST3 plugins on macOS and Windows through the `beamer-vst3` crat
 
 ### 4.1 Configuration
 
-The `Vst3Config` struct contains VST3-specific identifiers and settings:
+VST3 plugins are configured via the same `Config.toml` file used for AU plugins. The VST3 component UUID is automatically derived from your `manufacturer_code` and `plugin_code` via FNV-1a-128 hash.
 
-```rust
-use beamer::prelude::*;
+**Config.toml:**
 
-// Subcategories are derived from Config automatically
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX");
+```toml
+name = "My Plugin"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Myco"
+plugin_code = "mypg"
+vendor = "My Company"
 ```
 
-**Fields:**
+**UUID Auto-Derivation:**
 
-| Field | Method | Description |
-|-------|--------|-------------|
-| `component_uid` | `Vst3Config::new(uuid)` | Unique UUID for plugin identification |
-| `controller_uid` | `.with_controller(uid)` | Optional separate controller UID (advanced) |
-| `sysex_slots` | `.with_sysex_slots(n)` | SysEx output slots per block (default: 16) |
-| `sysex_buffer_size` | `.with_sysex_buffer_size(n)` | Max SysEx message size (default: 512) |
-
-**UUID Generation:**
-
-Each plugin needs a unique UUID. Generate one using:
-
-```bash
-cargo xtask generate-uuid
+The VST3 UUID is automatically derived as:
+```
+FNV-1a-128("beamer-vst3-uid" + manufacturer_code + plugin_code)
 ```
 
-The UUID format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
+This ensures:
+- Deterministic UUIDs (same codes always produce the same UUID)
+- No UUID collisions between different plugins
+- No manual UUID generation needed
+
+**UUID Override:**
+
+If you need a specific UUID (e.g., to maintain compatibility with an existing shipped plugin), add it to `Config.toml`:
+
+```toml
+vst3_id = "12345678-9ABC-DEF0-1234-567890ABCDEF"
+```
+
+The format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
 
 ### 4.2 Export Macro
 
-The `export_vst3!` macro generates platform-specific entry points:
+The `#[beamer::export]` attribute macro automatically generates VST3 entry points when the `vst3` feature is enabled.
+
+**Config.toml:**
+
+```toml
+name = "My Synth"
+category = "instrument"
+manufacturer_code = "Myco"
+plugin_code = "synt"
+vendor = "My Company"
+```
+
+**Rust code:**
 
 ```rust
 use beamer::prelude::*;
 
-// Without presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor);
+#[beamer::export]
+#[derive(Default, HasParameters)]
+pub struct SynthDescriptor {
+    #[parameters]
+    pub parameters: SynthParameters,
+}
 
-// With factory presets
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyDescriptor, MyPresets);
+impl Descriptor for SynthDescriptor {
+    // implementation...
+}
 ```
 
-**Arguments:**
+The macro generates:
+- `pub static CONFIG: Config` from Config.toml
+- VST3 component UUID (auto-derived from manufacturer_code + plugin_code)
+- Platform-specific entry points (`GetPluginFactory`, `bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows)
+- Optional factory presets if `Presets.toml` is present
 
-| Argument | Description |
-|----------|-------------|
-| `CONFIG` | Static reference to `Config` (format-agnostic metadata) |
-| `VST3_CONFIG` | Static reference to `Vst3Config` (VST3-specific settings) |
-| `MyDescriptor` | The Descriptor type implementing `Descriptor` trait |
-| `MyPresets` | (Optional) Presets type implementing `FactoryPresets` |
-
-The macro generates `GetPluginFactory` and platform-specific entry points (`bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows).
+The same code compiles for both AU and VST3 formats. Use Cargo features to control which formats to build.
 
 ### 4.3 Bundle Structure
 
@@ -2333,19 +2347,23 @@ lto = true
 
 ### 4.6 Plugin Categories
 
-VST3 subcategories are derived automatically from `Config`:
+VST3 subcategories are derived automatically from `Config.toml`:
 
-```rust
-// Category::Effect with Subcategory::Dynamics becomes "Fx|Dynamics"
-pub static CONFIG: Config = Config::new("My Compressor", Category::Effect)
-    .with_subcategories(&[Subcategory::Dynamics]);
+```toml
+# category = "effect" with subcategories = ["dynamics"] becomes "Fx|Dynamics"
+name = "My Compressor"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Myco"
+plugin_code = "comp"
 
-// Category::Instrument with Subcategory::Synth becomes "Instrument|Synth"
-pub static CONFIG: Config = Config::new("My Synth", Category::Instrument)
-    .with_subcategories(&[Subcategory::Synth]);
+# category = "instrument" with subcategories = ["synth"] becomes "Instrument|Synth"
+name = "My Synth"
+category = "instrument"
+subcategories = ["synth"]
+manufacturer_code = "Myco"
+plugin_code = "synt"
 ```
-
-You can override with `.with_subcategories()` on `Vst3Config` if needed.
 
 Common subcategories: `Subcategory::Dynamics`, `Eq`, `Filter`, `Delay`, `Reverb`, `Modulation`, `Distortion`, `Synth`, `Sampler`, etc.
 

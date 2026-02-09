@@ -1,0 +1,8 @@
+name = "Beamer Gain"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Bmer"
+plugin_code = "gain"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

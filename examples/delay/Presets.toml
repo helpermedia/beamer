@@ -1,0 +1,29 @@
+[[preset]]
+name = "Slapback"
+sync_mode = 0
+stereo_mode = 0
+time = 80.0
+feedback = 0.2
+mix = 0.3
+
+[[preset]]
+name = "Eighth Note"
+sync_mode = 2
+stereo_mode = 0
+feedback = 0.45
+mix = 0.4
+
+[[preset]]
+name = "Ping Pong"
+sync_mode = 1
+stereo_mode = 1
+feedback = 0.5
+mix = 0.5
+
+[[preset]]
+name = "Ambient"
+sync_mode = 0
+stereo_mode = 0
+time = 750.0
+feedback = 0.7
+mix = 0.6

@@ -1,0 +1,8 @@
+name = "Beamer Delay"
+category = "effect"
+subcategories = ["delay"]
+manufacturer_code = "Bmer"
+plugin_code = "dlay"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

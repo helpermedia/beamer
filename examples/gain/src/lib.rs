@@ -17,18 +17,6 @@
 use beamer::prelude::*;
 
 // =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Plugin configuration
-pub static CONFIG: Config = Config::new("Beamer Gain", Category::Effect, "Bmer", "gain")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
-
-// =============================================================================
 // Parameters
 // =============================================================================
 
@@ -63,6 +51,7 @@ impl GainParameters {
 ///
 /// Holds parameters and describes the plugin to the host before audio
 /// configuration is known. Transforms into `GainProcessor` via `prepare()`.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
@@ -131,9 +120,3 @@ impl Processor for GainProcessor {
         self.process_generic(buffer);
     }
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, GainDescriptor);

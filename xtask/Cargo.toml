@@ -12,3 +12,5 @@ workspace = true
 
 [dependencies]
 uuid = { version = "1.11", features = ["v4"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }

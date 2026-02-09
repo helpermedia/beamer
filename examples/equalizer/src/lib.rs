@@ -19,18 +19,6 @@
 
 use beamer::prelude::*;
 
-// =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Equalizer", Category::Effect, "Bmer", "eqlz")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Eq]);
-
 /// Pi constant for filter calculations
 const PI: f64 = std::f64::consts::PI;
 
@@ -263,6 +251,7 @@ pub struct EqualizerParameters {
 /// Equalizer plugin descriptor (unprepared state).
 ///
 /// Configures stereo I/O buses and transforms into processor when prepared.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct EqualizerDescriptor {
     #[parameters]
@@ -406,9 +395,3 @@ impl Processor for EqualizerProcessor {
         self.process_generic(buffer);
     }
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, EqualizerDescriptor);

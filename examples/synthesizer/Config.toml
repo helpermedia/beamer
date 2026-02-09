@@ -1,0 +1,8 @@
+name = "Beamer Synthesizer"
+category = "instrument"
+subcategories = ["synth"]
+manufacturer_code = "Bmer"
+plugin_code = "synt"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"

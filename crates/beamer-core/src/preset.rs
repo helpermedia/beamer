@@ -15,23 +15,23 @@
 //! When a sparse preset is applied, unspecified parameters keep their current
 //! values (they are NOT reset to defaults).
 //!
-//! # Example
+//! # Usage
 //!
-//! ```ignore
-//! use beamer_macros::Presets;
+//! Factory presets are defined in `Presets.toml` in the crate root. The
+//! `#[beamer::export]` macro automatically generates the preset implementation:
 //!
-//! #[derive(Presets)]
-//! #[preset(parameters = GainParameters)]
-//! pub enum GainPresets {
-//!     #[preset(name = "Unity", values(gain = 0.0))]
-//!     Unity,
+//! ```toml
+//! [[preset]]
+//! name = "Unity"
+//! gain = 0.0
 //!
-//!     #[preset(name = "Quiet", values(gain = -12.0))]
-//!     Quiet,
+//! [[preset]]
+//! name = "Quiet"
+//! gain = -12.0
 //!
-//!     #[preset(name = "Boost", values(gain = 6.0))]
-//!     Boost,
-//! }
+//! [[preset]]
+//! name = "Boost"
+//! gain = 6.0
 //! ```
 
 use std::marker::PhantomData;
@@ -61,9 +61,9 @@ pub struct PresetValue {
 
 /// Trait for factory preset collections.
 ///
-/// This trait is typically implemented via the `#[derive(Presets)]` macro.
-/// The trait provides methods to enumerate presets and apply them to a
-/// parameter collection.
+/// This trait is typically generated automatically by the `#[beamer::export]`
+/// macro when a `Presets.toml` file is present in the crate root. The trait
+/// provides methods to enumerate presets and apply them to a parameter collection.
 ///
 /// # Type Parameter
 ///

@@ -29,18 +29,6 @@
 use beamer::prelude::*;
 
 // =============================================================================
-// Plugin Configuration
-// =============================================================================
-
-/// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Compressor", Category::Effect, "Bmer", "comp")
-    .with_vendor("Beamer Framework")
-    .with_url("https://github.com/helpermedia/beamer")
-    .with_email("support@example.com")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
-
-// =============================================================================
 // Compression Ratio Enum
 // =============================================================================
 
@@ -177,6 +165,7 @@ pub struct CompressorParameters {
 ///
 /// Holds parameters and describes the plugin to the host before audio
 /// configuration is known. Transforms into `CompressorProcessor` via `prepare()`.
+#[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct CompressorDescriptor {
     #[parameters]
@@ -545,9 +534,3 @@ impl Processor for CompressorProcessor {
         }
     }
 }
-
-// =============================================================================
-// Plugin Exports
-// =============================================================================
-
-export_plugin!(CONFIG, CompressorDescriptor);

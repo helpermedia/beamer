@@ -53,11 +53,12 @@
 use proc_macro::TokenStream;
 
 mod codegen;
+mod config_file;
 mod enum_parameter;
 mod has_parameters;
+mod init;
 mod ir;
 mod parse;
-mod presets;
 mod range_eval;
 mod validate;
 
@@ -228,59 +229,63 @@ pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derive macro for implementing `FactoryPresets` trait on preset enums.
+/// Attribute macro that generates plugin configuration and entry points.
 ///
-/// This macro generates the `FactoryPresets` implementation that allows
-/// factory presets to be integrated into VST3 and AU plugin wrappers.
+/// Place `#[beamer::export]` on your Descriptor struct to automatically generate:
+/// - `pub static CONFIG: Config` from `Config.toml` in the crate root
+/// - Factory presets from `Presets.toml` (if present)
+/// - `export_plugin!` call with the correct arguments
 ///
-/// # Container Attribute
+/// # Requirements
 ///
-/// The enum must have a `#[preset(parameters = Type)]` attribute specifying
-/// which parameter struct the presets apply to.
-///
-/// # Variant Attributes
-///
-/// Each variant must have a `#[preset(name = "...", values(...))]` attribute:
-/// - `name = "..."` - Display name shown in the DAW's preset browser
-/// - `values(param = value, ...)` - Parameter values using string IDs
-///
-/// Values are specified in plain units (dB, Hz, etc.) and automatically
-/// converted to normalized values at runtime.
+/// - A `Config.toml` file must exist in the crate root (next to `Cargo.toml`)
+/// - The struct must derive `HasParameters` (with a `#[parameters]` field)
+/// - The struct must implement `Descriptor`
 ///
 /// # Example
 ///
 /// ```ignore
-/// use beamer::Presets;
+/// use beamer::prelude::*;
 ///
-/// #[derive(Presets)]
-/// #[preset(parameters = GainParameters)]
-/// pub enum GainPresets {
-///     #[preset(name = "Unity", values(gain = 0.0))]
-///     Unity,
-///
-///     #[preset(name = "Quiet", values(gain = -12.0))]
-///     Quiet,
-///
-///     #[preset(name = "Boost", values(gain = 6.0))]
-///     Boost,
+/// #[beamer::export]
+/// #[derive(Default, HasParameters)]
+/// pub struct GainDescriptor {
+///     #[parameters]
+///     pub parameters: GainParameters,
 /// }
+///
+/// impl Descriptor for GainDescriptor { /* ... */ }
+/// // No CONFIG static or export_plugin! needed!
 /// ```
-///
-/// # Sparse Presets
-///
-/// Presets can specify only some parameters - unspecified parameters keep
-/// their current values when the preset is applied:
-///
-/// ```ignore
-/// #[preset(name = "High Resonance", values(resonance = 0.9))]
-/// HighResonance,  // Only changes resonance, leaves other params alone
-/// ```
-#[proc_macro_derive(Presets, attributes(preset))]
-pub fn derive_presets(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+#[proc_macro_attribute]
+pub fn export(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(item as syn::DeriveInput);
+    let struct_ident = input.ident.clone();
 
-    match presets::derive_presets_impl(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
+    match init::export_impl(struct_ident) {
+        Ok(generated) => {
+            let original: proc_macro2::TokenStream = {
+                let ts: TokenStream = quote::quote! { #input }.into();
+                ts.into()
+            };
+            let combined = quote::quote! {
+                #original
+                #generated
+            };
+            combined.into()
+        }
+        Err(err) => {
+            let err = syn::Error::new(input.ident.span(), err);
+            let original: proc_macro2::TokenStream = {
+                let ts: TokenStream = quote::quote! { #input }.into();
+                ts.into()
+            };
+            let error_tokens = err.to_compile_error();
+            let combined = quote::quote! {
+                #original
+                #error_tokens
+            };
+            combined.into()
+        }
     }
 }

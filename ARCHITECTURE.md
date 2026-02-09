@@ -144,7 +144,7 @@ beamer/
 ├── crates/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
-│   ├── beamer-macros/       # Proc macros (#[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)], #[derive(Presets)])
+│   ├── beamer-macros/       # Proc macros (#[beamer::export], #[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
 │   ├── beamer-vst3/         # VST3 wrapper implementation
@@ -166,10 +166,10 @@ beamer/
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, shared `Config` |
-| `beamer-macros` | `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`, `#[derive(Presets)]` proc macros |
+| `beamer-macros` | Derive macros: `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`. Attribute macro: `#[beamer::export]` (reads Config.toml/Presets.toml) |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
-| `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge, `AuConfig` (macOS only) |
-| `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication, `Vst3Config` |
+| `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
+| `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
 | `beamer-webview` | Platform-native WebView embedding (planned) |
 
 ---
@@ -358,115 +358,163 @@ The derive macro generates the `parameters()`, `parameters_mut()`, and `set_para
 
 ## Plugin Configuration and Export
 
-Beamer uses a **split configuration model** to separate format-agnostic metadata from format-specific identifiers.
+Beamer uses **TOML-based configuration** with compile-time code generation to eliminate boilerplate.
 
 ### Configuration Architecture
 
+Plugin metadata is declared in `Config.toml` (required) and optionally `Presets.toml` in the plugin crate root. The `#[beamer::export]` attribute macro reads these files at compile time and generates:
+- The `CONFIG` static with all metadata
+- Factory presets implementation (if Presets.toml exists)
+- Format entry points via `export_plugin!` macro
+
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                      beamer-core                               │
-│                                                                │
-│  Config (shared metadata)                                      │
-│  • name, vendor, version                                       │
-│  • category, sub_categories                                    │
-│  • url, email, has_editor                                      │
-└────────────────────┬───────────────────────────────────────────┘
-                     │
-       ┌─────────────┴──────────────┐
-       │                            │
-       ▼                            ▼
-┌──────────────────┐      ┌──────────────────┐
-│    beamer-au     │      │   beamer-vst3    │
-│                  │      │                  │
-│  AuConfig        │      │  Vst3Config      │
-│  • manufacturer  │      │  • component_uid │
-│  • subtype       │      │  • controller_uid│
-│  • bus_config    │      │  • sysex_slots   │
-│                  │      │  • sysex_buf_size│
-└──────────────────┘      └──────────────────┘
+Plugin Crate Root
+├── Cargo.toml
+├── Config.toml              # Required: plugin metadata
+├── Presets.toml             # Optional: factory presets
+└── src/
+    └── lib.rs
+        ├── Parameters struct
+        ├── Descriptor struct with #[beamer::export]
+        └── Processor struct
 ```
 
-### Example: Multi-Format Plugin
+### Example: Plugin with TOML Configuration
 
+**Config.toml** (place in crate root next to Cargo.toml):
+```toml
+name = "My Gain Plugin"
+category = "effect"
+subcategories = ["dynamics"]
+manufacturer_code = "Demo"
+plugin_code = "gain"
+vendor = "My Company"
+url = "https://example.com"
+email = "support@example.com"
+```
+
+**Presets.toml** (optional):
+```toml
+[[preset]]
+name = "Default"
+gain = 0.0
+
+[[preset]]
+name = "+6dB"
+gain = 6.0
+```
+
+**src/lib.rs**:
 ```rust
 use beamer::prelude::*;
 
-// Shared configuration (format-agnostic)
-// Category is required and determines AU component type and VST3 base category
-pub static CONFIG: Config = Config::new("My Gain", Category::Effect)
-    .with_vendor("My Company")
-    .with_version(env!("CARGO_PKG_VERSION"))
-    .with_subcategories(&[Subcategory::Dynamics]);
+#[derive(Parameters)]
+pub struct GainParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
+}
 
-// AU-specific configuration (macOS only)
-#[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new(
-    "Demo",  // Manufacturer code (4 chars)
-    "gain",  // Subtype code (4 chars)
-);
+#[beamer::export]  // Reads Config.toml and generates everything
+#[derive(Default, HasParameters)]
+pub struct GainDescriptor {
+    #[parameters]
+    parameters: GainParameters,
+}
 
-// VST3-specific configuration (generate UUID with: cargo xtask generate-uuid)
-// Subcategories are derived from Config, or override with .with_subcategories()
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890");
+impl Descriptor for GainDescriptor {
+    type Setup = ();
+    type Processor = GainProcessor;
+    fn prepare(self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: self.parameters }
+    }
+}
 
-// Export Audio Unit plugin (macOS only)
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, MyPlugin);
+#[derive(HasParameters)]
+pub struct GainProcessor {
+    #[parameters]
+    parameters: GainParameters,
+}
 
-// Export VST3 plugin
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+impl Processor for GainProcessor {
+    type Descriptor = GainDescriptor;
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
+        // ... DSP code
+    }
+}
 ```
 
-### Factory Presets
-
-Both export macros support an optional presets parameter for plugins that provide factory presets:
-
-```rust
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, GainPlugin, GainPresets);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, GainPlugin, GainPresets);
-```
-
-If no presets type is specified, `NoPresets` is used automatically.
+That's it! No manual `CONFIG` static, no `export_plugin!` call. The `#[beamer::export]` attribute handles everything.
 
 ### Configuration Fields
 
-**Config** (shared):
-- `name` - Display name in DAW (required, constructor param)
-- `category` - Plugin type: `Category::Effect`, `Instrument`, `MidiEffect`, or `Generator` (required, constructor param)
-- `vendor` - Company/developer name
-- `version` - Semantic version string
-- `subcategories` - Array of `Subcategory` values (e.g., `&[Subcategory::Dynamics]`)
-- `url`, `email` - Contact information
-- `has_editor` - GUI enabled flag
+**Config.toml**:
+- `name` - Display name in DAW (required)
+- `category` - Plugin type: `"effect"`, `"instrument"`, `"midi_effect"`, or `"generator"` (required)
+- `subcategories` - Array of subcategory strings (optional, e.g., `["dynamics", "eq"]`)
+- `manufacturer_code` - 4-character manufacturer code for AU (required, e.g., `"Demo"`)
+- `plugin_code` - 4-character plugin code for AU (required, e.g., `"gain"`)
+- `vendor` - Company/developer name (optional)
+- `url` - Plugin URL (optional)
+- `email` - Support email (optional)
+- `vst3_id` - Explicit VST3 UUID override (optional, format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`)
+- `has_editor` - GUI enabled flag (optional, default: false)
 
-**AuConfig** (AU-specific):
-- `manufacturer` - 4-character manufacturer code (FourCC)
-- `subtype` - 4-character plugin subtype code (FourCC)
-- `tags` - Optional AU tags (derived from `Config.subcategories` if not set)
-- `bus_config` - Optional custom bus configuration
+**Field Ordering Convention** (for readability):
+```toml
+# 1. Core identity
+name = "..."
+category = "..."
+subcategories = [...]  # Optional, grouped with category
 
-**Vst3Config** (VST3-specific):
-- `component_uid` - 128-bit unique identifier (TUID)
-- `controller_uid` - Optional separate controller UID (for split architecture)
-- `subcategories` - Optional override (derived from `Config` if not set)
-- `sysex_slots` - Number of SysEx output buffers
-- `sysex_buffer_size` - Size of each SysEx buffer
+# 2. Technical identifiers
+manufacturer_code = "..."
+plugin_code = "..."
 
-### Why Split Configuration?
+# 3. Metadata
+vendor = "..."
+url = "..."
+email = "..."
+```
 
-1. **Shared metadata** - Write plugin name, vendor, version once
-2. **Format requirements** - AU needs FourCC codes, VST3 needs UIDs
-3. **Conditional compilation** - AU export only compiles on macOS
-4. **Future extensibility** - Possible to add CLAP, AAX, LV2 without affecting core
+**Presets.toml**:
+```toml
+[[preset]]
+name = "Preset Name"
+parameter_id = value
+another_parameter = value
+```
+
+Use parameter IDs (not Rust field names) and plain numeric values.
+
+### Why TOML Configuration?
+
+1. **Cleaner code** - No manual CONFIG statics or export macros
+2. **Easier to modify** - Change metadata without touching Rust code
+3. **Consistent format** - Same structure across all plugins
+4. **Better ergonomics** - Self-documenting field names (`manufacturer_code` instead of cryptic FourCC)
+
+### Generated Code
+
+The `#[beamer::export]` macro generates:
+
+1. **CONFIG static**: `pub static CONFIG: Config = Config::new(...).with_vendor(...).with_version(...)`
+2. **Presets implementation** (if Presets.toml exists): Implements `FactoryPresets` trait
+3. **Plugin exports**: Calls `export_plugin!(CONFIG, DescriptorStruct)` or `export_plugin!(CONFIG, DescriptorStruct, PresetsStruct)`
+
+The macro uses `include_str!()` to track file dependencies, so Cargo automatically rebuilds when Config.toml or Presets.toml changes.
+
+### VST3 ID Generation
+
+VST3 requires a unique 128-bit identifier. By default, Beamer derives it from your `manufacturer_code` and `plugin_code` using FNV-1a hashing. This ensures consistent IDs across builds.
+
+To use an explicit UUID (e.g., for backward compatibility):
+```toml
+vst3_id = "12345678-9ABC-DEF0-ABCD-EF1234567890"
+```
 
 ### Building Multi-Format Plugins
 
-Use `xtask` to build both formats:
+Use `xtask` to build formats:
 
 ```bash
 # AUv2 only (macOS, native architecture)
