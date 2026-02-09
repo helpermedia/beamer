@@ -18,31 +18,23 @@
 ///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`beamer_core::Config`] containing shared plugin metadata
-/// * `$au_config` - A static reference to [`AuConfig`] containing AU-specific configuration
+/// * `$config` - A static reference to [`beamer_core::Config`] containing all plugin metadata
 /// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use beamer_core::Config;
-/// use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+/// use beamer_core::{Config, config::Category};
 ///
-/// static CONFIG: Config = Config::new("My Plugin")
+/// static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 ///     .with_vendor("My Company");
 ///
-/// static AU_CONFIG: AuConfig = AuConfig::new(
-///     ComponentType::Effect,
-///     fourcc!(b"Demo"),  // subtype
-///     fourcc!(b"Mfgr"),  // manufacturer
-/// );
-///
 /// // Without presets
-/// export_au!(CONFIG, AU_CONFIG, MyPlugin);
+/// export_au!(CONFIG, MyPlugin);
 ///
 /// // With presets
-/// export_au!(CONFIG, AU_CONFIG, MyPlugin, MyPresets);
+/// export_au!(CONFIG, MyPlugin, MyPresets);
 /// ```
 ///
 /// # Generated Symbols
@@ -70,20 +62,13 @@
 /// - **Thread safety**: [`OnceLock`] provides thread-safe initialization.
 /// - **One plugin per binary**: Only one `export_au!` invocation is supported per binary.
 ///
-/// # See Also
-///
-/// - [`factory::register_factory`] - The underlying registration function
-/// - [`AuProcessor`] - The processor wrapper that bridges to your plugin
-/// - [`beamer_au_create_instance`](crate::bridge::beamer_au_create_instance) - The FFI entry point
-///
 /// [`OnceLock`]: std::sync::OnceLock
-/// [`AuConfig`]: crate::AuConfig
 /// [`AuProcessor`]: crate::AuProcessor
 /// [`FactoryPresets`]: beamer_core::FactoryPresets
 #[macro_export]
 macro_rules! export_au {
     // With explicit presets type
-    ($config:expr, $au_config:expr, $plugin:ty, $presets:ty) => {
+    ($config:expr, $plugin:ty, $presets:ty) => {
         // Factory registration function
         fn __beamer_au_do_register() {
             $crate::factory::register_factory(
@@ -92,7 +77,6 @@ macro_rules! export_au {
                         as Box<dyn $crate::AuPluginInstance>
                 },
                 &$config,
-                &$au_config,
             );
         }
 
@@ -118,7 +102,7 @@ macro_rules! export_au {
     };
 
     // Without presets (default to NoPresets)
-    ($config:expr, $au_config:expr, $plugin:ty) => {
-        $crate::export_au!($config, $au_config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
+    ($config:expr, $plugin:ty) => {
+        $crate::export_au!($config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
     };
 }

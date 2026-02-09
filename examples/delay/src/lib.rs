@@ -25,22 +25,13 @@ use beamer::prelude::*;
 // Plugin Configuration
 // =============================================================================
 
-/// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Delay", Category::Effect)
+/// Plugin configuration
+pub static CONFIG: Config = Config::new("Beamer Delay", Category::Effect, "Bmer", "dlay")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_subcategories(&[Subcategory::Delay]);
-
-/// AU-specific configuration
-/// Uses manufacturer code "Bmer" and subtype "dlay" for identification
-#[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "dlay");
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("A7B8C9D0-E1F2-A3B4-C5D6-E7F809101112");
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -491,8 +482,4 @@ impl Processor for DelayProcessor {
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, DelayDescriptor, DelayPresets);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, DelayDescriptor, DelayPresets);
+export_plugin!(CONFIG, DelayDescriptor, DelayPresets);

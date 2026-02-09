@@ -2,24 +2,13 @@
 //!
 //! Audio Plugin Framework for Rust.
 //!
-//! Beamer is a framework for building audio plugins with WebView-based GUIs.
+//! Beamer is a framework for building audio plugins (AU, VST3).
 //! It provides safe Rust abstractions that work with multiple plugin formats.
-//!
-//! ## Architecture
-//!
-//! ```text
-//! Your Plugin (implements Descriptor trait)
-//!        ↓
-//! Vst3Processor<P> (generic VST3 wrapper)
-//!        ↓
-//! VST3 COM interfaces
-//! ```
 //!
 //! ## Quick Start
 //!
 //! ```rust,ignore
 //! use beamer::prelude::*;
-//! use beamer::vst3_impl::{Vst3Processor, vst3};
 //!
 //! // Define your plugin
 //! struct MyGain { parameters: MyParameters }
@@ -38,9 +27,10 @@
 //! }
 //!
 //! // Export
-//! static CONFIG: Config = Config::new("MyGain");
-//! static VST3_CONFIG: Vst3Config = Vst3Config::new(vst3::uid(...));
-//! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
+//! static CONFIG: Config = Config::new("MyGain", Category::Effect, "Mfgr", "gain")
+//!     .with_vendor("My Company");
+//!
+//! export_plugin!(CONFIG, MyGain);
 //! ```
 
 // Re-export sub-crates
@@ -61,7 +51,6 @@ pub use beamer_vst3 as vst3_impl;
 #[cfg(feature = "vst3")]
 pub mod vst3 {
     pub use ::vst3::Steinberg;
-    // Re-export TUID type for convenience
     pub use ::vst3::Steinberg::TUID;
 }
 
@@ -77,6 +66,115 @@ pub use beamer_macros::EnumParameter;
 pub use beamer_macros::HasParameters;
 #[cfg(feature = "derive")]
 pub use beamer_macros::Presets;
+
+/// Generate plugin entry points for all enabled formats (AU, VST3).
+///
+/// This is the primary export macro for Beamer plugins. It generates the
+/// necessary entry points for whichever plugin formats are enabled via
+/// Cargo features.
+///
+/// # Arguments
+///
+/// * `$config` - A static reference to [`Config`](beamer_core::Config) containing all plugin metadata
+/// * `$plugin` - The plugin type implementing the [`Descriptor`](beamer_core::Descriptor) trait
+/// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`](beamer_core::FactoryPresets)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use beamer::prelude::*;
+///
+/// pub static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
+///     .with_vendor("My Company")
+///     .with_version(env!("CARGO_PKG_VERSION"));
+///
+/// export_plugin!(CONFIG, MyPlugin);
+///
+/// // With presets:
+/// export_plugin!(CONFIG, MyPlugin, MyPresets);
+/// ```
+#[macro_export]
+macro_rules! export_plugin {
+    // With explicit presets type
+    ($config:expr, $plugin:ty, $presets:ty) => {
+        // === AU entry points ===
+        #[cfg(feature = "au")]
+        fn __beamer_au_do_register() {
+            $crate::au_impl::factory::register_factory(
+                || {
+                    Box::new($crate::au_impl::AuProcessor::<$plugin, $presets>::new())
+                        as Box<dyn $crate::au_impl::AuPluginInstance>
+                },
+                &$config,
+            );
+        }
+
+        #[cfg(feature = "au")]
+        #[used]
+        #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+        static __BEAMER_AU_INIT: extern "C" fn() = {
+            extern "C" fn __beamer_au_register() {
+                __beamer_au_do_register();
+            }
+            __beamer_au_register
+        };
+
+        #[cfg(feature = "au")]
+        #[doc(hidden)]
+        pub fn __beamer_au_manual_init() {
+            __beamer_au_do_register();
+        }
+
+        // === VST3 entry points ===
+        #[cfg(all(feature = "vst3", target_os = "windows"))]
+        #[no_mangle]
+        extern "system" fn InitDll() -> bool {
+            true
+        }
+
+        #[cfg(all(feature = "vst3", target_os = "windows"))]
+        #[no_mangle]
+        extern "system" fn ExitDll() -> bool {
+            true
+        }
+
+        #[cfg(all(feature = "vst3", target_os = "macos"))]
+        #[no_mangle]
+        extern "system" fn bundleEntry(_bundle_ref: *mut std::ffi::c_void) -> bool {
+            true
+        }
+
+        #[cfg(all(feature = "vst3", target_os = "macos"))]
+        #[no_mangle]
+        extern "system" fn bundleExit() -> bool {
+            true
+        }
+
+        #[cfg(feature = "vst3")]
+        #[no_mangle]
+        extern "system" fn GetPluginFactory() -> *mut std::ffi::c_void {
+            use $crate::vst3_impl::vst3::ComWrapper;
+            use $crate::vst3_impl::Factory;
+
+            let factory = Factory::<$crate::vst3_impl::Vst3Processor<$plugin, $presets>>::new(&$config);
+            let wrapper = ComWrapper::new(factory);
+
+            wrapper
+                .to_com_ptr::<$crate::vst3_impl::vst3::Steinberg::IPluginFactory>()
+                .unwrap()
+                .into_raw() as *mut std::ffi::c_void
+        }
+    };
+
+    // Without presets (default to NoPresets)
+    ($config:expr, $plugin:ty) => {
+        $crate::export_plugin!(
+            $config,
+            $plugin,
+            $crate::core::NoPresets<<$plugin as $crate::core::HasParameters>::Parameters>
+        );
+    };
+}
 
 /// Prelude module for convenient imports.
 ///
@@ -125,18 +223,15 @@ pub mod prelude {
         MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
         // Process context and transport
         FrameRate, ProcessContext, Transport,
+        // FourCharCode
+        FourCharCode,
     };
 
-    // Shared plugin configuration (format-agnostic)
+    // Plugin configuration
     pub use beamer_core::{Config, config::Category, config::Subcategory};
 
-    // AU implementation (only when feature enabled)
-    #[cfg(feature = "au")]
-    pub use beamer_au::{export_au, AuConfig, AuProcessor, fourcc};
-
-    // VST3 implementation (only when feature enabled)
-    #[cfg(feature = "vst3")]
-    pub use beamer_vst3::{export_vst3, Vst3Config, Vst3Processor};
+    // Unified export macro
+    pub use crate::export_plugin;
 
     // Derive macros for parameters (when feature enabled)
     // These share names with the traits/types they implement, which is allowed

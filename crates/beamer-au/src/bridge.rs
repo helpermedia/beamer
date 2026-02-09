@@ -462,11 +462,7 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
     if desc.is_null() {
         return;
     }
-    let au_config = match factory::au_config() {
-        Some(c) => c,
-        None => return,
-    };
-    let plugin_config = match factory::plugin_config() {
+    let config = match factory::plugin_config() {
         Some(c) => c,
         None => return,
     };
@@ -475,9 +471,9 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
     // a valid AudioComponentDescription struct with at least 5 u32 fields.
     // The pointer arithmetic accesses consecutive fields in the struct.
     unsafe {
-        *desc.add(0) = plugin_config.category.to_au_component_type();
-        *desc.add(1) = u32::from_be_bytes(au_config.subtype.0);
-        *desc.add(2) = u32::from_be_bytes(au_config.manufacturer.0);
+        *desc.add(0) = config.category.to_au_component_type();
+        *desc.add(1) = u32::from_be_bytes(config.subtype.0);
+        *desc.add(2) = u32::from_be_bytes(config.manufacturer.0);
         *desc.add(3) = 0; // componentFlags
         *desc.add(4) = 0; // componentFlagsMask
     }

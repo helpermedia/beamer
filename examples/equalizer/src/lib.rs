@@ -24,20 +24,12 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Equalizer", Category::Effect)
+pub static CONFIG: Config = Config::new("Beamer Equalizer", Category::Effect, "Bmer", "eqlz")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_subcategories(&[Subcategory::Eq]);
-
-/// AU-specific configuration
-#[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "eqlz");
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("639DD3FC-D376-4023-BF19-CD57A01FCF4D");
 
 /// Pi constant for filter calculations
 const PI: f64 = std::f64::consts::PI;
@@ -419,8 +411,4 @@ impl Processor for EqualizerProcessor {
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, EqualizerDescriptor);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, EqualizerDescriptor);
+export_plugin!(CONFIG, EqualizerDescriptor);

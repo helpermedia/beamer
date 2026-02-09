@@ -8,26 +8,18 @@ use std::sync::OnceLock;
 
 use beamer_core::Config;
 
-use crate::config::AuConfig;
 use crate::instance::AuPluginInstance;
 
 /// Factory function type for creating plugin instances.
 pub type PluginFactory = fn() -> Box<dyn AuPluginInstance>;
 
-/// Configuration bundle stored with the factory.
-#[derive(Debug)]
-pub struct FactoryConfig {
-    pub plugin_config: &'static Config,
-    pub au_config: &'static AuConfig,
-}
-
 /// Global factory storage (set by export_au! macro).
 static PLUGIN_FACTORY: OnceLock<PluginFactory> = OnceLock::new();
 
 /// Global configuration storage.
-static FACTORY_CONFIG: OnceLock<FactoryConfig> = OnceLock::new();
+static FACTORY_CONFIG: OnceLock<&'static Config> = OnceLock::new();
 
-/// Register factory and configs.
+/// Register factory and config.
 ///
 /// Called by the `export_au!` macro during module initialization.
 ///
@@ -38,24 +30,20 @@ static FACTORY_CONFIG: OnceLock<FactoryConfig> = OnceLock::new();
 pub fn register_factory(
     factory: PluginFactory,
     plugin_config: &'static Config,
-    au_config: &'static AuConfig,
 ) {
     PLUGIN_FACTORY
         .set(factory)
         .expect("AU factory already registered - only one plugin per binary is supported");
 
     FACTORY_CONFIG
-        .set(FactoryConfig {
-            plugin_config,
-            au_config,
-        })
+        .set(plugin_config)
         .expect("AU factory config already registered");
 
     log::debug!(
         "AU factory registered: {} ({} {})",
         plugin_config.name,
-        au_config.manufacturer,
-        au_config.subtype
+        plugin_config.manufacturer,
+        plugin_config.subtype
     );
 }
 
@@ -68,12 +56,7 @@ pub fn create_instance() -> Option<Box<dyn AuPluginInstance>> {
 
 /// Get the plugin configuration.
 pub fn plugin_config() -> Option<&'static Config> {
-    FACTORY_CONFIG.get().map(|c| c.plugin_config)
-}
-
-/// Get the AU-specific configuration.
-pub fn au_config() -> Option<&'static AuConfig> {
-    FACTORY_CONFIG.get().map(|c| c.au_config)
+    FACTORY_CONFIG.get().copied()
 }
 
 /// Check if a factory has been registered.

@@ -59,22 +59,13 @@ use beamer::prelude::*;
 // Plugin Configuration
 // =============================================================================
 
-/// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Drums", Category::Instrument)
+/// Plugin configuration
+pub static CONFIG: Config = Config::new("Beamer Drums", Category::Instrument, "Bmer", "drum")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_subcategories(&[Subcategory::Drum]);
-
-/// AU-specific configuration
-/// Uses manufacturer code "Bmer" and subtype "drum" for identification
-#[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "drum");
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("D0A1B2C3-E4F5-A6B7-C8D9-E0F112233446");
 
 /// Number of voices per drum type
 const VOICES_PER_DRUM: usize = 4;
@@ -673,8 +664,4 @@ fn one_pole_lowpass(input: f64, state: &mut f64, cutoff: f64, sample_rate: f64) 
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, DrumsDescriptor);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, DrumsDescriptor);
+export_plugin!(CONFIG, DrumsDescriptor);

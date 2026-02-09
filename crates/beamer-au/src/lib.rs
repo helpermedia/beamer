@@ -49,21 +49,12 @@
 //! 2. Use `export_au!` macro to generate AU entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::Config;
-//! use beamer_au::{export_au, AuConfig, ComponentType, fourcc};
+//! use beamer_core::{Config, config::Category};
 //!
-//! // Shared plugin config
-//! static CONFIG: Config = Config::new("My Plugin")
+//! static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Demo", "mypg")
 //!     .with_vendor("My Company");
 //!
-//! // AU-specific config
-//! static AU_CONFIG: AuConfig = AuConfig::new(
-//!     ComponentType::Effect,
-//!     fourcc!(b"Demo"),  // Manufacturer
-//!     fourcc!(b"mypg"),  // Subtype
-//! );
-//!
-//! export_au!(CONFIG, AU_CONFIG, MyPlugin);
+//! export_au!(CONFIG, MyPlugin);
 //! ```
 //!
 //! ## Real-Time Safety
@@ -90,7 +81,7 @@ pub mod config;
 pub mod error;
 
 // Re-exports
-pub use config::{AuConfig, FourCharCode};
+pub use config::FourCharCode;
 pub use error::{PluginError, PluginResult};
 
 // Re-export shared Config from beamer-core

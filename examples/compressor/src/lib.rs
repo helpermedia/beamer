@@ -33,21 +33,12 @@ use beamer::prelude::*;
 // =============================================================================
 
 /// Shared plugin configuration (format-agnostic metadata)
-pub static CONFIG: Config = Config::new("Beamer Compressor", Category::Effect)
+pub static CONFIG: Config = Config::new("Beamer Compressor", Category::Effect, "Bmer", "comp")
     .with_vendor("Beamer Framework")
     .with_url("https://github.com/helpermedia/beamer")
     .with_email("support@example.com")
     .with_version(env!("CARGO_PKG_VERSION"))
     .with_subcategories(&[Subcategory::Dynamics]);
-
-/// AU-specific configuration
-/// Uses manufacturer code "Bmer" and subtype "comp" for identification
-#[cfg(feature = "au")]
-pub static AU_CONFIG: AuConfig = AuConfig::new("Bmer", "comp");
-
-/// VST3-specific configuration
-#[cfg(feature = "vst3")]
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("B1C2D3E4-F506-1728-394A-5B6C7D8E9F00");
 
 // =============================================================================
 // Compression Ratio Enum
@@ -559,8 +550,4 @@ impl Processor for CompressorProcessor {
 // Plugin Exports
 // =============================================================================
 
-#[cfg(feature = "au")]
-export_au!(CONFIG, AU_CONFIG, CompressorDescriptor);
-
-#[cfg(feature = "vst3")]
-export_vst3!(CONFIG, VST3_CONFIG, CompressorDescriptor);
+export_plugin!(CONFIG, CompressorDescriptor);

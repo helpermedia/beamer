@@ -10,39 +10,30 @@
 ///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`beamer_core::Config`] containing shared plugin metadata
-/// * `$vst3_config` - A static reference to [`Vst3Config`] containing VST3-specific configuration
+/// * `$config` - A static reference to [`beamer_core::Config`] containing all plugin metadata
 /// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use beamer_core::Config;
-/// use beamer_vst3::{export_vst3, Vst3Config, vst3};
+/// use beamer_core::{Config, config::Category};
 ///
-/// // Shared plugin configuration
-/// static CONFIG: Config = Config::new("My Plugin")
+/// static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 ///     .with_vendor("My Company");
 ///
-/// // VST3-specific configuration
-/// static VST3_CONFIG: Vst3Config = Vst3Config::new(
-///     vst3::uid(0x12345678, 0x9ABCDEF0, 0xABCDEF12, 0x34567890),
-/// );
-///
 /// // Without presets
-/// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin);
+/// export_vst3!(CONFIG, MyPlugin);
 ///
 /// // With presets
-/// export_vst3!(CONFIG, VST3_CONFIG, MyPlugin, MyPresets);
+/// export_vst3!(CONFIG, MyPlugin, MyPresets);
 /// ```
 ///
-/// [`Vst3Config`]: crate::Vst3Config
 /// [`FactoryPresets`]: beamer_core::FactoryPresets
 #[macro_export]
 macro_rules! export_vst3 {
     // With explicit presets type
-    ($config:expr, $vst3_config:expr, $plugin:ty, $presets:ty) => {
+    ($config:expr, $plugin:ty, $presets:ty) => {
         // Platform-specific entry points
 
         #[cfg(target_os = "windows")]
@@ -76,7 +67,7 @@ macro_rules! export_vst3 {
             use $crate::vst3::ComWrapper;
             use $crate::Factory;
 
-            let factory = Factory::<$crate::Vst3Processor<$plugin, $presets>>::new(&$config, &$vst3_config);
+            let factory = Factory::<$crate::Vst3Processor<$plugin, $presets>>::new(&$config);
             let wrapper = ComWrapper::new(factory);
 
             wrapper
@@ -87,7 +78,7 @@ macro_rules! export_vst3 {
     };
 
     // Without presets (default to NoPresets)
-    ($config:expr, $vst3_config:expr, $plugin:ty) => {
-        $crate::export_vst3!($config, $vst3_config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
+    ($config:expr, $plugin:ty) => {
+        $crate::export_vst3!($config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
     };
 }

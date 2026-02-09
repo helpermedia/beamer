@@ -29,21 +29,12 @@
 //! 2. Use `export_vst3!` macro to generate entry points
 //!
 //! ```rust,ignore
-//! use beamer_core::{Descriptor, Processor, Buffer, Config};
-//! use beamer_vst3::{export_vst3, Vst3Processor, Vst3Config, vst3};
+//! use beamer_core::{Config, config::Category};
 //!
-//! // Define your plugin
-//! struct MyGain { parameters: MyParameters }
-//!
-//! // Shared plugin config
-//! static CONFIG: Config = Config::new("My Plugin")
+//! static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 //!     .with_vendor("My Company");
 //!
-//! // VST3-specific config (generate UUID with: cargo xtask generate-uuid)
-//! static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-//!     .with_categories("Fx|Dynamics");
-//!
-//! export_vst3!(CONFIG, VST3_CONFIG, MyGain);
+//! export_vst3!(CONFIG, MyGain);
 //! ```
 
 #![allow(non_upper_case_globals)]
@@ -59,7 +50,6 @@ pub mod wrapper;
 // Re-exports
 pub use factory::Factory;
 pub use processor::Vst3Processor;
-pub use wrapper::Vst3Config;
 
 // Re-export shared types from beamer-core
 pub use beamer_core::Config;
