@@ -902,7 +902,7 @@ The macro generates the preset implementation automatically. No manual preset st
 
 #### FactoryPresets Trait
 
-The derive macro generates an implementation of the `FactoryPresets` trait. For advanced use cases, you can implement it manually:
+The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`. For advanced use cases, you can implement it manually:
 
 ```rust
 pub trait FactoryPresets: Send + Sync + 'static {
