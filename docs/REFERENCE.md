@@ -63,6 +63,7 @@ email = "support@example.com"
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `vst3_controller_id` | String | VST3 controller UUID for split component/controller architecture (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 | `sysex_slots` | Integer | Number of pre-allocated SysEx output slots (default: 16) |
 | `sysex_buffer_size` | Integer | Maximum SysEx message size in bytes (default: 512) |
 

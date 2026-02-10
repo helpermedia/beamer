@@ -25,6 +25,8 @@ pub struct ConfigFile {
     pub subcategories: Option<Vec<String>>,
     /// Explicit Vst3 UUID override (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
     pub vst3_id: Option<String>,
+    /// Explicit Vst3 controller UUID for split component/controller architecture (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
+    pub vst3_controller_id: Option<String>,
     /// Whether the plugin has a GUI editor.
     pub has_editor: Option<bool>,
     /// Number of SysEx output slots per process block (default: 16).

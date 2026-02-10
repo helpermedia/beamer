@@ -91,6 +91,9 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
     let vst3_id = config.vst3_id.as_ref().map(|id| {
         quote! { .with_vst3_id(#id) }
     });
+    let vst3_controller_id = config.vst3_controller_id.as_ref().map(|id| {
+        quote! { .with_vst3_controller_id(#id) }
+    });
 
     let sysex_slots = config.sysex_slots.map(|slots| {
         quote! { .with_sysex_slots(#slots) }
@@ -123,6 +126,7 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
         .with_version(env!("CARGO_PKG_VERSION"))
         #has_editor
         #vst3_id
+        #vst3_controller_id
         #sysex_slots
         #sysex_buffer_size
         #subcategories

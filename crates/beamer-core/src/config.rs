@@ -502,30 +502,35 @@ impl Config {
     }
 
     /// Set the vendor name.
+    #[doc(hidden)]
     pub const fn with_vendor(mut self, vendor: &'static str) -> Self {
         self.vendor = vendor;
         self
     }
 
     /// Set the vendor URL.
+    #[doc(hidden)]
     pub const fn with_url(mut self, url: &'static str) -> Self {
         self.url = url;
         self
     }
 
     /// Set the vendor email.
+    #[doc(hidden)]
     pub const fn with_email(mut self, email: &'static str) -> Self {
         self.email = email;
         self
     }
 
     /// Set the version string.
+    #[doc(hidden)]
     pub const fn with_version(mut self, version: &'static str) -> Self {
         self.version = version;
         self
     }
 
     /// Enable the editor/GUI.
+    #[doc(hidden)]
     pub const fn with_editor(mut self) -> Self {
         self.has_editor = true;
         self
@@ -535,6 +540,7 @@ impl Config {
     ///
     /// Subcategories provide more specific classification beyond the main category.
     /// They are used for VST3 subcategory strings and AU tags.
+    #[doc(hidden)]
     pub const fn with_subcategories(mut self, subcategories: &'static [Subcategory]) -> Self {
         self.subcategories = subcategories;
         self
@@ -549,6 +555,7 @@ impl Config {
     /// # Arguments
     ///
     /// * `uuid` - UUID string in format "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    #[doc(hidden)]
     pub const fn with_vst3_id(mut self, uuid: &'static str) -> Self {
         self.vst3_id = Some(parse_uuid(uuid));
         self
@@ -562,6 +569,7 @@ impl Config {
     /// # Arguments
     ///
     /// * `uuid` - UUID string in format "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    #[doc(hidden)]
     pub const fn with_vst3_controller_id(mut self, uuid: &'static str) -> Self {
         self.vst3_controller_id = Some(parse_uuid(uuid));
         self
@@ -571,6 +579,7 @@ impl Config {
     ///
     /// Higher values allow more concurrent SysEx messages but use more memory.
     /// Default is 16 slots.
+    #[doc(hidden)]
     pub const fn with_sysex_slots(mut self, slots: usize) -> Self {
         self.sysex_slots = slots;
         self
@@ -579,6 +588,7 @@ impl Config {
     /// Set the maximum size of each SysEx message in bytes (AU and VST3).
     ///
     /// Messages larger than this will be truncated. Default is 512 bytes.
+    #[doc(hidden)]
     pub const fn with_sysex_buffer_size(mut self, size: usize) -> Self {
         self.sysex_buffer_size = size;
         self
