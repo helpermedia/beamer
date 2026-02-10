@@ -454,6 +454,10 @@ const fn parse_uuid_u32(bytes: &[u8], start: usize) -> u32 {
 /// Parse a UUID string ("XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX") into [u32; 4].
 const fn parse_uuid(uuid: &str) -> [u32; 4] {
     let bytes = uuid.as_bytes();
+    assert!(
+        bytes.len() == 36,
+        "vst3_id must be a UUID in format XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    );
     [
         parse_uuid_u32(bytes, 0),
         parse_uuid_u32(bytes, 9),

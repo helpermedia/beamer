@@ -23,9 +23,9 @@ pub struct ConfigFile {
     pub email: Option<String>,
     /// Subcategory strings (e.g., ["dynamics", "eq"]).
     pub subcategories: Option<Vec<String>>,
-    /// Explicit Vst3 UUID override (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
+    /// Explicit VST3 UUID override (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
     pub vst3_id: Option<String>,
-    /// Explicit Vst3 controller UUID for split component/controller architecture (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
+    /// Explicit VST3 controller UUID for split component/controller architecture (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
     pub vst3_controller_id: Option<String>,
     /// Whether the plugin has a GUI editor.
     pub has_editor: Option<bool>,
@@ -54,6 +54,34 @@ pub struct PresetEntry {
     pub values: HashMap<String, toml::Value>,
 }
 
+fn validate_uuid(uuid: &str, field: &str) -> Result<(), String> {
+    if uuid.len() != 36 {
+        return Err(format!(
+            "{field} must be a UUID in format XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX, got {:?}",
+            uuid
+        ));
+    }
+    for (i, c) in uuid.chars().enumerate() {
+        match i {
+            8 | 13 | 18 | 23 => {
+                if c != '-' {
+                    return Err(format!(
+                        "{field} has invalid character at position {i}: expected '-', got '{c}'"
+                    ));
+                }
+            }
+            _ => {
+                if !c.is_ascii_hexdigit() {
+                    return Err(format!(
+                        "{field} has invalid character at position {i}: expected hex digit, got '{c}'"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl ConfigFile {
     /// Validate the config file contents.
     pub fn validate(&self) -> Result<(), String> {
@@ -75,6 +103,12 @@ impl ConfigFile {
                 "category must be one of {:?}, got {:?}",
                 valid_categories, self.category
             ));
+        }
+        if let Some(ref id) = self.vst3_id {
+            validate_uuid(id, "vst3_id")?;
+        }
+        if let Some(ref id) = self.vst3_controller_id {
+            validate_uuid(id, "vst3_controller_id")?;
         }
         Ok(())
     }
