@@ -302,9 +302,9 @@ pub const DEFAULT_SYSEX_BUFFER_SIZE: usize = 512;
 /// Unified plugin configuration.
 ///
 /// Contains all plugin metadata: shared fields (name, vendor, category),
-/// plugin identity (AU four-char codes), and VST3-specific settings.
-/// The VST3 component UID is derived automatically from the AU codes
-/// via FNV-1a hash unless explicitly overridden.
+/// plugin identity (AU four-char codes), and format-specific settings
+/// (VST3 component UIDs). The VST3 component UID is derived automatically
+/// from the AU codes via FNV-1a hash unless explicitly overridden.
 ///
 /// # Example
 ///
@@ -355,11 +355,11 @@ pub struct Config {
     /// combined component pattern (processor + controller in one object).
     pub vst3_controller_id: Option<[u32; 4]>,
 
-    /// Number of SysEx output slots per process block (VST3).
-    pub vst3_sysex_slots: usize,
+    /// Number of SysEx output slots per process block (AU and VST3).
+    pub sysex_slots: usize,
 
-    /// Maximum size of each SysEx message in bytes (VST3).
-    pub vst3_sysex_buffer_size: usize,
+    /// Maximum size of each SysEx message in bytes (AU and VST3).
+    pub sysex_buffer_size: usize,
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -496,8 +496,8 @@ impl Config {
             subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
             vst3_id: None,
             vst3_controller_id: None,
-            vst3_sysex_slots: DEFAULT_SYSEX_SLOTS,
-            vst3_sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
+            sysex_slots: DEFAULT_SYSEX_SLOTS,
+            sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
         }
     }
 
@@ -567,20 +567,20 @@ impl Config {
         self
     }
 
-    /// Set the number of SysEx output slots per process block (VST3).
+    /// Set the number of SysEx output slots per process block (AU and VST3).
     ///
     /// Higher values allow more concurrent SysEx messages but use more memory.
     /// Default is 16 slots.
-    pub const fn with_vst3_sysex_slots(mut self, slots: usize) -> Self {
-        self.vst3_sysex_slots = slots;
+    pub const fn with_sysex_slots(mut self, slots: usize) -> Self {
+        self.sysex_slots = slots;
         self
     }
 
-    /// Set the maximum size of each SysEx message in bytes (VST3).
+    /// Set the maximum size of each SysEx message in bytes (AU and VST3).
     ///
     /// Messages larger than this will be truncated. Default is 512 bytes.
-    pub const fn with_vst3_sysex_buffer_size(mut self, size: usize) -> Self {
-        self.vst3_sysex_buffer_size = size;
+    pub const fn with_sysex_buffer_size(mut self, size: usize) -> Self {
+        self.sysex_buffer_size = size;
         self
     }
 

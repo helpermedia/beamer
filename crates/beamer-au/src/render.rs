@@ -1050,6 +1050,9 @@ impl<S: Sample> RenderBlock<S> {
     /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
+    /// * `sysex_slots` - Number of SysEx message slots to pre-allocate
+    /// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
         storage: ProcessBufferStorage<S>,
@@ -1058,6 +1061,8 @@ impl<S: Sample> RenderBlock<S> {
         schedule_midi_event_block: Option<*const c_void>,
         max_frames: u32,
         sample_rate: f64,
+        sysex_slots: usize,
+        sysex_buffer_size: usize,
     ) -> Self {
         let aux_input_bus_count = storage.aux_input_bus_count();
         let sample_type_size = std::mem::size_of::<S>();
@@ -1097,7 +1102,10 @@ impl<S: Sample> RenderBlock<S> {
             sample_rate,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
-            sysex_output_pool: UnsafeCell::new(SysExOutputPool::new()),
+            sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
+                sysex_slots,
+                sysex_buffer_size,
+            )),
             schedule_midi_event_block,
             warmup_count: AtomicUsize::new(0),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
@@ -2298,6 +2306,9 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
 /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
+/// * `sysex_slots` - Number of SysEx message slots to pre-allocate
+/// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
+#[allow(clippy::too_many_arguments)]
 pub fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f32>,
@@ -2306,6 +2317,8 @@ pub fn create_render_block_f32(
     schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
+    sysex_slots: usize,
+    sysex_buffer_size: usize,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
@@ -2315,6 +2328,8 @@ pub fn create_render_block_f32(
         schedule_midi_event_block,
         max_frames,
         sample_rate,
+        sysex_slots,
+        sysex_buffer_size,
     ))
 }
 
@@ -2331,6 +2346,9 @@ pub fn create_render_block_f32(
 /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
+/// * `sysex_slots` - Number of SysEx message slots to pre-allocate
+/// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
+#[allow(clippy::too_many_arguments)]
 pub fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f64>,
@@ -2339,6 +2357,8 @@ pub fn create_render_block_f64(
     schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
+    sysex_slots: usize,
+    sysex_buffer_size: usize,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
@@ -2348,5 +2368,7 @@ pub fn create_render_block_f64(
         schedule_midi_event_block,
         max_frames,
         sample_rate,
+        sysex_slots,
+        sysex_buffer_size,
     ))
 }

@@ -33,6 +33,10 @@ plugin_code = "mypg"
 vendor = "My Company"
 url = "https://example.com"
 email = "support@example.com"
+
+# Optional: Advanced SysEx configuration
+# sysex_slots = 64
+# sysex_buffer_size = 4096
 ```
 
 **Required Fields:**
@@ -54,6 +58,19 @@ email = "support@example.com"
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
 | `has_editor` | Boolean | Whether plugin has a GUI (default: `false`) |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
+
+**Advanced Optional Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sysex_slots` | Integer | Number of pre-allocated SysEx output slots (default: 16) |
+| `sysex_buffer_size` | Integer | Maximum SysEx message size in bytes (default: 512) |
+
+**SysEx Configuration:**
+- Advanced settings for plugins that send SysEx messages
+- Defaults (16 slots, 512 bytes) cover most use cases
+- Higher values use more memory but allow more concurrent/larger SysEx messages
+- Both AU and VST3 formats use these settings
 
 **Notes:**
 
@@ -1434,7 +1451,16 @@ fn wants_midi(&self) -> bool { true }
 
 **Plugin-Declared Capacity:**
 
-SysEx configuration is currently an advanced feature not exposed via `Config.toml`. The defaults (16 slots, 512 bytes per message) work for most plugins. For custom SysEx configuration, you would need to manually modify the generated `CONFIG` static (advanced usage).
+SysEx configuration can be set via Config.toml:
+
+```toml
+sysex_slots = 64
+sysex_buffer_size = 4096
+```
+
+Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
+- Your plugin sends many SysEx messages per buffer (increase slots)
+- Your plugin sends large SysEx messages like sample dumps (increase buffer size)
 
 **Heap Fallback (optional feature: `sysex-heap-fallback`):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.

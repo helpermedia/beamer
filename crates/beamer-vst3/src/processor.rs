@@ -361,8 +361,8 @@ where
             midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
-                config.vst3_sysex_slots,
-                config.vst3_sysex_buffer_size,
+                config.sysex_slots,
+                config.sysex_buffer_size,
             )),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),

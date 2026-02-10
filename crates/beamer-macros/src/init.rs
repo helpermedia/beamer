@@ -92,6 +92,14 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
         quote! { .with_vst3_id(#id) }
     });
 
+    let sysex_slots = config.sysex_slots.map(|slots| {
+        quote! { .with_sysex_slots(#slots) }
+    });
+
+    let sysex_buffer_size = config.sysex_buffer_size.map(|size| {
+        quote! { .with_sysex_buffer_size(#size) }
+    });
+
     let subcategories = if let Some(subs) = &config.subcategories {
         let sub_tokens: Vec<TokenStream> = subs
             .iter()
@@ -115,6 +123,8 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
         .with_version(env!("CARGO_PKG_VERSION"))
         #has_editor
         #vst3_id
+        #sysex_slots
+        #sysex_buffer_size
         #subcategories
         ;
     })

@@ -651,6 +651,11 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             }
         }
 
+        // Get SysEx configuration from plugin config
+        let config = factory::plugin_config().expect("Plugin config not registered");
+        let sysex_slots = config.sysex_slots;
+        let sysex_buffer_size = config.sysex_buffer_size;
+
         // Create the render block based on sample format
         // Note: We don't store host block pointers here - they're passed per-render call
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
@@ -667,6 +672,8 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                     None, // schedule_midi_event_block passed at render time
                     max_frames,
                     sample_rate,
+                    sysex_slots,
+                    sysex_buffer_size,
                 ))
             }
             BeamerAuSampleFormat::Float64 => {
@@ -682,6 +689,8 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                     None,
                     max_frames,
                     sample_rate,
+                    sysex_slots,
+                    sysex_buffer_size,
                 ))
             }
         };

@@ -27,6 +27,12 @@ pub struct ConfigFile {
     pub vst3_id: Option<String>,
     /// Whether the plugin has a GUI editor.
     pub has_editor: Option<bool>,
+    /// Number of SysEx output slots per process block (default: 16).
+    #[serde(default)]
+    pub sysex_slots: Option<usize>,
+    /// Maximum size of each SysEx message in bytes (default: 512).
+    #[serde(default)]
+    pub sysex_buffer_size: Option<usize>,
 }
 
 /// Presets file from Presets.toml.

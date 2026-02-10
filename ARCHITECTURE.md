@@ -318,7 +318,7 @@ Descriptor                       Processor
        parameters →                 ← parameters back
 ```
 
-This is the **type-state pattern** - a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File`, builder APIs, and session types.
+This is the **type-state pattern** - a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File` and session types.
 
 **Why ownership instead of shared references?**
 
@@ -731,11 +731,11 @@ pub struct ProcessBufferStorage<S: Sample> {
 - `clear()` resets length to 0 without deallocating
 - `push()` into reserved capacity never allocates
 
-**Plugin-Declared Capacity** (VST3-specific):
-```rust
-pub static VST3_CONFIG: Vst3Config = Vst3Config::new("12345678-9ABC-DEF0-ABCD-EF1234567890")
-    .with_sysex_slots(64)         // Default: 16
-    .with_sysex_buffer_size(4096); // Default: 512 bytes
+**Plugin-Declared Capacity** (configurable via Config.toml):
+```toml
+# Config.toml
+sysex_slots = 64 # Default: 16
+sysex_buffer_size = 4096 # Default: 512 bytes
 ```
 
 ### Allocation Lifecycle
