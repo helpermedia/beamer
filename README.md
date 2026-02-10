@@ -80,7 +80,7 @@ email = "support@example.com"
 
 ## Plugin Structure
 
-Beamer plugins use three structs: **Parameters** (data), **Descriptor** (configuration), and **Processor** (audio). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
+Beamer plugins use three structs: **Parameters** (data), **Descriptor** (plugin blueprint), and **Processor** (audio and MIDI). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 

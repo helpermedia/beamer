@@ -165,7 +165,7 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, shared `Config` |
+| `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, `Config` |
 | `beamer-macros` | Derive macros: `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`. Attribute macro: `#[beamer::export]` (reads Config.toml/Presets.toml) |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
@@ -186,7 +186,7 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 │  • No sample rate or audio state                                │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
-                                  │ prepare(config)
+                                  │ self.prepare(setup)
                                   │ [setupProcessing]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -203,7 +203,7 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 │                     Descriptor (Unprepared)                     │
 │  • Parameters preserved                                         │
 │  • DSP state discarded                                          │
-│  • Ready for prepare() with new config                          │
+│  • Ready for prepare() with new setup                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -443,7 +443,7 @@ impl Processor for GainProcessor {
 }
 ```
 
-That's it! No manual `CONFIG` static, no `export_plugin!` call. The `#[beamer::export]` attribute handles everything.
+The `#[beamer::export]` attribute reads Config.toml and generates the required `CONFIG` static and plugin export code.
 
 ### Configuration Fields
 
@@ -457,7 +457,7 @@ That's it! No manual `CONFIG` static, no `export_plugin!` call. The `#[beamer::e
 - `url` - Plugin URL (optional)
 - `email` - Support email (optional)
 - `vst3_id` - Explicit VST3 UUID override (optional, format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`)
-- `has_editor` - GUI enabled flag (optional, default: false)
+- `has_editor` - GUI enabled flag (optional, default: false, reserved for future WebView support)
 
 **Field Ordering Convention** (for readability):
 ```toml
@@ -491,7 +491,6 @@ Use parameter IDs (not Rust field names) and plain numeric values.
 1. **Cleaner code** - No manual CONFIG statics or export macros
 2. **Easier to modify** - Change metadata without touching Rust code
 3. **Consistent format** - Same structure across all plugins
-4. **Better ergonomics** - Self-documenting field names (`manufacturer_code` instead of cryptic FourCC)
 
 ### Generated Code
 
@@ -748,7 +747,7 @@ Plugin Load (creates Descriptor in Unprepared state)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ validate_bus_limits(plugin_config)                          │
+│ validate_bus_limits(descriptor)                             │
 │   • Check declared buses ≤ MAX_BUSES                        │
 │   • Check declared channels per bus ≤ MAX_CHANNELS          │
 │   • Return error if exceeded (plugin fails to load)         │
@@ -765,7 +764,7 @@ Plugin Load (creates Descriptor in Unprepared state)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
-│   • Descriptor::prepare(config) → Processor                 │
+│   • descriptor.prepare(setup) → Processor                   │
 │     - Descriptor consumed, Processor created                │
 │     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate()                        │
@@ -789,10 +788,10 @@ Plugin Load (creates Descriptor in Unprepared state)
     │
     ▼ (on sample rate change)
 ┌─────────────────────────────────────────────────────────────┐
-│ setupProcessing() with new config                           │
+│ setupProcessing() with new setup                            │
 │   • Processor::unprepare() → Descriptor                     │
 │     - Parameters preserved, DSP state discarded             │
-│   • Descriptor::prepare(new_config) → Processor             │
+│   • descriptor.prepare(new_setup) → Processor               │
 │     - DSP state reallocated for new sample rate             │
 └─────────────────────────────────────────────────────────────┘
 ```

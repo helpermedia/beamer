@@ -69,7 +69,7 @@ Beamer plugins use three structs for clear separation of concerns:
 | Struct | Derive | Purpose |
 |--------|--------|---------|
 | `*Parameters` | `#[derive(Parameters)]` | Pure parameter definitions with declarative attributes |
-| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds parameters, describes plugin to host before audio config |
+| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds parameters, describes plugin to host before audio configuration is known |
 | `*Processor` | `#[derive(HasParameters)]` | Prepared state with DSP logic, created by `prepare()` |
 
 **Lifecycle:**
@@ -570,7 +570,7 @@ impl ParameterInfo {
 
 ### 1.4 Descriptor Trait
 
-The `Descriptor` trait represents a plugin in its **unprepared state** - before the host provides audio configuration. When the host calls `setupProcessing()`, the plugin transforms into a `Processor` via the `prepare()` method.
+The `Descriptor` trait represents a plugin in its **unprepared state** - before the host provides audio setup information. When the host calls `setupProcessing()`, the plugin transforms into a `Processor` via the `prepare()` method.
 
 ```rust
 pub trait Descriptor: HasParameters + Default {
@@ -580,7 +580,7 @@ pub trait Descriptor: HasParameters + Default {
     /// The prepared processor type
     type Processor: Processor<Descriptor = Self, Parameters = Self::Parameters>;
 
-    /// Transform into a prepared processor with audio configuration.
+    /// Transform into a prepared processor with audio setup information.
     /// Consumes self - the plugin moves into the prepared state.
     fn prepare(self, setup: Self::Setup) -> Self::Processor;
 
@@ -797,7 +797,7 @@ The plugin transitions between states based on host actions:
                     │  (unprepared)   │
                     └────────┬────────┘
                              │ setupProcessing(true)
-                             │ + prepare(config)
+                             │ + prepare(setup)
                              ▼
                     ┌─────────────────┐
                     │  Processor      │
@@ -2119,79 +2119,25 @@ bool beamer_au_accepts_midi(BeamerAuInstanceHandle instance);
 bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 ```
 
-### 3.7 Example: Multi-Format Plugin
+### 3.7 Building Audio Units
 
-**Config.toml** (place in crate root next to Cargo.toml):
-
-```toml
-name = "Universal Gain"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Myco"
-plugin_code = "gain"
-vendor = "My Company"
-```
-
-**Rust code** (src/lib.rs):
-
-```rust
-use beamer::prelude::*;
-
-// 1. Parameters
-#[derive(Parameters)]
-pub struct GainParameters {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParameter,
-}
-
-// 2. Descriptor
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Descriptor for GainDescriptor {
-    type Setup = ();
-    type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
-    }
-}
-
-// 3. Processor
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
-            }
-        }
-    }
-}
-```
-
-The `#[beamer::export]` macro generates entry points for both AU (macOS) and VST3 when their respective features are enabled. Use Cargo features in your build commands:
+Use `cargo xtask bundle` to build AU plugins:
 
 ```bash
-# Build AU only (macOS)
-cargo build --features au
+# Build AUv2
+cargo xtask bundle gain --auv2
 
-# Build VST3 only
-cargo build --features vst3
+# Build AUv3
+cargo xtask bundle gain --auv3
 
-# Build both formats
-cargo build --features au,vst3
+# Build both AUv2 and AUv3
+cargo xtask bundle gain --auv2 --auv3
+
+# Build and install
+cargo xtask bundle gain --auv3 --install --release
+
+# Universal binary (x86_64 + arm64)
+cargo xtask bundle gain --auv3 --arch universal
 ```
 
 ### 3.8 Development: Testing Both AUv2 and AUv3
