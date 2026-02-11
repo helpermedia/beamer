@@ -391,8 +391,7 @@ static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector) {
             return (AudioComponentMethod)BeamerAuv2AddRenderNotify;
         case kAudioUnitRemoveRenderNotifySelect:
             return (AudioComponentMethod)BeamerAuv2RemoveRenderNotify;
-        case kMusicDeviceMIDIEventSelect:
-            return (AudioComponentMethod)BeamerAuv2MIDIEvent;
+{{MIDI_EVENT_CASE}}
         default:
             return NULL;
     }

@@ -68,7 +68,7 @@ pub fn bundle_auv2(
     }
 
     // Generate ObjC wrapper with factory function
-    let wrapper_source = generate_auv2_wrapper_source(package);
+    let wrapper_source = generate_auv2_wrapper_source(package, &component_type);
     let gen_dir = workspace_root.join("target/au-gen").join(package);
     fs::create_dir_all(&gen_dir).map_err(|e| format!("Failed to create gen dir: {}", e))?;
     let wrapper_path = gen_dir.join("auv2_wrapper.m");
