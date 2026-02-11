@@ -86,6 +86,7 @@ typedef struct BeamerAuv2Instance {
     AUPreset* presetStorage;           // Backing storage for preset structs
     uint32_t presetCount;              // Number of factory presets
     int32_t currentPresetIndex;        // -1 = no preset, >=0 = factory preset index
+    CFStringRef currentPresetName;     // Current preset name for ClassInfo round-trip
 
     // MIDI event ring buffer (lock-free SPSC: MIDIEvent produces, Render consumes)
     AURenderEvent midiRingBuffer[BEAMER_AU_MAX_MIDI_EVENTS];
@@ -282,6 +283,7 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
     inst->presetCount = presetCount;
     inst->currentPresetIndex = -1;
+    inst->currentPresetName = NULL;
 
     if (presetCount > 0) {
         // Allocate backing storage for AUPreset structs
@@ -334,6 +336,12 @@ static OSStatus BeamerAuv2Close(void* self) {
     }
 
     FreeInputBufferList(inst);
+
+    // Release current preset name
+    if (inst->currentPresetName) {
+        CFRelease(inst->currentPresetName);
+        inst->currentPresetName = NULL;
+    }
 
     // Release factory presets
     if (inst->factoryPresets) {
@@ -1031,13 +1039,16 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             CFRelease(subTypeNum);
             CFRelease(manuNum);
 
-            // Add plugin name
-            char nameBuffer[256];
-            uint32_t nameLen = beamer_au_get_name(inst->rustInstance, nameBuffer, sizeof(nameBuffer));
-            if (nameLen > 0) {
-                CFStringRef nameStr = CFStringCreateWithCString(NULL, nameBuffer, kCFStringEncodingUTF8);
-                CFDictionarySetValue(dict, CFSTR("name"), nameStr);
-                CFRelease(nameStr);
+            // Add current preset name (required by auval ClassInfo round-trip)
+            if (inst->currentPresetName) {
+                CFDictionarySetValue(dict, CFSTR("name"), inst->currentPresetName);
+            } else if (inst->currentPresetIndex >= 0 &&
+                       (uint32_t)inst->currentPresetIndex < inst->presetCount &&
+                       inst->presetStorage) {
+                CFDictionarySetValue(dict, CFSTR("name"),
+                    inst->presetStorage[inst->currentPresetIndex].presetName);
+            } else {
+                CFDictionarySetValue(dict, CFSTR("name"), CFSTR("Untitled"));
             }
 
             // Store format version
@@ -1105,7 +1116,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 preset->presetName = inst->presetStorage[inst->currentPresetIndex].presetName;
             } else {
                 preset->presetNumber = -1;
-                preset->presetName = CFSTR("Current Settings");
+                preset->presetName = inst->currentPresetName ? inst->currentPresetName : CFSTR("Untitled");
             }
             *ioDataSize = sizeof(AUPreset);
             return noErr;
@@ -1299,6 +1310,15 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
 
+            // Restore preset name from "name" key
+            CFStringRef nameStr = (CFStringRef)CFDictionaryGetValue(dict, CFSTR("name"));
+            if (nameStr && CFGetTypeID(nameStr) == CFStringGetTypeID()) {
+                if (inst->currentPresetName) {
+                    CFRelease(inst->currentPresetName);
+                }
+                inst->currentPresetName = CFStringCreateCopy(NULL, nameStr);
+            }
+
             // Try "data" key (standard AU) first, then fallback to "beamer-state"
             CFDataRef stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("data"));
             if (!stateData) {
@@ -1323,12 +1343,27 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             }
 
             const AUPreset* newPreset = (const AUPreset*)inData;
+
+            // Release old preset name
+            if (inst->currentPresetName) {
+                CFRelease(inst->currentPresetName);
+                inst->currentPresetName = NULL;
+            }
+
             if (newPreset->presetNumber >= 0 && (uint32_t)newPreset->presetNumber < inst->presetCount) {
                 inst->currentPresetIndex = newPreset->presetNumber;
                 beamer_au_apply_preset(inst->rustInstance, (uint32_t)newPreset->presetNumber);
+                // Copy factory preset name
+                if (inst->presetStorage && inst->presetStorage[inst->currentPresetIndex].presetName) {
+                    inst->currentPresetName = (CFStringRef)CFRetain(
+                        inst->presetStorage[inst->currentPresetIndex].presetName);
+                }
             } else {
-                // User preset (negative number) - just track the index
+                // User preset (negative number) - track the provided name
                 inst->currentPresetIndex = -1;
+                if (newPreset->presetName) {
+                    inst->currentPresetName = CFStringCreateCopy(NULL, newPreset->presetName);
+                }
             }
 
             NotifyPropertyListeners(inst, propID, scope, element);
