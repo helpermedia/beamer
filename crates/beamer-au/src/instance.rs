@@ -48,6 +48,10 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// Called when AU host calls `deallocateRenderResources`.
     /// This triggers the Processor → Descriptor transition.
+    ///
+    /// This method must be idempotent: calling it when already unprepared
+    /// is a safe no-op. The destroy path relies on this to ensure cleanup
+    /// even if a prior deallocation was skipped.
     fn deallocate_render_resources(&mut self);
 
     /// Check if currently in prepared state (render resources allocated).

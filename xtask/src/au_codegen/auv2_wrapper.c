@@ -66,6 +66,7 @@ typedef struct BeamerAuv2Instance {
     // Allocated input buffer for pulling
     AudioBufferList* inputBufferList;
     UInt32 inputBufferCapacity;
+    void* ownedInputBuffers[BEAMER_AU_MAX_CHANNELS]; // tracks our calloc'd mData pointers
 
     // Property listeners
     PropertyListener propertyListeners[MAX_PROPERTY_LISTENERS];
@@ -99,6 +100,7 @@ typedef struct BeamerAuv2Instance {
 static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci);
 static OSStatus BeamerAuv2Close(void* self);
 static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector);
+static void FreeInputBufferList(BeamerAuv2Instance* inst);
 
 static OSStatus BeamerAuv2Initialize(void* self);
 static OSStatus BeamerAuv2Uninitialize(void* self);
@@ -157,11 +159,14 @@ static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyI
 }
 
 static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels, UInt32 frames) {
+    if (channels > BEAMER_AU_MAX_CHANNELS) return kAudio_ParamError;
     UInt32 neededCapacity = frames * channels;
     if (inst->inputBufferList && inst->inputBufferCapacity >= neededCapacity) {
-        // Existing buffer is large enough, just update frame counts
+        // Existing buffer is large enough. Restore our owned mData pointers
+        // because the host may have replaced them during a previous render.
         for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {
             inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
+            inst->inputBufferList->mBuffers[i].mData = inst->ownedInputBuffers[i];
         }
         return noErr;
     }
@@ -169,9 +174,8 @@ static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels,
     // Free old buffer if it exists
     if (inst->inputBufferList) {
         for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {
-            if (inst->inputBufferList->mBuffers[i].mData) {
-                free(inst->inputBufferList->mBuffers[i].mData);
-            }
+            free(inst->ownedInputBuffers[i]);
+            inst->ownedInputBuffers[i] = NULL;
         }
         free(inst->inputBufferList);
     }
@@ -185,8 +189,12 @@ static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels,
     for (UInt32 i = 0; i < channels; i++) {
         inst->inputBufferList->mBuffers[i].mNumberChannels = 1;
         inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
-        inst->inputBufferList->mBuffers[i].mData = calloc(frames, sizeof(Float32));
-        if (!inst->inputBufferList->mBuffers[i].mData) return kAudio_MemFullError;
+        inst->ownedInputBuffers[i] = calloc(frames, sizeof(Float32));
+        inst->inputBufferList->mBuffers[i].mData = inst->ownedInputBuffers[i];
+        if (!inst->ownedInputBuffers[i]) {
+            FreeInputBufferList(inst);
+            return kAudio_MemFullError;
+        }
     }
 
     inst->inputBufferCapacity = neededCapacity;
@@ -195,10 +203,10 @@ static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels,
 
 static void FreeInputBufferList(BeamerAuv2Instance* inst) {
     if (inst->inputBufferList) {
+        // Free our owned pointers, not mData (host may have replaced them)
         for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {
-            if (inst->inputBufferList->mBuffers[i].mData) {
-                free(inst->inputBufferList->mBuffers[i].mData);
-            }
+            free(inst->ownedInputBuffers[i]);
+            inst->ownedInputBuffers[i] = NULL;
         }
         free(inst->inputBufferList);
         inst->inputBufferList = NULL;
