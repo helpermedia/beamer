@@ -45,6 +45,8 @@ pub mod export;
 pub mod factory;
 pub mod processor;
 pub mod util;
+#[cfg(feature = "webview")]
+pub mod webview;
 pub mod wrapper;
 
 // Re-exports

@@ -1,15 +1,17 @@
 # Phase 2A: Core Platform Support
 
-WebView windows showing static HTML in VST3 plugins on macOS and Windows.
+WebView windows showing static HTML in VST3 and AU plugins on macOS (and
+Windows for VST3).
 
 ## Crate Structure
+
+`beamer-webview` is a pure platform layer with no format-specific dependencies:
 
 ```
 crates/beamer-webview/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs
-│   ├── view.rs                  # IPlugView wrapper
 │   ├── error.rs
 │   └── platform/
 │       ├── mod.rs
@@ -17,13 +19,18 @@ crates/beamer-webview/
 │       └── windows.rs           # WebView2
 ```
 
+Format-specific integration lives in each format's own crate/template:
+- VST3 `IPlugView` impl in `beamer-vst3` (uses `MacosWebView`/`WindowsWebView`)
+- AU view controller in `xtask/src/au_codegen/auv3_wrapper.m` (calls
+  `beamer-webview` via C-ABI)
+
 ## Dependencies
 
 ```toml
+# beamer-webview - no vst3 or AU dependencies
 [dependencies]
 beamer-core = { workspace = true }
 log = { workspace = true }
-vst3 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -50,7 +57,7 @@ crate uses `objc2` 0.6 with `objc2-web-kit` 0.3 for WKWebView in production.
 ## Public API
 
 ```rust
-pub use view::WebViewPlugView;
+pub use platform::PlatformWebView;
 pub use error::{WebViewError, Result};
 
 pub struct WebViewConfig {
@@ -58,6 +65,10 @@ pub struct WebViewConfig {
     pub dev_tools: bool,
 }
 ```
+
+The crate exposes the platform WebView types and config. Format-specific
+wrappers (`IPlugView`, `NSViewController`) are built on top by each format
+crate.
 
 ## Platform Implementations
 
@@ -71,16 +82,18 @@ pub struct MacosWebView {
 
 impl MacosWebView {
     pub unsafe fn attach_to_parent(parent: *mut c_void, config: &WebViewConfig) -> Result<Self>;
-    pub fn set_frame(&mut self, x: i32, y: i32, width: i32, height: i32);
+    pub fn set_frame(&self, x: i32, y: i32, width: i32, height: i32);
     pub fn detach(&mut self);
 }
 ```
 
 **Notes**:
-- Parent is `NSView*` (not `NSWindow*`) - VST3 hosts provide an `NSView`
+- Parent is `NSView*` (not `NSWindow*`) - both VST3 and AU hosts provide an
+  `NSView` as the parent container
 - Coordinate origin: bottom-left
 - WKWebView must be created on main thread (VST3 hosts typically call
-  `IPlugView::attached()` on the main thread, but verify per-host)
+  `IPlugView::attached()` on the main thread; AU hosts call
+  `requestViewController` on the main thread)
 - `objc2` 0.6 uses `Retained<T>` (formerly `Id<T>`)
 
 ### Windows (`platform/windows.rs`)
@@ -106,47 +119,79 @@ impl WindowsWebView {
 - Runtime required (built into Win11, separate install for Win10)
 - Parent is `HWND`
 - Use `webview2-com` crate instead of raw `windows` features for WebView2 APIs
+- AU is macOS-only, so this backend is only used by VST3
 
-## IPlugView Wrapper (`view.rs`)
+### C-ABI exports (for AU)
 
-The wrapper implements `IPlugViewTrait` from the `vst3` crate, matching how
-`Vst3Processor` implements other VST3 COM traits (e.g., `IEditControllerTrait`,
-`IAudioProcessorTrait`).
+`beamer-webview` exports C-ABI functions so the ObjC AU wrapper can use the
+platform layer without reimplementing WKWebView setup:
 
 ```rust
+/// Create a WebView attached to the given parent NSView.
+/// Returns an opaque handle, or null on failure.
+#[no_mangle]
+pub extern "C" fn beamer_webview_create(
+    parent: *mut c_void,
+    html: *const c_char,
+    dev_tools: bool,
+) -> *mut c_void;
+
+/// Update the WebView frame.
+#[no_mangle]
+pub extern "C" fn beamer_webview_set_frame(
+    handle: *mut c_void,
+    x: i32, y: i32, width: i32, height: i32,
+);
+
+/// Detach and destroy the WebView.
+#[no_mangle]
+pub extern "C" fn beamer_webview_destroy(handle: *mut c_void);
+```
+
+This lets the AU ObjC template call into the same Rust platform code that VST3
+uses, keeping WebView creation logic in one place.
+
+## beamer-vst3 Integration
+
+The `IPlugView` implementation lives in `beamer-vst3`, using `beamer-webview`'s
+platform types. This is analogous to how `Vst3Processor` implements other VST3
+COM traits.
+
+```rust
+// In beamer-vst3/src/webview.rs (new file)
 pub struct WebViewPlugView {
     #[cfg(target_os = "macos")]
-    platform: Option<MacosWebView>,
+    platform: UnsafeCell<Option<beamer_webview::MacosWebView>>,
     #[cfg(target_os = "windows")]
-    platform: Option<WindowsWebView>,
+    platform: UnsafeCell<Option<beamer_webview::WindowsWebView>>,
 
-    config: WebViewConfig,
-    constraints: EditorConstraints,
-    size: Size,
-    frame: Option<*mut IPlugFrame>,
+    config: beamer_webview::WebViewConfig,
+    delegate: UnsafeCell<Box<dyn EditorDelegate>>,
+    size: UnsafeCell<Size>,
+    frame: UnsafeCell<*mut IPlugFrame>,
 }
 
 impl IPlugViewTrait for WebViewPlugView {
     unsafe fn isPlatformTypeSupported(&self, type_: FIDString) -> tresult;
-    unsafe fn attached(&mut self, parent: *mut c_void, type_: FIDString) -> tresult;
-    unsafe fn removed(&mut self) -> tresult;
-    unsafe fn onSize(&mut self, new_size: *mut ViewRect) -> tresult;
+    unsafe fn attached(&self, parent: *mut c_void, type_: FIDString) -> tresult;
+    unsafe fn removed(&self) -> tresult;
+    unsafe fn onSize(&self, new_size: *mut ViewRect) -> tresult;
     unsafe fn getSize(&self, size: *mut ViewRect) -> tresult;
-    unsafe fn canResize(&self) -> tresult; // uses EditorConstraints.resizable
-    unsafe fn setFrame(&mut self, frame: *mut IPlugFrame) -> tresult;
+    unsafe fn canResize(&self) -> tresult;
+    unsafe fn setFrame(&self, frame: *mut IPlugFrame) -> tresult;
 }
 ```
 
 ### EditorDelegate integration
 
-`WebViewPlugView::new()` takes an `EditorDelegate` reference to:
+`WebViewPlugView::new()` takes an `EditorDelegate` to:
 - Get initial size via `editor_size()`
 - Get constraints via `editor_constraints()` (used by `canResize`)
 - Call `editor_opened()` in `attached()`
 - Call `editor_closed()` in `removed()`
 - Call `editor_resized()` in `onSize()`
 
-## beamer-vst3 Integration
+### createView() in Vst3Processor
 
 Update `Vst3Processor::createView()` in [processor.rs:2275](../crates/beamer-vst3/src/processor.rs#L2275):
 
@@ -157,24 +202,93 @@ unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
         return std::ptr::null_mut();
     }
 
-    // TODO: get html content and EditorDelegate from plugin
-    let config = beamer_webview::WebViewConfig { html, dev_tools: false };
-    let constraints = /* from EditorDelegate */;
-    let size = /* from EditorDelegate */;
-    match beamer_webview::WebViewPlugView::new(config, size, constraints) {
-        Ok(view) => /* return as COM pointer via vst3 crate machinery */,
-        Err(e) => {
-            log::error!("Failed to create WebView: {:?}", e);
-            std::ptr::null_mut()
-        }
-    }
+    let config = beamer_webview::WebViewConfig { html, dev_tools: cfg!(debug_assertions) };
+    let delegate = Box::new(StaticEditorDelegate::new(size, constraints));
+    let view = WebViewPlugView::new(config, delegate);
+    // Return as COM pointer via vst3::ComWrapper
 }
 ```
 
-**Open question**: The exact COM pointer return mechanism needs to match how the
-`vst3` crate expects `IPlugView` implementors to be returned. Investigate how
-`Vst3Processor` itself is exposed as a COM object to determine the right
-pattern (likely via `Class` / `ComRef` from the `vst3` crate).
+## beamer-au Integration
+
+AU uses `requestViewController(completionHandler:)` to provide a custom editor.
+The ObjC wrapper creates an `NSViewController` and calls into `beamer-webview`
+via C-ABI to create the WKWebView.
+
+### C-ABI bridge additions (`BeamerAuBridge.h`)
+
+New functions to expose editor config from the Rust instance:
+
+```c
+/// Whether the plugin has a custom editor.
+bool beamer_au_has_editor(BeamerAuInstanceHandle instance);
+
+/// Get the editor HTML content. Returns NULL if no editor.
+const char* beamer_au_get_editor_html(BeamerAuInstanceHandle instance);
+
+/// Get the initial editor size.
+void beamer_au_get_editor_size(BeamerAuInstanceHandle instance,
+                               uint32_t* width, uint32_t* height);
+```
+
+These read directly from the `Config` fields (`has_editor`, `editor_html`,
+`editor_width`, `editor_height`) that are already populated by the
+`#[beamer::export]` macro.
+
+### ObjC wrapper changes (`auv3_wrapper.m`)
+
+Override `requestViewController(completionHandler:)` to provide an
+`NSViewController` hosting a WebView created via `beamer-webview` C-ABI:
+
+```objc
+- (void)requestViewControllerWithCompletionHandler:
+    (void (^)(NSViewController* _Nullable))completionHandler {
+    if (!beamer_au_has_editor(_rustInstance)) {
+        completionHandler(nil);
+        return;
+    }
+
+    const char* html = beamer_au_get_editor_html(_rustInstance);
+    if (html == NULL) {
+        completionHandler(nil);
+        return;
+    }
+
+    uint32_t width = 0, height = 0;
+    beamer_au_get_editor_size(_rustInstance, &width, &height);
+
+    NSViewController* vc = [[NSViewController alloc] init];
+    NSView* container = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, 0, width, height)];
+    vc.view = container;
+    vc.preferredContentSize = NSMakeSize(width, height);
+
+    // Create WebView via beamer-webview C-ABI (shared platform layer)
+    void* webviewHandle = beamer_webview_create(
+        (__bridge void*)container, html, /* dev_tools */ false);
+    if (webviewHandle == NULL) {
+        completionHandler(nil);
+        return;
+    }
+
+    // Store handle for later cleanup
+    _webviewHandle = webviewHandle;
+    completionHandler(vc);
+}
+```
+
+**Notes**:
+- The completion handler is called synchronously here. AU hosts handle both
+  sync and async responses.
+- WebView creation goes through the same Rust `MacosWebView` code that VST3
+  uses, via the `beamer_webview_create` C-ABI function. This ensures both
+  formats share identical WebView setup, and Phase 2C IPC will work for both.
+- Dev tools (`setInspectable:`) should be enabled in debug builds. The generated
+  template can pass a bool or check a preprocessor flag.
+- `autoresizingMask` is set inside `MacosWebView::attach_to_parent()`, so the
+  AU host's view controller resizing works automatically.
+- The wrapper stores the opaque handle and calls `beamer_webview_destroy` on
+  dealloc.
 
 ## Example Plugin
 
@@ -186,12 +300,24 @@ static CONFIG: Config = Config::new("WebView Demo")
 
 ## Tasks
 
-- [ ] Create `beamer-webview` crate with Cargo.toml
+### beamer-webview crate (platform layer)
+- [ ] Create `beamer-webview` crate with Cargo.toml (no `vst3` dependency)
 - [ ] Implement `MacosWebView` (attach, resize, detach)
 - [ ] Implement `WindowsWebView` (attach with async bridging, resize, detach)
-- [ ] Implement `WebViewPlugView` (IPlugView) with `EditorDelegate` integration
+- [ ] Add C-ABI exports (`beamer_webview_create`, `beamer_webview_set_frame`, `beamer_webview_destroy`)
+
+### VST3 integration (in beamer-vst3)
+- [ ] Move `WebViewPlugView` (`IPlugView` impl) to `beamer-vst3/src/webview.rs`
 - [ ] Wire up `Vst3Processor::createView()` (COM pointer return mechanism)
+
+### AU integration
+- [ ] Add C-ABI bridge functions (`beamer_au_has_editor`, `beamer_au_get_editor_html`, `beamer_au_get_editor_size`)
+- [ ] Implement `requestViewControllerWithCompletionHandler:` in `auv3_wrapper.m`
+
+### Example & testing
 - [ ] Create example plugin
+- [ ] Verify in a VST3 host (e.g., REAPER)
+- [ ] Verify in an AU host (e.g., Logic, GarageBand)
 
 ## References
 
@@ -200,4 +326,5 @@ static CONFIG: Config = Config::new("WebView Demo")
 - [webview2-com](https://github.com/wravery/webview2-rs) / [WebView2 docs](https://learn.microsoft.com/en-us/microsoft-edge/webview2/)
 - [Tauri wry](https://github.com/tauri-apps/wry) - reference implementation using objc2 + WKWebView
 - [VST3 IPlugView](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical+Documentation/VST+Module+Architecture/IPlugView.html)
+- [AUAudioUnit requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
 - [vstwebview](https://github.com/rdaum/vstwebview)

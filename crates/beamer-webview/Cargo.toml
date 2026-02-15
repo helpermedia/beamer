@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 beamer-core = { workspace = true }
 log = { workspace = true }
-vst3 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

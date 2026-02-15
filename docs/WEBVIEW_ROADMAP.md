@@ -1,10 +1,22 @@
 # WebView GUI Roadmap (Phase 2)
 
-Platform-native WebView embedding for VST3 plugin GUIs.
+Platform-native WebView embedding for plugin GUIs (VST3 and AU).
 
 ## Approach
 
-Direct platform APIs (not `wry`) - VST3 requires attaching to host-provided window handles.
+Direct platform APIs (not `wry`). Both VST3 and AU require attaching to
+host-provided window handles (`NSView` on macOS, `HWND` on Windows).
+
+`beamer-webview` is a pure platform layer with no format-specific code. Each
+format wrapper uses it symmetrically:
+
+- **VST3**: `beamer-vst3` depends on `beamer-webview`, implements `IPlugView`
+  using `MacosWebView`/`WindowsWebView`
+- **AU**: generated ObjC template calls into `beamer-webview` via C-ABI to
+  create and manage the `WKWebView`
+
+This keeps `beamer-webview` free of `vst3` or AU dependencies and ensures
+Phase 2C IPC features are available to both formats automatically.
 
 | Platform | Backend | Crate | Phase |
 |----------|---------|-------|-------|
@@ -22,10 +34,12 @@ The WebView case is different - we only need to *instantiate and configure*
 ## Phases
 
 ### Phase 2A: Core Platform Support
-- `IPlugView` implementation (macOS/Windows)
-- WebView creation and lifecycle
+- Platform WebView creation and lifecycle (macOS/Windows)
 - Static HTML loading
 - `EditorDelegate` integration
+- VST3 `IPlugView` wrapper (in `beamer-vst3`)
+- AU `NSViewController` integration (in generated ObjC template, calling
+  `beamer-webview` via C-ABI)
 
 ### Phase 2B: Resource Loading
 - Embedded assets (`include_str!`)
@@ -81,21 +95,25 @@ examples/equalizer/
 ## Crate Structure
 
 ```
-beamer-webview/
+beamer-webview/                    # Platform layer only, no format deps
 ├── src/
 │   ├── lib.rs
 │   ├── platform/
-│   │   ├── macos.rs
-│   │   └── windows.rs
-│   ├── view.rs         # IPlugView wrapper
+│   │   ├── macos.rs               # WKWebView
+│   │   └── windows.rs             # WebView2
 │   └── error.rs
 ```
+
+Format-specific integration:
+- VST3 `IPlugView` impl lives in `beamer-vst3`
+- AU view controller lives in `xtask/src/au_codegen/auv3_wrapper.m`
 
 Note: `resources.rs` is Phase 2B scope.
 
 ## References
 
 - [VST3 IPlugView](https://steinbergmedia.github.io/vst3_doc/base/classSteinberg_1_1IPlugView.html)
+- [AUAudioUnit requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
 - [Tauri wry](https://github.com/tauri-apps/wry) - reference for objc2 + WKWebView usage
 - [webview2-com](https://github.com/wravery/webview2-rs) - WebView2 Rust bindings
 - [vstwebview](https://github.com/rdaum/vstwebview)

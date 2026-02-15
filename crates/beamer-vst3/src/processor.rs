@@ -2290,7 +2290,7 @@ where
                 None => return std::ptr::null_mut(),
             };
 
-            let config = beamer_webview::WebViewConfig {
+            let config = crate::webview::WebViewConfig {
                 html,
                 dev_tools: cfg!(debug_assertions),
             };
@@ -2299,9 +2299,9 @@ where
                 min: size,
                 ..beamer_core::EditorConstraints::default()
             };
-            let delegate = Box::new(beamer_webview::StaticEditorDelegate::new(size, constraints));
+            let delegate = Box::new(crate::webview::StaticEditorDelegate::new(size, constraints));
 
-            let view = beamer_webview::WebViewPlugView::new(config, delegate);
+            let view = crate::webview::WebViewPlugView::new(config, delegate);
             let wrapper = vst3::ComWrapper::new(view);
             match wrapper.to_com_ptr::<IPlugView>() {
                 Some(ptr) => ptr.into_raw(),

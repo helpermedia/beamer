@@ -3,19 +3,15 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 
-use beamer_core::{EditorDelegate, Size};
+use beamer_core::{EditorConstraints, EditorDelegate, Size};
+use beamer_webview::platform::PlatformWebView;
+pub use beamer_webview::WebViewConfig;
 use vst3::Steinberg::*;
 use vst3::Class;
 
-use crate::WebViewConfig;
-use crate::platform;
-
 /// VST3 IPlugView implementation backed by a platform WebView.
 pub struct WebViewPlugView {
-    #[cfg(target_os = "macos")]
-    platform: UnsafeCell<Option<platform::macos::MacosWebView>>,
-    #[cfg(target_os = "windows")]
-    platform: UnsafeCell<Option<platform::windows::WindowsWebView>>,
+    platform: UnsafeCell<Option<PlatformWebView>>,
     config: WebViewConfig,
     delegate: UnsafeCell<Box<dyn EditorDelegate>>,
     size: UnsafeCell<Size>,
@@ -83,7 +79,7 @@ impl IPlugViewTrait for WebViewPlugView {
         }
 
         // SAFETY: parent is a valid platform handle provided by the host.
-        match unsafe { platform::PlatformWebView::attach_to_parent(parent, &self.config) } {
+        match unsafe { PlatformWebView::attach_to_parent(parent, &self.config) } {
             Ok(webview) => {
                 *platform = Some(webview);
                 // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
@@ -244,5 +240,31 @@ impl Drop for WebViewPlugView {
                 ((*(*unknown).vtbl).release)(unknown);
             }
         }
+    }
+}
+
+/// Simple `EditorDelegate` backed by fixed size and constraints.
+///
+/// Used when the plugin doesn't provide its own delegate (the common case
+/// for Config-driven editor setup).
+pub struct StaticEditorDelegate {
+    size: Size,
+    constraints: EditorConstraints,
+}
+
+impl StaticEditorDelegate {
+    /// Create a new static delegate with the given size and constraints.
+    pub fn new(size: Size, constraints: EditorConstraints) -> Self {
+        Self { size, constraints }
+    }
+}
+
+impl EditorDelegate for StaticEditorDelegate {
+    fn editor_size(&self) -> Size {
+        self.size
+    }
+
+    fn editor_constraints(&self) -> EditorConstraints {
+        self.constraints
     }
 }
