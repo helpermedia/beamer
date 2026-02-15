@@ -29,6 +29,8 @@ pub struct ConfigFile {
     pub vst3_controller_id: Option<String>,
     /// Whether the plugin has a GUI editor.
     pub has_editor: Option<bool>,
+    /// Initial editor size as [width, height] in pixels.
+    pub editor_size: Option<(u32, u32)>,
     /// Number of SysEx output slots per process block (default: 16).
     #[serde(default)]
     pub sysex_slots: Option<usize>,

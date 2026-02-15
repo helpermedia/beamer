@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["webview"]
+## WebView editor support.
+webview = ["beamer-webview"]
 ## Enable heap-backed fallback for SysEx overflow.
 ##
 ## When the fixed-size SysEx output pool is exhausted, overflow messages are
@@ -25,6 +27,7 @@ workspace = true
 
 [dependencies]
 beamer-core = { workspace = true }
+beamer-webview = { workspace = true, optional = true }
 vst3 = { workspace = true }
 log = { workspace = true }
 com-scrape-types = "0.1"

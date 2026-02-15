@@ -38,6 +38,46 @@ The WebView case is different - we only need to *instantiate and configure*
 - Event emission (Rust -> JS)
 - Parameter synchronization
 
+## Plugin Directory Convention
+
+Plugins place web UI assets in a `webview/` subdirectory. The name matches the
+rendering technology, leaving room for alternative UI approaches (e.g. `egui/`,
+`iced/`) in forks or future extensions.
+
+**Plain HTML (no build step):**
+
+```
+examples/gain/
+├── Cargo.toml
+├── Config.toml
+├── src/
+│   └── lib.rs
+└── webview/
+    └── index.html
+```
+
+**Framework-based (TypeScript, React, Svelte, etc.):**
+
+```
+examples/equalizer/
+├── Cargo.toml
+├── Config.toml
+├── src/
+│   └── lib.rs
+└── webview/
+    ├── package.json
+    ├── vite.config.ts
+    ├── index.html
+    └── src/
+        └── App.tsx
+```
+
+**Detection rules for `cargo xtask bundle`:**
+
+- `webview/package.json` exists: run build, embed `webview/dist/index.html`
+- `webview/index.html` exists (no package.json): embed directly
+- No `webview/` directory: no editor
+
 ## Crate Structure
 
 ```

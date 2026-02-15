@@ -6,6 +6,7 @@ members = [
     "crates/beamer-utils",
     "crates/beamer-au",
     "crates/beamer-vst3",
+    "crates/beamer-webview",
     "examples/gain",
     "examples/compressor",
     "examples/equalizer",
@@ -13,6 +14,7 @@ members = [
     "examples/synthesizer",
     "examples/midi-transform",
     "examples/drums",
+    "examples/webview-demo",
     "xtask",
 ]
 resolver = "2"
@@ -39,6 +41,7 @@ beamer-macros = { version = "0.2.3", path = "crates/beamer-macros" }
 beamer-utils = { version = "0.2.3", path = "crates/beamer-utils" }
 beamer-au = { version = "0.2.3", path = "crates/beamer-au" }
 beamer-vst3 = { version = "0.2.3", path = "crates/beamer-vst3" }
+beamer-webview = { version = "0.2.3", path = "crates/beamer-webview" }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

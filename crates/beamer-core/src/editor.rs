@@ -28,7 +28,7 @@ impl Default for EditorConstraints {
 /// Implement this trait to provide GUI-related configuration and callbacks.
 /// The actual WebView creation and management is handled by the framework;
 /// this trait just provides configuration and lifecycle hooks.
-pub trait EditorDelegate: Send {
+pub trait EditorDelegate: Send + Sync {
     /// Get the initial editor size.
     ///
     /// This is the size the editor window will have when first opened.

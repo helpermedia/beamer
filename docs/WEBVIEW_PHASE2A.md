@@ -54,7 +54,7 @@ pub use view::WebViewPlugView;
 pub use error::{WebViewError, Result};
 
 pub struct WebViewConfig {
-    pub html: String,
+    pub html: &'static str,
     pub dev_tools: bool,
 }
 ```

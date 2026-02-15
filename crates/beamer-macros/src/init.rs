@@ -65,7 +65,7 @@ fn subcategory_tokens(sub: &str) -> Result<TokenStream, String> {
 }
 
 /// Generate the Config static from a parsed ConfigFile.
-fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
+fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStream, String> {
     let name = &config.name;
     let category = category_tokens(&config.category);
     let manufacturer_code = &config.manufacturer_code;
@@ -81,13 +81,39 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
     let email = config.email.as_ref().map(|e| {
         quote! { .with_email(#e) }
     });
-    let has_editor = config.has_editor.and_then(|h| {
-        if h {
-            Some(quote! { .with_editor() })
-        } else {
-            None
-        }
+
+    // Auto-detect webview/index.html for editor HTML.
+    //
+    // NOTE: This existence check runs at macro expansion time, so its result
+    // is baked into the cached compilation. If a user adds webview/index.html
+    // after an initial build without modifying any .rs file, the stale cache
+    // won't pick it up until something else forces recompilation (e.g.
+    // `cargo clean` or touching a source file). Proc macros cannot emit
+    // `cargo:rerun-if-changed`, so there is no way to track a path that
+    // doesn't exist yet. In practice, adding a webview UI also requires
+    // source changes, so this rarely causes issues.
+    let webview_html_path = std::path::Path::new(manifest_dir).join("webview/index.html");
+    let has_webview = webview_html_path.exists();
+
+    let editor_html = if has_webview {
+        Some(quote! { .with_editor_html(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/webview/index.html"))) })
+    } else {
+        None
+    };
+
+    // has_editor is true if explicitly set and no webview (with_editor_html already sets it)
+    let has_editor = if !has_webview && config.has_editor.unwrap_or(false) {
+        Some(quote! { .with_editor() })
+    } else {
+        None
+    };
+
+    let editor_size = config.editor_size.as_ref().map(|size| {
+        let w = size.0;
+        let h = size.1;
+        quote! { .with_editor_size(#w, #h) }
     });
+
     let vst3_id = config.vst3_id.as_ref().map(|id| {
         quote! { .with_vst3_id(#id) }
     });
@@ -125,6 +151,8 @@ fn generate_config(config: &ConfigFile) -> Result<TokenStream, String> {
         #email
         .with_version(env!("CARGO_PKG_VERSION"))
         #has_editor
+        #editor_html
+        #editor_size
         #vst3_id
         #vst3_controller_id
         #sysex_slots
@@ -238,7 +266,7 @@ pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
     config.validate()?;
 
     // Generate Config static
-    let config_tokens = generate_config(&config)?;
+    let config_tokens = generate_config(&config, &manifest_dir)?;
 
     // Check for Presets.toml
     let presets_path = std::path::Path::new(&manifest_dir).join("Presets.toml");

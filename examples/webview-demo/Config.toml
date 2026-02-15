@@ -1,0 +1,9 @@
+name = "Beamer WebView Demo"
+category = "effect"
+subcategories = ["analyzer"]
+manufacturer_code = "Bmer"
+plugin_code = "wvdm"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"
+has_editor = true

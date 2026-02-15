@@ -360,6 +360,18 @@ pub struct Config {
 
     /// Maximum size of each SysEx message in bytes (AU and VST3).
     pub sysex_buffer_size: usize,
+
+    /// HTML content for the WebView editor.
+    ///
+    /// When set, the framework creates a WebView editor that loads this HTML.
+    /// Typically populated via `include_str!("../webview/index.html")`.
+    pub editor_html: Option<&'static str>,
+
+    /// Initial editor width in pixels.
+    pub editor_width: u32,
+
+    /// Initial editor height in pixels.
+    pub editor_height: u32,
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -502,6 +514,9 @@ impl Config {
             vst3_controller_id: None,
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
+            editor_html: None,
+            editor_width: 800,
+            editor_height: 600,
         }
     }
 
@@ -537,6 +552,25 @@ impl Config {
     #[doc(hidden)]
     pub const fn with_editor(mut self) -> Self {
         self.has_editor = true;
+        self
+    }
+
+    /// Set the editor HTML content and enable the editor.
+    ///
+    /// This sets both the HTML content and the `has_editor` flag.
+    /// Typically used with `include_str!()` to embed HTML at compile time.
+    #[doc(hidden)]
+    pub const fn with_editor_html(mut self, html: &'static str) -> Self {
+        self.editor_html = Some(html);
+        self.has_editor = true;
+        self
+    }
+
+    /// Set the initial editor size in pixels.
+    #[doc(hidden)]
+    pub const fn with_editor_size(mut self, width: u32, height: u32) -> Self {
+        self.editor_width = width;
+        self.editor_height = height;
         self
     }
 

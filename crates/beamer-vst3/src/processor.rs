@@ -2277,16 +2277,42 @@ where
             return std::ptr::null_mut();
         }
 
-        // Check if this is an "editor" view request
         // SAFETY: name is non-null (checked above) and is null-terminated C string.
         let name_str = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().unwrap_or("");
-        if name_str != "editor" {
+        if name_str != "editor" || !self.config.has_editor {
             return std::ptr::null_mut();
         }
 
-        // TODO: Integrate WebView editor via EditorDelegate in Phase 2
-        // For now, return null (no editor)
-        std::ptr::null_mut()
+        #[cfg(feature = "webview")]
+        {
+            let html = match self.config.editor_html {
+                Some(h) => h,
+                None => return std::ptr::null_mut(),
+            };
+
+            let config = beamer_webview::WebViewConfig {
+                html,
+                dev_tools: cfg!(debug_assertions),
+            };
+            let size = beamer_core::Size::new(self.config.editor_width, self.config.editor_height);
+            let constraints = beamer_core::EditorConstraints {
+                min: size,
+                ..beamer_core::EditorConstraints::default()
+            };
+            let delegate = Box::new(beamer_webview::StaticEditorDelegate::new(size, constraints));
+
+            let view = beamer_webview::WebViewPlugView::new(config, delegate);
+            let wrapper = vst3::ComWrapper::new(view);
+            match wrapper.to_com_ptr::<IPlugView>() {
+                Some(ptr) => ptr.into_raw(),
+                None => std::ptr::null_mut(),
+            }
+        }
+
+        #[cfg(not(feature = "webview"))]
+        {
+            std::ptr::null_mut()
+        }
     }
 }
 
