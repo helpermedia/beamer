@@ -671,6 +671,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "webview-demo-auv2"
+version = "0.2.3"
+dependencies = [
+ "beamer",
+]
+
+[[package]]
 name = "webview2-com"
 version = "0.38.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

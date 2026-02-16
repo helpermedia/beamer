@@ -1,8 +1,8 @@
-name = "Beamer WebView Demo"
+name = "Beamer WebView Demo AUv2"
 category = "effect"
 subcategories = ["analyzer"]
 manufacturer_code = "Bmer"
-plugin_code = "wvd3"
+plugin_code = "wvd2"
 vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"

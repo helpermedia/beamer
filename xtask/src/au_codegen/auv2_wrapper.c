@@ -12,6 +12,19 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
+#import <Cocoa/Cocoa.h>
+#import <AudioUnit/AUCocoaUIView.h>
+
+// CocoaUI class interfaces (implementations at end of file)
+@interface {{COCOA_EDITOR_VIEW_CLASS}} : NSView {
+    void* _webviewHandle;
+}
+- (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle;
+@end
+
+@interface {{COCOA_VIEW_FACTORY_CLASS}} : NSObject <AUCocoaUIBase>
+@end
+
 // Include the bridge header for Rust plugin access
 #include "BeamerAuBridge.h"
 
@@ -22,6 +35,10 @@
 #define MAX_PROPERTY_LISTENERS 64
 #define MAX_RENDER_NOTIFY 32
 #define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
+
+// Private property for view factory to retrieve the Rust instance handle.
+// Uses the AU custom property range (64000+), following the iPlug2/JUCE pattern.
+#define kBeamerAuPropertyRustInstance 64000
 
 // =============================================================================
 // MARK: - Data Structures
@@ -705,6 +722,27 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = false;
             return noErr;
 
+        // CocoaUI - only supported when the plugin has an editor
+        case kAudioUnitProperty_CocoaUI:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!beamer_au_has_editor(inst->rustInstance)) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (outDataSize) *outDataSize = sizeof(AudioUnitCocoaViewInfo);
+            if (outWritable) *outWritable = false;
+            return noErr;
+
+        // Private property: expose Rust instance handle for the view factory
+        case kBeamerAuPropertyRustInstance:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (outDataSize) *outDataSize = sizeof(BeamerAuInstanceHandle);
+            if (outWritable) *outWritable = false;
+            return noErr;
+
         default:
             return kAudioUnitErr_InvalidProperty;
     }
@@ -1150,6 +1188,42 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             }
             *(OSStatus*)outData = noErr;
             *ioDataSize = sizeof(OSStatus);
+            return noErr;
+        }
+
+        case kAudioUnitProperty_CocoaUI: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!beamer_au_has_editor(inst->rustInstance)) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitCocoaViewInfo)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+
+            // Get the bundle URL from the view factory class (it lives in our bundle)
+            NSBundle* bundle = [NSBundle bundleForClass:[{{COCOA_VIEW_FACTORY_CLASS}} class]];
+            CFURLRef bundleURL = (__bridge_retained CFURLRef)[bundle bundleURL];
+
+            AudioUnitCocoaViewInfo* info = (AudioUnitCocoaViewInfo*)outData;
+            info->mCocoaAUViewBundleLocation = bundleURL; // caller owns this reference
+            info->mCocoaAUViewClass[0] = CFStringCreateWithCString(
+                kCFAllocatorDefault, "{{COCOA_VIEW_FACTORY_CLASS}}", kCFStringEncodingUTF8);
+
+            *ioDataSize = sizeof(AudioUnitCocoaViewInfo);
+            return noErr;
+        }
+
+        case kBeamerAuPropertyRustInstance: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(BeamerAuInstanceHandle)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            *(BeamerAuInstanceHandle*)outData = inst->rustInstance;
+            *ioDataSize = sizeof(BeamerAuInstanceHandle);
             return noErr;
         }
 
@@ -1740,3 +1814,92 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
     pthread_mutex_unlock(&inst->renderNotifyMutex);
     return noErr;
 }
+
+// =============================================================================
+// MARK: - CocoaUI Editor View
+// =============================================================================
+
+@implementation {{COCOA_EDITOR_VIEW_CLASS}}
+- (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _webviewHandle = handle;
+    }
+    return self;
+}
+- (void)dealloc {
+    if (_webviewHandle != NULL) {
+        beamer_webview_destroy(_webviewHandle);
+    }
+}
+@end
+
+// =============================================================================
+// MARK: - CocoaUI View Factory
+// =============================================================================
+
+@implementation {{COCOA_VIEW_FACTORY_CLASS}}
+- (unsigned)interfaceVersion {
+    return 0;
+}
+
+- (NSView*)uiViewForAudioUnit:(AudioUnit)audioUnit withSize:(NSSize)preferredSize {
+    // Retrieve the Rust instance handle via custom property
+    BeamerAuInstanceHandle rustInstance = NULL;
+    UInt32 dataSize = sizeof(BeamerAuInstanceHandle);
+    OSStatus status = AudioUnitGetProperty(audioUnit, kBeamerAuPropertyRustInstance,
+        kAudioUnitScope_Global, 0, &rustInstance, &dataSize);
+    if (status != noErr || rustInstance == NULL) {
+        return nil;
+    }
+
+    if (!beamer_au_has_editor(rustInstance)) {
+        return nil;
+    }
+
+    const char* html = beamer_au_get_editor_html(rustInstance);
+    if (html == NULL) {
+        return nil;
+    }
+
+    uint32_t width = 0, height = 0;
+    beamer_au_get_editor_size(rustInstance, &width, &height);
+
+    // Use preferred size from host if provided, otherwise use plugin defaults
+    NSSize viewSize;
+    if (preferredSize.width > 0 && preferredSize.height > 0) {
+        viewSize = preferredSize;
+    } else {
+        viewSize = NSMakeSize(width, height);
+    }
+
+    // Create WebView via beamer-webview C-ABI (shared platform layer)
+#ifdef DEBUG
+    bool devTools = true;
+#else
+    bool devTools = false;
+#endif
+
+    // Create a temporary container to attach the WebView to
+    NSView* container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)];
+    if (container == nil) {
+        return nil;
+    }
+    void* webviewHandle = beamer_webview_create((__bridge void*)container, html, devTools);
+    if (webviewHandle == NULL) {
+        return nil;
+    }
+
+    // Wrap in editor view that manages WebView lifecycle
+    {{COCOA_EDITOR_VIEW_CLASS}}* editorView = [[{{COCOA_EDITOR_VIEW_CLASS}} alloc]
+        initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)
+        webviewHandle:webviewHandle];
+
+    // Re-parent the WebView's container into the editor view
+    [container setFrame:editorView.bounds];
+    [container setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [editorView addSubview:container];
+
+    return editorView;
+}
+@end
