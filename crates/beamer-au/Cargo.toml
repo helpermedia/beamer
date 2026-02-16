@@ -11,7 +11,9 @@ categories = ["multimedia::audio"]
 links = "beamer_au_native"
 
 [features]
-default = []
+default = ["webview"]
+## WebView editor support.
+webview = ["beamer-webview"]
 sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 
 [lints]
@@ -22,6 +24,7 @@ cc = "1.0"
 
 [dependencies]
 beamer-core = { workspace = true }
+beamer-webview = { workspace = true, optional = true }
 log = { workspace = true }
 
 # Note: The hybrid ObjC/Rust AU architecture uses native Objective-C (BeamerAuWrapper.m)

@@ -4,14 +4,15 @@
 //! layer used by both VST3 and AU format wrappers.
 
 mod error;
+mod ffi;
 pub mod platform;
 
 pub use error::{Result, WebViewError};
 
 /// Configuration for a WebView editor.
-pub struct WebViewConfig {
+pub struct WebViewConfig<'a> {
     /// HTML content to load.
-    pub html: &'static str,
+    pub html: &'a str,
     /// Whether to enable developer tools.
     pub dev_tools: bool,
 }

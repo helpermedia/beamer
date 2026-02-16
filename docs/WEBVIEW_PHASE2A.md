@@ -21,7 +21,9 @@ crates/beamer-webview/
 
 Format-specific integration lives in each format's own crate/template:
 - VST3 `IPlugView` impl in `beamer-vst3` (uses `MacosWebView`/`WindowsWebView`)
-- AU view controller in `xtask/src/au_codegen/auv3_wrapper.m` (calls
+- AUv3 view controller in `xtask/src/au_codegen/auv3_wrapper.m` (calls
+  `beamer-webview` via C-ABI)
+- AUv2 Cocoa UI view factory in `xtask/src/au_codegen/auv2_wrapper.c` (calls
   `beamer-webview` via C-ABI)
 
 ## Dependencies
@@ -121,10 +123,10 @@ impl WindowsWebView {
 - Use `webview2-com` crate instead of raw `windows` features for WebView2 APIs
 - AU is macOS-only, so this backend is only used by VST3
 
-### C-ABI exports (for AU)
+### C-ABI exports (for AU, both AUv2 and AUv3)
 
-`beamer-webview` exports C-ABI functions so the ObjC AU wrapper can use the
-platform layer without reimplementing WKWebView setup:
+`beamer-webview` exports C-ABI functions so both AU wrapper templates can use
+the platform layer without reimplementing WKWebView setup:
 
 ```rust
 /// Create a WebView attached to the given parent NSView.
@@ -148,8 +150,8 @@ pub extern "C" fn beamer_webview_set_frame(
 pub extern "C" fn beamer_webview_destroy(handle: *mut c_void);
 ```
 
-This lets the AU ObjC template call into the same Rust platform code that VST3
-uses, keeping WebView creation logic in one place.
+Both AU formats call into the same Rust platform code that VST3 uses, keeping
+WebView creation logic in one place.
 
 ## beamer-vst3 Integration
 
@@ -211,9 +213,14 @@ unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
 
 ## beamer-au Integration
 
-AU uses `requestViewController(completionHandler:)` to provide a custom editor.
-The ObjC wrapper creates an `NSViewController` and calls into `beamer-webview`
-via C-ABI to create the WKWebView.
+Both AUv3 and AUv2 use the same C-ABI bridge functions and the same
+`beamer-webview` platform layer. The only difference is how the host requests
+the editor view:
+
+- **AUv3**: `requestViewControllerWithCompletionHandler:` returns an
+  `NSViewController`
+- **AUv2**: `kAudioUnitProperty_CocoaUI` returns an `AUCocoaUIBase` view
+  factory class that provides an `NSView`
 
 ### C-ABI bridge additions (`BeamerAuBridge.h`)
 
@@ -235,9 +242,9 @@ These read directly from the `Config` fields (`has_editor`, `editor_html`,
 `editor_width`, `editor_height`) that are already populated by the
 `#[beamer::export]` macro.
 
-### ObjC wrapper changes (`auv3_wrapper.m`)
+### AUv3 wrapper changes (`auv3_wrapper.m`)
 
-Override `requestViewController(completionHandler:)` to provide an
+Override `requestViewControllerWithCompletionHandler:` to provide an
 `NSViewController` hosting a WebView created via `beamer-webview` C-ABI:
 
 ```objc
@@ -290,6 +297,45 @@ Override `requestViewController(completionHandler:)` to provide an
 - The wrapper stores the opaque handle and calls `beamer_webview_destroy` on
   dealloc.
 
+### AUv2 wrapper changes (`auv2_wrapper.c`)
+
+AUv2 provides custom UIs via the `kAudioUnitProperty_CocoaUI` property. The
+host queries this property, gets a bundle URL and an ObjC class name that
+conforms to `AUCocoaUIBase`, then calls `uiViewForAudioUnit:withSize:` to get
+an `NSView`.
+
+The generated wrapper needs:
+
+1. An `AUCocoaUIBase`-conforming view factory class
+2. Property handler for `kAudioUnitProperty_CocoaUI` returning
+   `AudioUnitCocoaViewInfo` with the factory class
+3. The factory's `uiViewForAudioUnit:withSize:` creates a container `NSView`
+   and calls `beamer_webview_create` to attach a WebView
+
+```objc
+@interface BeamerCocoaViewFactory : NSObject <AUCocoaUIBase>
+@end
+
+@implementation BeamerCocoaViewFactory
+- (NSView *)uiViewForAudioUnit:(AudioUnit)audioUnit
+                      withSize:(NSSize)preferredSize {
+    // Query editor config from Rust via bridge functions
+    // Create container NSView
+    // Call beamer_webview_create to attach WebView
+    // Return the container view
+}
+@end
+```
+
+**Notes**:
+- The view factory class is generated per-plugin (like the AUv3 extension class)
+- WebView lifecycle: create in `uiViewForAudioUnit:withSize:`, destroy when the
+  view is removed from its superview (override `viewDidMoveToWindow:` or use a
+  weak reference pattern)
+- Same `beamer_webview_*` C-ABI functions as AUv3, same Rust platform code
+- `autoresizingMask` is set inside `MacosWebView::attach_to_parent()`, so host
+  resizing works automatically
+
 ## Example Plugin
 
 ```rust
@@ -310,9 +356,14 @@ static CONFIG: Config = Config::new("WebView Demo")
 - [ ] Move `WebViewPlugView` (`IPlugView` impl) to `beamer-vst3/src/webview.rs`
 - [ ] Wire up `Vst3Processor::createView()` (COM pointer return mechanism)
 
-### AU integration
+### AU integration (AUv3)
 - [ ] Add C-ABI bridge functions (`beamer_au_has_editor`, `beamer_au_get_editor_html`, `beamer_au_get_editor_size`)
 - [ ] Implement `requestViewControllerWithCompletionHandler:` in `auv3_wrapper.m`
+
+### AU integration (AUv2)
+- [ ] Add `AUCocoaUIBase` view factory class to `auv2_wrapper.c`
+- [ ] Handle `kAudioUnitProperty_CocoaUI` in the property dispatcher
+- [ ] Implement `uiViewForAudioUnit:withSize:` using `beamer_webview_create`
 
 ### Example & testing
 - [ ] Create example plugin
@@ -326,5 +377,7 @@ static CONFIG: Config = Config::new("WebView Demo")
 - [webview2-com](https://github.com/wravery/webview2-rs) / [WebView2 docs](https://learn.microsoft.com/en-us/microsoft-edge/webview2/)
 - [Tauri wry](https://github.com/tauri-apps/wry) - reference implementation using objc2 + WKWebView
 - [VST3 IPlugView](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical+Documentation/VST+Module+Architecture/IPlugView.html)
-- [AUAudioUnit requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
+- [AUv3 requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
+- [AUv2 kAudioUnitProperty_CocoaUI](https://developer.apple.com/documentation/audiotoolbox/kaudiounitproperty_cocoaui)
+- [AUCocoaUIBase protocol](https://developer.apple.com/documentation/audiotoolbox/aucocoauibase)
 - [vstwebview](https://github.com/rdaum/vstwebview)

@@ -198,6 +198,7 @@ pub fn bundle_auv3(
                 "-framework", "AudioToolbox",
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
+                "-framework", "WebKit",
                 "-F", frameworks_dir.to_str_safe()?,
                 "-framework", &framework_name,
                 "-Wl,-rpath,@loader_path/../../../../Frameworks",

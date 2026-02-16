@@ -12,7 +12,7 @@ use vst3::Class;
 /// VST3 IPlugView implementation backed by a platform WebView.
 pub struct WebViewPlugView {
     platform: UnsafeCell<Option<PlatformWebView>>,
-    config: WebViewConfig,
+    config: WebViewConfig<'static>,
     delegate: UnsafeCell<Box<dyn EditorDelegate>>,
     size: UnsafeCell<Size>,
     frame: UnsafeCell<*mut IPlugFrame>,
@@ -27,7 +27,7 @@ impl WebViewPlugView {
     /// Create a new WebView plug view with the given delegate.
     ///
     /// Initial size is obtained from `delegate.editor_size()`.
-    pub fn new(config: WebViewConfig, delegate: Box<dyn EditorDelegate>) -> Self {
+    pub fn new(config: WebViewConfig<'static>, delegate: Box<dyn EditorDelegate>) -> Self {
         let size = delegate.editor_size();
         Self {
             platform: UnsafeCell::new(None),

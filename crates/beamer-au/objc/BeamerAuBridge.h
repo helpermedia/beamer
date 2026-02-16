@@ -866,6 +866,93 @@ typedef enum BeamerAuFloat64Support {
 BeamerAuFloat64Support beamer_au_get_float64_support(BeamerAuInstanceHandle _Nullable instance);
 
 // =============================================================================
+// MARK: - Editor / WebView
+// =============================================================================
+
+/**
+ * Check if the plugin has a custom editor.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return true if the plugin provides a custom WebView editor.
+ */
+bool beamer_au_has_editor(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Get the editor HTML content.
+ *
+ * Returns a pointer to a null-terminated UTF-8 string containing the HTML
+ * for the plugin's WebView editor. Returns NULL if no editor is configured.
+ *
+ * The returned pointer is valid for the lifetime of the process and must
+ * not be freed by the caller.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return Null-terminated HTML string, or NULL if no editor.
+ */
+const char* _Nullable beamer_au_get_editor_html(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Get the initial editor size in pixels.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param width    Pointer to receive the editor width.
+ * @param height   Pointer to receive the editor height.
+ */
+void beamer_au_get_editor_size(BeamerAuInstanceHandle _Nullable instance,
+                               uint32_t* _Nonnull width,
+                               uint32_t* _Nonnull height);
+
+// =============================================================================
+// MARK: - WebView C-ABI (beamer-webview)
+// =============================================================================
+
+/**
+ * Create a WebView attached to the given parent NSView.
+ *
+ * This function is provided by the beamer-webview crate and creates a
+ * WKWebView using the shared platform layer (same code path as VST3).
+ *
+ * Thread Safety: Must be called from the main thread.
+ *
+ * @param parent    A valid NSView* pointer to attach the WebView to.
+ * @param html      Null-terminated UTF-8 HTML content to load.
+ * @param dev_tools Whether to enable Web Inspector.
+ *
+ * @return Opaque handle to the WebView, or NULL on failure.
+ *         Must be destroyed with beamer_webview_destroy().
+ */
+void* _Nullable beamer_webview_create(void* _Nonnull parent,
+                                      const char* _Nonnull html,
+                                      bool dev_tools);
+
+/**
+ * Update the WebView frame.
+ *
+ * @param handle Opaque WebView handle from beamer_webview_create().
+ * @param x      X origin (bottom-left coordinate system).
+ * @param y      Y origin.
+ * @param width  Width in points.
+ * @param height Height in points.
+ */
+void beamer_webview_set_frame(void* _Nonnull handle,
+                              int32_t x, int32_t y,
+                              int32_t width, int32_t height);
+
+/**
+ * Detach and destroy the WebView.
+ *
+ * @param handle Opaque WebView handle from beamer_webview_create().
+ *               Must not be used after this call.
+ */
+void beamer_webview_destroy(void* _Nullable handle);
+
+// =============================================================================
 // MARK: - Plugin Metadata
 // =============================================================================
 

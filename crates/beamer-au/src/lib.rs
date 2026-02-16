@@ -73,6 +73,11 @@
 
 #![cfg_attr(not(target_os = "macos"), allow(unused))]
 
+// Force-link beamer-webview so its C-ABI symbols (beamer_webview_create, etc.)
+// are available to the ObjC AU wrapper at link time.
+#[cfg(all(target_os = "macos", feature = "webview"))]
+extern crate beamer_webview;
+
 // =============================================================================
 // Platform-independent modules
 // =============================================================================

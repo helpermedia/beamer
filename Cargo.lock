@@ -18,6 +18,7 @@ name = "beamer-au"
 version = "0.2.3"
 dependencies = [
  "beamer-core",
+ "beamer-webview",
  "cc",
  "log",
 ]

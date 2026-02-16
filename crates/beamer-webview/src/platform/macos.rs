@@ -4,7 +4,7 @@ use std::ffi::c_void;
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::NSString;
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 
@@ -25,7 +25,7 @@ impl MacosWebView {
     /// Must be called from the main thread.
     pub unsafe fn attach_to_parent(
         parent: *mut c_void,
-        config: &WebViewConfig,
+        config: &WebViewConfig<'_>,
     ) -> Result<Self> {
         if parent.is_null() {
             return Err(WebViewError::CreationFailed("null parent view".into()));
@@ -56,6 +56,10 @@ impl MacosWebView {
         // SAFETY: html_string is a valid NSString; base URL is None.
         unsafe { webview.loadHTMLString_baseURL(&html_string, None) };
 
+        webview.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         parent_view.addSubview(&webview);
 
         Ok(Self { webview })

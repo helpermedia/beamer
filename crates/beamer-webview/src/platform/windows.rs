@@ -16,7 +16,7 @@ impl WindowsWebView {
     /// `parent` must be a valid `HWND` provided by the VST3 host.
     pub unsafe fn attach_to_parent(
         _parent: *mut std::ffi::c_void,
-        _config: &WebViewConfig,
+        _config: &WebViewConfig<'_>,
     ) -> Result<Self> {
         Err(WebViewError::PlatformNotSupported)
     }

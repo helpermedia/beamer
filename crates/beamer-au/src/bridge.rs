@@ -2189,6 +2189,99 @@ pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> 
 }
 
 // =============================================================================
+// Editor / WebView
+// =============================================================================
+
+/// Check if the plugin has a custom editor.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_has_editor(_instance: BeamerAuInstanceHandle) -> bool {
+    let result = catch_unwind(|| {
+        let config = match factory::plugin_config() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        config.has_editor
+    });
+
+    result.unwrap_or(false)
+}
+
+/// Get the editor HTML content.
+///
+/// Returns a pointer to a null-terminated UTF-8 string, or NULL if the
+/// plugin has no editor HTML. The pointer is valid for the lifetime of
+/// the process (cached internally on first call).
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+/// - The returned pointer must not be freed by the caller
+#[no_mangle]
+pub extern "C" fn beamer_au_get_editor_html(
+    _instance: BeamerAuInstanceHandle,
+) -> *const c_char {
+    use std::ffi::CString;
+    use std::sync::OnceLock;
+
+    // Rust &str is not null-terminated. Cache a CString so the pointer
+    // returned to ObjC is valid for the process lifetime.
+    static EDITOR_HTML_CSTR: OnceLock<Option<CString>> = OnceLock::new();
+
+    let result = catch_unwind(|| {
+        let cached = EDITOR_HTML_CSTR.get_or_init(|| {
+            let config = factory::plugin_config()?;
+            let html = config.editor_html?;
+            CString::new(html).ok()
+        });
+
+        match cached {
+            Some(cstr) => cstr.as_ptr(),
+            None => ptr::null(),
+        }
+    });
+
+    result.unwrap_or(ptr::null())
+}
+
+/// Get the initial editor size in pixels.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - `width` and `height` must be valid non-null pointers to `uint32_t`
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_editor_size(
+    _instance: BeamerAuInstanceHandle,
+    width: *mut u32,
+    height: *mut u32,
+) {
+    if width.is_null() || height.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(|| {
+        let config = match factory::plugin_config() {
+            Some(c) => c,
+            None => return,
+        };
+
+        // SAFETY: width and height validated non-null above.
+        unsafe {
+            *width = config.editor_width;
+            *height = config.editor_height;
+        }
+    });
+}
+
+// =============================================================================
 // Factory Presets
 // =============================================================================
 

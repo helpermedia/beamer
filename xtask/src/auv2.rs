@@ -108,6 +108,7 @@ pub fn bundle_auv2(
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
                 "-framework", "CoreAudioKit",
+                "-framework", "WebKit",
                 "-I", bridge_header_dir.to_str_safe()?,
                 dylib_path.to_str_safe()?,  // Link directly with the dylib
                 "-Wl,-rpath,@loader_path",

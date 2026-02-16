@@ -2,6 +2,7 @@
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
+#import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
 #include <os/lock.h>
 #include <os/log.h>
@@ -35,6 +36,7 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     AUAudioUnitPreset* _currentPreset;
     AUInternalRenderBlock _cachedInternalRenderBlock;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
+    void* _webviewHandle;
 }
 
 + (NSUInteger)nextInstanceId;
@@ -99,6 +101,7 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     _sampleRate = kDefaultSampleRate;
     _maxFrames = kDefaultMaxFrames;
     _resourcesAllocated = NO;
+    _webviewHandle = NULL;
     memset(&_busConfig, 0, sizeof(_busConfig));
 
     AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
@@ -133,6 +136,11 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 - (void)dealloc {
     [_instanceLock lock];
     _instanceValid = NO;
+
+    if (_webviewHandle != NULL) {
+        beamer_webview_destroy(_webviewHandle);
+        _webviewHandle = NULL;
+    }
 
     if (_rustInstance != NULL) {
         if (_resourcesAllocated) {
@@ -894,6 +902,60 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 
 - (BOOL)canProcessInPlace {
     return NO;
+}
+
+// =============================================================================
+// MARK: - Editor / WebView
+// =============================================================================
+
+// No _instanceLock needed: this is a direct method call, so the caller
+// holds a strong reference and dealloc cannot run concurrently. The lock
+// is only required in AUParameterTree closure callbacks that capture
+// weakSelf and can outlive the instance.
+- (void)requestViewControllerWithCompletionHandler:
+    (void (^)(NSViewController* _Nullable))completionHandler {
+    if (!beamer_au_has_editor(_rustInstance)) {
+        completionHandler(nil);
+        return;
+    }
+
+    // Destroy previous WebView if host calls this method again
+    if (_webviewHandle != NULL) {
+        beamer_webview_destroy(_webviewHandle);
+        _webviewHandle = NULL;
+    }
+
+    const char* html = beamer_au_get_editor_html(_rustInstance);
+    if (html == NULL) {
+        completionHandler(nil);
+        return;
+    }
+
+    uint32_t width = 0, height = 0;
+    beamer_au_get_editor_size(_rustInstance, &width, &height);
+
+    NSViewController* vc = [[NSViewController alloc] init];
+    NSView* container = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, 0, width, height)];
+    vc.view = container;
+    vc.preferredContentSize = NSMakeSize(width, height);
+
+    // Create WebView via beamer-webview C-ABI (shared platform layer).
+    // The same Rust code handles WKWebView setup for both VST3 and AU.
+#ifdef DEBUG
+    bool devTools = true;
+#else
+    bool devTools = false;
+#endif
+    void* webviewHandle = beamer_webview_create(
+        (__bridge void*)container, html, devTools);
+    if (webviewHandle == NULL) {
+        completionHandler(nil);
+        return;
+    }
+
+    _webviewHandle = webviewHandle;
+    completionHandler(vc);
 }
 
 @end

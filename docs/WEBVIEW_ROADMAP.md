@@ -12,8 +12,10 @@ format wrapper uses it symmetrically:
 
 - **VST3**: `beamer-vst3` depends on `beamer-webview`, implements `IPlugView`
   using `MacosWebView`/`WindowsWebView`
-- **AU**: generated ObjC template calls into `beamer-webview` via C-ABI to
-  create and manage the `WKWebView`
+- **AU (AUv3)**: generated ObjC template calls into `beamer-webview` via C-ABI
+  from `requestViewControllerWithCompletionHandler:`
+- **AU (AUv2)**: generated ObjC template calls into `beamer-webview` via C-ABI
+  from `kAudioUnitProperty_CocoaUI` view factory
 
 This keeps `beamer-webview` free of `vst3` or AU dependencies and ensures
 Phase 2C IPC features are available to both formats automatically.
@@ -38,7 +40,9 @@ The WebView case is different - we only need to *instantiate and configure*
 - Static HTML loading
 - `EditorDelegate` integration
 - VST3 `IPlugView` wrapper (in `beamer-vst3`)
-- AU `NSViewController` integration (in generated ObjC template, calling
+- AUv3 `NSViewController` integration (in `auv3_wrapper.m`, calling
+  `beamer-webview` via C-ABI)
+- AUv2 `kAudioUnitProperty_CocoaUI` integration (in `auv2_wrapper.c`, calling
   `beamer-webview` via C-ABI)
 
 ### Phase 2B: Resource Loading
@@ -106,14 +110,16 @@ beamer-webview/                    # Platform layer only, no format deps
 
 Format-specific integration:
 - VST3 `IPlugView` impl lives in `beamer-vst3`
-- AU view controller lives in `xtask/src/au_codegen/auv3_wrapper.m`
+- AUv3 view controller lives in `xtask/src/au_codegen/auv3_wrapper.m`
+- AUv2 Cocoa UI view factory lives in `xtask/src/au_codegen/auv2_wrapper.c`
 
 Note: `resources.rs` is Phase 2B scope.
 
 ## References
 
 - [VST3 IPlugView](https://steinbergmedia.github.io/vst3_doc/base/classSteinberg_1_1IPlugView.html)
-- [AUAudioUnit requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
+- [AUv3 requestViewController](https://developer.apple.com/documentation/audiotoolbox/auaudiounit/1583904-requestviewcontroller)
+- [AUv2 kAudioUnitProperty_CocoaUI](https://developer.apple.com/documentation/audiotoolbox/kaudiounitproperty_cocoaui)
 - [Tauri wry](https://github.com/tauri-apps/wry) - reference for objc2 + WKWebView usage
 - [webview2-com](https://github.com/wravery/webview2-rs) - WebView2 Rust bindings
 - [vstwebview](https://github.com/rdaum/vstwebview)
