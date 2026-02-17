@@ -28,13 +28,23 @@ fn generate_auv2_wrapper_impl(_plugin_name: &str) -> String {
 }
 
 /// Generate the AU extension ObjC implementation with plugin-specific class names.
-fn generate_au_extension_source(plugin_name: &str) -> String {
+///
+/// When `has_editor` is true, uses the AUViewController-based template so that
+/// Logic Pro (and other hosts that check NSExtensionPrincipalClass) shows the
+/// custom WebView editor. Non-editor plugins use the plain NSObject template.
+fn generate_au_extension_source(plugin_name: &str, has_editor: bool) -> String {
     let pascal_name = to_pascal_case(plugin_name);
     let wrapper_class = format!("Beamer{}AuWrapper", pascal_name);
     let extension_class = format!("Beamer{}AuExtension", pascal_name);
     let factory_func = format!("Beamer{}AuExtensionFactory", pascal_name);
 
-    include_str!("auv3_extension.m")
+    let template = if has_editor {
+        include_str!("auv3_extension_editor.m")
+    } else {
+        include_str!("auv3_extension.m")
+    };
+
+    template
         .replace("{{PLUGIN_NAME}}", plugin_name)
         .replace("{{WRAPPER_CLASS}}", &wrapper_class)
         .replace("{{EXTENSION_CLASS}}", &extension_class)

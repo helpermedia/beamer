@@ -51,7 +51,7 @@ pub fn bundle_auv2(
     fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name) =
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, _) =
         detect_au_component_info(package, workspace_root);
     crate::verbose!(
         verbose,
@@ -174,9 +174,10 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     // Get appropriate tags based on component type
     let tags = get_au_tags(config.component_type);
 
-    // Generate factory function name
+    // Generate factory function name and CocoaUI view factory class name
     let pascal_name = to_pascal_case(config.package);
     let factory_name = format!("Beamer{}Factory", pascal_name);
+    let cocoa_view_factory_class = format!("Beamer{}CocoaViewFactory", pascal_name);
 
     // Create the plugin display name from vendor and plugin name
     let plugin_display_name = match (config.vendor_name, config.plugin_name) {
@@ -217,6 +218,8 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13</string>
+    <key>NSPrincipalClass</key>
+    <string>{cocoa_view_factory_class}</string>
     <key>AudioComponents</key>
     <array>
         <dict>
@@ -252,6 +255,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
         subtype = subtype,
         tags = tags,
         factory_name = factory_name,
+        cocoa_view_factory_class = cocoa_view_factory_class,
         version = config.version_string,
         version_int = config.version_int,
         plugin_display_name = plugin_display_name,

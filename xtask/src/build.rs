@@ -450,7 +450,8 @@ pub fn compile_plugin_objc(
 
     // Generate plugin-specific ObjC source files
     let wrapper_source = generate_au_wrapper_source(plugin_name);
-    let extension_source = generate_au_extension_source(plugin_name);
+    let has_editor = crate::util::detect_has_editor(plugin_name, workspace_root);
+    let extension_source = generate_au_extension_source(plugin_name, has_editor);
 
     let wrapper_path = gen_dir.join("AuWrapper.m");
     let extension_path = gen_dir.join("AuExtension.m");

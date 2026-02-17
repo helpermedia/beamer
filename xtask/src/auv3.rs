@@ -198,6 +198,7 @@ pub fn bundle_auv3(
                 "-framework", "AudioToolbox",
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
+                "-framework", "CoreAudioKit",
                 "-framework", "WebKit",
                 "-F", frameworks_dir.to_str_safe()?,
                 "-framework", &framework_name,
@@ -220,7 +221,7 @@ pub fn bundle_auv3(
     crate::verbose!(verbose, "    Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer, and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name) = detect_au_component_info(package, workspace_root);
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_editor) = detect_au_component_info(package, workspace_root);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
@@ -247,6 +248,7 @@ pub fn bundle_auv3(
         version_int,
         plugin_name: detected_plugin_name.as_deref(),
         vendor_name: detected_vendor_name.as_deref(),
+        has_editor,
     });
     fs::write(appex_contents_dir.join("Info.plist"), appex_info_plist)
         .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
@@ -390,6 +392,13 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let pascal_name = to_pascal_case(config.package);
     let extension_class = format!("Beamer{}AuExtension", pascal_name);
 
+    // Use AudioUnit-UI extension point for plugins with an editor
+    let extension_point = if config.has_editor {
+        "com.apple.AudioUnit-UI"
+    } else {
+        "com.apple.AudioUnit"
+    };
+
     // Create the plugin display name from vendor and plugin name
     // Format: "Vendor: Plugin Name" (e.g., "Beamer Framework: Beamer Synthesizer")
     let plugin_display_name = match (config.vendor_name, config.plugin_name) {
@@ -433,7 +442,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>
-        <string>com.apple.AudioUnit</string>
+        <string>{extension_point}</string>
         <key>NSExtensionPrincipalClass</key>
         <string>{extension_class}</string>
         <key>NSExtensionAttributes</key>
@@ -470,6 +479,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
 "#,
         executable = config.executable_name,
         package = config.package,
+        extension_point = extension_point,
         extension_class = extension_class,
         manufacturer = manufacturer,
         component_type = config.component_type,

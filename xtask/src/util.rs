@@ -14,6 +14,7 @@ struct ConfigFile {
     manufacturer_code: String,
     plugin_code: String,
     vendor: Option<String>,
+    has_editor: Option<bool>,
 }
 
 /// Extension trait for converting paths to strings with proper error handling.
@@ -298,18 +299,48 @@ pub fn install_bundle(
 }
 
 // =============================================================================
+// Plugin Feature Detection
+// =============================================================================
+
+/// Detect whether a plugin has a custom editor (WebView UI).
+///
+/// Checks `Config.toml` for `has_editor = true` and also checks for
+/// a `webview/index.html` file in the example directory.
+pub fn detect_has_editor(package: &str, workspace_root: &Path) -> bool {
+    let example_dir = workspace_root.join("examples").join(package);
+
+    // Check Config.toml for explicit has_editor flag
+    let config_path = example_dir.join("Config.toml");
+    if let Ok(toml_str) = fs::read_to_string(&config_path) {
+        if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
+            if config.has_editor == Some(true) {
+                return true;
+            }
+        }
+    }
+
+    // Also check for webview/index.html (mirrors macro behavior)
+    example_dir.join("webview/index.html").exists()
+}
+
+// =============================================================================
 // AU Plugin Metadata Detection (from source code)
 // =============================================================================
 
 /// Detect AU component info by reading Config.toml or parsing plugin source code.
 ///
-/// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name).
+/// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name, has_editor).
 /// Used by both AUv2 and AUv3 bundlers.
 ///
 /// Tries to read `examples/{package}/Config.toml` first. Falls back to
 /// parsing the source code in `examples/{package}/src/lib.rs` if the TOML
 /// file is missing or cannot be parsed.
-pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
+///
+/// The `has_editor` field is computed via `detect_has_editor`, avoiding
+/// a second parse of Config.toml by callers that need both pieces of info.
+pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
+    let has_editor = detect_has_editor(package, workspace_root);
+
     // Try Config.toml first
     let config_path = workspace_root.join("examples").join(package).join("Config.toml");
     if let Ok(toml_str) = fs::read_to_string(&config_path) {
@@ -327,6 +358,7 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
                 Some(config.plugin_code),
                 Some(config.name),
                 config.vendor,
+                has_editor,
             );
         }
     }
@@ -353,10 +385,10 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
         // Detect plugin name and vendor from Config::new()
         let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
 
-        (component_type, manufacturer, subtype, plugin_name, vendor_name)
+        (component_type, manufacturer, subtype, plugin_name, vendor_name, has_editor)
     } else {
         // Default to effect if we can't read the file
-        ("aufx".to_string(), None, None, None, None)
+        ("aufx".to_string(), None, None, None, None, has_editor)
     }
 }
 

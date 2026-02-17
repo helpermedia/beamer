@@ -908,10 +908,11 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 // MARK: - Editor / WebView
 // =============================================================================
 
-// No _instanceLock needed: this is a direct method call, so the caller
-// holds a strong reference and dealloc cannot run concurrently. The lock
-// is only required in AUParameterTree closure callbacks that capture
-// weakSelf and can outlive the instance.
+// Hosts call this method on the AUAudioUnit to get a view controller for the
+// plugin UI. This is the primary UI path for hosts like Reaper that use the
+// AUAudioUnit API directly. For hosts that check the extension's principal
+// class (Logic Pro), the AUViewController extension in auv3_extension_editor.m
+// provides the UI independently.
 - (void)requestViewControllerWithCompletionHandler:
     (void (^)(NSViewController* _Nullable))completionHandler {
     if (!beamer_au_has_editor(_rustInstance)) {
@@ -940,8 +941,6 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     vc.view = container;
     vc.preferredContentSize = NSMakeSize(width, height);
 
-    // Create WebView via beamer-webview C-ABI (shared platform layer).
-    // The same Rust code handles WKWebView setup for both VST3 and AU.
 #ifdef DEBUG
     bool devTools = true;
 #else

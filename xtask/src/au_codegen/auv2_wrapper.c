@@ -37,7 +37,7 @@
 #define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
 
 // Private property for view factory to retrieve the Rust instance handle.
-// Uses the AU custom property range (64000+), following the iPlug2/JUCE pattern.
+// Uses the AU custom property range (64000+).
 #define kBeamerAuPropertyRustInstance 64000
 
 // =============================================================================
@@ -1824,12 +1824,32 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
     self = [super initWithFrame:frame];
     if (self) {
         _webviewHandle = handle;
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(applicationWillTerminate:)
+                                                     name:NSApplicationWillTerminateNotification
+                                                   object:nil];
     }
     return self;
 }
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
+    }
+}
+- (BOOL)mouseDownCanMoveWindow {
+    return NO;
+}
+- (void)viewDidMoveToWindow {
+    NSWindow* window = [self window];
+    if (window != nil) {
+        [window setAcceptsMouseMovedEvents:YES];
+    }
+}
+- (void)applicationWillTerminate:(NSNotification*)notification {
+    if (_webviewHandle != NULL) {
+        beamer_webview_destroy(_webviewHandle);
+        _webviewHandle = NULL;
     }
 }
 @end

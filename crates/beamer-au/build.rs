@@ -11,6 +11,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=CoreAudio");
+        println!("cargo:rustc-link-lib=framework=CoreAudioKit");
 
         // Export the output directory so xtask can find the header files.
         // Due to `links = "beamer_au_native"` in Cargo.toml, this becomes
