@@ -40,11 +40,15 @@
         initWithFrame:NSMakeRect(0, 0, width, height)];
     self.view = container;
     self.preferredContentSize = NSMakeSize(width, height);
+}
 
-    // Create the WebView immediately so it is ready when the host
-    // presents the view. This mirrors requestViewControllerWithCompletionHandler:
-    // in the AUAudioUnit wrapper (used by Reaper) where the WebView is
-    // created before the VC is returned to the host.
+- (void)viewWillAppear {
+    [super viewWillAppear];
+
+    if (_webviewHandle != NULL) {
+        return; // Already created
+    }
+
     const char* html = beamer_au_get_editor_html(NULL);
     if (html == NULL) {
         return;
@@ -56,7 +60,7 @@
     bool devTools = false;
 #endif
     _webviewHandle = beamer_webview_create(
-        (__bridge void*)container, html, devTools);
+        (__bridge void*)self.view, html, devTools);
 }
 
 - (void)viewDidLoad {

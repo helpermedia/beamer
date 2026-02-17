@@ -3,6 +3,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <Cocoa/Cocoa.h>
+#import <CoreAudioKit/CoreAudioKit.h>
 #import <Foundation/Foundation.h>
 #include <os/lock.h>
 #include <os/log.h>
@@ -902,6 +903,21 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 
 - (BOOL)canProcessInPlace {
     return NO;
+}
+
+// =============================================================================
+// MARK: - View Configuration
+// =============================================================================
+
+// Accept all view configurations the host offers. This API is for layout
+// variants (compact vs expanded), not for zoom percentages. Logic's View
+// menu zoom (50%-200%) is host-side scaling via MATTScaleView and is
+// independent of this method. Returning all indices prevents the window
+// from drifting in size on each open/close cycle.
+- (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations
+    API_AVAILABLE(macos(10.13), ios(11)) {
+    return [NSIndexSet indexSetWithIndexesInRange:
+        NSMakeRange(0, availableViewConfigurations.count)];
 }
 
 // =============================================================================
