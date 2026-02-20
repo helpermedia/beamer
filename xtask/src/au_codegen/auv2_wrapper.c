@@ -1884,14 +1884,7 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 
     uint32_t width = 0, height = 0;
     beamer_au_get_editor_size(rustInstance, &width, &height);
-
-    // Use preferred size from host if provided, otherwise use plugin defaults
-    NSSize viewSize;
-    if (preferredSize.width > 0 && preferredSize.height > 0) {
-        viewSize = preferredSize;
-    } else {
-        viewSize = NSMakeSize(width, height);
-    }
+    NSSize viewSize = NSMakeSize(width, height);
 
     // Create WebView via beamer-webview C-ABI (shared platform layer)
 #ifdef DEBUG

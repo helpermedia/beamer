@@ -909,15 +909,20 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 // MARK: - View Configuration
 // =============================================================================
 
-// Accept all view configurations the host offers. This API is for layout
-// variants (compact vs expanded), not for zoom percentages. Logic's View
-// menu zoom (50%-200%) is host-side scaling via MATTScaleView and is
-// independent of this method. Returning all indices prevents the window
-// from drifting in size on each open/close cycle.
+// Only accept zero-sized view configurations. Logic and GarageBand offer a
+// {0, 0} entry meaning "use the view controller's preferredContentSize".
+// Accepting only that entry makes the host defer to our configured editor
+// size instead of picking an oversized screen-resolution layout.
 - (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations
     API_AVAILABLE(macos(10.13), ios(11)) {
-    return [NSIndexSet indexSetWithIndexesInRange:
-        NSMakeRange(0, availableViewConfigurations.count)];
+    NSMutableIndexSet* indices = [[NSMutableIndexSet alloc] init];
+    for (NSUInteger i = 0; i < availableViewConfigurations.count; i++) {
+        AUAudioUnitViewConfiguration* config = availableViewConfigurations[i];
+        if (config.width + config.height == 0) {
+            [indices addIndex:i];
+        }
+    }
+    return indices;
 }
 
 // =============================================================================

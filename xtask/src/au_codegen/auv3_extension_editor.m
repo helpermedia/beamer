@@ -19,27 +19,28 @@
 @interface {{EXTENSION_CLASS}} : AUViewController <AUAudioUnitFactory>
 {
     void* _webviewHandle;
+    uint32_t _editorWidth;
+    uint32_t _editorHeight;
 }
 @end
 
 @implementation {{EXTENSION_CLASS}}
 
+- (instancetype)initWithNibName:(NSNibName)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
+    self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil];
+    if (self) {
+        beamer_au_ensure_factory_registered();
+        beamer_au_get_editor_size(NULL, &_editorWidth, &_editorHeight);
+        self.preferredContentSize = NSMakeSize(_editorWidth, _editorHeight);
+    }
+    return self;
+}
+
 - (void)loadView {
-    // Ensure the Rust factory is registered before reading config.
-    // In the AUv3 XPC process the #[ctor] initialiser should have run,
-    // but call this as a safety net in case the host queries the view
-    // before createAudioUnitWithComponentDescription:.
-    beamer_au_ensure_factory_registered();
-
-    uint32_t width = 0, height = 0;
-    beamer_au_get_editor_size(NULL, &width, &height);
-    if (width == 0) width = 800;
-    if (height == 0) height = 600;
-
     NSView* container = [[NSView alloc]
-        initWithFrame:NSMakeRect(0, 0, width, height)];
+        initWithFrame:NSMakeRect(0, 0, _editorWidth, _editorHeight)];
     self.view = container;
-    self.preferredContentSize = NSMakeSize(width, height);
+    self.preferredContentSize = NSMakeSize(_editorWidth, _editorHeight);
 }
 
 - (void)viewWillAppear {
