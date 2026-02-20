@@ -112,6 +112,12 @@ impl ConfigFile {
         if let Some(ref id) = self.vst3_controller_id {
             validate_uuid(id, "vst3_controller_id")?;
         }
+        if self.has_editor == Some(true) && self.editor_size.is_none() {
+            return Err(
+                "editor_size is required when has_editor is true (e.g. editor_size = [400, 300])"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 }

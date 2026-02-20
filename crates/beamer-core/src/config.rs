@@ -515,8 +515,8 @@ impl Config {
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
             editor_html: None,
-            editor_width: 800,
-            editor_height: 600,
+            editor_width: 0,
+            editor_height: 0,
         }
     }
 

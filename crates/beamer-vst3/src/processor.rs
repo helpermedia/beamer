@@ -2294,6 +2294,10 @@ where
                 html,
                 dev_tools: cfg!(debug_assertions),
             };
+            debug_assert!(
+                self.config.editor_width > 0 && self.config.editor_height > 0,
+                "editor_size must be set when has_editor is true"
+            );
             let size = beamer_core::Size::new(self.config.editor_width, self.config.editor_height);
             let constraints = beamer_core::EditorConstraints {
                 min: size,

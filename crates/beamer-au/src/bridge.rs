@@ -2273,6 +2273,11 @@ pub extern "C" fn beamer_au_get_editor_size(
             None => return,
         };
 
+        debug_assert!(
+            config.editor_width > 0 && config.editor_height > 0,
+            "editor_size must be set when has_editor is true"
+        );
+
         // SAFETY: width and height validated non-null above.
         unsafe {
             *width = config.editor_width;

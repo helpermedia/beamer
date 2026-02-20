@@ -7,3 +7,4 @@ vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
 has_editor = true
+editor_size = [400, 300]

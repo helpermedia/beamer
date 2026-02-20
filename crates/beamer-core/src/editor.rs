@@ -32,10 +32,7 @@ pub trait EditorDelegate: Send + Sync {
     /// Get the initial editor size.
     ///
     /// This is the size the editor window will have when first opened.
-    /// Default is 800x600.
-    fn editor_size(&self) -> Size {
-        Size::new(800, 600)
-    }
+    fn editor_size(&self) -> Size;
 
     /// Get the editor size constraints.
     ///
