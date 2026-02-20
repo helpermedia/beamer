@@ -11,7 +11,7 @@
 //! - [`Descriptor`] - Plugin definition (unprepared state, holds parameters)
 //! - [`Processor`] - Core DSP processing trait (prepared state)
 //! - [`Parameters`] - Parameter collection trait
-//! - [`EditorDelegate`] - GUI configuration and callbacks
+//! - [`GuiDelegate`] - GUI configuration and callbacks
 //!
 //! ## Types
 //!
@@ -32,7 +32,7 @@ pub mod bus_config;
 pub mod bypass;
 pub mod conversion_buffers;
 pub mod config;
-pub mod editor;
+pub mod gui;
 pub mod error;
 pub mod midi;
 pub mod midi_cc_config;
@@ -59,7 +59,7 @@ pub use bus_config::{CachedBusConfig, CachedBusInfo};
 pub use config::{Config, FourCharCode};
 pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
-pub use editor::{EditorConstraints, EditorDelegate, NoEditor};
+pub use gui::{GuiConstraints, GuiDelegate, NoGui};
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types

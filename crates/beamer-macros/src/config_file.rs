@@ -27,10 +27,10 @@ pub struct ConfigFile {
     pub vst3_id: Option<String>,
     /// Explicit VST3 controller UUID for split component/controller architecture (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
     pub vst3_controller_id: Option<String>,
-    /// Whether the plugin has a GUI editor.
-    pub has_editor: Option<bool>,
-    /// Initial editor size as [width, height] in pixels.
-    pub editor_size: Option<(u32, u32)>,
+    /// Whether the plugin has a GUI.
+    pub has_gui: Option<bool>,
+    /// Initial GUI size as [width, height] in pixels.
+    pub gui_size: Option<(u32, u32)>,
     /// Number of SysEx output slots per process block (default: 16).
     #[serde(default)]
     pub sysex_slots: Option<usize>,
@@ -112,9 +112,9 @@ impl ConfigFile {
         if let Some(ref id) = self.vst3_controller_id {
             validate_uuid(id, "vst3_controller_id")?;
         }
-        if self.has_editor == Some(true) && self.editor_size.is_none() {
+        if self.has_gui == Some(true) && self.gui_size.is_none() {
             return Err(
-                "editor_size is required when has_editor is true (e.g. editor_size = [400, 300])"
+                "gui_size is required when has_gui is true (e.g. gui_size = [400, 300])"
                     .to_string(),
             );
         }

@@ -302,7 +302,7 @@ pub const DEFAULT_SYSEX_BUFFER_SIZE: usize = 512;
 /// Unified plugin configuration.
 ///
 /// Contains all plugin metadata: shared fields (name, vendor, category),
-/// plugin identity (AU four-char codes), and format-specific settings
+/// plugin identity (AU four-char codes) and format-specific settings
 /// (VST3 component UIDs). The VST3 component UID is derived automatically
 /// from the AU codes via FNV-1a hash unless explicitly overridden.
 ///
@@ -335,8 +335,8 @@ pub struct Config {
     /// Plugin version string.
     pub version: &'static str,
 
-    /// Whether this plugin has an editor/GUI.
-    pub has_editor: bool,
+    /// Whether this plugin has a GUI.
+    pub has_gui: bool,
 
     /// Plugin subcategories for more specific classification.
     pub subcategories: &'static [Subcategory],
@@ -361,17 +361,17 @@ pub struct Config {
     /// Maximum size of each SysEx message in bytes (AU and VST3).
     pub sysex_buffer_size: usize,
 
-    /// HTML content for the WebView editor.
+    /// HTML content for the WebView GUI.
     ///
-    /// When set, the framework creates a WebView editor that loads this HTML.
+    /// When set, the framework creates a WebView GUI that loads this HTML.
     /// Typically populated via `include_str!("../webview/index.html")`.
-    pub editor_html: Option<&'static str>,
+    pub gui_html: Option<&'static str>,
 
-    /// Initial editor width in pixels.
-    pub editor_width: u32,
+    /// Initial GUI width in pixels.
+    pub gui_width: u32,
 
-    /// Initial editor height in pixels.
-    pub editor_height: u32,
+    /// Initial GUI height in pixels.
+    pub gui_height: u32,
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -506,7 +506,7 @@ impl Config {
             url: "",
             email: "",
             version: "1.0.0",
-            has_editor: false,
+            has_gui: false,
             subcategories: &[],
             manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer_code)),
             subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
@@ -514,9 +514,9 @@ impl Config {
             vst3_controller_id: None,
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
-            editor_html: None,
-            editor_width: 0,
-            editor_height: 0,
+            gui_html: None,
+            gui_width: 0,
+            gui_height: 0,
         }
     }
 
@@ -548,29 +548,29 @@ impl Config {
         self
     }
 
-    /// Enable the editor/GUI.
+    /// Enable the GUI.
     #[doc(hidden)]
-    pub const fn with_editor(mut self) -> Self {
-        self.has_editor = true;
+    pub const fn with_gui(mut self) -> Self {
+        self.has_gui = true;
         self
     }
 
-    /// Set the editor HTML content and enable the editor.
+    /// Set the GUI HTML content and enable the GUI.
     ///
-    /// This sets both the HTML content and the `has_editor` flag.
+    /// This sets both the HTML content and the `has_gui` flag.
     /// Typically used with `include_str!()` to embed HTML at compile time.
     #[doc(hidden)]
-    pub const fn with_editor_html(mut self, html: &'static str) -> Self {
-        self.editor_html = Some(html);
-        self.has_editor = true;
+    pub const fn with_gui_html(mut self, html: &'static str) -> Self {
+        self.gui_html = Some(html);
+        self.has_gui = true;
         self
     }
 
-    /// Set the initial editor size in pixels.
+    /// Set the initial GUI size in pixels.
     #[doc(hidden)]
-    pub const fn with_editor_size(mut self, width: u32, height: u32) -> Self {
-        self.editor_width = width;
-        self.editor_height = height;
+    pub const fn with_gui_size(mut self, width: u32, height: u32) -> Self {
+        self.gui_width = width;
+        self.gui_height = height;
         self
     }
 

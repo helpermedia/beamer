@@ -9,7 +9,7 @@ pub mod platform;
 
 pub use error::{Result, WebViewError};
 
-/// Configuration for a WebView editor.
+/// Configuration for a WebView GUI.
 pub struct WebViewConfig<'a> {
     /// HTML content to load.
     pub html: &'a str,

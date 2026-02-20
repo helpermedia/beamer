@@ -56,7 +56,8 @@ email = "support@example.com"
 | `url` | String | Vendor website |
 | `email` | String | Support email |
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
-| `has_editor` | Boolean | Whether plugin has a GUI (default: `false`) |
+| `has_gui` | Boolean | Whether plugin has a GUI (default: `false`) |
+| `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 
 **Advanced Optional Fields:**
@@ -950,7 +951,7 @@ Beamer provides safe, ergonomic access to audio buffers using a two-buffer archi
 **Design Goals:**
 - Stack-allocated for real-time safety (no heap allocations in `process()`)
 - Clear separation between input (read-only) and output (mutable) channels
-- Support for both mono, stereo, and surround processing
+- Support for mono, stereo and surround processing
 - Generic over sample type (`f32` or `f64`)
 
 #### Main Buffer
@@ -1022,7 +1023,7 @@ The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't
 
 ### 1.8 ProcessContext and Transport
 
-The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size, and detailed DAW transport state for tempo-synced effects, sequencers, and time-based processing.
+The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
 
 **What you can do:**
 - Sync delays/LFOs to host tempo
@@ -1279,7 +1280,7 @@ impl Processor for ReverbProcessor {
 
 ---
 
-> **See Also:** For format-specific details on plugin export, bundle structure, and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
+> **See Also:** For format-specific details on plugin export, bundle structure and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
 
 ---
 
@@ -1394,7 +1395,7 @@ MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<Mid
 
 **Construction Paths:**
 - **Semantic constructors** - Used by VST3 which provides already-parsed event structures
-- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding, and Note On velocity 0 → Note Off conversion
+- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and Note On velocity 0 → Note Off conversion
 
 ### 2.2 MidiBuffer
 
@@ -1805,7 +1806,7 @@ Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with 
 
 The `beamer-au` crate uses a **hybrid Objective-C/Rust architecture**:
 - **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
-- **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
+- **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 
 This approach was chosen for several reasons:
 - **Runtime compatibility**: `AUAudioUnit` subclassing requires Objective-C runtime metadata that Rust FFI bindings struggle to generate correctly

@@ -11,8 +11,8 @@ pub enum PluginError {
     ProcessingError(String),
     /// State serialization/deserialization error.
     StateError(String),
-    /// Editor/GUI error.
-    EditorError(String),
+    /// GUI error.
+    GuiError(String),
     /// Platform-specific error.
     PlatformError(String),
     /// WebView creation or operation failed.
@@ -25,7 +25,7 @@ impl fmt::Display for PluginError {
             Self::InitializationFailed(msg) => write!(f, "Initialization failed: {}", msg),
             Self::ProcessingError(msg) => write!(f, "Processing error: {}", msg),
             Self::StateError(msg) => write!(f, "State error: {}", msg),
-            Self::EditorError(msg) => write!(f, "Editor error: {}", msg),
+            Self::GuiError(msg) => write!(f, "GUI error: {}", msg),
             Self::PlatformError(msg) => write!(f, "Platform error: {}", msg),
             Self::WebViewError(msg) => write!(f, "WebView error: {}", msg),
         }

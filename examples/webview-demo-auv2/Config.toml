@@ -6,5 +6,5 @@ plugin_code = "wvd2"
 vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
-has_editor = true
-editor_size = [400, 300]
+has_gui = true
+gui_size = [400, 300]

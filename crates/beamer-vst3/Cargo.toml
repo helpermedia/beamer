@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 default = ["webview"]
-## WebView editor support.
+## WebView GUI support.
 webview = ["beamer-webview"]
 ## Enable heap-backed fallback for SysEx overflow.
 ##

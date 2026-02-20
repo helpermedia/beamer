@@ -854,7 +854,7 @@ pub extern "C" fn beamer_au_is_prepared(instance: BeamerAuInstanceHandle) -> boo
 /// - `pull_input_block` may be null for generator plugins that don't need input
 /// - Context block pointers (`_musical_context_block`, `_transport_state_block`,
 ///   `_schedule_midi_block`) may be null if those features aren't used
-/// - This function validates `instance`, `action_flags`, `timestamp`, and
+/// - This function validates `instance`, `action_flags`, `timestamp` and
 ///   `output_data` are non-null; returns `K_AUDIO_UNIT_ERR_INVALID_PARAMETER` if any are null
 /// - Thread safety: Designed for real-time audio thread; uses non-blocking
 ///   `try_read()` to avoid blocking if resource allocation is in progress
@@ -2189,33 +2189,33 @@ pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> 
 }
 
 // =============================================================================
-// Editor / WebView
+// GUI / WebView
 // =============================================================================
 
-/// Check if the plugin has a custom editor.
+/// Check if the plugin has a custom GUI.
 ///
 /// # Safety
 ///
 /// - `_instance` parameter is currently unused but accepted for API consistency
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_has_editor(_instance: BeamerAuInstanceHandle) -> bool {
+pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
     let result = catch_unwind(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
 
-        config.has_editor
+        config.has_gui
     });
 
     result.unwrap_or(false)
 }
 
-/// Get the editor HTML content.
+/// Get the GUI HTML content.
 ///
 /// Returns a pointer to a null-terminated UTF-8 string, or NULL if the
-/// plugin has no editor HTML. The pointer is valid for the lifetime of
+/// plugin has no GUI HTML. The pointer is valid for the lifetime of
 /// the process (cached internally on first call).
 ///
 /// # Safety
@@ -2224,7 +2224,7 @@ pub extern "C" fn beamer_au_has_editor(_instance: BeamerAuInstanceHandle) -> boo
 /// - Thread safety: Safe to call from any thread
 /// - The returned pointer must not be freed by the caller
 #[no_mangle]
-pub extern "C" fn beamer_au_get_editor_html(
+pub extern "C" fn beamer_au_get_gui_html(
     _instance: BeamerAuInstanceHandle,
 ) -> *const c_char {
     use std::ffi::CString;
@@ -2232,12 +2232,12 @@ pub extern "C" fn beamer_au_get_editor_html(
 
     // Rust &str is not null-terminated. Cache a CString so the pointer
     // returned to ObjC is valid for the process lifetime.
-    static EDITOR_HTML_CSTR: OnceLock<Option<CString>> = OnceLock::new();
+    static GUI_HTML_CSTR: OnceLock<Option<CString>> = OnceLock::new();
 
     let result = catch_unwind(|| {
-        let cached = EDITOR_HTML_CSTR.get_or_init(|| {
+        let cached = GUI_HTML_CSTR.get_or_init(|| {
             let config = factory::plugin_config()?;
-            let html = config.editor_html?;
+            let html = config.gui_html?;
             CString::new(html).ok()
         });
 
@@ -2250,7 +2250,7 @@ pub extern "C" fn beamer_au_get_editor_html(
     result.unwrap_or(ptr::null())
 }
 
-/// Get the initial editor size in pixels.
+/// Get the initial GUI size in pixels.
 ///
 /// # Safety
 ///
@@ -2258,7 +2258,7 @@ pub extern "C" fn beamer_au_get_editor_html(
 /// - `width` and `height` must be valid non-null pointers to `uint32_t`
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_get_editor_size(
+pub extern "C" fn beamer_au_get_gui_size(
     _instance: BeamerAuInstanceHandle,
     width: *mut u32,
     height: *mut u32,
@@ -2274,14 +2274,14 @@ pub extern "C" fn beamer_au_get_editor_size(
         };
 
         debug_assert!(
-            config.editor_width > 0 && config.editor_height > 0,
-            "editor_size must be set when has_editor is true"
+            config.gui_width > 0 && config.gui_height > 0,
+            "gui_size must be set when has_gui is true"
         );
 
         // SAFETY: width and height validated non-null above.
         unsafe {
-            *width = config.editor_width;
-            *height = config.editor_height;
+            *width = config.gui_width;
+            *height = config.gui_height;
         }
     });
 }

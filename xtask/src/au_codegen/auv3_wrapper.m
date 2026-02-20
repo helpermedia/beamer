@@ -911,7 +911,7 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 
 // Only accept zero-sized view configurations. Logic and GarageBand offer a
 // {0, 0} entry meaning "use the view controller's preferredContentSize".
-// Accepting only that entry makes the host defer to our configured editor
+// Accepting only that entry makes the host defer to our configured GUI
 // size instead of picking an oversized screen-resolution layout.
 - (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations
     API_AVAILABLE(macos(10.13), ios(11)) {
@@ -926,17 +926,17 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 }
 
 // =============================================================================
-// MARK: - Editor / WebView
+// MARK: - GUI / WebView
 // =============================================================================
 
 // Hosts call this method on the AUAudioUnit to get a view controller for the
 // plugin UI. This is the primary UI path for hosts like Reaper that use the
 // AUAudioUnit API directly. For hosts that check the extension's principal
-// class (Logic Pro), the AUViewController extension in auv3_extension_editor.m
+// class (Logic Pro), the AUViewController extension in auv3_extension_gui.m
 // provides the UI independently.
 - (void)requestViewControllerWithCompletionHandler:
     (void (^)(NSViewController* _Nullable))completionHandler {
-    if (!beamer_au_has_editor(_rustInstance)) {
+    if (!beamer_au_has_gui(_rustInstance)) {
         completionHandler(nil);
         return;
     }
@@ -947,14 +947,14 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
         _webviewHandle = NULL;
     }
 
-    const char* html = beamer_au_get_editor_html(_rustInstance);
+    const char* html = beamer_au_get_gui_html(_rustInstance);
     if (html == NULL) {
         completionHandler(nil);
         return;
     }
 
     uint32_t width = 0, height = 0;
-    beamer_au_get_editor_size(_rustInstance, &width, &height);
+    beamer_au_get_gui_size(_rustInstance, &width, &height);
 
     NSViewController* vc = [[NSViewController alloc] init];
     NSView* container = [[NSView alloc]

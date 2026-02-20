@@ -38,7 +38,7 @@ The WebView case is different - we only need to *instantiate and configure*
 ### Phase 2A: Core Platform Support
 - Platform WebView creation and lifecycle (macOS/Windows)
 - Static HTML loading
-- `EditorDelegate` integration
+- `GuiDelegate` integration
 - VST3 `IPlugView` wrapper (in `beamer-vst3`)
 - AUv3 `NSViewController` integration (in `auv3_wrapper.m`, calling
   `beamer-webview` via C-ABI)
@@ -94,7 +94,7 @@ examples/equalizer/
 
 - `webview/package.json` exists: run build, embed `webview/dist/index.html`
 - `webview/index.html` exists (no package.json): embed directly
-- No `webview/` directory: no editor
+- No `webview/` directory: no GUI
 
 ## Crate Structure
 

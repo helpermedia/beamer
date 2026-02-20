@@ -1,7 +1,7 @@
 //! WebView demo plugin.
 //!
 //! A minimal example demonstrating WebView GUI support in a Beamer plugin.
-//! The plugin is a simple gain effect with a static HTML editor loaded
+//! The plugin is a simple gain effect with a static HTML GUI loaded
 //! via WKWebView (macOS). Windows support is planned but not yet implemented.
 
 use beamer::prelude::*;
@@ -21,10 +21,10 @@ pub struct WebViewDemoParameters {
 // Descriptor (unprepared state)
 // =============================================================================
 
-/// Plugin descriptor with WebView editor support.
+/// Plugin descriptor with WebView GUI support.
 ///
 /// The `#[beamer::export]` macro auto-detects `webview/index.html` and
-/// embeds it as the editor HTML content.
+/// embeds it as the GUI HTML content.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct WebViewDemoDescriptor {

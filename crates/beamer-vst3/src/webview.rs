@@ -1,9 +1,9 @@
-//! IPlugView wrapper for WebView editors.
+//! IPlugView wrapper for WebView GUIs.
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 
-use beamer_core::{EditorConstraints, EditorDelegate, Size};
+use beamer_core::{GuiConstraints, GuiDelegate, Size};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
 use vst3::Steinberg::*;
@@ -13,7 +13,7 @@ use vst3::Class;
 pub struct WebViewPlugView {
     platform: UnsafeCell<Option<PlatformWebView>>,
     config: WebViewConfig<'static>,
-    delegate: UnsafeCell<Box<dyn EditorDelegate>>,
+    delegate: UnsafeCell<Box<dyn GuiDelegate>>,
     size: UnsafeCell<Size>,
     frame: UnsafeCell<*mut IPlugFrame>,
 }
@@ -26,9 +26,9 @@ unsafe impl Sync for WebViewPlugView {}
 impl WebViewPlugView {
     /// Create a new WebView plug view with the given delegate.
     ///
-    /// Initial size is obtained from `delegate.editor_size()`.
-    pub fn new(config: WebViewConfig<'static>, delegate: Box<dyn EditorDelegate>) -> Self {
-        let size = delegate.editor_size();
+    /// Initial size is obtained from `delegate.gui_size()`.
+    pub fn new(config: WebViewConfig<'static>, delegate: Box<dyn GuiDelegate>) -> Self {
+        let size = delegate.gui_size();
         Self {
             platform: UnsafeCell::new(None),
             config,
@@ -84,7 +84,7 @@ impl IPlugViewTrait for WebViewPlugView {
                 *platform = Some(webview);
                 // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
                 let delegate = unsafe { &mut *self.delegate.get() };
-                delegate.editor_opened();
+                delegate.gui_opened();
                 kResultOk
             }
             Err(e) => {
@@ -97,7 +97,7 @@ impl IPlugViewTrait for WebViewPlugView {
     unsafe fn removed(&self) -> tresult {
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let delegate = unsafe { &mut *self.delegate.get() };
-        delegate.editor_closed();
+        delegate.gui_closed();
 
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let platform = unsafe { &mut *self.platform.get() };
@@ -153,7 +153,7 @@ impl IPlugViewTrait for WebViewPlugView {
         let new_size = Size::new(width, height);
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let delegate = unsafe { &mut *self.delegate.get() };
-        delegate.editor_resized(new_size);
+        delegate.gui_resized(new_size);
 
         // Update platform webview frame
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
@@ -204,7 +204,7 @@ impl IPlugViewTrait for WebViewPlugView {
     unsafe fn canResize(&self) -> tresult {
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let delegate = unsafe { &*self.delegate.get() };
-        if delegate.editor_constraints().resizable { kResultOk } else { kResultFalse }
+        if delegate.gui_constraints().resizable { kResultOk } else { kResultFalse }
     }
 
     unsafe fn checkSizeConstraint(&self, rect: *mut ViewRect) -> tresult {
@@ -213,7 +213,7 @@ impl IPlugViewTrait for WebViewPlugView {
         }
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let delegate = unsafe { &*self.delegate.get() };
-        let constraints = delegate.editor_constraints();
+        let constraints = delegate.gui_constraints();
 
         // SAFETY: rect is non-null (checked above) and host guarantees validity.
         let r = unsafe { &mut *rect };
@@ -243,28 +243,28 @@ impl Drop for WebViewPlugView {
     }
 }
 
-/// Simple `EditorDelegate` backed by fixed size and constraints.
+/// Simple `GuiDelegate` backed by fixed size and constraints.
 ///
 /// Used when the plugin doesn't provide its own delegate (the common case
-/// for Config-driven editor setup).
-pub struct StaticEditorDelegate {
+/// for Config-driven GUI setup).
+pub struct StaticGuiDelegate {
     size: Size,
-    constraints: EditorConstraints,
+    constraints: GuiConstraints,
 }
 
-impl StaticEditorDelegate {
+impl StaticGuiDelegate {
     /// Create a new static delegate with the given size and constraints.
-    pub fn new(size: Size, constraints: EditorConstraints) -> Self {
+    pub fn new(size: Size, constraints: GuiConstraints) -> Self {
         Self { size, constraints }
     }
 }
 
-impl EditorDelegate for StaticEditorDelegate {
-    fn editor_size(&self) -> Size {
+impl GuiDelegate for StaticGuiDelegate {
+    fn gui_size(&self) -> Size {
         self.size
     }
 
-    fn editor_constraints(&self) -> EditorConstraints {
+    fn gui_constraints(&self) -> GuiConstraints {
         self.constraints
     }
 }

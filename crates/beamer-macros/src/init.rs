@@ -82,7 +82,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_email(#e) }
     });
 
-    // Auto-detect webview/index.html for editor HTML.
+    // Auto-detect webview/index.html for GUI HTML.
     //
     // NOTE: This existence check runs at macro expansion time, so its result
     // is baked into the cached compilation. If a user adds webview/index.html
@@ -95,23 +95,23 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     let webview_html_path = std::path::Path::new(manifest_dir).join("webview/index.html");
     let has_webview = webview_html_path.exists();
 
-    let editor_html = if has_webview {
-        Some(quote! { .with_editor_html(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/webview/index.html"))) })
+    let gui_html = if has_webview {
+        Some(quote! { .with_gui_html(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/webview/index.html"))) })
     } else {
         None
     };
 
-    // has_editor is true if explicitly set and no webview (with_editor_html already sets it)
-    let has_editor = if !has_webview && config.has_editor.unwrap_or(false) {
-        Some(quote! { .with_editor() })
+    // has_gui is true if explicitly set and no webview (with_gui_html already sets it)
+    let has_gui = if !has_webview && config.has_gui.unwrap_or(false) {
+        Some(quote! { .with_gui() })
     } else {
         None
     };
 
-    let editor_size = config.editor_size.as_ref().map(|size| {
+    let gui_size = config.gui_size.as_ref().map(|size| {
         let w = size.0;
         let h = size.1;
-        quote! { .with_editor_size(#w, #h) }
+        quote! { .with_gui_size(#w, #h) }
     });
 
     let vst3_id = config.vst3_id.as_ref().map(|id| {
@@ -150,9 +150,9 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #url
         #email
         .with_version(env!("CARGO_PKG_VERSION"))
-        #has_editor
-        #editor_html
-        #editor_size
+        #has_gui
+        #gui_html
+        #gui_size
         #vst3_id
         #vst3_controller_id
         #sysex_slots
@@ -249,7 +249,7 @@ fn generate_presets(presets: &PresetsFile, descriptor: &syn::Ident) -> Result<To
 
 /// Main entry point for the `#[beamer::export]` attribute macro.
 ///
-/// Generates the CONFIG static, optional presets, and format entry points
+/// Generates the CONFIG static, optional presets and format entry points
 /// for the given descriptor struct.
 pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
     // Read Config.toml from the crate's root directory

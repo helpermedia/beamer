@@ -12,7 +12,7 @@ links = "beamer_au_native"
 
 [features]
 default = ["webview"]
-## WebView editor support.
+## WebView GUI support.
 webview = ["beamer-webview"]
 sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 

@@ -67,7 +67,7 @@ The AU wrapper uses a **hybrid architecture**: native Objective-C for Apple runt
 └─────────────────────────────────┴────────────────────────────────┘
 ```
 
-**Why Hybrid?** Native Objective-C integrates naturally with Apple's frameworks, provides better debuggability with Apple's tools, and avoids the complexity of Rust FFI bindings for `AUAudioUnit` subclassing. The hybrid approach guarantees Apple compatibility while keeping all audio processing in Rust.
+**Why Hybrid?** Native Objective-C integrates naturally with Apple's frameworks, provides better debuggability with Apple's tools and avoids the complexity of Rust FFI bindings for `AUAudioUnit` subclassing. The hybrid approach guarantees Apple compatibility while keeping all audio processing in Rust.
 
 ### VST3 Architecture
 
@@ -148,7 +148,7 @@ beamer/
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
 │   ├── beamer-vst3/         # VST3 wrapper implementation
-│   └── beamer-webview/      # WebView per platform (planned)
+│   └── beamer-webview/      # WebView per platform
 ├── examples/
 │   ├── gain/                # Audio effect example
 │   ├── compressor/          # Dynamics compressor
@@ -170,7 +170,7 @@ beamer/
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
-| `beamer-webview` | Platform-native WebView embedding (planned) |
+| `beamer-webview` | Platform-native WebView embedding |
 
 ---
 
@@ -209,11 +209,11 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 
 ### Why This Design?
 
-Audio plugins need sample rate for buffer allocation, filter coefficients, and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The `prepare()` design ensures DSP state is only created with valid configuration.
+Audio plugins need sample rate for buffer allocation, filter coefficients and envelope timing, but the sample rate isn't known until the host calls `setupProcessing()`. The `prepare()` design ensures DSP state is only created with valid configuration.
 
 ### Design Rationale
 
-Beamer's design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states, and the compiler enforces valid transitions.
+Beamer's design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states and the compiler enforces valid transitions.
 
 The `Processor` type is always fully initialized, so `process()` code is clean:
 
@@ -352,7 +352,7 @@ pub struct GainProcessor {
 }
 ```
 
-The derive macro generates the `parameters()`, `parameters_mut()`, and `set_parameters()` methods automatically.
+The derive macro generates the `parameters()`, `parameters_mut()` and `set_parameters()` methods automatically.
 
 ---
 
@@ -457,7 +457,8 @@ The `#[beamer::export]` attribute reads Config.toml and generates the required `
 - `url` - Plugin URL (optional)
 - `email` - Support email (optional)
 - `vst3_id` - Explicit VST3 UUID override (optional, format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`)
-- `has_editor` - GUI enabled flag (optional, default: false, reserved for future WebView support)
+- `has_gui` - GUI enabled flag (optional, default: false)
+- `gui_size` - Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true)
 
 **Field Ordering Convention** (for readability):
 ```toml

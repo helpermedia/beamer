@@ -235,7 +235,7 @@ enum PluginState<P: Descriptor> {
 /// Generic VST3 processor wrapping any [`Descriptor`] implementation.
 ///
 /// This struct implements the VST3 combined component pattern, providing
-/// `IComponent`, `IAudioProcessor`, and `IEditController` interfaces that
+/// `IComponent`, `IAudioProcessor` and `IEditController` interfaces that
 /// delegate to the wrapped plugin.
 ///
 /// # Two-Phase Lifecycle
@@ -1225,7 +1225,7 @@ where
                 }
             }
             MediaTypes_::kEvent => {
-                // Only index 0 for event bus, and only if plugin wants MIDI
+                // Only index 0 for event bus and only if plugin wants MIDI
                 // SAFETY: VST3 guarantees single-threaded access for this call.
                 if index != 0 || !unsafe { self.wants_midi() } {
                     return kInvalidArgument;
@@ -2216,7 +2216,7 @@ where
 
                 // Always apply unconditionally - never skip with "if changed" guard.
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
-                // when it's already selected), and skipping would break preset 0 on
+                // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
                 // SAFETY: VST3 guarantees single-threaded access for this call.
                 Presets::apply(preset_index, unsafe { self.parameters() });
@@ -2279,13 +2279,13 @@ where
 
         // SAFETY: name is non-null (checked above) and is null-terminated C string.
         let name_str = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().unwrap_or("");
-        if name_str != "editor" || !self.config.has_editor {
+        if name_str != "editor" || !self.config.has_gui {
             return std::ptr::null_mut();
         }
 
         #[cfg(feature = "webview")]
         {
-            let html = match self.config.editor_html {
+            let html = match self.config.gui_html {
                 Some(h) => h,
                 None => return std::ptr::null_mut(),
             };
@@ -2295,15 +2295,15 @@ where
                 dev_tools: cfg!(debug_assertions),
             };
             debug_assert!(
-                self.config.editor_width > 0 && self.config.editor_height > 0,
-                "editor_size must be set when has_editor is true"
+                self.config.gui_width > 0 && self.config.gui_height > 0,
+                "gui_size must be set when has_gui is true"
             );
-            let size = beamer_core::Size::new(self.config.editor_width, self.config.editor_height);
-            let constraints = beamer_core::EditorConstraints {
+            let size = beamer_core::Size::new(self.config.gui_width, self.config.gui_height);
+            let constraints = beamer_core::GuiConstraints {
                 min: size,
-                ..beamer_core::EditorConstraints::default()
+                ..beamer_core::GuiConstraints::default()
             };
-            let delegate = Box::new(crate::webview::StaticEditorDelegate::new(size, constraints));
+            let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
 
             let view = crate::webview::WebViewPlugView::new(config, delegate);
             let wrapper = vst3::ComWrapper::new(view);
@@ -3243,7 +3243,7 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
 /// The `sysex_pool` parameter provides stable storage for SysEx data during the
 /// process() call, ensuring the pointers remain valid until the host processes them.
 ///
-/// Note: ChordInfo, ScaleInfo, and NoteExpressionText are primarily input events
+/// Note: ChordInfo, ScaleInfo and NoteExpressionText are primarily input events
 /// (DAW → plugin) and are not output.
 fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> Option<Event> {
     // SAFETY: Event is a C struct with no invalid bit patterns; zeroed is a valid state.

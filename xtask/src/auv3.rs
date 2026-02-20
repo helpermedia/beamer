@@ -220,8 +220,8 @@ pub fn bundle_auv3(
 
     crate::verbose!(verbose, "    Appex executable built ({})", arch_str);
 
-    // Auto-detect component type, manufacturer, and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_editor) = detect_au_component_info(package, workspace_root);
+    // Auto-detect component type, manufacturer and subtype from plugin source
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(package, workspace_root);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
@@ -248,7 +248,7 @@ pub fn bundle_auv3(
         version_int,
         plugin_name: detected_plugin_name.as_deref(),
         vendor_name: detected_vendor_name.as_deref(),
-        has_editor,
+        has_gui,
     });
     fs::write(appex_contents_dir.join("Info.plist"), appex_info_plist)
         .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
@@ -392,8 +392,8 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     let pascal_name = to_pascal_case(config.package);
     let extension_class = format!("Beamer{}AuExtension", pascal_name);
 
-    // Use AudioUnit-UI extension point for plugins with an editor
-    let extension_point = if config.has_editor {
+    // Use AudioUnit-UI extension point for plugins with a GUI
+    let extension_point = if config.has_gui {
         "com.apple.AudioUnit-UI"
     } else {
         "com.apple.AudioUnit"

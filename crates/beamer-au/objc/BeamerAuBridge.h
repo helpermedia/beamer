@@ -5,7 +5,7 @@
  *
  * This header defines the interface for the hybrid AU implementation where:
  * - Objective-C provides the AUAudioUnit subclass (BeamerAuWrapper)
- * - Rust provides all DSP, parameter handling, and state management
+ * - Rust provides all DSP, parameter handling and state management
  *
  * The bridge is designed for:
  * - Full feature parity with VST3 (aux buses, f32/f64, MIDI, parameters, state)
@@ -502,7 +502,7 @@ OSStatus beamer_au_render(
 /**
  * Reset the plugin's DSP state.
  *
- * Clears delay lines, filter states, and other DSP memory.
+ * Clears delay lines, filter states and other DSP memory.
  * Called when transport stops/starts or when the plugin is bypassed/un-bypassed.
  *
  * Thread Safety: Call from main thread only.
@@ -866,24 +866,24 @@ typedef enum BeamerAuFloat64Support {
 BeamerAuFloat64Support beamer_au_get_float64_support(BeamerAuInstanceHandle _Nullable instance);
 
 // =============================================================================
-// MARK: - Editor / WebView
+// MARK: - GUI / WebView
 // =============================================================================
 
 /**
- * Check if the plugin has a custom editor.
+ * Check if the plugin has a custom GUI.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return true if the plugin provides a custom WebView editor.
+ * @return true if the plugin provides a custom WebView GUI.
  */
-bool beamer_au_has_editor(BeamerAuInstanceHandle _Nullable instance);
+bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Get the editor HTML content.
+ * Get the GUI HTML content.
  *
  * Returns a pointer to a null-terminated UTF-8 string containing the HTML
- * for the plugin's WebView editor. Returns NULL if no editor is configured.
+ * for the plugin's WebView GUI. Returns NULL if no GUI is configured.
  *
  * The returned pointer is valid for the lifetime of the process and must
  * not be freed by the caller.
@@ -891,22 +891,22 @@ bool beamer_au_has_editor(BeamerAuInstanceHandle _Nullable instance);
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return Null-terminated HTML string, or NULL if no editor.
+ * @return Null-terminated HTML string, or NULL if no GUI.
  */
-const char* _Nullable beamer_au_get_editor_html(BeamerAuInstanceHandle _Nullable instance);
+const char* _Nullable beamer_au_get_gui_html(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Get the initial editor size in pixels.
+ * Get the initial GUI size in pixels.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @param width    Pointer to receive the editor width.
- * @param height   Pointer to receive the editor height.
+ * @param width    Pointer to receive the GUI width.
+ * @param height   Pointer to receive the GUI height.
  */
-void beamer_au_get_editor_size(BeamerAuInstanceHandle _Nullable instance,
-                               uint32_t* _Nonnull width,
-                               uint32_t* _Nonnull height);
+void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
+                            uint32_t* _Nonnull width,
+                            uint32_t* _Nonnull height);
 
 // =============================================================================
 // MARK: - WebView C-ABI (beamer-webview)

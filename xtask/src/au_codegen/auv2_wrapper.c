@@ -16,7 +16,7 @@
 #import <AudioUnit/AUCocoaUIView.h>
 
 // CocoaUI class interfaces (implementations at end of file)
-@interface {{COCOA_EDITOR_VIEW_CLASS}} : NSView {
+@interface {{COCOA_GUI_VIEW_CLASS}} : NSView {
     void* _webviewHandle;
 }
 - (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle;
@@ -722,12 +722,12 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = false;
             return noErr;
 
-        // CocoaUI - only supported when the plugin has an editor
+        // CocoaUI - only supported when the plugin has a GUI
         case kAudioUnitProperty_CocoaUI:
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
             }
-            if (!beamer_au_has_editor(inst->rustInstance)) {
+            if (!beamer_au_has_gui(inst->rustInstance)) {
                 return kAudioUnitErr_InvalidProperty;
             }
             if (outDataSize) *outDataSize = sizeof(AudioUnitCocoaViewInfo);
@@ -1195,7 +1195,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
             }
-            if (!beamer_au_has_editor(inst->rustInstance)) {
+            if (!beamer_au_has_gui(inst->rustInstance)) {
                 return kAudioUnitErr_InvalidProperty;
             }
             if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitCocoaViewInfo)) {
@@ -1816,10 +1816,10 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 }
 
 // =============================================================================
-// MARK: - CocoaUI Editor View
+// MARK: - CocoaUI GUI View
 // =============================================================================
 
-@implementation {{COCOA_EDITOR_VIEW_CLASS}}
+@implementation {{COCOA_GUI_VIEW_CLASS}}
 - (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle {
     self = [super initWithFrame:frame];
     if (self) {
@@ -1873,17 +1873,17 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
         return nil;
     }
 
-    if (!beamer_au_has_editor(rustInstance)) {
+    if (!beamer_au_has_gui(rustInstance)) {
         return nil;
     }
 
-    const char* html = beamer_au_get_editor_html(rustInstance);
+    const char* html = beamer_au_get_gui_html(rustInstance);
     if (html == NULL) {
         return nil;
     }
 
     uint32_t width = 0, height = 0;
-    beamer_au_get_editor_size(rustInstance, &width, &height);
+    beamer_au_get_gui_size(rustInstance, &width, &height);
     NSSize viewSize = NSMakeSize(width, height);
 
     // Create WebView via beamer-webview C-ABI (shared platform layer)
@@ -1903,16 +1903,16 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
         return nil;
     }
 
-    // Wrap in editor view that manages WebView lifecycle
-    {{COCOA_EDITOR_VIEW_CLASS}}* editorView = [[{{COCOA_EDITOR_VIEW_CLASS}} alloc]
+    // Wrap in GUI view that manages WebView lifecycle
+    {{COCOA_GUI_VIEW_CLASS}}* guiView = [[{{COCOA_GUI_VIEW_CLASS}} alloc]
         initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)
         webviewHandle:webviewHandle];
 
-    // Re-parent the WebView's container into the editor view
-    [container setFrame:editorView.bounds];
+    // Re-parent the WebView's container into the GUI view
+    [container setFrame:guiView.bounds];
     [container setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [editorView addSubview:container];
+    [guiView addSubview:container];
 
-    return editorView;
+    return guiView;
 }
 @end

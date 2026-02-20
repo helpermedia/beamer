@@ -192,14 +192,14 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        Descriptor, EditorDelegate, HasParameters, Processor,
+        Descriptor, GuiDelegate, HasParameters, Processor,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         AuxInputCount, AuxOutputCount, ProcessMode,
         // Bus configuration
         BusInfo, BusType,
-        // Editor types
-        EditorConstraints, NoEditor,
+        // GUI types
+        GuiConstraints, NoGui,
         // Parameter metadata
         NoParameters, ParameterFlags, ParameterInfo,
         // Factory presets

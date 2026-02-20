@@ -29,7 +29,7 @@ pub struct AppexPlistConfig<'a> {
     pub version_int: u32,
     pub plugin_name: Option<&'a str>,
     pub vendor_name: Option<&'a str>,
-    pub has_editor: bool,
+    pub has_gui: bool,
 }
 
 /// Configuration for creating AUv2 component Info.plist

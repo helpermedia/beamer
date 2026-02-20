@@ -60,8 +60,8 @@
 | | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** | EditorDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
-| | EditorConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **GUI** | GuiDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
+| | GuiConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 
 **Legend:**
 - ✅ Tested/Used
@@ -164,11 +164,11 @@
 ---
 
 #### WebView Plugin
-**Goal:** Test EditorDelegate, WebView GUI
+**Goal:** Test GuiDelegate, WebView GUI
 
 **Features to test:**
-- ✅ `EditorDelegate` - WebView integration
-- ✅ `EditorConstraints` - GUI sizing
+- ✅ `GuiDelegate` - WebView integration
+- ✅ `GuiConstraints` - GUI sizing
 - ✅ Parameter communication - GUI ↔ DSP
 - ✅ Custom UI rendering
 

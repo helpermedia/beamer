@@ -2,7 +2,7 @@
 
 A Rust framework for building Audio Unit (AU) and VST3 audio plugins.
 
-Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS, Windows) through modern web UI (planned) from a single codebase.
+Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS, Windows) through modern web UI from a single codebase.
 
 > [!NOTE]
 > Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
@@ -11,9 +11,9 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 
 **Built on Rust's guarantees.** Where most plugin frameworks use C++, Beamer uses Rust. Memory and threading bugs become compile-time errors, not runtime crashes.
 
-**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation, and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
+**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
 
-**Clean separation of concerns.** DSP code stays in safe Rust while the planned WebView architecture enables modern interfaces with HTML, CSS, and JavaScript. Plugin configuration lives in TOML files. Beamer bridges them together and handles plugin format complexity.
+**Clean separation of concerns.** DSP code stays in safe Rust while the WebView architecture enables modern interfaces with HTML, CSS and JavaScript. Plugin configuration lives in TOML files. Beamer bridges them together and handles plugin format complexity.
 
 ## Quick Start
 
@@ -80,7 +80,7 @@ email = "support@example.com"
 
 ## Plugin Structure
 
-Beamer plugins use three structs: **Parameters** (data), **Descriptor** (plugin blueprint), and **Processor** (audio and MIDI). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
+Beamer plugins use three structs: **Parameters** (data), **Descriptor** (plugin blueprint) and **Processor** (audio and MIDI). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
@@ -108,7 +108,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 ## Features
 
 - **Multi-format** - AU (macOS) and VST3 (macOS, Windows)
-- **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing, and more
+- **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing and more
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
@@ -116,7 +116,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore
-- **WebView GUI** (planned) - Modern web-based plugin interfaces
+- **WebView GUI** - Modern web-based plugin interfaces via WKWebView (macOS)
 
 ## Documentation
 

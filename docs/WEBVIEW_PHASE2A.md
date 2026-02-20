@@ -168,7 +168,7 @@ pub struct WebViewPlugView {
     platform: UnsafeCell<Option<beamer_webview::WindowsWebView>>,
 
     config: beamer_webview::WebViewConfig,
-    delegate: UnsafeCell<Box<dyn EditorDelegate>>,
+    delegate: UnsafeCell<Box<dyn GuiDelegate>>,
     size: UnsafeCell<Size>,
     frame: UnsafeCell<*mut IPlugFrame>,
 }
@@ -184,14 +184,14 @@ impl IPlugViewTrait for WebViewPlugView {
 }
 ```
 
-### EditorDelegate integration
+### GuiDelegate integration
 
-`WebViewPlugView::new()` takes an `EditorDelegate` to:
-- Get initial size via `editor_size()`
-- Get constraints via `editor_constraints()` (used by `canResize`)
-- Call `editor_opened()` in `attached()`
-- Call `editor_closed()` in `removed()`
-- Call `editor_resized()` in `onSize()`
+`WebViewPlugView::new()` takes a `GuiDelegate` to:
+- Get initial size via `gui_size()`
+- Get constraints via `gui_constraints()` (used by `canResize`)
+- Call `gui_opened()` in `attached()`
+- Call `gui_closed()` in `removed()`
+- Call `gui_resized()` in `onSize()`
 
 ### createView() in Vst3Processor
 
@@ -200,12 +200,12 @@ Update `Vst3Processor::createView()` in [processor.rs:2275](../crates/beamer-vst
 ```rust
 unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
     let name_str = std::ffi::CStr::from_ptr(name).to_str().unwrap_or("");
-    if name_str != "editor" || !self.config.has_editor {
+    if name_str != "editor" || !self.config.has_gui {
         return std::ptr::null_mut();
     }
 
     let config = beamer_webview::WebViewConfig { html, dev_tools: cfg!(debug_assertions) };
-    let delegate = Box::new(StaticEditorDelegate::new(size, constraints));
+    let delegate = Box::new(StaticGuiDelegate::new(size, constraints));
     let view = WebViewPlugView::new(config, delegate);
     // Return as COM pointer via vst3::ComWrapper
 }
@@ -215,7 +215,7 @@ unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
 
 Both AUv3 and AUv2 use the same C-ABI bridge functions and the same
 `beamer-webview` platform layer. The only difference is how the host requests
-the editor view:
+the GUI view:
 
 - **AUv3**: `requestViewControllerWithCompletionHandler:` returns an
   `NSViewController`
@@ -224,22 +224,22 @@ the editor view:
 
 ### C-ABI bridge additions (`BeamerAuBridge.h`)
 
-New functions to expose editor config from the Rust instance:
+New functions to expose GUI config from the Rust instance:
 
 ```c
-/// Whether the plugin has a custom editor.
-bool beamer_au_has_editor(BeamerAuInstanceHandle instance);
+/// Whether the plugin has a custom GUI.
+bool beamer_au_has_gui(BeamerAuInstanceHandle instance);
 
-/// Get the editor HTML content. Returns NULL if no editor.
-const char* beamer_au_get_editor_html(BeamerAuInstanceHandle instance);
+/// Get the GUI HTML content. Returns NULL if no GUI.
+const char* beamer_au_get_gui_html(BeamerAuInstanceHandle instance);
 
-/// Get the initial editor size.
-void beamer_au_get_editor_size(BeamerAuInstanceHandle instance,
-                               uint32_t* width, uint32_t* height);
+/// Get the initial GUI size.
+void beamer_au_get_gui_size(BeamerAuInstanceHandle instance,
+                            uint32_t* width, uint32_t* height);
 ```
 
-These read directly from the `Config` fields (`has_editor`, `editor_html`,
-`editor_width`, `editor_height`) that are already populated by the
+These read directly from the `Config` fields (`has_gui`, `gui_html`,
+`gui_width`, `gui_height`) that are already populated by the
 `#[beamer::export]` macro.
 
 ### AUv3 wrapper changes (`auv3_wrapper.m`)
@@ -250,19 +250,19 @@ Override `requestViewControllerWithCompletionHandler:` to provide an
 ```objc
 - (void)requestViewControllerWithCompletionHandler:
     (void (^)(NSViewController* _Nullable))completionHandler {
-    if (!beamer_au_has_editor(_rustInstance)) {
+    if (!beamer_au_has_gui(_rustInstance)) {
         completionHandler(nil);
         return;
     }
 
-    const char* html = beamer_au_get_editor_html(_rustInstance);
+    const char* html = beamer_au_get_gui_html(_rustInstance);
     if (html == NULL) {
         completionHandler(nil);
         return;
     }
 
     uint32_t width = 0, height = 0;
-    beamer_au_get_editor_size(_rustInstance, &width, &height);
+    beamer_au_get_gui_size(_rustInstance, &width, &height);
 
     NSViewController* vc = [[NSViewController alloc] init];
     NSView* container = [[NSView alloc]
@@ -289,7 +289,7 @@ Override `requestViewControllerWithCompletionHandler:` to provide an
   sync and async responses.
 - WebView creation goes through the same Rust `MacosWebView` code that VST3
   uses, via the `beamer_webview_create` C-ABI function. This ensures both
-  formats share identical WebView setup, and Phase 2C IPC will work for both.
+  formats share identical WebView setup and Phase 2C IPC will work for both.
 - Dev tools (`setInspectable:`) should be enabled in debug builds. The generated
   template can pass a bool or check a preprocessor flag.
 - `autoresizingMask` is set inside `MacosWebView::attach_to_parent()`, so the
@@ -341,7 +341,7 @@ The generated wrapper needs:
 ```rust
 static CONFIG: Config = Config::new("WebView Demo")
     .with_vendor("Beamer")
-    .with_editor();
+    .with_gui();
 ```
 
 ## Tasks
@@ -357,7 +357,7 @@ static CONFIG: Config = Config::new("WebView Demo")
 - [ ] Wire up `Vst3Processor::createView()` (COM pointer return mechanism)
 
 ### AU integration (AUv3)
-- [ ] Add C-ABI bridge functions (`beamer_au_has_editor`, `beamer_au_get_editor_html`, `beamer_au_get_editor_size`)
+- [ ] Add C-ABI bridge functions (`beamer_au_has_gui`, `beamer_au_get_gui_html`, `beamer_au_get_gui_size`)
 - [ ] Implement `requestViewControllerWithCompletionHandler:` in `auv3_wrapper.m`
 
 ### AU integration (AUv2)
