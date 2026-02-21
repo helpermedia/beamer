@@ -11,12 +11,22 @@ log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSData",
+    "NSDictionary",
+    "NSGeometry",
+    "NSString",
+    "NSURL",
+    "NSURLRequest",
+    "NSURLResponse",
+] }
 objc2-app-kit = { version = "0.3", features = ["NSView"] }
 objc2-web-kit = { version = "0.3", features = [
     "WKWebView",
     "WKWebViewConfiguration",
     "WKNavigation",
+    "WKURLSchemeHandler",
+    "WKURLSchemeTask",
     "objc2-app-kit",
     "objc2-core-foundation",
 ] }

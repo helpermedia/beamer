@@ -26,6 +26,7 @@
 //! - [`Transport`] - DAW transport/timing state
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
+pub mod assets;
 pub mod buffer;
 pub mod buffer_storage;
 pub mod bus_config;
@@ -56,6 +57,7 @@ pub mod types;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
+pub use assets::{EmbeddedAsset, EmbeddedAssets};
 pub use config::{Config, FourCharCode};
 pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};

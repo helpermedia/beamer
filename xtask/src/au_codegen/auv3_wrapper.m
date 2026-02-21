@@ -947,12 +947,6 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
         _webviewHandle = NULL;
     }
 
-    const char* html = beamer_au_get_gui_html(_rustInstance);
-    if (html == NULL) {
-        completionHandler(nil);
-        return;
-    }
-
     uint32_t width = 0, height = 0;
     beamer_au_get_gui_size(_rustInstance, &width, &height);
 
@@ -967,8 +961,17 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 #else
     bool devTools = false;
 #endif
-    void* webviewHandle = beamer_webview_create(
-        (__bridge void*)container, html, devTools);
+
+    const char* devUrl = beamer_au_get_gui_html(_rustInstance);
+    void* webviewHandle;
+    if (devUrl != NULL) {
+        webviewHandle = beamer_webview_create_url(
+            (__bridge void*)container, devUrl, devTools);
+    } else {
+        // Assets already registered globally during plugin init
+        webviewHandle = beamer_webview_create(
+            (__bridge void*)container, devTools);
+    }
     if (webviewHandle == NULL) {
         completionHandler(nil);
         return;

@@ -3,13 +3,15 @@
 use std::ffi::c_void;
 
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSView;
-use objc2_foundation::NSString;
-use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
+use objc2_foundation::{NSString, NSURL, NSURLRequest};
+use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
 use crate::error::{Result, WebViewError};
-use crate::WebViewConfig;
+use crate::platform::macos_scheme::BeamerSchemeHandler;
+use crate::{WebViewConfig, WebViewSource};
 
 /// macOS WebView backed by WKWebView.
 pub struct MacosWebView {
@@ -42,6 +44,20 @@ impl MacosWebView {
         // SAFETY: WKWebViewConfiguration::new is safe when called on the main thread.
         let wk_config = unsafe { WKWebViewConfiguration::new(mtm) };
 
+        // Register custom scheme handler for embedded assets
+        if matches!(config.source, WebViewSource::Assets(_)) {
+            let handler = BeamerSchemeHandler::new(mtm);
+            let handler_proto: &ProtocolObject<dyn WKURLSchemeHandler> =
+                ProtocolObject::from_ref(&*handler);
+            // SAFETY: handler and wk_config are valid; we are on the main thread.
+            unsafe {
+                wk_config.setURLSchemeHandler_forURLScheme(
+                    Some(handler_proto),
+                    &NSString::from_str("beamer"),
+                );
+            };
+        }
+
         // SAFETY: frame and wk_config are valid; we are on the main thread.
         let webview = unsafe {
             WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &wk_config)
@@ -52,9 +68,28 @@ impl MacosWebView {
             unsafe { webview.setInspectable(true) };
         }
 
-        let html_string = NSString::from_str(config.html);
-        // SAFETY: html_string is a valid NSString; base URL is None.
-        unsafe { webview.loadHTMLString_baseURL(&html_string, None) };
+        match &config.source {
+            WebViewSource::Assets(_) => {
+                // Navigate to beamer://localhost/index.html
+                let url_str = NSString::from_str("beamer://localhost/index.html");
+                let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
+                    WebViewError::CreationFailed("failed to create scheme URL".into())
+                })?;
+                let request = NSURLRequest::requestWithURL(&nsurl);
+                // SAFETY: webview and request are valid; we are on the main thread.
+                unsafe { webview.loadRequest(&request) };
+            }
+            WebViewSource::Url(url) => {
+                // Navigate to dev server URL
+                let url_str = NSString::from_str(url);
+                let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
+                    WebViewError::CreationFailed(format!("invalid dev server URL: {url}"))
+                })?;
+                let request = NSURLRequest::requestWithURL(&nsurl);
+                // SAFETY: webview and request are valid; we are on the main thread.
+                unsafe { webview.loadRequest(&request) };
+            }
+        }
 
         parent_view.addSubview(&webview);
 

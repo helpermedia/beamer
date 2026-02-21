@@ -2285,13 +2285,20 @@ where
 
         #[cfg(feature = "webview")]
         {
-            let html = match self.config.gui_html {
-                Some(h) => h,
-                None => return std::ptr::null_mut(),
+            use beamer_webview::{WebViewConfig, WebViewSource};
+
+            let source = if let Some(url) = self.config.gui_url {
+                WebViewSource::Url(url)
+            } else if let Some(assets) = self.config.gui_assets {
+                // Register assets globally so the scheme handler can access them
+                beamer_webview::register_assets(assets);
+                WebViewSource::Assets(assets)
+            } else {
+                return std::ptr::null_mut();
             };
 
-            let config = crate::webview::WebViewConfig {
-                html,
+            let config = WebViewConfig {
+                source,
                 dev_tools: cfg!(debug_assertions),
             };
             debug_assert!(

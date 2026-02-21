@@ -361,11 +361,12 @@ pub struct Config {
     /// Maximum size of each SysEx message in bytes (AU and VST3).
     pub sysex_buffer_size: usize,
 
-    /// HTML content for the WebView GUI.
-    ///
-    /// When set, the framework creates a WebView GUI that loads this HTML.
-    /// Typically populated via `include_str!("../webview/index.html")`.
-    pub gui_html: Option<&'static str>,
+    /// Embedded web assets for the GUI. Set by the proc macro from the
+    /// webview directory contents.
+    pub gui_assets: Option<&'static crate::EmbeddedAssets>,
+
+    /// Dev server URL. Takes priority over `gui_assets` when set.
+    pub gui_url: Option<&'static str>,
 
     /// Initial GUI width in pixels.
     pub gui_width: u32,
@@ -514,7 +515,8 @@ impl Config {
             vst3_controller_id: None,
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
-            gui_html: None,
+            gui_assets: None,
+            gui_url: None,
             gui_width: 0,
             gui_height: 0,
         }
@@ -555,13 +557,18 @@ impl Config {
         self
     }
 
-    /// Set the GUI HTML content and enable the GUI.
-    ///
-    /// This sets both the HTML content and the `has_gui` flag.
-    /// Typically used with `include_str!()` to embed HTML at compile time.
+    /// Set the embedded web assets and enable the GUI.
     #[doc(hidden)]
-    pub const fn with_gui_html(mut self, html: &'static str) -> Self {
-        self.gui_html = Some(html);
+    pub const fn with_gui_assets(mut self, assets: &'static crate::EmbeddedAssets) -> Self {
+        self.gui_assets = Some(assets);
+        self.has_gui = true;
+        self
+    }
+
+    /// Set the dev server URL and enable the GUI.
+    #[doc(hidden)]
+    pub const fn with_gui_url(mut self, url: &'static str) -> Self {
+        self.gui_url = Some(url);
         self.has_gui = true;
         self
     }

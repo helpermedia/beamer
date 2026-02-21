@@ -185,6 +185,8 @@ macro_rules! export_plugin {
 pub mod prelude {
     // Core traits and types
     pub use beamer_core::{
+        // Asset types
+        EmbeddedAsset, EmbeddedAssets,
         // Buffer types
         AuxiliaryBuffers, AuxInput, AuxOutput, Buffer,
         // Bypass handling

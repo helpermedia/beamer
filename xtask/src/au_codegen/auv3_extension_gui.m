@@ -50,18 +50,20 @@
         return; // Already created
     }
 
-    const char* html = beamer_au_get_gui_html(NULL);
-    if (html == NULL) {
-        return;
-    }
-
 #ifdef DEBUG
     bool devTools = true;
 #else
     bool devTools = false;
 #endif
-    _webviewHandle = beamer_webview_create(
-        (__bridge void*)self.view, html, devTools);
+
+    const char* devUrl = beamer_au_get_gui_html(NULL);
+    if (devUrl != NULL) {
+        _webviewHandle = beamer_webview_create_url(
+            (__bridge void*)self.view, devUrl, devTools);
+    } else {
+        _webviewHandle = beamer_webview_create(
+            (__bridge void*)self.view, devTools);
+    }
 }
 
 - (void)viewDidLoad {

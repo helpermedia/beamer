@@ -2227,24 +2227,10 @@ pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
 pub extern "C" fn beamer_au_get_gui_html(
     _instance: BeamerAuInstanceHandle,
 ) -> *const c_char {
-    use std::ffi::CString;
-    use std::sync::OnceLock;
-
-    // Rust &str is not null-terminated. Cache a CString so the pointer
-    // returned to ObjC is valid for the process lifetime.
-    static GUI_HTML_CSTR: OnceLock<Option<CString>> = OnceLock::new();
-
+    // TODO: Phase 2B replaces gui_html with gui_assets/gui_url.
+    // AU wrapper needs updating to use the new scheme handler.
     let result = catch_unwind(|| {
-        let cached = GUI_HTML_CSTR.get_or_init(|| {
-            let config = factory::plugin_config()?;
-            let html = config.gui_html?;
-            CString::new(html).ok()
-        });
-
-        match cached {
-            Some(cstr) => cstr.as_ptr(),
-            None => ptr::null(),
-        }
+        ptr::null()
     });
 
     result.unwrap_or(ptr::null())

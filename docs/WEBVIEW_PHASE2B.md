@@ -75,7 +75,7 @@ the same `objc2` bindings that wry uses.
 ### EmbeddedAsset Type
 
 ```rust
-// beamer-webview/src/assets.rs
+// beamer-core/src/assets.rs
 
 /// A single file embedded at compile time.
 pub struct EmbeddedAsset {
@@ -103,7 +103,9 @@ impl EmbeddedAssets {
 ```
 
 No third-party crate needed. The proc macro generates `include_bytes!()`
-calls and the types are defined in `beamer-webview`.
+calls and the types are defined in `beamer-core` (to avoid a circular
+dependency, since `beamer-webview` depends on `beamer-core`).
+`beamer-webview` re-exports them for convenience.
 
 ### Proc Macro Directory Scanning
 
@@ -254,7 +256,7 @@ static is the simplest way for the scheme handler to access embedded
 assets:
 
 ```rust
-// beamer-webview/src/assets.rs
+// beamer-core/src/assets.rs
 
 use std::sync::OnceLock;
 
@@ -527,9 +529,10 @@ Standard Vite config works out of the box. No special plugins needed:
 ```ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: 'dist',
   },
@@ -644,9 +647,11 @@ gui_size = [600, 400]
     "build": "bunx --bun vite build"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
     "vite": "^6.0.0"
   }
 }
@@ -655,7 +660,6 @@ gui_size = [600, 400]
 ## Tasks
 
 ### beamer-webview changes
-- [ ] Add `EmbeddedAsset`, `EmbeddedAssets` types and global registration
 - [ ] Add MIME type detection
 - [ ] Implement `BeamerSchemeHandler` (`WKURLSchemeHandler`) via
   `define_class!`
@@ -669,6 +673,7 @@ gui_size = [600, 400]
   `NSURLResponse`, `NSHTTPURLResponse`, `NSData`
 
 ### beamer-core changes
+- [ ] Add `EmbeddedAsset`, `EmbeddedAssets` types and global registration
 - [ ] Replace `gui_html` with `gui_assets: Option<&'static EmbeddedAssets>`
 - [ ] Add `gui_url: Option<&'static str>` for dev server mode
 - [ ] Add `with_gui_assets()` and `with_gui_url()` builder methods

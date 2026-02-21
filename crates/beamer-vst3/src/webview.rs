@@ -5,7 +5,7 @@ use std::ffi::c_void;
 
 use beamer_core::{GuiConstraints, GuiDelegate, Size};
 use beamer_webview::platform::PlatformWebView;
-pub use beamer_webview::WebViewConfig;
+pub use beamer_webview::{WebViewConfig, WebViewSource};
 use vst3::Steinberg::*;
 use vst3::Class;
 

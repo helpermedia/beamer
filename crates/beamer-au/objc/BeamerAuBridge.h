@@ -880,10 +880,10 @@ BeamerAuFloat64Support beamer_au_get_float64_support(BeamerAuInstanceHandle _Nul
 bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Get the GUI HTML content.
+ * Get the dev server URL.
  *
- * Returns a pointer to a null-terminated UTF-8 string containing the HTML
- * for the plugin's WebView GUI. Returns NULL if no GUI is configured.
+ * Returns NULL in production mode (embedded assets are used instead).
+ * In dev mode, returns a null-terminated URL like "http://localhost:5173".
  *
  * The returned pointer is valid for the lifetime of the process and must
  * not be freed by the caller.
@@ -891,7 +891,7 @@ bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return Null-terminated HTML string, or NULL if no GUI.
+ * @return Null-terminated URL string, or NULL if not in dev mode.
  */
 const char* _Nullable beamer_au_get_gui_html(BeamerAuInstanceHandle _Nullable instance);
 
@@ -913,23 +913,37 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
 // =============================================================================
 
 /**
- * Create a WebView attached to the given parent NSView.
+ * Create a WebView serving embedded assets via custom URL scheme.
  *
- * This function is provided by the beamer-webview crate and creates a
- * WKWebView using the shared platform layer (same code path as VST3).
+ * Assets must be registered via register_assets() before calling this.
+ * The WebView navigates to beamer://localhost/index.html.
  *
  * Thread Safety: Must be called from the main thread.
  *
  * @param parent    A valid NSView* pointer to attach the WebView to.
- * @param html      Null-terminated UTF-8 HTML content to load.
  * @param dev_tools Whether to enable Web Inspector.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
  *         Must be destroyed with beamer_webview_destroy().
  */
 void* _Nullable beamer_webview_create(void* _Nonnull parent,
-                                      const char* _Nonnull html,
                                       bool dev_tools);
+
+/**
+ * Create a WebView that loads from a URL (dev server mode).
+ *
+ * Thread Safety: Must be called from the main thread.
+ *
+ * @param parent    A valid NSView* pointer to attach the WebView to.
+ * @param url       Null-terminated UTF-8 URL to navigate to.
+ * @param dev_tools Whether to enable Web Inspector.
+ *
+ * @return Opaque handle to the WebView, or NULL on failure.
+ *         Must be destroyed with beamer_webview_destroy().
+ */
+void* _Nullable beamer_webview_create_url(void* _Nonnull parent,
+                                          const char* _Nonnull url,
+                                          bool dev_tools);
 
 /**
  * Update the WebView frame.

@@ -1877,11 +1877,6 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
         return nil;
     }
 
-    const char* html = beamer_au_get_gui_html(rustInstance);
-    if (html == NULL) {
-        return nil;
-    }
-
     uint32_t width = 0, height = 0;
     beamer_au_get_gui_size(rustInstance, &width, &height);
     NSSize viewSize = NSMakeSize(width, height);
@@ -1898,7 +1893,16 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
     if (container == nil) {
         return nil;
     }
-    void* webviewHandle = beamer_webview_create((__bridge void*)container, html, devTools);
+
+    const char* devUrl = beamer_au_get_gui_html(rustInstance);
+    void* webviewHandle;
+    if (devUrl != NULL) {
+        webviewHandle = beamer_webview_create_url(
+            (__bridge void*)container, devUrl, devTools);
+    } else {
+        webviewHandle = beamer_webview_create(
+            (__bridge void*)container, devTools);
+    }
     if (webviewHandle == NULL) {
         return nil;
     }
