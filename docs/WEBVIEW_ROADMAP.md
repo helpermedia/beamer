@@ -46,7 +46,7 @@ The WebView case is different - we only need to *instantiate and configure*
   `beamer-webview` via C-ABI)
 
 ### Phase 2B: Resource Loading
-- Embedded assets (`include_str!`)
+- Embedded assets (`include_bytes!`)
 - Dev server support (hot reload)
 - `cargo xtask` integration
 
@@ -126,5 +126,4 @@ Note: `resources.rs` is Phase 2B scope.
 
 ## Status
 
-**Current**: Planning
-**Next**: Phase 2A - [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)
+**Phase 2A**: Complete - [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)
