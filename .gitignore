@@ -18,3 +18,7 @@ CLAUDE.md
 # Environment
 .env
 .env.local
+
+# Node.js / webview builds
+node_modules/
+examples/*/webview/dist/

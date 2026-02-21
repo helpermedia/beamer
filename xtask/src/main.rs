@@ -233,6 +233,10 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
         )?;
     }
 
+    // Build webview assets (must happen before cargo build so dist/ exists for proc macro)
+    let package_dir = workspace_root.join("examples").join(&config.package);
+    build::build_webview(&package_dir, config.verbose)?;
+
     // Determine paths
     let target_dir = workspace_root.join("target").join(profile_str);
 

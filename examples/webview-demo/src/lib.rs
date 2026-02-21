@@ -1,8 +1,8 @@
 //! WebView demo plugin.
 //!
-//! A minimal example demonstrating WebView GUI support in a Beamer plugin.
-//! The plugin is a simple gain effect with a static HTML GUI loaded
-//! via WKWebView (macOS). Windows support is planned but not yet implemented.
+//! An example demonstrating React + Vite + Tailwind webview GUI support
+//! in a Beamer plugin. Web assets are built with bun and embedded at
+//! compile time. The plugin is a simple gain effect with an interactive GUI.
 
 use beamer::prelude::*;
 
@@ -23,8 +23,8 @@ pub struct WebViewDemoParameters {
 
 /// Plugin descriptor with WebView GUI support.
 ///
-/// The `#[beamer::export]` macro auto-detects `webview/index.html` and
-/// embeds it as the GUI HTML content.
+/// The `#[beamer::export]` macro scans `webview/dist/` at compile time
+/// and embeds all built assets via `include_bytes!()`.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct WebViewDemoDescriptor {

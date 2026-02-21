@@ -7,4 +7,4 @@ vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
 has_gui = true
-gui_size = [400, 300]
+gui_size = [600, 400]

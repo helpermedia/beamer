@@ -539,5 +539,73 @@ pub fn compile_plugin_objc(
     Ok(gen_dir)
 }
 
+/// Detect the package manager to use for a webview project.
+///
+/// Checks for lockfiles in order of specificity, defaulting to bun.
+fn detect_package_manager(webview_dir: &Path) -> (&'static str, &'static [&'static str], &'static [&'static str]) {
+    if webview_dir.join("bun.lock").exists() {
+        ("bun", &["install"], &["run", "build"])
+    } else if webview_dir.join("pnpm-lock.yaml").exists() {
+        ("pnpm", &["install"], &["run", "build"])
+    } else if webview_dir.join("yarn.lock").exists() {
+        ("yarn", &["install"], &["run", "build"])
+    } else if webview_dir.join("package-lock.json").exists() {
+        ("npm", &["install"], &["run", "build"])
+    } else {
+        ("bun", &["install"], &["run", "build"])
+    }
+}
+
+/// Build webview assets if the package has a framework-based webview.
+///
+/// Detects the package manager from lockfiles (defaulting to bun),
+/// runs install + build and verifies that dist/index.html was produced.
+/// Skips silently if there is no webview/package.json (plain HTML or no webview).
+pub fn build_webview(package_dir: &Path, verbose: bool) -> Result<(), String> {
+    let webview_dir = package_dir.join("webview");
+    let package_json = webview_dir.join("package.json");
+
+    if !package_json.exists() {
+        return Ok(()); // Plain HTML or no webview
+    }
+
+    let (cmd, install_args, run_args) = detect_package_manager(&webview_dir);
+
+    crate::status!("  Building webview ({})...", cmd);
+
+    // Install dependencies
+    crate::verbose!(verbose, "    Running {} install...", cmd);
+    let status = Command::new(cmd)
+        .args(install_args)
+        .current_dir(&webview_dir)
+        .status()
+        .map_err(|e| format!("Failed to run {} install: {}", cmd, e))?;
+
+    if !status.success() {
+        return Err(format!("{} install failed", cmd));
+    }
+
+    // Run build
+    crate::verbose!(verbose, "    Running {} run build...", cmd);
+    let status = Command::new(cmd)
+        .args(run_args)
+        .current_dir(&webview_dir)
+        .status()
+        .map_err(|e| format!("Failed to run {} build: {}", cmd, e))?;
+
+    if !status.success() {
+        return Err(format!("{} build failed", cmd));
+    }
+
+    // Verify output
+    let dist_dir = webview_dir.join("dist");
+    if !dist_dir.join("index.html").exists() {
+        return Err("webview build did not produce dist/index.html".to_string());
+    }
+
+    crate::verbose!(verbose, "    Webview build complete");
+    Ok(())
+}
+
 // Include the AUv3 ObjC code generation functions
 include!("au_codegen/auv3_objc.rs");
