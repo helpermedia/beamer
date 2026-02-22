@@ -50,7 +50,7 @@ pub fn bundle_auv2(
     fs::create_dir_all(&macos_dir).map_err(|e| format!("Failed to create MacOS dir: {}", e))?;
     fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
-    // Auto-detect component type, manufacturer, and subtype from plugin source
+    // Auto-detect component type, manufacturer and subtype from plugin source
     let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, _) =
         detect_au_component_info(package, workspace_root);
     crate::verbose!(

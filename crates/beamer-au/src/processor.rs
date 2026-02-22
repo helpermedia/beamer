@@ -289,7 +289,7 @@ where
         outputs: &mut [&mut [f64]],
         num_samples: usize,
     ) -> PluginResult<()> {
-        // Get processor, sample_rate, and conversion_buffers from prepared state
+        // Get processor, sample_rate and conversion_buffers from prepared state
         let (processor, sample_rate, conversion_buffers) = match &mut self.state {
             AuState::Prepared {
                 processor,
@@ -807,7 +807,7 @@ where
 
     fn apply_preset(&self, index: u32) -> bool {
         // Always apply unconditionally - never guard with "if changed".
-        // Hosts may re-send the same preset, and skipping would break preset 0.
+        // Hosts may re-send the same preset and skipping would break preset 0.
         let params = match &self.state {
             AuState::Unprepared { plugin, .. } => plugin.parameters(),
             AuState::Prepared { processor, .. } => processor.parameters(),

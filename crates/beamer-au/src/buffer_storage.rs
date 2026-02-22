@@ -635,7 +635,7 @@ mod tests {
         storage.aux_outputs[0].push(unsafe { aux_output_buffer.as_ptr().add(4) as *mut f32 });
 
         // Build slices
-        // SAFETY: Pointers are still valid (within test scope), and num_samples (4) matches
+        // SAFETY: Pointers are still valid (within test scope) and num_samples (4) matches
         // what was pushed: 2 pointers × 4 samples each covers the 8-element test arrays.
         let aux_input_slices = unsafe { storage.aux_input_slices(4) };
         // SAFETY: Same justification as aux_input_slices - pointers valid, num_samples matches.

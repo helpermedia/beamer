@@ -19,7 +19,7 @@ use crate::objc_block;
 
 /// Extract transport information from AU's host musical context.
 ///
-/// Queries the AU host for tempo, time signature, position, and playback state.
+/// Queries the AU host for tempo, time signature, position and playback state.
 /// Returns `Transport::default()` if the context block is unavailable or if
 /// the query fails.
 ///

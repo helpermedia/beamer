@@ -613,7 +613,7 @@ fn allocate_audio_buffer_list(
     // SAFETY: We allocate memory with the correct layout for AudioBufferList with
     // num_buffers entries. The flexible array member pattern requires manual allocation
     // because Rust can't represent variable-length trailing arrays in structs.
-    // We initialize all fields before returning, and Box::from_raw takes ownership.
+    // We initialize all fields before returning and Box::from_raw takes ownership.
     unsafe {
         let ptr = std::alloc::alloc(layout) as *mut AudioBufferList;
         if ptr.is_null() {
@@ -762,7 +762,7 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
 
 /// Update MidiCcState from incoming MIDI events.
 ///
-/// Scans the MIDI buffer for CC, pitch bend, and channel pressure events,
+/// Scans the MIDI buffer for CC, pitch bend and channel pressure events,
 /// updating the MidiCcState accordingly. This allows plugins to query current
 /// controller values via `ProcessContext::midi_cc()`.
 ///
@@ -1179,7 +1179,7 @@ impl<S: Sample> RenderBlock<S> {
             let buffer = unsafe { list.buffer_at_mut(i) };
             if !buffer.data.is_null() && buffer.data_byte_size > 0 {
                 let byte_count = num_samples * std::mem::size_of::<S>();
-                // SAFETY: buffer.data is non-null (checked above), and we clamp to
+                // SAFETY: buffer.data is non-null (checked above) and we clamp to
                 // data_byte_size to avoid out-of-bounds access.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(
@@ -1517,7 +1517,7 @@ impl<S: Sample> RenderBlock<S> {
         }
 
         // Use pre-allocated storage instead of Vec allocations
-        // SAFETY: We have exclusive access via &self, and AU guarantees
+        // SAFETY: We have exclusive access via &self and AU guarantees
         // single-threaded render calls. The UnsafeCell allows interior
         // mutability for the storage reuse pattern.
         let storage = unsafe { &mut *self.storage.get() };
@@ -1921,7 +1921,7 @@ impl<S: Sample> RenderBlock<S> {
             .collect();
 
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
-        // MidiCcState uses atomics internally, and we only read it.
+        // MidiCcState uses atomics internally and we only read it.
         let cc_state_ptr: Option<*const beamer_core::MidiCcState> =
             plugin_guard.midi_cc_state().map(|cc| cc as *const _);
 

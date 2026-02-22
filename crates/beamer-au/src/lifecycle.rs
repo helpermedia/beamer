@@ -8,7 +8,7 @@
 //!
 //! The state machine mirrors the VST3 wrapper's pattern, providing clean separation
 //! between plugin configuration (unprepared) and audio processing (prepared) phases.
-//! This design ensures that audio resources are only allocated when needed, and that
+//! This design ensures that audio resources are only allocated when needed and that
 //! parameters remain accessible before and after allocation.
 //!
 //! # State Transitions

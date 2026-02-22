@@ -8,7 +8,7 @@
 //! The AU wrapper uses AUv2-style `.component` bundles with a modern v3 `AUAudioUnit` internally:
 //! - **AUv2 bundle**: Simple `.component` distribution, works with ad-hoc code signing
 //! - **v3 AUAudioUnit**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for modern API
-//! - **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
+//! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 
 /// Generate Audio Unit export entry points.
 ///

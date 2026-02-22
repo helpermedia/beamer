@@ -893,7 +893,18 @@ bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
  * @param instance Handle to the plugin instance.
  * @return Null-terminated URL string, or NULL if not in dev mode.
  */
-const char* _Nullable beamer_au_get_gui_html(BeamerAuInstanceHandle _Nullable instance);
+const char* _Nullable beamer_au_get_gui_url(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Register embedded GUI assets for the custom URL scheme handler.
+ *
+ * Must be called before beamer_webview_create() so that the
+ * beamer:// scheme handler can serve embedded files. Safe to call
+ * multiple times (internally synchronized via OnceLock).
+ *
+ * Thread Safety: Safe to call from any thread.
+ */
+void beamer_au_register_gui_assets(void);
 
 /**
  * Get the initial GUI size in pixels.

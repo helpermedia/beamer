@@ -962,13 +962,13 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     bool devTools = false;
 #endif
 
-    const char* devUrl = beamer_au_get_gui_html(_rustInstance);
+    const char* devUrl = beamer_au_get_gui_url(_rustInstance);
     void* webviewHandle;
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url(
             (__bridge void*)container, devUrl, devTools);
     } else {
-        // Assets already registered globally during plugin init
+        beamer_au_register_gui_assets();
         webviewHandle = beamer_webview_create(
             (__bridge void*)container, devTools);
     }

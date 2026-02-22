@@ -29,7 +29,7 @@
 // for passing valid pointers. Marking them `unsafe` would be unusual for C FFI.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::{Arc, Mutex};
@@ -2212,11 +2212,14 @@ pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
     result.unwrap_or(false)
 }
 
-/// Get the GUI HTML content.
+/// Get the dev server URL.
 ///
-/// Returns a pointer to a null-terminated UTF-8 string, or NULL if the
-/// plugin has no GUI HTML. The pointer is valid for the lifetime of
-/// the process (cached internally on first call).
+/// Returns NULL in production mode (embedded assets are served via the
+/// custom URL scheme instead). In dev mode, returns a null-terminated
+/// URL like "http://localhost:5173".
+///
+/// The returned pointer is valid for the lifetime of the process
+/// (cached in a static OnceLock) and must not be freed by the caller.
 ///
 /// # Safety
 ///
@@ -2224,16 +2227,50 @@ pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
 /// - Thread safety: Safe to call from any thread
 /// - The returned pointer must not be freed by the caller
 #[no_mangle]
-pub extern "C" fn beamer_au_get_gui_html(
+pub extern "C" fn beamer_au_get_gui_url(
     _instance: BeamerAuInstanceHandle,
 ) -> *const c_char {
-    // TODO: Phase 2B replaces gui_html with gui_assets/gui_url.
-    // AU wrapper needs updating to use the new scheme handler.
+    use std::sync::OnceLock;
+    static CACHED_URL: OnceLock<Option<CString>> = OnceLock::new();
+
     let result = catch_unwind(|| {
-        ptr::null()
+        let cached = CACHED_URL.get_or_init(|| {
+            let config = factory::plugin_config()?;
+            let url = config.gui_url?;
+            CString::new(url).ok()
+        });
+
+        match cached {
+            Some(cstr) => cstr.as_ptr(),
+            None => ptr::null(),
+        }
     });
 
     result.unwrap_or(ptr::null())
+}
+
+/// Register embedded GUI assets for the scheme handler.
+///
+/// Must be called before `beamer_webview_create()` so the custom URL
+/// scheme handler can serve embedded files. Safe to call multiple times
+/// (the registration uses `OnceLock` internally).
+///
+/// # Safety
+///
+/// - Thread safety: Safe to call from any thread (internally synchronized)
+#[cfg(feature = "webview")]
+#[no_mangle]
+pub extern "C" fn beamer_au_register_gui_assets() {
+    let _ = catch_unwind(|| {
+        let config = match factory::plugin_config() {
+            Some(c) => c,
+            None => return,
+        };
+
+        if let Some(assets) = config.gui_assets {
+            beamer_webview::register_assets(assets);
+        }
+    });
 }
 
 /// Get the initial GUI size in pixels.

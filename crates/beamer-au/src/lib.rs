@@ -27,7 +27,7 @@
 //!
 //! Uses a **hybrid Objective-C/Rust architecture**:
 //! - **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
-//! - **Rust**: All DSP, parameters, and plugin logic via C-ABI bridge functions
+//! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 //!
 //! ```text
 //! User Plugin (implements beamer_core::Descriptor)
