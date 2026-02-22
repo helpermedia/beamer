@@ -896,15 +896,26 @@ bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
 const char* _Nullable beamer_au_get_gui_url(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Register embedded GUI assets for the custom URL scheme handler.
+ * Get the embedded GUI assets pointer.
  *
- * Must be called before beamer_webview_create() so that the
- * beamer:// scheme handler can serve embedded files. Safe to call
- * multiple times (internally synchronized via OnceLock).
+ * Returns an opaque pointer suitable for passing to beamer_webview_create().
+ * Returns NULL if no assets are configured (e.g. dev server mode).
  *
  * Thread Safety: Safe to call from any thread.
  */
-void beamer_au_register_gui_assets(void);
+const void* _Nullable beamer_au_get_gui_assets(void);
+
+/**
+ * Write the 4-byte plugin subtype code to out.
+ *
+ * The code is used to generate a unique ObjC class name per plugin type,
+ * allowing multiple Beamer plugins to coexist in the same host process.
+ *
+ * Thread Safety: Safe to call from any thread.
+ *
+ * @param out Pointer to at least 4 writable bytes.
+ */
+void beamer_au_get_plugin_code(uint8_t* _Nonnull out);
 
 /**
  * Get the initial GUI size in pixels.
@@ -926,18 +937,23 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
 /**
  * Create a WebView serving embedded assets via custom URL scheme.
  *
- * Assets must be registered via register_assets() before calling this.
- * The WebView navigates to beamer://localhost/index.html.
+ * Each plugin passes its 4-byte subtype code so the scheme handler gets a
+ * unique ObjC class name, allowing multiple Beamer plugins to coexist in
+ * the same host process.
  *
  * Thread Safety: Must be called from the main thread.
  *
- * @param parent    A valid NSView* pointer to attach the WebView to.
- * @param dev_tools Whether to enable Web Inspector.
+ * @param parent      A valid NSView* pointer to attach the WebView to.
+ * @param assets      Opaque assets pointer from beamer_au_get_gui_assets().
+ * @param plugin_code Pointer to 4 bytes of the plugin subtype code.
+ * @param dev_tools   Whether to enable Web Inspector.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
  *         Must be destroyed with beamer_webview_destroy().
  */
 void* _Nullable beamer_webview_create(void* _Nonnull parent,
+                                      const void* _Nonnull assets,
+                                      const uint8_t* _Nonnull plugin_code,
                                       bool dev_tools);
 
 /**
@@ -945,15 +961,17 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
  *
  * Thread Safety: Must be called from the main thread.
  *
- * @param parent    A valid NSView* pointer to attach the WebView to.
- * @param url       Null-terminated UTF-8 URL to navigate to.
- * @param dev_tools Whether to enable Web Inspector.
+ * @param parent      A valid NSView* pointer to attach the WebView to.
+ * @param url         Null-terminated UTF-8 URL to navigate to.
+ * @param plugin_code Pointer to 4 bytes of the plugin subtype code.
+ * @param dev_tools   Whether to enable Web Inspector.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
  *         Must be destroyed with beamer_webview_destroy().
  */
 void* _Nullable beamer_webview_create_url(void* _Nonnull parent,
                                           const char* _Nonnull url,
+                                          const uint8_t* _Nonnull plugin_code,
                                           bool dev_tools);
 
 /**

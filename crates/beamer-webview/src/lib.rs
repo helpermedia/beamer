@@ -9,21 +9,22 @@ mod ffi;
 pub mod mime;
 pub mod platform;
 
-pub use assets::{EmbeddedAsset, EmbeddedAssets, register_assets};
+pub use assets::{EmbeddedAsset, EmbeddedAssets};
 pub use error::{Result, WebViewError};
-
-/// Content source for a WebView.
-pub enum WebViewSource<'a> {
-    /// Serve embedded assets via custom URL scheme.
-    Assets(&'a EmbeddedAssets),
-    /// Navigate to a URL (dev server).
-    Url(&'a str),
-}
 
 /// Configuration for a WebView GUI.
 pub struct WebViewConfig<'a> {
-    /// Content source.
-    pub source: WebViewSource<'a>,
+    /// 4-byte plugin subtype code used to generate a unique ObjC class name
+    /// per plugin type so multiple plugins can coexist in the same host process.
+    pub plugin_code: [u8; 4],
+    /// Embedded web assets. When set, the WebView navigates to
+    /// `beamer://localhost/index.html` and a per-instance scheme handler
+    /// serves files from this table.
+    pub assets: Option<&'static EmbeddedAssets>,
+    /// Dev server URL. When set, the WebView navigates here instead of
+    /// using the custom scheme handler. The lifetime allows FFI paths to
+    /// pass a short-lived reference without claiming `'static`.
+    pub url: Option<&'a str>,
     /// Whether to enable developer tools.
     pub dev_tools: bool,
 }

@@ -2285,20 +2285,16 @@ where
 
         #[cfg(feature = "webview")]
         {
-            use beamer_webview::{WebViewConfig, WebViewSource};
+            use beamer_webview::WebViewConfig;
 
-            let source = if let Some(url) = self.config.gui_url {
-                WebViewSource::Url(url)
-            } else if let Some(assets) = self.config.gui_assets {
-                // Register assets globally so the scheme handler can access them
-                beamer_webview::register_assets(assets);
-                WebViewSource::Assets(assets)
-            } else {
+            if self.config.gui_url.is_none() && self.config.gui_assets.is_none() {
                 return std::ptr::null_mut();
-            };
+            }
 
             let config = WebViewConfig {
-                source,
+                plugin_code: self.config.subtype.0,
+                assets: self.config.gui_assets,
+                url: self.config.gui_url,
                 dev_tools: cfg!(debug_assertions),
             };
             debug_assert!(

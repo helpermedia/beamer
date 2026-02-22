@@ -966,15 +966,18 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     bool devTools = false;
 #endif
 
+    uint8_t pluginCode[4];
+    beamer_au_get_plugin_code(pluginCode);
+
     const char* devUrl = beamer_au_get_gui_url(_rustInstance);
     void* webviewHandle;
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url(
-            (__bridge void*)container, devUrl, devTools);
+            (__bridge void*)container, devUrl, pluginCode, devTools);
     } else {
-        beamer_au_register_gui_assets();
+        const void* assets = beamer_au_get_gui_assets();
         webviewHandle = beamer_webview_create(
-            (__bridge void*)container, devTools);
+            (__bridge void*)container, assets, pluginCode, devTools);
     }
     if (webviewHandle == NULL) {
         completionHandler(nil);

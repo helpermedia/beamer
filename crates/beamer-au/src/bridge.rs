@@ -2249,28 +2249,61 @@ pub extern "C" fn beamer_au_get_gui_url(
     result.unwrap_or(ptr::null())
 }
 
-/// Register embedded GUI assets for the scheme handler.
+/// Get the embedded GUI assets pointer.
 ///
-/// Must be called before `beamer_webview_create()` so the custom URL
-/// scheme handler can serve embedded files. Safe to call multiple times
-/// (the registration uses `OnceLock` internally).
+/// Returns an opaque pointer suitable for passing to `beamer_webview_create()`.
+/// Returns null if no assets are configured (e.g. dev server mode).
 ///
 /// # Safety
 ///
-/// - Thread safety: Safe to call from any thread (internally synchronized)
+/// - Thread safety: Safe to call from any thread
+/// - The returned pointer is valid for the lifetime of the process
+///   (it points into static data embedded in the binary)
 #[cfg(feature = "webview")]
 #[no_mangle]
-pub extern "C" fn beamer_au_register_gui_assets() {
-    let _ = catch_unwind(|| {
+pub extern "C" fn beamer_au_get_gui_assets() -> *const std::ffi::c_void {
+    let result = catch_unwind(|| {
+        match factory::plugin_config().and_then(|c| c.gui_assets) {
+            Some(assets) => {
+                assets as *const beamer_webview::EmbeddedAssets as *const std::ffi::c_void
+            }
+            None => ptr::null(),
+        }
+    });
+
+    result.unwrap_or(ptr::null())
+}
+
+/// Write the 4-byte plugin subtype code to `out`.
+///
+/// The code is used to generate a unique ObjC class name per plugin type,
+/// allowing multiple Beamer plugins to coexist in the same host process.
+///
+/// # Safety
+///
+/// - `out` must point to at least 4 writable bytes
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_plugin_code(out: *mut u8) {
+    if out.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return,
         };
 
-        if let Some(assets) = config.gui_assets {
-            beamer_webview::register_assets(assets);
+        let bytes = config.subtype.0;
+        // SAFETY: caller guarantees out points to at least 4 writable bytes.
+        unsafe {
+            *out = bytes[0];
+            *out.add(1) = bytes[1];
+            *out.add(2) = bytes[2];
+            *out.add(3) = bytes[3];
         }
-    });
+    }));
 }
 
 /// Get the initial GUI size in pixels.

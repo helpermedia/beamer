@@ -12,33 +12,53 @@ mod macos_ffi {
     use std::ptr;
 
     use crate::platform::macos::MacosWebView;
-    use crate::{WebViewConfig, WebViewSource};
+    use crate::WebViewConfig;
 
     /// Create a WebView serving embedded assets via custom scheme.
     ///
-    /// Assets must be registered via `register_assets()` before calling this.
+    /// Each plugin must pass its 4-byte plugin code so that the scheme handler
+    /// gets a unique ObjC class name (avoiding collisions when multiple Beamer
+    /// plugins are loaded in the same host process).
+    ///
     /// Returns an opaque handle, or null on failure.
     ///
     /// # Safety
     ///
     /// - `parent` must be a valid `NSView*` pointer
+    /// - `assets` must be a valid `*const EmbeddedAssets` with `'static` lifetime
+    /// - `plugin_code` must point to exactly 4 ASCII bytes
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create(
         parent: *mut c_void,
+        assets: *const c_void,
+        plugin_code: *const u8,
         dev_tools: bool,
     ) -> *mut c_void {
-        if parent.is_null() {
+        if parent.is_null() || assets.is_null() || plugin_code.is_null() {
             return ptr::null_mut();
         }
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            // The scheme handler reads from GLOBAL_ASSETS (set via register_assets()),
-            // not from config.source. The Assets variant here only selects the
-            // beamer:// navigation path in attach_to_parent.
-            let empty = beamer_core::EmbeddedAssets::new(&[]);
+            // SAFETY: caller guarantees plugin_code points to 4 bytes.
+            let code = unsafe {
+                [
+                    *plugin_code,
+                    *plugin_code.add(1),
+                    *plugin_code.add(2),
+                    *plugin_code.add(3),
+                ]
+            };
+
+            // SAFETY: caller guarantees assets is a valid *const EmbeddedAssets
+            // with 'static lifetime (it comes from Config.gui_assets).
+            let assets_ref: &'static crate::assets::EmbeddedAssets =
+                unsafe { &*(assets as *const crate::assets::EmbeddedAssets) };
+
             let config = WebViewConfig {
-                source: WebViewSource::Assets(&empty),
+                plugin_code: code,
+                assets: Some(assets_ref),
+                url: None,
                 dev_tools,
             };
 
@@ -60,14 +80,16 @@ mod macos_ffi {
     ///
     /// - `parent` must be a valid `NSView*` pointer
     /// - `url` must be a valid null-terminated UTF-8 C string
+    /// - `plugin_code` must point to exactly 4 ASCII bytes
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create_url(
         parent: *mut c_void,
         url: *const c_char,
+        plugin_code: *const u8,
         dev_tools: bool,
     ) -> *mut c_void {
-        if parent.is_null() || url.is_null() {
+        if parent.is_null() || url.is_null() || plugin_code.is_null() {
             return ptr::null_mut();
         }
 
@@ -75,8 +97,20 @@ mod macos_ffi {
             // SAFETY: caller guarantees url is a valid C string.
             let url_str = unsafe { CStr::from_ptr(url) }.to_str().ok()?;
 
+            // SAFETY: caller guarantees plugin_code points to 4 bytes.
+            let code = unsafe {
+                [
+                    *plugin_code,
+                    *plugin_code.add(1),
+                    *plugin_code.add(2),
+                    *plugin_code.add(3),
+                ]
+            };
+
             let config = WebViewConfig {
-                source: WebViewSource::Url(url_str),
+                plugin_code: code,
+                assets: None,
+                url: Some(url_str),
                 dev_tools,
             };
 

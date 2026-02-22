@@ -72,14 +72,17 @@
     bool devTools = false;
 #endif
 
+    uint8_t pluginCode[4];
+    beamer_au_get_plugin_code(pluginCode);
+
     const char* devUrl = beamer_au_get_gui_url(NULL);
     if (devUrl != NULL) {
         _webviewHandle = beamer_webview_create_url(
-            (__bridge void*)self.view, devUrl, devTools);
+            (__bridge void*)self.view, devUrl, pluginCode, devTools);
     } else {
-        beamer_au_register_gui_assets();
+        const void* assets = beamer_au_get_gui_assets();
         _webviewHandle = beamer_webview_create(
-            (__bridge void*)self.view, devTools);
+            (__bridge void*)self.view, assets, pluginCode, devTools);
     }
 }
 
