@@ -41,13 +41,29 @@
         initWithFrame:NSMakeRect(0, 0, _guiWidth, _guiHeight)];
     self.view = container;
     self.preferredContentSize = NSMakeSize(_guiWidth, _guiHeight);
+
+    // Create the WebView early so content can load before the host
+    // shows the window, matching the timing VST3 and AUv2 get.
+    [self _ensureWebView];
 }
 
 - (void)viewWillAppear {
     [super viewWillAppear];
 
+    // Recreate the WebView if it was destroyed on close.
+    [self _ensureWebView];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // Keep frame-based layout; pin to top-left
+    self.view.translatesAutoresizingMaskIntoConstraints = YES;
+    self.view.autoresizingMask = NSViewMaxXMargin | NSViewMinYMargin;
+}
+
+- (void)_ensureWebView {
     if (_webviewHandle != NULL) {
-        return; // Already created
+        return;
     }
 
 #ifdef DEBUG
@@ -65,13 +81,6 @@
         _webviewHandle = beamer_webview_create(
             (__bridge void*)self.view, devTools);
     }
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    // Keep frame-based layout; pin to top-left
-    self.view.translatesAutoresizingMaskIntoConstraints = YES;
-    self.view.autoresizingMask = NSViewMaxXMargin | NSViewMinYMargin;
 }
 
 - (void)viewDidLayout {

@@ -909,20 +909,24 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 // MARK: - View Configuration
 // =============================================================================
 
-// Only accept zero-sized view configurations. Logic and GarageBand offer a
-// {0, 0} entry meaning "use the view controller's preferredContentSize".
-// Accepting only that entry makes the host defer to our configured GUI
-// size instead of picking an oversized screen-resolution layout.
+// Prefer zero-sized view configurations so Logic and GarageBand defer to
+// preferredContentSize. If no {0, 0} entry exists (Reaper, other hosts),
+// accept all configurations so the host knows we have a GUI.
 - (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations
     API_AVAILABLE(macos(10.13), ios(11)) {
-    NSMutableIndexSet* indices = [[NSMutableIndexSet alloc] init];
+    NSMutableIndexSet* zeroSized = [[NSMutableIndexSet alloc] init];
     for (NSUInteger i = 0; i < availableViewConfigurations.count; i++) {
         AUAudioUnitViewConfiguration* config = availableViewConfigurations[i];
         if (config.width + config.height == 0) {
-            [indices addIndex:i];
+            [zeroSized addIndex:i];
         }
     }
-    return indices;
+    if ([zeroSized count] > 0) {
+        return zeroSized;
+    }
+    // No {0, 0} entry - accept all so the host shows the GUI.
+    return [NSIndexSet indexSetWithIndexesInRange:
+        NSMakeRange(0, availableViewConfigurations.count)];
 }
 
 // =============================================================================

@@ -6,7 +6,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSView;
-use objc2_foundation::{NSString, NSURL, NSURLRequest};
+use objc2_foundation::{NSNumber, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
 use crate::error::{Result, WebViewError};
@@ -67,6 +67,13 @@ impl MacosWebView {
             // SAFETY: setInspectable is safe to call on a valid WKWebView.
             unsafe { webview.setInspectable(true) };
         }
+
+        // Disable the default white background so the view is transparent
+        // while content loads. This prevents a white flash on startup.
+        let key = NSString::from_str("drawsBackground");
+        let value = NSNumber::new_bool(false);
+        // SAFETY: WKWebView supports KVC for drawsBackground; we are on the main thread.
+        let _: () = unsafe { objc2::msg_send![&webview, setValue: &*value, forKey: &*key] };
 
         match &config.source {
             WebViewSource::Assets(_) => {
