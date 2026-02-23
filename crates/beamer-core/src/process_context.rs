@@ -127,7 +127,7 @@ impl FrameRate {
 
 /// Host transport and timing information.
 ///
-/// Contains tempo, time signature, playback position, and transport state.
+/// Contains tempo, time signature, playback position and transport state.
 /// All timing fields are `Option<T>` because not all hosts provide all data.
 /// Playback state fields (`is_playing`, etc.) are always valid.
 ///
@@ -324,7 +324,7 @@ impl Transport {
 
 /// Complete processing context for a single `process()` call.
 ///
-/// Contains sample rate, buffer size, transport/timing information, and
+/// Contains sample rate, buffer size, transport/timing information and
 /// optional MIDI CC state for direct access to controller values.
 /// Passed as the third parameter to [`Processor::process()`].
 ///

@@ -240,8 +240,10 @@ fn allocate_processing_resources(
     let midi_cc_state =
         midi_cc_config.map(|cfg| Box::new(beamer_core::MidiCcState::from_config(&cfg)));
 
-    // Pre-allocate MIDI output buffer for process_midi()
-    let midi_output_buffer = Box::new(beamer_core::MidiBuffer::new());
+    // Pre-allocate MIDI output buffer for process_midi().
+    // Uses new_boxed() to construct directly on the heap, avoiding a ~80KB
+    // stack temporary that could overflow in debug builds.
+    let midi_output_buffer = beamer_core::MidiBuffer::new_boxed();
 
     (conversion_buffers, midi_cc_state, midi_output_buffer)
 }

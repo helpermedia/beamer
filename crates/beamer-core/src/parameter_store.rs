@@ -8,8 +8,8 @@
 //! Beamer provides two parameter traits that work together:
 //!
 //! - **[`Parameters`](crate::parameter_types::Parameters)** (recommended): High-level trait with
-//!   type-erased iteration, automatic state serialization, and support for parameter
-//!   types like `FloatParameter`, `IntParameter`, and `BoolParameter`. Use `#[derive(Parameters)]`
+//!   type-erased iteration, automatic state serialization and support for parameter
+//!   types like `FloatParameter`, `IntParameter` and `BoolParameter`. Use `#[derive(Parameters)]`
 //!   for automatic implementation.
 //!
 //! - **[`ParameterStore`]**: Low-level trait for direct host communication. Provides

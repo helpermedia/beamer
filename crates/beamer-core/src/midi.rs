@@ -1170,7 +1170,7 @@ impl RpnTracker {
 
 /// Combines MSB and LSB controller values into a single 14-bit normalized value.
 ///
-/// MIDI CC 0-31 are MSB controllers, and CC 32-63 are their corresponding LSB pairs.
+/// MIDI CC 0-31 are MSB controllers and CC 32-63 are their corresponding LSB pairs.
 /// Together they provide 14-bit resolution (0-16383) instead of 7-bit (0-127).
 ///
 /// # Arguments
@@ -1265,7 +1265,7 @@ pub const fn split_14bit_raw(value: u16) -> (u8, u8) {
 /// VST3 Note Expression type IDs.
 ///
 /// These constants identify the type of per-note expression in
-/// [`NoteExpressionValue`], [`NoteExpressionInt`], and [`NoteExpressionText`] events.
+/// [`NoteExpressionValue`], [`NoteExpressionInt`] and [`NoteExpressionText`] events.
 pub mod note_expression {
     /// Per-note volume (0.0 = silent, 1.0 = full).
     pub const VOLUME: u32 = 0;
@@ -1788,11 +1788,38 @@ impl MidiBuffer {
     ///
     /// Uses `std::array::from_fn` with `MidiEvent::default()` since
     /// `MidiEvent` is no longer `Copy` (due to `Box<SysEx>`).
+    ///
+    /// **Warning**: This places ~80KB on the stack. Avoid calling from
+    /// threads with small stacks (e.g. audio IO threads). Use
+    /// [`new_boxed`](Self::new_boxed) instead for heap allocation.
     pub fn new() -> Self {
         Self {
             events: std::array::from_fn(|_| MidiEvent::default()),
             len: 0,
             overflowed: false,
+        }
+    }
+
+    /// Create a new empty MIDI buffer directly on the heap.
+    ///
+    /// Unlike `Box::new(MidiBuffer::new())`, this never creates the
+    /// `[MidiEvent; 1024]` array as a stack temporary. Safe to call from
+    /// any thread, including audio IO threads with small stacks (~544KB)
+    /// where debug builds don't optimize away the temporary.
+    pub fn new_boxed() -> Box<Self> {
+        let mut boxed = Box::<Self>::new_uninit();
+        let ptr = boxed.as_mut_ptr();
+        // SAFETY: We fully initialize all three fields before calling
+        // assume_init. Each MidiEvent::default() is a small stack value
+        // (~80 bytes) written directly to the heap through the pointer.
+        unsafe {
+            std::ptr::addr_of_mut!((*ptr).len).write(0);
+            std::ptr::addr_of_mut!((*ptr).overflowed).write(false);
+            let events_ptr = std::ptr::addr_of_mut!((*ptr).events) as *mut MidiEvent;
+            for i in 0..MAX_MIDI_EVENTS {
+                events_ptr.add(i).write(MidiEvent::default());
+            }
+            boxed.assume_init()
         }
     }
 
@@ -1852,11 +1879,9 @@ impl MidiBuffer {
     }
 }
 
-impl Default for MidiBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// No Default impl: MidiBuffer is ~80KB and must not be stack-allocated
+// accidentally via mem::take, Box::default(), etc. Use new_boxed() for
+// heap allocation or new() only when you know the stack can handle it.
 
 // =============================================================================
 // Note Expression Controller Types (VST3 SDK 3.5.0)
@@ -2308,5 +2333,48 @@ impl MpeInputDeviceSettings {
             member_begin_channel: begin,
             member_end_channel: end,
         }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midi_buffer_new_boxed_is_empty() {
+        let buf = MidiBuffer::new_boxed();
+        assert_eq!(buf.len(), 0);
+        assert!(buf.is_empty());
+        assert!(!buf.has_overflowed());
+    }
+
+    #[test]
+    fn midi_buffer_new_boxed_push_and_iterate() {
+        let mut buf = MidiBuffer::new_boxed();
+
+        let event = MidiEvent::note_on(0, 0, 60, 0.8, 60, 0.0, 0);
+        assert!(buf.push(event.clone()));
+        assert_eq!(buf.len(), 1);
+
+        let first = buf.iter().next().unwrap();
+        assert_eq!(first.sample_offset, 0);
+        if let MidiEventKind::NoteOn(n) = &first.event {
+            assert_eq!(n.pitch, 60);
+        } else {
+            panic!("expected NoteOn");
+        }
+    }
+
+    #[test]
+    fn midi_buffer_new_boxed_clear() {
+        let mut buf = MidiBuffer::new_boxed();
+        buf.push(MidiEvent::note_on(0, 0, 60, 0.8, 60, 0.0, 0));
+        buf.clear();
+        assert!(buf.is_empty());
+        assert!(!buf.has_overflowed());
     }
 }

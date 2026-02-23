@@ -696,11 +696,16 @@ where
         // Check if we have factory presets for automatic MIDI PC mapping
         let preset_count = Presets::count();
 
-        // Take the pre-allocated buffer temporarily to avoid borrow issues
-        let mut core_output = match &mut self.state {
+        // Borrow processor and midi_output_buffer simultaneously from the
+        // prepared state. This avoids mem::take, which would construct a new
+        // default MidiBuffer on the stack - a ~80KB [MidiEvent; 1024] that
+        // overflows the audio IO thread's small stack in debug builds.
+        let (processor, core_output) = match &mut self.state {
             AuState::Prepared {
-                midi_output_buffer, ..
-            } => std::mem::take(midi_output_buffer),
+                processor,
+                midi_output_buffer,
+                ..
+            } => (processor, midi_output_buffer.as_mut()),
             _ => {
                 // Not prepared - pass through events unchanged
                 for event in input {
@@ -712,12 +717,6 @@ where
 
         // Clear for reuse
         core_output.clear();
-
-        // Get processor reference
-        let processor = match &mut self.state {
-            AuState::Prepared { processor, .. } => processor,
-            _ => unreachable!(), // We already matched Prepared above
-        };
 
         // =========================================================================
         // MIDI Program Change → Factory Preset Mapping
@@ -758,38 +757,22 @@ where
                     .collect();
 
                 // Process remaining events through the plugin
-                processor.process_midi(&filtered, &mut core_output);
+                processor.process_midi(&filtered, core_output);
 
                 // Copy events back to AU's MidiBuffer
                 for event in core_output.iter() {
                     let _ = output.push(event.clone());
-                }
-
-                // Put buffer back
-                if let AuState::Prepared {
-                    midi_output_buffer, ..
-                } = &mut self.state
-                {
-                    *midi_output_buffer = core_output;
                 }
                 return;
             }
         }
 
         // No PC filtering needed - process all events directly
-        processor.process_midi(input, &mut core_output);
+        processor.process_midi(input, core_output);
 
         // Copy events back to AU's MidiBuffer
         for event in core_output.iter() {
             let _ = output.push(event.clone());
-        }
-
-        // Put buffer back
-        if let AuState::Prepared {
-            midi_output_buffer, ..
-        } = &mut self.state
-        {
-            *midi_output_buffer = core_output;
         }
     }
 

@@ -8,7 +8,7 @@ This crate provides the shared traits and types used by all plugin formats (AU, 
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
 - **Parameter types**: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter` with smoothing
-- **Transport info**: DAW tempo, time signature, and position data
+- **Transport info**: DAW tempo, time signature and position data
 
 ## Usage
 

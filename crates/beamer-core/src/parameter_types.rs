@@ -2,7 +2,7 @@
 //!
 //! This module provides the recommended way to define plugin parameters. It includes
 //! parameter types ([`FloatParameter`], [`IntParameter`], [`BoolParameter`], [`EnumParameter`]) that
-//! encapsulate atomic storage, range mapping, and value formatting.
+//! encapsulate atomic storage, range mapping and value formatting.
 //!
 //! # The `Parameters` Trait (Recommended)
 //!
@@ -53,7 +53,7 @@ use crate::types::{ParameterId, ParameterValue};
 /// and runtime lookup without knowing the concrete parameter type.
 ///
 /// All implementations must be thread-safe (`Send + Sync`) for
-/// concurrent access from audio, UI, and host threads.
+/// concurrent access from audio, UI and host threads.
 pub trait ParameterRef: Send + Sync {
     /// Get the parameter's unique ID.
     fn id(&self) -> ParameterId;

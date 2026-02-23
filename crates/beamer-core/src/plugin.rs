@@ -557,7 +557,7 @@ pub trait Processor: HasParameters {
     ///
     /// * `buffer` - Main audio bus (stereo/surround input and output)
     /// * `aux` - Auxiliary buses (sidechain, aux sends) - ignore if not needed
-    /// * `context` - Processing context with sample rate, buffer size, and transport info
+    /// * `context` - Processing context with sample rate, buffer size and transport info
     ///
     /// # Real-Time Safety
     ///
@@ -743,7 +743,7 @@ pub trait Processor: HasParameters {
     ///
     /// Override this to return `true` if your plugin implements `process_f64()` natively.
     /// When false (default), the framework will automatically convert 64-bit host buffers
-    /// to 32-bit, call `process()`, and convert back.
+    /// to 32-bit, call `process()` and convert back.
     ///
     /// # Performance Considerations
     ///
@@ -926,7 +926,7 @@ pub trait Processor: HasParameters {
 ///
 /// This is the primary trait that plugin authors implement to create a complete
 /// audio plugin. It holds parameters and configuration that doesn't depend on
-/// sample rate, and transforms into a [`Processor`] via [`Descriptor::prepare()`]
+/// sample rate and transforms into a [`Processor`] via [`Descriptor::prepare()`]
 /// when audio configuration becomes available.
 ///
 /// # Two-Phase Lifecycle

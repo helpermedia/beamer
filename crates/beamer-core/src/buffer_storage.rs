@@ -391,7 +391,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
             .iter()
             .map(|&ptr| {
                 // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
-                // remain valid for the returned slice lifetime, and do not alias.
+                // remain valid for the returned slice lifetime and do not alias.
                 // Host guarantees single-threaded render access.
                 unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
             })
@@ -443,7 +443,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
                 bus.iter()
                     .map(|&ptr| {
                         // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
-                        // remain valid for the returned slice lifetime, and do not alias.
+                        // remain valid for the returned slice lifetime and do not alias.
                         // Host guarantees single-threaded render access.
                         unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
                     })
