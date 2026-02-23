@@ -58,6 +58,7 @@ email = "support@example.com"
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
 | `has_gui` | Boolean | Whether plugin has a GUI (default: `false`) |
 | `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
+| `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 
 **Advanced Optional Fields:**
@@ -2515,3 +2516,17 @@ for event in &events.ramps {
 **Alternative:** Sub-block processing that splits the buffer at parameter event boundaries. Higher overhead but provides true sample-accuracy.
 
 **Priority:** Low - current behavior matches industry standard (VST3 SDK reference implementation uses same approach) and covers 99%+ of use cases.
+
+### 5.6 WebView Background Color
+
+The WKWebView's default background is disabled (`drawsBackground = false`), making it fully transparent. This means whatever is behind the webview is visible until web content covers it. By default that is the DAW's own view background, which is sometimes white in certain DAWs, causing a visible flash before your UI appears.
+
+To prevent this white flash, set `gui_background_color` in `Config.toml`:
+
+```toml
+gui_background_color = "#1a1a2e"
+```
+
+This paints the specified color on the parent NSView's CALayer before the WKWebView is created. It stays visible through the transparent webview until your web content renders its own background on top.
+
+This is independent from any background set in HTML, CSS or JS. You can use either approach, or both.

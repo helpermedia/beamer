@@ -4,7 +4,7 @@ function App() {
   const [gain, setGain] = useState(0)
 
   return (
-    <div className="h-screen bg-[#1a1a2e] text-gray-200 flex flex-col items-center justify-center select-none">
+    <div className="h-screen bg-[#00BCD4] text-gray-200 flex flex-col items-center justify-center select-none">
       <h1 className="text-2xl font-bold text-[#7b68ee] mb-1">
         Beamer WebView Demo AUv2
       </h1>

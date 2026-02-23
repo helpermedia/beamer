@@ -2296,6 +2296,7 @@ where
                 assets: self.config.gui_assets,
                 url: self.config.gui_url,
                 dev_tools: cfg!(debug_assertions),
+                background_color: self.config.gui_background_color,
             };
             debug_assert!(
                 self.config.gui_width > 0 && self.config.gui_height > 0,

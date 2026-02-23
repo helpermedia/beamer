@@ -2342,6 +2342,47 @@ pub extern "C" fn beamer_au_get_gui_size(
     });
 }
 
+/// Write the 4-byte GUI background color (RGBA) to `out`.
+///
+/// Returns all zeros if no background color is configured.
+///
+/// # Safety
+///
+/// - `out` must point to at least 4 writable bytes
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_gui_background_color(out: *mut u8) {
+    if out.is_null() {
+        return;
+    }
+
+    // Zero-initialize before catch_unwind so callers always get valid data
+    // even if plugin_config() returns None or a panic is caught.
+    // SAFETY: caller guarantees out points to at least 4 writable bytes.
+    unsafe {
+        *out = 0;
+        *out.add(1) = 0;
+        *out.add(2) = 0;
+        *out.add(3) = 0;
+    }
+
+    let _ = catch_unwind(|| {
+        let config = match factory::plugin_config() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let rgba = config.gui_background_color;
+        // SAFETY: caller guarantees out points to at least 4 writable bytes.
+        unsafe {
+            *out = rgba[0];
+            *out.add(1) = rgba[1];
+            *out.add(2) = rgba[2];
+            *out.add(3) = rgba[3];
+        }
+    });
+}
+
 // =============================================================================
 // Factory Presets
 // =============================================================================

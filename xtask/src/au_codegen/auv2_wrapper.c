@@ -1897,15 +1897,18 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
     uint8_t pluginCode[4];
     beamer_au_get_plugin_code(pluginCode);
 
+    uint8_t bgColor[4];
+    beamer_au_get_gui_background_color(bgColor);
+
     const char* devUrl = beamer_au_get_gui_url(rustInstance);
     void* webviewHandle;
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url(
-            (__bridge void*)container, devUrl, pluginCode, devTools);
+            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor);
     } else {
         const void* assets = beamer_au_get_gui_assets();
         webviewHandle = beamer_webview_create(
-            (__bridge void*)container, assets, pluginCode, devTools);
+            (__bridge void*)container, assets, pluginCode, devTools, bgColor);
     }
     if (webviewHandle == NULL) {
         return nil;

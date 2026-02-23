@@ -930,6 +930,18 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
                             uint32_t* _Nonnull width,
                             uint32_t* _Nonnull height);
 
+/**
+ * Get the GUI background color (RGBA, 0-255).
+ *
+ * Used to set the parent view's layer background so the correct color
+ * shows while web content loads, preventing a white flash.
+ *
+ * Thread Safety: Safe to call from any thread.
+ *
+ * @param out Pointer to at least 4 writable bytes (R, G, B, A).
+ */
+void beamer_au_get_gui_background_color(uint8_t* _Nonnull out);
+
 // =============================================================================
 // MARK: - WebView C-ABI (beamer-webview)
 // =============================================================================
@@ -943,10 +955,11 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
  *
  * Thread Safety: Must be called from the main thread.
  *
- * @param parent      A valid NSView* pointer to attach the WebView to.
- * @param assets      Opaque assets pointer from beamer_au_get_gui_assets().
- * @param plugin_code Pointer to 4 bytes of the plugin subtype code.
- * @param dev_tools   Whether to enable Web Inspector.
+ * @param parent           A valid NSView* pointer to attach the WebView to.
+ * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
+ * @param plugin_code      Pointer to 4 bytes of the plugin subtype code.
+ * @param dev_tools        Whether to enable Web Inspector.
+ * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
  *         Must be destroyed with beamer_webview_destroy().
@@ -954,17 +967,19 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
 void* _Nullable beamer_webview_create(void* _Nonnull parent,
                                       const void* _Nonnull assets,
                                       const uint8_t* _Nonnull plugin_code,
-                                      bool dev_tools);
+                                      bool dev_tools,
+                                      const uint8_t* _Nullable background_color);
 
 /**
  * Create a WebView that loads from a URL (dev server mode).
  *
  * Thread Safety: Must be called from the main thread.
  *
- * @param parent      A valid NSView* pointer to attach the WebView to.
- * @param url         Null-terminated UTF-8 URL to navigate to.
- * @param plugin_code Pointer to 4 bytes of the plugin subtype code.
- * @param dev_tools   Whether to enable Web Inspector.
+ * @param parent           A valid NSView* pointer to attach the WebView to.
+ * @param url              Null-terminated UTF-8 URL to navigate to.
+ * @param plugin_code      Pointer to 4 bytes of the plugin subtype code.
+ * @param dev_tools        Whether to enable Web Inspector.
+ * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
  *         Must be destroyed with beamer_webview_destroy().
@@ -972,7 +987,8 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
 void* _Nullable beamer_webview_create_url(void* _Nonnull parent,
                                           const char* _Nonnull url,
                                           const uint8_t* _Nonnull plugin_code,
-                                          bool dev_tools);
+                                          bool dev_tools,
+                                          const uint8_t* _Nullable background_color);
 
 /**
  * Update the WebView frame.

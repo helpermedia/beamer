@@ -373,6 +373,12 @@ pub struct Config {
 
     /// Initial GUI height in pixels.
     pub gui_height: u32,
+
+    /// Background color (RGBA, 0-255) painted on the parent view's layer
+    /// before the WKWebView loads. Prevents the host's default white from
+    /// flashing while web content renders.
+    /// All-zero means no override (platform default).
+    pub gui_background_color: [u8; 4],
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -519,6 +525,7 @@ impl Config {
             gui_url: None,
             gui_width: 0,
             gui_height: 0,
+            gui_background_color: [0; 4],
         }
     }
 
@@ -578,6 +585,14 @@ impl Config {
     pub const fn with_gui_size(mut self, width: u32, height: u32) -> Self {
         self.gui_width = width;
         self.gui_height = height;
+        self
+    }
+
+    /// Set the background color painted on the parent view while web content
+    /// loads. Specified as `[R, G, B, A]` with each component in 0-255 range.
+    #[doc(hidden)]
+    pub const fn with_gui_background_color(mut self, rgba: [u8; 4]) -> Self {
+        self.gui_background_color = rgba;
         self
     }
 

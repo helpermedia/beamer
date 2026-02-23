@@ -238,6 +238,27 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_sysex_buffer_size(#size) }
     });
 
+    let gui_background_color = config
+        .gui_background_color
+        .as_deref()
+        .map(|hex| {
+            let hex = hex.strip_prefix('#').unwrap_or(hex);
+            if hex.len() != 6 {
+                return Err(format!(
+                    "gui_background_color must be a 6-digit hex string (e.g. \"#1a1a2e\"), got {:?}",
+                    hex
+                ));
+            }
+            let r = u8::from_str_radix(&hex[0..2], 16)
+                .map_err(|e| format!("gui_background_color red: {e}"))?;
+            let g = u8::from_str_radix(&hex[2..4], 16)
+                .map_err(|e| format!("gui_background_color green: {e}"))?;
+            let b = u8::from_str_radix(&hex[4..6], 16)
+                .map_err(|e| format!("gui_background_color blue: {e}"))?;
+            Ok(quote! { .with_gui_background_color([#r, #g, #b, 255]) })
+        })
+        .transpose()?;
+
     let subcategories = if let Some(subs) = &config.subcategories {
         let sub_tokens: Vec<TokenStream> = subs
             .iter()
@@ -269,6 +290,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #sysex_slots
         #sysex_buffer_size
         #subcategories
+        #gui_background_color
         ;
     })
 }

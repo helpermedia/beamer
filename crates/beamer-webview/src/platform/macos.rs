@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSColor, NSView};
 use objc2_foundation::{NSNumber, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
@@ -75,8 +75,31 @@ impl MacosWebView {
             unsafe { webview.setInspectable(true) };
         }
 
-        // Disable the default white background so the view is transparent
-        // while content loads. This prevents a white flash on startup.
+        // If a background color is configured, paint it on the parent view's
+        // layer so the host's default white doesn't flash while the WKWebView
+        // loads content.
+        let [r, g, b, a] = config.background_color;
+        if r != 0 || g != 0 || b != 0 || a != 0 {
+            // SAFETY: parent_view is valid; we are on the main thread.
+            unsafe {
+                let _: () = objc2::msg_send![parent_view, setWantsLayer: true];
+                let color = NSColor::colorWithSRGBRed_green_blue_alpha(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    a as f64 / 255.0,
+                );
+                let layer: *mut objc2::runtime::AnyObject =
+                    objc2::msg_send![parent_view, layer];
+                if !layer.is_null() {
+                    let cg_color: *mut c_void = objc2::msg_send![&*color, CGColor];
+                    let _: () = objc2::msg_send![layer, setBackgroundColor: cg_color];
+                }
+            }
+        }
+
+        // Disable the default white background so the WKWebView is
+        // transparent and the parent's color (if set) shows through.
         let key = NSString::from_str("drawsBackground");
         let value = NSNumber::new_bool(false);
         // SAFETY: WKWebView supports KVC for drawsBackground; we are on the main thread.

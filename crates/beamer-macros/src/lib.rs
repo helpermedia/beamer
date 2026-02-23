@@ -128,7 +128,7 @@ fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::T
 ///
 /// - The type must be an enum
 /// - All variants must be unit variants (no fields)
-/// - The enum must also derive `Copy`, `Clone`, and `PartialEq`
+/// - The enum must also derive `Copy`, `Clone` and `PartialEq`
 ///
 /// # Attributes
 ///
@@ -202,7 +202,7 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 ///
 /// - The struct must have named fields
 /// - Exactly one field must be marked with `#[parameters]`
-/// - The marked field's type must implement `ParameterStore`, `ParameterGroups`, and `Parameters`
+/// - The marked field's type must implement `ParameterStore`, `ParameterGroups` and `Parameters`
 ///
 /// # What It Generates
 ///

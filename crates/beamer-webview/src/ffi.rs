@@ -14,6 +14,16 @@ mod macos_ffi {
     use crate::platform::macos::MacosWebView;
     use crate::WebViewConfig;
 
+    /// Read 4 bytes from a pointer, or return `[0; 4]` if null.
+    unsafe fn read_rgba(ptr: *const u8) -> [u8; 4] {
+        if ptr.is_null() {
+            [0; 4]
+        } else {
+            // SAFETY: caller guarantees ptr points to at least 4 readable bytes.
+            unsafe { [*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)] }
+        }
+    }
+
     /// Create a WebView serving embedded assets via custom scheme.
     ///
     /// Each plugin must pass its 4-byte plugin code so that the scheme handler
@@ -27,6 +37,7 @@ mod macos_ffi {
     /// - `parent` must be a valid `NSView*` pointer
     /// - `assets` must be a valid `*const EmbeddedAssets` with `'static` lifetime
     /// - `plugin_code` must point to exactly 4 ASCII bytes
+    /// - `background_color` must point to 4 bytes (RGBA) or be null
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create(
@@ -34,6 +45,7 @@ mod macos_ffi {
         assets: *const c_void,
         plugin_code: *const u8,
         dev_tools: bool,
+        background_color: *const u8,
     ) -> *mut c_void {
         if parent.is_null() || assets.is_null() || plugin_code.is_null() {
             return ptr::null_mut();
@@ -55,11 +67,15 @@ mod macos_ffi {
             let assets_ref: &'static crate::assets::EmbeddedAssets =
                 unsafe { &*(assets as *const crate::assets::EmbeddedAssets) };
 
+            // SAFETY: read_rgba handles null safely.
+            let bg = unsafe { read_rgba(background_color) };
+
             let config = WebViewConfig {
                 plugin_code: code,
                 assets: Some(assets_ref),
                 url: None,
                 dev_tools,
+                background_color: bg,
             };
 
             // SAFETY: caller guarantees parent is a valid NSView pointer on main thread.
@@ -81,6 +97,7 @@ mod macos_ffi {
     /// - `parent` must be a valid `NSView*` pointer
     /// - `url` must be a valid null-terminated UTF-8 C string
     /// - `plugin_code` must point to exactly 4 ASCII bytes
+    /// - `background_color` must point to 4 bytes (RGBA) or be null
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create_url(
@@ -88,6 +105,7 @@ mod macos_ffi {
         url: *const c_char,
         plugin_code: *const u8,
         dev_tools: bool,
+        background_color: *const u8,
     ) -> *mut c_void {
         if parent.is_null() || url.is_null() || plugin_code.is_null() {
             return ptr::null_mut();
@@ -107,11 +125,15 @@ mod macos_ffi {
                 ]
             };
 
+            // SAFETY: read_rgba handles null safely.
+            let bg = unsafe { read_rgba(background_color) };
+
             let config = WebViewConfig {
                 plugin_code: code,
                 assets: None,
                 url: Some(url_str),
                 dev_tools,
+                background_color: bg,
             };
 
             // SAFETY: caller guarantees parent is a valid NSView pointer on main thread.

@@ -27,4 +27,7 @@ pub struct WebViewConfig<'a> {
     pub url: Option<&'a str>,
     /// Whether to enable developer tools.
     pub dev_tools: bool,
+    /// Background color (RGBA, 0-255) painted on the parent view's layer
+    /// while web content loads. All-zero means no override.
+    pub background_color: [u8; 4],
 }

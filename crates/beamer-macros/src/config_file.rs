@@ -37,6 +37,9 @@ pub struct ConfigFile {
     /// Maximum size of each SysEx message in bytes (default: 512).
     #[serde(default)]
     pub sysex_buffer_size: Option<usize>,
+    /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
+    #[serde(default)]
+    pub gui_background_color: Option<String>,
 }
 
 /// Presets file from Presets.toml.
