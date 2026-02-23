@@ -660,54 +660,54 @@ gui_size = [600, 400]
 ## Tasks
 
 ### beamer-webview changes
-- [ ] Add MIME type detection
-- [ ] Implement `BeamerSchemeHandler` (`WKURLSchemeHandler`) via
+- [x] Add MIME type detection
+- [x] Implement `BeamerSchemeHandler` (`WKURLSchemeHandler`) via
   `define_class!`
-- [ ] Register scheme handler in `MacosWebView::attach_to_parent`
-- [ ] Replace `loadHTMLString` with `loadRequest` to `beamer://localhost/`
-- [ ] Add `beamer_webview_create_url` C-ABI export for dev server mode
-- [ ] Update `beamer_webview_create` C-ABI (remove `html` parameter)
-- [ ] Add `objc2-web-kit` features: `WKURLSchemeHandler`,
+- [x] Register scheme handler in `MacosWebView::attach_to_parent`
+- [x] Replace `loadHTMLString` with `loadRequest` to `beamer://localhost/`
+- [x] Add `beamer_webview_create_url` C-ABI export for dev server mode
+- [x] Update `beamer_webview_create` C-ABI (remove `html` parameter)
+- [x] Add `objc2-web-kit` features: `WKURLSchemeHandler`,
   `WKURLSchemeTask`
-- [ ] Add `objc2-foundation` features: `NSURL`, `NSURLRequest`,
+- [x] Add `objc2-foundation` features: `NSURL`, `NSURLRequest`,
   `NSURLResponse`, `NSHTTPURLResponse`, `NSData`
 
 ### beamer-core changes
-- [ ] Add `EmbeddedAsset`, `EmbeddedAssets` types and global registration
-- [ ] Replace `gui_html` with `gui_assets: Option<&'static EmbeddedAssets>`
-- [ ] Add `gui_url: Option<&'static str>` for dev server mode
-- [ ] Add `with_gui_assets()` and `with_gui_url()` builder methods
+- [x] Add `EmbeddedAsset`, `EmbeddedAssets` types and global registration
+- [x] Replace `gui_html` with `gui_assets: Option<&'static EmbeddedAssets>`
+- [x] Add `gui_url: Option<&'static str>` for dev server mode
+- [x] Add `with_gui_assets()` and `with_gui_url()` builder methods
 
 ### beamer-macros changes
-- [ ] Add directory scanning to `#[beamer::export]` (walk webview dir,
+- [x] Add directory scanning to `#[beamer::export]` (walk webview dir,
   generate `include_bytes!()` per file)
-- [ ] Generate `EmbeddedAssets` static and `register_assets()` call
-- [ ] Check `BEAMER_DEV_URL` env var for dev server mode
-- [ ] Detection logic: `dist/` for framework projects, `webview/` for
+- [x] Generate `EmbeddedAssets` static and `register_assets()` call
+- [x] Check `BEAMER_DEV_URL` env var for dev server mode
+- [x] Detection logic: `dist/` for framework projects, `webview/` for
   plain HTML
 
 ### beamer-vst3 changes
-- [ ] Update `createView()` to use `WebViewSource::Assets` /
+- [x] Update `createView()` to use `WebViewSource::Assets` /
   `WebViewSource::Url`
 
 ### beamer-au changes
-- [ ] Remove `beamer_au_get_gui_html`, add `beamer_au_get_gui_url`
-- [ ] Update AUv3 wrapper: use `beamer_webview_create` (no html param)
+- [x] Remove `beamer_au_get_gui_html`, add `beamer_au_get_gui_url`
+- [x] Update AUv3 wrapper: use `beamer_webview_create` (no html param)
   or `beamer_webview_create_url`
-- [ ] Update AUv2 wrapper: same
+- [x] Update AUv2 wrapper: same
 
 ### xtask changes
-- [ ] Add `build_webview()` function with package manager detection
-- [ ] Integrate web build step into `cargo xtask bundle` flow
-- [ ] Add build output verification
+- [x] Add `build_webview()` function with package manager detection
+- [x] Integrate web build step into `cargo xtask bundle` flow
+- [x] Add build output verification
 
 ### Example & testing
-- [ ] Update `webview-demo` example to use custom URL scheme (plain HTML)
-- [ ] Create framework-based example plugin (React)
-- [ ] Verify hot reload with dev server
-- [ ] Verify production build via `cargo xtask bundle`
-- [ ] Verify in a VST3 host
-- [ ] Verify in an AU host
+- [x] Update `webview-demo` example to use custom URL scheme (plain HTML)
+- [x] Create framework-based example plugin (React)
+- [x] Verify hot reload with dev server
+- [x] Verify production build via `cargo xtask bundle`
+- [x] Verify in a VST3 host
+- [x] Verify in an AU host
 
 ## References
 

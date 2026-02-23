@@ -2,10 +2,20 @@
 
 use std::ffi::c_void;
 
+use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSColor, NSView};
+use objc2_app_kit::NSView;
+
+/// Opaque CGColor type with correct encoding for objc2 msg_send.
+#[repr(C)]
+struct CGColor([u8; 0]);
+
+// SAFETY: CGColorRef has ObjC type encoding ^{CGColor=}.
+unsafe impl RefEncode for CGColor {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
+}
 use objc2_foundation::{NSNumber, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
@@ -80,20 +90,27 @@ impl MacosWebView {
         // loads content.
         let [r, g, b, a] = config.background_color;
         if r != 0 || g != 0 || b != 0 || a != 0 {
+            extern "C" {
+                fn CGColorCreateSRGB(
+                    red: f64, green: f64, blue: f64, alpha: f64,
+                ) -> *const CGColor;
+                fn CGColorRelease(color: *const CGColor);
+            }
             // SAFETY: parent_view is valid; we are on the main thread.
+            // CGColorCreateSRGB returns a +1 retained CGColor (macOS 13+).
             unsafe {
                 let _: () = objc2::msg_send![parent_view, setWantsLayer: true];
-                let color = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    r as f64 / 255.0,
-                    g as f64 / 255.0,
-                    b as f64 / 255.0,
-                    a as f64 / 255.0,
-                );
                 let layer: *mut objc2::runtime::AnyObject =
                     objc2::msg_send![parent_view, layer];
                 if !layer.is_null() {
-                    let cg_color: *mut c_void = objc2::msg_send![&*color, CGColor];
+                    let cg_color = CGColorCreateSRGB(
+                        r as f64 / 255.0,
+                        g as f64 / 255.0,
+                        b as f64 / 255.0,
+                        a as f64 / 255.0,
+                    );
                     let _: () = objc2::msg_send![layer, setBackgroundColor: cg_color];
+                    CGColorRelease(cg_color);
                 }
             }
         }

@@ -127,4 +127,4 @@ Note: `resources.rs` is Phase 2B scope.
 ## Status
 
 **Phase 2A**: Complete - [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)
-**Phase 2B**: Next - [WEBVIEW_PHASE2B.md](./WEBVIEW_PHASE2B.md)
+**Phase 2B**: Complete - [WEBVIEW_PHASE2B.md](./WEBVIEW_PHASE2B.md)
