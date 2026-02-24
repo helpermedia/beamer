@@ -227,6 +227,8 @@ pub mod prelude {
         FrameRate, ProcessContext, Transport,
         // FourCharCode
         FourCharCode,
+        // WebView support
+        WebViewHandle, WebViewHandler, serde_json,
     };
 
     // Plugin configuration

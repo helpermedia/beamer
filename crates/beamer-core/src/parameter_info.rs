@@ -123,6 +123,9 @@ impl Default for ParameterFlags {
 pub struct ParameterInfo {
     /// Unique parameter identifier.
     pub id: ParameterId,
+    /// Original string identifier from `#[parameter(id = "...")]`.
+    /// Empty string for parameters defined without a string ID.
+    pub string_id: &'static str,
     /// Full parameter name (e.g., "Master Volume").
     pub name: &'static str,
     /// Short parameter name for constrained UIs (e.g., "Vol").
@@ -149,6 +152,7 @@ impl ParameterInfo {
     pub const fn new(id: ParameterId, name: &'static str) -> Self {
         Self {
             id,
+            string_id: "",
             name,
             short_name: name,
             units: "",
@@ -164,6 +168,12 @@ impl ParameterInfo {
             },
             group_id: ROOT_GROUP_ID,
         }
+    }
+
+    /// Set the string identifier.
+    pub const fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.string_id = string_id;
+        self
     }
 
     /// Set the short name.
@@ -226,6 +236,7 @@ impl ParameterInfo {
     pub const fn bypass(id: ParameterId) -> Self {
         Self {
             id,
+            string_id: "",
             name: "Bypass",
             short_name: "Byp",
             units: "",

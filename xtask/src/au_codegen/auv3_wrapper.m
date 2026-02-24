@@ -9,6 +9,7 @@
 #include <os/log.h>
 
 #include "BeamerAuBridge.h"
+#include "au_ipc_helpers.h"
 
 // =============================================================================
 // MARK: - Constants
@@ -38,9 +39,13 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     AUInternalRenderBlock _cachedInternalRenderBlock;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
+    NSTimer* _syncTimer;
+    double* _lastParamValues;
+    uint32_t _paramCount;
 }
 
 + (NSUInteger)nextInstanceId;
+- (BeamerAuInstanceHandle)rustInstance;
 
 @end
 
@@ -62,6 +67,10 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     @synchronized([{{WRAPPER_CLASS}} class]) {
         return ++{{WRAPPER_CLASS}}InstanceCounter;
     }
+}
+
+- (BeamerAuInstanceHandle)rustInstance {
+    return _rustInstance;
 }
 
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
@@ -134,7 +143,60 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     return self;
 }
 
+// =============================================================================
+// MARK: - WebView IPC Callbacks
+// =============================================================================
+
+static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t len) {
+    {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
+    if (!jsonStr) return;
+
+    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (!msg) return;
+
+    NSString* type = msg[@"type"];
+    if ([type isEqualToString:@"param:set"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        double value = [msg[@"value"] doubleValue];
+        beamer_au_param_set_from_ui(self->_rustInstance, paramId, value);
+        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            float min = param.minValue;
+            float max = param.maxValue;
+            param.value = min + (float)value * (max - min);
+        }
+    } else if ([type isEqualToString:@"param:begin"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeTouch];
+        }
+    } else if ([type isEqualToString:@"param:end"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeRelease];
+        }
+    } else if ([type isEqualToString:@"invoke"]) {
+        beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
+    } else if ([type isEqualToString:@"event"]) {
+        beamer_au_ipc_handle_event(self->_rustInstance, msg);
+    }
+}
+
+static void beamer_auv3_on_loaded(void* context) {
+    {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    beamer_au_ipc_send_init_dump(self->_rustInstance, self->_webviewHandle);
+}
+
 - (void)dealloc {
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
+
     [_instanceLock lock];
     _instanceValid = NO;
 
@@ -153,6 +215,31 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     }
 
     [_instanceLock unlock];
+}
+
+- (void)_pollParams {
+    if (!_webviewHandle || !_rustInstance) return;
+    if (_paramCount == 0) return;
+
+    NSMutableString* script = [NSMutableString stringWithString:@"window.__BEAMER__._onParams({"];
+    BOOL any = NO;
+
+    BeamerAuParameterInfo info;
+    for (uint32_t i = 0; i < _paramCount; i++) {
+        if (!beamer_au_get_parameter_info(_rustInstance, i, &info)) continue;
+        double val = beamer_au_param_get_normalized(_rustInstance, info.id);
+        if (val == _lastParamValues[i]) continue;
+        _lastParamValues[i] = val;
+        if (any) [script appendString:@","];
+        [script appendFormat:@"%u:%f", info.id, val];
+        any = YES;
+    }
+
+    if (any) {
+        [script appendString:@"})"];
+        const char* utf8 = [script UTF8String];
+        beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
+    }
 }
 
 - (AUAudioUnitBus*)createBusAtIndex:(uint32_t)index
@@ -975,12 +1062,16 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     const char* devUrl = beamer_au_get_gui_url(_rustInstance);
     void* webviewHandle;
     if (devUrl != NULL) {
-        webviewHandle = beamer_webview_create_url(
-            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor);
+        webviewHandle = beamer_webview_create_url_with_ipc(
+            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor,
+            beamer_auv3_on_message, beamer_auv3_on_loaded,
+            (__bridge void*)self);
     } else {
         const void* assets = beamer_au_get_gui_assets();
-        webviewHandle = beamer_webview_create(
-            (__bridge void*)container, assets, pluginCode, devTools, bgColor);
+        webviewHandle = beamer_webview_create_with_ipc(
+            (__bridge void*)container, assets, pluginCode, devTools, bgColor,
+            beamer_auv3_on_message, beamer_auv3_on_loaded,
+            (__bridge void*)self);
     }
     if (webviewHandle == NULL) {
         completionHandler(nil);
@@ -988,6 +1079,24 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     }
 
     _webviewHandle = webviewHandle;
+
+    // NAN sentinel: NAN != NAN (IEEE 754) ensures the first sync tick sends all values.
+    _paramCount = beamer_au_get_parameter_count(_rustInstance);
+    if (_paramCount > 0) {
+        _lastParamValues = (double*)malloc(_paramCount * sizeof(double));
+        for (uint32_t i = 0; i < _paramCount; i++) {
+            _lastParamValues[i] = NAN;
+        }
+    }
+
+    // Start 60Hz parameter sync timer.
+    // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
+    __weak typeof(self) weakSelf = self;
+    _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
+        (void)t;
+        [weakSelf _pollParams];
+    }];
+
     completionHandler(vc);
 }
 

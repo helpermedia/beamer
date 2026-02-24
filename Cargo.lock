@@ -27,6 +27,7 @@ dependencies = [
  "beamer-webview",
  "cc",
  "log",
+ "serde_json",
 ]
 
 [[package]]
@@ -34,6 +35,9 @@ name = "beamer-core"
 version = "0.2.3"
 dependencies = [
  "beamer-utils",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -60,6 +64,9 @@ dependencies = [
  "beamer-webview",
  "com-scrape-types",
  "log",
+ "objc2",
+ "objc2-foundation",
+ "serde_json",
  "vst3",
 ]
 
@@ -73,6 +80,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "serde_json",
  "webview2-com",
  "windows 0.62.2",
 ]

@@ -52,6 +52,8 @@ pub mod setup;
 pub mod smoothing;
 pub mod sysex_pool;
 pub mod types;
+pub mod webview_handle;
+pub mod webview_handler;
 
 // Re-exports for convenience
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
@@ -93,7 +95,7 @@ pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
-pub use parameter_store::{NoParameters, ParameterStore};
+pub use parameter_store::{params_to_init_json, NoParameters, ParameterStore};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
@@ -108,3 +110,9 @@ pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use sysex_pool::SysExOutputPool;
 pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
+pub use webview_handle::WebViewHandle;
+pub use webview_handler::WebViewHandler;
+
+// Re-export serde_json so plugins can use WebViewHandler without adding
+// serde_json to their own Cargo.toml.
+pub use serde_json;

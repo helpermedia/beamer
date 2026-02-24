@@ -2,20 +2,46 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
+use std::fmt::Write;
+use std::sync::Arc;
 
-use beamer_core::{GuiConstraints, GuiDelegate, Size};
+use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewHandler};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
+use vst3::Steinberg::Vst::IComponentHandler;
 use vst3::Steinberg::*;
 use vst3::Class;
+
+/// Shared context between WebViewPlugView and its IPC callbacks.
+///
+/// This struct is heap-allocated and pinned. Raw pointers to it are passed
+/// as the callback context for the WebView's message and loaded callbacks.
+struct IpcContext {
+    /// Parameter store (trait object for type-erased access).
+    params: *const dyn ParameterStore,
+    /// Component handler for host notification. Null until set.
+    handler: *mut IComponentHandler,
+    /// Custom WebView message handler (invoke/event routing).
+    webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// Cached parameter values from the last sync tick.
+    /// Index corresponds to ParameterStore::info(index).
+    last_values: Vec<f64>,
+    /// Pointer to the platform WebView (for evaluate_js calls from callbacks).
+    /// Set in attached(), cleared in removed().
+    webview: *const PlatformWebView,
+    /// NSTimer handle for parameter sync. Null when not running.
+    sync_timer: *mut objc2::runtime::AnyObject,
+}
 
 /// VST3 IPlugView implementation backed by a platform WebView.
 pub struct WebViewPlugView {
     platform: UnsafeCell<Option<PlatformWebView>>,
-    config: WebViewConfig<'static>,
+    config: UnsafeCell<WebViewConfig<'static>>,
     delegate: UnsafeCell<Box<dyn GuiDelegate>>,
     size: UnsafeCell<Size>,
     frame: UnsafeCell<*mut IPlugFrame>,
+    /// IPC context, heap-allocated for stable pointer.
+    ipc: UnsafeCell<Box<IpcContext>>,
 }
 
 // SAFETY: VST3 IPlugView methods are called from the UI thread only.
@@ -23,24 +49,268 @@ unsafe impl Send for WebViewPlugView {}
 // SAFETY: VST3 IPlugView methods are called from the UI thread only.
 unsafe impl Sync for WebViewPlugView {}
 
+/// AddRef a non-null IComponentHandler.
+///
+/// # Safety
+///
+/// `handler` must be a valid COM pointer or null.
+unsafe fn handler_addref(handler: *mut IComponentHandler) {
+    if !handler.is_null() {
+        let unknown = handler as *mut FUnknown;
+        unsafe { ((*(*unknown).vtbl).addRef)(unknown) };
+    }
+}
+
+/// Release a non-null IComponentHandler.
+///
+/// # Safety
+///
+/// `handler` must be a valid COM pointer or null.
+unsafe fn handler_release(handler: *mut IComponentHandler) {
+    if !handler.is_null() {
+        let unknown = handler as *mut FUnknown;
+        unsafe { ((*(*unknown).vtbl).release)(unknown) };
+    }
+}
+
 impl WebViewPlugView {
-    /// Create a new WebView plug view with the given delegate.
+    /// Create a new WebView plug view with parameter sync support.
     ///
-    /// Initial size is obtained from `delegate.gui_size()`.
-    pub fn new(config: WebViewConfig<'static>, delegate: Box<dyn GuiDelegate>) -> Self {
+    /// # Safety
+    ///
+    /// `params` must be a valid pointer that remains valid for the lifetime
+    /// of this view (it points to the plugin's parameter struct which
+    /// outlives the editor).
+    /// `component_handler` is the IComponentHandler pointer (may be null initially).
+    /// If non-null, this function AddRefs it; the view owns a reference until dropped.
+    pub unsafe fn new(
+        config: WebViewConfig<'static>,
+        delegate: Box<dyn GuiDelegate>,
+        params: *const dyn ParameterStore,
+        component_handler: *mut IComponentHandler,
+        webview_handler: Option<Arc<dyn WebViewHandler>>,
+    ) -> Self {
         let size = delegate.gui_size();
+
+        // Pre-allocate last_values cache.
+        // NAN as sentinel: NAN != NAN guarantees the first sync tick sends all values.
+        // SAFETY: Caller guarantees params is valid.
+        let param_count = unsafe { &*params }.count();
+        let last_values = vec![f64::NAN; param_count];
+
+        // AddRef the handler so the view owns an independent reference.
+        // SAFETY: Caller guarantees component_handler is a valid COM pointer or null.
+        unsafe { handler_addref(component_handler) };
+
         Self {
             platform: UnsafeCell::new(None),
-            config,
+            config: UnsafeCell::new(config),
             delegate: UnsafeCell::new(delegate),
             size: UnsafeCell::new(size),
             frame: UnsafeCell::new(std::ptr::null_mut()),
+            ipc: UnsafeCell::new(Box::new(IpcContext {
+                params,
+                handler: component_handler,
+                webview_handler,
+                last_values,
+                webview: std::ptr::null(),
+                sync_timer: std::ptr::null_mut(),
+            })),
+        }
+    }
+
+    /// Update the component handler pointer (called when host sets a new handler).
+    pub fn set_component_handler(&self, handler: *mut IComponentHandler) {
+        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
+        let ipc = unsafe { &mut *self.ipc.get() };
+        let old = ipc.handler;
+        ipc.handler = handler;
+        // SAFETY: handler is a valid COM pointer or null per caller contract.
+        unsafe {
+            handler_addref(handler);
+            handler_release(old);
         }
     }
 }
 
 impl Class for WebViewPlugView {
     type Interfaces = (IPlugView,);
+}
+
+// ---------------------------------------------------------------------------
+// IPC callbacks (extern "C-unwind" for WebView)
+// ---------------------------------------------------------------------------
+
+/// Message callback: dispatches JSON messages from JavaScript.
+unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, len: usize) {
+    if context.is_null() || json.is_null() {
+        return;
+    }
+
+    // SAFETY: context is a valid IpcContext pointer (set in attached()).
+    let ipc = unsafe { &mut *(context as *mut IpcContext) };
+    // SAFETY: json/len come from the WebView message handler, guaranteed valid UTF-8 JSON.
+    let json_str = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(json, len)) };
+
+    let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        log::warn!("Invalid IPC message JSON: {json_str}");
+        return;
+    };
+
+    let Some(msg_type) = msg.get("type").and_then(|t| t.as_str()) else {
+        return;
+    };
+
+    // SAFETY: params pointer remains valid for the lifetime of the view.
+    let params = unsafe { &*ipc.params };
+
+    match msg_type {
+        "param:set" => {
+            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
+            let Some(value) = msg.get("value").and_then(|v| v.as_f64()) else { return };
+            params.set_normalized(id, value);
+            if !ipc.handler.is_null() {
+                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+                unsafe {
+                    ((*(*ipc.handler).vtbl).performEdit)(ipc.handler, id, value);
+                }
+            }
+        }
+        "param:begin" => {
+            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
+            if !ipc.handler.is_null() {
+                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+                unsafe {
+                    ((*(*ipc.handler).vtbl).beginEdit)(ipc.handler, id);
+                }
+            }
+        }
+        "param:end" => {
+            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
+            if !ipc.handler.is_null() {
+                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+                unsafe {
+                    ((*(*ipc.handler).vtbl).endEdit)(ipc.handler, id);
+                }
+            }
+        }
+        "invoke" => {
+            let Some(method) = msg.get("method").and_then(|v| v.as_str()) else { return };
+            let args = msg.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let call_id = msg.get("callId").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            let result = match &ipc.webview_handler {
+                Some(handler) => handler.on_invoke(method, &args),
+                None => Ok(serde_json::Value::Null),
+            };
+
+            // Send result back to JS so the Promise resolves/rejects.
+            if !ipc.webview.is_null() {
+                // SAFETY: webview pointer is valid for the view lifetime.
+                let webview = unsafe { &*ipc.webview };
+                let js = match result {
+                    Ok(val) => {
+                        let json = serde_json::to_string(&val).unwrap_or_else(|_| "null".into());
+                        format!("window.__BEAMER__._onResult({call_id},{{\"ok\":{json}}})")
+                    }
+                    Err(err) => {
+                        let escaped = serde_json::to_string(&err).unwrap_or_default();
+                        format!("window.__BEAMER__._onResult({call_id},{{\"err\":{escaped}}})")
+                    }
+                };
+                webview.evaluate_js(&js);
+            }
+        }
+        "event" => {
+            let Some(name) = msg.get("name").and_then(|v| v.as_str()) else { return };
+            let data = msg.get("data").cloned().unwrap_or(serde_json::Value::Null);
+
+            if let Some(handler) = &ipc.webview_handler {
+                handler.on_event(name, &data);
+            }
+        }
+        _ => {
+            log::debug!("Unknown IPC message type: {msg_type}");
+        }
+    }
+}
+
+/// Loaded callback: sends the parameter init dump when the page finishes loading.
+unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+
+    // SAFETY: context is a valid IpcContext pointer (set in attached()).
+    let ipc = unsafe { &*(context as *const IpcContext) };
+    if ipc.webview.is_null() {
+        return;
+    }
+
+    // SAFETY: params and webview pointers remain valid for the view lifetime.
+    let params = unsafe { &*ipc.params };
+    // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
+    let webview = unsafe { &*ipc.webview };
+
+    let json_array = beamer_core::params_to_init_json(params);
+    let js = format!("window.__BEAMER__._onInit({json_array})");
+    webview.evaluate_js(&js);
+}
+
+/// NSTimer callback for 60Hz parameter sync.
+unsafe extern "C-unwind" fn sync_timer_fired(
+    _this: *mut objc2::runtime::AnyObject,
+    _cmd: objc2::runtime::Sel,
+    timer: *mut objc2::runtime::AnyObject,
+) {
+    // SAFETY: timer is a valid NSTimer object provided by the Cocoa runtime.
+    let user_info: *mut objc2::runtime::AnyObject = unsafe { objc2::msg_send![timer, userInfo] };
+    if user_info.is_null() {
+        return;
+    }
+
+    // SAFETY: userInfo is an NSValue wrapping our context pointer.
+    let ptr: *const objc2::runtime::AnyObject = unsafe { objc2::msg_send![user_info, pointerValue] };
+    if ptr.is_null() {
+        return;
+    }
+
+    // SAFETY: ptr is a valid IpcContext pointer stored in the NSValue.
+    let ipc = unsafe { &mut *(ptr as *mut IpcContext) };
+    // Guard against timer firing after webview detach but before invalidation.
+    if ipc.webview.is_null() {
+        return;
+    }
+
+    // SAFETY: params and webview pointers remain valid for the view lifetime.
+    let params = unsafe { &*ipc.params };
+    // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
+    let webview = unsafe { &*ipc.webview };
+
+    // Poll and push changed parameters.
+    let mut script = String::new();
+    let mut any_changed = false;
+
+    let count = params.count();
+    for i in 0..count {
+        let Some(info) = params.info(i) else { continue };
+        let val = params.get_normalized(info.id);
+        if i < ipc.last_values.len() && val != ipc.last_values[i] {
+            ipc.last_values[i] = val;
+            if !any_changed {
+                script.push_str("window.__BEAMER__._onParams({");
+                any_changed = true;
+            } else {
+                script.push(',');
+            }
+            let _ = write!(script, "{}:{}", info.id, val);
+        }
+    }
+
+    if any_changed {
+        script.push_str("})");
+        webview.evaluate_js(&script);
+    }
 }
 
 #[allow(non_snake_case)]
@@ -78,10 +348,72 @@ impl IPlugViewTrait for WebViewPlugView {
             return kResultFalse;
         }
 
+        // Set up IPC callbacks in the config.
+        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
+        let ipc = unsafe { &mut *self.ipc.get() };
+        let ipc_ptr = &mut **ipc as *mut IpcContext as *mut c_void;
+
+        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
+        let config = unsafe { &mut *self.config.get() };
+        config.message_callback = Some(on_message);
+        config.loaded_callback = Some(on_loaded);
+        config.callback_context = ipc_ptr;
+
         // SAFETY: parent is a valid platform handle provided by the host.
-        match unsafe { PlatformWebView::attach_to_parent(parent, &self.config) } {
+        match unsafe { PlatformWebView::attach_to_parent(parent, config) } {
             Ok(webview) => {
                 *platform = Some(webview);
+
+                // Point the IPC context to the webview for evaluate_js calls.
+                ipc.webview = platform.as_ref().unwrap() as *const PlatformWebView;
+
+                // Reset cached values so the first sync tick sends everything.
+                for v in &mut ipc.last_values {
+                    *v = f64::NAN;
+                }
+
+                // Start 60Hz sync timer.
+                #[cfg(target_os = "macos")]
+                {
+                    use objc2::msg_send;
+
+                    // SAFETY: NSValue class is always available; wrapping a raw pointer.
+                    let ns_value: *mut objc2::runtime::AnyObject = unsafe {
+                        msg_send![
+                            objc2::runtime::AnyClass::get(c"NSValue").unwrap(),
+                            valueWithPointer: ipc_ptr
+                        ]
+                    };
+
+                    let timer_class = get_or_register_timer_class();
+                    // SAFETY: Allocating a new NSObject subclass instance.
+                    let target: *mut objc2::runtime::AnyObject = unsafe {
+                        msg_send![timer_class, alloc]
+                    };
+                    // SAFETY: Initializing the allocated NSObject subclass instance.
+                    let target: *mut objc2::runtime::AnyObject = unsafe {
+                        msg_send![target, init]
+                    };
+
+                    // SAFETY: NSTimer class is always available; creating a repeating timer.
+                    let timer: *mut objc2::runtime::AnyObject = unsafe {
+                        msg_send![
+                            objc2::runtime::AnyClass::get(c"NSTimer").unwrap(),
+                            scheduledTimerWithTimeInterval: (1.0 / 60.0f64),
+                            target: target,
+                            selector: objc2::sel!(beamerSyncTimerFired:),
+                            userInfo: ns_value,
+                            repeats: true
+                        ]
+                    };
+
+                    // SAFETY: target is a valid +1 retained object from alloc+init above.
+                    // The timer retains the target, so we balance the alloc's +1 here.
+                    let _: () = unsafe { msg_send![target, release] };
+
+                    ipc.sync_timer = timer;
+                }
+
                 // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
                 let delegate = unsafe { &mut *self.delegate.get() };
                 delegate.gui_opened();
@@ -89,6 +421,10 @@ impl IPlugViewTrait for WebViewPlugView {
             }
             Err(e) => {
                 log::error!("Failed to create WebView: {e}");
+                // Clear callbacks on failure.
+                config.message_callback = None;
+                config.loaded_callback = None;
+                config.callback_context = std::ptr::null_mut();
                 kResultFalse
             }
         }
@@ -100,6 +436,24 @@ impl IPlugViewTrait for WebViewPlugView {
         delegate.gui_closed();
 
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
+        let ipc = unsafe { &mut *self.ipc.get() };
+
+        // Stop sync timer.
+        #[cfg(target_os = "macos")]
+        {
+            if !ipc.sync_timer.is_null() {
+                // SAFETY: sync_timer is a valid NSTimer; invalidate stops and releases it.
+                unsafe {
+                    let _: () = objc2::msg_send![ipc.sync_timer, invalidate];
+                }
+                ipc.sync_timer = std::ptr::null_mut();
+            }
+        }
+
+        // Clear webview pointer before detaching.
+        ipc.webview = std::ptr::null();
+
+        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let platform = unsafe { &mut *self.platform.get() };
         if let Some(webview) = platform.as_mut() {
             webview.detach();
@@ -109,15 +463,15 @@ impl IPlugViewTrait for WebViewPlugView {
     }
 
     unsafe fn onWheel(&self, _distance: f32) -> tresult {
-        kResultFalse // Let WebView handle scroll events
+        kResultFalse
     }
 
     unsafe fn onKeyDown(&self, _key: char16, _keyCode: int16, _modifiers: int16) -> tresult {
-        kResultFalse // Let WebView handle key events
+        kResultFalse
     }
 
     unsafe fn onKeyUp(&self, _key: char16, _keyCode: int16, _modifiers: int16) -> tresult {
-        kResultFalse // Let WebView handle key events
+        kResultFalse
     }
 
     unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
@@ -149,13 +503,11 @@ impl IPlugViewTrait for WebViewPlugView {
         size.width = width;
         size.height = height;
 
-        // Notify delegate of resize
         let new_size = Size::new(width, height);
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let delegate = unsafe { &mut *self.delegate.get() };
         delegate.gui_resized(new_size);
 
-        // Update platform webview frame
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let platform = unsafe { &*self.platform.get() };
         if let Some(webview) = platform.as_ref() {
@@ -177,17 +529,16 @@ impl IPlugViewTrait for WebViewPlugView {
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let old_frame = unsafe { *frame_ptr };
 
-        // Release old frame reference
+        // Release old frame reference.
         if !old_frame.is_null() {
-            // SAFETY: old_frame is a valid COM object. IPlugFrame inherits FUnknown,
-            // so its vtbl starts with the FUnknownVtbl base.
+            // SAFETY: old_frame is a valid COM object. IPlugFrame inherits FUnknown.
             unsafe {
                 let unknown = old_frame as *mut FUnknown;
                 ((*(*unknown).vtbl).release)(unknown);
             };
         }
 
-        // AddRef new frame
+        // AddRef new frame.
         if !frame.is_null() {
             // SAFETY: frame is a valid COM object provided by the host.
             unsafe {
@@ -229,9 +580,32 @@ impl IPlugViewTrait for WebViewPlugView {
     }
 }
 
-// Release IPlugFrame reference when dropped.
+// Release COM references and clean up IPC when dropped.
+// This is a safety net in case removed() was not called by the host.
 impl Drop for WebViewPlugView {
     fn drop(&mut self) {
+        let ipc = self.ipc.get_mut();
+
+        // Invalidate sync timer if still running.
+        #[cfg(target_os = "macos")]
+        {
+            if !ipc.sync_timer.is_null() {
+                // SAFETY: sync_timer is a valid NSTimer.
+                unsafe {
+                    let _: () = objc2::msg_send![ipc.sync_timer, invalidate];
+                }
+                ipc.sync_timer = std::ptr::null_mut();
+            }
+        }
+
+        // Clear webview pointer to prevent stale dereferences.
+        ipc.webview = std::ptr::null();
+
+        // Release our AddRef'd IComponentHandler reference.
+        // SAFETY: handler was AddRef'd in new() or set_component_handler().
+        unsafe { handler_release(ipc.handler) };
+        ipc.handler = std::ptr::null_mut();
+
         let frame = *self.frame.get_mut();
         if !frame.is_null() {
             // SAFETY: frame is a valid COM object. We hold a reference from setFrame.
@@ -244,16 +618,12 @@ impl Drop for WebViewPlugView {
 }
 
 /// Simple `GuiDelegate` backed by fixed size and constraints.
-///
-/// Used when the plugin doesn't provide its own delegate (the common case
-/// for Config-driven GUI setup).
 pub struct StaticGuiDelegate {
     size: Size,
     constraints: GuiConstraints,
 }
 
 impl StaticGuiDelegate {
-    /// Create a new static delegate with the given size and constraints.
     pub fn new(size: Size, constraints: GuiConstraints) -> Self {
         Self { size, constraints }
     }
@@ -267,4 +637,47 @@ impl GuiDelegate for StaticGuiDelegate {
     fn gui_constraints(&self) -> GuiConstraints {
         self.constraints
     }
+}
+
+// ---------------------------------------------------------------------------
+// NSTimer helper class
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
+    use objc2::runtime::{AnyClass, ClassBuilder};
+    use objc2_foundation::NSObject;
+    use objc2::ClassType;
+
+    let c_name = c"BeamerSyncTimerTarget";
+
+    if let Some(existing) = AnyClass::get(c_name) {
+        return existing;
+    }
+
+    let superclass = NSObject::class();
+    let mut builder = match ClassBuilder::new(c_name, superclass) {
+        Some(b) => b,
+        None => {
+            return AnyClass::get(c_name)
+                .expect("class must exist after ClassBuilder::new returned None");
+        }
+    };
+
+    // SAFETY: sync_timer_fired has the correct signature for an ObjC method
+    // receiving (self, _cmd, timer). AnyObject is the correct callee type
+    // for a dynamically registered class.
+    unsafe {
+        builder.add_method::<objc2::runtime::AnyObject, _>(
+            objc2::sel!(beamerSyncTimerFired:),
+            sync_timer_fired
+                as unsafe extern "C-unwind" fn(
+                    *mut objc2::runtime::AnyObject,
+                    objc2::runtime::Sel,
+                    *mut objc2::runtime::AnyObject,
+                ),
+        );
+    }
+
+    builder.register()
 }

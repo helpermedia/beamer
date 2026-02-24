@@ -6,6 +6,9 @@ pub mod macos;
 #[cfg(target_os = "macos")]
 pub mod macos_scheme;
 
+#[cfg(target_os = "macos")]
+pub mod macos_ipc;
+
 #[cfg(target_os = "windows")]
 pub mod windows;
 

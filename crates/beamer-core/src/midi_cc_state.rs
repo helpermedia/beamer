@@ -246,6 +246,7 @@ impl MidiCcState {
 
         ParameterInfo {
             id,
+            string_id: "",
             name,
             short_name,
             units: "",

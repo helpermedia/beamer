@@ -21,6 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
+use std::sync::Arc;
 
 use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
@@ -32,7 +33,7 @@ use beamer_core::{
     MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, Processor, ScaleInfo, SysEx,
-    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
+    SysExOutputPool, Transport, WebViewHandler, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
@@ -312,6 +313,8 @@ where
     /// Component handler for notifying host of parameter changes
     /// Stored as raw pointer - host manages lifetime, we just AddRef/Release
     component_handler: UnsafeCell<*mut IComponentHandler>,
+    /// Custom WebView message handler (invoke/event routing).
+    webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// Marker for the plugin type and preset collection
     _marker: PhantomData<(P, Presets)>,
 }
@@ -349,6 +352,9 @@ where
         // Create MidiCcState from plugin's config (framework-managed)
         let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
 
+        // Capture the WebView handler (if any) before the descriptor is consumed.
+        let webview_handler = plugin.webview_handler();
+
         Self {
             state: UnsafeCell::new(PluginState::Unprepared {
                 plugin,
@@ -370,6 +376,7 @@ where
             midi_cc_state,
             current_preset_index: UnsafeCell::new(0), // Default to first preset
             component_handler: UnsafeCell::new(std::ptr::null_mut()),
+            webview_handler,
             _marker: PhantomData,
         }
     }
@@ -2297,6 +2304,9 @@ where
                 url: self.config.gui_url,
                 dev_tools: cfg!(debug_assertions),
                 background_color: self.config.gui_background_color,
+                message_callback: None,
+                loaded_callback: None,
+                callback_context: std::ptr::null_mut(),
             };
             debug_assert!(
                 self.config.gui_width > 0 && self.config.gui_height > 0,
@@ -2309,7 +2319,23 @@ where
             };
             let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
 
-            let view = crate::webview::WebViewPlugView::new(config, delegate);
+            // Get raw pointers to parameters and handler for the WebView IPC.
+            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+            let params: *const dyn beamer_core::ParameterStore =
+                unsafe { self.parameters() as &dyn beamer_core::ParameterStore };
+            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+            let component_handler = unsafe { *self.component_handler.get() };
+
+            // SAFETY: params points to the plugin's parameter struct which outlives the view.
+            let view = unsafe {
+                crate::webview::WebViewPlugView::new(
+                    config,
+                    delegate,
+                    params,
+                    component_handler,
+                    self.webview_handler.clone(),
+                )
+            };
             let wrapper = vst3::ComWrapper::new(view);
             match wrapper.to_com_ptr::<IPlugView>() {
                 Some(ptr) => ptr.into_raw(),

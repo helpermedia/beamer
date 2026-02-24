@@ -511,6 +511,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0, // Set via with_id() or macro
+                string_id: "",
                 name,
                 short_name: name,
                 units: "",
@@ -569,6 +570,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -617,6 +619,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -668,6 +671,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -713,6 +717,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -842,6 +847,12 @@ impl FloatParameter {
     /// ```
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
+        self
+    }
+
+    /// Set the string identifier from `#[parameter(id = "...")]`.
+    pub fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.info.string_id = string_id;
         self
     }
 
@@ -1337,6 +1348,7 @@ impl IntParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: "",
@@ -1382,6 +1394,12 @@ impl IntParameter {
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
+        self
+    }
+
+    /// Set the string identifier from `#[parameter(id = "...")]`.
+    pub fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.info.string_id = string_id;
         self
     }
 
@@ -1632,6 +1650,7 @@ impl BoolParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: "",
@@ -1660,6 +1679,7 @@ impl BoolParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name: "Bypass",
                 short_name: "Byp",
                 units: "",
@@ -1688,6 +1708,12 @@ impl BoolParameter {
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
+        self
+    }
+
+    /// Set the string identifier from `#[parameter(id = "...")]`.
+    pub fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.info.string_id = string_id;
         self
     }
 
@@ -1992,6 +2018,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
         Self {
             info: ParameterInfo {
                 id: 0,
+                string_id: "",
                 name,
                 short_name: name,
                 units: "",
@@ -2018,6 +2045,12 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     /// the FNV-1a hash of the string ID.
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
+        self
+    }
+
+    /// Set the string identifier from `#[parameter(id = "...")]`.
+    pub fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.info.string_id = string_id;
         self
     }
 

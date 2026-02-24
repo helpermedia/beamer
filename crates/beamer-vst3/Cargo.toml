@@ -31,3 +31,8 @@ beamer-webview = { workspace = true, optional = true }
 vst3 = { workspace = true }
 log = { workspace = true }
 com-scrape-types = "0.1"
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"

@@ -185,3 +185,42 @@ impl crate::parameter_types::Parameters for NoParameters {
         None
     }
 }
+
+/// Build a JSON array of parameter info for WebView init dumps.
+///
+/// Returns a JSON string like `[{"id":0,"stringId":"gain",...}, ...]`.
+/// Used by both VST3 and AU format wrappers to send the initial
+/// parameter state to the JavaScript runtime.
+pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
+    let entries: Vec<ParamInitEntry> = (0..store.count())
+        .filter_map(|i| {
+            let info = store.info(i)?;
+            Some(ParamInitEntry {
+                id: info.id,
+                string_id: info.string_id,
+                name: info.name,
+                min: store.normalized_to_plain(info.id, 0.0),
+                max: store.normalized_to_plain(info.id, 1.0),
+                default_value: info.default_normalized,
+                value: store.get_normalized(info.id),
+                units: info.units,
+                steps: info.step_count,
+            })
+        })
+        .collect();
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParamInitEntry {
+    id: u32,
+    string_id: &'static str,
+    name: &'static str,
+    min: f64,
+    max: f64,
+    default_value: f64,
+    value: f64,
+    units: &'static str,
+    steps: i32,
+}

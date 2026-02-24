@@ -9,7 +9,8 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["./src/beamer"]
   },
   "include": ["src"]
 }

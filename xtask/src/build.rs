@@ -461,8 +461,9 @@ pub fn compile_plugin_objc(
     fs::write(&extension_path, extension_source)
         .map_err(|e| format!("Failed to write AuExtension.m: {}", e))?;
 
-    // Path to BeamerAuBridge.h header
+    // Header search paths for clang
     let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
+    let ipc_header_dir = workspace_root.join("xtask/src/au_codegen");
 
     // Determine architecture for clang
     let arch = match target {
@@ -482,6 +483,7 @@ pub fn compile_plugin_objc(
             "-fobjc-arc",
             "-fmodules",
             "-I", bridge_header_dir.to_str_safe()?,
+            "-I", ipc_header_dir.to_str_safe()?,
             "-o", wrapper_obj.to_str_safe()?,
             wrapper_path.to_str_safe()?,
         ])
@@ -513,6 +515,7 @@ pub fn compile_plugin_objc(
             "-fobjc-arc",
             "-fmodules",
             "-I", bridge_header_dir.to_str_safe()?,
+            "-I", ipc_header_dir.to_str_safe()?,
             "-o", extension_obj.to_str_safe()?,
             extension_path.to_str_safe()?,
         ])

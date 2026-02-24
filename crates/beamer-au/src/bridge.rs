@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
 use crate::error::os_status;
-use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, MAX_BUSES};
+use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, WebViewHandler, MAX_BUSES};
 use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
@@ -351,6 +351,9 @@ pub struct BeamerInstanceHandle {
     max_frames: u32,
     /// Cached bus configuration
     bus_config: Option<CachedBusConfig>,
+    /// Cached WebView handler, captured at instance creation to avoid
+    /// locking the plugin mutex on every invoke/event call.
+    webview_handler: Option<Arc<dyn WebViewHandler>>,
 }
 
 // SAFETY: BeamerInstanceHandle is designed for FFI use. Thread safety is ensured by:
@@ -503,6 +506,10 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
         // Use the factory to create a new plugin instance
         let plugin = factory::create_instance()?;
 
+        // Cache the WebView handler before wrapping in the Mutex so we
+        // don't need to lock on every invoke/event call from the UI.
+        let webview_handler = plugin.webview_handler();
+
         let handle = Box::new(BeamerInstanceHandle {
             plugin: Arc::new(Mutex::new(plugin)),
             render_block: std::sync::RwLock::new(None),
@@ -510,6 +517,7 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
             sample_rate: 44100.0,
             max_frames: 1024,
             bus_config: None,
+            webview_handler,
         });
 
         Some(Box::into_raw(handle))
@@ -2487,6 +2495,230 @@ pub extern "C" fn beamer_au_apply_preset(
         };
         plugin.apply_preset(preset_index)
     })
+}
+
+// =============================================================================
+// WebView IPC Parameter Sync
+// =============================================================================
+
+/// Get a parameter's current normalized value (for WebView sync).
+///
+/// Returns f64 for full precision in the JS runtime (JS `number` is f64).
+/// This differs from `beamer_au_get_parameter_value` which returns f32
+/// for the AU host API.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0.0`)
+#[no_mangle]
+pub extern "C" fn beamer_au_param_get_normalized(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+) -> f64 {
+    if instance.is_null() {
+        return 0.0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let plugin = lock_plugin(handle).ok()?;
+        let store = plugin.parameter_store().ok()?;
+        Some(store.get_normalized(param_id))
+    }));
+
+    result.unwrap_or(Some(0.0)).unwrap_or(0.0)
+}
+
+/// Get all parameter info as a JSON string for the WebView init dump.
+///
+/// Returns a heap-allocated null-terminated C string that the caller must
+/// free with `beamer_au_free_string`. Returns null on failure.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns null)
+#[no_mangle]
+pub extern "C" fn beamer_au_param_info_json(
+    instance: BeamerAuInstanceHandle,
+) -> *mut c_char {
+    if instance.is_null() {
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let plugin = lock_plugin(handle).ok()?;
+        let store = plugin.parameter_store().ok()?;
+        let json = beamer_core::params_to_init_json(store);
+        CString::new(json).ok()
+    }));
+
+    match result {
+        Ok(Some(cstr)) => cstr.into_raw(),
+        _ => ptr::null_mut(),
+    }
+}
+
+/// Free a string returned by a beamer_au function (e.g., `beamer_au_param_info_json`,
+/// `beamer_au_on_invoke`).
+///
+/// # Safety
+///
+/// - `ptr` must be a pointer returned by a beamer_au function that allocates
+///   strings via `CString::into_raw()`, or null.
+#[no_mangle]
+pub extern "C" fn beamer_au_free_string(ptr: *mut c_char) {
+    if !ptr.is_null() {
+        // SAFETY: ptr was returned by CString::into_raw() in a beamer_au function.
+        unsafe { drop(CString::from_raw(ptr)) };
+    }
+}
+
+/// Set a parameter value from the WebView UI (normalized, f64 precision).
+///
+/// This sets the normalized value in the Rust parameter store. The ObjC
+/// wrapper is responsible for notifying the host (via AUParameterTree for
+/// AUv3 or AudioUnitSetParameter for AUv2).
+///
+/// Accepts f64 for full precision from the JS runtime.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function does nothing)
+#[no_mangle]
+pub extern "C" fn beamer_au_param_set_from_ui(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+    value: f64,
+) {
+    if instance.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        if let Ok(plugin) = lock_plugin(handle) {
+            if let Ok(store) = plugin.parameter_store() {
+                store.set_normalized(param_id, value);
+            }
+        }
+    }));
+}
+
+// =============================================================================
+// WebView Invoke / Event
+// =============================================================================
+
+/// Handle an invoke call from JavaScript.
+///
+/// Called when the WebView sends an `invoke` message. Dispatches to the
+/// plugin's `WebViewHandler::on_invoke` if one is registered. Returns a
+/// heap-allocated JSON string with `{"ok":...}` or `{"err":"..."}` that the
+/// caller must free with `beamer_au_free_string`. Returns null on failure.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns null)
+/// - `method` must be a valid UTF-8 pointer with at least `method_len` bytes
+/// - `args_json` must be a valid UTF-8 pointer with at least `args_json_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn beamer_au_on_invoke(
+    instance: BeamerAuInstanceHandle,
+    method: *const u8,
+    method_len: usize,
+    args_json: *const u8,
+    args_json_len: usize,
+) -> *mut c_char {
+    if instance.is_null() || method.is_null() || args_json.is_null() {
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Pointers validated non-null above. Caller guarantees correct lengths.
+        let method_bytes = unsafe { std::slice::from_raw_parts(method, method_len) };
+        // SAFETY: args_json validated non-null above. Caller guarantees correct length.
+        let args_bytes = unsafe { std::slice::from_raw_parts(args_json, args_json_len) };
+        let method_str = std::str::from_utf8(method_bytes).ok()?;
+        let args_str = std::str::from_utf8(args_bytes).ok()?;
+
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+
+        let json = match &handle.webview_handler {
+            Some(h) => {
+                let args: Vec<serde_json::Value> =
+                    serde_json::from_str(args_str).unwrap_or_default();
+                match h.on_invoke(method_str, &args) {
+                    Ok(val) => {
+                        format!(r#"{{"ok":{}}}"#, serde_json::to_string(&val).unwrap_or_default())
+                    }
+                    Err(msg) => {
+                        let escaped = serde_json::to_string(&msg).unwrap_or_default();
+                        format!(r#"{{"err":{}}}"#, escaped)
+                    }
+                }
+            }
+            None => r#"{"ok":null}"#.to_string(),
+        };
+
+        CString::new(json).ok()
+    }));
+
+    match result {
+        Ok(Some(cstr)) => cstr.into_raw(),
+        _ => ptr::null_mut(),
+    }
+}
+
+/// Handle a custom event from JavaScript.
+///
+/// Called when the WebView sends an `event` message. Dispatches to the
+/// plugin's `WebViewHandler::on_event` if one is registered.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function does nothing)
+/// - `name` must be a valid UTF-8 pointer with at least `name_len` bytes
+/// - `data_json` must be a valid UTF-8 pointer with at least `data_json_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn beamer_au_on_event(
+    instance: BeamerAuInstanceHandle,
+    name: *const u8,
+    name_len: usize,
+    data_json: *const u8,
+    data_json_len: usize,
+) {
+    if instance.is_null() || name.is_null() || data_json.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Pointers validated non-null above. Caller guarantees correct lengths.
+        let name_bytes = unsafe { std::slice::from_raw_parts(name, name_len) };
+        // SAFETY: data_json validated non-null above. Caller guarantees correct length.
+        let data_bytes = unsafe { std::slice::from_raw_parts(data_json, data_json_len) };
+        let name_str = std::str::from_utf8(name_bytes).ok()?;
+        let data_str = std::str::from_utf8(data_bytes).ok()?;
+
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+
+        if let Some(h) = &handle.webview_handler {
+            let data: serde_json::Value =
+                serde_json::from_str(data_str).unwrap_or(serde_json::Value::Null);
+            h.on_event(name_str, &data);
+        }
+
+        Some(())
+    }));
 }
 
 // =============================================================================

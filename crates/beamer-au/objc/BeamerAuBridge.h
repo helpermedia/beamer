@@ -943,6 +943,97 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
 void beamer_au_get_gui_background_color(uint8_t* _Nonnull out);
 
 // =============================================================================
+// MARK: - WebView IPC Parameter Sync
+// =============================================================================
+
+/**
+ * Get a parameter's current normalized value (for WebView sync).
+ *
+ * Thread Safety: Can be called from any thread (uses atomics internally).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID.
+ * @return Normalized value (0.0 to 1.0), f64 precision for JS runtime.
+ */
+double beamer_au_param_get_normalized(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
+
+/**
+ * Get all parameter info as a JSON string for the WebView init dump.
+ *
+ * Returns a heap-allocated null-terminated C string that the caller must
+ * free with `beamer_au_free_string`. Returns NULL on failure.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return JSON string, or NULL on failure. Caller must free with beamer_au_free_string.
+ */
+char* _Nullable beamer_au_param_info_json(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Free a string returned by a beamer_au function (e.g., beamer_au_param_info_json,
+ * beamer_au_on_invoke).
+ *
+ * @param ptr Pointer returned by a beamer_au string-producing function, or NULL (no-op).
+ */
+void beamer_au_free_string(char* _Nullable ptr);
+
+/**
+ * Set a parameter value from the WebView UI (normalized).
+ *
+ * The ObjC wrapper is responsible for notifying the host via
+ * AUParameterTree (AUv3) or AudioUnitSetParameter (AUv2).
+ *
+ * Thread Safety: Can be called from any thread (uses atomics internally).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID.
+ * @param value Normalized value (0.0 to 1.0), f64 precision from JS runtime.
+ */
+void beamer_au_param_set_from_ui(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id, double value);
+
+/**
+ * Handle an invoke call from JavaScript.
+ *
+ * Dispatches to the plugin's WebViewHandler::on_invoke if registered.
+ * Returns a JSON string with {"ok":...} or {"err":"..."}.
+ * The caller must free the returned string with beamer_au_free_string.
+ *
+ * Thread Safety: Can be called from the main thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param method UTF-8 method name bytes.
+ * @param method_len Length of method name in bytes.
+ * @param args_json UTF-8 JSON string of the arguments array.
+ * @param args_json_len Length of args_json in bytes.
+ * @return JSON result string, or NULL on failure. Caller must free with beamer_au_free_string.
+ */
+char* _Nullable beamer_au_on_invoke(BeamerAuInstanceHandle _Nullable instance,
+                                    const uint8_t* _Nonnull method,
+                                    size_t method_len,
+                                    const uint8_t* _Nonnull args_json,
+                                    size_t args_json_len);
+
+/**
+ * Handle a custom event from JavaScript.
+ *
+ * Dispatches to the plugin's WebViewHandler::on_event if registered.
+ *
+ * Thread Safety: Can be called from the main thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param name UTF-8 event name bytes.
+ * @param name_len Length of event name in bytes.
+ * @param data_json UTF-8 JSON string of the event data.
+ * @param data_json_len Length of data_json in bytes.
+ */
+void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
+                        const uint8_t* _Nonnull name,
+                        size_t name_len,
+                        const uint8_t* _Nonnull data_json,
+                        size_t data_json_len);
+
+// =============================================================================
 // MARK: - WebView C-ABI (beamer-webview)
 // =============================================================================
 
@@ -1010,6 +1101,63 @@ void beamer_webview_set_frame(void* _Nonnull handle,
  *               Must not be used after this call.
  */
 void beamer_webview_destroy(void* _Nullable handle);
+
+/**
+ * Evaluate JavaScript in the WebView.
+ *
+ * @param handle Opaque WebView handle.
+ * @param script UTF-8 script bytes.
+ * @param len Length of script in bytes.
+ */
+void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull script, size_t len);
+
+/**
+ * Create a WebView with IPC support, serving embedded assets.
+ *
+ * @param parent           NSView* to attach the WebView to.
+ * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
+ * @param plugin_code      Pointer to 4 bytes of plugin subtype code.
+ * @param dev_tools        Enable Web Inspector.
+ * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
+ * @param message_callback Called when JS sends a message to native.
+ * @param loaded_callback  Called when the WebView finishes initial load.
+ * @param callback_context Opaque pointer passed to both callbacks.
+ * @return Opaque WebView handle, or NULL on failure.
+ */
+void* _Nullable beamer_webview_create_with_ipc(
+    void* _Nonnull parent,
+    const void* _Nonnull assets,
+    const uint8_t* _Nonnull plugin_code,
+    bool dev_tools,
+    const uint8_t* _Nullable background_color,
+    void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
+    void (* _Nonnull loaded_callback)(void* context),
+    void* _Nullable callback_context
+);
+
+/**
+ * Create a WebView with IPC support, loading from a URL (dev server mode).
+ *
+ * @param parent           NSView* to attach the WebView to.
+ * @param url              Null-terminated UTF-8 URL.
+ * @param plugin_code      Pointer to 4 bytes of plugin subtype code.
+ * @param dev_tools        Enable Web Inspector.
+ * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
+ * @param message_callback Called when JS sends a message to native.
+ * @param loaded_callback  Called when the WebView finishes initial load.
+ * @param callback_context Opaque pointer passed to both callbacks.
+ * @return Opaque WebView handle, or NULL on failure.
+ */
+void* _Nullable beamer_webview_create_url_with_ipc(
+    void* _Nonnull parent,
+    const char* _Nonnull url,
+    const uint8_t* _Nonnull plugin_code,
+    bool dev_tools,
+    const uint8_t* _Nullable background_color,
+    void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
+    void (* _Nonnull loaded_callback)(void* context),
+    void* _Nullable callback_context
+);
 
 // =============================================================================
 // MARK: - Plugin Metadata

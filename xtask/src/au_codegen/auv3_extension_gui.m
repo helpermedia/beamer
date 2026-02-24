@@ -7,6 +7,7 @@
 @import CoreAudioKit;
 @import Foundation;
 #include "BeamerAuBridge.h"
+#include "au_ipc_helpers.h"
 
 @class {{WRAPPER_CLASS}};
 
@@ -14,15 +15,92 @@
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
                                      options:(AudioComponentInstantiationOptions)options
                                        error:(NSError**)outError;
+- (BeamerAuInstanceHandle)rustInstance;
 @end
 
 @interface {{EXTENSION_CLASS}} : AUViewController <AUAudioUnitFactory>
 {
+@public
     void* _webviewHandle;
     uint32_t _guiWidth;
     uint32_t _guiHeight;
+    {{WRAPPER_CLASS}}* _wrapper;
+    NSTimer* _syncTimer;
+    BOOL _webviewLoaded;
+    double* _lastParamValues;
+    uint32_t _paramCount;
 }
 @end
+
+@interface {{EXTENSION_CLASS}} ()
+- (void)_ensureWebView;
+- (void)_sendInitDump;
+- (void)_startSyncTimer;
+- (void)_pollParams;
+@end
+
+// =============================================================================
+// MARK: - WebView IPC Callbacks
+// =============================================================================
+
+static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_t len) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    BeamerAuInstanceHandle instance = [ext->_wrapper rustInstance];
+    if (!instance) return;
+
+    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
+    if (!jsonStr) return;
+
+    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (!msg) return;
+
+    NSString* type = msg[@"type"];
+    if ([type isEqualToString:@"param:set"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        double value = [msg[@"value"] doubleValue];
+        beamer_au_param_set_from_ui(instance, paramId, value);
+        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            float min = param.minValue;
+            float max = param.maxValue;
+            param.value = min + (float)value * (max - min);
+        }
+    } else if ([type isEqualToString:@"param:begin"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeTouch];
+        }
+    } else if ([type isEqualToString:@"param:end"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+        if (param) {
+            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeRelease];
+        }
+    } else if ([type isEqualToString:@"invoke"]) {
+        beamer_au_ipc_handle_invoke(instance, ext->_webviewHandle, msg);
+    } else if ([type isEqualToString:@"event"]) {
+        beamer_au_ipc_handle_event(instance, msg);
+    }
+}
+
+static void beamer_auv3_ext_on_loaded(void* context) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    ext->_webviewLoaded = YES;
+
+    // If the wrapper is already available, send the parameter init dump
+    // and start the sync timer. Otherwise createAudioUnitWithComponentDescription:
+    // will handle it when the wrapper arrives.
+    if (ext->_wrapper) {
+        [ext _sendInitDump];
+        [ext _startSyncTimer];
+    }
+}
+
+// =============================================================================
+// MARK: - Extension Implementation
+// =============================================================================
 
 @implementation {{EXTENSION_CLASS}}
 
@@ -78,14 +156,78 @@
     uint8_t bgColor[4];
     beamer_au_get_gui_background_color(bgColor);
 
+    // Always create with IPC callbacks. The callbacks check whether
+    // _wrapper is available before accessing the Rust instance, so
+    // it's safe even if the audio unit hasn't been created yet.
     const char* devUrl = beamer_au_get_gui_url(NULL);
     if (devUrl != NULL) {
-        _webviewHandle = beamer_webview_create_url(
-            (__bridge void*)self.view, devUrl, pluginCode, devTools, bgColor);
+        _webviewHandle = beamer_webview_create_url_with_ipc(
+            (__bridge void*)self.view, devUrl, pluginCode, devTools, bgColor,
+            beamer_auv3_ext_on_message, beamer_auv3_ext_on_loaded,
+            (__bridge void*)self);
     } else {
         const void* assets = beamer_au_get_gui_assets();
-        _webviewHandle = beamer_webview_create(
-            (__bridge void*)self.view, assets, pluginCode, devTools, bgColor);
+        _webviewHandle = beamer_webview_create_with_ipc(
+            (__bridge void*)self.view, assets, pluginCode, devTools, bgColor,
+            beamer_auv3_ext_on_message, beamer_auv3_ext_on_loaded,
+            (__bridge void*)self);
+    }
+}
+
+- (void)_sendInitDump {
+    if (!_webviewHandle || !_wrapper) return;
+    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
+    beamer_au_ipc_send_init_dump(instance, _webviewHandle);
+}
+
+- (void)_startSyncTimer {
+    if (_syncTimer) return;
+
+    // NAN sentinel: NAN != NAN (IEEE 754) ensures the first sync tick sends all values.
+    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
+    if (instance) {
+        _paramCount = beamer_au_get_parameter_count(instance);
+        if (_paramCount > 0) {
+            free(_lastParamValues);
+            _lastParamValues = (double*)malloc(_paramCount * sizeof(double));
+            for (uint32_t i = 0; i < _paramCount; i++) {
+                _lastParamValues[i] = NAN;
+            }
+        }
+    }
+
+    // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
+    __weak typeof(self) weakSelf = self;
+    _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
+        (void)t;
+        [weakSelf _pollParams];
+    }];
+}
+
+- (void)_pollParams {
+    if (!_webviewHandle || !_wrapper) return;
+    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
+    if (!instance) return;
+    if (_paramCount == 0) return;
+
+    NSMutableString* script = [NSMutableString stringWithString:@"window.__BEAMER__._onParams({"];
+    BOOL any = NO;
+
+    BeamerAuParameterInfo info;
+    for (uint32_t i = 0; i < _paramCount; i++) {
+        if (!beamer_au_get_parameter_info(instance, i, &info)) continue;
+        double val = beamer_au_param_get_normalized(instance, info.id);
+        if (val == _lastParamValues[i]) continue;
+        _lastParamValues[i] = val;
+        if (any) [script appendString:@","];
+        [script appendFormat:@"%u:%f", info.id, val];
+        any = YES;
+    }
+
+    if (any) {
+        [script appendString:@"})"];
+        const char* utf8 = [script UTF8String];
+        beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
     }
 }
 
@@ -101,6 +243,13 @@
 - (void)viewDidDisappear {
     [super viewDidDisappear];
 
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    _webviewLoaded = NO;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
+    _paramCount = 0;
+
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
@@ -109,6 +258,11 @@
 
 - (void)dealloc {
     // Safety net in case -viewDidDisappear was not called
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
+
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
@@ -126,7 +280,20 @@
         return nil;
     }
 
-    return [[{{WRAPPER_CLASS}} alloc] initWithComponentDescription:desc options:0 error:error];
+    {{WRAPPER_CLASS}}* wrapper = [[{{WRAPPER_CLASS}} alloc] initWithComponentDescription:desc options:0 error:error];
+    if (!wrapper) return nil;
+
+    _wrapper = wrapper;
+
+    // If the WebView already finished loading, send the init dump and
+    // start the parameter sync timer now. Otherwise the on_loaded
+    // callback will handle it when the load completes.
+    if (_webviewLoaded && _webviewHandle) {
+        [self _sendInitDump];
+        [self _startSyncTimer];
+    }
+
+    return wrapper;
 }
 
 @end

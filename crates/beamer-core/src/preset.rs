@@ -186,6 +186,7 @@ mod tests {
                 value: AtomicU64::new(0.0f64.to_bits()),
                 info: ParameterInfo {
                     id,
+                    string_id: "",
                     name,
                     short_name: name,
                     units: "",

@@ -53,8 +53,14 @@ The WebView case is different - we only need to *instantiate and configure*
 ### Phase 2C: IPC & Parameter Binding
 - JS API (`window.__BEAMER__`)
 - Invoke pattern (JS -> Rust)
-- Event emission (Rust -> JS)
+- Event emission (Rust -> JS, non-realtime threads only)
 - Parameter synchronization
+
+### Phase 2D: Real-Time Visualization
+- Lock-free ring buffer for audio thread -> main thread data
+- Main-thread timer drains buffer and pushes to JS alongside param sync
+- Spectrum data, level meters and waveform display
+- `WebViewHandle::emit_rt()` for audio-thread-safe event emission
 
 ## Plugin Directory Convention
 
@@ -128,3 +134,5 @@ Note: `resources.rs` is Phase 2B scope.
 
 **Phase 2A**: Complete - [WEBVIEW_PHASE2A.md](./WEBVIEW_PHASE2A.md)
 **Phase 2B**: Complete - [WEBVIEW_PHASE2B.md](./WEBVIEW_PHASE2B.md)
+**Phase 2C**: Planned - [WEBVIEW_PHASE2C.md](./WEBVIEW_PHASE2C.md)
+**Phase 2D**: Planned

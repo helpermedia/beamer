@@ -14,8 +14,12 @@
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
 //! plugin implementation.
 
+use std::sync::Arc;
+
 use crate::error::{PluginError, PluginResult};
-use beamer_core::{CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext};
+use beamer_core::{
+    CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext, WebViewHandler,
+};
 
 /// Type-erased interface for AU plugin instances.
 ///
@@ -362,6 +366,18 @@ pub trait AuPluginInstance: Send + 'static {
         for event in input {
             output.push(event.clone());
         }
+    }
+
+    // =========================================================================
+    // WebView Handler
+    // =========================================================================
+
+    /// Returns the WebView handler for custom invoke/event messages.
+    ///
+    /// Returns `None` if the plugin does not provide a custom handler.
+    /// Parameter synchronization is automatic and does not require this.
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        None
     }
 
     // =========================================================================

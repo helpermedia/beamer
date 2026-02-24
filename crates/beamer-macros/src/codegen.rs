@@ -1177,6 +1177,12 @@ fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident
         .with_id(#struct_name::#const_name)
     };
 
+    // Always add .with_string_id()
+    let id_str = &parameter.string_id;
+    let with_string_id = quote! {
+        .with_string_id(#id_str)
+    };
+
     // Optional: .with_short_name()
     let with_short_name = parameter.attributes.short_name.as_ref().map(|short| {
         quote! { .with_short_name(#short) }
@@ -1211,6 +1217,7 @@ fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident
 
     quote! {
         #with_id
+        #with_string_id
         #with_short_name
         #with_smoother
         #with_step_size

@@ -4,6 +4,8 @@
 //! in a Beamer plugin. Web assets are built with bun and embedded at
 //! compile time. The plugin is a simple gain effect with an interactive GUI.
 
+use std::sync::Arc;
+
 use beamer::prelude::*;
 
 // =============================================================================
@@ -39,6 +41,34 @@ impl Descriptor for WebViewDemoDescriptor {
     fn prepare(self, _: ()) -> WebViewDemoProcessor {
         WebViewDemoProcessor {
             parameters: self.parameters,
+        }
+    }
+
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        Some(Arc::new(DemoHandler))
+    }
+}
+
+// =============================================================================
+// WebView Handler (invoke/event demo)
+// =============================================================================
+
+/// Handles `__BEAMER__.invoke()` calls from JavaScript.
+struct DemoHandler;
+
+impl WebViewHandler for DemoHandler {
+    fn on_invoke(
+        &self,
+        method: &str,
+        _args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        match method {
+            "getInfo" => Ok(serde_json::json!({
+                "name": "Beamer WebView Demo",
+                "version": env!("CARGO_PKG_VERSION"),
+                "framework": "Beamer",
+            })),
+            _ => Err(format!("unknown method: {method}")),
         }
     }
 }

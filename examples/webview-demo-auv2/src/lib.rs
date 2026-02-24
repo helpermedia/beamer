@@ -1,8 +1,10 @@
-//! WebView demo plugin.
+//! WebView demo plugin (AUv2 variant).
 //!
-//! A minimal example demonstrating WebView GUI support in a Beamer plugin.
-//! The plugin is a simple gain effect with a static HTML GUI loaded
-//! via WKWebView (macOS). Windows support is planned but not yet implemented.
+//! An example demonstrating React + Vite + Tailwind webview GUI support
+//! in a Beamer plugin. Web assets are built with bun and embedded at
+//! compile time. The plugin is a simple gain effect with an interactive GUI.
+
+use std::sync::Arc;
 
 use beamer::prelude::*;
 
@@ -23,8 +25,8 @@ pub struct WebViewDemoParameters {
 
 /// Plugin descriptor with WebView GUI support.
 ///
-/// The `#[beamer::export]` macro auto-detects `webview/index.html` and
-/// embeds it as the GUI HTML content.
+/// The `#[beamer::export]` macro scans `webview/dist/` at compile time
+/// and embeds all built assets via `include_bytes!()`.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct WebViewDemoDescriptor {
@@ -39,6 +41,34 @@ impl Descriptor for WebViewDemoDescriptor {
     fn prepare(self, _: ()) -> WebViewDemoProcessor {
         WebViewDemoProcessor {
             parameters: self.parameters,
+        }
+    }
+
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        Some(Arc::new(DemoHandler))
+    }
+}
+
+// =============================================================================
+// WebView Handler (invoke/event demo)
+// =============================================================================
+
+/// Handles `__BEAMER__.invoke()` calls from JavaScript.
+struct DemoHandler;
+
+impl WebViewHandler for DemoHandler {
+    fn on_invoke(
+        &self,
+        method: &str,
+        _args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        match method {
+            "getInfo" => Ok(serde_json::json!({
+                "name": "Beamer WebView Demo AUv2",
+                "version": env!("CARGO_PKG_VERSION"),
+                "framework": "Beamer",
+            })),
+            _ => Err(format!("unknown method: {method}")),
         }
     }
 }

@@ -15,18 +15,28 @@
 #import <Cocoa/Cocoa.h>
 #import <AudioUnit/AUCocoaUIView.h>
 
+// Include the bridge header for Rust plugin access
+#include "BeamerAuBridge.h"
+#include "au_ipc_helpers.h"
+
 // CocoaUI class interfaces (implementations at end of file)
 @interface {{COCOA_GUI_VIEW_CLASS}} : NSView {
+@public
     void* _webviewHandle;
+    BeamerAuInstanceHandle _rustInstance;
+    AudioUnit _audioUnit;
+    NSTimer* _syncTimer;
+    double* _lastParamValues;
+    uint32_t _paramCount;
 }
-- (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle;
+- (instancetype)initWithFrame:(NSRect)frame
+                 webviewHandle:(void*)handle
+                  rustInstance:(BeamerAuInstanceHandle)rustInstance
+                     audioUnit:(AudioUnit)audioUnit;
 @end
 
 @interface {{COCOA_VIEW_FACTORY_CLASS}} : NSObject <AUCocoaUIBase>
 @end
-
-// Include the bridge header for Rust plugin access
-#include "BeamerAuBridge.h"
 
 // =============================================================================
 // MARK: - Constants
@@ -1819,22 +1829,123 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 // MARK: - CocoaUI GUI View
 // =============================================================================
 
+// =============================================================================
+// MARK: - AUv2 WebView IPC Callbacks
+// =============================================================================
+
+static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t len) {
+    {{COCOA_GUI_VIEW_CLASS}}* self = (__bridge {{COCOA_GUI_VIEW_CLASS}}*)context;
+    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
+    if (!jsonStr) return;
+
+    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (!msg) return;
+
+    NSString* type = msg[@"type"];
+    if ([type isEqualToString:@"param:set"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        double value = [msg[@"value"] doubleValue];
+        beamer_au_param_set_from_ui(self->_rustInstance, paramId, value);
+        // Notify host via AudioUnitSetParameter (convert normalized to AU value)
+        float auValue = beamer_au_get_parameter_value_au(self->_rustInstance, paramId);
+        AudioUnitSetParameter(self->_audioUnit, paramId,
+            kAudioUnitScope_Global, 0, auValue, 0);
+    } else if ([type isEqualToString:@"param:begin"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AudioUnitEvent event;
+        memset(&event, 0, sizeof(event));
+        event.mEventType = kAudioUnitEvent_BeginParameterChangeGesture;
+        event.mArgument.mParameter.mAudioUnit = self->_audioUnit;
+        event.mArgument.mParameter.mParameterID = paramId;
+        event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
+        AUEventListenerNotify(NULL, NULL, &event);
+    } else if ([type isEqualToString:@"param:end"]) {
+        uint32_t paramId = [msg[@"id"] unsignedIntValue];
+        AudioUnitEvent event;
+        memset(&event, 0, sizeof(event));
+        event.mEventType = kAudioUnitEvent_EndParameterChangeGesture;
+        event.mArgument.mParameter.mAudioUnit = self->_audioUnit;
+        event.mArgument.mParameter.mParameterID = paramId;
+        event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
+        AUEventListenerNotify(NULL, NULL, &event);
+    } else if ([type isEqualToString:@"invoke"]) {
+        beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
+    } else if ([type isEqualToString:@"event"]) {
+        beamer_au_ipc_handle_event(self->_rustInstance, msg);
+    }
+}
+
+static void beamer_auv2_on_loaded(void* context) {
+    {{COCOA_GUI_VIEW_CLASS}}* self = (__bridge {{COCOA_GUI_VIEW_CLASS}}*)context;
+    beamer_au_ipc_send_init_dump(self->_rustInstance, self->_webviewHandle);
+}
+
 @implementation {{COCOA_GUI_VIEW_CLASS}}
-- (instancetype)initWithFrame:(NSRect)frame webviewHandle:(void*)handle {
+- (instancetype)initWithFrame:(NSRect)frame
+                 webviewHandle:(void*)handle
+                  rustInstance:(BeamerAuInstanceHandle)rustInstance
+                     audioUnit:(AudioUnit)audioUnit {
     self = [super initWithFrame:frame];
     if (self) {
         _webviewHandle = handle;
+        _rustInstance = rustInstance;
+        _audioUnit = audioUnit;
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(applicationWillTerminate:)
                                                      name:NSApplicationWillTerminateNotification
                                                    object:nil];
+        // NAN sentinel: NAN != NAN (IEEE 754) ensures the first sync tick sends all values.
+        _paramCount = beamer_au_get_parameter_count(_rustInstance);
+        if (_paramCount > 0) {
+            _lastParamValues = (double*)malloc(_paramCount * sizeof(double));
+            for (uint32_t i = 0; i < _paramCount; i++) {
+                _lastParamValues[i] = NAN;
+            }
+        }
+
+        // Start 60Hz parameter sync timer.
+        // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
+        __weak typeof(self) weakSelf = self;
+        _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
+            (void)t;
+            [weakSelf _pollParams];
+        }];
     }
     return self;
 }
 - (void)dealloc {
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
+    }
+}
+- (void)_pollParams {
+    if (!_webviewHandle || !_rustInstance) return;
+    if (_paramCount == 0) return;
+
+    NSMutableString* script = [NSMutableString stringWithString:@"window.__BEAMER__._onParams({"];
+    BOOL any = NO;
+
+    BeamerAuParameterInfo info;
+    for (uint32_t i = 0; i < _paramCount; i++) {
+        if (!beamer_au_get_parameter_info(_rustInstance, i, &info)) continue;
+        double val = beamer_au_param_get_normalized(_rustInstance, info.id);
+        if (val == _lastParamValues[i]) continue;
+        _lastParamValues[i] = val;
+        if (any) [script appendString:@","];
+        [script appendFormat:@"%u:%f", info.id, val];
+        any = YES;
+    }
+
+    if (any) {
+        [script appendString:@"})"];
+        const char* utf8 = [script UTF8String];
+        beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
     }
 }
 - (BOOL)mouseDownCanMoveWindow {
@@ -1847,6 +1958,10 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
     }
 }
 - (void)applicationWillTerminate:(NSNotification*)notification {
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
@@ -1902,22 +2017,34 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 
     const char* devUrl = beamer_au_get_gui_url(rustInstance);
     void* webviewHandle;
+    // Create the GUI view that will be returned to the host.
+    // __bridge (no retain) is safe for the callback context because the host
+    // retains this view for the editor lifetime, and -dealloc destroys the
+    // WebView before the view is freed - so the context cannot dangle.
+    {{COCOA_GUI_VIEW_CLASS}}* guiView = [[{{COCOA_GUI_VIEW_CLASS}} alloc]
+        initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)
+        webviewHandle:NULL
+         rustInstance:rustInstance
+            audioUnit:audioUnit];
+
     if (devUrl != NULL) {
-        webviewHandle = beamer_webview_create_url(
-            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor);
+        webviewHandle = beamer_webview_create_url_with_ipc(
+            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor,
+            beamer_auv2_on_message, beamer_auv2_on_loaded,
+            (__bridge void*)guiView);
     } else {
         const void* assets = beamer_au_get_gui_assets();
-        webviewHandle = beamer_webview_create(
-            (__bridge void*)container, assets, pluginCode, devTools, bgColor);
+        webviewHandle = beamer_webview_create_with_ipc(
+            (__bridge void*)container, assets, pluginCode, devTools, bgColor,
+            beamer_auv2_on_message, beamer_auv2_on_loaded,
+            (__bridge void*)guiView);
     }
     if (webviewHandle == NULL) {
         return nil;
     }
 
-    // Wrap in GUI view that manages WebView lifecycle
-    {{COCOA_GUI_VIEW_CLASS}}* guiView = [[{{COCOA_GUI_VIEW_CLASS}} alloc]
-        initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)
-        webviewHandle:webviewHandle];
+    // Store the webview handle in the GUI view
+    guiView->_webviewHandle = webviewHandle;
 
     // Re-parent the WebView's container into the GUI view
     [container setFrame:guiView.bounds];

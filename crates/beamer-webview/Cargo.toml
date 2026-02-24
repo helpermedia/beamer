@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 beamer-core = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -28,6 +29,11 @@ objc2-web-kit = { version = "0.3", features = [
     "WKNavigation",
     "WKURLSchemeHandler",
     "WKURLSchemeTask",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKNavigationDelegate",
     "objc2-app-kit",
     "objc2-core-foundation",
 ] }

@@ -12,6 +12,8 @@
 //! This design eliminates placeholder values by making it impossible to process audio
 //! until proper configuration is available.
 
+use std::sync::Arc;
+
 use crate::buffer::{AuxiliaryBuffers, Buffer};
 use crate::error::{PluginError, PluginResult};
 use crate::midi::{
@@ -23,6 +25,7 @@ use crate::parameter_groups::ParameterGroups;
 use crate::parameter_store::ParameterStore;
 use crate::parameter_types::Parameters;
 use crate::process_context::ProcessContext;
+use crate::webview_handler::WebViewHandler;
 
 // =============================================================================
 // HasParameters Trait (Shared Parameter Access)
@@ -1379,6 +1382,21 @@ pub trait Descriptor: HasParameters + Default {
     fn set_mpe_input_device_settings(&mut self, settings: MpeInputDeviceSettings) -> bool {
         let _ = settings;
         true
+    }
+
+    // =========================================================================
+    // WebView Handler (custom JS invoke/event handling)
+    // =========================================================================
+
+    /// Returns a shared handler for custom WebView messages.
+    ///
+    /// Override to handle `invoke()` calls and custom events from JavaScript.
+    /// The returned handler is shared across the plugin lifetime via `Arc`.
+    /// Parameter synchronization is automatic and does not require this.
+    ///
+    /// Default returns `None` (no custom message handling).
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        None
     }
 }
 

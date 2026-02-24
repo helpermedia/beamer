@@ -1783,6 +1783,12 @@ pub struct MidiBuffer {
     overflowed: bool,
 }
 
+impl Default for MidiBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MidiBuffer {
     /// Create a new empty MIDI buffer.
     ///

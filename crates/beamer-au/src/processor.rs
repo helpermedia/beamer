@@ -29,6 +29,7 @@
 //! via the render callback (currently placeholder).
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
 use crate::instance::AuPluginInstance;
@@ -36,6 +37,7 @@ use crate::lifecycle::AuState;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
     MidiEvent, NoPresets, ParameterGroups, ParameterStore, ProcessContext, Processor, Transport,
+    WebViewHandler,
 };
 
 /// Generic AU processor wrapper.
@@ -53,6 +55,9 @@ where
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     state: AuState<P>,
+    /// Cached WebView handler from the Descriptor. Captured at construction
+    /// so it remains accessible after prepare() consumes the Descriptor.
+    webview_handler: Option<Arc<dyn WebViewHandler>>,
     _presets: PhantomData<Presets>,
 }
 
@@ -67,8 +72,13 @@ where
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
     pub fn new() -> Self {
+        // Capture the WebView handler before the Descriptor is consumed
+        // by prepare(). The handler is Send + Sync so it can outlive the
+        // Descriptor.
+        let handler = P::default().webview_handler();
         Self {
             state: AuState::new(),
+            webview_handler: handler,
             _presets: PhantomData,
         }
     }
@@ -776,6 +786,10 @@ where
         }
     }
 
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        self.webview_handler.clone()
+    }
+
     fn preset_count(&self) -> u32 {
         Presets::count() as u32
     }
@@ -853,6 +867,7 @@ mod tests {
                 value: AtomicU64::new(default.to_bits()),
                 info: ParameterInfo {
                     id,
+                    string_id: "",
                     name,
                     short_name: name,
                     units: "dB",

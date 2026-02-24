@@ -4,7 +4,7 @@ use std::ffi::c_void;
 
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSView;
 
@@ -23,9 +23,20 @@ use crate::error::{Result, WebViewError};
 use crate::platform::macos_scheme::new_scheme_handler;
 use crate::WebViewConfig;
 
+/// Injected JavaScript runtime that creates `window.__BEAMER__`.
+///
+/// Loaded from `beamer_runtime.js` at compile time. The script is injected
+/// at document start before any page code runs. Uses var/function (no ES6)
+/// for maximum WebView compatibility.
+const BEAMER_RUNTIME_JS: &str = include_str!("beamer_runtime.js");
+
 /// macOS WebView backed by WKWebView.
 pub struct MacosWebView {
     webview: Retained<WKWebView>,
+    /// Retained reference to the navigation delegate to prevent deallocation.
+    _nav_delegate: Option<Retained<AnyObject>>,
+    /// Retained reference to the message handler to prevent deallocation.
+    _msg_handler: Option<Retained<AnyObject>>,
 }
 
 impl MacosWebView {
@@ -60,9 +71,8 @@ impl MacosWebView {
             let handler =
                 unsafe { new_scheme_handler(assets, config.plugin_code, mtm) };
             // SAFETY: handler conforms to WKURLSchemeHandler (protocol declared
-            // by ClassBuilder, both required methods implemented). The pointer
-            // cast is sound because AnyObject has the same layout as
-            // ProtocolObject<dyn WKURLSchemeHandler>.
+            // by ClassBuilder). The pointer cast is sound because AnyObject has
+            // the same layout as ProtocolObject<dyn WKURLSchemeHandler>.
             let handler_proto: &ProtocolObject<dyn WKURLSchemeHandler> = unsafe {
                 &*(&*handler as *const _ as *const ProtocolObject<dyn WKURLSchemeHandler>)
             };
@@ -75,19 +85,82 @@ impl MacosWebView {
             };
         }
 
+        // SAFETY: wk_config is a valid WKWebViewConfiguration on the main thread.
+        let content_controller = unsafe { wk_config.userContentController() };
+
+        // Inject the __BEAMER__ runtime script at document start.
+        let mut msg_handler_retained = None;
+        if config.message_callback.is_some() {
+            // SAFETY: WKUserScript alloc+init with valid NSString source.
+            // addUserScript on a valid content controller on the main thread.
+            unsafe {
+                let ns_source = NSString::from_str(BEAMER_RUNTIME_JS);
+                let cls = objc2::runtime::AnyClass::get(c"WKUserScript").unwrap();
+                let obj: *mut AnyObject = objc2::msg_send![cls, alloc];
+                let obj: *mut AnyObject = objc2::msg_send![
+                    obj,
+                    initWithSource: &*ns_source,
+                    injectionTime: 0u64, // WKUserScriptInjectionTimeAtDocumentStart
+                    forMainFrameOnly: true
+                ];
+                assert!(!obj.is_null(), "WKUserScript alloc+init returned nil");
+                let user_script = Retained::from_raw(obj).unwrap();
+                let _: () = objc2::msg_send![&*content_controller, addUserScript: &*user_script];
+            }
+
+            // Register message handler.
+            if let Some(callback) = config.message_callback {
+                // SAFETY: callback and context are valid per caller contract.
+                let handler = unsafe {
+                    crate::platform::macos_ipc::new_message_handler(
+                        callback,
+                        config.callback_context,
+                        mtm,
+                    )
+                };
+                // SAFETY: handler conforms to WKScriptMessageHandler; content
+                // controller is valid; we are on the main thread.
+                unsafe {
+                    let name = NSString::from_str("beamer");
+                    let _: () = objc2::msg_send![
+                        &*content_controller,
+                        addScriptMessageHandler: &*handler,
+                        name: &*name
+                    ];
+                }
+                msg_handler_retained = Some(handler);
+            }
+        }
+
         // SAFETY: frame and wk_config are valid; we are on the main thread.
         let webview = unsafe {
             WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &wk_config)
         };
+
+        // Set navigation delegate for load-complete detection.
+        let mut nav_delegate_retained = None;
+        if let Some(loaded) = config.loaded_callback {
+            // SAFETY: loaded and context are valid per caller contract.
+            let delegate = unsafe {
+                crate::platform::macos_ipc::new_navigation_delegate(
+                    loaded,
+                    config.callback_context,
+                    mtm,
+                )
+            };
+            // SAFETY: webview and delegate are valid; we are on the main thread.
+            unsafe {
+                let _: () = objc2::msg_send![&webview, setNavigationDelegate: &*delegate];
+            }
+            nav_delegate_retained = Some(delegate);
+        }
 
         if config.dev_tools {
             // SAFETY: setInspectable is safe to call on a valid WKWebView.
             unsafe { webview.setInspectable(true) };
         }
 
-        // If a background color is configured, paint it on the parent view's
-        // layer so the host's default white doesn't flash while the WKWebView
-        // loads content.
+        // Background color on parent layer to prevent white flash.
         let [r, g, b, a] = config.background_color;
         if r != 0 || g != 0 || b != 0 || a != 0 {
             extern "C" {
@@ -115,15 +188,13 @@ impl MacosWebView {
             }
         }
 
-        // Disable the default white background so the WKWebView is
-        // transparent and the parent's color (if set) shows through.
+        // Disable default white background.
         let key = NSString::from_str("drawsBackground");
         let value = NSNumber::new_bool(false);
         // SAFETY: WKWebView supports KVC for drawsBackground; we are on the main thread.
         let _: () = unsafe { objc2::msg_send![&webview, setValue: &*value, forKey: &*key] };
 
         if let Some(url) = config.url {
-            // Dev server mode: navigate directly to the URL.
             let url_str = NSString::from_str(url);
             let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
                 WebViewError::CreationFailed(format!("invalid dev server URL: {url}"))
@@ -132,7 +203,6 @@ impl MacosWebView {
             // SAFETY: webview and request are valid; we are on the main thread.
             unsafe { webview.loadRequest(&request) };
         } else if config.assets.is_some() {
-            // Production mode: navigate to beamer://localhost/index.html.
             let url_str = NSString::from_str("beamer://localhost/index.html");
             let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
                 WebViewError::CreationFailed("failed to create scheme URL".into())
@@ -144,7 +214,11 @@ impl MacosWebView {
 
         parent_view.addSubview(&webview);
 
-        Ok(Self { webview })
+        Ok(Self {
+            webview,
+            _nav_delegate: nav_delegate_retained,
+            _msg_handler: msg_handler_retained,
+        })
     }
 
     /// Update the WebView frame.
@@ -156,8 +230,33 @@ impl MacosWebView {
         self.webview.setFrame(frame);
     }
 
-    /// Remove the WebView from its parent.
+    /// Evaluate JavaScript in the WebView.
+    ///
+    /// Must be called from the main thread. Fire-and-forget (no completion handler).
+    pub fn evaluate_js(&self, script: &str) {
+        let ns_script = NSString::from_str(script);
+        // SAFETY: webview is valid; fire-and-forget with no completion handler.
+        unsafe {
+            self.webview
+                .evaluateJavaScript_completionHandler(&ns_script, None);
+        }
+    }
+
+    /// Remove the WebView from its parent and clean up IPC handlers.
     pub fn detach(&mut self) {
+        // SAFETY: Remove message handler and user scripts to break retain cycles.
+        // webview and its configuration are valid on the main thread.
+        unsafe {
+            let config = self.webview.configuration();
+            let controller = config.userContentController();
+            let name = NSString::from_str("beamer");
+            let _: () = objc2::msg_send![&*controller, removeScriptMessageHandlerForName: &*name];
+            let _: () = objc2::msg_send![&*controller, removeAllUserScripts];
+        }
+        // SAFETY: Clear navigation delegate to release the retained delegate object.
+        unsafe {
+            let _: () = objc2::msg_send![&self.webview, setNavigationDelegate: std::ptr::null::<AnyObject>()];
+        }
         self.webview.removeFromSuperview();
     }
 }

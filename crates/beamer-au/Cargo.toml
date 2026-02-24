@@ -26,6 +26,7 @@ cc = "1.0"
 beamer-core = { workspace = true }
 beamer-webview = { workspace = true, optional = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 # Note: The hybrid ObjC/Rust AU architecture uses native Objective-C (BeamerAuWrapper.m)
 # for AUAudioUnit subclassing, with a C-ABI bridge to Rust. This avoids the need for

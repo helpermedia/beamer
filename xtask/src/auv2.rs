@@ -85,8 +85,9 @@ pub fn bundle_auv2(
     let arch_str = if arches.len() > 1 { "universal" } else { arches[0] };
     crate::verbose!(verbose, "    Building component ({})...", arch_str);
 
-    // Get bridge header path
+    // Header search paths for clang
     let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
+    let ipc_header_dir = workspace_root.join("xtask/src/au_codegen");
 
     let executable_name = bundle_name.trim_end_matches(".component");
     let binary_dest = macos_dir.join(executable_name);
@@ -110,6 +111,7 @@ pub fn bundle_auv2(
                 "-framework", "CoreAudioKit",
                 "-framework", "WebKit",
                 "-I", bridge_header_dir.to_str_safe()?,
+                "-I", ipc_header_dir.to_str_safe()?,
                 dylib_path.to_str_safe()?,  // Link directly with the dylib
                 "-Wl,-rpath,@loader_path",
                 "-o", arch_output.to_str_safe()?,
