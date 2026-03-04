@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import Slider from "./components/Slider";
 
 interface PluginInfo {
   name: string;
@@ -7,95 +8,50 @@ interface PluginInfo {
 }
 
 function App() {
-  const [gain, setGain] = useState(0);
-  const [ready, setReady] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
-  const [invokeError, setInvokeError] = useState<string | null>(null);
 
-  useEffect(() => {
-    __BEAMER__.ready.then(() => {
-      setGain(__BEAMER__.params.get("gain"));
-      setReady(true);
-    });
-
-    return __BEAMER__.params.on("gain", setGain);
-  }, []);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    setGain(v);
-    __BEAMER__.params.set("gain", v);
-  };
-
-  const handleGetInfo = () => {
-    setInvokeError(null);
+  const handleAbout = () => {
+    if (showAbout) {
+      setShowAbout(false);
+      return;
+    }
     __BEAMER__
       .invoke("getInfo")
-      .then((result) => setPluginInfo(result as PluginInfo))
-      .catch((err) => setInvokeError(String(err)));
+      .then((result) => {
+        setPluginInfo(result as PluginInfo);
+        setShowAbout(true);
+      })
+      .catch(() => {});
   };
 
-  const info = __BEAMER__?.params?.info("gain");
-  const min = info?.min ?? -60;
-  const max = info?.max ?? 12;
-  const displayValue = min + gain * (max - min);
-
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-[#00BCD4] text-white font-sans select-none">
-      <h1 className="text-3xl font-bold mb-2 text-[#7b68ee]">
-        Beamer WebView Demo AUv2
-      </h1>
-      <p className="text-sm text-gray-700 mb-8">
-        React 19 + Vite + Tailwind v4
-      </p>
-
-      <div className="flex flex-col items-center gap-4 w-72">
-        <label className="text-lg font-medium">Gain</label>
-
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.001}
-          value={gain}
-          onMouseDown={() => __BEAMER__.params.beginEdit("gain")}
-          onChange={handleChange}
-          onMouseUp={() => __BEAMER__.params.endEdit("gain")}
-          className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#7b68ee]"
-        />
-
-        <span className="text-2xl font-mono text-[#7b68ee]">
-          {displayValue.toFixed(1)} dB
-        </span>
-
-        {!ready && (
-          <span className="text-xs text-gray-700">Connecting...</span>
-        )}
-      </div>
-
-      {/* Invoke round-trip demo */}
-      <div className="flex flex-col items-center gap-3 mt-8 w-72">
+    <div className="relative flex flex-col items-center justify-center h-screen bg-slate-950 text-white font-sans select-none">
+      <div className="absolute top-3 right-3">
         <button
-          onClick={handleGetInfo}
-          className="px-4 py-2 bg-[#7b68ee] hover:bg-[#6a5acd] rounded text-sm font-medium transition-colors cursor-pointer"
+          onClick={handleAbout}
+          className="text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
         >
-          invoke("getInfo")
+          About
         </button>
 
-        {pluginInfo && (
-          <div className="text-xs text-gray-300 bg-[#16213e] rounded px-4 py-3 w-full font-mono">
+        {showAbout && pluginInfo && (
+          <div className="text-xs text-gray-300 bg-slate-800 rounded px-4 py-3 mt-1 w-48 font-mono text-right">
             <div>{pluginInfo.name}</div>
             <div>v{pluginInfo.version}</div>
             <div>{pluginInfo.framework}</div>
           </div>
         )}
-
-        {invokeError && (
-          <div className="text-xs text-red-400 bg-[#16213e] rounded px-4 py-3 w-full font-mono">
-            Error: {invokeError}
-          </div>
-        )}
       </div>
+
+      <h1 className="text-3xl font-bold mb-2 text-[#7b68ee]">
+        Beamer WebView Demo AUv2
+      </h1>
+      <p className="text-sm text-gray-400 mb-8">
+        React 19 + Vite + Tailwind v4
+      </p>
+
+      <Slider type="circular" paramId="gain" size={80} className="text-[#7b68ee]" />
     </div>
   );
 }
