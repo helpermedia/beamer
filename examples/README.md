@@ -273,3 +273,25 @@ MIDI instrument that transforms notes and CC messages.
 - `IntParameter` for note/CC selection
 - `BoolParameter` for enable toggles
 - `process_midi()` for MIDI processing
+
+---
+
+### [WebView Demo](webview-demo/)
+
+Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Gain** | Volume adjustment from -60 dB to +12 dB |
+| **Pan** | Stereo panning with constant-power law |
+
+**Demonstrates:**
+- `WebViewHandler` for bidirectional IPC between Rust and JavaScript
+- `__BEAMER__.invoke()` for request/response calls from JS to Rust
+- `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
+- React parameter binding via `useSyncExternalStore`
+- Circular knob with angular and linear drag modes
+- Bipolar arc rendering for pan knob
+- DAW undo grouping with `beginEdit`/`endEdit`

@@ -156,7 +156,8 @@ beamer/
 │   ├── delay/               # Delay effect with tempo sync
 │   ├── synthesizer/         # Polyphonic synthesizer with MIDI CC emulation
 │   ├── drums/               # Drum synthesizer with multi-output buses
-│   └── midi-transform/      # MIDI effect example
+│   ├── midi-transform/      # MIDI effect example
+│   └── webview-demo/        # WebView GUI with React
 └── xtask/                   # Build tooling (bundle, install)
 ```
 
@@ -242,7 +243,24 @@ pub struct GainParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
+```
 
+**Parameter attributes:**
+
+| Attribute | Description |
+|-----------|-------------|
+| `id = "..."` | String ID (required), hashed to u32 via FNV-1a |
+| `name = "..."` | Display name |
+| `default = <value>` | Default value (float, int or bool) |
+| `range = start..=end` | Value range (inclusive) |
+| `kind = "..."` | Unit type: `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones` |
+| `short_name = "..."` | Short name for constrained UIs |
+| `smoothing = "..."` | Parameter smoothing: `"exp:5.0"` or `"linear:50.0"` (time constant in ms) |
+| `step = <value>` | Discrete step size (FloatParameter only) |
+| `group = "..."` | Flat visual grouping in DAW |
+| `bypass` | Mark as bypass parameter (BoolParameter only) |
+
+```rust
 // 2. Descriptor - holds parameters, describes plugin to host
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
@@ -537,6 +555,22 @@ cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --arch universal --release
 ```
 
 **Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
+
+### Building WebView Plugins
+
+Plugins with `has_gui = true` in Config.toml need their web assets built before bundling. The `#[beamer::export]` macro scans `webview/dist/` at compile time and embeds all files via `include_bytes!()`.
+
+```bash
+# Build web assets first (from the example's webview/ directory)
+cd examples/webview-demo/webview && bun install && bun run build && cd -
+
+# Then bundle as usual
+cargo xtask bundle webview-demo --auv3 --release --install
+```
+
+The web assets (HTML, CSS, JS) are served at runtime through a custom URL scheme (`beamer://`) rather than a local HTTP server.
+
+`beamer-webview` uses platform APIs directly (`objc2` + `objc2-web-kit` for WKWebView) rather than a wrapper like `wry`. Audio plugin hosts provide their own parent views (`NSView`, `HWND`) that the WebView must attach to, and the AU wrapper needs a C-ABI bridge for its generated ObjC code. A high-level wrapper would add indirection without solving either problem.
 
 ---
 

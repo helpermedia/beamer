@@ -15,7 +15,6 @@ members = [
     "examples/midi-transform",
     "examples/drums",
     "examples/webview-demo",
-    "examples/webview-demo-auv2",
     "xtask",
 ]
 resolver = "2"

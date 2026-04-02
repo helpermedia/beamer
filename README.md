@@ -103,6 +103,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 | **[drums](https://github.com/helpermedia/beamer/tree/main/examples/drums)** | Drum synthesizer with multi-output buses |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation |
 
+### WebView GUI
+
+| Example | Description |
+|---------|-------------|
+| **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin UI with React |
+
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 
 ## Features
@@ -116,7 +122,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore
-- **WebView GUI** - Modern web-based plugin interfaces via WKWebView (macOS)
+- **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC and built-in React/Vite tooling (macOS)
 
 ## Documentation
 
@@ -143,6 +149,7 @@ Contributions for testing and fixes on Windows are welcome.
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-vst3` | VST3 wrapper implementation |
+| `beamer-webview` | WebView GUI system (WKWebView, IPC, asset serving) |
 
 ## Building & Installation
 

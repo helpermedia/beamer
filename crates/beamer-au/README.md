@@ -12,7 +12,7 @@ This crate provides **both AUv2 and AUv3** support through a shared C-ABI bridge
 - **MIDI support**: MIDI 1.0 and MIDI 2.0 UMP event processing
 - **Real-time safe**: Zero-allocation render path
 - **Auxiliary buses**: Sidechain and multi-bus support
-- **Limitation**: No custom UI (uses host generic parameter UI)
+- **WebView GUI**: Web-based plugin interfaces via `beamer-webview`
 
 ## Platform Requirements
 
