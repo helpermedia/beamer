@@ -11,11 +11,7 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
 
-  const handleAbout = () => {
-    if (showAbout) {
-      setShowAbout(false);
-      return;
-    }
+  const openAbout = () => {
     __BEAMER__
       .invoke("getInfo")
       .then((result) => {
@@ -25,24 +21,26 @@ function App() {
       .catch(() => {});
   };
 
+  const closeAbout = () => setShowAbout(false);
+
   return (
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">
-      <div className="absolute top-3 right-3">
-        <button
-          onClick={handleAbout}
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
-        >
-          About
-        </button>
+      <button
+        onClick={openAbout}
+        className="absolute top-3 right-3 text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+      >
+        About
+      </button>
 
-        {showAbout && pluginInfo && (
-          <div className="text-xs text-gray-300 bg-slate-800 rounded px-4 py-3 mt-1 w-48 font-mono text-right">
-            <div>{pluginInfo.name}</div>
+      {showAbout && pluginInfo && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/75" onClick={closeAbout}>
+          <div className="text-sm text-gray-300 bg-slate-800 rounded px-8 py-6 font-mono text-center">
+            <div className="text-sm text-white mb-1">{pluginInfo.name}</div>
             <div>v{pluginInfo.version}</div>
-            <div>{pluginInfo.framework}</div>
+            <div className="text-gray-500 mt-1">{pluginInfo.framework}</div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <h1 className="text-3xl font-bold mb-2 text-cyan-400">
         Beamer WebView Demo
@@ -51,7 +49,10 @@ function App() {
         React 19 + Vite + Tailwind v4
       </p>
 
-      <Slider type="circular" paramId="gain" size={80} />
+      <div className="flex gap-6">
+        <Slider type="circular" paramId="gain" size={80} />
+        <Slider type="circular" paramId="pan" size={80} />
+      </div>
     </div>
   );
 }

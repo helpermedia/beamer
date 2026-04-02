@@ -12,11 +12,14 @@ use beamer::prelude::*;
 // Parameters
 // =============================================================================
 
-/// Simple gain parameter for demonstration.
+/// Parameters for the WebView demo plugin.
 #[derive(Parameters)]
 pub struct WebViewDemoParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
+
+    #[parameter(id = "pan", name = "Pan", default = 0.0, kind = "pan")]
+    pub pan: FloatParameter,
 }
 
 // =============================================================================
@@ -93,10 +96,18 @@ impl Processor for WebViewDemoProcessor {
         _aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
+        debug_assert!(buffer.num_output_channels() <= 2, "pan assumes stereo");
+
         let gain = self.parameters.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
+
+        // Constant-power pan: angle maps [-1, +1] to [0, PI/2].
+        let angle = ((self.parameters.pan.get() + 1.0) * 0.5 * std::f64::consts::FRAC_PI_2) as f32;
+        let pan_gains = [gain * angle.cos(), gain * angle.sin()];
+
+        for (ch, (input, output)) in buffer.zip_channels().enumerate() {
+            let g = pan_gains[ch.min(1)];
             for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
+                *o = *i * g;
             }
         }
     }

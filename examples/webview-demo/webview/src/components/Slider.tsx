@@ -183,8 +183,10 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
+      // Undo natural scrolling inversion so physical scroll-up always increases.
+      const rawDeltaY = (e.nativeEvent as any).webkitDirectionInvertedFromDevice ? -e.deltaY : e.deltaY;
       const step = e.shiftKey ? FINE_SCROLL_STEP : SCROLL_STEP;
-      const delta = e.deltaY > 0 ? -step : step;
+      const delta = rawDeltaY > 0 ? -step : step;
       if (!wheelTimeout.current) beginEdit();
       else clearTimeout(wheelTimeout.current);
       set(value + delta);
@@ -221,8 +223,26 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
 
   if (type === "circular") {
     const endAngle = ARC_START - value * ARC_SWEEP;
-    const valuePath = value > 0.001 ? describeArc(ARC_START, endAngle) : "";
     const dotPos = polarToCartesian(endAngle);
+
+    // Detect bipolar parameters (symmetric range around zero, e.g. pan -1..+1).
+    const bipolarCenter = info && info.min < 0 && info.max > 0
+      && Math.abs(info.min + info.max) < 0.001
+      ? -info.min / (info.max - info.min)
+      : null;
+
+    let valuePath = "";
+    if (bipolarCenter !== null) {
+      const centerAngle = ARC_START - bipolarCenter * ARC_SWEEP;
+      if (Math.abs(value - bipolarCenter) > 0.001) {
+        // Swap so the larger angle is always the start argument.
+        valuePath = value >= bipolarCenter
+          ? describeArc(centerAngle, endAngle)
+          : describeArc(endAngle, centerAngle);
+      }
+    } else {
+      valuePath = value > 0.001 ? describeArc(ARC_START, endAngle) : "";
+    }
 
     return (
       <div
@@ -257,9 +277,29 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
               d={valuePath}
               className="fill-none stroke-current"
               strokeWidth={4}
-              strokeLinecap="round"
+              strokeLinecap={bipolarCenter !== null ? "butt" : "round"}
             />
           )}
+          {bipolarCenter !== null && (() => {
+            const ca = ARC_START - bipolarCenter * ARC_SWEEP;
+            const on = polarToCartesian(ca);
+            // Center tick extending equally above and below the track.
+            const dx = on.x - CX;
+            const dy = on.y - CY;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const unit = { x: dx / len, y: dy / len };
+            const start = { x: on.x + unit.x * 4, y: on.y + unit.y * 4 };
+            const end = { x: on.x - unit.x * 4, y: on.y - unit.y * 4 };
+            return (
+              <line
+                x1={start.x} y1={start.y}
+                x2={end.x} y2={end.y}
+                className="stroke-gray-500"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+              />
+            );
+          })()}
           {/* Invisible hit area for easier handle grabbing. */}
           <circle cx={dotPos.x} cy={dotPos.y} r={HANDLE_HIT_RADIUS} className="fill-transparent" />
           <circle cx={dotPos.x} cy={dotPos.y} r={4} className={`pointer-events-none ${dragging && dragState.current?.mode === "angular" ? "fill-cyan-300" : "fill-current"}`} />
