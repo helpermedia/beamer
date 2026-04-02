@@ -57,6 +57,7 @@ unsafe impl Sync for WebViewPlugView {}
 unsafe fn handler_addref(handler: *mut IComponentHandler) {
     if !handler.is_null() {
         let unknown = handler as *mut FUnknown;
+        // SAFETY: handler is non-null and caller guarantees valid COM pointer with valid vtbl.
         unsafe { ((*(*unknown).vtbl).addRef)(unknown) };
     }
 }
@@ -69,6 +70,7 @@ unsafe fn handler_addref(handler: *mut IComponentHandler) {
 unsafe fn handler_release(handler: *mut IComponentHandler) {
     if !handler.is_null() {
         let unknown = handler as *mut FUnknown;
+        // SAFETY: handler is non-null and caller guarantees valid COM pointer with valid vtbl.
         unsafe { ((*(*unknown).vtbl).release)(unknown) };
     }
 }
@@ -120,7 +122,11 @@ impl WebViewPlugView {
     }
 
     /// Update the component handler pointer (called when host sets a new handler).
-    pub fn set_component_handler(&self, handler: *mut IComponentHandler) {
+    ///
+    /// # Safety
+    ///
+    /// `handler` must be a valid COM pointer or null.
+    pub unsafe fn set_component_handler(&self, handler: *mut IComponentHandler) {
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let ipc = unsafe { &mut *self.ipc.get() };
         let old = ipc.handler;
@@ -149,8 +155,12 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
     let ipc = unsafe { &mut *(context as *mut IpcContext) };
-    // SAFETY: json/len come from the WebView message handler, guaranteed valid UTF-8 JSON.
-    let json_str = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(json, len)) };
+    // SAFETY: json/len come from the WebView message handler.
+    let bytes = unsafe { std::slice::from_raw_parts(json, len) };
+    let Ok(json_str) = std::str::from_utf8(bytes) else {
+        log::error!("IPC message is not valid UTF-8.");
+        return;
+    };
 
     let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) else {
         log::warn!("Invalid IPC message JSON: {json_str}");

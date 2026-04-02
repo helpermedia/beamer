@@ -44,6 +44,9 @@ impl WebViewHandle {
     ///
     /// - `eval_fn` must be a valid function pointer that remains valid for
     ///   the lifetime of the handle
+    /// - `eval_fn` must dispatch to the main thread (e.g. via `dispatch_async`)
+    ///   so that a stale context pointer from a concurrent `invalidate()` does
+    ///   not cause use-after-free
     /// - `context` must remain valid until `invalidate()` is called
     pub unsafe fn new(eval_fn: EvalJsFn, context: *mut c_void) -> Self {
         Self {
@@ -77,8 +80,10 @@ impl WebViewHandle {
         );
 
         // SAFETY: eval_fn is a valid function pointer (guaranteed by new()),
-        // and ctx was checked non-null above. The callee dispatches to the
-        // main thread if needed.
+        // and ctx was checked non-null above. A concurrent invalidate() could
+        // make ctx stale between the null check and this call, but eval_fn
+        // dispatches to the main thread where invalidation also happens, so
+        // the pointer is not dereferenced after free.
         unsafe {
             (self.eval_fn)(ctx, script.as_ptr(), script.len());
         }
@@ -87,7 +92,9 @@ impl WebViewHandle {
     /// Invalidate the handle, preventing further calls.
     ///
     /// Called when the WebView is detached. After this, `emit()` becomes
-    /// a no-op.
+    /// a no-op. A concurrent `emit()` that already loaded the context pointer
+    /// before this store is safe because `eval_fn` dispatches to the main
+    /// thread, where the context is still valid at the time of actual use.
     pub fn invalidate(&self) {
         self.context.store(std::ptr::null_mut(), Ordering::Release);
     }

@@ -59,10 +59,14 @@ fn scheme_handler_class(plugin_code: [u8; 4]) -> &'static AnyClass {
     // Ivar: raw pointer to the plugin's embedded assets.
     builder.add_ivar::<*const c_void>(ASSETS_IVAR);
 
-    // Declare WKURLSchemeHandler protocol conformance.
-    let proto = AnyProtocol::get(c"WKURLSchemeHandler")
-        .expect("WKURLSchemeHandler protocol must be available");
-    builder.add_protocol(proto);
+    // Declare WKURLSchemeHandler protocol conformance if the protocol is
+    // registered. objc_getProtocol() only finds protocols adopted by at
+    // least one loaded class, so it may return None in some hosts. WebKit
+    // dispatches via selectors, not protocol conformance, so this is safe
+    // to skip.
+    if let Some(proto) = AnyProtocol::get(c"WKURLSchemeHandler") {
+        builder.add_protocol(proto);
+    }
 
     // SAFETY: the method signatures match the WKURLSchemeHandler protocol.
     // Raw pointers are used for the receiver to satisfy HRTB requirements.

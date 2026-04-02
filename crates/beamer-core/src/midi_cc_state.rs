@@ -282,11 +282,6 @@ impl MidiCcState {
     }
 }
 
-// SAFETY: AtomicU64 is Send + Sync and all other fields are either primitive or Vec.
-unsafe impl Send for MidiCcState {}
-// SAFETY: AtomicU64 is Send + Sync and all other fields are either primitive or Vec.
-unsafe impl Sync for MidiCcState {}
-
 impl core::fmt::Debug for MidiCcState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let enabled: Vec<u8> = self
