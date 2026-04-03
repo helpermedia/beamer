@@ -90,6 +90,14 @@ impl<P: Descriptor> AuState<P> {
         }
     }
 
+    /// Create a new state machine with an existing descriptor instance.
+    pub fn with_descriptor(plugin: P) -> Self {
+        Self::Unprepared {
+            plugin,
+            pending_state: None,
+        }
+    }
+
     /// Check if in prepared state.
     pub fn is_prepared(&self) -> bool {
         matches!(self, Self::Prepared { .. })

@@ -1938,7 +1938,7 @@ static void beamer_auv2_on_loaded(void* context) {
         if (val == _lastParamValues[i]) continue;
         _lastParamValues[i] = val;
         if (any) [script appendString:@","];
-        [script appendFormat:@"%u:%f", info.id, val];
+        [script appendFormat:@"%u:%g", info.id, val];
         any = YES;
     }
 

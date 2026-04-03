@@ -1,8 +1,8 @@
 //! Handle for sending events from Rust to the WebView.
 //!
-//! **Not yet wired up.** The type is defined here for Phase 2D (real-time
-//! visualization). It will be instantiated and provided to plugins when
-//! the format wrappers gain Rust-to-JS event emission support.
+//! **Not yet wired up.** The type is defined here for real-time
+//! visualization support. It will be instantiated and provided to plugins
+//! when the format wrappers gain Rust-to-JS event emission support.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -21,8 +21,8 @@ pub type EvalJsFn = unsafe extern "C-unwind" fn(context: *mut c_void, script: *c
 /// Calls are dispatched to the main thread internally.
 ///
 /// **Not audio-thread safe.** This struct allocates (JSON serialization).
-/// For sending visualization data from the audio thread, see Phase 2D's
-/// lock-free ring buffer approach.
+/// For sending visualization data from the audio thread, see the planned
+/// lock-free ring buffer approach (REFERENCE.md section 6.1).
 #[derive(Clone)]
 pub struct WebViewHandle {
     eval_fn: EvalJsFn,
@@ -47,7 +47,10 @@ impl WebViewHandle {
     /// - `eval_fn` must dispatch to the main thread (e.g. via `dispatch_async`)
     ///   so that a stale context pointer from a concurrent `invalidate()` does
     ///   not cause use-after-free
-    /// - `context` must remain valid until `invalidate()` is called
+    /// - `context` must remain valid until `invalidate()` is called AND all
+    ///   pending `dispatch_async` blocks that captured it have executed. The
+    ///   caller must drain the main queue (or otherwise ensure no in-flight
+    ///   blocks reference `context`) before freeing it.
     pub unsafe fn new(eval_fn: EvalJsFn, context: *mut c_void) -> Self {
         Self {
             eval_fn,
@@ -81,9 +84,11 @@ impl WebViewHandle {
 
         // SAFETY: eval_fn is a valid function pointer (guaranteed by new()),
         // and ctx was checked non-null above. A concurrent invalidate() could
-        // make ctx stale between the null check and this call, but eval_fn
-        // dispatches to the main thread where invalidation also happens, so
-        // the pointer is not dereferenced after free.
+        // store null between the check and this call, making ctx stale. This
+        // is safe only because eval_fn dispatches via dispatch_async, and the
+        // caller guarantees context is not freed until pending blocks drain.
+        // If emit() runs on the main thread, eval_fn may execute synchronously,
+        // but that is safe because invalidate() has not yet been called.
         unsafe {
             (self.eval_fn)(ctx, script.as_ptr(), script.len());
         }
@@ -93,8 +98,9 @@ impl WebViewHandle {
     ///
     /// Called when the WebView is detached. After this, `emit()` becomes
     /// a no-op. A concurrent `emit()` that already loaded the context pointer
-    /// before this store is safe because `eval_fn` dispatches to the main
-    /// thread, where the context is still valid at the time of actual use.
+    /// before this store is safe only if `eval_fn` dispatches asynchronously
+    /// to the main thread AND the context is not freed until all pending
+    /// dispatch blocks have drained. The caller must ensure this ordering.
     pub fn invalidate(&self) {
         self.context.store(std::ptr::null_mut(), Ordering::Release);
     }

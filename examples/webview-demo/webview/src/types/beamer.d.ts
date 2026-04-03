@@ -30,7 +30,7 @@ interface Beamer {
   /** @internal Called by native code to initialize parameters. */
   _onInit(params: BeamerParamInfo[]): void;
   /** @internal Called by native code to push parameter changes. */
-  _onParams(changed: Record<number, number>): void;
+  _onParams(changed: Record<string, number>): void;
   /** @internal Called by native code to resolve/reject invoke promises. */
   _onResult(callId: number, result: { ok?: unknown; err?: string }): void;
   /** @internal Called by native code to dispatch events. */

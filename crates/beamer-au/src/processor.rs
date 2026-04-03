@@ -72,12 +72,14 @@ where
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
     pub fn new() -> Self {
-        // Capture the WebView handler before the Descriptor is consumed
-        // by prepare(). The handler is Send + Sync so it can outlive the
-        // Descriptor.
-        let handler = P::default().webview_handler();
+        // Create a single descriptor instance and capture the WebView
+        // handler from it before passing ownership to AuState. This
+        // ensures the handler references the same instance that becomes
+        // the live plugin, not a discarded throw-away copy.
+        let descriptor = P::default();
+        let handler = descriptor.webview_handler();
         Self {
-            state: AuState::new(),
+            state: AuState::with_descriptor(descriptor),
             webview_handler: handler,
             _presets: PhantomData,
         }
