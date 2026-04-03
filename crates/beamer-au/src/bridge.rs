@@ -2569,6 +2569,96 @@ pub extern "C" fn beamer_au_param_get_plain(
     result.unwrap_or(Some(0.0)).unwrap_or(0.0)
 }
 
+/// Get a parameter's formatted display text for the WebView.
+///
+/// Returns the Rust-formatted display string (e.g. "L50", "0.0", "440")
+/// into a caller-provided buffer. Returns the number of bytes written
+/// (excluding null terminator), or 0 on failure.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0`)
+/// - `out_buffer` must be a valid pointer to a writable buffer of at least
+///   `buffer_len` bytes, or null
+#[no_mangle]
+pub extern "C" fn beamer_au_param_get_display_text(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+    out_buffer: *mut c_char,
+    buffer_len: u32,
+) -> u32 {
+    if instance.is_null() || out_buffer.is_null() || buffer_len == 0 {
+        return 0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let plugin = lock_plugin(handle).ok()?;
+        let store = plugin.parameter_store().ok()?;
+        let normalized = store.get_normalized(param_id);
+        Some(store.normalized_to_string(param_id, normalized))
+    }));
+
+    let string = match result {
+        Ok(Some(s)) => s,
+        _ => return 0,
+    };
+
+    let bytes = string.as_bytes();
+    let copy_len = bytes.len().min(buffer_len as usize - 1);
+
+    // SAFETY: out_buffer and buffer_len were validated at function start.
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, copy_len);
+        *out_buffer.add(copy_len) = 0;
+    }
+
+    copy_len as u32
+}
+
+/// Parse a display string for a parameter and return a normalized value.
+///
+/// Returns `f64::NAN` if the string cannot be parsed.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `NAN`)
+/// - `text` must be a valid pointer to a UTF-8 string of `text_len` bytes
+#[no_mangle]
+pub extern "C" fn beamer_au_param_string_to_normalized(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+    text: *const u8,
+    text_len: usize,
+) -> f64 {
+    if instance.is_null() || text.is_null() {
+        return f64::NAN;
+    }
+
+    // SAFETY: text is non-null and text_len is the byte length.
+    let text_slice = unsafe { std::slice::from_raw_parts(text, text_len) };
+    let text_str = match std::str::from_utf8(text_slice) {
+        Ok(s) => s,
+        Err(_) => return f64::NAN,
+    };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let plugin = lock_plugin(handle).ok()?;
+        let store = plugin.parameter_store().ok()?;
+        store.string_to_normalized(param_id, text_str)
+    }));
+
+    match result {
+        Ok(Some(normalized)) => normalized,
+        _ => f64::NAN,
+    }
+}
+
 /// Get all parameter info as a JSON string for the WebView init dump.
 ///
 /// Returns a heap-allocated null-terminated C string that the caller must

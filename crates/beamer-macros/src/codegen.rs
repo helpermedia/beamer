@@ -835,6 +835,11 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.plain_to_normalized(plain)).unwrap_or(0.0)
             }
+
+            fn formatter_kind(&self, id: ::beamer::core::types::ParameterId) -> &'static str {
+                use ::beamer::core::parameter_types::Parameters;
+                self.by_id(id).map(|p| p.formatter_kind()).unwrap_or("float")
+            }
         }
     }
 }

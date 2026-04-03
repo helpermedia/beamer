@@ -973,6 +973,47 @@ double beamer_au_param_get_normalized(BeamerAuInstanceHandle _Nullable instance,
 double beamer_au_param_get_plain(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
 
 /**
+ * Get a parameter's formatted display text for the WebView.
+ *
+ * Returns the Rust-formatted display string (e.g. "L50", "0.0", "440")
+ * into a caller-provided buffer.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param param_id   Parameter ID.
+ * @param out_buffer Buffer to write the display string (UTF-8, null-terminated).
+ * @param buffer_len Size of out_buffer in bytes (including null terminator).
+ * @return Number of bytes written (excluding null terminator), or 0 on error.
+ */
+uint32_t beamer_au_param_get_display_text(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t param_id,
+    char* _Nonnull out_buffer,
+    uint32_t buffer_len
+);
+
+/**
+ * Parse a display string for a parameter and return a normalized value.
+ *
+ * Returns NAN if the string cannot be parsed.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID.
+ * @param text     UTF-8 string to parse.
+ * @param text_len Length of the string in bytes.
+ * @return Normalized value (0.0 to 1.0), or NAN on parse failure.
+ */
+double beamer_au_param_string_to_normalized(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t param_id,
+    const uint8_t* _Nonnull text,
+    size_t text_len
+);
+
+/**
  * Get all parameter info as a JSON string for the WebView init dump.
  *
  * Returns a heap-allocated null-terminated C string that the caller must

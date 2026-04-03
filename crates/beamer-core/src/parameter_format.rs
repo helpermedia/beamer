@@ -184,9 +184,9 @@ impl Formatter {
                 if value.abs() < 0.005 {
                     "C".to_string()
                 } else if value < 0.0 {
-                    format!("L{:.0}", value.abs() * 100.0)
+                    format!("L {:.0}", value.abs() * 100.0)
                 } else {
-                    format!("R{:.0}", value * 100.0)
+                    format!("R {:.0}", value * 100.0)
                 }
             }
 
@@ -369,6 +369,26 @@ impl Formatter {
             Formatter::Ratio { .. } => "",
             Formatter::Semitones => "st",
             Formatter::Boolean => "",
+        }
+    }
+
+    /// Get a stable identifier for this formatter variant.
+    ///
+    /// Used by the webview IPC protocol so JavaScript can implement
+    /// custom formatting per parameter kind.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Formatter::Float { .. } => "float",
+            Formatter::Decibel { .. } => "db",
+            Formatter::DecibelDirect { .. } => "db",
+            Formatter::Frequency => "hz",
+            Formatter::Milliseconds { .. } => "ms",
+            Formatter::Seconds { .. } => "s",
+            Formatter::Percent { .. } => "percent",
+            Formatter::Pan => "pan",
+            Formatter::Ratio { .. } => "ratio",
+            Formatter::Semitones => "semitones",
+            Formatter::Boolean => "boolean",
         }
     }
 }

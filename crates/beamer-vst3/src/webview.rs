@@ -185,6 +185,29 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                     ((*(*ipc.handler).vtbl).performEdit)(ipc.handler, id, value);
                 }
             }
+            // Echo the authoritative values back to JS immediately so
+            // displayText updates without waiting for the next poll tick.
+            if !ipc.webview.is_null() {
+                let norm = params.get_normalized(id);
+                let plain = params.normalized_to_plain(id, norm);
+                let text = params.normalized_to_string(id, norm);
+                let text_json = serde_json::to_string(&text).unwrap_or_default();
+                // SAFETY: webview is valid for the view lifetime.
+                let webview = unsafe { &*ipc.webview };
+                webview.evaluate_js(&format!(
+                    "window.__BEAMER__._onParams({{{}:[{},{},{}]}})",
+                    id, norm, plain, text_json
+                ));
+                // Update last_values so the poll doesn't redundantly re-send.
+                for i in 0..params.count() {
+                    if let Some(info) = params.info(i) {
+                        if info.id == id && i < ipc.last_values.len() {
+                            ipc.last_values[i] = norm;
+                            break;
+                        }
+                    }
+                }
+            }
         }
         "param:begin" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
@@ -209,9 +232,22 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
             let args = msg.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let call_id = msg.get("callId").and_then(|v| v.as_u64()).unwrap_or(0);
 
-            let result = match &ipc.webview_handler {
-                Some(handler) => handler.on_invoke(method, &args),
-                None => Ok(serde_json::Value::Null),
+            // Handle built-in invokes before dispatching to the plugin handler.
+            let result = if method == "_beamer/paramTextToNormalized" {
+                let param_id = args.first().and_then(|v| v.as_u64()).map(|v| v as u32);
+                let text = args.get(1).and_then(|v| v.as_str());
+                match (param_id, text) {
+                    (Some(id), Some(s)) => match params.string_to_normalized(id, s) {
+                        Some(norm) => Ok(serde_json::Value::from(norm)),
+                        None => Ok(serde_json::Value::Null),
+                    },
+                    _ => Ok(serde_json::Value::Null),
+                }
+            } else {
+                match &ipc.webview_handler {
+                    Some(handler) => handler.on_invoke(method, &args),
+                    None => Ok(serde_json::Value::Null),
+                }
             };
 
             // Send result back to JS so the Promise resolves/rejects.
@@ -314,7 +350,9 @@ unsafe extern "C-unwind" fn sync_timer_fired(
                 script.push(',');
             }
             let plain = params.normalized_to_plain(info.id, val);
-            let _ = write!(script, "{}:[{},{}]", info.id, val, plain);
+            let text = params.normalized_to_string(info.id, val);
+            let text_json = serde_json::to_string(&text).unwrap_or_default();
+            let _ = write!(script, "{}:[{},{},{}]", info.id, val, plain, text_json);
         }
     }
 

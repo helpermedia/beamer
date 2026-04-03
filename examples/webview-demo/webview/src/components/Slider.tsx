@@ -59,25 +59,6 @@ function describeArc(startAngle: number, endAngle: number): string {
   return `M ${start.x} ${start.y} A ${R} ${R} 0 ${largeArc} 1 ${end.x} ${end.y}`;
 }
 
-// Adaptive decimal precision based on parameter range.
-function formatDisplayValue(
-  displayValue: number,
-  info: BeamerParamInfo | undefined,
-): string {
-  if (!info) return fixNegZero(displayValue.toFixed(1));
-  if (info.steps > 0) return Math.round(displayValue).toString();
-  const range = info.max - info.min;
-  if (range <= 1) return fixNegZero(displayValue.toFixed(3));
-  if (range <= 10) return fixNegZero(displayValue.toFixed(2));
-  return fixNegZero(displayValue.toFixed(1));
-}
-
-// Strip the sign from "-0", "-0.0", "-0.00" etc. AU hosts round-trip
-// parameter values through f32, which can produce tiny negative values
-// that format as negative zero.
-function fixNegZero(s: string): string {
-  return s.charCodeAt(0) === 45 && +s === 0 ? s.slice(1) : s;
-}
 
 const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 
@@ -91,7 +72,7 @@ const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 //   - Scroll wheel: step adjustment (debounced for DAW undo grouping).
 //   - Double-click: type a value directly.
 function Slider({ type = "circular", paramId, size = 64, label, className }: SliderProps) {
-  const { value, displayValue, info, beginEdit, set, endEdit, resetToDefault } =
+  const { value, displayText, info, beginEdit, set, endEdit, resetToDefault } =
     useBeamerControl(paramId);
 
   const svgRef = useRef<SVGSVGElement>(null);
@@ -124,6 +105,7 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
   const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
+  const committing = useRef(false);
 
   const inputRefCallback = useCallback((el: HTMLInputElement | null) => {
     if (el) {
@@ -206,15 +188,25 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
   );
 
   const handleDoubleClick = useCallback(() => {
-    setEditText(formatDisplayValue(displayValue, info));
+    setEditText(displayText);
     setEditing(true);
-  }, [displayValue, info]);
+  }, [displayText]);
 
-  const commitEdit = useCallback(() => {
+  const commitEdit = useCallback(async () => {
+    if (committing.current) return;
+    committing.current = true;
     setEditing(false);
-    const parsed = parseFloat(editText);
-    if (isNaN(parsed) || !info) return;
-    const normalized = (parsed - info.min) / (info.max - info.min);
+    if (!info) { committing.current = false; return; }
+    const text = editText.trim();
+    if (text === "") { committing.current = false; return; }
+    // Use the Rust parser for authoritative normalization. This handles
+    // all format-specific parsing (pan "L 50", dB, percent, etc.) and
+    // non-linear parameter curves correctly.
+    const normalized = await __BEAMER__.invoke(
+      "_beamer/paramTextToNormalized", info.id, text,
+    ) as number | null;
+    committing.current = false;
+    if (normalized == null) return;
     beginEdit();
     set(normalized);
     endEdit();
@@ -316,7 +308,7 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
           ref={editing ? inputRefCallback : undefined}
           type="text"
           readOnly={!editing}
-          value={editing ? editText : `${formatDisplayValue(displayValue, info)} ${units}`}
+          value={editing ? editText : `${displayText} ${units}`.trim()}
           onChange={(e) => setEditText(e.target.value)}
           onKeyDown={editing ? handleEditKeyDown : undefined}
           onBlur={editing ? commitEdit : undefined}

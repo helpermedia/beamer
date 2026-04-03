@@ -1,9 +1,10 @@
-import { useCallback, useMemo } from "react";
+import { useSyncExternalStore, useCallback, useMemo } from "react";
 import { useBeamerParam } from "./useBeamerParam";
 
 interface BeamerControl {
   value: number;
   displayValue: number;
+  displayText: string;
   info: BeamerParamInfo | undefined;
   beginEdit: () => void;
   set: (normalized: number) => void;
@@ -43,13 +44,19 @@ export function useBeamerControl(paramId: string): BeamerControl {
     }
   }, [paramId]);
 
-  // Use the authoritative plain value from the Rust parameter store
-  // rather than recomputing from normalized, which avoids f32 round-trip
-  // artifacts in AU hosts (e.g. 0.0 dB displaying as "-0.0").
+  // Use authoritative values from the Rust parameter store rather than
+  // recomputing from normalized, avoiding f32 round-trip artifacts.
   const displayValue = useMemo(() => {
     if (!info) return value;
     return __BEAMER__.params.getPlain(paramId);
   }, [value, info, paramId]);
 
-  return { value, displayValue, info, beginEdit, set, endEdit, resetToDefault };
+  // Subscribe independently so displayText updates even when the
+  // normalized value hasn't changed (e.g. echo after param:set).
+  const displayText = useSyncExternalStore(
+    (cb) => __BEAMER__.params.on(paramId, cb),
+    () => __BEAMER__.params.getDisplayText(paramId),
+  );
+
+  return { value, displayValue, displayText, info, beginEdit, set, endEdit, resetToDefault };
 }

@@ -119,6 +119,14 @@ pub trait ParameterStore: Send + Sync {
     /// Inverse of `normalized_to_plain`.
     fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue;
 
+    /// Get the formatter kind string for a parameter (e.g. "db", "pan", "hz").
+    ///
+    /// Used by the webview IPC protocol so JavaScript can implement custom
+    /// formatting. Returns "float" by default.
+    fn formatter_kind(&self, _id: ParameterId) -> &'static str {
+        "float"
+    }
+
     /// Find parameter info by ID.
     ///
     /// Default implementation searches linearly through all parameters.
@@ -205,6 +213,8 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
                 default_value: info.default_normalized,
                 value: normalized,
                 plain_value: store.normalized_to_plain(info.id, normalized),
+                display_text: store.normalized_to_string(info.id, normalized),
+                format: store.formatter_kind(info.id),
                 units: info.units,
                 steps: info.step_count,
             })
@@ -224,6 +234,8 @@ struct ParamInitEntry {
     default_value: f64,
     value: f64,
     plain_value: f64,
+    display_text: String,
+    format: &'static str,
     units: &'static str,
     steps: i32,
 }

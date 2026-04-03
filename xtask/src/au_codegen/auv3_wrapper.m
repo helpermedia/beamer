@@ -176,6 +176,9 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
             param.value = min + (float)value * (max - min);
             self->_settingFromWebView = NO;
         }
+        // Echo authoritative values back to JS immediately.
+        beamer_au_ipc_echo_param(self->_rustInstance, self->_webviewHandle,
+                                 paramId, self->_lastParamValues, self->_paramCount);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
@@ -189,7 +192,9 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
             [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeRelease];
         }
     } else if ([type isEqualToString:@"invoke"]) {
-        beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
+        if (!beamer_au_ipc_handle_builtin_invoke(self->_rustInstance, self->_webviewHandle, msg)) {
+            beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
+        }
     } else if ([type isEqualToString:@"event"]) {
         beamer_au_ipc_handle_event(self->_rustInstance, msg);
     }
@@ -240,8 +245,10 @@ static void beamer_auv3_on_loaded(void* context) {
         if (val == _lastParamValues[i]) continue;
         _lastParamValues[i] = val;
         double plain = beamer_au_param_get_plain(_rustInstance, info.id);
+        char text[128];
+        beamer_au_param_get_display_text(_rustInstance, info.id, text, sizeof(text));
         if (any) [script appendString:@","];
-        [script appendFormat:@"%u:[%.17g,%.17g]", info.id, val, plain];
+        [script appendFormat:@"%u:[%.17g,%.17g,\"%s\"]", info.id, val, plain, text];
         any = YES;
     }
 

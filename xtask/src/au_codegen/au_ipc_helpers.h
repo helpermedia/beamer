@@ -9,6 +9,99 @@
 #include "BeamerAuBridge.h"
 
 // ---------------------------------------------------------------------------
+// Parameter set echo
+// ---------------------------------------------------------------------------
+
+/// Echo authoritative parameter values back to JS after a param:set.
+///
+/// Called immediately after updating the Rust store so displayText
+/// updates without waiting for the next poll tick. Also updates the
+/// poll cache to prevent redundant re-sends.
+static void beamer_au_ipc_echo_param(
+    BeamerAuInstanceHandle instance,
+    void* webviewHandle,
+    uint32_t paramId,
+    double* lastParamValues,
+    uint32_t paramCount
+) {
+    if (!instance || !webviewHandle) return;
+
+    double norm = beamer_au_param_get_normalized(instance, paramId);
+    double plain = beamer_au_param_get_plain(instance, paramId);
+    char text[128];
+    beamer_au_param_get_display_text(instance, paramId, text, sizeof(text));
+
+    // Escape the text for embedding in a JS string literal.
+    NSString* textStr = [NSString stringWithUTF8String:text];
+    textStr = [textStr stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+    textStr = [textStr stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+    textStr = [textStr stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
+    textStr = [textStr stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
+
+    NSString* script = [NSString stringWithFormat:
+        @"window.__BEAMER__._onParams({%u:[%.17g,%.17g,\"%@\"]})",
+        paramId, norm, plain, textStr];
+    const char* utf8 = [script UTF8String];
+    beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
+
+    // Update poll cache so the next tick doesn't redundantly re-send.
+    if (lastParamValues) {
+        BeamerAuParameterInfo info;
+        for (uint32_t i = 0; i < paramCount; i++) {
+            if (beamer_au_get_parameter_info(instance, i, &info) && info.id == paramId) {
+                lastParamValues[i] = norm;
+                break;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Built-in invoke dispatch
+// ---------------------------------------------------------------------------
+
+/// Handle built-in Beamer invokes (prefixed with "_beamer/").
+///
+/// Returns YES if the method was handled, NO if the caller should
+/// fall through to the plugin handler.
+static BOOL beamer_au_ipc_handle_builtin_invoke(
+    BeamerAuInstanceHandle instance,
+    void* webviewHandle,
+    NSDictionary* msg
+) {
+    NSString* method = msg[@"method"];
+    if (![method hasPrefix:@"_beamer/"]) return NO;
+
+    NSNumber* callId = msg[@"callId"];
+    if (!callId) return YES;
+
+    if ([method isEqualToString:@"_beamer/paramTextToNormalized"]) {
+        NSArray* args = msg[@"args"];
+        uint32_t paramId = [args[0] unsignedIntValue];
+        NSString* text = args[1];
+        const char* textUtf8 = [text UTF8String];
+        size_t textLen = strlen(textUtf8);
+
+        double normalized = beamer_au_param_string_to_normalized(
+            instance, paramId, (const uint8_t*)textUtf8, textLen);
+
+        NSString* script;
+        if (isnan(normalized)) {
+            script = [NSString stringWithFormat:
+                @"window.__BEAMER__._onResult(%@,{\"ok\":null})", callId];
+        } else {
+            script = [NSString stringWithFormat:
+                @"window.__BEAMER__._onResult(%@,{\"ok\":%.17g})", callId, normalized];
+        }
+        const char* utf8 = [script UTF8String];
+        beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
+        return YES;
+    }
+
+    return NO;
+}
+
+// ---------------------------------------------------------------------------
 // Invoke dispatch
 // ---------------------------------------------------------------------------
 

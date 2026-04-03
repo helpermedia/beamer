@@ -4,6 +4,8 @@ interface BeamerParamInfo {
   name: string;
   value: number;
   plainValue: number;
+  displayText: string;
+  format: string;
   defaultValue: number;
   min: number;
   max: number;
@@ -14,6 +16,7 @@ interface BeamerParamInfo {
 interface BeamerParams {
   get(stringId: string): number;
   getPlain(stringId: string): number;
+  getDisplayText(stringId: string): string;
   set(stringId: string, value: number): void;
   beginEdit(stringId: string): void;
   endEdit(stringId: string): void;
@@ -32,7 +35,7 @@ interface Beamer {
   /** @internal Called by native code to initialize parameters. */
   _onInit(params: BeamerParamInfo[]): void;
   /** @internal Called by native code to push parameter changes. */
-  _onParams(changed: Record<string, [number, number]>): void;
+  _onParams(changed: Record<string, [number, number, string]>): void;
   /** @internal Called by native code to resolve/reject invoke promises. */
   _onResult(callId: number, result: { ok?: unknown; err?: string }): void;
   /** @internal Called by native code to dispatch events. */

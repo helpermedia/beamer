@@ -112,6 +112,11 @@ pub trait ParameterRef: Send + Sync {
     /// Convert a plain value to a normalized value.
     fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue;
 
+    /// Get the formatter kind string (e.g. "db", "pan", "hz").
+    fn formatter_kind(&self) -> &'static str {
+        "float"
+    }
+
     /// Get the full ParameterInfo for this parameter.
     ///
     /// This is used by the `#[derive(Parameters)]` macro to generate the
@@ -1274,6 +1279,10 @@ impl ParameterRef for FloatParameter {
         self.range.normalize(plain)
     }
 
+    fn formatter_kind(&self) -> &'static str {
+        self.formatter.kind()
+    }
+
     fn info(&self) -> &ParameterInfo {
         &self.info
     }
@@ -1599,6 +1608,10 @@ impl ParameterRef for IntParameter {
             return 0.5;
         }
         ((plain - self.min as f64) / (self.max - self.min) as f64).clamp(0.0, 1.0)
+    }
+
+    fn formatter_kind(&self) -> &'static str {
+        self.formatter.kind()
     }
 
     fn info(&self) -> &ParameterInfo {

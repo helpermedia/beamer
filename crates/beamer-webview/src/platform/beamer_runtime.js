@@ -32,14 +32,15 @@
         var p = paramMap[stringId];
         return p ? p.plainValue : 0;
       },
+      getDisplayText: function(stringId) {
+        var p = paramMap[stringId];
+        return p ? p.displayText : "";
+      },
       set: function(stringId, value) {
         var p = paramMap[stringId];
         if (!p) return;
         p.value = value;
         p.info.value = value;
-        var plain = p.info.min + value * (p.info.max - p.info.min);
-        p.plainValue = plain;
-        p.info.plainValue = plain;
         post({type:"param:set", id:p.id, value:value});
       },
       beginEdit: function(stringId) {
@@ -107,7 +108,7 @@
         delete pendingParamSubs[p.stringId];
         var entry = {
           id: p.id, value: p.value, plainValue: p.plainValue,
-          listeners: pending, info: p
+          displayText: p.displayText, listeners: pending, info: p
         };
         paramMap[p.stringId] = entry;
         paramById[p.id] = entry;
@@ -119,11 +120,13 @@
       for (var id in changed) {
         var entry = paramById[id];
         if (entry) {
-          var pair = changed[id];
-          entry.value = pair[0];
-          entry.plainValue = pair[1];
-          entry.info.value = pair[0];
-          entry.info.plainValue = pair[1];
+          var tuple = changed[id];
+          entry.value = tuple[0];
+          entry.plainValue = tuple[1];
+          entry.displayText = tuple[2];
+          entry.info.value = tuple[0];
+          entry.info.plainValue = tuple[1];
+          entry.info.displayText = tuple[2];
           entry.listeners.forEach(function(cb) { cb(entry.value); });
         }
       }
