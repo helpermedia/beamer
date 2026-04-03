@@ -195,6 +195,7 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
     let entries: Vec<ParamInitEntry> = (0..store.count())
         .filter_map(|i| {
             let info = store.info(i)?;
+            let normalized = store.get_normalized(info.id);
             Some(ParamInitEntry {
                 id: info.id,
                 string_id: info.string_id,
@@ -202,7 +203,8 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
                 min: store.normalized_to_plain(info.id, 0.0),
                 max: store.normalized_to_plain(info.id, 1.0),
                 default_value: info.default_normalized,
-                value: store.get_normalized(info.id),
+                value: normalized,
+                plain_value: store.normalized_to_plain(info.id, normalized),
                 units: info.units,
                 steps: info.step_count,
             })
@@ -221,6 +223,7 @@ struct ParamInitEntry {
     max: f64,
     default_value: f64,
     value: f64,
+    plain_value: f64,
     units: &'static str,
     steps: i32,
 }

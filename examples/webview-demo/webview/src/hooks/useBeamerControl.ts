@@ -43,10 +43,13 @@ export function useBeamerControl(paramId: string): BeamerControl {
     }
   }, [paramId]);
 
+  // Use the authoritative plain value from the Rust parameter store
+  // rather than recomputing from normalized, which avoids f32 round-trip
+  // artifacts in AU hosts (e.g. 0.0 dB displaying as "-0.0").
   const displayValue = useMemo(() => {
     if (!info) return value;
-    return info.min + value * (info.max - info.min);
-  }, [value, info]);
+    return __BEAMER__.params.getPlain(paramId);
+  }, [value, info, paramId]);
 
   return { value, displayValue, info, beginEdit, set, endEdit, resetToDefault };
 }

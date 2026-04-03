@@ -64,12 +64,19 @@ function formatDisplayValue(
   displayValue: number,
   info: BeamerParamInfo | undefined,
 ): string {
-  if (!info) return displayValue.toFixed(1);
+  if (!info) return fixNegZero(displayValue.toFixed(1));
   if (info.steps > 0) return Math.round(displayValue).toString();
   const range = info.max - info.min;
-  if (range <= 1) return displayValue.toFixed(3);
-  if (range <= 10) return displayValue.toFixed(2);
-  return displayValue.toFixed(1);
+  if (range <= 1) return fixNegZero(displayValue.toFixed(3));
+  if (range <= 10) return fixNegZero(displayValue.toFixed(2));
+  return fixNegZero(displayValue.toFixed(1));
+}
+
+// Strip the sign from "-0", "-0.0", "-0.00" etc. AU hosts round-trip
+// parameter values through f32, which can produce tiny negative values
+// that format as negative zero.
+function fixNegZero(s: string): string {
+  return s.charCodeAt(0) === 45 && +s === 0 ? s.slice(1) : s;
 }
 
 const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);

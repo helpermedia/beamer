@@ -28,11 +28,18 @@
         var p = paramMap[stringId];
         return p ? p.value : 0;
       },
+      getPlain: function(stringId) {
+        var p = paramMap[stringId];
+        return p ? p.plainValue : 0;
+      },
       set: function(stringId, value) {
         var p = paramMap[stringId];
         if (!p) return;
         p.value = value;
         p.info.value = value;
+        var plain = p.info.min + value * (p.info.max - p.info.min);
+        p.plainValue = plain;
+        p.info.plainValue = plain;
         post({type:"param:set", id:p.id, value:value});
       },
       beginEdit: function(stringId) {
@@ -99,8 +106,8 @@
         var pending = pendingParamSubs[p.stringId] || [];
         delete pendingParamSubs[p.stringId];
         var entry = {
-          id: p.id, value: p.value, listeners: pending,
-          info: p
+          id: p.id, value: p.value, plainValue: p.plainValue,
+          listeners: pending, info: p
         };
         paramMap[p.stringId] = entry;
         paramById[p.id] = entry;
@@ -112,8 +119,11 @@
       for (var id in changed) {
         var entry = paramById[id];
         if (entry) {
-          entry.value = changed[id];
-          entry.info.value = changed[id];
+          var pair = changed[id];
+          entry.value = pair[0];
+          entry.plainValue = pair[1];
+          entry.info.value = pair[0];
+          entry.info.plainValue = pair[1];
           entry.listeners.forEach(function(cb) { cb(entry.value); });
         }
       }

@@ -313,7 +313,8 @@ unsafe extern "C-unwind" fn sync_timer_fired(
             } else {
                 script.push(',');
             }
-            let _ = write!(script, "{}:{}", info.id, val);
+            let plain = params.normalized_to_plain(info.id, val);
+            let _ = write!(script, "{}:[{},{}]", info.id, val, plain);
         }
     }
 
