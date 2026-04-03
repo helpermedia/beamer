@@ -42,6 +42,7 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     NSTimer* _syncTimer;
     double* _lastParamValues;
     uint32_t _paramCount;
+    _Atomic BOOL _settingFromWebView;
 }
 
 + (NSUInteger)nextInstanceId;
@@ -71,6 +72,10 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 
 - (BeamerAuInstanceHandle)rustInstance {
     return _rustInstance;
+}
+
+- (void)setSettingFromWebView:(BOOL)flag {
+    _settingFromWebView = flag;
 }
 
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)componentDescription
@@ -165,7 +170,11 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
         if (param) {
             float min = param.minValue;
             float max = param.maxValue;
+            // Flag prevents the observer from overwriting the precise
+            // f64 value in the Rust store with an f32 round-trip.
+            self->_settingFromWebView = YES;
             param.value = min + (float)value * (max - min);
+            self->_settingFromWebView = NO;
         }
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
@@ -230,8 +239,9 @@ static void beamer_auv3_on_loaded(void* context) {
         double val = beamer_au_param_get_normalized(_rustInstance, info.id);
         if (val == _lastParamValues[i]) continue;
         _lastParamValues[i] = val;
+        double plain = beamer_au_param_get_plain(_rustInstance, info.id);
         if (any) [script appendString:@","];
-        [script appendFormat:@"%u:%g", info.id, val];
+        [script appendFormat:@"%u:[%.17g,%.17g]", info.id, val, plain];
         any = YES;
     }
 
@@ -764,6 +774,12 @@ static void beamer_auv3_on_loaded(void* context) {
         if (strongSelf == nil) {
             return;
         }
+        // Skip when the change originated from the webview. The Rust
+        // store already has the precise f64 value; writing the f32
+        // AUValue back would introduce round-trip artifacts.
+        if (strongSelf->_settingFromWebView) {
+            return;
+        }
 
         [strongSelf->_instanceLock lock];
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
@@ -783,17 +799,13 @@ static void beamer_auv3_on_loaded(void* context) {
         [strongSelf->_instanceLock lock];
         NSString* result = nil;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
-            float normalizedValue = 0.0f;
-            if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {
-                normalizedValue = displayValue / param.maxValue;
-            } else if (param.maxValue > param.minValue) {
-                normalizedValue = (displayValue - param.minValue) / (param.maxValue - param.minValue);
-            }
+            // Pass the plain value directly to Rust which normalizes in f64
+            // precision, avoiding f32 round-trip artifacts in display strings.
             char buffer[128];
             uint32_t written = beamer_au_format_parameter_value(
                 strongSelf->_rustInstance,
                 (uint32_t)param.address,
-                normalizedValue,
+                displayValue,
                 buffer,
                 sizeof(buffer)
             );

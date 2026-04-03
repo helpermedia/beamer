@@ -54,7 +54,7 @@ pub enum Formatter {
     /// Direct decibel formatter where input is already in dB.
     ///
     /// Used by `FloatParameter::db()` where the plain value is stored as dB.
-    /// Format: "+12.0", "-60.0" (unit "dB" via `unit()`)
+    /// Format: "12.0", "-60.0" (unit "dB" via `unit()`)
     DecibelDirect {
         /// Number of decimal places.
         precision: usize,
@@ -141,22 +141,19 @@ impl Formatter {
                     "-inf".to_string()
                 } else {
                     let db = 20.0 * value.log10();
-                    if db >= 0.0 {
-                        format!("+{:.prec$}", db, prec = *precision)
-                    } else {
-                        format!("{:.prec$}", db, prec = *precision)
-                    }
+                    let db = if db == 0.0 { 0.0 } else { db };
+                    format!("{:.prec$}", db, prec = *precision)
                 }
             }
 
             Formatter::DecibelDirect { precision, min_db } => {
-                // Value is already in dB, just format it
-                // Use strict less-than so that min_db itself displays correctly
+                // Value is already in dB, just format it.
+                // Use strict less-than so that min_db itself displays correctly.
+                // Normalize -0.0 to 0.0 to avoid displaying "-0.0".
                 if value < *min_db {
                     "-inf".to_string()
-                } else if value >= 0.0 {
-                    format!("+{:.prec$}", value, prec = *precision)
                 } else {
+                    let value = if value == 0.0 { 0.0 } else { value };
                     format!("{:.prec$}", value, prec = *precision)
                 }
             }
@@ -473,7 +470,7 @@ mod tests {
         let formatter = Formatter::Decibel { precision: 1 };
         let updated = formatter.with_precision(2);
         assert_eq!(updated.precision(), Some(2));
-        assert_eq!(updated.text(1.0), "+0.00"); // 0 dB
+        assert_eq!(updated.text(1.0), "0.00"); // 0 dB
     }
 
     #[test]

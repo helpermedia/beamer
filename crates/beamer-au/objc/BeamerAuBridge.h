@@ -624,25 +624,26 @@ void beamer_au_set_parameter_value_au(
 );
 
 /**
- * Format a parameter value as a display string.
+ * Format a parameter's plain value as a display string.
  *
- * Converts a normalized value to a human-readable string using the parameter's
- * value-to-string function (e.g., "0.5" -> "-6.0 dB").
+ * Accepts a plain (actual) value in the parameter's native range
+ * (e.g. dB, Hz) and normalizes internally using f64 precision to
+ * avoid f32 round-trip artifacts in the display string.
  *
  * Thread Safety: Can be called from any thread.
  *
- * @param instance   Handle to the plugin instance.
- * @param param_id   Parameter ID.
- * @param value      Normalized value to format (0.0 to 1.0).
- * @param out_buffer Buffer to write the formatted string (UTF-8, null-terminated).
- * @param buffer_len Size of out_buffer in bytes (including null terminator).
+ * @param instance    Handle to the plugin instance.
+ * @param param_id    Parameter ID.
+ * @param plain_value Plain value in the parameter's native range.
+ * @param out_buffer  Buffer to write the formatted string (UTF-8, null-terminated).
+ * @param buffer_len  Size of out_buffer in bytes (including null terminator).
  *
  * @return Number of bytes written (excluding null terminator), or 0 on error.
  */
 uint32_t beamer_au_format_parameter_value(
     BeamerAuInstanceHandle _Nullable instance,
     uint32_t param_id,
-    float value,
+    float plain_value,
     char* out_buffer,
     uint32_t buffer_len
 );
@@ -956,6 +957,20 @@ void beamer_au_get_gui_background_color(uint8_t* _Nonnull out);
  * @return Normalized value (0.0 to 1.0), f64 precision for JS runtime.
  */
 double beamer_au_param_get_normalized(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
+
+/**
+ * Get a parameter's current plain (actual) value (for WebView display).
+ *
+ * Reads the normalized value and converts to plain using f64 precision,
+ * avoiding f32 round-trip artifacts from the AU host API.
+ *
+ * Thread Safety: Can be called from any thread (uses atomics internally).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param param_id Parameter ID.
+ * @return Plain value in the parameter's native range, f64 precision.
+ */
+double beamer_au_param_get_plain(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
 
 /**
  * Get all parameter info as a JSON string for the WebView init dump.

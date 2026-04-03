@@ -925,21 +925,10 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 value = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
             }
 
-            // For indexed parameters, convert index to normalized for formatting
-            float formatValue = value;
-            uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
-            for (uint32_t i = 0; i < count; i++) {
-                BeamerAuParameterInfo info;
-                if (beamer_au_get_parameter_info(inst->rustInstance, i, &info) && info.id == paramID) {
-                    if (info.unit_type == kAudioUnitParameterUnit_Indexed && info.step_count > 0) {
-                        formatValue = value / (float)info.step_count;
-                    }
-                    break;
-                }
-            }
-
+            // Pass the plain value directly to Rust which normalizes in f64
+            // precision, avoiding f32 round-trip artifacts in display strings.
             char buffer[256];
-            uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, paramID, formatValue, buffer, sizeof(buffer));
+            uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, paramID, value, buffer, sizeof(buffer));
             if (written > 0) {
                 params->outString = CFStringCreateWithCString(NULL, buffer, kCFStringEncodingUTF8);
             } else {
@@ -1937,8 +1926,9 @@ static void beamer_auv2_on_loaded(void* context) {
         double val = beamer_au_param_get_normalized(_rustInstance, info.id);
         if (val == _lastParamValues[i]) continue;
         _lastParamValues[i] = val;
+        double plain = beamer_au_param_get_plain(_rustInstance, info.id);
         if (any) [script appendString:@","];
-        [script appendFormat:@"%u:%g", info.id, val];
+        [script appendFormat:@"%u:[%.17g,%.17g]", info.id, val, plain];
         any = YES;
     }
 

@@ -1224,7 +1224,7 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
     })
 }
 
-/// Format a parameter value as a display string.
+/// Format a parameter's plain value as a display string.
 ///
 /// # Safety
 ///
@@ -1241,7 +1241,7 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
 pub extern "C" fn beamer_au_format_parameter_value(
     instance: BeamerAuInstanceHandle,
     param_id: u32,
-    value: f32,
+    plain_value: f32,
     out_buffer: *mut c_char,
     buffer_len: u32,
 ) -> u32 {
@@ -1255,8 +1255,13 @@ pub extern "C" fn beamer_au_format_parameter_value(
             Err(_) => return 0,
         };
 
+        // Normalize from plain using f64 precision to avoid f32 round-trip
+        // artifacts (e.g. 0.0 dB displaying as "-0.0").
         let string = match plugin.parameter_store() {
-            Ok(store) => store.normalized_to_string(param_id, value as f64),
+            Ok(store) => {
+                let normalized = store.plain_to_normalized(param_id, plain_value as f64);
+                store.normalized_to_string(param_id, normalized)
+            }
             Err(_) => return 0,
         };
 
@@ -2526,6 +2531,39 @@ pub extern "C" fn beamer_au_param_get_normalized(
         let plugin = lock_plugin(handle).ok()?;
         let store = plugin.parameter_store().ok()?;
         Some(store.get_normalized(param_id))
+    }));
+
+    result.unwrap_or(Some(0.0)).unwrap_or(0.0)
+}
+
+/// Get a parameter's current plain (actual) value for WebView display.
+///
+/// Reads the normalized value and converts to plain using f64 precision,
+/// avoiding f32 round-trip artifacts that occur when the AU host stores
+/// and restores parameter values as float.
+///
+/// Returns f64 for full precision in the JS runtime.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns `0.0`)
+#[no_mangle]
+pub extern "C" fn beamer_au_param_get_plain(
+    instance: BeamerAuInstanceHandle,
+    param_id: u32,
+) -> f64 {
+    if instance.is_null() {
+        return 0.0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let plugin = lock_plugin(handle).ok()?;
+        let store = plugin.parameter_store().ok()?;
+        let normalized = store.get_normalized(param_id);
+        Some(store.normalized_to_plain(param_id, normalized))
     }));
 
     result.unwrap_or(Some(0.0)).unwrap_or(0.0)

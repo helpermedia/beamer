@@ -16,6 +16,7 @@
                                      options:(AudioComponentInstantiationOptions)options
                                        error:(NSError**)outError;
 - (BeamerAuInstanceHandle)rustInstance;
+- (void)setSettingFromWebView:(BOOL)flag;
 @end
 
 @interface {{EXTENSION_CLASS}} : AUViewController <AUAudioUnitFactory>
@@ -64,7 +65,11 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
         if (param) {
             float min = param.minValue;
             float max = param.maxValue;
+            // Flag prevents the wrapper's observer from overwriting the
+            // precise f64 value in the Rust store with an f32 round-trip.
+            [ext->_wrapper setSettingFromWebView:YES];
             param.value = min + (float)value * (max - min);
+            [ext->_wrapper setSettingFromWebView:NO];
         }
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
@@ -219,8 +224,9 @@ static void beamer_auv3_ext_on_loaded(void* context) {
         double val = beamer_au_param_get_normalized(instance, info.id);
         if (val == _lastParamValues[i]) continue;
         _lastParamValues[i] = val;
+        double plain = beamer_au_param_get_plain(instance, info.id);
         if (any) [script appendString:@","];
-        [script appendFormat:@"%u:%g", info.id, val];
+        [script appendFormat:@"%u:[%.17g,%.17g]", info.id, val, plain];
         any = YES;
     }
 
