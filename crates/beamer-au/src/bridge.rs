@@ -44,10 +44,6 @@ use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     RenderBlockTrait,
 };
-// ParameterStore trait must be in scope for trait methods on `dyn ParameterStore` returned by
-// `plugin.parameter_store()`. While no explicit mention appears in code, Rust requires the trait
-// import for method resolution on trait objects.
-#[allow(unused_imports)]
 use beamer_core::ParameterStore;
 
 // =============================================================================
@@ -324,6 +320,74 @@ impl Default for BeamerAuChannelCapabilities {
 // Instance Handle
 // =============================================================================
 
+/// Cached fat pointer to a `dyn ParameterStore` trait object.
+///
+/// `*const dyn ParameterStore` is a fat pointer (data + vtable, 16 bytes) that
+/// carries an implicit `'static` bound in Rust's type system. We store it as
+/// `[usize; 2]` to avoid borrow-checker conflicts when extracting the pointer
+/// from a `MutexGuard` scope.
+///
+/// # Safety
+///
+/// The stored pointer must remain valid for as long as it is used. In practice,
+/// it points into the `Box<dyn AuPluginInstance>` heap allocation which lives
+/// for the entire instance lifetime. The pointer is updated (on the main thread)
+/// during allocate/deallocate when the parameter storage moves.
+struct ParamStorePtr {
+    raw: [usize; 2],
+}
+
+const _: () = assert!(
+    std::mem::size_of::<*const dyn ParameterStore>() == std::mem::size_of::<[usize; 2]>(),
+    "Fat pointer size mismatch"
+);
+
+impl ParamStorePtr {
+    /// Create a null (invalid) pointer.
+    fn null() -> Self {
+        Self { raw: [0; 2] }
+    }
+
+    /// Capture the current ParameterStore pointer from a plugin instance.
+    fn capture(plugin: &dyn AuPluginInstance) -> Self {
+        match plugin.parameter_store() {
+            Ok(store) => {
+                let ptr: *const dyn ParameterStore = store;
+                // SAFETY: A fat pointer (data + vtable) is exactly two usizes on all
+                // supported platforms. The compile-time assertion above guards this.
+                let raw: [usize; 2] = unsafe { std::mem::transmute(ptr) };
+                Self { raw }
+            }
+            Err(_) => Self::null(),
+        }
+    }
+
+    /// Check if the pointer is null (invalid).
+    fn is_null(&self) -> bool {
+        self.raw[0] == 0
+    }
+
+    /// Get a reference to the ParameterStore.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the pointee is still alive (i.e. the
+    /// `Box<dyn AuPluginInstance>` has not been dropped or its state
+    /// changed since `capture()` was called).
+    unsafe fn get(&self) -> &dyn ParameterStore {
+        // SAFETY: `raw` was created from a valid fat pointer via `transmute` in `capture()`.
+        let ptr: *const dyn ParameterStore = unsafe { std::mem::transmute(self.raw) };
+        // SAFETY: The caller guarantees the pointee is still alive.
+        unsafe { &*ptr }
+    }
+}
+
+// SAFETY: The ParameterStore trait requires Send + Sync. The pointer targets
+// parameter data backed by atomics, which are inherently thread-safe.
+unsafe impl Send for ParamStorePtr {}
+// SAFETY: Same rationale as Send. All parameter value access uses atomic operations.
+unsafe impl Sync for ParamStorePtr {}
+
 /// Opaque handle to a beamer AU plugin instance.
 ///
 /// This struct wraps the Rust plugin instance and render resources,
@@ -354,15 +418,30 @@ pub struct BeamerInstanceHandle {
     /// Cached WebView handler, captured at instance creation to avoid
     /// locking the plugin mutex on every invoke/event call.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// Cached ParameterStore pointer for lock-free parameter access.
+    ///
+    /// Updated on the main thread during instance creation, allocate and
+    /// deallocate. Read without locking by parameter functions. This is safe
+    /// because:
+    /// - Writes happen on the main thread (allocate/deallocate/create)
+    /// - The 60Hz webview sync timer also runs on the main thread
+    /// - AU host parameter callbacks (`set_parameter_value_au`) may run on the
+    ///   audio thread, but only between allocate and deallocate when the pointer
+    ///   is stable
+    /// - The pointee lives inside the `Box<dyn AuPluginInstance>` heap allocation
+    ///   which is never freed or reallocated during the instance lifetime
+    param_store: ParamStorePtr,
 }
 
 // SAFETY: BeamerInstanceHandle is designed for FFI use. Thread safety is ensured by:
 // - `plugin` is wrapped in Arc<Mutex<>> for synchronized access
 // - `render_block` is wrapped in RwLock to prevent data races
+// - `param_store` is only written on the main thread (allocate/deallocate)
 // - Other fields are only modified during allocate/deallocate which holds exclusive access
 unsafe impl Send for BeamerInstanceHandle {}
 
-// SAFETY: Same as Send impl above. All mutable state is protected by Mutex or RwLock.
+// SAFETY: Same as Send impl above. All mutable state is protected by Mutex, RwLock
+// or main-thread exclusivity.
 unsafe impl Sync for BeamerInstanceHandle {}
 
 /// Type alias for the opaque handle pointer.
@@ -383,6 +462,41 @@ fn lock_plugin(
         .plugin
         .lock()
         .map_err(|_| os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
+}
+
+/// Access the cached ParameterStore without locking.
+///
+/// Uses the `param_store` pointer cached on the handle. This pointer is
+/// updated on the main thread during create/allocate/deallocate and read
+/// without locking by parameter functions. Falls back to the mutex path
+/// if the cached pointer is null (should not happen in normal operation).
+///
+/// # Safety
+///
+/// The `param_store` pointer cached on `handle` must point to a live
+/// `ParameterStore` (i.e. the `Box<dyn AuPluginInstance>` must not have been
+/// dropped, and the plugin state must not have transitioned through
+/// prepare/unprepare since the pointer was captured). If the pointer is null,
+/// the function falls back to the mutex path safely.
+unsafe fn with_param_store<R>(
+    handle: &BeamerInstanceHandle,
+    f: impl FnOnce(&dyn ParameterStore) -> R,
+) -> Option<R> {
+    if !handle.param_store.is_null() {
+        // SAFETY: The pointer was captured from the plugin's ParameterStore while
+        // the mutex was held. The pointee lives inside Box<dyn AuPluginInstance>
+        // which is alive for the entire instance lifetime. The pointer is only
+        // updated on the main thread (allocate/deallocate), which serializes with
+        // the 60Hz webview timer. Audio-thread callers only run between allocate
+        // and deallocate when the pointer is stable.
+        let store = unsafe { handle.param_store.get() };
+        return Some(f(store));
+    }
+
+    // Fallback: should not happen, but handle gracefully.
+    let plugin = lock_plugin(handle).ok()?;
+    let store = plugin.parameter_store().ok()?;
+    Some(f(store))
 }
 
 /// Copy a Rust string into a fixed-size C char array.
@@ -506,9 +620,10 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
         // Use the factory to create a new plugin instance
         let plugin = factory::create_instance()?;
 
-        // Cache the WebView handler before wrapping in the Mutex so we
-        // don't need to lock on every invoke/event call from the UI.
+        // Cache the WebView handler and ParameterStore pointer before wrapping
+        // in the Mutex so we don't need to lock on every invoke/event/param call.
         let webview_handler = plugin.webview_handler();
+        let param_store = ParamStorePtr::capture(plugin.as_ref());
 
         let handle = Box::new(BeamerInstanceHandle {
             plugin: Arc::new(Mutex::new(plugin)),
@@ -518,6 +633,7 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
             max_frames: 1024,
             bus_config: None,
             webview_handler,
+            param_store,
         });
 
         Some(Box::into_raw(handle))
@@ -645,7 +761,11 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
         }
 
-        // Allocate resources on the plugin
+        // Invalidate the cached pointer before prepare() moves the parameters.
+        // Readers that arrive during the transition will fall back to the mutex.
+        handle.param_store = ParamStorePtr::null();
+
+        // Allocate resources on the plugin (calls prepare(), which moves parameters).
         {
             let mut plugin = match lock_plugin(handle) {
                 Ok(guard) => guard,
@@ -657,6 +777,17 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             {
                 return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
             }
+        }
+        // Refresh the cached ParameterStore pointer. The parameters have moved
+        // from the Descriptor to the Processor during prepare(). Lock through
+        // the Arc clone to avoid borrowing `handle` (which we need to write to).
+        {
+            let plugin_arc = Arc::clone(&handle.plugin);
+            let plugin = match plugin_arc.lock() {
+                Ok(guard) => guard,
+                Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+            };
+            handle.param_store = ParamStorePtr::capture(plugin.as_ref());
         }
 
         // Get SysEx configuration from plugin config
@@ -789,6 +920,9 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
             return;
         }
 
+        // Invalidate the cached pointer before unprepare() moves the parameters.
+        handle.param_store = ParamStorePtr::null();
+
         // Use try_lock() for the plugin mutex, consistent with render path.
         // At this point the render_block is None, so even if a render call
         // is starting, it will fail at the render_block check and not access
@@ -799,7 +933,7 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 // This shouldn't normally happen since we cleared render_block first,
-                // but handle it gracefully
+                // but handle it gracefully.
                 log::warn!(
                     "beamer_au_deallocate_render_resources: plugin lock held, \
                      render_block cleared but plugin resources not deallocated"
@@ -815,7 +949,24 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
             }
         }
 
-        // Clear bus config only after successful deallocation
+        // Refresh the cached ParameterStore pointer. The parameters have moved
+        // from the Processor back to the Descriptor during unprepare().
+        {
+            let plugin_arc = Arc::clone(&handle.plugin);
+            match plugin_arc.lock() {
+                Ok(plugin) => {
+                    handle.param_store = ParamStorePtr::capture(plugin.as_ref());
+                }
+                Err(_) => {
+                    log::warn!(
+                        "beamer_au_deallocate_render_resources: \
+                         failed to refresh param_store cache"
+                    );
+                }
+            };
+        }
+
+        // Clear bus config only after successful deallocation.
         handle.bus_config = None;
     }));
 }
@@ -972,15 +1123,8 @@ pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        match plugin.parameter_store() {
-            Ok(store) => store.count() as u32,
-            Err(_) => 0,
-        }
+        // SAFETY: handle validated by with_instance! macro.
+        unsafe { with_param_store(handle, |store| store.count() as u32) }.unwrap_or(0)
     })
 }
 
@@ -994,7 +1138,7 @@ pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle
 /// - `out_info` must be a valid pointer to a `BeamerAuParameterInfo` struct,
 ///   or null (in which case this function returns `false`)
 /// - This function validates both pointers are non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_info(
     instance: BeamerAuInstanceHandle,
@@ -1006,54 +1150,51 @@ pub extern "C" fn beamer_au_get_parameter_info(
     }
 
     with_instance!(instance, false, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
-
-        let store = match plugin.parameter_store() {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        let param_info = match store.info(index as usize) {
-            Some(info) => info,
-            None => return false,
-        };
-
-        // Fill output struct
         // SAFETY: out_info was validated as non-null at function start.
         let out = unsafe { &mut *out_info };
-        out.id = param_info.id;
-        copy_str_to_char_array(param_info.name, &mut out.name);
-        copy_str_to_char_array(param_info.units, &mut out.units);
-        out.unit_type = param_info.unit as u32;
-        // Compute min/max actual values from normalized range
-        out.min_value = store.normalized_to_plain(param_info.id, 0.0) as f32;
-        out.max_value = store.normalized_to_plain(param_info.id, 1.0) as f32;
-        // Convert default and current values to actual (plain) values
-        out.default_value =
-            store.normalized_to_plain(param_info.id, param_info.default_normalized) as f32;
-        out.current_value =
-            store.normalized_to_plain(param_info.id, store.get_normalized(param_info.id)) as f32;
-        out.step_count = param_info.step_count;
-        // Convert ParameterFlags to u32 bitfield
-        out.flags = {
-            let mut flags = 0u32;
-            if param_info.flags.can_automate {
-                flags |= 1 << 0; // BeamerAuParameterFlagAutomatable
-            }
-            if param_info.flags.is_hidden {
-                flags |= 1 << 1; // BeamerAuParameterFlagHidden
-            }
-            if param_info.flags.is_readonly {
-                flags |= 1 << 2; // BeamerAuParameterFlagReadOnly
-            }
-            flags
-        };
-        out.group_id = param_info.group_id;
+        // SAFETY: handle validated by with_instance! macro.
+        unsafe {
+            with_param_store(handle, |store| {
+                let param_info = match store.info(index as usize) {
+                    Some(info) => info,
+                    None => return false,
+                };
 
-        true
+                // Fill output struct.
+                out.id = param_info.id;
+                copy_str_to_char_array(param_info.name, &mut out.name);
+                copy_str_to_char_array(param_info.units, &mut out.units);
+                out.unit_type = param_info.unit as u32;
+                // Compute min/max actual values from normalized range.
+                out.min_value = store.normalized_to_plain(param_info.id, 0.0) as f32;
+                out.max_value = store.normalized_to_plain(param_info.id, 1.0) as f32;
+                // Convert default and current values to actual (plain) values.
+                out.default_value =
+                    store.normalized_to_plain(param_info.id, param_info.default_normalized) as f32;
+                out.current_value = store
+                    .normalized_to_plain(param_info.id, store.get_normalized(param_info.id))
+                    as f32;
+                out.step_count = param_info.step_count;
+                // Convert ParameterFlags to u32 bitfield.
+                out.flags = {
+                    let mut flags = 0u32;
+                    if param_info.flags.can_automate {
+                        flags |= 1 << 0; // BeamerAuParameterFlagAutomatable
+                    }
+                    if param_info.flags.is_hidden {
+                        flags |= 1 << 1; // BeamerAuParameterFlagHidden
+                    }
+                    if param_info.flags.is_readonly {
+                        flags |= 1 << 2; // BeamerAuParameterFlagReadOnly
+                    }
+                    flags
+                };
+                out.group_id = param_info.group_id;
+
+                true
+            })
+        }
+        .unwrap_or(false)
     })
 }
 
@@ -1065,22 +1206,16 @@ pub extern "C" fn beamer_au_get_parameter_info(
 ///   or null (in which case this function returns `0.0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value(
     instance: BeamerAuInstanceHandle,
     param_id: u32,
 ) -> f32 {
     with_instance!(instance, 0.0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0.0,
-        };
-
-        match plugin.parameter_store() {
-            Ok(store) => store.get_normalized(param_id) as f32,
-            Err(_) => 0.0,
-        }
+        // SAFETY: handle validated by with_instance! macro.
+        unsafe { with_param_store(handle, |store| store.get_normalized(param_id) as f32) }
+            .unwrap_or(0.0)
     })
 }
 
@@ -1100,13 +1235,11 @@ pub extern "C" fn beamer_au_set_parameter_value(
     value: f32,
 ) {
     with_instance_void!(instance, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
-
-        if let Ok(store) = plugin.parameter_store() {
-            store.set_normalized(param_id, value as f64);
+        // SAFETY: handle validated by with_instance_void! macro.
+        unsafe {
+            with_param_store(handle, |store| {
+                store.set_normalized(param_id, value as f64);
+            });
         }
     })
 }
@@ -1126,41 +1259,37 @@ pub extern "C" fn beamer_au_set_parameter_value(
 ///   or null (in which case this function returns `0.0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_au(
     instance: BeamerAuInstanceHandle,
     param_id: u32,
 ) -> f32 {
     with_instance!(instance, 0.0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0.0,
-        };
+        // SAFETY: handle validated by with_instance! macro.
+        unsafe {
+            with_param_store(handle, |store| {
+                let normalized = store.get_normalized(param_id);
 
-        let store = match plugin.parameter_store() {
-            Ok(s) => s,
-            Err(_) => return 0.0,
-        };
-
-        let normalized = store.get_normalized(param_id);
-
-        // Find parameter info to check if it's indexed
-        let count = store.count();
-        for i in 0..count {
-            if let Some(info) = store.info(i) {
-                if info.id == param_id {
-                    // For indexed parameters, return integer index (0..step_count)
-                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        return (normalized as f32 * info.step_count as f32).round();
+                // Find parameter info to check if it's indexed.
+                let count = store.count();
+                for i in 0..count {
+                    if let Some(info) = store.info(i) {
+                        if info.id == param_id {
+                            // For indexed parameters, return integer index (0..step_count).
+                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                                return (normalized as f32 * info.step_count as f32).round();
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
-            }
-        }
 
-        // For all other parameters, return actual (plain) value
-        store.normalized_to_plain(param_id, normalized) as f32
+                // For all other parameters, return actual (plain) value.
+                store.normalized_to_plain(param_id, normalized) as f32
+            })
+        }
+        .unwrap_or(0.0)
     })
 }
 
@@ -1188,38 +1317,32 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
     value: f32,
 ) {
     with_instance_void!(instance, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        // SAFETY: handle validated by with_instance_void! macro.
+        unsafe {
+            with_param_store(handle, |store| {
+                // Find parameter info to check if it's indexed.
+                let count = store.count();
+                let mut is_indexed = false;
 
-        let store = match plugin.parameter_store() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-
-        // Find parameter info to check if it's indexed
-        let count = store.count();
-        let mut is_indexed = false;
-
-        for i in 0..count {
-            if let Some(info) = store.info(i) {
-                if info.id == param_id {
-                    // For indexed parameters, convert index (0..step_count) to normalized (0..1)
-                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        is_indexed = true;
-                        let normalized = value / info.step_count as f32;
-                        store.set_normalized(param_id, normalized as f64);
+                for i in 0..count {
+                    if let Some(info) = store.info(i) {
+                        if info.id == param_id {
+                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                                is_indexed = true;
+                                let normalized = value / info.step_count as f32;
+                                store.set_normalized(param_id, normalized as f64);
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
-            }
-        }
 
-        // For all other parameters, convert actual (plain) value to normalized
-        if !is_indexed {
-            let normalized = store.plain_to_normalized(param_id, value as f64);
-            store.set_normalized(param_id, normalized);
+                // For all other parameters, convert actual (plain) value to normalized.
+                if !is_indexed {
+                    let normalized = store.plain_to_normalized(param_id, value as f64);
+                    store.set_normalized(param_id, normalized);
+                }
+            });
         }
     })
 }
@@ -1250,22 +1373,22 @@ pub extern "C" fn beamer_au_format_parameter_value(
     }
 
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
         // Normalize from plain using f64 precision to avoid f32 round-trip
         // artifacts (e.g. 0.0 dB displaying as "-0.0").
-        let string = match plugin.parameter_store() {
-            Ok(store) => {
+        // SAFETY: handle validated by with_instance! macro.
+        let string = unsafe {
+            with_param_store(handle, |store| {
                 let normalized = store.plain_to_normalized(param_id, plain_value as f64);
                 store.normalized_to_string(param_id, normalized)
-            }
-            Err(_) => return 0,
+            })
         };
 
-        // Copy to buffer
+        let string = match string {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        // Copy to buffer.
         let bytes = string.as_bytes();
         let copy_len = bytes.len().min(buffer_len as usize - 1);
 
@@ -1311,21 +1434,20 @@ pub extern "C" fn beamer_au_parse_parameter_value(
             Err(_) => return false,
         };
 
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
+        // SAFETY: handle validated by with_instance! macro.
+        let result = unsafe {
+            with_param_store(handle, |store| {
+                store.string_to_normalized(param_id, rust_string)
+            })
         };
 
-        match plugin.parameter_store() {
-            Ok(store) => match store.string_to_normalized(param_id, rust_string) {
-                Some(value) => {
-                    // SAFETY: out_value was validated as non-null at function start.
-                    unsafe { *out_value = value as f32 };
-                    true
-                }
-                None => false,
-            },
-            Err(_) => false,
+        match result {
+            Some(Some(value)) => {
+                // SAFETY: out_value was validated as non-null at function start.
+                unsafe { *out_value = value as f32 };
+                true
+            }
+            _ => false,
         }
     })
 }
@@ -1347,30 +1469,25 @@ pub extern "C" fn beamer_au_get_parameter_value_count(
     param_id: u32,
 ) -> u32 {
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        let store = match plugin.parameter_store() {
-            Ok(s) => s,
-            Err(_) => return 0,
-        };
-
-        // Find the parameter info by ID
-        let count = store.count();
-        for i in 0..count {
-            if let Some(info) = store.info(i) {
-                if info.id == param_id {
-                    // Only return value count for indexed parameters
-                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        return (info.step_count + 1) as u32;
+        // SAFETY: handle validated by with_instance! macro.
+        unsafe {
+            with_param_store(handle, |store| {
+                // Find the parameter info by ID.
+                let count = store.count();
+                for i in 0..count {
+                    if let Some(info) = store.info(i) {
+                        if info.id == param_id {
+                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                                return (info.step_count + 1) as u32;
+                            }
+                            return 0;
+                        }
                     }
-                    return 0;
                 }
-            }
+                0
+            })
         }
-        0
+        .unwrap_or(0)
     })
 }
 
@@ -1402,54 +1519,49 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
     }
 
     with_instance!(instance, false, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
+        // SAFETY: handle validated by with_instance! macro.
+        let result = unsafe {
+            with_param_store(handle, |store| {
+                // Find the parameter info by ID to get step_count.
+                let count = store.count();
+                let mut step_count: Option<i32> = None;
 
-        let store = match plugin.parameter_store() {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        // Find the parameter info by ID to get step_count
-        let count = store.count();
-        let mut step_count: Option<i32> = None;
-
-        for i in 0..count {
-            if let Some(info) = store.info(i) {
-                if info.id == param_id {
-                    // Only process indexed parameters
-                    if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                        step_count = Some(info.step_count);
+                for i in 0..count {
+                    if let Some(info) = store.info(i) {
+                        if info.id == param_id {
+                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                                step_count = Some(info.step_count);
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
-            }
-        }
 
-        let step_count = match step_count {
-            Some(sc) => sc,
-            None => return false, // Not an indexed parameter
+                let step_count = match step_count {
+                    Some(sc) => sc,
+                    None => return None,
+                };
+
+                if value_index > step_count as u32 {
+                    return None;
+                }
+
+                let normalized = if step_count > 0 {
+                    value_index as f64 / step_count as f64
+                } else {
+                    0.0
+                };
+
+                Some(store.normalized_to_string(param_id, normalized))
+            })
         };
 
-        // Check if value_index is in range
-        if value_index > step_count as u32 {
-            return false;
-        }
-
-        // Convert index to normalized value
-        // For N+1 values with step_count N: normalized = index / step_count
-        let normalized = if step_count > 0 {
-            value_index as f64 / step_count as f64
-        } else {
-            0.0
+        let display_string = match result {
+            Some(Some(s)) => s,
+            _ => return false,
         };
 
-        // Get the display string for this normalized value
-        let display_string = store.normalized_to_string(param_id, normalized);
-
-        // Copy to output buffer
+        // Copy to output buffer.
         let bytes = display_string.as_bytes();
         let copy_len = bytes.len().min(max_length as usize - 1);
 
@@ -2526,11 +2638,10 @@ pub extern "C" fn beamer_au_param_get_normalized(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        let plugin = lock_plugin(handle).ok()?;
-        let store = plugin.parameter_store().ok()?;
-        Some(store.get_normalized(param_id))
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe { with_param_store(handle, |store| store.get_normalized(param_id)) }
     }));
 
     result.unwrap_or(Some(0.0)).unwrap_or(0.0)
@@ -2558,12 +2669,15 @@ pub extern "C" fn beamer_au_param_get_plain(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        let plugin = lock_plugin(handle).ok()?;
-        let store = plugin.parameter_store().ok()?;
-        let normalized = store.get_normalized(param_id);
-        Some(store.normalized_to_plain(param_id, normalized))
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe {
+            with_param_store(handle, |store| {
+                let normalized = store.get_normalized(param_id);
+                store.normalized_to_plain(param_id, normalized)
+            })
+        }
     }));
 
     result.unwrap_or(Some(0.0)).unwrap_or(0.0)
@@ -2593,12 +2707,15 @@ pub extern "C" fn beamer_au_param_get_display_text(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        let plugin = lock_plugin(handle).ok()?;
-        let store = plugin.parameter_store().ok()?;
-        let normalized = store.get_normalized(param_id);
-        Some(store.normalized_to_string(param_id, normalized))
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe {
+            with_param_store(handle, |store| {
+                let normalized = store.get_normalized(param_id);
+                store.normalized_to_string(param_id, normalized)
+            })
+        }
     }));
 
     let string = match result {
@@ -2646,15 +2763,18 @@ pub extern "C" fn beamer_au_param_string_to_normalized(
     };
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        let plugin = lock_plugin(handle).ok()?;
-        let store = plugin.parameter_store().ok()?;
-        store.string_to_normalized(param_id, text_str)
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe {
+            with_param_store(handle, |store| {
+                store.string_to_normalized(param_id, text_str)
+            })
+        }
     }));
 
     match result {
-        Ok(Some(normalized)) => normalized,
+        Ok(Some(Some(normalized))) => normalized,
         _ => f64::NAN,
     }
 }
@@ -2677,16 +2797,19 @@ pub extern "C" fn beamer_au_param_info_json(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        let plugin = lock_plugin(handle).ok()?;
-        let store = plugin.parameter_store().ok()?;
-        let json = beamer_core::params_to_init_json(store);
-        CString::new(json).ok()
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe {
+            with_param_store(handle, |store| {
+                let json = beamer_core::params_to_init_json(store);
+                CString::new(json).ok()
+            })
+        }
     }));
 
     match result {
-        Ok(Some(cstr)) => cstr.into_raw(),
+        Ok(Some(Some(cstr))) => cstr.into_raw(),
         _ => ptr::null_mut(),
     }
 }
@@ -2729,12 +2852,13 @@ pub extern "C" fn beamer_au_param_set_from_ui(
     }
 
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        // SAFETY: instance validated non-null above.
         let handle = unsafe { &*instance };
-        if let Ok(plugin) = lock_plugin(handle) {
-            if let Ok(store) = plugin.parameter_store() {
+        // SAFETY: handle points to a live BeamerInstanceHandle.
+        unsafe {
+            with_param_store(handle, |store| {
                 store.set_normalized(param_id, value);
-            }
+            });
         }
     }));
 }
