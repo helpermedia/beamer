@@ -90,6 +90,12 @@ impl MidiBuffer {
         &self.events
     }
 
+    /// Get the events as a mutable slice.
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent] {
+        &mut self.events
+    }
+
     /// Get the event count.
     #[inline]
     pub fn len(&self) -> usize {
@@ -1931,14 +1937,11 @@ impl<S: Sample> RenderBlock<S> {
 
         let immediate = &parameter_events.immediate;
         let ramps = &parameter_events.ramps;
-        let midi_events_all = midi_buffer.as_slice();
+        let midi_events_all = midi_buffer.as_mut_slice();
 
         let mut imm_idx: usize = 0;
         let mut ramp_idx: usize = 0;
         let mut midi_idx: usize = 0;
-
-        // Scratch MIDI buffer for sub-block processing (reused, no per-boundary allocations).
-        let mut segment_midi: Vec<MidiEvent> = Vec::with_capacity(midi_events_all.len());
 
         let mut block_start: usize = 0;
         while block_start < num_samples {
@@ -2018,23 +2021,30 @@ impl<S: Sample> RenderBlock<S> {
 
             // Slice and rebase MIDI events for this sub-block.
             // MIDI offsets passed to the plugin must be relative to the start of the current block.
-            segment_midi.clear();
-
+            // Events are sorted by sample_offset and each belongs to exactly one sub-block,
+            // so we rebase offsets in-place and restore after processing.
+            // This is safe because the plugin receives &[MidiEvent] (immutable). If the
+            // signature ever changes to &mut, the restore step would need revisiting.
             while midi_idx < midi_events_all.len()
                 && (midi_events_all[midi_idx].sample_offset as usize) < block_start
             {
                 midi_idx += 1;
             }
-            let mut midi_scan = midi_idx;
-            while midi_scan < midi_events_all.len()
-                && (midi_events_all[midi_scan].sample_offset as usize) < (block_start + block_len)
-            {
-                let mut ev = midi_events_all[midi_scan].clone();
-                ev.sample_offset = ev.sample_offset.saturating_sub(block_start as u32);
-                segment_midi.push(ev);
-                midi_scan += 1;
+            let midi_end = {
+                let mut scan = midi_idx;
+                while scan < midi_events_all.len()
+                    && (midi_events_all[scan].sample_offset as usize) < (block_start + block_len)
+                {
+                    scan += 1;
+                }
+                scan
+            };
+
+            // Rebase offsets in-place to be relative to sub-block start.
+            let block_start_u32 = block_start as u32;
+            for ev in &mut midi_events_all[midi_idx..midi_end] {
+                ev.sample_offset = ev.sample_offset.saturating_sub(block_start_u32);
             }
-            midi_idx = midi_scan;
 
             // Adjust transport sample position for this sub-block.
             let mut seg_transport = transport;
@@ -2057,9 +2067,16 @@ impl<S: Sample> RenderBlock<S> {
                 &mut segment_outputs,
                 &segment_aux_inputs,
                 &mut segment_aux_outputs,
-                &segment_midi,
+                &midi_events_all[midi_idx..midi_end],
                 &context,
             );
+
+            // Restore original offsets after processing. This runs before the
+            // early-exit check below, so offsets are always restored even on error.
+            for ev in &mut midi_events_all[midi_idx..midi_end] {
+                ev.sample_offset += block_start_u32;
+            }
+            midi_idx = midi_end;
 
             if block_status != os_status::NO_ERR {
                 result = block_status;

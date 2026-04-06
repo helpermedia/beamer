@@ -771,9 +771,9 @@ where
                 // Process remaining events through the plugin
                 processor.process_midi(&filtered, core_output);
 
-                // Copy events back to AU's MidiBuffer
-                for event in core_output.iter() {
-                    let _ = output.push(event.clone());
+                // Move events to AU's MidiBuffer (avoids cloning Box<SysEx>).
+                for event in core_output.drain() {
+                    let _ = output.push(event);
                 }
                 return;
             }
@@ -782,9 +782,9 @@ where
         // No PC filtering needed - process all events directly
         processor.process_midi(input, core_output);
 
-        // Copy events back to AU's MidiBuffer
-        for event in core_output.iter() {
-            let _ = output.push(event.clone());
+        // Move events to AU's MidiBuffer (avoids cloning Box<SysEx>).
+        for event in core_output.drain() {
+            let _ = output.push(event);
         }
     }
 

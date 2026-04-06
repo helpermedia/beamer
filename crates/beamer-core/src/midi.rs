@@ -1883,7 +1883,53 @@ impl MidiBuffer {
     pub fn as_slice(&self) -> &[MidiEvent] {
         &self.events[..self.len]
     }
+
+    /// Move all events out of the buffer, leaving it empty.
+    ///
+    /// Returns an iterator that yields owned `MidiEvent` values by moving them
+    /// out of the buffer. This avoids cloning (and heap allocation for SysEx
+    /// events). The buffer is empty after iteration completes.
+    pub fn drain(&mut self) -> MidiBufferDrain<'_> {
+        let len = self.len;
+        self.len = 0;
+        MidiBufferDrain {
+            events: &mut self.events[..len],
+            index: 0,
+        }
+    }
 }
+
+/// Iterator that moves events out of a [`MidiBuffer`].
+///
+/// Created by [`MidiBuffer::drain`]. Each event is moved out via
+/// `std::mem::take`, replacing it with a default (non-allocating) event.
+pub struct MidiBufferDrain<'a> {
+    events: &'a mut [MidiEvent],
+    index: usize,
+}
+
+impl Iterator for MidiBufferDrain<'_> {
+    type Item = MidiEvent;
+
+    #[inline]
+    fn next(&mut self) -> Option<MidiEvent> {
+        if self.index < self.events.len() {
+            let event = std::mem::take(&mut self.events[self.index]);
+            self.index += 1;
+            Some(event)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.events.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for MidiBufferDrain<'_> {}
 
 // No Default impl: MidiBuffer is ~80KB and must not be stack-allocated
 // accidentally via mem::take, Box::default(), etc. Use new_boxed() for

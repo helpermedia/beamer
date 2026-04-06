@@ -3118,7 +3118,11 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
         K_DATA_EVENT => {
             // SAFETY: event.type == K_DATA_EVENT, so data is active variant.
             let data_event = unsafe { &event.__field0.data };
-            // Only handle SysEx data type
+            // Only handle SysEx data type.
+            // NOTE: Box::new() allocates here. This runs once per SysEx event per
+            // process block (not per clone), and SysEx input from hosts is rare.
+            // A Box recycling pool could eliminate this, but the complexity is not
+            // justified given the low frequency.
             if data_event.r#type == DATA_TYPE_MIDI_SYSEX {
                 let mut sysex = SysEx::new();
                 let copy_len = (data_event.size as usize).min(MAX_SYSEX_SIZE);

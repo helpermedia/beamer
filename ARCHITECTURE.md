@@ -614,7 +614,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - `AUParameterTree` built from `ParameterStore`
 - `implementorValueObserver` - Host → plugin changes
 - `implementorValueProvider` - Plugin → host reads
-- Automation via `AURenderEventParameter`/`ParameterRamp` (buffer-quantized with smoother interpolation)
+- Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
 
 **State**: NSDictionary with NSData
 - Full processor state persistence (`save_state`/`load_state`)
@@ -664,7 +664,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **MIDI Output** | ✓ (instruments/MIDI effects only) | ✓ |
 | **SysEx Output** | ✓ (pool) | ✓ (pool) |
 | **Parameter Sync** | Push (KVO callbacks) | Pull (COM methods) |
-| **Param Automation** | Buffer-quantized + smoothing | Buffer-quantized + smoothing |
+| **Param Automation** | Sample-accurate (sub-block) | Buffer-quantized + smoothing |
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |
 | **f64 Conversion** | Pre-allocated | Pre-allocated |
 | **State Format** | NSDictionary | Binary blob |

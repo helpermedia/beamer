@@ -2,66 +2,70 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-02-05
-**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums
+**Last Updated:** 2026-04-06
+**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drums | Notes |
-|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|-------|
-| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
-| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
-| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | Waveform, sync, ratio |
-| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
-| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
-| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
-| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
-| | Nested groups (`#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
-| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
-| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Presets.toml file |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
-| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Reset state on activation |
-| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
-| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
-| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Drums uses mono |
-| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | 4 mono outputs (drums) |
-| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | 3 mono aux buses (drums) |
-| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Delay tempo sync |
-| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Synthesizer voices, drum triggering |
-| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Synth ±2 semitones |
-| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Mod wheel, transform |
-| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Per-note vibrato, transform |
-| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Global vibrato (synthesizer) |
-| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
-| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **GUI** | GuiDelegate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (WebView) |
-| | GuiConstraints | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drums | WebView Demo | Notes |
+|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|--------------|-------|
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
+| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
+| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Enable toggles, bypass, soft knee |
+| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | Waveform, sync, ratio |
+| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Feedback, mix, cutoff |
+| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
+| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
+| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
+| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
+| | Nested groups (`#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Rust code organization only? |
+| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
+| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
+| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Presets.toml file |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
+| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Delay decay, envelope release |
+| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reset state on activation |
+| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
+| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
+| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drums uses mono |
+| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 4 mono outputs (drums) |
+| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 mono aux buses (drums) |
+| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Delay tempo sync |
+| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | Synthesizer voices, drum triggering |
+| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Synth ±2 semitones |
+| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Mod wheel, transform |
+| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | VST3 CC emulation |
+| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Per-note vibrato, transform |
+| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Global vibrato (synthesizer) |
+| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
+| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **GUI** (macOS only) | WebViewHandler | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
+| | has_gui / gui_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml GUI config |
+| | gui_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
+| | Embedded assets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme |
+| | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.invoke() and polling |
+| | DAW undo grouping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | beginEdit/endEdit |
 
 **Legend:**
 - ✅ Tested/Used
@@ -162,28 +166,6 @@
 - `examples/midi-processor/Cargo.toml`
 
 ---
-
-#### WebView Plugin
-**Goal:** Test GuiDelegate, WebView GUI
-
-**Features to test:**
-- ✅ `GuiDelegate` - WebView integration
-- ✅ `GuiConstraints` - GUI sizing
-- ✅ Parameter communication - GUI ↔ DSP
-- ✅ Custom UI rendering
-
-**Implementation notes:**
-- Simple plugin with WebView-based GUI
-- Real-time parameter updates from GUI
-- Visual waveform display or spectrum analyzer
-- Demonstrates bidirectional communication
-
-**Files to create:**
-- `examples/webview-demo/src/lib.rs`
-- `examples/webview-demo/Cargo.toml`
-- `examples/webview-demo/gui/` - HTML/CSS/JS
-
-**Note:** Requires Phase 2 WebView implementation to be complete.
 
 ---
 

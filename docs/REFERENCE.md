@@ -2772,9 +2772,11 @@ This is a core-level feature (not webview-specific) because the ring buffer and 
 
 **Status:** `WebViewHandle` is defined in `beamer-core` but not yet connected to the format wrappers. The ring buffer and `emit_rt()` are not yet implemented.
 
-### 6.2 Sample-Accurate Parameter Automation
+### 6.2 Sample-Accurate Parameter Automation (VST3)
 
-**Current behavior:** Both VST3 and AU wrappers apply parameter changes at the start of each audio buffer, using the last value in the automation queue. The existing `Smoother` infrastructure then interpolates to avoid zipper noise.
+**AU status:** The AU wrapper already implements sample-accurate parameter automation via sub-block processing. The render buffer is split at parameter event boundaries, with changes applied at the start of each sub-block. MIDI events are rebased in-place to maintain correct offsets within each sub-block.
+
+**VST3 current behavior:** The VST3 wrapper applies parameter changes at the start of each audio buffer, using the last value in the automation queue. The existing `Smoother` infrastructure then interpolates to avoid zipper noise.
 
 **Limitation:** This approach is buffer-quantized rather than sample-accurate. For most plugins this is imperceptible, but edge cases exist:
 
@@ -2782,24 +2784,7 @@ This is a core-level feature (not webview-specific) because the ring buffer and 
 - Sample-accurate gate/trigger parameters
 - Precision timing for transient designers
 
-**Planned enhancement:** Add dynamic ramp support to `beamer_core::Smoother`:
-
-```rust
-impl Smoother {
-    /// Set target with explicit ramp duration in samples.
-    /// Overrides the default smoothing time for this transition only.
-    pub fn set_target_with_samples(&mut self, target: f64, ramp_samples: u32);
-}
-
-// Usage in parameter handling
-for event in &events.ramps {
-    if let Some(param) = parameters.by_id(event.param_id) {
-        param.set_normalized_with_ramp(event.end_value, event.ramp_duration_samples);
-    }
-}
-```
-
-**Alternative:** Sub-block processing that splits the buffer at parameter event boundaries. Higher overhead but provides true sample-accuracy.
+**Planned enhancement:** Bring the VST3 wrapper to parity with AU by adding sub-block processing that splits the buffer at parameter event boundaries.
 
 **Priority:** Low. Current behavior matches the industry standard and covers the vast majority of use cases.
 
