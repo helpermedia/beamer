@@ -10,7 +10,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "beamer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-au",
  "beamer-core",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-au"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-core",
  "beamer-webview",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-utils",
  "log",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-macros"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-utils",
  "proc-macro2",
@@ -54,11 +54,11 @@ dependencies = [
 
 [[package]]
 name = "beamer-utils"
-version = "0.2.3"
+version = "0.2.4"
 
 [[package]]
 name = "beamer-vst3"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-core",
  "beamer-webview",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "beamer-webview"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer-core",
  "log",
@@ -130,14 +130,14 @@ checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "compressor"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
 
 [[package]]
 name = "delay"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
@@ -154,14 +154,14 @@ dependencies = [
 
 [[package]]
 name = "drums"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
 
 [[package]]
 name = "equalizer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
@@ -186,7 +186,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "gain"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
@@ -285,7 +285,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "midi-transform"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "synthesizer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "webview-demo"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "beamer",
 ]
