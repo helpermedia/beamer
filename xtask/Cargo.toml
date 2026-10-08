@@ -12,5 +12,5 @@ workspace = true
 
 [dependencies]
 uuid = { version = "1.11", features = ["v4"] }
-toml = "0.8"
+toml = "1"
 serde = { workspace = true }
