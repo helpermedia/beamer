@@ -305,7 +305,7 @@ impl PluginSetup for AuxOutputCount {
 ///     type Setup = (SampleRate, ProcessMode);
 ///     fn prepare(self, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
 ///         let oversampling = match mode {
-///             ProcessMode::Realtime => 2,
+///             ProcessMode::Realtime | ProcessMode::Prefetch => 2,
 ///             ProcessMode::Offline => 8,
 ///         };
 ///         OversamplingProcessor { sample_rate: sr.0, oversampling }

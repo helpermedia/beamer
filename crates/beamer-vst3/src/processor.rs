@@ -177,11 +177,11 @@ fn validate_speaker_arrangement(arrangement: SpeakerArrangement) -> Result<(), S
 fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> S {
     use beamer_core::{HostSetup, ProcessMode};
 
-    // Convert VST3 process mode to our ProcessMode
-    let process_mode = match setup.processMode {
-        1 => ProcessMode::Offline,       // kOffline
-        2 => ProcessMode::Prefetch,      // kPrefetch
-        _ => ProcessMode::Realtime,      // kRealtime (0) or unknown
+    // Convert VST3 process mode to our ProcessMode.
+    let process_mode = match setup.processMode as ProcessModes {
+        ProcessModes_::kOffline => ProcessMode::Offline,
+        ProcessModes_::kPrefetch => ProcessMode::Prefetch,
+        _ => ProcessMode::Realtime,
     };
 
     let host_setup = HostSetup::new(
@@ -3380,4 +3380,29 @@ fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> O
     }
 
     Some(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beamer_core::ProcessMode;
+
+    fn process_mode_for(process_mode: int32) -> ProcessMode {
+        let setup = ProcessSetup {
+            processMode: process_mode,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 512,
+            sampleRate: 48000.0,
+        };
+        build_setup::<ProcessMode>(&setup, &BusLayout::default())
+    }
+
+    #[test]
+    fn maps_vst3_process_modes() {
+        assert_eq!(process_mode_for(ProcessModes_::kRealtime as int32), ProcessMode::Realtime);
+        assert_eq!(process_mode_for(ProcessModes_::kPrefetch as int32), ProcessMode::Prefetch);
+        assert_eq!(process_mode_for(ProcessModes_::kOffline as int32), ProcessMode::Offline);
+        // Unknown modes fall back to realtime.
+        assert_eq!(process_mode_for(-1), ProcessMode::Realtime);
+    }
 }
