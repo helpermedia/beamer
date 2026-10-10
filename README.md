@@ -126,6 +126,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 ## Documentation
 
+- [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
 - [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - Detailed API reference
 - [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) - Example testing roadmap and feature coverage matrix
