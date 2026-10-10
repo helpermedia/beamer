@@ -80,6 +80,7 @@ cargo xtask bundle gain --auv2 --auv3 --vst3 --release
 | `--release` | Optimized build. The default debug build can be too slow for real-time audio |
 | `--arch <arch>` | `native` (default), `universal` (x86_64 and arm64), `arm64` or `x86_64` |
 | `--install` | Install the bundles after building (see [Installing](#installing)) |
+| `--clean` | Force a rebuild of the plugin and remove its previous bundles first. Needed after a change to xtask's AUv3 Objective-C templates, since that alone does not relink the plugin |
 | `--verbose` | Show detailed build output |
 
 Bundles land in `target/release` (or `target/debug`) and are named after

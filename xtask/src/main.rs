@@ -190,8 +190,8 @@ fn print_usage() {
     eprintln!("               AUv2: ~/Library/Audio/Plug-Ins/Components/");
     eprintln!("               AUv3: ~/Applications/");
     eprintln!("               VST3: ~/Library/Audio/Plug-Ins/VST3/");
-    eprintln!("  --clean      Clean build caches before building (forces full rebuild)");
-    eprintln!("               Removes beamer-au cc cache and previous bundles.");
+    eprintln!("  --clean      Force a rebuild of the plugin before building");
+    eprintln!("               Removes its build artifacts, generated AU ObjC code and previous bundles.");
     eprintln!("               Use when ObjC/header changes aren't being picked up.");
     eprintln!("  --verbose    Show detailed build output (default: quiet)");
     eprintln!();
@@ -222,15 +222,7 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
 
     // Clean build caches if requested
     if config.clean {
-        build::clean_build_caches(
-            &workspace_root,
-            &config.package,
-            config.release,
-            config.verbose,
-            config.build_auv2,
-            config.build_auv3,
-            config.build_vst3,
-        )?;
+        build::clean_build_caches(&workspace_root, config)?;
     }
 
     // Build webview assets (must happen before cargo build so dist/ exists for proc macro)

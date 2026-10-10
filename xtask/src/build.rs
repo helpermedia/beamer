@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, Arch, PathExt};
+use crate::BundleConfig;
 
 /// Read version from workspace Cargo.toml and convert to Apple's version integer format
 pub fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> {
@@ -326,74 +327,78 @@ pub fn build_universal(
     Ok(universal_path)
 }
 
-/// Clean build caches to force full rebuild.
+/// Target triples that are built for an architecture selection.
+fn target_triples(arch: Arch) -> Vec<&'static str> {
+    match arch {
+        Arch::Native => vec![current_target()],
+        Arch::Arm64 => vec!["aarch64-apple-darwin"],
+        Arch::X86_64 => vec!["x86_64-apple-darwin"],
+        Arch::Universal => vec!["x86_64-apple-darwin", "aarch64-apple-darwin"],
+    }
+}
+
+/// Force a rebuild of the plugin and remove its previous bundles.
 ///
-/// This is necessary because:
-/// 1. `cc::Build` (used in build.rs) caches compiled .o files in target/build/beamer-au-*/
-/// 2. Even if cargo triggers a rebuild, cc may use cached object files
-/// 3. The final .app bundle may not get updated if only static libraries changed
-///
-/// Use --clean when ObjC or header file changes aren't being picked up.
-pub fn clean_build_caches(
-    workspace_root: &Path,
-    package: &str,
-    release: bool,
-    verbose: bool,
-    build_auv2: bool,
-    build_auv3: bool,
-    build_vst3: bool,
-) -> Result<(), String> {
-    let profile = if release { "release" } else { "debug" };
+/// xtask compiles the generated AUv3 ObjC code into static libraries and
+/// links them into the plugin through RUSTFLAGS. Cargo does not track those
+/// libraries, so a change to the ObjC templates or to `au_ipc_helpers.h`
+/// alone does not relink the plugin. Cleaning the plugin package forces a
+/// rebuild that picks the change up.
+pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Result<(), String> {
+    let package = config.package.as_str();
+    let verbose = config.verbose;
+
+    let profile = if config.release { "release" } else { "debug" };
     let target_dir = workspace_root.join("target").join(profile);
-    let clean_au = build_auv2 || build_auv3;
 
     // Build description of what we're cleaning
-    let mut targets = Vec::new();
-    if clean_au {
-        targets.push("AU caches");
+    let mut formats = Vec::new();
+    if config.build_auv2 {
+        formats.push("AUv2");
     }
-    if build_auv2 {
-        targets.push("AUv2");
+    if config.build_auv3 {
+        formats.push("AUv3");
     }
-    if build_auv3 {
-        targets.push("AUv3");
+    if config.build_vst3 {
+        formats.push("VST3");
     }
-    if build_vst3 {
-        targets.push("VST3");
-    }
-    crate::status!("  Cleaning ({})...", targets.join(", "));
+    crate::status!("  Cleaning ({})...", formats.join(", "));
 
-    // Clean beamer-au cc cache (compiled ObjC objects) - only for AU builds
-    if clean_au {
-        let build_dir = workspace_root.join("target").join(profile).join("build");
-        if build_dir.exists() {
-            for entry in fs::read_dir(&build_dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry.file_name();
-                if name.to_string_lossy().starts_with("beamer-au-") {
-                    crate::verbose!(verbose, "    Removing: {}", entry.path().display());
-                    fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
-                }
-            }
+    // Remove the plugin's build artifacts so that cargo rebuilds and relinks it.
+    for target in target_triples(config.arch) {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("clean")
+            .arg("-p")
+            .arg(package)
+            .arg("--target")
+            .arg(target)
+            .current_dir(workspace_root);
+
+        if config.release {
+            cmd.arg("--release");
         }
 
-        // Clean beamer-au deps (compiled Rust library)
-        let deps_dir = target_dir.join("deps");
-        if deps_dir.exists() {
-            for entry in fs::read_dir(&deps_dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.starts_with("libbeamer_au") {
-                    crate::verbose!(verbose, "    Removing: {}", entry.path().display());
-                    fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
-                }
-            }
+        if !verbose {
+            cmd.arg("--quiet");
+        }
+
+        let status = cmd.status().map_err(|e| format!("Failed to run cargo clean: {}", e))?;
+        if !status.success() {
+            return Err(format!("cargo clean failed for {}", target));
+        }
+    }
+
+    // Remove the generated ObjC sources and static libraries (AU builds only).
+    if config.build_auv2 || config.build_auv3 {
+        let gen_dir = workspace_root.join("target").join("au-gen").join(package);
+        if gen_dir.exists() {
+            crate::verbose!(verbose, "    Removing: {}", gen_dir.display());
+            fs::remove_dir_all(&gen_dir).map_err(|e| e.to_string())?;
         }
     }
 
     // Clean previous VST3 bundle
-    if build_vst3 {
+    if config.build_vst3 {
         let vst3_bundle_name = to_vst3_bundle_name(package);
         let vst3_path = target_dir.join(&vst3_bundle_name);
         if vst3_path.exists() {
@@ -403,7 +408,7 @@ pub fn clean_build_caches(
     }
 
     // Clean previous AUv2 component bundle
-    if build_auv2 {
+    if config.build_auv2 {
         let auv2_bundle_name = to_auv2_component_name(package);
         let component_path = target_dir.join(&auv2_bundle_name);
         if component_path.exists() {
@@ -413,7 +418,7 @@ pub fn clean_build_caches(
     }
 
     // Clean previous AUv3 app bundle
-    if build_auv3 {
+    if config.build_auv3 {
         let auv3_bundle_name = to_au_bundle_name(package);
         let app_path = target_dir.join(&auv3_bundle_name);
         if app_path.exists() {
