@@ -77,7 +77,7 @@ cargo xtask bundle gain --auv2 --auv3 --vst3 --release
 
 | Option | Effect |
 |--------|--------|
-| `--release` | Optimized build (the default is a debug build) |
+| `--release` | Optimized build. The default debug build can be too slow for real-time audio |
 | `--arch <arch>` | `native` (default), `universal` (x86_64 and arm64), `arm64` or `x86_64` |
 | `--install` | Install the bundles after building (see [Installing](#installing)) |
 | `--verbose` | Show detailed build output |
@@ -94,9 +94,15 @@ the package: `BeamerGain.component` (AUv2), `BeamerGain.app` (AUv3) and
 
 For AUv2 and AUv3, xtask generates Objective-C wrapper code for the plugin,
 compiles it with clang and signs the bundles ad hoc. An AUv3 is an app that
-contains the Audio Unit as an app extension. VST3 bundles need no wrapper
-and xtask does not sign them (on Apple Silicon the linker already signs the
-binary ad hoc).
+contains the Audio Unit as an app extension. The component's `Info.plist`
+(for an AUv3, the app extension's) registers the Audio Unit under the type,
+plugin code and manufacturer code from `Config.toml`. VST3 bundles need no
+wrapper and xtask does not sign them (on Apple Silicon the linker already
+signs the binary ad hoc).
+
+Ad hoc signatures are enough for local development. Distributing plugins
+outside the Mac App Store needs a Developer ID signature and notarization,
+which xtask does not do.
 
 ### WebView assets
 

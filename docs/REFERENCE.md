@@ -1284,7 +1284,7 @@ impl Processor for ReverbProcessor {
 
 ---
 
-> **See Also:** For format-specific details on plugin export, bundle structure and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration).
+> **See Also:** For format-specific details on plugin export and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration). Bundle layouts are described in [BUILDING.md](BUILDING.md).
 
 ---
 
@@ -1806,6 +1806,8 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Descriptor`, `Processor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
 
+Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md).
+
 ### 3.1 Architecture Overview
 
 The `beamer-au` crate uses a **hybrid Objective-C/Rust architecture**:
@@ -1948,128 +1950,7 @@ The macro reads `Config.toml` and generates:
 
 No manual `export_au!` or `export_vst3!` calls needed.
 
-### 3.4 Bundle Structure
-
-#### AUv2 Bundle (`.component`)
-
-```
-MyPlugin.component/
-├── Contents/
-│   ├── Info.plist              # Metadata and AudioComponents
-│   ├── MacOS/
-│   │   └── MyPlugin            # Rust binary (universal or arch-specific)
-│   ├── PkgInfo
-│   └── Resources/
-│       └── (assets, if any)
-```
-
-#### AUv3 Bundle (`.appex` in `.app`)
-
-AUv3 plugins are App Extensions that must be embedded in a host application:
-
-```
-MyPlugin.app/
-├── Contents/
-│   ├── Info.plist
-│   ├── MacOS/
-│   │   └── MyPlugin            # Minimal host app
-│   └── PlugIns/
-│       └── MyPlugin.appex/
-│           ├── Contents/
-│           │   ├── Info.plist  # Extension metadata
-│           │   ├── MacOS/
-│           │   │   └── MyPlugin  # Rust binary
-│           │   └── Resources/
-│           └── ...
-```
-
-**Info.plist AudioComponents:**
-
-```xml
-<key>AudioComponents</key>
-<array>
-    <dict>
-        <key>type</key>
-        <string>aufx</string>              <!-- Effect -->
-        <key>subtype</key>
-        <string>gain</string>              <!-- Your subtype code -->
-        <key>manufacturer</key>
-        <string>Demo</string>              <!-- Your manufacturer code -->
-        <key>name</key>
-        <string>Beamer Gain</string>
-        <key>version</key>
-        <integer>65536</integer>           <!-- 1.0.0 = 0x00010000 -->
-        <key>factoryFunction</key>
-        <string>BeamerAudioUnitFactory</string>
-    </dict>
-</array>
-```
-
-**Category to AU Type Codes:**
-
-| Category | Type Code | Description |
-|----------|-----------|-------------|
-| `Category::Effect` | `aufx` | Audio effect |
-| `Category::MidiEffect` | `aumi` | MIDI effect (receives/produces MIDI) |
-| `Category::Instrument` | `aumu` | Instrument/synthesizer |
-| `Category::Generator` | `augn` | Audio generator |
-
-### 3.5 Build System
-
-Use `cargo xtask` to build and bundle Audio Unit plugins:
-
-```bash
-# Build AUv2 bundle (native architecture, fastest for development)
-cargo xtask bundle my-plugin --auv2 --release
-
-# Build AUv3 bundle
-cargo xtask bundle my-plugin --auv3 --release
-
-# Build and install to system location
-cargo xtask bundle my-plugin --auv2 --release --install
-
-# Build AUv2 and VST3
-cargo xtask bundle my-plugin --auv2 --vst3 --release --install
-
-# Build universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --auv2 --arch universal --release
-```
-
-**Architecture Options:**
-- `--arch native` (default) - Build for current machine's architecture
-- `--arch universal` - Build fat binary for distribution (x86_64 + arm64)
-- `--arch arm64` - Build for Apple Silicon only
-- `--arch x86_64` - Build for Intel only
-
-**Build Options:**
-- `--release` - Build with optimizations (required for real-time audio performance)
-- `--install` - Install to user directory (see Install Locations below)
-- `--clean` - Clean build caches before building (use when ObjC changes aren't picked up)
-- `--verbose` / `-v` - Show detailed build output
-
-**Install Locations:**
-
-```
-AUv2: ~/Library/Audio/Plug-Ins/Components/
-AUv3: ~/Applications/
-VST3: ~/Library/Audio/Plug-Ins/VST3/
-```
-
-**Code Signing:**
-
-macOS requires code signing for plugins to load:
-
-```bash
-# Ad-hoc signing (development)
-codesign --force --deep --sign - MyPlugin.component
-
-# Developer ID signing (distribution)
-codesign --force --deep --sign "Developer ID Application: Your Name" MyPlugin.component
-```
-
-The `xtask` tool automatically performs ad-hoc signing during bundling.
-
-### 3.6 C-ABI Bridge Interface
+### 3.4 C-ABI Bridge Interface
 
 The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between the native wrappers (both AUv2 and AUv3) and Rust. Both formats share the same 40+ bridge functions:
 
@@ -2151,58 +2032,13 @@ bool beamer_au_accepts_midi(BeamerAuInstanceHandle instance);
 bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
 ```
 
-### 3.7 Building Audio Units
-
-Use `cargo xtask bundle` to build AU plugins:
-
-```bash
-# Build AUv2
-cargo xtask bundle gain --auv2
-
-# Build AUv3
-cargo xtask bundle gain --auv3
-
-# Build both AUv2 and AUv3
-cargo xtask bundle gain --auv2 --auv3
-
-# Build and install
-cargo xtask bundle gain --auv3 --install --release
-
-# Universal binary (x86_64 + arm64)
-cargo xtask bundle gain --auv3 --arch universal
-```
-
-### 3.8 Development: Testing Both AUv2 and AUv3
-
-When you build the same plugin as both AUv2 and AUv3, macOS bridges them together if they share the same **type/subtype/manufacturer** codes. Hosts like Logic Pro and Reaper will show only one version (typically preferring AUv3).
-
-This is by design - Apple intended AUv3 to be a drop-in replacement for AUv2 with the same identifiers allowing seamless project compatibility.
-
-**To test both formats side by side during development:**
-
-Create a separate test project with a different `plugin_code`:
-
-```toml
-# Main plugin Config.toml (builds as AUv3)
-name = "Beamer Gain"
-manufacturer_code = "Bmer"
-plugin_code = "gain"
-
-# Test plugin Config.toml (builds as AUv2 with different code)
-name = "Beamer Gain (Test)"
-manufacturer_code = "Bmer"
-plugin_code = "gai2"  # Different plugin code
-```
-
-With different plugin codes, hosts treat them as separate plugins and both will appear in the plugin list.
-
-**Alternative:** Uninstall one format before testing the other, then run `killall -9 AudioComponentRegistrar` to refresh the host's plugin cache.
-
 ---
 
 ## 4. VST3 Integration
 
 Beamer supports VST3 plugins on macOS and Windows through the `beamer-vst3` crate. VST3 plugins share the same core traits (`Descriptor`, `Processor`, `Parameters`) as other formats, allowing you to target all formats from a single codebase.
+
+Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md).
 
 ### 4.1 Configuration
 
@@ -2280,50 +2116,7 @@ The macro generates:
 
 The same code compiles for both AU and VST3 formats. Use Cargo features to control which formats to build.
 
-### 4.3 Bundle Structure
-
-**macOS:**
-```
-MyPlugin.vst3/
-├── Contents/
-│   ├── Info.plist
-│   ├── MacOS/
-│   │   └── MyPlugin
-│   └── PkgInfo
-```
-
-**Windows:**
-```
-MyPlugin.vst3/
-├── Contents/
-│   └── x86_64-win/
-│       └── MyPlugin.vst3
-```
-
-### 4.4 Build System
-
-```bash
-cargo xtask bundle gain --vst3 --release
-```
-
-**Cargo.toml:**
-
-```toml
-[lib]
-crate-type = ["cdylib"]
-
-[profile.release]
-lto = true
-```
-
-### 4.5 Install Locations
-
-| Platform | Location |
-|----------|----------|
-| macOS | `~/Library/Audio/Plug-Ins/VST3/` |
-| Windows | `C:\Program Files\Common Files\VST3\` |
-
-### 4.6 Plugin Categories
+### 4.3 Plugin Categories
 
 VST3 subcategories are derived automatically from `Config.toml`:
 
