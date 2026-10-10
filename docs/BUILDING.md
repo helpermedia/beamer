@@ -57,7 +57,7 @@ The crate must be listed under `[workspace] members` in the root
 `lib<package>.dylib`, with hyphens as underscores.
 
 `Config.toml` sits next to `Cargo.toml` and describes the plugin (see
-[Plugin Configuration](REFERENCE.md#11-plugin-configuration)). A `webview/`
+[Plugin Configuration](REFERENCE.md#plugin-configuration)). A `webview/`
 folder with the plugin's web UI is optional.
 
 ## Building

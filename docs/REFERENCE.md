@@ -8,17 +8,15 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ## Table of Contents
 
-1. [Core API](#1-core-api)
-2. [MIDI Reference](#2-midi-reference)
-3. [Audio Unit Integration](#3-audio-unit-integration)
-4. [VST3 Integration](#4-vst3-integration)
-5. [Future Work](#5-future-work)
+1. [Core API](#core-api)
+2. [MIDI Reference](#midi-reference)
+3. [Format Notes](#format-notes)
 
 ---
 
-## 1. Core API
+## Core API
 
-### 1.1 Plugin Configuration
+### Plugin Configuration
 
 Every plugin requires a `Config.toml` file in the crate root (next to `Cargo.toml`) containing format-agnostic metadata. This configuration is read at compile time by the `#[beamer::export]` macro and applies to all plugin formats (AU and VST3).
 
@@ -83,7 +81,7 @@ email = "support@example.com"
 - `category` determines the AU component type (`aufx`, `aumu`, `aumi`, `augn`)
 - By convention fields are ordered as in the example above: first identity (`name`, `category`, `subcategories`), then codes (`manufacturer_code`, `plugin_code`) and finally metadata (`vendor`, `url`, `email`)
 
-### 1.2 Three-Struct Pattern
+### Three-Struct Pattern
 
 Beamer plugins use three structs for clear separation of concerns:
 
@@ -163,11 +161,11 @@ The `#[beamer::export]` macro on the descriptor struct reads `Config.toml` from 
 - Optional factory presets from `Presets.toml` (if present)
 - Format-specific plugin entry points for AU and VST3
 
-See [Section 1.1](#11-plugin-configuration) for Config.toml format and [Section 1.6](#16-factory-presets) for Presets.toml.
+See [Plugin Configuration](#plugin-configuration) for the Config.toml format and [Factory Presets](#factory-presets) for Presets.toml.
 
-The following sections cover: Parameters (§1.3), Descriptor trait (§1.4), Processor trait (§1.5).
+The following sections cover [Parameters](#parameters), the [Descriptor trait](#descriptor-trait) and the [Processor trait](#processor-trait).
 
-### 1.3 Parameters
+### Parameters
 
 Use `#[derive(Parameters)]` to define plugin parameters with declarative attributes. The macro generates all required trait implementations automatically.
 
@@ -473,7 +471,7 @@ pub struct SynthesizerParameters {
 }
 
 // Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
-// Groups appear in DAW automation lanes and parameter lists (e.g., Cubase Quick Controls)
+// Groups appear in DAW automation lanes and parameter lists
 // Note: Most DAWs don't display groups in the main plugin UI
 ```
 
@@ -579,7 +577,7 @@ pub struct ParameterInfo {
 pub struct ParameterFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
-    pub is_bypass: bool, // Maps to VST3 kIsBypass (see §3.2)
+    pub is_bypass: bool, // Maps to VST3 kIsBypass (see Soft Bypass)
     pub is_list: bool, // Display as dropdown list (for enums)
     pub is_hidden: bool, // Hide from DAW parameter list (used by MIDI CC emulation)
 }
@@ -590,7 +588,7 @@ impl ParameterInfo {
 }
 ```
 
-### 1.4 Descriptor Trait
+### Descriptor Trait
 
 The `Descriptor` trait represents a plugin in its **unprepared state** - before the host provides audio setup information. When the host calls `setupProcessing()`, the plugin transforms into a `Processor` via the `prepare()` method.
 
@@ -740,7 +738,7 @@ impl Descriptor for FftDescriptor {
 }
 ```
 
-### 1.5 Processor Trait
+### Processor Trait
 
 The `Processor` trait represents a plugin in its **prepared state** - ready for real-time audio processing. Created by `Descriptor::prepare()`, it can transform back to unprepared state via `unprepare()`.
 
@@ -798,7 +796,7 @@ pub trait Processor: HasParameters {
         // Default: no-op (framework converts via f32 path)
     }
 
-    /// MIDI CC configuration for CC emulation (see §2.5).
+    /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 
     /// State persistence (default: delegates to Parameters trait)
@@ -836,7 +834,7 @@ The plugin transitions between states based on host actions:
 
 This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `Processor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale) for detailed rationale.
 
-### 1.6 Factory Presets
+### Factory Presets
 
 Factory presets let plugins provide built-in presets that appear in host preset menus (e.g., Logic's preset browser, VST3 program changes). Users can browse and load these presets without needing separate preset files.
 
@@ -947,7 +945,7 @@ When a plugin has factory presets, MIDI Program Change (PC) events are automatic
 
 This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
-### 1.7 Buffer Types
+### Buffer Types
 
 Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
 
@@ -1024,7 +1022,7 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
 
 The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't allow lifetime shortening. The solution uses `'borrow` for the outer reference and `'data` for the inner data, allowing the borrow to be shorter while preserving safety.
 
-### 1.8 ProcessContext and Transport
+### ProcessContext and Transport
 
 The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
 
@@ -1095,7 +1093,7 @@ pub enum FrameRate {
 }
 ```
 
-### 1.9 Sample Trait (f32/f64)
+### Sample Trait (f32/f64)
 
 The `Sample` trait lets you write DSP code once and support both `f32` and `f64` processing. This is the recommended pattern for plugins that want to offer native double-precision support.
 
@@ -1205,7 +1203,7 @@ impl Processor for GainProcessor {
 - Most dynamics processors
 - Synthesizers (often limited by oscillator precision anyway)
 
-### 1.10 Soft Bypass
+### Soft Bypass
 
 ```rust
 pub enum BypassState {
@@ -1283,13 +1281,13 @@ impl Processor for ReverbProcessor {
 
 ---
 
-> **See Also:** For format-specific details on plugin export and host requirements, see [Section 3: Audio Unit Integration](#3-audio-unit-integration) and [Section 4: VST3 Integration](#4-vst3-integration). Bundle layouts are described in [BUILDING.md](BUILDING.md).
+> **See Also:** For format-specific details, see [Format Notes](#format-notes). Bundle layouts are described in [BUILDING.md](BUILDING.md).
 
 ---
 
-## 2. MIDI Reference
+## MIDI Reference
 
-### 2.1 Event Types
+### Event Types
 
 All MIDI types are `Copy` for real-time safety.
 
@@ -1400,7 +1398,7 @@ MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<Mid
 - **Semantic constructors** - Used by VST3 which provides already-parsed event structures
 - **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and Note On velocity 0 → Note Off conversion
 
-### 2.2 MidiBuffer
+### MidiBuffer
 
 ```rust
 pub struct MidiBuffer { /* Fixed capacity: 1024 events */ }
@@ -1415,7 +1413,7 @@ impl MidiBuffer {
 }
 ```
 
-### 2.3 Event Modification
+### Event Modification
 
 Use `event.with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
 
@@ -1443,7 +1441,7 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 fn wants_midi(&self) -> bool { true }
 ```
 
-### 2.4 SysEx Handling
+### SysEx Handling
 
 **Buffer Size (Cargo features):**
 
@@ -1470,7 +1468,7 @@ Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
 **Heap Fallback (optional feature: `sysex-heap-fallback`):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.
 
-### 2.5 Note Expression (MPE)
+### Note Expression (MPE)
 
 ```rust
 pub mod note_expression {
@@ -1533,7 +1531,7 @@ MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
 MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 ```
 
-### 2.6 MIDI CC Emulation (MidiCcConfig)
+### MIDI CC Emulation (MidiCcConfig)
 
 VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
 
@@ -1642,7 +1640,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context:
 }
 ```
 
-### 2.7 Manual MIDI Mapping
+### Manual MIDI Mapping
 
 For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 
@@ -1673,7 +1671,7 @@ fn on_midi_learn(&mut self, _bus: i32, _channel: i16, cc: u8) -> bool {
 
 **MIDI 2.0:** `midi1_assignments()`, `midi2_assignments()`, `on_midi2_learn()`
 
-### 2.8 Keyswitch Controller
+### Keyswitch Controller
 
 ```rust
 fn keyswitch_count(&self, _bus: i32, _channel: i16) -> usize { 4 }
@@ -1687,7 +1685,7 @@ fn keyswitch_info(&self, _bus: i32, _channel: i16, index: usize) -> Option<Keysw
 }
 ```
 
-### 2.9 RPN/NRPN Helpers
+### RPN/NRPN Helpers
 
 **Constants:**
 
@@ -1735,7 +1733,7 @@ pub struct ParameterNumberMessage {
 }
 ```
 
-### 2.10 CC Utilities
+### CC Utilities
 
 **Constants:**
 
@@ -1781,7 +1779,7 @@ let combined = combine_14bit_raw(msb, lsb);  // → 0-16383
 let (msb, lsb) = split_14bit_raw(combined);
 ```
 
-### 2.11 VST3 Event Mapping
+### VST3 Event Mapping
 
 | Beamer Type | VST3 Event ID | Direction |
 |------------|---------------|-----------|
@@ -1801,94 +1799,15 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 ---
 
-## 3. Audio Unit Integration
+## Format Notes
 
-Beamer supports Audio Unit plugins on macOS through the `beamer-au` crate, with both **AUv2** (`.component`) and **AUv3** (`.appex`) formats fully implemented. Audio Units share the same core traits (`Descriptor`, `Processor`, `Parameters`) as VST3, allowing you to target all formats from a single codebase.
+Both formats share the same core traits (`Descriptor`, `Processor`, `Parameters`), so one codebase targets both. The `#[beamer::export]` macro generates the entry points for every format enabled through Cargo features (`au`, `vst3`). Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md), and the design of both wrappers in [ARCHITECTURE.md](../ARCHITECTURE.md#format-specific-implementation-details).
 
-Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md).
+### Audio Unit
 
-### 3.1 Architecture Overview
+Audio Units are supported on macOS through the `beamer-au` crate, as AUv2 (`.component`) and AUv3 (`.appex`).
 
-The `beamer-au` crate uses a **hybrid Objective-C/Rust architecture**:
-- **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
-- **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
-
-This approach was chosen for several reasons:
-- **Runtime compatibility**: `AUAudioUnit` subclassing requires Objective-C runtime metadata that Rust FFI bindings struggle to generate correctly
-- **Simplicity**: Native ObjC integrates naturally with Apple frameworks without abstraction layers
-- **Debuggability**: Apple's tools (Instruments, lldb, auval) work better with native ObjC code
-- **Fewer dependencies**: No need for objc2, block2, or related crates
-
-The hybrid architecture guarantees Apple compatibility while keeping all audio processing in Rust.
-
-```
-┌─────────────────────────────────────────────┐
-│   AU Host (Logic, GarageBand, Reaper)       │
-├─────────────────────────────────────────────┤
-│      BeamerAuWrapper (Native Objective-C)   │
-│      objc/BeamerAuWrapper.m                 │
-├─────────────────────────────────────────────┤
-│           C-ABI Bridge Layer                │
-│   objc/BeamerAuBridge.h ↔ src/bridge.rs     │
-├─────────────────────────────────────────────┤
-│           beamer-au (Rust)                  │
-│   AuProcessor, RenderBlock, factory         │
-├─────────────────────────────────────────────┤
-│              beamer-core traits             │
-│   Descriptor, Processor, Parameters         │
-└─────────────────────────────────────────────┘
-```
-
-#### File Structure
-
-```
-crates/beamer-au/
-├── build.rs                    # Compiles Objective-C via cc crate
-├── objc/
-│   ├── BeamerAuBridge.h        # C-ABI function declarations
-│   ├── BeamerAuWrapper.h       # ObjC class interface
-│   └── BeamerAuWrapper.m       # Native AUAudioUnit subclass
-└── src/
-    ├── bridge.rs               # C-ABI implementations
-    ├── factory.rs              # Plugin factory registration
-    ├── processor.rs            # AuProcessor<P> wrapper (lifecycle, state)
-    ├── render.rs               # RenderBlock (audio, MIDI, parameters)
-    ├── instance.rs             # AuPluginInstance trait
-    └── ...
-```
-
-**Why two files vs VST3's single `processor.rs`?** Unlike VST3 (which implements a single COM interface in Rust), AU's render callback crosses an FFI boundary from Objective-C. `processor.rs` handles plugin lifecycle on the main thread, while `render.rs` contains the `RenderBlock` for real-time audio processing on the audio thread. This separation reflects the different threading contexts and the ObjC/Rust boundary.
-
-**Key Features:**
-- Both AUv2 and AUv3 formats supported (macOS 10.11+)
-- Full parameter automation via `AUParameterTree` (AUv3) and properties (AUv2)
-- Parameter automation with smoother interpolation (buffer-quantized)
-- MIDI input (legacy MIDI 1.0 and MIDI 2.0 UMP, 1024 event buffer)
-- MIDI output via `scheduleMIDIEventBlock` (instruments/MIDI effects only)
-- MIDI CC state tracking (`MidiCcState` for mod wheel, pitch bend, etc.)
-- SysEx output via pre-allocated `SysExOutputPool`
-- Sidechain/auxiliary buses with real bus layout forwarding
-- Full state persistence (processor `save_state`/`load_state` + deferred loading)
-- f32/f64 processing with pre-allocated conversion buffers
-- Transport information (tempo, beat position, playback state)
-- Real-time safe: no heap allocation in render path
-
-### 3.2 Configuration
-
-Audio Unit plugins are configured via `Config.toml` in the crate root. The configuration is shared across all plugin formats.
-
-**Config.toml:**
-
-```toml
-name = "My Plugin"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Myco"
-plugin_code = "mypg"
-vendor = "My Company"
-```
-
-#### Plugin Categories
+#### AU Component Types
 
 The `category` field in `Config.toml` determines the AU component type:
 
@@ -1901,223 +1820,36 @@ The `category` field in `Config.toml` determines the AU component type:
 
 #### FourCC Codes
 
-The `manufacturer_code` and `plugin_code` fields in `Config.toml` specify the 4-character FourCC identifiers used by Audio Units:
+The `manufacturer_code` and `plugin_code` fields in `Config.toml` are the 4-character FourCC identifiers of the Audio Unit:
 
-**Best Practices:**
 - `manufacturer_code`: Use your company/product abbreviation (4 ASCII chars)
 - `plugin_code`: Unique identifier for this specific plugin (4 ASCII chars)
 - Avoid conflicts: Check [Apple's registry](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
 - Use lowercase for effects, MixedCase for instruments (convention)
 
-### 3.3 Export Macro
+### VST3
 
-The `#[beamer::export]` attribute macro on your descriptor struct automatically generates AU (and VST3) plugin entry points at compile time.
+VST3 plugins are built through the `beamer-vst3` crate. With the `vst3` feature enabled, the macro generates the platform entry points: `GetPluginFactory`, plus `bundleEntry`/`bundleExit` on macOS and `InitDll`/`ExitDll` on Windows.
 
-**Config.toml** (place in crate root next to Cargo.toml):
+#### Component ID
 
-```toml
-name = "Beamer Gain"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Bmer"
-plugin_code = "gain"
-vendor = "Beamer Framework"
-```
+The VST3 component UUID is derived from `manufacturer_code` and `plugin_code`:
 
-**Rust code:**
-
-```rust
-use beamer::prelude::*;
-
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    pub parameters: GainParameters,
-}
-
-impl Descriptor for GainDescriptor {
-    // implementation...
-}
-```
-
-The macro reads `Config.toml` and generates:
-- `pub static CONFIG: Config` from the TOML fields
-- AU entry points (macOS only, when `au` feature is enabled)
-- VST3 entry points (when `vst3` feature is enabled)
-- Optional factory presets from `Presets.toml` if present
-
-No manual `export_au!` or `export_vst3!` calls needed.
-
-### 3.4 C-ABI Bridge Interface
-
-The bridge layer (`objc/BeamerAuBridge.h` ↔ `src/bridge.rs`) defines the contract between the native wrappers (both AUv2 and AUv3) and Rust. Both formats share the same 40+ bridge functions:
-
-#### Instance Lifecycle
-
-```c
-// Create/destroy plugin instances
-BeamerAuInstanceHandle beamer_au_create_instance(void);
-void beamer_au_destroy_instance(BeamerAuInstanceHandle instance);
-```
-
-#### Render Resources
-
-```c
-// Allocate/deallocate for audio processing
-int32_t beamer_au_allocate_render_resources(
-    BeamerAuInstanceHandle instance,
-    double sample_rate,
-    uint32_t max_frames,
-    BeamerAuSampleFormat sample_format,
-    const BeamerAuBusConfig* bus_config
-);
-void beamer_au_deallocate_render_resources(BeamerAuInstanceHandle instance);
-```
-
-#### Audio Rendering
-
-```c
-// Main render callback (real-time thread)
-int32_t beamer_au_render(
-    BeamerAuInstanceHandle instance,
-    uint32_t* action_flags,
-    const AudioTimeStamp* timestamp,
-    uint32_t frame_count,
-    int32_t output_bus_number,
-    AudioBufferList* output_data,
-    const AURenderEvent* events,
-    void* pull_input_block,
-    void* musical_context_block,
-    void* transport_state_block,
-    void* schedule_midi_block
-);
-```
-
-#### Parameters
-
-```c
-// Query and modify parameters
-uint32_t beamer_au_get_parameter_count(BeamerAuInstanceHandle instance);
-bool beamer_au_get_parameter_info(BeamerAuInstanceHandle instance, uint32_t index, BeamerAuParameterInfo* out_info);
-float beamer_au_get_parameter_value(BeamerAuInstanceHandle instance, uint32_t param_id);
-void beamer_au_set_parameter_value(BeamerAuInstanceHandle instance, uint32_t param_id, float value);
-```
-
-#### State Persistence
-
-```c
-// Save/load plugin state
-uint32_t beamer_au_get_state_size(BeamerAuInstanceHandle instance);
-uint32_t beamer_au_get_state(BeamerAuInstanceHandle instance, uint8_t* buffer, uint32_t size);
-int32_t beamer_au_set_state(BeamerAuInstanceHandle instance, const uint8_t* buffer, uint32_t size);
-```
-
-#### Bus Configuration
-
-```c
-// Query bus layout
-uint32_t beamer_au_get_input_bus_count(BeamerAuInstanceHandle instance);
-uint32_t beamer_au_get_output_bus_count(BeamerAuInstanceHandle instance);
-uint32_t beamer_au_get_input_bus_channel_count(BeamerAuInstanceHandle instance, uint32_t bus_index);
-uint32_t beamer_au_get_output_bus_channel_count(BeamerAuInstanceHandle instance, uint32_t bus_index);
-```
-
-#### MIDI Support
-
-```c
-// Check MIDI capabilities
-bool beamer_au_accepts_midi(BeamerAuInstanceHandle instance);
-bool beamer_au_produces_midi(BeamerAuInstanceHandle instance);
-```
-
----
-
-## 4. VST3 Integration
-
-Beamer supports VST3 plugins on macOS and Windows through the `beamer-vst3` crate. VST3 plugins share the same core traits (`Descriptor`, `Processor`, `Parameters`) as other formats, allowing you to target all formats from a single codebase.
-
-Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md).
-
-### 4.1 Configuration
-
-VST3 plugins are configured via the same `Config.toml` file used for AU plugins. The VST3 component UUID is automatically derived from your `manufacturer_code` and `plugin_code` via FNV-1a-128 hash.
-
-**Config.toml:**
-
-```toml
-name = "My Plugin"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Myco"
-plugin_code = "mypg"
-vendor = "My Company"
-```
-
-**UUID Auto-Derivation:**
-
-The VST3 UUID is automatically derived as:
 ```
 FNV-1a-128("beamer-vst3-uid" + manufacturer_code + plugin_code)
 ```
 
-This ensures:
-- Deterministic UUIDs (same codes always produce the same UUID)
-- No UUID collisions between different plugins
-- No manual UUID generation needed
-
-**UUID Override:**
-
-If you need a specific UUID (e.g., to maintain compatibility with an existing shipped plugin), add it to `Config.toml`:
+The same codes always produce the same UUID, so no manual UUID is needed. To keep the ID of an already shipped plugin, set it in `Config.toml`:
 
 ```toml
 vst3_id = "12345678-9ABC-DEF0-1234-567890ABCDEF"
 ```
 
-The format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes).
+The format is `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (36 characters with dashes). `cargo xtask generate-uuid` prints a new one.
 
-### 4.2 Export Macro
+#### VST3 Subcategories
 
-The `#[beamer::export]` attribute macro automatically generates VST3 entry points when the `vst3` feature is enabled.
-
-**Config.toml:**
-
-```toml
-name = "My Synth"
-category = "instrument"
-manufacturer_code = "Myco"
-plugin_code = "synt"
-vendor = "My Company"
-```
-
-**Rust code:**
-
-```rust
-use beamer::prelude::*;
-
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct SynthDescriptor {
-    #[parameters]
-    pub parameters: SynthParameters,
-}
-
-impl Descriptor for SynthDescriptor {
-    // implementation...
-}
-```
-
-The macro generates:
-- `pub static CONFIG: Config` from Config.toml
-- VST3 component UUID (auto-derived from manufacturer_code + plugin_code)
-- Platform-specific entry points (`GetPluginFactory`, `bundleEntry`/`bundleExit` on macOS, `InitDll`/`ExitDll` on Windows)
-- Optional factory presets if `Presets.toml` is present
-
-The same code compiles for both AU and VST3 formats. Use Cargo features to control which formats to build.
-
-### 4.3 Plugin Categories
-
-VST3 subcategories are derived automatically from `Config.toml`:
+VST3 subcategories are derived from `Config.toml`:
 
 ```toml
 # category = "effect" with subcategories = ["dynamics"] becomes "Fx|Dynamics"
@@ -2136,23 +1868,3 @@ plugin_code = "synt"
 ```
 
 Common subcategories: `Subcategory::Dynamics`, `Eq`, `Filter`, `Delay`, `Reverb`, `Modulation`, `Distortion`, `Synth`, `Sampler`, etc.
-
----
-
-## 5. Future Work
-
-### 5.1 Sample-Accurate Parameter Automation (VST3)
-
-**AU status:** The AU wrapper already implements sample-accurate parameter automation via sub-block processing. The render buffer is split at parameter event boundaries, with changes applied at the start of each sub-block. MIDI events are rebased in-place to maintain correct offsets within each sub-block.
-
-**VST3 current behavior:** The VST3 wrapper applies parameter changes at the start of each audio buffer, using the last value in the automation queue. The existing `Smoother` infrastructure then interpolates to avoid zipper noise.
-
-**Limitation:** This approach is buffer-quantized rather than sample-accurate. For most plugins this is imperceptible, but edge cases exist:
-
-- Ultra-fast LFO modulation of parameters
-- Sample-accurate gate/trigger parameters
-- Precision timing for transient designers
-
-**Planned enhancement:** Bring the VST3 wrapper to parity with AU by adding sub-block processing that splits the buffer at parameter event boundaries.
-
-**Priority:** Low. Current behavior matches the industry standard and covers the vast majority of use cases.

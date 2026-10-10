@@ -51,8 +51,8 @@ The `#[beamer::export]` macro reads `Config.toml` and generates the plugin confi
 ## Documentation
 
 See the [main repository](https://github.com/helpermedia/beamer) for:
-- [Parameter Documentation](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#13-parameters)
-- [Declarative Attributes Guide](https://github.com/helpermedia/beamer#parameter-attributes)
+- [Parameter Documentation](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#parameters)
+- [Declarative Attributes Guide](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#declarative-attributes)
 - [Examples](https://github.com/helpermedia/beamer/tree/main/examples)
 
 ## License

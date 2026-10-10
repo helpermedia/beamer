@@ -31,7 +31,7 @@ Use `beamer-vst3` directly only if you're:
 See the [main repository](https://github.com/helpermedia/beamer) for:
 - [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
 - [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
-- [VST3 Integration Details](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#3-vst3-integration)
+- [VST3 Integration Details](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#vst3)
 
 ## License
 

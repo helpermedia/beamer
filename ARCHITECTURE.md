@@ -238,7 +238,7 @@ Beamer plugins use three structs for clear separation of concerns:
 2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
 3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
 
-See [Three-Struct Pattern](docs/REFERENCE.md#12-three-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#13-parameters) for the parameter attributes.
+See [Three-Struct Pattern](docs/REFERENCE.md#three-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#parameters) for the parameter attributes.
 
 **Plugins with DSP state** add fields to the Processor:
 
@@ -254,7 +254,7 @@ struct DelayProcessor {
 
 ### Setup Types
 
-`prepare()` receives only what the plugin asks for through its `Setup` type: `()` for stateless plugins, `SampleRate` for most others or a tuple such as `(SampleRate, MaxBufferSize)`. See [Descriptor Trait](docs/REFERENCE.md#14-descriptor-trait) for all setup types.
+`prepare()` receives only what the plugin asks for through its `Setup` type: `()` for stateless plugins, `SampleRate` for most others or a tuple such as `(SampleRate, MaxBufferSize)`. See [Descriptor Trait](docs/REFERENCE.md#descriptor-trait) for all setup types.
 
 ### Trait Responsibilities
 
@@ -319,7 +319,7 @@ Plugin Crate Root
         └── Processor struct
 ```
 
-See [Plugin Configuration](docs/REFERENCE.md#11-plugin-configuration) for all `Config.toml` fields and [Factory Presets](docs/REFERENCE.md#16-factory-presets) for `Presets.toml`.
+See [Plugin Configuration](docs/REFERENCE.md#plugin-configuration) for all `Config.toml` fields and [Factory Presets](docs/REFERENCE.md#factory-presets) for `Presets.toml`.
 
 ### Why TOML Configuration?
 
@@ -388,6 +388,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
 - [sysex_pool.rs](crates/beamer-core/src/sysex_pool.rs) - SysEx output pool (in beamer-core, shared with VST3)
+
+`processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters, state and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
 **MIDI**: UMP MIDI 1.0/2.0 → `beamer-core::MidiEvent`
 - Universal MIDI Packet format (32-bit packets)
@@ -460,6 +462,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Feature Parity** | ✓ Full parity | Reference |
 
 The format wrappers are thin translation layers: all DSP, parameter, MIDI event, buffer and transport logic lives in `beamer-core`, and only the host-facing API code differs per format.
+
+**Parameter automation.** The AU wrapper applies automation sample-accurately: it splits the render buffer at parameter event boundaries and rebases MIDI events to each sub-block. The VST3 wrapper applies the last queued value at the start of each buffer and relies on the `Smoother` infrastructure to avoid zipper noise. That is buffer-quantized, which is imperceptible for most plugins but not for very fast parameter modulation or sample-accurate gate and trigger parameters. Bringing the VST3 wrapper to parity through the same sub-block processing is planned, with low priority.
 
 ---
 
