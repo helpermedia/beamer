@@ -110,7 +110,7 @@ If the plugin has a `webview/package.json`, xtask runs the package
 manager's install and build before compiling and expects the result in
 `webview/dist/index.html`. A plain `webview/index.html` needs no build
 step. For a dev server with live reload, see
-[WebView GUI System](REFERENCE.md#5-webview-gui-system).
+[Development Server](WEBVIEW.md#development-server).
 
 ### What xtask produces
 

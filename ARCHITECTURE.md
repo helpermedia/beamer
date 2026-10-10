@@ -4,6 +4,7 @@ This document describes the high-level architecture of Beamer, a Rust framework 
 
 For detailed API documentation, see [docs/REFERENCE.md](docs/REFERENCE.md).
 For building, installing and testing plugins, see [docs/BUILDING.md](docs/BUILDING.md).
+For the WebView GUI system, see [docs/WEBVIEW.md](docs/WEBVIEW.md).
 For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EXAMPLE_COVERAGE.md).
 
 ---
@@ -351,7 +352,7 @@ Plugins are built, bundled and installed with `cargo xtask bundle`. See [BUILDIN
 
 ### WebView Assets
 
-Plugins with a `webview/` directory embed their web UI at compile time: the `#[beamer::export]` macro scans `webview/dist/` (or `webview/` itself for plain HTML projects), embeds every file via `include_bytes!()` and enables the GUI. See [Asset Embedding](docs/REFERENCE.md#57-asset-embedding) for the detection rules.
+Plugins with a `webview/` directory embed their web UI at compile time: the `#[beamer::export]` macro scans `webview/dist/` (or `webview/` itself for plain HTML projects), embeds every file via `include_bytes!()` and enables the GUI. See [Asset Embedding](docs/WEBVIEW.md#asset-embedding) for the detection rules.
 
 The web assets (HTML, CSS, JS) are served at runtime through a custom URL scheme (`beamer://`) rather than a local HTTP server.
 

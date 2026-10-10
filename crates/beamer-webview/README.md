@@ -29,6 +29,7 @@ Use `beamer-webview` directly only if you're:
 
 See the [main repository](https://github.com/helpermedia/beamer) for:
 - [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
+- [WebView GUI Guide](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md)
 - [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
 
 ## License

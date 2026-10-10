@@ -22,7 +22,7 @@ pub type EvalJsFn = unsafe extern "C-unwind" fn(context: *mut c_void, script: *c
 ///
 /// **Not audio-thread safe.** This struct allocates (JSON serialization).
 /// For sending visualization data from the audio thread, see the planned
-/// lock-free ring buffer approach (REFERENCE.md section 6.1).
+/// lock-free ring buffer approach (docs/WEBVIEW.md, Real-Time Visualization).
 #[derive(Clone)]
 pub struct WebViewHandle {
     eval_fn: EvalJsFn,
