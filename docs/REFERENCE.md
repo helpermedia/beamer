@@ -82,6 +82,7 @@ email = "support@example.com"
 - VST3 UUID is auto-derived from `manufacturer_code` and `plugin_code` unless `vst3_id` is specified
 - The 4-character codes are used for both AU FourCC identifiers and VST3 UUID derivation
 - `category` determines the AU component type (`aufx`, `aumu`, `aumi`, `augn`)
+- By convention fields are ordered as in the example above: first identity (`name`, `category`, `subcategories`), then codes (`manufacturer_code`, `plugin_code`) and finally metadata (`vendor`, `url`, `email`)
 
 ### 1.2 Three-Struct Pattern
 
@@ -216,6 +217,7 @@ Use `#[derive(HasParameters)]` separately on Descriptor and Processor structs to
 | `kind = "..."` | Unit type (see below) | Optional |
 | `group = "..."` | Visual grouping without nested struct | Optional |
 | `short_name = "..."` | Short name for constrained UIs | Optional |
+| `step = <value>` | Discrete step size (FloatParameter only) | Optional |
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) | Optional |
 | `bypass` | Mark as bypass parameter (BoolParameter only) | Optional |
 
@@ -700,7 +702,7 @@ Request exactly what your plugin needs using composable types:
 
 For IDE autocomplete, use `beamer::setup::*` to import all available types.
 
-Compose multiple types using tuples:
+Compose up to five types using a tuple:
 
 ```rust
 // Simple plugin - no setup needed

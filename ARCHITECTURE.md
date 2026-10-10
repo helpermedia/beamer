@@ -3,6 +3,7 @@
 This document describes the high-level architecture of Beamer, a Rust framework for building audio plugins with WebView-based GUIs.
 
 For detailed API documentation, see [docs/REFERENCE.md](docs/REFERENCE.md).
+For building, installing and testing plugins, see [docs/BUILDING.md](docs/BUILDING.md).
 For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EXAMPLE_COVERAGE.md).
 
 ---
@@ -236,60 +237,7 @@ Beamer plugins use three structs for clear separation of concerns:
 2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
 3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
 
-```rust
-// 1. Parameters - pure data
-#[derive(Parameters)]
-pub struct GainParameters {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParameter,
-}
-```
-
-**Parameter attributes:**
-
-| Attribute | Description |
-|-----------|-------------|
-| `id = "..."` | String ID (required), hashed to u32 via FNV-1a |
-| `name = "..."` | Display name |
-| `default = <value>` | Default value (float, int or bool) |
-| `range = start..=end` | Value range (inclusive) |
-| `kind = "..."` | Unit type: `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones` |
-| `short_name = "..."` | Short name for constrained UIs |
-| `smoothing = "..."` | Parameter smoothing: `"exp:5.0"` or `"linear:50.0"` (time constant in ms) |
-| `step = <value>` | Discrete step size (FloatParameter only) |
-| `group = "..."` | Flat visual grouping in DAW |
-| `bypass` | Mark as bypass parameter (BoolParameter only) |
-
-```rust
-// 2. Descriptor - holds parameters, describes plugin to host
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Descriptor for GainDescriptor {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
-    type Setup = ();
-    type Processor = GainProcessor;
-
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
-    }
-}
-
-// 3. Processor - prepared state, ready for audio
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-    fn process(&mut self, buffer: &mut Buffer, ...) { /* ... */ }
-}
-```
+See [Three-Struct Pattern](docs/REFERENCE.md#12-three-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#13-parameters) for the parameter attributes.
 
 **Plugins with DSP state** add fields to the Processor:
 
@@ -305,15 +253,7 @@ struct DelayProcessor {
 
 ### Setup Types
 
-| Type | Use Case | Value |
-|------|----------|-------|
-| `()` | Stateless plugins (gain, pan) | - |
-| `SampleRate` | Most plugins (delay, filter, envelope) | `f64` via `.hz()` |
-| `MaxBufferSize` | FFT, lookahead | `usize` |
-| `MainOutputChannels` | Per-channel state | `u32` |
-| `(A, B, ...)` | Combine multiple types | Tuples up to 5 elements |
-
-For IDE autocomplete, use `beamer::setup::*` to import all available types.
+`prepare()` receives only what the plugin asks for through its `Setup` type: `()` for stateless plugins, `SampleRate` for most others or a tuple such as `(SampleRate, MaxBufferSize)`. See [Descriptor Trait](docs/REFERENCE.md#14-descriptor-trait) for all setup types.
 
 ### Trait Responsibilities
 
@@ -351,26 +291,7 @@ Both `Descriptor` and `Processor` implement `HasParameters` because the host nee
 - Before `prepare()`: Host queries parameter info, user adjusts values
 - After `prepare()`: Host automates parameters during playback
 
-Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on both Descriptor and Processor:
-
-```rust
-// Descriptor with HasParameters
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-// Processor with HasParameters
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-    // Additional DSP state...
-}
-```
-
-The derive macro generates the `parameters()`, `parameters_mut()` and `set_parameters()` methods automatically.
+Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on both Descriptor and Processor. The derive macro generates the `parameters()`, `parameters_mut()` and `set_parameters()` methods.
 
 ---
 
@@ -397,113 +318,7 @@ Plugin Crate Root
         └── Processor struct
 ```
 
-### Example: Plugin with TOML Configuration
-
-**Config.toml** (place in crate root next to Cargo.toml):
-```toml
-name = "My Gain Plugin"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Demo"
-plugin_code = "gain"
-vendor = "My Company"
-url = "https://example.com"
-email = "support@example.com"
-```
-
-**Presets.toml** (optional):
-```toml
-[[preset]]
-name = "Default"
-gain = 0.0
-
-[[preset]]
-name = "+6dB"
-gain = 6.0
-```
-
-**src/lib.rs**:
-```rust
-use beamer::prelude::*;
-
-#[derive(Parameters)]
-pub struct GainParameters {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParameter,
-}
-
-#[beamer::export]  // Reads Config.toml and generates everything
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Descriptor for GainDescriptor {
-    type Setup = ();
-    type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
-    }
-}
-
-#[derive(HasParameters)]
-pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
-}
-
-impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        // ... DSP code
-    }
-}
-```
-
-The `#[beamer::export]` attribute reads Config.toml and generates the required `CONFIG` static and plugin export code.
-
-### Configuration Fields
-
-**Config.toml**:
-- `name` - Display name in DAW (required)
-- `category` - Plugin type: `"effect"`, `"instrument"`, `"midi_effect"`, or `"generator"` (required)
-- `subcategories` - Array of subcategory strings (optional, e.g., `["dynamics", "eq"]`)
-- `manufacturer_code` - 4-character manufacturer code for AU (required, e.g., `"Demo"`)
-- `plugin_code` - 4-character plugin code for AU (required, e.g., `"gain"`)
-- `vendor` - Company/developer name (optional)
-- `url` - Plugin URL (optional)
-- `email` - Support email (optional)
-- `vst3_id` - Explicit VST3 UUID override (optional, format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`)
-- `has_gui` - GUI enabled flag (optional, default: false)
-- `gui_size` - Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true)
-
-**Field Ordering Convention** (for readability):
-```toml
-# 1. Core identity
-name = "..."
-category = "..."
-subcategories = [...]  # Optional, grouped with category
-
-# 2. Technical identifiers
-manufacturer_code = "..."
-plugin_code = "..."
-
-# 3. Metadata
-vendor = "..."
-url = "..."
-email = "..."
-```
-
-**Presets.toml**:
-```toml
-[[preset]]
-name = "Preset Name"
-parameter_id = value
-another_parameter = value
-```
-
-Use parameter IDs (not Rust field names) and plain numeric values.
+See [Plugin Configuration](docs/REFERENCE.md#11-plugin-configuration) for all `Config.toml` fields and [Factory Presets](docs/REFERENCE.md#16-factory-presets) for `Presets.toml`.
 
 ### Why TOML Configuration?
 
@@ -530,43 +345,13 @@ To use an explicit UUID (e.g., for backward compatibility):
 vst3_id = "12345678-9ABC-DEF0-ABCD-EF1234567890"
 ```
 
-### Building Multi-Format Plugins
+### Building
 
-Use `xtask` to build formats:
+Plugins are built, bundled and installed with `cargo xtask bundle`. See [BUILDING.md](docs/BUILDING.md).
 
-```bash
-# AUv2 only (macOS, native architecture)
-cargo xtask bundle my-plugin --auv2 --release
+### WebView Assets
 
-# AUv3 only (macOS, native architecture)
-cargo xtask bundle my-plugin --auv3 --release
-
-# VST3 only (native architecture)
-cargo xtask bundle my-plugin --vst3 --release
-
-# All formats (macOS)
-cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --release
-
-# Install to system plugin directories
-cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --release --install
-
-# Universal binary for distribution (x86_64 + arm64)
-cargo xtask bundle my-plugin --auv2 --auv3 --vst3 --arch universal --release
-```
-
-**Architecture options**: `--arch native` (default), `--arch universal`, `--arch arm64`, `--arch x86_64`
-
-### Building WebView Plugins
-
-Plugins with `has_gui = true` in Config.toml need their web assets built before bundling. The `#[beamer::export]` macro scans `webview/dist/` at compile time and embeds all files via `include_bytes!()`.
-
-```bash
-# Build web assets first (from the example's webview/ directory)
-cd examples/webview-demo/webview && bun install && bun run build && cd -
-
-# Then bundle as usual
-cargo xtask bundle webview-demo --auv3 --release --install
-```
+Plugins with a `webview/` directory embed their web UI at compile time: the `#[beamer::export]` macro scans `webview/dist/` (or `webview/` itself for plain HTML projects), embeds every file via `include_bytes!()` and enables the GUI. See [Asset Embedding](docs/REFERENCE.md#57-asset-embedding) for the detection rules.
 
 The web assets (HTML, CSS, JS) are served at runtime through a custom URL scheme (`beamer://`) rather than a local HTTP server.
 
@@ -673,22 +458,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Registration** | ObjC factory + module init | `GetPluginFactory()` |
 | **Feature Parity** | ✓ Full parity | Reference |
 
-### Code Reuse Statistics
-
-**Shared** (beamer-core): ~100%
-- All DSP processing logic
-- Parameter management
-- MIDI event representation
-- Buffer abstractions
-- Transport and context
-
-**Format-specific**: ~0% overlap
-- Different C APIs (COM vs ObjC)
-- Different MIDI formats
-- Different parameter models
-- Different state serialization
-
-The format wrappers are **thin translation layers** that adapt the platform API to `beamer-core` abstractions.
+The format wrappers are thin translation layers: all DSP, parameter, MIDI event, buffer and transport logic lives in `beamer-core`, and only the host-facing API code differs per format.
 
 ---
 
