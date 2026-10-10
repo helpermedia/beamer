@@ -93,6 +93,32 @@ pub fn bundle_auv2(
     let executable_name = bundle_name.trim_end_matches(".component");
     let binary_dest = macos_dir.join(executable_name);
 
+    // Copy the dylib next to the component binary and give the copy an install
+    // name relative to it. The linker records that name in the component
+    // binary, which then loads the bundled copy. The dylib that cargo builds
+    // has the absolute path of the build directory as its install name.
+    //
+    // The name has to be @loader_path based. dyld compares a requested name
+    // with the install names of the images that are already loaded before it
+    // looks on disk, and it expands @loader_path to the directory of the
+    // requesting binary first. An @rpath name can therefore be satisfied by a
+    // library with the same name that another bundle loaded earlier. The
+    // absolute build path was satisfied by the VST3 build of the same plugin,
+    // which keeps that path as its install name and has no AU symbols.
+    let dylib_name = dylib_path.file_name().unwrap();
+    let dylib_dest = macos_dir.join(dylib_name);
+    fs::copy(dylib_path, &dylib_dest).map_err(|e| format!("Failed to copy dylib: {}", e))?;
+
+    let install_name = format!("@loader_path/{}", dylib_name.to_string_lossy());
+    let install_name_status = Command::new("install_name_tool")
+        .args(["-id", &install_name, dylib_dest.to_str_safe()?])
+        .status()
+        .map_err(|e| format!("Failed to run install_name_tool: {}", e))?;
+
+    if !install_name_status.success() {
+        return Err("Failed to set the install name of the plugin dylib".to_string());
+    }
+
     let mut built_paths: Vec<PathBuf> = Vec::new();
 
     for target_arch in &arches {
@@ -113,8 +139,8 @@ pub fn bundle_auv2(
                 "-framework", "WebKit",
                 "-I", bridge_header_dir.to_str_safe()?,
                 "-I", ipc_header_dir.to_str_safe()?,
-                dylib_path.to_str_safe()?,  // Link directly with the dylib
-                "-Wl,-rpath,@loader_path",
+                // Link with the bundled dylib, which has the @loader_path install name.
+                dylib_dest.to_str_safe()?,
                 "-o", arch_output.to_str_safe()?,
                 wrapper_path.to_str_safe()?,
             ])
@@ -128,11 +154,6 @@ pub fn bundle_auv2(
     }
 
     combine_or_rename_binaries(&built_paths, &binary_dest, true)?;
-
-    // Copy dylib next to the binary (for @rpath resolution)
-    let dylib_name = dylib_path.file_name().unwrap();
-    let dylib_dest = macos_dir.join(dylib_name);
-    fs::copy(dylib_path, &dylib_dest).map_err(|e| format!("Failed to copy dylib: {}", e))?;
 
     // Create Info.plist with factoryFunction
     let info_plist = create_component_info_plist(&ComponentPlistConfig {
@@ -153,8 +174,11 @@ pub fn bundle_auv2(
     fs::write(contents_dir.join("PkgInfo"), "BNDL????")
         .map_err(|e| format!("Failed to write PkgInfo: {}", e))?;
 
-    // Code sign with ad-hoc signature
+    // Code sign with ad-hoc signature: the dylib first, then the component.
+    // codesign does not sign nested code and refuses a bundle that contains an
+    // unsigned dylib. Only arm64 code is signed by the linker.
     crate::verbose!(verbose, "    Signing...");
+    codesign_bundle(&dylib_dest, None, "Plugin library", verbose);
     codesign_bundle(&bundle_dir, None, "Component", verbose);
 
     // Install if requested
