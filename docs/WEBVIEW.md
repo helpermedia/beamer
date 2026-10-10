@@ -39,7 +39,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 | `beamer-core` | `WebViewHandler` trait, `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60Hz sync timer, IPC dispatch |
-| `beamer-au` | AU view controller, 60Hz sync timer, IPC dispatch |
+| `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60Hz sync timer and IPC dispatch |
 
 ## Configuration
 
@@ -49,7 +49,7 @@ GUI settings are declared in `Config.toml`:
 name = "Beamer WebView Demo"
 category = "effect"
 manufacturer_code = "Bmer"
-plugin_code = "wvd3"
+plugin_code = "wvdm"
 has_gui = true
 gui_size = [600, 400]
 gui_background_color = "#1a1a2e"
@@ -77,6 +77,9 @@ interface BeamerParamInfo {
   stringId: string;
   name: string;
   value: number;
+  plainValue: number;
+  displayText: string;
+  format: string;
   defaultValue: number;
   min: number;
   max: number;
@@ -86,6 +89,8 @@ interface BeamerParamInfo {
 
 interface BeamerParams {
   get(stringId: string): number;
+  getPlain(stringId: string): number;
+  getDisplayText(stringId: string): string;
   set(stringId: string, value: number): void;
   beginEdit(stringId: string): void;
   endEdit(stringId: string): void;
@@ -107,11 +112,13 @@ declare const __BEAMER__: Beamer;
 
 ### Parameter Methods
 
-All parameter methods use string identifiers (the `stringId` from `Config.toml`, e.g. `"gain"`).
+All parameter methods use string identifiers (the `id` from the `#[parameter(id = "...")]` attribute, e.g. `"gain"`).
 
 | Method | Description |
 |--------|-------------|
 | `params.get(stringId)` | Get the current normalized value (0.0 - 1.0) |
+| `params.getPlain(stringId)` | Get the current value in plain units (e.g. dB) |
+| `params.getDisplayText(stringId)` | Get the current value as formatted by the parameter, without the unit |
 | `params.set(stringId, value)` | Set the normalized value and notify the host |
 | `params.beginEdit(stringId)` | Start an automation gesture (call before a drag) |
 | `params.endEdit(stringId)` | End an automation gesture (call after a drag) |
@@ -133,6 +140,13 @@ console.log(info.version); // "0.1.0"
 
 If the handler returns `Err(message)`, the Promise rejects with that message string.
 
+One method is built in and never reaches the handler: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
+
+```javascript
+const info = __BEAMER__.params.info("gain");
+const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info.id, "-6");
+```
+
 ### Custom Events
 
 Events provide fire-and-forget communication in both directions:
@@ -141,7 +155,7 @@ Events provide fire-and-forget communication in both directions:
 // JS -> Rust
 __BEAMER__.emit("myEvent", { some: "data" });
 
-// Rust -> JS (via WebViewHandle::emit)
+// Rust -> JS (planned, see Status and Planned Work)
 __BEAMER__.on("spectrumData", (data) => {
   drawSpectrum(data);
 });
@@ -225,23 +239,30 @@ When the WebView finishes loading its initial page, the format wrapper calls `pa
 ```javascript
 window.__BEAMER__._onInit([
   {"id":0,"stringId":"gain","name":"Gain","min":-60.0,"max":12.0,
-   "defaultValue":0.833,"value":0.833,"units":"dB","steps":0},
+   "defaultValue":0.8333,"value":0.8333,"plainValue":0.0,"displayText":"0.0",
+   "format":"db","units":"dB","steps":0},
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
-   "defaultValue":0.5,"value":0.5,"units":"","steps":0}
+   "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
+   "format":"pan","units":"","steps":0}
 ])
 ```
+
+The example is shortened for readability: real numeric IDs are hashes of the string IDs, and values carry full precision.
 
 Each entry corresponds to a `ParamInitEntry`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `u32` | Numeric parameter ID (used internally for host calls) |
+| `id` | `u32` | Numeric parameter ID, a hash of the string ID (used internally for host calls) |
 | `stringId` | `string` | String identifier from the `#[parameter(id = "...")]` attribute |
 | `name` | `string` | Display name |
 | `min` | `f64` | Minimum plain value (`normalized_to_plain(0.0)`) |
 | `max` | `f64` | Maximum plain value (`normalized_to_plain(1.0)`) |
 | `defaultValue` | `f64` | Default value in normalized form (0.0 - 1.0) |
 | `value` | `f64` | Current value in normalized form (0.0 - 1.0) |
+| `plainValue` | `f64` | Current value in plain units |
+| `displayText` | `string` | Current value as formatted by the parameter, without the unit |
+| `format` | `string` | Formatter kind as reported by the parameter: `float`, `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio`, `semitones` or `boolean` |
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
 
@@ -249,17 +270,17 @@ The runtime resolves the `ready` promise after processing this dump, so any code
 
 ### 60Hz Polling
 
-After the init dump, a repeating timer fires at 60 Hz on the main thread. Each tick:
+Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. Each tick:
 
 1. Iterates over all parameters
 2. Compares each normalized value against a cached snapshot
-3. For any parameter whose value changed, appends it to a delta object
-4. Calls `window.__BEAMER__._onParams({id: value, ...})` with only the changed entries
+3. For any parameter whose value changed, appends its normalized value, plain value and display text to a delta object
+4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
 
-The delta format is a plain object mapping numeric parameter IDs to normalized values:
+The delta format is a plain object mapping numeric parameter IDs to those three values:
 
 ```javascript
-window.__BEAMER__._onParams({0: 0.72, 1: 0.35})
+window.__BEAMER__._onParams({0: [0.72, -8.16, "-8.2"], 1: [0.35, -0.3, "L 30"]})
 ```
 
 The runtime updates its internal map and fires all registered `params.on()` callbacks for the affected parameters.
@@ -274,6 +295,7 @@ When JavaScript calls `params.set(stringId, value)`:
 2. Posts a `{type: "param:set", id, value}` message via `WKScriptMessageHandler`
 3. The native message callback calls `ParameterStore::set_normalized()` on the parameter
 4. The native callback calls `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
+5. The native side sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
 
 `beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs.
 
@@ -305,7 +327,8 @@ Wraps `useBeamerParam` with convenience methods for building knobs, sliders and 
 ```typescript
 interface BeamerControl {
   value: number;           // Current normalized value (0.0 - 1.0)
-  displayValue: number;    // Denormalized value (in plain units)
+  displayValue: number;    // Current value in plain units
+  displayText: string;     // Current value as formatted by the parameter
   info: BeamerParamInfo | undefined;
   beginEdit: () => void;
   set: (normalized: number) => void;
@@ -320,14 +343,14 @@ Usage in a component:
 
 ```tsx
 function MyKnob({ paramId }: { paramId: string }) {
-  const { value, displayValue, info, beginEdit, set, endEdit } =
+  const { value, displayText, info, beginEdit, set, endEdit } =
     useBeamerControl(paramId);
 
   return (
     <Knob
       value={value}
       label={info?.name}
-      displayText={`${displayValue.toFixed(1)} ${info?.units}`}
+      displayText={`${displayText} ${info?.units ?? ""}`.trim()}
       onDragStart={beginEdit}
       onDrag={set}
       onDragEnd={endEdit}
@@ -336,7 +359,7 @@ function MyKnob({ paramId }: { paramId: string }) {
 }
 ```
 
-The `set()` method clamps the value to `[0, 1]`. The `resetToDefault()` method wraps a full `beginEdit` / `set` / `endEdit` gesture so the host records it as an undoable edit.
+`displayValue` and `displayText` come from the Rust parameter store, so they match what the host shows. The `set()` method clamps the value to `[0, 1]`. The `resetToDefault()` method wraps a full `beginEdit` / `set` / `endEdit` gesture so the host records it as an undoable edit.
 
 ## Asset Embedding
 
