@@ -159,17 +159,38 @@ pub fn generate_au_subtype(package: &str) -> String {
     }
 }
 
+/// Maps a `Config.toml` category to its AU component type code.
+///
+/// Has to match `Category::to_au_component_type` in beamer-core, which is the
+/// type the plugin reports at runtime. Unknown categories map to `aufx`.
+#[must_use]
+pub fn au_component_type(category: &str) -> &'static str {
+    match category {
+        "instrument" => "aumu",
+        "midi_effect" => "aumi",
+        "generator" => "augn",
+        _ => "aufx",
+    }
+}
+
 /// Maps AU component type code to appropriate tags for Info.plist.
 ///
 /// DAWs use these tags for plugin categorization.
 #[must_use]
 pub fn get_au_tags(component_type: &str) -> &'static str {
     match component_type {
-        "aufx" => "Effects",           // Audio effect
-        "aumu" => "Synth",             // Music device/instrument
-        "aumi" => "MIDI",              // MIDI processor
-        "aumf" => "Effects",           // Music effect
-        _ => "Effects",                // Default fallback
+        // Audio effect.
+        "aufx" => "Effects",
+        // Music device (instrument).
+        "aumu" => "Synth",
+        // MIDI processor.
+        "aumi" => "MIDI",
+        // Music effect.
+        "aumf" => "Effects",
+        // Generator.
+        "augn" => "Generator",
+        // Default fallback.
+        _ => "Effects",
     }
 }
 
@@ -345,12 +366,7 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
     let config_path = workspace_root.join("examples").join(package).join("Config.toml");
     if let Ok(toml_str) = fs::read_to_string(&config_path) {
         if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
-            let component_type = match config.category.as_str() {
-                "instrument" | "generator" => "aumu",
-                "midi_effect" => "aumi",
-                _ => "aufx",
-            }
-            .to_string();
+            let component_type = au_component_type(&config.category).to_string();
 
             return (
                 component_type,
@@ -367,17 +383,18 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
     let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
 
     if let Ok(content) = fs::read_to_string(&lib_path) {
-        // Detect component type from Category enum in Config::new()
-        let component_type = if content.contains("Category::Instrument")
-            || content.contains("Category::Generator")
-        {
-            "aumu".to_string()
+        // Detect component type from Category enum in Config::new().
+        let category = if content.contains("Category::Instrument") {
+            "instrument"
+        } else if content.contains("Category::Generator") {
+            "generator"
         } else if content.contains("Category::MidiEffect") {
-            "aumi".to_string()
+            "midi_effect"
         } else {
-            // Default to effect (aufx)
-            "aufx".to_string()
+            // Default to effect (aufx).
+            "effect"
         };
+        let component_type = au_component_type(category).to_string();
 
         // Detect manufacturer and subtype from Config::new()
         let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
@@ -488,4 +505,45 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use beamer_core::config::Category;
+
+    use super::*;
+
+    /// Name of a category in `Config.toml`.
+    ///
+    /// The match is exhaustive, so a new `Category` variant fails to compile
+    /// here until it is added to this test.
+    fn config_name(category: Category) -> &'static str {
+        match category {
+            Category::Effect => "effect",
+            Category::Instrument => "instrument",
+            Category::MidiEffect => "midi_effect",
+            Category::Generator => "generator",
+        }
+    }
+
+    #[test]
+    fn test_au_component_type_matches_core() {
+        // The type written into Info.plist has to equal the type the plugin
+        // reports at runtime.
+        let categories = [
+            Category::Effect,
+            Category::Instrument,
+            Category::MidiEffect,
+            Category::Generator,
+        ];
+        for category in categories {
+            let name = config_name(category);
+            assert_eq!(
+                au_component_type(name).as_bytes(),
+                category.to_au_component_type().to_be_bytes(),
+                "category \"{}\"",
+                name
+            );
+        }
+    }
 }

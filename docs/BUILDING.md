@@ -183,8 +183,8 @@ manufacturer codes from `Config.toml`:
 auval -v aufx gain Bmer
 ```
 
-The type is `aufx` for effects, `aumu` for instruments and `aumi` for MIDI
-effects.
+The type is `aufx` for effects, `aumu` for instruments, `aumi` for MIDI
+effects and `augn` for generators.
 
 [pluginval](https://github.com/Tracktion/pluginval) validates VST3 and
 Audio Unit plugins. Its command-line binary is inside the app bundle (the
