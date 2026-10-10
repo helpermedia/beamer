@@ -7,31 +7,99 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,ignore
+//! A plugin has three structs: the parameters, a descriptor that describes
+//! the plugin to the host and a processor that handles the audio. The
+//! `#[beamer::export]` attribute on the descriptor reads `Config.toml` at
+//! compile time and generates the plugin metadata and the entry points for
+//! the enabled formats.
+//!
+// The example needs the derive macros, so it is only compiled as a doctest
+// when the `derive` feature is enabled.
+#![cfg_attr(feature = "derive", doc = "```rust")]
+#![cfg_attr(not(feature = "derive"), doc = "```rust,ignore")]
 //! use beamer::prelude::*;
 //!
-//! // Define your plugin
-//! struct MyGain { parameters: MyParameters }
+//! // 1. Parameters: pure data with derive macros.
+//! #[derive(Parameters)]
+//! struct GainParameters {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     gain: FloatParameter,
+//! }
 //!
-//! impl Processor for MyGain {
-//!     fn setup(&mut self, _: f64, _: usize) {}
-//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-//!         // Your DSP here
+//! // 2. Descriptor: holds the parameters and describes the plugin to the host.
+//! # // The attribute reads Config.toml, which this crate does not have, so
+//! # // the doctest comments it out. The rendered page still shows the line.
+//! # /*
+//! #[beamer::export]
+//! # */
+//! #[derive(Default, HasParameters)]
+//! struct GainDescriptor {
+//!     #[parameters]
+//!     parameters: GainParameters,
+//! }
+//!
+//! impl Descriptor for GainDescriptor {
+//!     // A plain gain needs no setup. Use SampleRate for delays and
+//!     // MaxBufferSize for FFT.
+//!     type Setup = ();
+//!     type Processor = GainProcessor;
+//!
+//!     fn prepare(self, _: ()) -> GainProcessor {
+//!         GainProcessor { parameters: self.parameters }
 //!     }
 //! }
 //!
-//! impl Descriptor for MyGain {
-//!     type Parameters = MyParameters;
-//!     fn parameters(&self) -> &Self::Parameters { &self.parameters }
-//!     fn create() -> Self { Self { parameters: MyParameters::new() } }
+//! // 3. Processor: the prepared state, ready for audio.
+//! #[derive(HasParameters)]
+//! struct GainProcessor {
+//!     #[parameters]
+//!     parameters: GainParameters,
 //! }
 //!
-//! // Export
-//! static CONFIG: Config = Config::new("MyGain", Category::Effect, "Mfgr", "gain")
-//!     .with_vendor("My Company");
+//! impl Processor for GainProcessor {
+//!     type Descriptor = GainDescriptor;
 //!
-//! export_plugin!(CONFIG, MyGain);
+//!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
+//!         let gain = self.parameters.gain.as_linear() as f32;
+//!         for (input, output) in buffer.zip_channels() {
+//!             for (i, o) in input.iter().zip(output.iter_mut()) {
+//!                 *o = *i * gain;
+//!             }
+//!         }
+//!     }
+//! }
 //! ```
+//!
+//! The plugin crate is a dynamic library with one feature per format, named
+//! `au` and `vst3`. The export macro checks these names in the plugin crate, so
+//! the entry points are only generated for the enabled features:
+//!
+//! ```toml
+//! [lib]
+//! crate-type = ["cdylib"]
+//!
+//! [features]
+//! au = ["beamer/au"]
+//! vst3 = ["beamer/vst3"]
+//! ```
+//!
+//! `Config.toml` in the crate root, next to `Cargo.toml`:
+//!
+//! ```toml
+//! name = "My Gain Plugin"
+//! category = "effect"
+//! subcategories = ["dynamics"]
+//! manufacturer_code = "Manu"
+//! plugin_code = "gain"
+//! vendor = "My Company"
+//! url = "https://example.com"
+//! email = "support@example.com"
+//! ```
+//!
+//! See [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md)
+//! for building and bundling a plugin. The
+//! [repository](https://github.com/helpermedia/beamer) also has the reference
+//! and the example plugins.
 
 // Re-export sub-crates
 pub use beamer_core as core;
@@ -69,29 +137,30 @@ pub use beamer_macros::export;
 
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///
-/// This is the primary export macro for Beamer plugins. It generates the
-/// necessary entry points for whichever plugin formats are enabled via
-/// Cargo features.
+/// Plugins normally do not call this macro themselves. `#[beamer::export]` on
+/// the descriptor struct generates the `CONFIG` static from `Config.toml` and
+/// the presets from `Presets.toml`, then calls this macro with them.
 ///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`Config`](beamer_core::Config) containing all plugin metadata
+/// * `$config` - The [`Config`](beamer_core::Config) static containing all plugin metadata
 /// * `$plugin` - The plugin type implementing the [`Descriptor`](beamer_core::Descriptor) trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`](beamer_core::FactoryPresets)
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use beamer::prelude::*;
+/// In outline, what `#[beamer::export]` generates for a descriptor `MyPlugin`:
 ///
+/// ```rust,ignore
 /// pub static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 ///     .with_vendor("My Company")
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///
+/// // Without a Presets.toml.
 /// export_plugin!(CONFIG, MyPlugin);
 ///
-/// // With presets:
-/// export_plugin!(CONFIG, MyPlugin, MyPresets);
+/// // With a Presets.toml, from which the macro also generates __BeamerPresets.
+/// export_plugin!(CONFIG, MyPlugin, __BeamerPresets);
 /// ```
 #[macro_export]
 macro_rules! export_plugin {
