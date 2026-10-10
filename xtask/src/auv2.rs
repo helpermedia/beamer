@@ -25,7 +25,8 @@ pub fn bundle_auv2(
     // ├── Contents/
     // │   ├── Info.plist       ← AudioComponents + factoryFunction
     // │   ├── MacOS/
-    // │   │   └── BeamerGain   ← Plugin dylib with factory symbol
+    // │   │   ├── BeamerGain     ← Component binary with factory symbol
+    // │   │   └── libgain.dylib  ← Plugin's Rust library
     // │   ├── Resources/
     // │   └── PkgInfo
 

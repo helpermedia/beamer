@@ -65,7 +65,7 @@ struct BundleConfig {
 /// Generate a new UUID for plugin identification.
 ///
 /// Outputs a UUID in the standard format: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-/// This can be used directly with `Vst3Config::new()` in VST3 configs.
+/// Use it as the `vst3_id` in `Config.toml` to override the derived VST3 UUID.
 fn generate_uuid() {
     let uuid = uuid::Uuid::new_v4();
     // Format as uppercase without braces, matching uuidgen output
