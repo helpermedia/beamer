@@ -1867,4 +1867,4 @@ manufacturer_code = "Myco"
 plugin_code = "synt"
 ```
 
-Common subcategories: `Subcategory::Dynamics`, `Eq`, `Filter`, `Delay`, `Reverb`, `Modulation`, `Distortion`, `Synth`, `Sampler`, etc.
+Common subcategories: `"dynamics"`, `"eq"`, `"filter"`, `"delay"`, `"reverb"`, `"modulation"`, `"distortion"`, `"synth"` and `"sampler"`.

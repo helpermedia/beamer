@@ -6,13 +6,15 @@ Working Beamer plugins demonstrating framework features.
 
 ## Running Examples
 
-A format flag is required: `--auv2`, `--auv3`, or `--vst3`.
+A format flag is required: `--auv2`, `--auv3` or `--vst3`.
 
 ```bash
 cargo xtask bundle <example> --auv2 --release --install
 cargo xtask bundle <example> --vst3 --release --install
 cargo xtask bundle <example> --auv2 --vst3 --release    # Multiple formats at once
 ```
+
+See [docs/BUILDING.md](../docs/BUILDING.md) for prerequisites, all options and testing.
 
 ## Available Examples
 

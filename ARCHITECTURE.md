@@ -21,7 +21,7 @@ A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-b
 - **WebView for UI**: Leverage modern web technologies (React, Svelte, Vue, etc.)
 - **Multi-format**: Audio Unit and VST3 support from a single codebase
 - **Lightweight**: Use OS-native WebViews, no bundled browser engine
-- **Cross-platform**: macOS today (Intel and Apple Silicon); Windows planned (the architecture is platform-agnostic, but the WebView backend is macOS-only so far)
+- **Cross-platform**: macOS today (Apple Silicon and Intel, tested on Apple Silicon); Windows in progress (the architecture is platform-agnostic, but the WebView backend is macOS-only so far)
 
 ### Goals
 
@@ -442,9 +442,9 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 
 | Feature | Audio Unit | VST3 |
 |---------|------------|------|
-| **Platform** | macOS only | macOS; Windows planned (UI backend macOS-only so far) |
+| **Platform** | macOS only | macOS; Windows in progress (UI backend macOS-only so far) |
 | **API Style** | Hybrid ObjC/Rust via C-ABI | COM (C++ style) |
-| **Language** | ObjC + Rust + cc crate | Rust + vst3-sys |
+| **Language** | ObjC + Rust | Rust + vst3 crate |
 | **Code Size** | Multiple files (ObjC + Rust) | Single file |
 | **MIDI Format** | UMP MIDI 1.0/2.0 | VST3 Event union |
 | **MIDI Buffer** | 1024 events | 1024 events |

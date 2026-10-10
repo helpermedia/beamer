@@ -82,7 +82,7 @@ email = "support@example.com"
 
 Beamer plugins use three structs: **Parameters** (data), **Descriptor** (plugin blueprint) and **Processor** (audio and MIDI). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
+See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
 ## Examples
 
@@ -128,7 +128,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 - [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
-- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - Detailed API reference
+- [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - API reference: configuration, parameters, traits, MIDI and format notes
 - [WEBVIEW.md](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md) - WebView GUI system, JavaScript API and React integration
 - [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) - Example testing roadmap and feature coverage matrix
 
@@ -156,11 +156,10 @@ Contributions for testing and fixes on Windows are welcome.
 ## Building & Installation
 
 ```bash
-cargo xtask bundle gain --auv3 --vst3 --release            # Build both formats
-cargo xtask bundle gain --auv3 --vst3 --release --install  # Build and install
+cargo xtask bundle gain --auv3 --vst3 --release --install
 ```
 
-Use `--auv2` for AUv2 instead of AUv3. For universal binaries (x86_64 + arm64), add `--arch universal`.
+See [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) for prerequisites, formats, options and testing.
 
 ## License
 
