@@ -9,17 +9,12 @@ use quote::{format_ident, quote};
 
 use beamer_utils::fnv1a_32;
 
-use crate::config_file::{ConfigFile, PresetsFile};
+use crate::config_file::{category_variant, ConfigFile, PresetsFile};
 
 /// Map a category string from Config.toml to the corresponding token stream.
-fn category_tokens(category: &str) -> TokenStream {
-    match category {
-        "effect" => quote! { ::beamer::prelude::Category::Effect },
-        "instrument" => quote! { ::beamer::prelude::Category::Instrument },
-        "midi_effect" => quote! { ::beamer::prelude::Category::MidiEffect },
-        "generator" => quote! { ::beamer::prelude::Category::Generator },
-        _ => unreachable!("category validated before calling"),
-    }
+fn category_tokens(category: &str) -> Result<TokenStream, String> {
+    let variant = format_ident!("{}", category_variant(category)?);
+    Ok(quote! { ::beamer::prelude::Category::#variant })
 }
 
 /// Map a subcategory string from Config.toml to the corresponding token stream.
@@ -151,7 +146,7 @@ fn generate_assets_tokens(asset_paths: &[String], subdir: &str) -> (TokenStream,
 /// Generate the Config static from a parsed ConfigFile.
 fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStream, String> {
     let name = &config.name;
-    let category = category_tokens(&config.category);
+    let category = category_tokens(&config.category)?;
     let manufacturer_code = &config.manufacturer_code;
     let plugin_code = &config.plugin_code;
 
@@ -448,4 +443,57 @@ pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
         #presets_tokens
         #export_tokens
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use beamer_core::config::Category;
+
+    use super::*;
+    use crate::config_file::CATEGORIES;
+
+    /// Name of a variant as `CATEGORIES` spells it.
+    ///
+    /// The match is exhaustive, so a new `Category` variant fails to compile
+    /// here until it is added to this test.
+    fn variant_name(category: Category) -> &'static str {
+        match category {
+            Category::Effect => "Effect",
+            Category::Instrument => "Instrument",
+            Category::MidiEffect => "MidiEffect",
+            Category::Generator => "Generator",
+        }
+    }
+
+    #[test]
+    fn test_categories_match_core() {
+        // Every variant has exactly one name in Config.toml, and the table
+        // has no entry for a variant that does not exist.
+        let variants = [
+            Category::Effect,
+            Category::Instrument,
+            Category::MidiEffect,
+            Category::Generator,
+        ];
+        assert_eq!(CATEGORIES.len(), variants.len());
+        for category in variants {
+            let name = variant_name(category);
+            assert_eq!(
+                CATEGORIES.iter().filter(|(_, variant)| *variant == name).count(),
+                1,
+                "variant {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_category_tokens() {
+        let tokens = category_tokens("midi_effect").unwrap().to_string();
+        assert!(tokens.ends_with("Category :: MidiEffect"), "{}", tokens);
+
+        // An unknown name is an error that lists the valid ones.
+        let error = category_tokens("synth").unwrap_err();
+        assert!(error.contains("\"generator\"") && error.contains("\"synth\""), "{}", error);
+    }
 }

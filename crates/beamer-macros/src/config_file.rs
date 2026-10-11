@@ -59,6 +59,25 @@ pub struct PresetEntry {
     pub values: HashMap<String, toml::Value>,
 }
 
+/// Category names in Config.toml and the `Category` variant each one selects.
+pub(crate) const CATEGORIES: &[(&str, &str)] = &[
+    ("effect", "Effect"),
+    ("instrument", "Instrument"),
+    ("midi_effect", "MidiEffect"),
+    ("generator", "Generator"),
+];
+
+/// Look up the `Category` variant for a category name from Config.toml.
+pub(crate) fn category_variant(category: &str) -> Result<&'static str, String> {
+    match CATEGORIES.iter().find(|(name, _)| *name == category) {
+        Some((_, variant)) => Ok(variant),
+        None => {
+            let names: Vec<&str> = CATEGORIES.iter().map(|(name, _)| *name).collect();
+            Err(format!("category must be one of {:?}, got {:?}", names, category))
+        }
+    }
+}
+
 fn validate_uuid(uuid: &str, field: &str) -> Result<(), String> {
     if uuid.len() != 36 {
         return Err(format!(
@@ -102,13 +121,7 @@ impl ConfigFile {
                 self.plugin_code
             ));
         }
-        let valid_categories = ["effect", "instrument", "midi_effect", "generator"];
-        if !valid_categories.contains(&self.category.as_str()) {
-            return Err(format!(
-                "category must be one of {:?}, got {:?}",
-                valid_categories, self.category
-            ));
-        }
+        category_variant(&self.category)?;
         if let Some(ref id) = self.vst3_id {
             validate_uuid(id, "vst3_id")?;
         }

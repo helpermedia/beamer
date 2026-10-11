@@ -20,3 +20,7 @@ proc-macro2 = { workspace = true }
 beamer-utils = { workspace = true }
 toml = "1"
 serde = { workspace = true }
+
+[dev-dependencies]
+# Tests check the category table against the enum in beamer-core.
+beamer-core = { workspace = true }

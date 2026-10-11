@@ -37,6 +37,7 @@ dependencies = [
 name = "beamer-macros"
 version = "0.2.4"
 dependencies = [
+ "beamer-core",
  "beamer-utils",
  "proc-macro2",
  "quote",
