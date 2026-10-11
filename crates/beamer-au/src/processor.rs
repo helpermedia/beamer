@@ -1214,6 +1214,18 @@ mod tests {
     }
 
     // =========================================================================
+    // Declared Bus Tests
+    // =========================================================================
+
+    #[test]
+    fn test_main_channels_of_declared_buses() {
+        // The test plugin declares one stereo input and keeps the default
+        // stereo output.
+        let processor = AuProcessor::<TestPlugin, TestPresets>::new();
+        assert_eq!(crate::bridge::main_channels_of(&processor), (2, 2));
+    }
+
+    // =========================================================================
     // MIDI Program Change → Factory Preset Tests
     // =========================================================================
 

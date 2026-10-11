@@ -1747,7 +1747,7 @@ impl<S: Sample> RenderBlock<S> {
                     }
                 }
             }
-            // If input_data is null, this is an instrument with no inputs
+            // If input_data is null, the plugin has no input bus or the host did not feed it.
 
             // Now collect output pointers (after in-place fixup)
             storage.collect_outputs(output_data, num_samples);

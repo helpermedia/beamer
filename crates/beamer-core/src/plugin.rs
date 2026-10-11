@@ -1055,7 +1055,8 @@ pub trait Descriptor: HasParameters + Default {
 
     /// Returns the number of audio input buses.
     ///
-    /// Default returns 1 (single stereo input).
+    /// Default returns 1 (single stereo input). A plugin without audio input,
+    /// such as most instruments and generators, overrides this to return 0.
     fn input_bus_count(&self) -> usize {
         1
     }

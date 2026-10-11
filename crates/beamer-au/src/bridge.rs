@@ -2043,20 +2043,93 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
     get_bus_channel_count_impl(instance, bus_index, BusDirection::Output)
 }
 
+/// Declared channel counts of the main input and output bus.
+///
+/// A plugin that declares no bus in a direction has 0 channels there. That is
+/// how an instrument or generator without audio input looks. The exception is
+/// a plugin without any bus, see `main_channels`. Returns `None` when there is
+/// no plugin to ask.
+fn declared_main_channels(instance: BeamerAuInstanceHandle) -> Option<(u32, u32)> {
+    if instance.is_null() {
+        return None;
+    }
+
+    // SAFETY: instance validated non-null above. Caller guarantees a valid
+    // pointer from beamer_au_create_instance.
+    let handle = unsafe { &*instance };
+    let plugin = lock_plugin(handle).ok()?;
+
+    Some(main_channels_of(&**plugin))
+}
+
+/// Main bus channel counts of a plugin, from the buses it declares.
+pub(crate) fn main_channels_of(plugin: &dyn AuPluginInstance) -> (u32, u32) {
+    main_channels(
+        plugin.declared_input_bus_count(),
+        plugin.declared_input_bus_info(0),
+        plugin.declared_output_bus_count(),
+        plugin.declared_output_bus_info(0),
+    )
+}
+
+/// Main bus channel counts for the given bus counts and main bus infos.
+fn main_channels(
+    input_buses: usize,
+    main_input: Option<beamer_core::BusInfo>,
+    output_buses: usize,
+    main_output: Option<beamer_core::BusInfo>,
+) -> (u32, u32) {
+    // An Audio Unit needs an output bus. The AUv3 wrapper creates one for a
+    // plugin that declares no bus at all, as wide as its main output bus info
+    // says or stereo without one, so the answer has to match it.
+    if input_buses == 0 && output_buses == 0 {
+        return (0, main_bus_channels(1, main_output));
+    }
+
+    (
+        main_bus_channels(input_buses, main_input),
+        main_bus_channels(output_buses, main_output),
+    )
+}
+
+/// Channel count of the main bus in one direction.
+///
+/// The bus count decides whether there is a main bus at all: the default
+/// `input_bus_info` describes a stereo bus even for a plugin that returns 0
+/// from `input_bus_count`. A bus that is counted but has no info is treated
+/// as stereo.
+fn main_bus_channels(bus_count: usize, main_bus: Option<beamer_core::BusInfo>) -> u32 {
+    if bus_count == 0 {
+        0
+    } else {
+        main_bus.map_or(2, |info| info.channel_count)
+    }
+}
+
+/// Channel counts to assume when the plugin cannot be asked.
+///
+/// Stereo out, stereo in only for the categories that normally have an input.
+fn fallback_main_channels(category: beamer_core::config::Category) -> (u32, u32) {
+    use beamer_core::config::Category;
+
+    match category {
+        Category::Effect | Category::MidiEffect => (2, 2),
+        Category::Instrument | Category::Generator => (0, 2),
+    }
+}
+
 /// Check if a proposed channel configuration is valid.
 ///
-/// Validates a channel configuration against the buses the plugin declares.
-///
-/// For effects (aufx) and MIDI effects (aumi), the configuration has to match the
-/// declared channel counts of the main input and output bus.
-///
-/// For instruments (aumu) and generators (augn), it has to have 0 input channels and
-/// match the declared channel count of the main output bus.
+/// A configuration is valid when it matches the channel counts of the main
+/// input and output bus that the plugin declares. This holds for every
+/// category: an instrument or generator normally declares no input bus and
+/// then needs 0 input channels, but one that declares an input is valid with
+/// that input.
 ///
 /// # Safety
 ///
 /// - `instance` should be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case the declared channel counts fall back to stereo)
+///   or null (in which case `fallback_main_channels` decides)
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_is_channel_config_valid(
@@ -2067,7 +2140,7 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
     use beamer_core::MAX_CHANNELS;
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Get the plugin config to check the plugin type
+        // The fallback depends on the plugin type.
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
@@ -2078,62 +2151,11 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
             return false;
         }
 
-        match config.category {
-            beamer_core::config::Category::Effect | beamer_core::config::Category::MidiEffect => {
-                // Effects and MIDI processors: validate against declared MAIN bus channels.
-                // For plugins with sidechain, we only check the main bus (bus 0).
-                let (declared_input, declared_output) = if instance.is_null() {
-                    (2, 2) // Default to stereo
-                } else {
-                    // SAFETY: instance validated non-null in the else branch.
-                    // Caller guarantees valid pointer from beamer_au_create_instance.
-                    let handle = unsafe { &*instance };
-                    match lock_plugin(handle) {
-                        Ok(plugin) => {
-                            let input = plugin
-                                .declared_input_bus_info(0)
-                                .map(|info| info.channel_count)
-                                .unwrap_or(2);
-                            let output = plugin
-                                .declared_output_bus_info(0)
-                                .map(|info| info.channel_count)
-                                .unwrap_or(2);
-                            (input, output)
-                        }
-                        Err(_) => (2, 2), // Lock failed, fall back to stereo
-                    }
-                };
+        // Only the main bus (bus 0) is checked. Sidechain buses are handled separately.
+        let (declared_input, declared_output) = declared_main_channels(instance)
+            .unwrap_or_else(|| fallback_main_channels(config.category));
 
-                // Validate channels match the declared configuration
-                main_input_channels == declared_input && main_output_channels == declared_output
-            }
-            beamer_core::config::Category::Instrument | beamer_core::config::Category::Generator => {
-                // Instruments and generators: must have 0 input channels
-                if main_input_channels != 0 {
-                    return false;
-                }
-
-                // Query declared output channel count from the plugin
-                let declared_output_channels = if instance.is_null() {
-                    // No instance available, accept stereo as default
-                    2
-                } else {
-                    // SAFETY: instance validated non-null in the else branch.
-                    // Caller guarantees valid pointer from beamer_au_create_instance.
-                    let handle = unsafe { &*instance };
-                    match lock_plugin(handle) {
-                        Ok(plugin) => plugin
-                            .declared_output_bus_info(0)
-                            .map(|info| info.channel_count)
-                            .unwrap_or(2),
-                        Err(_) => 2, // Lock failed, fall back to stereo
-                    }
-                };
-
-                // Validate output channels match the declared configuration
-                main_output_channels == declared_output_channels
-            }
-        }
+        main_input_channels == declared_input && main_output_channels == declared_output
     }));
 
     result.unwrap_or(false)
@@ -2141,17 +2163,10 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
 
 /// Get the supported channel capabilities for the main bus.
 ///
-/// This function returns the [input, output] channel configurations that
-/// the plugin supports, based on its component type and declared bus configuration.
-///
-/// # Capability Semantics
-///
-/// - **Effects (`aufx`)**: Return `[M, N]`, the declared channel counts of the
-///   main input and output bus.
-/// - **Instruments (`aumu`)**: Return `[0, N]` where N is the declared output
-///   channel count. Instruments have no audio input, only MIDI.
-/// - **Generators (`augn`)**: Return `[0, N]` like instruments.
-/// - **MIDI effects (`aumi`)**: Return `[M, N]` like effects.
+/// This function returns the [input, output] channel configuration that the
+/// plugin supports: `[M, N]`, the declared channel counts of the main input
+/// and output bus. M is 0 for a plugin that declares no input bus, which is
+/// the normal case for instruments (`aumu`) and generators (`augn`).
 ///
 /// # Returns
 ///
@@ -2173,7 +2188,7 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Get the plugin config to check plugin type
+        // The fallback depends on the plugin type.
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
@@ -2184,83 +2199,15 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
         let capabilities = unsafe { &mut *out_capabilities };
         *capabilities = BeamerAuChannelCapabilities::default();
 
-        match config.category {
-            beamer_core::config::Category::Effect | beamer_core::config::Category::MidiEffect => {
-                // Query the declared MAIN bus channel counts from the plugin.
-                // For plugins with sidechain (multiple input buses), we only report
-                // the main bus capability. Sidechain channels are handled separately.
-                //
-                // If no instance available, fall back to stereo.
-                let (input_ch, output_ch) = if instance.is_null() {
-                    (2, 2) // Default to stereo
-                } else {
-                    // SAFETY: instance validated non-null in the else branch.
-                    // Caller guarantees valid pointer from beamer_au_create_instance.
-                    let handle = unsafe { &*instance };
-                    match lock_plugin(handle) {
-                        Ok(plugin) => {
-                            let input = plugin
-                                .declared_input_bus_info(0)
-                                .map(|info| info.channel_count as i32)
-                                .unwrap_or(2);
-                            let output = plugin
-                                .declared_output_bus_info(0)
-                                .map(|info| info.channel_count as i32)
-                                .unwrap_or(2);
-                            (input, output)
-                        }
-                        Err(_) => (2, 2), // Lock failed, fall back to stereo
-                    }
-                };
+        // Only the main bus is reported. Sidechain channels are handled separately.
+        let (input_channels, output_channels) = declared_main_channels(instance)
+            .unwrap_or_else(|| fallback_main_channels(config.category));
 
-                // Report explicit channel configuration for the main bus
-                capabilities.count = 1;
-                capabilities.capabilities[0] = BeamerAuChannelCapability {
-                    input_channels: input_ch,
-                    output_channels: output_ch,
-                };
-            }
-            beamer_core::config::Category::Instrument | beamer_core::config::Category::Generator => {
-                // Instruments and generators: query the declared output channel count from the plugin
-                if instance.is_null() {
-                    // No instance, fall back to stereo
-                    capabilities.count = 1;
-                    capabilities.capabilities[0] = BeamerAuChannelCapability {
-                        input_channels: 0,
-                        output_channels: 2,
-                    };
-                    return true;
-                }
-
-                // SAFETY: instance validated non-null (handled in if branch above).
-                // Caller guarantees valid pointer from beamer_au_create_instance.
-                let handle = unsafe { &*instance };
-                let plugin = match lock_plugin(handle) {
-                    Ok(guard) => guard,
-                    Err(_) => {
-                        // Lock failed, fall back to stereo
-                        capabilities.count = 1;
-                        capabilities.capabilities[0] = BeamerAuChannelCapability {
-                            input_channels: 0,
-                            output_channels: 2,
-                        };
-                        return true;
-                    }
-                };
-
-                // Get the declared output channel count from the main output bus
-                let output_channels = plugin
-                    .declared_output_bus_info(0)
-                    .map(|info| info.channel_count as i32)
-                    .unwrap_or(2); // Default to stereo if not declared
-
-                capabilities.count = 1;
-                capabilities.capabilities[0] = BeamerAuChannelCapability {
-                    input_channels: 0, // Instruments and generators have no audio input
-                    output_channels,
-                };
-            }
-        }
+        capabilities.count = 1;
+        capabilities.capabilities[0] = BeamerAuChannelCapability {
+            input_channels: input_channels as i32,
+            output_channels: output_channels as i32,
+        };
 
         true
     }));
@@ -2981,6 +2928,51 @@ pub unsafe extern "C" fn beamer_au_on_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_main_bus_channels() {
+        use beamer_core::BusInfo;
+
+        // No bus in this direction, whatever the bus info says.
+        assert_eq!(main_bus_channels(0, Some(BusInfo::stereo("Input"))), 0);
+        assert_eq!(main_bus_channels(0, None), 0);
+
+        assert_eq!(main_bus_channels(1, Some(BusInfo::stereo("Input"))), 2);
+        assert_eq!(main_bus_channels(2, Some(BusInfo::mono("Input"))), 1);
+        assert_eq!(main_bus_channels(1, None), 2);
+    }
+
+    #[test]
+    fn test_main_channels() {
+        use beamer_core::BusInfo;
+
+        let stereo = || Some(BusInfo::stereo("Bus"));
+
+        // An effect, and an instrument that declares an input.
+        assert_eq!(main_channels(1, stereo(), 1, stereo()), (2, 2));
+
+        // The usual instrument: no input bus, although the default bus info
+        // still describes one.
+        assert_eq!(main_channels(0, stereo(), 1, stereo()), (0, 2));
+
+        // No output bus, and no bus at all, where the AUv3 wrapper adds an
+        // output bus.
+        assert_eq!(main_channels(1, stereo(), 0, None), (2, 0));
+        assert_eq!(main_channels(0, None, 0, None), (0, 2));
+        assert_eq!(main_channels(0, None, 0, Some(BusInfo::mono("Bus"))), (0, 1));
+    }
+
+    #[test]
+    fn test_main_channels_without_a_plugin() {
+        use beamer_core::config::Category;
+
+        assert_eq!(declared_main_channels(ptr::null_mut()), None);
+
+        assert_eq!(fallback_main_channels(Category::Effect), (2, 2));
+        assert_eq!(fallback_main_channels(Category::MidiEffect), (2, 2));
+        assert_eq!(fallback_main_channels(Category::Instrument), (0, 2));
+        assert_eq!(fallback_main_channels(Category::Generator), (0, 2));
+    }
 
     #[test]
     fn test_beamer_au_bus_info_layout() {

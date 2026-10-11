@@ -1378,14 +1378,10 @@ typedef struct {
 /**
  * Get the supported channel capabilities for the main bus.
  *
- * This function returns the [input, output] channel configurations that
- * the plugin supports, based on its component type and declared bus configuration.
- *
- * Capability semantics:
- * - Effects (aufx): Returns [M, N], the declared main bus channel counts
- * - Instruments (aumu): Returns [0, N] where N is declared output channel count
- * - Generators (augn): Returns [0, N] like instruments
- * - MIDI effects (aumi): Returns [M, N] like effects
+ * This function returns the [input, output] channel configuration that the
+ * plugin supports: [M, N], the declared channel counts of the main input and
+ * output bus. M is 0 for a plugin that declares no input bus, which is the
+ * normal case for instruments (aumu) and generators (augn).
  *
  * Thread Safety: Can be called from any thread.
  *
