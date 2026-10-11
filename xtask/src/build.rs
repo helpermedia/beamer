@@ -39,37 +39,12 @@ pub fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> 
     Ok((version, version_int))
 }
 
-fn find_beamer_au_out_dir(workspace_root: &Path, target: &str, profile: &str) -> Option<PathBuf> {
-    let build_dir = workspace_root
-        .join("target")
-        .join(target)
-        .join(profile)
-        .join("build");
-
-    if !build_dir.exists() {
-        return None;
-    }
-
-    // Find beamer-au-* directory
-    for entry in fs::read_dir(&build_dir).ok()? {
-        let entry = entry.ok()?;
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with("beamer-au-") {
-            let out_dir = entry.path().join("out");
-            if out_dir.exists() {
-                return Some(out_dir);
-            }
-        }
-    }
-
-    None
-}
-
-/// Generate the rustc flags for linking AU static libraries.
+/// Extra rustc arguments for the plugin crate of an AU build.
 ///
-/// The `objc_lib_dir` parameter points to where plugin-specific ObjC static libraries
-/// were compiled (contains libplugin_au_objc.a and libplugin_au_extension.a).
-fn get_au_rustflags(
+/// They link the AU static libraries into the plugin. The `objc_lib_dir`
+/// parameter points to where plugin-specific ObjC static libraries were
+/// compiled (contains libplugin_au_objc.a and libplugin_au_extension.a).
+fn au_rustc_args(
     plugin_name: &str,
     objc_lib_dir: &Path,
 ) -> Result<Vec<String>, String> {
@@ -85,9 +60,9 @@ fn get_au_rustflags(
     // Library names based on plugin
     let lib_name = plugin_name.replace('-', "_");
 
-    // Build the flags with all necessary linker arguments.
+    // Every linker argument the plugin needs, as flag and value pairs.
     // Note: beamer_au_appex_force_link is internal (not exported) to avoid symbol collisions.
-    let flags = [
+    let args = [
         ("-L", format!("native={}", objc_lib_dir_str)),
         ("-C", format!("link-arg=-Wl,-force_load,{}/lib{}_au_objc.a", objc_lib_dir_str, lib_name)),
         ("-C", format!("link-arg=-Wl,-force_load,{}/lib{}_au_extension.a", objc_lib_dir_str, lib_name)),
@@ -99,7 +74,7 @@ fn get_au_rustflags(
     ];
 
     // Every flag and its value is a separate argument for rustc.
-    Ok(flags
+    Ok(args
         .into_iter()
         .flat_map(|(flag, value)| [flag.to_string(), value])
         .collect())
@@ -202,46 +177,14 @@ fn user_rustflags(encoded: Option<&str>, plain: Option<&str>) -> Vec<String> {
 /// The user's flags come first, so that xtask's flags win where rustc takes
 /// the last of a repeated option. Returns `None` when there are no flags.
 /// The variables then stay as they are and cargo applies its own rules.
-fn encode_rustflags(user: &[String], au: &[String], remap: &[String]) -> Option<String> {
-    let flags: Vec<&str> = user.iter().chain(au).chain(remap).map(String::as_str).collect();
+fn encode_rustflags(user: &[String], remap: &[String]) -> Option<String> {
+    let flags: Vec<&str> = user.iter().chain(remap).map(String::as_str).collect();
 
     if flags.is_empty() {
         None
     } else {
         Some(flags.join("\x1f"))
     }
-}
-
-/// Build beamer-au to ensure static libraries exist before building plugins.
-fn ensure_beamer_au_built(workspace_root: &Path, target: &str, release: bool) -> Result<(), String> {
-    let profile = if release { "release" } else { "debug" };
-
-    // Check if already built
-    if find_beamer_au_out_dir(workspace_root, target, profile).is_some() {
-        return Ok(());
-    }
-
-    println!("Building beamer-au for {}...", target);
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("-p")
-        .arg("beamer-au")
-        .arg("--target")
-        .arg(target)
-        .current_dir(workspace_root);
-
-    if release {
-        cmd.arg("--release");
-    }
-
-    let status = cmd.status()
-        .map_err(|e| format!("Failed to build beamer-au: {}", e))?;
-
-    if !status.success() {
-        return Err("Failed to build beamer-au".to_string());
-    }
-
-    Ok(())
 }
 
 /// Get the current host target triple.
@@ -256,18 +199,23 @@ pub fn current_target() -> &'static str {
     compile_error!("Unsupported platform");
 }
 
-/// Extra rustc arguments for the plugin crate of a macOS VST3 build.
+/// Extra rustc arguments for the plugin crate of a VST3 build.
 ///
 /// On macOS the VST3 bundle binary is a copy of the plugin dylib. Without an
 /// explicit install name the linker uses the absolute path of the build
 /// output, which then ships in the bundle and lets dyld bind a later request
 /// for that path to the plugin. Name the dylib after the bundle binary,
 /// relative to the loading image, instead.
-fn vst3_rustc_args(package: &str) -> [String; 2] {
+fn vst3_rustc_args(package: &str, target: &str) -> Vec<String> {
+    // The install name is a Mach-O concept, so only Apple targets get it.
+    if !target.ends_with("-apple-darwin") {
+        return Vec::new();
+    }
+
     let bundle_name = to_vst3_bundle_name(package);
     let executable_name = bundle_name.trim_end_matches(".vst3");
 
-    [
+    vec![
         "-C".to_string(),
         format!("link-arg=-Wl,-install_name,@loader_path/{}", executable_name),
     ]
@@ -275,14 +223,16 @@ fn vst3_rustc_args(package: &str) -> [String; 2] {
 
 /// Create the cargo command that builds the plugin crate for one target.
 ///
-/// VST3 builds for Apple targets use `cargo rustc`, which passes the arguments
-/// from `vst3_rustc_args` to the plugin crate only. RUSTFLAGS would apply them
-/// to every crate, so every plugin would get its own build of all
-/// dependencies. All other builds use `cargo build`.
+/// `plugin_args` are extra rustc arguments for the plugin crate alone, from
+/// `au_rustc_args` or `vst3_rustc_args`. They go through `cargo rustc`, which
+/// passes them to that crate only. Without them the command is a plain
+/// `cargo build`.
 ///
-/// `au_rustflags` are the flags from `get_au_rustflags` for an AU build. They
-/// reach every crate, as do the user's own flags and, for release builds, the
-/// flags from `remap_path_flags`. The encoded form keeps paths with spaces
+/// The flags for every crate are the user's own and, for release builds, the
+/// ones from `remap_path_flags`. They have to be the same for every format and
+/// plugin: cargo leaves flags that contain `--remap-path-prefix` out of the
+/// artifact file names, so all flag values share one set of artifacts and a
+/// difference rebuilds every crate. The encoded form keeps paths with spaces
 /// intact.
 fn plugin_build_command(
     package: &str,
@@ -290,13 +240,10 @@ fn plugin_build_command(
     format: &str,
     release: bool,
     workspace_root: &Path,
-    au_rustflags: &[String],
+    plugin_args: &[String],
 ) -> Result<Command, String> {
-    // The install name is a Mach-O concept, so only Apple targets get it.
-    let set_install_name = format == "vst3" && target.ends_with("-apple-darwin");
-
     let mut cmd = Command::new("cargo");
-    cmd.arg(if set_install_name { "rustc" } else { "build" })
+    cmd.arg(if plugin_args.is_empty() { "build" } else { "rustc" })
         .arg("-p")
         .arg(package)
         .arg("--target")
@@ -309,8 +256,8 @@ fn plugin_build_command(
         cmd.arg("--release");
     }
 
-    if set_install_name {
-        cmd.arg("--lib").arg("--").args(vst3_rustc_args(package));
+    if !plugin_args.is_empty() {
+        cmd.arg("--lib").arg("--").args(plugin_args);
     }
 
     let user = user_rustflags(
@@ -319,7 +266,7 @@ fn plugin_build_command(
     );
     let remap = if release { remap_path_flags(workspace_root)? } else { Vec::new() };
 
-    if let Some(encoded) = encode_rustflags(&user, au_rustflags, &remap) {
+    if let Some(encoded) = encode_rustflags(&user, &remap) {
         cmd.env("CARGO_ENCODED_RUSTFLAGS", encoded);
     }
 
@@ -350,17 +297,16 @@ pub fn build_native(
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    // AU requires additional setup (beamer-au and ObjC code)
-    let rustflags = if format == "au" {
-        ensure_beamer_au_built(workspace_root, target, release)?;
+    // AU requires additional setup (ObjC code).
+    let plugin_args = if format == "au" {
         crate::verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
         let objc_lib_dir = compile_plugin_objc(package, workspace_root, target)?;
-        get_au_rustflags(package, &objc_lib_dir)?
+        au_rustc_args(package, &objc_lib_dir)?
     } else {
-        Vec::new()
+        vst3_rustc_args(package, target)
     };
 
-    let mut cmd = plugin_build_command(package, target, format, release, workspace_root, &rustflags)?;
+    let mut cmd = plugin_build_command(package, target, format, release, workspace_root, &plugin_args)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
     if !status.success() {
@@ -392,26 +338,26 @@ pub fn build_universal(
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    // AU requires additional setup (beamer-au and ObjC code)
-    let (rustflags_x86, rustflags_arm) = if format == "au" {
-        ensure_beamer_au_built(workspace_root, "x86_64-apple-darwin", release)?;
-        ensure_beamer_au_built(workspace_root, "aarch64-apple-darwin", release)?;
-
+    // AU requires additional setup (ObjC code).
+    let (plugin_args_x86, plugin_args_arm) = if format == "au" {
         crate::verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
         let objc_lib_dir_x86 = compile_plugin_objc(package, workspace_root, "x86_64-apple-darwin")?;
         let objc_lib_dir_arm = compile_plugin_objc(package, workspace_root, "aarch64-apple-darwin")?;
 
         (
-            get_au_rustflags(package, &objc_lib_dir_x86)?,
-            get_au_rustflags(package, &objc_lib_dir_arm)?,
+            au_rustc_args(package, &objc_lib_dir_x86)?,
+            au_rustc_args(package, &objc_lib_dir_arm)?,
         )
     } else {
-        (Vec::new(), Vec::new())
+        (
+            vst3_rustc_args(package, "x86_64-apple-darwin"),
+            vst3_rustc_args(package, "aarch64-apple-darwin"),
+        )
     };
 
     // Build for x86_64
     crate::verbose!(verbose, "    Building for x86_64...");
-    let mut cmd = plugin_build_command(package, "x86_64-apple-darwin", format, release, workspace_root, &rustflags_x86)?;
+    let mut cmd = plugin_build_command(package, "x86_64-apple-darwin", format, release, workspace_root, &plugin_args_x86)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to build for x86_64: {}", e))?;
     if !status.success() {
@@ -420,7 +366,7 @@ pub fn build_universal(
 
     // Build for arm64
     crate::verbose!(verbose, "    Building for arm64...");
-    let mut cmd = plugin_build_command(package, "aarch64-apple-darwin", format, release, workspace_root, &rustflags_arm)?;
+    let mut cmd = plugin_build_command(package, "aarch64-apple-darwin", format, release, workspace_root, &plugin_args_arm)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to build for arm64: {}", e))?;
     if !status.success() {
@@ -473,7 +419,7 @@ fn target_triples(arch: Arch) -> Vec<&'static str> {
 /// Force a rebuild of the plugin and remove its previous bundles.
 ///
 /// xtask compiles the generated AUv3 ObjC code into static libraries and
-/// links them into the plugin through rustc flags. Cargo does not track those
+/// links them into the plugin through rustc arguments. Cargo does not track those
 /// libraries, so a change to the ObjC templates or to `au_ipc_helpers.h`
 /// alone does not relink the plugin. Cleaning the plugin package forces a
 /// rebuild that picks the change up.
@@ -779,19 +725,16 @@ mod tests {
     #[test]
     fn test_encode_rustflags() {
         let user = ["--cfg".to_string(), "a".to_string()];
-        let au = ["-L".to_string(), "native=/tmp/My Projects/au-gen".to_string()];
         let remap = remap_path_flags_for("/Users/me/My Projects/beamer", "/Users/me/.cargo", "/sysroot/src", "abc123");
 
-        // User flags first, then the AU flags, then the remap flags. A space
-        // inside a flag does not end it.
-        let encoded = encode_rustflags(&user, &au, &remap).unwrap();
+        // User flags first, then the remap flags. A space inside a flag does
+        // not end it.
+        let encoded = encode_rustflags(&user, &remap).unwrap();
         assert_eq!(
             encoded.split('\x1f').collect::<Vec<_>>(),
             [
                 "--cfg",
                 "a",
-                "-L",
-                "native=/tmp/My Projects/au-gen",
                 "--remap-path-prefix=/Users/me/My Projects/beamer=.",
                 "--remap-path-prefix=/Users/me/.cargo=/cargo",
                 "--remap-path-prefix=/sysroot/src=/rustc/abc123",
@@ -799,23 +742,34 @@ mod tests {
         );
 
         // Without flags the variable is not set at all.
-        assert_eq!(encode_rustflags(&[], &[], &[]), None);
+        assert_eq!(encode_rustflags(&[], &[]), None);
     }
 
     #[test]
-    fn test_au_rustflags_are_separate_arguments() {
-        let flags = get_au_rustflags("midi-transform", Path::new("/tmp/My Projects/au-gen")).unwrap();
+    fn test_vst3_rustc_args() {
+        assert_eq!(
+            vst3_rustc_args("midi-transform", "aarch64-apple-darwin"),
+            ["-C", "link-arg=-Wl,-install_name,@loader_path/BeamerMidiTransform"]
+        );
+
+        // Only Mach-O has install names.
+        assert!(vst3_rustc_args("midi-transform", "x86_64-pc-windows-msvc").is_empty());
+    }
+
+    #[test]
+    fn test_au_rustc_args_are_separate_arguments() {
+        let args = au_rustc_args("midi-transform", Path::new("/tmp/My Projects/au-gen")).unwrap();
 
         // Every flag is followed by its value, and a space in the path does
         // not split an argument.
-        assert_eq!(flags.len() % 2, 0);
-        assert_eq!(&flags[..2], ["-L", "native=/tmp/My Projects/au-gen"]);
-        assert_eq!(flags[2], "-C");
+        assert_eq!(args.len() % 2, 0);
+        assert_eq!(&args[..2], ["-L", "native=/tmp/My Projects/au-gen"]);
+        assert_eq!(args[2], "-C");
         assert_eq!(
-            flags[3],
+            args[3],
             "link-arg=-Wl,-force_load,/tmp/My Projects/au-gen/libmidi_transform_au_objc.a"
         );
-        assert!(flags.chunks(2).all(|pair| pair[0] == "-L" || pair[0] == "-C"));
-        assert!(flags.contains(&"link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerMidiTransformAuWrapper".to_string()));
+        assert!(args.chunks(2).all(|pair| pair[0] == "-L" || pair[0] == "-C"));
+        assert!(args.contains(&"link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerMidiTransformAuWrapper".to_string()));
     }
 }
