@@ -45,15 +45,12 @@
 //!
 //! ## Usage
 //!
-//! 1. Implement `beamer_core::Descriptor` for your plugin type
-//! 2. Use `export_au!` macro to generate AU entry points
+//! Plugins use this crate through the `beamer` crate. Its `#[beamer::export]`
+//! attribute generates the `CONFIG` static from `Config.toml` and, when the
+//! plugin's `au` feature is enabled, registers the plugin through
+//! [`export_au!`]:
 //!
 //! ```rust,ignore
-//! use beamer_core::{Config, config::Category};
-//!
-//! static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Demo", "mypg")
-//!     .with_vendor("My Company");
-//!
 //! export_au!(CONFIG, MyPlugin);
 //! ```
 //!

@@ -139,7 +139,8 @@ pub use beamer_macros::export;
 ///
 /// Plugins normally do not call this macro themselves. `#[beamer::export]` on
 /// the descriptor struct generates the `CONFIG` static from `Config.toml` and
-/// the presets from `Presets.toml`, then calls this macro with them.
+/// the presets from `Presets.toml`, then calls this macro with them. The
+/// macro in turn calls the export macro of every enabled format crate.
 ///
 /// # Arguments
 ///
@@ -166,73 +167,11 @@ pub use beamer_macros::export;
 macro_rules! export_plugin {
     // With explicit presets type
     ($config:expr, $plugin:ty, $presets:ty) => {
-        // === AU entry points ===
         #[cfg(feature = "au")]
-        fn __beamer_au_do_register() {
-            $crate::au_impl::factory::register_factory(
-                || {
-                    Box::new($crate::au_impl::AuProcessor::<$plugin, $presets>::new())
-                        as Box<dyn $crate::au_impl::AuPluginInstance>
-                },
-                &$config,
-            );
-        }
-
-        #[cfg(feature = "au")]
-        #[used]
-        #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
-        static __BEAMER_AU_INIT: extern "C" fn() = {
-            extern "C" fn __beamer_au_register() {
-                __beamer_au_do_register();
-            }
-            __beamer_au_register
-        };
-
-        #[cfg(feature = "au")]
-        #[doc(hidden)]
-        pub fn __beamer_au_manual_init() {
-            __beamer_au_do_register();
-        }
-
-        // === VST3 entry points ===
-        #[cfg(all(feature = "vst3", target_os = "windows"))]
-        #[no_mangle]
-        extern "system" fn InitDll() -> bool {
-            true
-        }
-
-        #[cfg(all(feature = "vst3", target_os = "windows"))]
-        #[no_mangle]
-        extern "system" fn ExitDll() -> bool {
-            true
-        }
-
-        #[cfg(all(feature = "vst3", target_os = "macos"))]
-        #[no_mangle]
-        extern "system" fn bundleEntry(_bundle_ref: *mut std::ffi::c_void) -> bool {
-            true
-        }
-
-        #[cfg(all(feature = "vst3", target_os = "macos"))]
-        #[no_mangle]
-        extern "system" fn bundleExit() -> bool {
-            true
-        }
+        $crate::au_impl::export_au!($config, $plugin, $presets);
 
         #[cfg(feature = "vst3")]
-        #[no_mangle]
-        extern "system" fn GetPluginFactory() -> *mut std::ffi::c_void {
-            use $crate::vst3_impl::vst3::ComWrapper;
-            use $crate::vst3_impl::Factory;
-
-            let factory = Factory::<$crate::vst3_impl::Vst3Processor<$plugin, $presets>>::new(&$config);
-            let wrapper = ComWrapper::new(factory);
-
-            wrapper
-                .to_com_ptr::<$crate::vst3_impl::vst3::Steinberg::IPluginFactory>()
-                .unwrap()
-                .into_raw() as *mut std::ffi::c_void
-        }
+        $crate::vst3_impl::export_vst3!($config, $plugin, $presets);
     };
 
     // Without presets (default to NoPresets)

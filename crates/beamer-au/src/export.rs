@@ -16,9 +16,12 @@
 /// your plugin. It works in conjunction with the native Objective-C wrapper
 /// (`BeamerAuWrapper`) that implements the actual `AUAudioUnit` subclass.
 ///
+/// Plugins normally do not call this macro themselves: `beamer::export_plugin!`
+/// calls it for plugins built with the `au` feature.
+///
 /// # Arguments
 ///
-/// * `$config` - A static reference to [`beamer_core::Config`] containing all plugin metadata
+/// * `$config` - The [`beamer_core::Config`] static containing all plugin metadata
 /// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///

@@ -25,15 +25,12 @@
 //!
 //! ## Usage
 //!
-//! 1. Implement `beamer_core::Descriptor` for your plugin type
-//! 2. Use `export_vst3!` macro to generate entry points
+//! Plugins use this crate through the `beamer` crate. Its `#[beamer::export]`
+//! attribute generates the `CONFIG` static from `Config.toml` and, when the
+//! plugin's `vst3` feature is enabled, the entry points through
+//! [`export_vst3!`]:
 //!
 //! ```rust,ignore
-//! use beamer_core::{Config, config::Category};
-//!
-//! static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
-//!     .with_vendor("My Company");
-//!
 //! export_vst3!(CONFIG, MyGain);
 //! ```
 
