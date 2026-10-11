@@ -145,6 +145,60 @@ pub fn current_target() -> &'static str {
     compile_error!("Unsupported platform");
 }
 
+/// Extra rustc arguments for the plugin crate of a macOS VST3 build.
+///
+/// On macOS the VST3 bundle binary is a copy of the plugin dylib. Without an
+/// explicit install name the linker uses the absolute path of the build
+/// output, which then ships in the bundle and lets dyld bind a later request
+/// for that path to the plugin. Name the dylib after the bundle binary,
+/// relative to the loading image, instead.
+fn vst3_rustc_args(package: &str) -> [String; 2] {
+    let bundle_name = to_vst3_bundle_name(package);
+    let executable_name = bundle_name.trim_end_matches(".vst3");
+
+    [
+        "-C".to_string(),
+        format!("link-arg=-Wl,-install_name,@loader_path/{}", executable_name),
+    ]
+}
+
+/// Create the cargo command that builds the plugin crate for one target.
+///
+/// VST3 builds for Apple targets use `cargo rustc`, which passes the arguments
+/// from `vst3_rustc_args` to the plugin crate only. RUSTFLAGS would apply them
+/// to every crate, so every plugin would get its own build of all
+/// dependencies. All other builds use `cargo build`.
+fn plugin_build_command(
+    package: &str,
+    target: &str,
+    format: &str,
+    release: bool,
+    workspace_root: &Path,
+) -> Command {
+    // The install name is a Mach-O concept, so only Apple targets get it.
+    let set_install_name = format == "vst3" && target.ends_with("-apple-darwin");
+
+    let mut cmd = Command::new("cargo");
+    cmd.arg(if set_install_name { "rustc" } else { "build" })
+        .arg("-p")
+        .arg(package)
+        .arg("--target")
+        .arg(target)
+        .arg("--features")
+        .arg(format)
+        .current_dir(workspace_root);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    if set_install_name {
+        cmd.arg("--lib").arg("--").args(vst3_rustc_args(package));
+    }
+
+    cmd
+}
+
 /// Build for a single architecture (native, arm64, or x86_64).
 pub fn build_native(
     package: &str,
@@ -179,19 +233,7 @@ pub fn build_native(
         None
     };
 
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("-p")
-        .arg(package)
-        .arg("--target")
-        .arg(target)
-        .arg("--features")
-        .arg(format)
-        .current_dir(workspace_root);
-
-    if release {
-        cmd.arg("--release");
-    }
+    let mut cmd = plugin_build_command(package, target, format, release, workspace_root);
 
     if let Some(flags) = &rustflags {
         cmd.env("RUSTFLAGS", flags);
@@ -246,19 +288,7 @@ pub fn build_universal(
 
     // Build for x86_64
     crate::verbose!(verbose, "    Building for x86_64...");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("-p")
-        .arg(package)
-        .arg("--target")
-        .arg("x86_64-apple-darwin")
-        .arg("--features")
-        .arg(format)
-        .current_dir(workspace_root);
-
-    if release {
-        cmd.arg("--release");
-    }
+    let mut cmd = plugin_build_command(package, "x86_64-apple-darwin", format, release, workspace_root);
 
     if let Some(flags) = &rustflags_x86 {
         cmd.env("RUSTFLAGS", flags);
@@ -271,19 +301,7 @@ pub fn build_universal(
 
     // Build for arm64
     crate::verbose!(verbose, "    Building for arm64...");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("-p")
-        .arg(package)
-        .arg("--target")
-        .arg("aarch64-apple-darwin")
-        .arg("--features")
-        .arg(format)
-        .current_dir(workspace_root);
-
-    if release {
-        cmd.arg("--release");
-    }
+    let mut cmd = plugin_build_command(package, "aarch64-apple-darwin", format, release, workspace_root);
 
     if let Some(flags) = &rustflags_arm {
         cmd.env("RUSTFLAGS", flags);
