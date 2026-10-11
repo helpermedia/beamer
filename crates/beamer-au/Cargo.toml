@@ -7,8 +7,6 @@ license.workspace = true
 repository = "https://github.com/helpermedia/beamer"
 keywords = ["audio", "plugin", "au", "audiounit", "music"]
 categories = ["multimedia::audio"]
-# This tells cargo to propagate native library dependencies to downstream crates
-links = "beamer_au_native"
 
 [features]
 default = ["webview"]
