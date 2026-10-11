@@ -113,6 +113,21 @@ manager's install and build before compiling and expects the result in
 step. For a dev server with live reload, see
 [Development Server](WEBVIEW.md#development-server).
 
+### Compiler flags
+
+Release builds do not carry the source paths of the machine that built
+them. The compiler keeps source paths for panic messages, and xtask
+replaces their local prefixes with `--remap-path-prefix`: the workspace
+becomes `.`, the Cargo home `/cargo` and the standard library sources
+`/rustc/<commit>`. Debug builds keep the full paths. Dependencies that
+live outside the workspace and the Cargo home are not covered.
+
+xtask passes compiler flags of its own for the Audio Unit formats and for
+release builds. It keeps the flags from `CARGO_ENCODED_RUSTFLAGS`, or else
+`RUSTFLAGS`, in front of its own. `rustflags` from Cargo configuration,
+whether from config files or from `CARGO_BUILD_RUSTFLAGS` and
+`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, do not apply to those builds.
+
 ### What xtask produces
 
 AUv2:
