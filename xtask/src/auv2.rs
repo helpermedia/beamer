@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::get_version_info;
+use crate::build::{clang_arches, get_version_info};
 use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt};
 use crate::ComponentPlistConfig;
 
@@ -76,12 +76,7 @@ pub fn bundle_auv2(
     fs::write(&wrapper_path, wrapper_source).map_err(|e| format!("Failed to write wrapper: {}", e))?;
 
     // Build for each architecture
-    let arches = match arch {
-        Arch::Universal => vec!["x86_64", "arm64"],
-        Arch::Native => vec![if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" }],
-        Arch::Arm64 => vec!["arm64"],
-        Arch::X86_64 => vec!["x86_64"],
-    };
+    let arches = clang_arches(arch)?;
 
     let arch_str = if arches.len() > 1 { "universal" } else { arches[0] };
     crate::verbose!(verbose, "    Building component ({})...", arch_str);

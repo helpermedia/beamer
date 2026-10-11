@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, Arch, PathExt};
+use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, to_vst3_executable_name, Arch, PathExt};
 use crate::BundleConfig;
 
 /// Read version from workspace Cargo.toml and convert to Apple's version integer format
@@ -212,12 +212,9 @@ fn vst3_rustc_args(package: &str, target: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    let bundle_name = to_vst3_bundle_name(package);
-    let executable_name = bundle_name.trim_end_matches(".vst3");
-
     vec![
         "-C".to_string(),
-        format!("link-arg=-Wl,-install_name,@loader_path/{}", executable_name),
+        format!("link-arg=-Wl,-install_name,@loader_path/{}", to_vst3_executable_name(package)),
     ]
 }
 
@@ -283,14 +280,11 @@ pub fn build_native(
     verbose: bool,
 ) -> Result<PathBuf, String> {
     // Always use explicit target to prevent the rustc flags leaking into build scripts.
-    let target = match arch {
-        Arch::Native => current_target(),
-        Arch::Arm64 => "aarch64-apple-darwin",
-        Arch::X86_64 => "x86_64-apple-darwin",
-        Arch::Universal => unreachable!("Universal should use build_universal"),
+    let [target] = target_triples(arch)[..] else {
+        unreachable!("Universal should use build_universal");
     };
 
-    let arch_name = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
+    let arch_name = clang_arch(target)?;
     crate::status!("  Building {} ({})...", format.to_uppercase(), arch_name);
 
     let profile = if release { "release" } else { "debug" };
@@ -407,13 +401,27 @@ pub fn build_universal(
 }
 
 /// Target triples that are built for an architecture selection.
-fn target_triples(arch: Arch) -> Vec<&'static str> {
+pub fn target_triples(arch: Arch) -> Vec<&'static str> {
     match arch {
         Arch::Native => vec![current_target()],
         Arch::Arm64 => vec!["aarch64-apple-darwin"],
         Arch::X86_64 => vec!["x86_64-apple-darwin"],
         Arch::Universal => vec!["x86_64-apple-darwin", "aarch64-apple-darwin"],
     }
+}
+
+/// Architecture name that clang and lipo use for a target triple.
+pub fn clang_arch(target: &str) -> Result<&'static str, String> {
+    match target {
+        "x86_64-apple-darwin" => Ok("x86_64"),
+        "aarch64-apple-darwin" => Ok("arm64"),
+        _ => Err(format!("Unsupported target: {}", target)),
+    }
+}
+
+/// Architecture names that clang and lipo use for an architecture selection.
+pub fn clang_arches(arch: Arch) -> Result<Vec<&'static str>, String> {
+    target_triples(arch).into_iter().map(clang_arch).collect()
 }
 
 /// Force a rebuild of the plugin and remove its previous bundles.
@@ -550,11 +558,7 @@ pub fn compile_plugin_objc(
     let ipc_header_dir = workspace_root.join("xtask/src/au_codegen");
 
     // Determine architecture for clang
-    let arch = match target {
-        "x86_64-apple-darwin" => "x86_64",
-        "aarch64-apple-darwin" => "arm64",
-        _ => return Err(format!("Unsupported target: {}", target)),
-    };
+    let arch = clang_arch(target)?;
 
     // Compile AuWrapper.m to static library
     let wrapper_obj = gen_dir.join("AuWrapper.o");
@@ -700,6 +704,17 @@ include!("au_codegen/auv3_objc.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clang_arches() {
+        // Universal builds list x86_64 first, like the build order.
+        assert_eq!(clang_arches(Arch::Universal).unwrap(), ["x86_64", "arm64"]);
+        assert_eq!(clang_arches(Arch::Arm64).unwrap(), ["arm64"]);
+        assert_eq!(clang_arches(Arch::X86_64).unwrap(), ["x86_64"]);
+        assert_eq!(target_triples(Arch::Native).len(), 1);
+
+        assert!(clang_arch("x86_64-pc-windows-msvc").is_err());
+    }
 
     #[test]
     fn test_rustc_commit_hash() {

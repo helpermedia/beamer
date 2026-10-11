@@ -116,6 +116,14 @@ pub fn to_pascal_case(name: &str) -> String {
         .collect()
 }
 
+/// Convert package name to the name of the binary inside a VST3 bundle.
+/// "gain" -> "BeamerGain"
+/// "midi-transform" -> "BeamerMidiTransform"
+#[must_use]
+pub fn to_vst3_executable_name(package: &str) -> String {
+    format!("Beamer{}", to_pascal_case(package))
+}
+
 /// Convert package name to VST3 bundle name.
 /// "gain" -> "BeamerGain.vst3"
 /// "midi-transform" -> "BeamerMidiTransform.vst3"
@@ -522,6 +530,17 @@ mod tests {
             Category::MidiEffect => "midi_effect",
             Category::Generator => "generator",
         }
+    }
+
+    #[test]
+    fn test_vst3_names() {
+        assert_eq!(to_vst3_executable_name("midi-transform"), "BeamerMidiTransform");
+
+        // The bundle is named after the binary inside it.
+        assert_eq!(
+            to_vst3_bundle_name("midi-transform"),
+            format!("{}.vst3", to_vst3_executable_name("midi-transform"))
+        );
     }
 
     #[test]

@@ -54,12 +54,12 @@ pub fn bundle_vst3(
         .map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
     // Copy dylib
-    let plugin_binary = macos_dir.join(bundle_name.trim_end_matches(".vst3"));
+    let plugin_binary = macos_dir.join(crate::util::to_vst3_executable_name(package));
     fs::copy(dylib_path, &plugin_binary)
         .map_err(|e| format!("Failed to copy dylib: {}", e))?;
 
     // Create Info.plist
-    let info_plist = create_vst3_info_plist(package, &bundle_name, &version_string);
+    let info_plist = create_vst3_info_plist(package, &version_string);
     fs::write(contents_dir.join("Info.plist"), info_plist)
         .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
 
@@ -78,8 +78,8 @@ pub fn bundle_vst3(
 }
 
 /// Creates the Info.plist content for a VST3 bundle.
-fn create_vst3_info_plist(package: &str, bundle_name: &str, version: &str) -> String {
-    let executable_name = bundle_name.trim_end_matches(".vst3");
+fn create_vst3_info_plist(package: &str, version: &str) -> String {
+    let executable_name = crate::util::to_vst3_executable_name(package);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
