@@ -182,11 +182,9 @@ pub fn get_au_tags(component_type: &str) -> &'static str {
         // Audio effect.
         "aufx" => "Effects",
         // Music device (instrument).
-        "aumu" => "Synth",
+        "aumu" => "Synthesizer",
         // MIDI processor.
         "aumi" => "MIDI",
-        // Music effect.
-        "aumf" => "Effects",
         // Generator.
         "augn" => "Generator",
         // Default fallback.

@@ -58,7 +58,7 @@ pub fn bundle_auv2(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
         component_type,
-        detected_manufacturer.as_deref().unwrap_or("Bemr"),
+        detected_manufacturer.as_deref().unwrap_or("Bmer"),
         detected_subtype.as_deref().unwrap_or("auto")
     );
     if let Some(ref name) = detected_plugin_name {

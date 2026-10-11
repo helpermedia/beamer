@@ -9,7 +9,7 @@ fn generate_auv2_wrapper_source(plugin_name: &str, component_type: &str) -> Stri
 
     // Only expose MusicDeviceMIDIEvent for types that accept MIDI
     let midi_event_case = match component_type {
-        "aumu" | "aumf" | "aumi" => {
+        "aumu" | "aumi" => {
             "        case kMusicDeviceMIDIEventSelect:\n            return (AudioComponentMethod)BeamerAuv2MIDIEvent;"
         }
         _ => "        // MIDI not exposed for this component type",
