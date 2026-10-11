@@ -904,7 +904,7 @@ The macro generates the preset implementation automatically. No manual preset st
 
 #### FactoryPresets Trait
 
-The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`. For advanced use cases, you can implement it manually:
+The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`:
 
 ```rust
 pub trait FactoryPresets: Send + Sync + 'static {
@@ -924,6 +924,8 @@ pub trait FactoryPresets: Send + Sync + 'static {
     fn apply(index: usize, parameters: &Self::Parameters) -> bool;
 }
 ```
+
+`#[beamer::export]` always uses the generated implementation, or none when there is no `Presets.toml`. It cannot select a hand-written one.
 
 #### MIDI Program Change Mapping
 

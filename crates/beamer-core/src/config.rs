@@ -5,12 +5,16 @@
 //!
 //! # Example
 //!
+//! Plugins normally do not write a `Config` by hand: `#[beamer::export]`
+//! generates the `CONFIG` static from `Config.toml`. Written out, it looks
+//! like this:
+//!
 //! ```ignore
 //! use beamer_core::{Config, config::Category};
 //!
 //! pub static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 //!     .with_vendor("My Company")
-//!     .with_version("1.0.0");
+//!     .with_version(env!("CARGO_PKG_VERSION"));
 //! ```
 
 // =========================================================================
@@ -94,7 +98,7 @@ macro_rules! fourcc {
 /// # Example
 ///
 /// ```ignore
-/// pub static CONFIG: Config = Config::new("My Compressor", Category::Effect)
+/// pub static CONFIG: Config = Config::new("My Compressor", Category::Effect, "Mfgr", "comp")
 ///     .with_subcategories(&[Subcategory::Dynamics]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
