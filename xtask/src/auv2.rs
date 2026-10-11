@@ -173,8 +173,8 @@ pub fn bundle_auv2(
     // codesign does not sign nested code and refuses a bundle that contains an
     // unsigned dylib. Only arm64 code is signed by the linker.
     crate::verbose!(verbose, "    Signing...");
-    codesign_bundle(&dylib_dest, None, "Plugin library", verbose);
-    codesign_bundle(&bundle_dir, None, "Component", verbose);
+    codesign_bundle(&dylib_dest, None, "Plugin library", verbose)?;
+    codesign_bundle(&bundle_dir, None, "Component", verbose)?;
 
     // Install if requested
     if install {

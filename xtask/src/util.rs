@@ -252,8 +252,14 @@ pub fn combine_or_rename_binaries(
 /// Ad-hoc code sign a bundle with optional entitlements.
 ///
 /// This handles the common codesign pattern used for frameworks, appex and app bundles.
-/// Prints verbose output on success, warnings on failure.
-pub fn codesign_bundle(target_path: &Path, entitlements: Option<&Path>, label: &str, verbose: bool) {
+/// Prints verbose output on success and returns an error on failure. A bundle
+/// that could not be signed does not load on Apple Silicon.
+pub fn codesign_bundle(
+    target_path: &Path,
+    entitlements: Option<&Path>,
+    label: &str,
+    verbose: bool,
+) -> Result<(), String> {
     use std::process::Command;
 
     let mut cmd = Command::new("codesign");
@@ -276,9 +282,17 @@ pub fn codesign_bundle(target_path: &Path, entitlements: Option<&Path>, label: &
                 }
             }
             crate::verbose!(verbose, "    {} code signing successful", label);
+            Ok(())
         }
-        Ok(_) => crate::status!("  Warning: {} code signing failed", label),
-        Err(e) => crate::status!("  Warning: Could not run codesign on {}: {}", label.to_lowercase(), e),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = match stderr.trim() {
+                "" => String::new(),
+                message => format!(": {}", message),
+            };
+            Err(format!("{} code signing failed{}", label, reason))
+        }
+        Err(e) => Err(format!("Could not run codesign on {}: {}", label.to_lowercase(), e)),
     }
 }
 

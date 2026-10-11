@@ -106,10 +106,15 @@ pub fn bundle_auv3(
         .map_err(|e| format!("Failed to copy dylib to framework: {}", e))?;
 
     // Fix dylib install name to use @rpath with versioned path
-    let _ = Command::new("install_name_tool")
+    let install_name_status = Command::new("install_name_tool")
         .args(["-id", &format!("@rpath/{}.framework/Versions/A/{}", framework_name, framework_name),
                &framework_binary.to_string_lossy()])
-        .status();
+        .status()
+        .map_err(|e| format!("Failed to run install_name_tool: {}", e))?;
+
+    if !install_name_status.success() {
+        return Err("Failed to set the install name of the framework binary".to_string());
+    }
 
     // Create framework Info.plist in Versions/A/Resources/
     let framework_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -291,12 +296,12 @@ pub fn bundle_auv3(
 
     // Code sign framework first, then appex, then container app
     crate::verbose!(verbose, "    Signing...");
-    codesign_bundle(&framework_dir, None, "Framework", verbose);
+    codesign_bundle(&framework_dir, None, "Framework", verbose)?;
 
     let entitlements_path = workspace_root.join("crates/beamer-au/resources/appex.entitlements");
-    codesign_bundle(&appex_dir, Some(&entitlements_path), "Appex", verbose);
+    codesign_bundle(&appex_dir, Some(&entitlements_path), "Appex", verbose)?;
 
-    codesign_bundle(&bundle_dir, None, "Container app", verbose);
+    codesign_bundle(&bundle_dir, None, "Container app", verbose)?;
 
     // Install if requested
     if install {
