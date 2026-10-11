@@ -192,7 +192,7 @@ fn print_usage() {
     eprintln!("               VST3: ~/Library/Audio/Plug-Ins/VST3/");
     eprintln!("  --clean      Force a rebuild of the plugin before building");
     eprintln!("               Removes its build artifacts, generated AU ObjC code and previous bundles.");
-    eprintln!("               Use when ObjC/header changes aren't being picked up.");
+    eprintln!("               Normally not needed: use it when a change isn't being picked up.");
     eprintln!("  --verbose    Show detailed build output (default: quiet)");
     eprintln!();
     eprintln!("Examples:");

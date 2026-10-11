@@ -1,6 +1,7 @@
 //! Build orchestration and AU ObjC code generation.
 
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -426,11 +427,9 @@ pub fn clang_arches(arch: Arch) -> Result<Vec<&'static str>, String> {
 
 /// Force a rebuild of the plugin and remove its previous bundles.
 ///
-/// xtask compiles the generated AUv3 ObjC code into static libraries and
-/// links them into the plugin through rustc arguments. Cargo does not track those
-/// libraries, so a change to the ObjC templates or to `au_ipc_helpers.h`
-/// alone does not relink the plugin. Cleaning the plugin package forces a
-/// rebuild that picks the change up.
+/// A normal build picks up changes by itself, including a change to the
+/// generated AUv3 ObjC code, its headers or its compiler (see
+/// `compile_plugin_objc`). This is the way out when something is stale anyway.
 pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Result<(), String> {
     let package = config.package.as_str();
     let verbose = config.verbose;
@@ -517,12 +516,49 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
     Ok(())
 }
 
+/// Flags for compiling the generated ObjC sources.
+const OBJC_FLAGS: [&str; 2] = ["-fobjc-arc", "-fmodules"];
+
+/// Hash the inputs of a compile step into a directory name.
+fn hash_inputs(inputs: &[&[u8]]) -> String {
+    let mut hasher = DefaultHasher::new();
+    for input in inputs {
+        input.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+/// Read every header in the given directories, in a stable order.
+fn read_headers(dirs: &[&Path]) -> Result<Vec<Vec<u8>>, String> {
+    let mut paths = Vec::new();
+    for dir in dirs {
+        let entries = fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read {}: {}", dir.display(), e))?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().is_some_and(|extension| extension == "h") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+
+    paths
+        .iter()
+        .map(|path| fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e)))
+        .collect()
+}
+
 /// Generate and compile plugin-specific ObjC code.
 ///
 /// This creates uniquely named ObjC classes for each plugin to avoid symbol collisions
 /// when multiple AU plugins are loaded in the same process (e.g., in Reaper).
 ///
 /// Returns the path to the directory containing the compiled static libraries.
+/// The directory is named after a hash of the generated sources, the headers
+/// they include, the compiler flags and the compiler version. It is part of
+/// the linker arguments of the plugin crate, so cargo relinks the plugin when
+/// one of them changes. Cargo does not track the libraries themselves.
 pub fn compile_plugin_objc(
     plugin_name: &str,
     workspace_root: &Path,
@@ -530,32 +566,62 @@ pub fn compile_plugin_objc(
 ) -> Result<PathBuf, String> {
     let lib_name = plugin_name.replace('-', "_");
 
-    // Create output directory for generated sources and compiled libraries
-    let gen_dir = workspace_root
-        .join("target")
-        .join("au-gen")
-        .join(plugin_name)
-        .join(target);
-
-    fs::create_dir_all(&gen_dir)
-        .map_err(|e| format!("Failed to create au-gen directory: {}", e))?;
-
-    // Generate plugin-specific ObjC source files
+    // Generate plugin-specific ObjC source files.
     let wrapper_source = generate_au_wrapper_source(plugin_name);
     let has_gui = crate::util::detect_has_gui(plugin_name, workspace_root);
     let extension_source = generate_au_extension_source(plugin_name, has_gui);
 
+    // Header search paths for clang.
+    let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
+    let ipc_header_dir = workspace_root.join("xtask/src/au_codegen");
+
+    // The compiler is an input as well: another clang can produce other code.
+    let clang_version = Command::new("clang")
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("Failed to run clang: {}", e))?
+        .stdout;
+    let flags = OBJC_FLAGS.join(" ");
+
+    let headers = read_headers(&[&bridge_header_dir, &ipc_header_dir])?;
+    let mut inputs: Vec<&[u8]> = vec![
+        wrapper_source.as_bytes(),
+        extension_source.as_bytes(),
+        flags.as_bytes(),
+        &clang_version,
+    ];
+    inputs.extend(headers.iter().map(Vec::as_slice));
+
+    // Create output directory for generated sources and compiled libraries.
+    let target_dir = workspace_root
+        .join("target")
+        .join("au-gen")
+        .join(plugin_name)
+        .join(target);
+    let gen_dir = target_dir.join(hash_inputs(&inputs));
+
+    // Only the directory for the current inputs is kept.
+    if target_dir.exists() {
+        for entry in fs::read_dir(&target_dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path == gen_dir {
+                continue;
+            }
+            let removed = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+            removed.map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+        }
+    }
+
+    fs::create_dir_all(&gen_dir)
+        .map_err(|e| format!("Failed to create au-gen directory: {}", e))?;
+
     let wrapper_path = gen_dir.join("AuWrapper.m");
     let extension_path = gen_dir.join("AuExtension.m");
 
-    fs::write(&wrapper_path, wrapper_source)
+    fs::write(&wrapper_path, &wrapper_source)
         .map_err(|e| format!("Failed to write AuWrapper.m: {}", e))?;
-    fs::write(&extension_path, extension_source)
+    fs::write(&extension_path, &extension_source)
         .map_err(|e| format!("Failed to write AuExtension.m: {}", e))?;
-
-    // Header search paths for clang
-    let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
-    let ipc_header_dir = workspace_root.join("xtask/src/au_codegen");
 
     // Determine architecture for clang
     let arch = clang_arch(target)?;
@@ -565,11 +631,9 @@ pub fn compile_plugin_objc(
     let wrapper_lib = gen_dir.join(format!("lib{}_au_objc.a", lib_name));
 
     let status = Command::new("clang")
+        .args(["-c", "-arch", arch])
+        .args(OBJC_FLAGS)
         .args([
-            "-c",
-            "-arch", arch,
-            "-fobjc-arc",
-            "-fmodules",
             "-I", bridge_header_dir.to_str_safe()?,
             "-I", ipc_header_dir.to_str_safe()?,
             "-o", wrapper_obj.to_str_safe()?,
@@ -597,11 +661,9 @@ pub fn compile_plugin_objc(
     let extension_lib = gen_dir.join(format!("lib{}_au_extension.a", lib_name));
 
     let status = Command::new("clang")
+        .args(["-c", "-arch", arch])
+        .args(OBJC_FLAGS)
         .args([
-            "-c",
-            "-arch", arch,
-            "-fobjc-arc",
-            "-fmodules",
             "-I", bridge_header_dir.to_str_safe()?,
             "-I", ipc_header_dir.to_str_safe()?,
             "-o", extension_obj.to_str_safe()?,
@@ -714,6 +776,18 @@ mod tests {
         assert_eq!(target_triples(Arch::Native).len(), 1);
 
         assert!(clang_arch("x86_64-pc-windows-msvc").is_err());
+    }
+
+    #[test]
+    fn test_hash_inputs() {
+        let hash = hash_inputs(&[b"wrapper", b"extension"]);
+        assert_eq!(hash.len(), 16);
+        assert_eq!(hash, hash_inputs(&[b"wrapper", b"extension"]));
+
+        // A change in any input, or content moving between inputs, gives
+        // another directory.
+        assert_ne!(hash, hash_inputs(&[b"wrapper", b"extension2"]));
+        assert_ne!(hash, hash_inputs(&[b"wrapperex", b"tension"]));
     }
 
     #[test]
