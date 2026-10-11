@@ -959,14 +959,11 @@ pub struct RenderBlock<S: Sample> {
     midi_output: UnsafeCell<MidiBuffer>,
     /// SysEx output pool for real-time safe SysEx message output
     sysex_output_pool: UnsafeCell<SysExOutputPool>,
-    /// Host-provided block for scheduling MIDI output events.
+    /// Host-provided block for sending MIDI output events.
     ///
-    /// This is an `AUScheduleMIDIEventBlock` provided by the AU host.
-    /// Only available for component types that support MIDI output:
-    /// - `aumu` (Music Device/Instrument)
-    /// - `aumf` (MIDI Effect)
-    ///
-    /// Effects (`aufx`) typically don't receive this block from hosts.
+    /// Neither AU wrapper passes this block yet, so it is always `None` and
+    /// MIDI output events are dropped. It is meant for the component types
+    /// that produce MIDI: `aumu` (instrument) and `aumi` (MIDI effect).
     schedule_midi_event_block: Option<*const c_void>,
     /// Per-instance warmup counter to silence initial renders.
     ///
@@ -1209,11 +1206,10 @@ impl<S: Sample> RenderBlock<S> {
         unsafe { (*timestamp).sample_time }
     }
 
-    /// Output a MIDI event to the host via scheduleMIDIEventBlock.
+    /// Output a MIDI event to the host via the MIDI output block.
     ///
-    /// This function sends MIDI data to the AU host if the scheduleMIDIEventBlock
-    /// was provided. This block is only available for component types that support
-    /// MIDI output (aumu instruments and aumf MIDI effects).
+    /// This function sends MIDI data to the AU host if the block was provided.
+    /// Neither AU wrapper passes it yet (see `schedule_midi_event_block`).
     ///
     /// # Arguments
     ///
@@ -1226,7 +1222,7 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// # Safety
     ///
-    /// This function is safe to call from the render thread. The scheduleMIDIEventBlock
+    /// This function is safe to call from the render thread. The MIDI output block
     /// is guaranteed to be valid for the duration of the render callback by the AU host.
     fn output_midi_to_host(&self, midi_bytes: &[u8], sample_offset: u32) -> bool {
         let Some(block) = self.schedule_midi_event_block else {
@@ -1381,8 +1377,8 @@ impl<S: Sample> RenderBlock<S> {
     /// Output all MIDI events from the output buffer to the host.
     ///
     /// This function iterates through the MIDI output buffer and sends each event
-    /// to the host via scheduleMIDIEventBlock. If no block is available (e.g., for
-    /// effect plugins), events are counted and a warning is logged.
+    /// to the host via the MIDI output block. If no block is available, which is
+    /// always the case until the AU wrappers pass one, events are counted and reported.
     ///
     /// # Arguments
     ///
@@ -2086,15 +2082,10 @@ impl<S: Sample> RenderBlock<S> {
             block_start = next_boundary;
         }
 
-        // Handle MIDI output via scheduleMIDIEventBlock (if available)
+        // Handle MIDI output via the MIDI output block (if available).
         //
-        // AU MIDI output depends on component type:
-        // - `aumu` (Music Device/Instrument): MIDI output supported via scheduleMIDIEventBlock
-        // - `aumf` (MIDI Effect): MIDI output supported
-        // - `aufx` (Effect): MIDI output NOT typically supported by hosts
-        //
-        // For effects, most hosts don't provide scheduleMIDIEventBlock, so MIDI output
-        // events will be dropped with a warning.
+        // Neither AU wrapper passes the block yet, so the events are dropped
+        // and reported below at debug level.
 
         // First, allocate SysEx messages to the pool for stable pointers
         for midi_event in midi_output.iter() {
@@ -2110,13 +2101,12 @@ impl<S: Sample> RenderBlock<S> {
         // Log warnings for dropped events
         if dropped_events > 0 {
             if self.schedule_midi_event_block.is_none() {
-                // No MIDI output block - this is expected for effect plugins (aufx)
-                // Only log at debug level to avoid spamming for effect plugins that
-                // generate MIDI output (which is unusual but possible)
+                // No MIDI output block: the AU wrappers do not pass one yet.
+                // Only log at debug level to avoid spamming for plugins that
+                // generate MIDI output.
                 log::debug!(
                     "AU MIDI output not available: {} events dropped. \
-                     MIDI output is only supported for instrument (aumu) and MIDI effect (aumf) plugins. \
-                     Effects (aufx) typically do not support MIDI output.",
+                     The AU wrappers do not pass a MIDI output block yet.",
                     dropped_events
                 );
             } else {

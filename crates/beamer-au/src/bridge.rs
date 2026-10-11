@@ -2045,18 +2045,18 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
 
 /// Check if a proposed channel configuration is valid.
 ///
-/// Validates a channel configuration against the plugin's declared capabilities.
+/// Validates a channel configuration against the buses the plugin declares.
 ///
-/// For effect plugins (aufx), this enforces that input channels equal output channels
-/// on the main bus, which is the typical expectation for [-1, -1] channel capability.
+/// For effects (aufx) and MIDI effects (aumi), the configuration has to match the
+/// declared channel counts of the main input and output bus.
 ///
-/// For instruments (aumu), this verifies that the configuration matches the declared
-/// output channel count (with 0 input channels).
+/// For instruments (aumu) and generators (augn), it has to have 0 input channels and
+/// match the declared channel count of the main output bus.
 ///
 /// # Safety
 ///
 /// - `instance` should be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case instruments fall back to accepting stereo)
+///   or null (in which case the declared channel counts fall back to stereo)
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_is_channel_config_valid(
@@ -2146,11 +2146,12 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
 ///
 /// # Capability Semantics
 ///
-/// - **Effects (`aufx`)**: Return `[-1, -1]` meaning "any matching configuration"
-///   where input and output channel counts must be equal.
+/// - **Effects (`aufx`)**: Return `[M, N]`, the declared channel counts of the
+///   main input and output bus.
 /// - **Instruments (`aumu`)**: Return `[0, N]` where N is the declared output
 ///   channel count. Instruments have no audio input, only MIDI.
-/// - **MIDI Processors (`aumi`)**: Similar to effects, `[-1, -1]`.
+/// - **Generators (`augn`)**: Return `[0, N]` like instruments.
+/// - **MIDI effects (`aumi`)**: Return `[M, N]` like effects.
 ///
 /// # Returns
 ///

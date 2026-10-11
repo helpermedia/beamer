@@ -463,9 +463,8 @@ bool beamer_au_is_prepared(BeamerAuInstanceHandle _Nullable instance);
  *                              May be NULL if host doesn't provide musical context.
  * @param transport_state_block Block to query host transport state (playing, recording).
  *                              May be NULL if host doesn't provide transport state.
- * @param schedule_midi_block   Block to schedule MIDI output events.
- *                              May be NULL for effect plugins (only available for
- *                              aumu instruments and aumf MIDI effects).
+ * @param schedule_midi_block   Block to send MIDI output events. Not used yet:
+ *                              both wrappers pass NULL and the bridge ignores it.
  *
  * @return OSStatus:
  *         - noErr (0): Success
@@ -482,7 +481,7 @@ bool beamer_au_is_prepared(BeamerAuInstanceHandle _Nullable instance);
  *
  * Post-conditions on success:
  * - output_data buffers contain processed audio
- * - MIDI output events (if any) have been scheduled via schedule_midi_block
+ * - MIDI output events (if any) have been dropped, see schedule_midi_block
  */
 OSStatus beamer_au_render(
     BeamerAuInstanceHandle _Nullable instance,
@@ -1314,10 +1313,9 @@ uint32_t beamer_au_get_output_bus_channel_count(
 /**
  * Check if a proposed channel configuration is valid.
  *
- * This is used by shouldChangeToFormat:forBus: to validate that a proposed
- * format change would result in a valid overall configuration. For example,
- * an effect plugin with [-1,-1] capability requires input channels to equal
- * output channels on the main bus.
+ * Called when render resources are allocated (AUv3) and on Initialize (AUv2)
+ * to check the main bus formats. For example, an effect has to keep the
+ * channel counts that its main buses declare.
  *
  * Thread Safety: Can be called from any thread.
  *
@@ -1384,9 +1382,10 @@ typedef struct {
  * the plugin supports, based on its component type and declared bus configuration.
  *
  * Capability semantics:
- * - Effects (aufx): Returns [-1, -1] meaning "any matching configuration"
+ * - Effects (aufx): Returns [M, N], the declared main bus channel counts
  * - Instruments (aumu): Returns [0, N] where N is declared output channel count
- * - MIDI Processors (aumi): Returns [-1, -1] like effects
+ * - Generators (augn): Returns [0, N] like instruments
+ * - MIDI effects (aumi): Returns [M, N] like effects
  *
  * Thread Safety: Can be called from any thread.
  *
@@ -1471,7 +1470,7 @@ bool beamer_au_apply_preset(
 /**
  * Check if the plugin accepts MIDI input.
  *
- * Returns true for instruments (aumu) and MIDI effects (aumf).
+ * Returns true for instruments (aumu) and MIDI effects (aumi).
  *
  * Thread Safety: Can be called from any thread.
  *
@@ -1483,7 +1482,7 @@ bool beamer_au_accepts_midi(BeamerAuInstanceHandle _Nullable instance);
 /**
  * Check if the plugin produces MIDI output.
  *
- * Returns true for instruments (aumu) that output MIDI and MIDI effects (aumf).
+ * Returns true for instruments (aumu) and MIDI effects (aumi).
  *
  * Thread Safety: Can be called from any thread.
  *
