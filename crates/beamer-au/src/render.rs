@@ -148,69 +148,37 @@ impl Default for MidiBuffer {
 ///
 /// - `parameter_address`: Used to look up the target parameter by ID.
 ///
-/// - `value`: Used to set the parameter's normalized value (0.0-1.0).
+/// - `value`: The new value in AU format: the plain value, or the index for an
+///   indexed parameter. It is converted to a normalized value when it is applied.
 #[derive(Clone, Debug)]
 pub struct AuParameterEvent {
     /// Sample offset within the current buffer.
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
-    /// New normalized value (0.0 to 1.0)
+    /// New value in AU format (plain value, or index for indexed parameters)
     pub value: f32,
 }
 
 /// Ramped parameter change for smooth automation.
 ///
-/// # Field Usage
-///
-/// - `sample_offset`: Sample offset where the ramp starts. Like immediate events, ramps are
-///   applied sample-accurately by sub-block processing.
-///
-/// - `parameter_address`: Used to look up the target parameter by ID.
-///
-/// - `start_value`: Preserved for API completeness with AU's `AURenderEventParameterRamp`.
-///   The current implementation applies the ramp as a value change at `sample_offset` and
-///   relies on the parameter's smoother (if any) for interpolation.
-///
-/// - `end_value`: Used to set the parameter's target normalized value.
-///
-/// - `duration_samples`: **Placeholder for future host-controlled ramping**. beamer_core's
-///   Smoother uses a fixed time constant configured at parameter construction (via
-///   `SmoothingStyle`). There is no API for dynamic per-event ramp duration configuration.
-///   This matches VST3 behavior, which also doesn't use host-provided ramp info.
-///
-/// # Design Rationale
-///
-/// The current "set end value, let smoother interpolate" approach is intentional:
-/// 1. **VST3 parity**: beamer-vst3 uses the same approach
-/// 2. **Consistent behavior**: Plugin smoothers provide predictable transitions
-/// 3. **Clear responsibility split**: The host chooses *when* a change starts; the plugin
-///    chooses *how* it smooths within its own model
-///
-/// For most musical parameters, the configured smoother time (e.g., 5ms exponential)
-/// provides smooth transitions regardless of the DAW's intended ramp duration.
-///
-/// The unused fields are preserved for API completeness with AU's
-/// `AURenderEventParameterRamp` event structure and potential future support for
-/// host-controlled ramp durations.
+/// AU describes a ramp by its end value and duration. The ramp is applied as a
+/// value change at `sample_offset` (sample-accurately, by sub-block processing)
+/// and the parameter's own smoother interpolates towards it. The format wrappers
+/// share this approach: the host chooses when a change starts and the plugin
+/// chooses how it smooths.
 #[derive(Clone, Debug)]
 pub struct AuParameterRampEvent {
     /// Sample offset where ramp starts.
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
-    /// Value at start of ramp (matches AU's `AURenderEventParameterRamp.value`).
-    ///
-    /// Currently unused: beamer's parameter smoothing uses `end_value` as target and interpolates
-    /// with the parameter's configured `SmoothingStyle`. Future: Could enable host-controlled ramps.
-    #[allow(dead_code)]
-    pub start_value: f32,
-    /// Value at end of ramp (used as target for parameter smoother)
+    /// Value at the end of the ramp, in AU format like `AuParameterEvent::value`.
     pub end_value: f32,
-    /// Duration of ramp in samples (matches AU's `AURenderEventParameterRamp.ramp_duration_sample_frames`).
+    /// Duration of the ramp in samples.
     ///
-    /// Currently unused: beamer's parameter smoothers use a fixed time constant configured at
-    /// parameter construction. Future: Could override smoother duration per-event.
+    /// Not used: the parameter smoothers have a fixed time constant that is
+    /// configured at parameter construction.
     #[allow(dead_code)]
     pub duration_samples: u32,
 }
@@ -263,13 +231,16 @@ pub enum AURenderEventType {
 
 /// Common header for all AU render events.
 ///
-/// All events are linked via the `next` pointer.
-#[repr(C)]
+/// All events are linked via the `next` pointer. Like the other event structs
+/// it mirrors the layout of the AudioToolbox declaration, which is packed to
+/// 4 bytes.
+#[repr(C, packed(4))]
 #[derive(Debug, Clone, Copy)]
 pub struct AURenderEventHeader {
     /// Pointer to next event in linked list (null if last)
     pub next: *const AURenderEvent,
-    /// Sample frame offset within this render call
+    /// Sample time at which the event is scheduled, on the timeline of the
+    /// render timestamp
     pub event_sample_time: i64,
     /// Event type discriminator
     pub event_type: u8,
@@ -277,59 +248,38 @@ pub struct AURenderEventHeader {
     pub reserved: u8,
 }
 
-/// Parameter change event.
+/// Parameter change event, immediate or ramped.
 ///
-/// Contains an immediate parameter value change from host automation.
-#[repr(C)]
+/// The event type tells the two apart: `AURenderEventType::Parameter` or
+/// `AURenderEventType::ParameterRamp`.
+#[repr(C, packed(4))]
 #[derive(Debug, Clone, Copy)]
-pub struct AURenderEventParameter {
+pub struct AUParameterEvent {
     /// Pointer to next event
     pub next: *const AURenderEvent,
-    /// Sample frame offset
+    /// Sample time at which the event is scheduled
     pub event_sample_time: i64,
-    /// Event type (should be AURenderEventType::Parameter)
+    /// Event type (Parameter or ParameterRamp)
     pub event_type: u8,
     /// Reserved
     pub reserved: [u8; 3],
-    /// Parameter address (u64)
-    pub parameter_address: u64,
-    /// New parameter value (f32)
-    pub value: f32,
-}
-
-/// Parameter ramp event.
-///
-/// Contains a ramped parameter change for smooth automation.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct AURenderEventParameterRamp {
-    /// Pointer to next event
-    pub next: *const AURenderEvent,
-    /// Sample frame offset
-    pub event_sample_time: i64,
-    /// Event type (should be AURenderEventType::ParameterRamp)
-    pub event_type: u8,
-    /// Reserved
-    pub reserved: [u8; 3],
-    /// Parameter address (u64)
-    pub parameter_address: u64,
-    /// Start value (f32)
-    pub value: f32,
-    /// End value (f32) - Added in AU v3.1
-    pub end_value: f32,
-    /// Ramp duration in sample frames (u32)
+    /// Ramp duration in sample frames, 0 for an immediate change
     pub ramp_duration_sample_frames: u32,
+    /// Parameter address (u64)
+    pub parameter_address: u64,
+    /// New value, or the value at the end of the ramp (f32)
+    pub value: f32,
 }
 
 /// Legacy MIDI 1.0 event.
 ///
 /// Contains standard MIDI bytes (status, data1, data2).
-#[repr(C)]
+#[repr(C, packed(4))]
 #[derive(Debug, Clone, Copy)]
 pub struct AUMIDIEvent {
     /// Pointer to next event
     pub next: *const AURenderEvent,
-    /// Sample frame offset
+    /// Sample time at which the event is scheduled
     pub event_sample_time: i64,
     /// Event type (should be AURenderEventType::Midi or MidiSysEx)
     pub event_type: u8,
@@ -346,11 +296,11 @@ pub struct AUMIDIEvent {
 /// MIDI 2.0 UMP event list.
 ///
 /// Contains Universal MIDI Packets in the newer MIDI 2.0 format.
-#[repr(C)]
+#[repr(C, packed(4))]
 pub struct AUMIDIEventList {
     /// Pointer to next event
     pub next: *const AURenderEvent,
-    /// Sample frame offset
+    /// Sample time at which the event is scheduled
     pub event_sample_time: i64,
     /// Event type (should be AURenderEventType::MidiEventList)
     pub event_type: u8,
@@ -372,7 +322,7 @@ pub struct MIDIEventList {
 }
 
 /// MIDIEventPacket from CoreMIDI.
-#[repr(C)]
+#[repr(C, packed(4))]
 pub struct MIDIEventPacket {
     /// Timestamp (host time in nanoseconds, 0 = now)
     pub time_stamp: u64,
@@ -427,10 +377,8 @@ impl MIDIEventPacket {
 pub union AURenderEvent {
     /// Common header (always safe to access)
     pub head: AURenderEventHeader,
-    /// Parameter change event
-    pub parameter: AURenderEventParameter,
-    /// Parameter ramp event
-    pub ramp: AURenderEventParameterRamp,
+    /// Parameter change or ramp event
+    pub parameter: AUParameterEvent,
     /// Legacy MIDI 1.0 event
     pub midi: AUMIDIEvent,
     // Note: midi_events_list omitted for now
@@ -651,14 +599,33 @@ fn allocate_audio_buffer_list(
 /// 4096 events per buffer is generous - typical buffers have < 100 events.
 const MAX_EVENTS_PER_BUFFER: usize = 4096;
 
+/// Convert the sample time of a render event to an offset in the current buffer.
+///
+/// AU render events carry an absolute sample time on the timeline of the
+/// render timestamp, so the start of the buffer is subtracted. Events that
+/// fall outside the buffer (late or early) move to its nearest sample. The
+/// AUAudioUnit base class has already translated "immediate" times.
+fn buffer_offset(event_sample_time: i64, buffer_start: i64, num_samples: usize) -> u32 {
+    let last = num_samples.saturating_sub(1) as i64;
+    let offset = event_sample_time.saturating_sub(buffer_start);
+    offset.clamp(0, last) as u32
+}
+
 /// Extract MIDI events from AU render event linked list.
 ///
 /// Iterates through the event list and converts MIDI events to beamer format.
-/// Handles both legacy MIDI 1.0 events and MIDI 2.0 UMP events.
+/// Handles both legacy MIDI 1.0 events and MIDI 2.0 UMP events. The sample
+/// offsets of the extracted events are relative to `buffer_start`, the sample
+/// time of the render timestamp.
 ///
 /// # Safety
 /// The `event_list` pointer must be valid or null.
-pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut MidiBuffer) {
+pub unsafe fn extract_midi_events(
+    event_list: *const AURenderEvent,
+    buffer: &mut MidiBuffer,
+    buffer_start: i64,
+    num_samples: usize,
+) {
     let mut event_ptr = event_list;
     let mut iterations = 0;
 
@@ -677,7 +644,8 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
                 // SAFETY: event_type == 8 (Midi), so midi field is the active union variant.
                 let midi_event = unsafe { &event.midi };
                 if midi_event.length >= 1 {
-                    let sample_offset = midi_event.event_sample_time as u32;
+                    let sample_offset =
+                        buffer_offset(midi_event.event_sample_time, buffer_start, num_samples);
                     let status = midi_event.data[0] & 0xF0;
                     let channel = midi_event.data[0] & 0x0F;
                     let data1 = if midi_event.length >= 2 {
@@ -702,8 +670,13 @@ pub unsafe fn extract_midi_events(event_list: *const AURenderEvent, buffer: &mut
             10 => {
                 // AURenderEventType::MidiEventList
                 // SAFETY: head is always safe to access.
-                let sample_offset = unsafe { event.head.event_sample_time as u32 };
-                // Get pointer to MIDIEventList (immediately after AUMIDIEventList header)
+                let sample_offset = buffer_offset(
+                    unsafe { event.head.event_sample_time },
+                    buffer_start,
+                    num_samples,
+                );
+                // Get pointer to MIDIEventList (immediately after AUMIDIEventList header,
+                // which is 20 bytes in the packed layout)
                 // SAFETY: For MidiEventList events, the MIDIEventList follows the header.
                 let event_list_ptr = unsafe {
                     (event_ptr as *const u8)
@@ -817,13 +790,17 @@ fn update_midi_cc_state(
 /// Extract parameter events from AU render event linked list.
 ///
 /// Iterates through the event list and extracts parameter change and ramp events.
-/// MIDI and other event types are ignored by this function.
+/// MIDI and other event types are ignored by this function. The sample offsets
+/// of the extracted events are relative to `buffer_start`, the sample time of
+/// the render timestamp.
 ///
 /// # Safety
 /// The `event_list` pointer must be valid or null.
 pub unsafe fn extract_parameter_events(
     event_list: *const AURenderEvent,
     buffer: &mut ParameterEventBuffer,
+    buffer_start: i64,
+    num_samples: usize,
 ) {
     buffer.clear();
 
@@ -844,20 +821,27 @@ pub unsafe fn extract_parameter_events(
                 // SAFETY: event_type == 1 (Parameter), so parameter field is the active variant.
                 let param_event = unsafe { &event.parameter };
                 buffer.immediate.push(AuParameterEvent {
-                    sample_offset: param_event.event_sample_time as u32,
+                    sample_offset: buffer_offset(
+                        param_event.event_sample_time,
+                        buffer_start,
+                        num_samples,
+                    ),
                     parameter_address: param_event.parameter_address,
                     value: param_event.value,
                 });
             }
             // AU_RENDER_EVENT_PARAMETER_RAMP (type 2)
             2 => {
-                // SAFETY: event_type == 2 (ParameterRamp), so ramp field is the active variant.
-                let ramp_event = unsafe { &event.ramp };
+                // SAFETY: event_type == 2 (ParameterRamp), so parameter field is the active variant.
+                let ramp_event = unsafe { &event.parameter };
                 buffer.ramps.push(AuParameterRampEvent {
-                    sample_offset: ramp_event.event_sample_time as u32,
+                    sample_offset: buffer_offset(
+                        ramp_event.event_sample_time,
+                        buffer_start,
+                        num_samples,
+                    ),
                     parameter_address: ramp_event.parameter_address,
-                    start_value: ramp_event.value,
-                    end_value: ramp_event.end_value,
+                    end_value: ramp_event.value,
                     duration_samples: ramp_event.ramp_duration_sample_frames,
                 });
             }
@@ -1542,26 +1526,16 @@ impl<S: Sample> RenderBlock<S> {
         let sysex_pool = unsafe { &mut *self.sysex_output_pool.get() };
         sysex_pool.clear();
 
-        // Extract MIDI events from the AU render event linked list
-        // SAFETY: event_list is valid for this render call (provided by AU host)
-        unsafe {
-            extract_midi_events(event_list, midi_buffer);
-        }
-
-        // Convert absolute sample times to relative buffer offsets.
-        //
-        // AU's eventSampleTime is an ABSOLUTE sample position (like the transport).
-        // We need to subtract the timestamp's sample_time (the buffer start position)
-        // to get a relative offset within [0, frame_count).
+        // AU's eventSampleTime is an absolute sample position on the timeline of
+        // the render timestamp. The extraction below turns it into an offset in
+        // this buffer.
         // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
         let buffer_start_sample = unsafe { (*timestamp).sample_time as i64 };
 
-        for event in midi_buffer.events.iter_mut() {
-            let absolute_time = event.sample_offset as i64;
-            let relative_offset = absolute_time - buffer_start_sample;
-
-            // Clamp to buffer bounds (handle late/early events gracefully)
-            event.sample_offset = relative_offset.clamp(0, (num_samples - 1) as i64) as u32;
+        // Extract MIDI events from the AU render event linked list
+        // SAFETY: event_list is valid for this render call (provided by AU host)
+        unsafe {
+            extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples);
         }
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
@@ -1586,7 +1560,12 @@ impl<S: Sample> RenderBlock<S> {
         // Extract parameter events from the AU render event linked list
         // SAFETY: event_list is valid for this render call (provided by AU host)
         unsafe {
-            extract_parameter_events(event_list, parameter_events);
+            extract_parameter_events(
+                event_list,
+                parameter_events,
+                buffer_start_sample,
+                num_samples,
+            );
         }
 
         // Sort by sample offset to enable sample-accurate application via sub-block processing.
@@ -2378,4 +2357,169 @@ pub fn create_render_block_f64(
         sysex_slots,
         sysex_buffer_size,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// Sample time of the buffer start used by the tests. It is larger than
+    /// `u32::MAX` so that a truncated time cannot pass.
+    const START: i64 = 5_000_000_000;
+
+    fn parameter_event(event_type: u8, time: i64, value: f32, ramp: u32) -> AURenderEvent {
+        AURenderEvent {
+            parameter: AUParameterEvent {
+                next: std::ptr::null(),
+                event_sample_time: time,
+                event_type,
+                reserved: [0; 3],
+                ramp_duration_sample_frames: ramp,
+                parameter_address: 7,
+                value,
+            },
+        }
+    }
+
+    fn midi_event(time: i64, data: [u8; 3]) -> AURenderEvent {
+        AURenderEvent {
+            midi: AUMIDIEvent {
+                next: std::ptr::null(),
+                event_sample_time: time,
+                event_type: AURenderEventType::Midi as u8,
+                reserved: 0,
+                length: 3,
+                cable: 0,
+                data,
+            },
+        }
+    }
+
+    /// Link the events into the list form the host passes to render.
+    fn link(events: &mut [AURenderEvent]) -> *const AURenderEvent {
+        for i in 1..events.len() {
+            let next: *const AURenderEvent = &events[i];
+            events[i - 1].head.next = next;
+        }
+        events.as_ptr()
+    }
+
+    #[test]
+    fn test_event_layout_matches_audio_toolbox() {
+        // The AudioToolbox declarations are packed to 4 bytes.
+        assert_eq!(size_of::<AURenderEventHeader>(), 20);
+        assert_eq!(offset_of!(AURenderEventHeader, event_type), 16);
+
+        assert_eq!(size_of::<AUParameterEvent>(), 36);
+        assert_eq!(
+            offset_of!(AUParameterEvent, ramp_duration_sample_frames),
+            20
+        );
+        assert_eq!(offset_of!(AUParameterEvent, parameter_address), 24);
+        assert_eq!(offset_of!(AUParameterEvent, value), 32);
+
+        assert_eq!(size_of::<AUMIDIEvent>(), 24);
+        assert_eq!(offset_of!(AUMIDIEvent, length), 18);
+        assert_eq!(offset_of!(AUMIDIEvent, cable), 20);
+        assert_eq!(offset_of!(AUMIDIEvent, data), 21);
+
+        // The MIDIEventList starts right after this header.
+        assert_eq!(size_of::<AUMIDIEventList>(), 20);
+        assert_eq!(offset_of!(AUMIDIEventList, cable), 18);
+
+        assert_eq!(size_of::<MIDIEventPacket>(), 12);
+        assert_eq!(offset_of!(MIDIEventPacket, word_count), 8);
+
+        assert_eq!(std::mem::align_of::<AURenderEvent>(), 4);
+    }
+
+    #[test]
+    fn test_midi_event_list_is_read_at_its_packed_offset() {
+        // An AUMIDIEventList header (20 bytes), a MIDIEventList header (8 bytes)
+        // and one packet (12 bytes) with a single word: Note On 60, velocity 100,
+        // as a MIDI 1.0 channel voice message.
+        let mut bytes = [0u8; 48];
+        bytes[8..16].copy_from_slice(&(START + 40).to_ne_bytes());
+        bytes[16] = AURenderEventType::MidiEventList as u8;
+        bytes[20..24].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[24..28].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[36..40].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[40..44].copy_from_slice(&0x2090_3C64u32.to_ne_bytes());
+
+        // Copy into storage with the alignment of a real event.
+        let mut storage = [0u64; 6];
+        // SAFETY: Both regions are 48 bytes and do not overlap.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), storage.as_mut_ptr().cast::<u8>(), 48);
+        }
+
+        let mut buffer = MidiBuffer::with_capacity(16);
+        // SAFETY: The storage holds one complete event with a null `next`.
+        unsafe { extract_midi_events(storage.as_ptr().cast(), &mut buffer, START, 512) };
+
+        let events = buffer.as_slice();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample_offset, 40);
+        match &events[0].event {
+            MidiEventKind::NoteOn(note) => assert_eq!(note.pitch, 60),
+            _ => panic!("expected a Note On"),
+        }
+    }
+
+    #[test]
+    fn test_buffer_offset() {
+        assert_eq!(buffer_offset(START, START, 512), 0);
+        assert_eq!(buffer_offset(START + 300, START, 512), 300);
+        // Late and early events move to the nearest sample of the buffer.
+        assert_eq!(buffer_offset(START - 10, START, 512), 0);
+        assert_eq!(buffer_offset(START + 512, START, 512), 511);
+        assert_eq!(buffer_offset(i64::MIN, START, 512), 0);
+        assert_eq!(buffer_offset(START, START, 0), 0);
+    }
+
+    #[test]
+    fn test_parameter_events_are_relative_to_the_buffer() {
+        let mut events = [
+            parameter_event(AURenderEventType::Parameter as u8, START + 256, -6.0, 0),
+            parameter_event(AURenderEventType::ParameterRamp as u8, START + 100, 3.0, 64),
+            midi_event(START + 10, [0x90, 60, 100]),
+        ];
+        let list = link(&mut events);
+
+        let mut buffer = ParameterEventBuffer::new();
+        // SAFETY: The list is valid and ends with a null `next`.
+        unsafe { extract_parameter_events(list, &mut buffer, START, 512) };
+
+        assert_eq!(buffer.immediate.len(), 1);
+        assert_eq!(buffer.immediate[0].sample_offset, 256);
+        assert_eq!(buffer.immediate[0].parameter_address, 7);
+        assert_eq!(buffer.immediate[0].value, -6.0);
+
+        assert_eq!(buffer.ramps.len(), 1);
+        assert_eq!(buffer.ramps[0].sample_offset, 100);
+        assert_eq!(buffer.ramps[0].end_value, 3.0);
+        assert_eq!(buffer.ramps[0].duration_samples, 64);
+    }
+
+    #[test]
+    fn test_midi_events_are_relative_to_the_buffer() {
+        let mut events = [
+            midi_event(START + 300, [0x90, 60, 100]),
+            parameter_event(AURenderEventType::Parameter as u8, START, 1.0, 0),
+            midi_event(START + 511, [0x80, 60, 0]),
+        ];
+        let list = link(&mut events);
+
+        let mut buffer = MidiBuffer::with_capacity(16);
+        // SAFETY: The list is valid and ends with a null `next`.
+        unsafe { extract_midi_events(list, &mut buffer, START, 512) };
+
+        let events = buffer.as_slice();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].sample_offset, 300);
+        assert!(matches!(events[0].event, MidiEventKind::NoteOn(_)));
+        assert_eq!(events[1].sample_offset, 511);
+        assert!(matches!(events[1].event, MidiEventKind::NoteOff(_)));
+    }
 }

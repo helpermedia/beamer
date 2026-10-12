@@ -637,61 +637,25 @@ where
 
         use beamer_core::parameter_types::Parameters;
 
-        // =========================================================================
-        // Parameter Automation Design Notes
-        // =========================================================================
-        //
-        // Current implementation: Set target value, let existing smoothers interpolate.
-        //
-        // Why this approach is intentional:
-        // 1. **Parity with VST3**: The beamer VST3 wrapper uses the same "last value"
-        //    approach (see beamer-vst3/src/processor.rs lines 1916-1920).
-        //
-        // 2. **Smoother API limitations**: beamer_core's Smoother uses a fixed time
-        //    constant configured at parameter construction (via SmoothingStyle).
-        //    There is no API for dynamic per-event ramp configuration like
-        //    `set_normalized_with_ramp(value, samples)`.
-        //
-        // 3. **Practical behavior**: For most musical parameters, the configured
-        //    smoother time (e.g., 5ms exponential) provides smooth transitions
-        //    that sound good regardless of the DAW's ramp duration.
-        //
-        // Sample offset (`sample_offset`) is currently not used because:
-        // - True sample-accurate automation would require sub-block processing
-        //   (splitting audio at event boundaries), which adds complexity and overhead
-        // - The smoother interpolates across the entire buffer anyway
-        // - Most plugins don't need sub-sample precision for parameter changes
-        //
-        // Ramp duration (`duration_samples`) is currently not used because:
-        // - beamer_core's Smoother doesn't support dynamic ramp reconfiguration
-        // - The fixed smoother time constant provides consistent behavior
-        //
-        // Future improvement options (if needed):
-        // - Add dynamic ramp support to beamer_core::Smoother
-        // - Implement sub-block processing for sample-accurate automation
-        // =========================================================================
+        // The events arrive in sub-blocks that start at their sample offset, so
+        // applying them here is sample accurate. A ramp is applied as a change to
+        // its end value: the parameter's own smoother interpolates, with the time
+        // constant configured at parameter construction, which is also what the
+        // other format wrappers do.
+        let parameters = processor.parameters_mut();
 
-        // Apply immediate parameter changes
-        // These set the target value; smoothers handle interpolation to avoid zipper noise.
-        for event in immediate {
-            // Convert AU parameter address to beamer parameter ID
-            // AU parameter addresses map directly to beamer parameter IDs
-            let param_id = event.parameter_address as u32;
+        // The values are in AU format (plain value, or index for an indexed
+        // parameter), like the ones the host sets on the parameter directly.
+        let immediate = immediate.iter().map(|e| (e.parameter_address, e.value));
+        let ramps = ramps.iter().map(|e| (e.parameter_address, e.end_value));
 
-            if let Some(param) = processor.parameters_mut().by_id(param_id) {
-                param.set_normalized(event.value as f64);
-            }
-        }
+        for (address, value) in immediate.chain(ramps) {
+            // AU parameter addresses map directly to beamer parameter IDs.
+            let param_id = address as u32;
+            let normalized = crate::bridge::au_value_to_normalized(&*parameters, param_id, value);
 
-        // Apply parameter ramps
-        // Set the end value as the target; the parameter's smoother interpolates.
-        // The ramp's `duration_samples` is not used because beamer_core's Smoother
-        // uses a fixed time constant configured at parameter construction.
-        for event in ramps {
-            let param_id = event.parameter_address as u32;
-
-            if let Some(param) = processor.parameters_mut().by_id(param_id) {
-                param.set_normalized(event.end_value as f64);
+            if let Some(param) = Parameters::by_id(&*parameters, param_id) {
+                param.set_normalized(normalized);
             }
         }
 

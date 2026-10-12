@@ -1678,8 +1678,11 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
     }
 
-    // Drain MIDI ring buffer and build AURenderEvent linked list
+    // Drain MIDI ring buffer and build AURenderEvent linked list.
+    // The ring holds offsets into this buffer. Render events carry a sample
+    // time on the timeline of the render timestamp, so add the buffer start.
     const AURenderEvent* midiEventList = NULL;
+    AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
     UInt32 midiRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
     UInt32 midiWrite = atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire);
     if (midiRead != midiWrite) {
@@ -1688,6 +1691,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         while (idx != midiWrite) {
             AURenderEvent* ev = &inst->midiRingBuffer[idx];
             ev->head.next = NULL;
+            ev->head.eventSampleTime += bufferStart;
             if (prev) prev->head.next = ev;
             else midiEventList = ev;
             prev = ev;
@@ -1745,6 +1749,7 @@ static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1,
     AURenderEvent* event = &inst->midiRingBuffer[write];
     memset(event, 0, sizeof(AURenderEvent));
     event->MIDI.eventType = AURenderEventMIDI;
+    // Offset into the next buffer. Render turns it into a sample time.
     event->MIDI.eventSampleTime = (AUEventSampleTime)inOffsetSampleFrame;
     event->MIDI.cable = 0;
     event->MIDI.length = 3;

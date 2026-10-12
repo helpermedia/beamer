@@ -1320,31 +1320,23 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
         // SAFETY: handle validated by with_instance_void! macro.
         unsafe {
             with_param_store(handle, |store| {
-                // Find parameter info to check if it's indexed.
-                let count = store.count();
-                let mut is_indexed = false;
-
-                for i in 0..count {
-                    if let Some(info) = store.info(i) {
-                        if info.id == param_id {
-                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                                is_indexed = true;
-                                let normalized = value / info.step_count as f32;
-                                store.set_normalized(param_id, normalized as f64);
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                // For all other parameters, convert actual (plain) value to normalized.
-                if !is_indexed {
-                    let normalized = store.plain_to_normalized(param_id, value as f64);
-                    store.set_normalized(param_id, normalized);
-                }
+                store.set_normalized(param_id, au_value_to_normalized(store, param_id, value));
             });
         }
     })
+}
+
+/// Convert a parameter value from AU format to a normalized value.
+///
+/// AU hosts use an index (0 to step_count) for indexed parameters and the
+/// actual (plain) value, such as dB or Hz, for all others.
+pub(crate) fn au_value_to_normalized(store: &dyn ParameterStore, param_id: u32, value: f32) -> f64 {
+    match store.info_by_id(param_id) {
+        Some(info) if info.unit == ParameterUnit::Indexed && info.step_count > 0 => {
+            (value / info.step_count as f32) as f64
+        }
+        _ => store.plain_to_normalized(param_id, value as f64),
+    }
 }
 
 /// Format a parameter's plain value as a display string.
