@@ -38,7 +38,8 @@ use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
-    BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, ProcessMode, WebViewHandler, MAX_BUSES,
+    BusType, CachedBusConfig, CachedBusInfo, ParameterInfo, ParameterUnit, ProcessMode,
+    WebViewHandler, MAX_BUSES,
 };
 use crate::factory;
 use crate::instance::AuPluginInstance;
@@ -210,13 +211,15 @@ pub struct BeamerAuParameterInfo {
     /// - 2 = Boolean (checkbox)
     /// - 13 = Decibels, 8 = Hertz, etc.
     pub unit_type: u32,
-    /// Minimum actual value (e.g., -60 dB for gain)
+    /// Minimum value in AU format: the actual value (e.g., -60 dB for gain),
+    /// or 0 for an indexed parameter
     pub min_value: f32,
-    /// Maximum actual value (e.g., +12 dB for gain)
+    /// Maximum value in AU format: the actual value (e.g., +12 dB for gain),
+    /// or `step_count` for an indexed parameter
     pub max_value: f32,
-    /// Default actual value (converted from normalized)
+    /// Default value in AU format (actual value, or index for an indexed parameter)
     pub default_value: f32,
-    /// Current actual value (converted from normalized)
+    /// Current value in AU format (actual value, or index for an indexed parameter)
     pub current_value: f32,
     /// Number of discrete steps (0 = continuous, 1 = boolean, N = N+1 states)
     pub step_count: i32,
@@ -1210,15 +1213,14 @@ pub extern "C" fn beamer_au_get_parameter_info(
                 copy_str_to_char_array(param_info.name, &mut out.name);
                 copy_str_to_char_array(param_info.units, &mut out.units);
                 out.unit_type = param_info.unit as u32;
-                // Compute min/max actual values from normalized range.
-                out.min_value = store.normalized_to_plain(param_info.id, 0.0) as f32;
-                out.max_value = store.normalized_to_plain(param_info.id, 1.0) as f32;
-                // Convert default and current values to actual (plain) values.
+                // The range and the values are in AU format, like the values
+                // the host gets and sets.
+                out.min_value = normalized_to_au_value(store, param_info, 0.0);
+                out.max_value = normalized_to_au_value(store, param_info, 1.0);
                 out.default_value =
-                    store.normalized_to_plain(param_info.id, param_info.default_normalized) as f32;
-                out.current_value = store
-                    .normalized_to_plain(param_info.id, store.get_normalized(param_info.id))
-                    as f32;
+                    normalized_to_au_value(store, param_info, param_info.default_normalized);
+                out.current_value =
+                    normalized_to_au_value(store, param_info, store.get_normalized(param_info.id));
                 out.step_count = param_info.step_count;
                 // Convert ParameterFlags to u32 bitfield.
                 out.flags = {
@@ -1293,7 +1295,7 @@ pub extern "C" fn beamer_au_set_parameter_value(
 ///
 /// For indexed parameters (those with `unit_type == kAudioUnitParameterUnit_Indexed`),
 /// this returns the index value (0 to step_count) instead of the normalized value (0.0 to 1.0).
-/// For non-indexed parameters, this returns the normalized value.
+/// For non-indexed parameters, this returns the actual (plain) value.
 ///
 /// This function is designed for use by AU wrappers that need to provide values
 /// in the format expected by AU hosts, where indexed parameters use integer indices.
@@ -1316,22 +1318,10 @@ pub extern "C" fn beamer_au_get_parameter_value_au(
             with_param_store(handle, |store| {
                 let normalized = store.get_normalized(param_id);
 
-                // Find parameter info to check if it's indexed.
-                let count = store.count();
-                for i in 0..count {
-                    if let Some(info) = store.info(i) {
-                        if info.id == param_id {
-                            // For indexed parameters, return integer index (0..step_count).
-                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
-                                return (normalized as f32 * info.step_count as f32).round();
-                            }
-                            break;
-                        }
-                    }
+                match store.info_by_id(param_id) {
+                    Some(info) => normalized_to_au_value(store, info, normalized),
+                    None => store.normalized_to_plain(param_id, normalized) as f32,
                 }
-
-                // For all other parameters, return actual (plain) value.
-                store.normalized_to_plain(param_id, normalized) as f32
             })
         }
         .unwrap_or(0.0)
@@ -1371,20 +1361,42 @@ pub extern "C" fn beamer_au_set_parameter_value_au(
     })
 }
 
+/// Whether AU hosts see the parameter as an index instead of its plain value.
+fn is_au_indexed(info: &ParameterInfo) -> bool {
+    info.unit == ParameterUnit::Indexed && info.step_count > 0
+}
+
 /// Convert a parameter value from AU format to a normalized value.
 ///
 /// AU hosts use an index (0 to step_count) for indexed parameters and the
 /// actual (plain) value, such as dB or Hz, for all others.
 pub(crate) fn au_value_to_normalized(store: &dyn ParameterStore, param_id: u32, value: f32) -> f64 {
     match store.info_by_id(param_id) {
-        Some(info) if info.unit == ParameterUnit::Indexed && info.step_count > 0 => {
-            (value / info.step_count as f32) as f64
-        }
+        Some(info) if is_au_indexed(info) => value as f64 / info.step_count as f64,
         _ => store.plain_to_normalized(param_id, value as f64),
     }
 }
 
-/// Format a parameter's plain value as a display string.
+/// Convert a normalized parameter value to AU format.
+///
+/// The reverse of [`au_value_to_normalized`]. The parameter info describes
+/// its range to the host in the same format.
+fn normalized_to_au_value(
+    store: &dyn ParameterStore,
+    info: &ParameterInfo,
+    normalized: f64,
+) -> f32 {
+    if is_au_indexed(info) {
+        (normalized * info.step_count as f64).round() as f32
+    } else {
+        store.normalized_to_plain(info.id, normalized) as f32
+    }
+}
+
+/// Format a parameter value in AU format as a display string.
+///
+/// The value is what the host holds: the actual (plain) value, or the index
+/// for an indexed parameter.
 ///
 /// # Safety
 ///
@@ -1401,7 +1413,7 @@ pub(crate) fn au_value_to_normalized(store: &dyn ParameterStore, param_id: u32, 
 pub extern "C" fn beamer_au_format_parameter_value(
     instance: BeamerAuInstanceHandle,
     param_id: u32,
-    plain_value: f32,
+    value: f32,
     out_buffer: *mut c_char,
     buffer_len: u32,
 ) -> u32 {
@@ -1410,12 +1422,12 @@ pub extern "C" fn beamer_au_format_parameter_value(
     }
 
     with_instance!(instance, 0, |handle| {
-        // Normalize from plain using f64 precision to avoid f32 round-trip
-        // artifacts (e.g. 0.0 dB displaying as "-0.0").
+        // Normalize using f64 precision to avoid f32 round-trip artifacts
+        // (e.g. 0.0 dB displaying as "-0.0").
         // SAFETY: handle validated by with_instance! macro.
         let string = unsafe {
             with_param_store(handle, |store| {
-                let normalized = store.plain_to_normalized(param_id, plain_value as f64);
+                let normalized = au_value_to_normalized(store, param_id, value);
                 store.normalized_to_string(param_id, normalized)
             })
         };
@@ -1514,7 +1526,7 @@ pub extern "C" fn beamer_au_get_parameter_value_count(
                 for i in 0..count {
                     if let Some(info) = store.info(i) {
                         if info.id == param_id {
-                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                            if is_au_indexed(info) {
                                 return (info.step_count + 1) as u32;
                             }
                             return 0;
@@ -1566,7 +1578,7 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
                 for i in 0..count {
                     if let Some(info) = store.info(i) {
                         if info.id == param_id {
-                            if info.unit == ParameterUnit::Indexed && info.step_count > 0 {
+                            if is_au_indexed(info) {
                                 step_count = Some(info.step_count);
                             }
                             break;
@@ -2933,6 +2945,7 @@ pub unsafe extern "C" fn beamer_au_on_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use beamer_core::{EnumParameter, EnumParameterValue, IntParameter, ParameterRef};
 
     #[test]
     fn test_main_bus_channels() {
@@ -2977,6 +2990,125 @@ mod tests {
         assert_eq!(fallback_main_channels(Category::MidiEffect), (2, 2));
         assert_eq!(fallback_main_channels(Category::Instrument), (0, 2));
         assert_eq!(fallback_main_channels(Category::Generator), (0, 2));
+    }
+
+    /// A parameter store with one parameter.
+    struct OneParameter<P: ParameterRef>(P);
+
+    impl<P: ParameterRef> ParameterStore for OneParameter<P> {
+        fn count(&self) -> usize {
+            1
+        }
+        fn info(&self, index: usize) -> Option<&ParameterInfo> {
+            (index == 0).then(|| self.0.info())
+        }
+        fn get_normalized(&self, _id: u32) -> f64 {
+            self.0.get_normalized()
+        }
+        fn set_normalized(&self, _id: u32, value: f64) {
+            self.0.set_normalized(value);
+        }
+        fn normalized_to_string(&self, _id: u32, normalized: f64) -> String {
+            self.0.display_normalized(normalized)
+        }
+        fn string_to_normalized(&self, _id: u32, string: &str) -> Option<f64> {
+            self.0.parse(string)
+        }
+        fn normalized_to_plain(&self, _id: u32, normalized: f64) -> f64 {
+            self.0.normalized_to_plain(normalized)
+        }
+        fn plain_to_normalized(&self, _id: u32, plain: f64) -> f64 {
+            self.0.plain_to_normalized(plain)
+        }
+    }
+
+    /// The range, default and current value the host is told, in that order.
+    fn au_values(store: &dyn ParameterStore) -> [f32; 4] {
+        let info = store.info(0).unwrap();
+        [
+            normalized_to_au_value(store, info, 0.0),
+            normalized_to_au_value(store, info, 1.0),
+            normalized_to_au_value(store, info, info.default_normalized),
+            normalized_to_au_value(store, info, store.get_normalized(info.id)),
+        ]
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Waveform {
+        Sine,
+        Saw,
+        Square,
+        Triangle,
+    }
+
+    impl EnumParameterValue for Waveform {
+        const COUNT: usize = 4;
+        const DEFAULT_INDEX: usize = 1;
+
+        fn from_index(index: usize) -> Option<Self> {
+            [Self::Sine, Self::Saw, Self::Square, Self::Triangle]
+                .get(index)
+                .copied()
+        }
+        fn to_index(self) -> usize {
+            self as usize
+        }
+        fn default_value() -> Self {
+            Self::Saw
+        }
+        fn name(index: usize) -> &'static str {
+            Self::names()[index]
+        }
+        fn names() -> &'static [&'static str] {
+            &["Sine", "Saw", "Square", "Triangle"]
+        }
+    }
+
+    #[test]
+    fn test_indexed_enum_parameter_in_au_format() {
+        let store = OneParameter(EnumParameter::<Waveform>::new("Waveform"));
+
+        // The host sees an index, and the default is the second variant.
+        assert_eq!(au_values(&store), [0.0, 3.0, 1.0, 1.0]);
+
+        // Every index the host can set comes back as the same index.
+        let id = store.info(0).unwrap().id;
+        for index in 0..4 {
+            store.set_normalized(id, au_value_to_normalized(&store, id, index as f32));
+            assert_eq!(au_values(&store)[3], index as f32);
+            assert_eq!(store.0.get(), Waveform::from_index(index).unwrap());
+        }
+    }
+
+    #[test]
+    fn test_indexed_int_parameter_in_au_format() {
+        // The plain range does not start at 0, the index the host sees does.
+        let store =
+            OneParameter(IntParameter::new("Steps", 2, 1..=4).with_unit(ParameterUnit::Indexed));
+        assert_eq!(au_values(&store), [0.0, 3.0, 1.0, 1.0]);
+
+        let id = store.info(0).unwrap().id;
+        store.set_normalized(id, au_value_to_normalized(&store, id, 3.0));
+        assert_eq!(store.0.get(), 4);
+        assert_eq!(au_values(&store)[3], 3.0);
+
+        // The string for an index is the string of the plain value behind it.
+        let string_for = |index| {
+            store.normalized_to_string(id, au_value_to_normalized(&store, id, index))
+        };
+        assert_eq!(string_for(0.0), "1");
+        assert_eq!(string_for(3.0), "4");
+    }
+
+    #[test]
+    fn test_plain_parameter_in_au_format() {
+        // Without the indexed unit the host sees the plain values.
+        let store = OneParameter(IntParameter::new("Steps", 2, 1..=4));
+        assert_eq!(au_values(&store), [1.0, 4.0, 2.0, 2.0]);
+
+        let id = store.info(0).unwrap().id;
+        store.set_normalized(id, au_value_to_normalized(&store, id, 3.0));
+        assert_eq!(store.0.get(), 3);
     }
 
     #[test]

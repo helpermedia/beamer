@@ -759,31 +759,19 @@ static void beamer_auv3_on_loaded(void* context) {
             }
         }
 
-        float paramMin;
-        float paramMax;
-        float paramDefault;
-
-        if (info.unit_type == kAudioUnitParameterUnit_Indexed) {
-            paramMin = 0.0f;
-            paramMax = (float)info.step_count;
-            paramDefault = roundf(info.default_value * info.step_count);
-        } else {
-            paramMin = info.min_value;
-            paramMax = info.max_value;
-            paramDefault = info.default_value;
-        }
-
+        // The range from Rust is in AU format: actual values, or an index
+        // (0..step_count) for indexed parameters.
         AUParameter* param = [AUParameterTree createParameterWithIdentifier:identifier
                                                                        name:name
                                                                     address:(AUParameterAddress)info.id
-                                                                        min:paramMin
-                                                                        max:paramMax
+                                                                        min:info.min_value
+                                                                        max:info.max_value
                                                                        unit:auUnit
                                                                    unitName:nil
                                                                       flags:flags
                                                                valueStrings:valueStrings
                                                         dependentParameters:nil];
-        param.value = paramDefault;
+        param.value = info.default_value;
 
         [allParams addObject:@{
             @"param": param,
@@ -914,7 +902,7 @@ static void beamer_auv3_on_loaded(void* context) {
         [strongSelf->_instanceLock lock];
         NSString* result = nil;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
-            // Pass the plain value directly to Rust which normalizes in f64
+            // Pass the AU value directly to Rust which normalizes in f64
             // precision, avoiding f32 round-trip artifacts in display strings.
             char buffer[128];
             uint32_t written = beamer_au_format_parameter_value(

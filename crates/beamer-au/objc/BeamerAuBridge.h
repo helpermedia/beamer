@@ -202,8 +202,9 @@ typedef enum {
  * in Objective-C from Rust's parameter definitions.
  *
  * Value Range:
- * - Values are in actual units (e.g., -60 to +12 dB)
- * - The ObjC wrapper uses min_value and max_value for the AUParameter range
+ * - Values are in AU format: actual units (e.g., -60 to +12 dB), or an index
+ *   from 0 to step_count for indexed parameters
+ * - The wrappers use min_value, max_value and default_value as they are
  * - Display values are formatted by Rust via `beamer_au_format_parameter_value()`
  */
 typedef struct {
@@ -223,13 +224,13 @@ typedef struct {
     /// - 8 = kAudioUnitParameterUnit_Hertz
     /// - etc. (see AudioUnitProperties.h for full list)
     uint32_t unit_type;
-    /// Minimum actual value (e.g., -60.0 for dB)
+    /// Minimum value in AU format (e.g., -60.0 for dB, 0 for an indexed parameter)
     float min_value;
-    /// Maximum actual value (e.g., 12.0 for dB)
+    /// Maximum value in AU format (e.g., 12.0 for dB, step_count for an indexed parameter)
     float max_value;
-    /// Default actual value (in the range min_value to max_value)
+    /// Default value in AU format (in the range min_value to max_value)
     float default_value;
-    /// Current actual value (in the range min_value to max_value)
+    /// Current value in AU format (in the range min_value to max_value)
     float current_value;
     /// Number of discrete steps (0 = continuous, 1 = boolean, N = N+1 states)
     int32_t step_count;
@@ -699,17 +700,18 @@ void beamer_au_set_parameter_value_au(
 );
 
 /**
- * Format a parameter's plain value as a display string.
+ * Format a parameter value in AU format as a display string.
  *
- * Accepts a plain (actual) value in the parameter's native range
- * (e.g. dB, Hz) and normalizes internally using f64 precision to
+ * Accepts the value the host holds: a plain (actual) value in the
+ * parameter's native range (e.g. dB, Hz), or the index for an indexed
+ * parameter. Normalizes internally using f64 precision to
  * avoid f32 round-trip artifacts in the display string.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance    Handle to the plugin instance.
  * @param param_id    Parameter ID.
- * @param plain_value Plain value in the parameter's native range.
+ * @param value       Value in AU format (plain value, or index).
  * @param out_buffer  Buffer to write the formatted string (UTF-8, null-terminated).
  * @param buffer_len  Size of out_buffer in bytes (including null terminator).
  *
@@ -718,7 +720,7 @@ void beamer_au_set_parameter_value_au(
 uint32_t beamer_au_format_parameter_value(
     BeamerAuInstanceHandle _Nullable instance,
     uint32_t param_id,
-    float plain_value,
+    float value,
     char* out_buffer,
     uint32_t buffer_len
 );

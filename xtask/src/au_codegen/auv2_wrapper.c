@@ -916,18 +916,15 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                     // Map unit type
                     auInfo->unit = bInfo.unit_type;
 
-                    // Use actual value range from Rust
+                    // The range from Rust is in AU format: actual values, or
+                    // an index (0..step_count) for indexed parameters.
                     auInfo->minValue = bInfo.min_value;
                     auInfo->maxValue = bInfo.max_value;
                     auInfo->defaultValue = bInfo.default_value;
 
-                    // Check if indexed parameter (for value strings)
-                    // AUv2 indexed params use integer values 0..step_count
+                    // Indexed parameters have a string for every value.
                     if (bInfo.unit_type == kAudioUnitParameterUnit_Indexed && bInfo.step_count > 0) {
                         auInfo->flags |= kAudioUnitParameterFlag_ValuesHaveStrings;
-                        auInfo->maxValue = (float)bInfo.step_count;
-                        // Convert default from normalized to index
-                        auInfo->defaultValue = roundf(bInfo.default_value * (float)bInfo.step_count);
                     }
 
                     // Copy unit label if present
@@ -987,7 +984,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 value = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
             }
 
-            // Pass the plain value directly to Rust which normalizes in f64
+            // Pass the AU value directly to Rust which normalizes in f64
             // precision, avoiding f32 round-trip artifacts in display strings.
             char buffer[256];
             uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, paramID, value, buffer, sizeof(buffer));
