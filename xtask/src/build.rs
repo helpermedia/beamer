@@ -64,7 +64,6 @@ fn au_rustc_args(
     // Every linker argument the plugin needs, as flag and value pairs.
     // Note: beamer_au_appex_force_link is internal (not exported) to avoid symbol collisions.
     let args = [
-        ("-L", format!("native={}", objc_lib_dir_str)),
         ("-C", format!("link-arg=-Wl,-force_load,{}/lib{}_au_objc.a", objc_lib_dir_str, lib_name)),
         ("-C", format!("link-arg=-Wl,-force_load,{}/lib{}_au_extension.a", objc_lib_dir_str, lib_name)),
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_{}", wrapper_class)),
@@ -892,13 +891,11 @@ mod tests {
         // Every flag is followed by its value, and a space in the path does
         // not split an argument.
         assert_eq!(args.len() % 2, 0);
-        assert_eq!(&args[..2], ["-L", "native=/tmp/My Projects/au-gen"]);
-        assert_eq!(args[2], "-C");
         assert_eq!(
-            args[3],
-            "link-arg=-Wl,-force_load,/tmp/My Projects/au-gen/libmidi_transform_au_objc.a"
+            &args[..2],
+            ["-C", "link-arg=-Wl,-force_load,/tmp/My Projects/au-gen/libmidi_transform_au_objc.a"]
         );
-        assert!(args.chunks(2).all(|pair| pair[0] == "-L" || pair[0] == "-C"));
+        assert!(args.chunks(2).all(|pair| pair[0] == "-C"));
         assert!(args.contains(&"link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerMidiTransformAuWrapper".to_string()));
     }
 }
