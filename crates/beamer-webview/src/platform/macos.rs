@@ -243,7 +243,7 @@ impl MacosWebView {
     }
 
     /// Remove the WebView from its parent and clean up IPC handlers.
-    pub fn detach(&mut self) {
+    fn detach(&mut self) {
         // SAFETY: Remove message handler and user scripts to break retain cycles.
         // webview and its configuration are valid on the main thread.
         unsafe {
@@ -258,5 +258,14 @@ impl MacosWebView {
             let _: () = objc2::msg_send![&self.webview, setNavigationDelegate: std::ptr::null::<AnyObject>()];
         }
         self.webview.removeFromSuperview();
+    }
+}
+
+// Dropping the WebView detaches it. The parent view retains the WKWebView, so
+// without this it would stay on screen and keep calling the IPC callbacks with
+// a context pointer its owner has already freed.
+impl Drop for MacosWebView {
+    fn drop(&mut self) {
+        self.detach();
     }
 }

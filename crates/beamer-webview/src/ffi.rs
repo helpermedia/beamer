@@ -190,9 +190,9 @@ mod macos_ffi {
 
         let _ = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: caller guarantees handle is valid and won't be reused.
-            let mut webview = unsafe { Box::from_raw(handle as *mut MacosWebView) };
-            webview.detach();
-            // Box drops here, releasing the WKWebView
+            let webview = unsafe { Box::from_raw(handle as *mut MacosWebView) };
+            // Dropping the WebView detaches it and releases the WKWebView.
+            drop(webview);
         }));
     }
 

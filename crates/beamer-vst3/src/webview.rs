@@ -27,7 +27,7 @@ struct IpcContext {
     /// Index corresponds to ParameterStore::info(index).
     last_values: Vec<f64>,
     /// Pointer to the platform WebView (for evaluate_js calls from callbacks).
-    /// Set in attached(), cleared in removed().
+    /// Set in attached(), cleared in removed() and when the view is dropped.
     webview: *const PlatformWebView,
     /// NSTimer handle for parameter sync. Null when not running.
     sync_timer: *mut objc2::runtime::AnyObject,
@@ -323,7 +323,7 @@ unsafe extern "C-unwind" fn sync_timer_fired(
 
     // SAFETY: ptr is a valid IpcContext pointer stored in the NSValue.
     let ipc = unsafe { &mut *(ptr as *mut IpcContext) };
-    // Guard against timer firing after webview detach but before invalidation.
+    // The pointer is null while no WebView is attached.
     if ipc.webview.is_null() {
         return;
     }
@@ -502,11 +502,9 @@ impl IPlugViewTrait for WebViewPlugView {
         // Clear webview pointer before detaching.
         ipc.webview = std::ptr::null();
 
+        // Dropping the platform WebView detaches it from the parent.
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let platform = unsafe { &mut *self.platform.get() };
-        if let Some(webview) = platform.as_mut() {
-            webview.detach();
-        }
         *platform = None;
         kResultOk
     }
@@ -649,6 +647,12 @@ impl Drop for WebViewPlugView {
 
         // Clear webview pointer to prevent stale dereferences.
         ipc.webview = std::ptr::null();
+
+        // Detach the WebView while the IPC context it calls into is still alive,
+        // and tell the delegate, which removed() would have done.
+        if self.platform.get_mut().take().is_some() {
+            self.delegate.get_mut().gui_closed();
+        }
 
         // Release our AddRef'd IComponentHandler reference.
         // SAFETY: handler was AddRef'd in new() or set_component_handler().

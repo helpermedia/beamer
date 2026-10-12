@@ -23,7 +23,4 @@ impl WindowsWebView {
 
     /// Update the WebView bounds.
     pub fn set_bounds(&self, _x: i32, _y: i32, _width: i32, _height: i32) {}
-
-    /// Remove the WebView from its parent.
-    pub fn detach(&mut self) {}
 }
