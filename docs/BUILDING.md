@@ -84,7 +84,7 @@ cargo xtask bundle gain --auv2 --auv3 --vst3 --release
 | `--arch <arch>` | `native` (default), `universal` (x86_64 and arm64), `arm64` or `x86_64` |
 | `--install` | Install the bundles after building (see [Installing](#installing)) |
 | `--clean` | Force a rebuild of the plugin and remove its previous bundles first. Normally not needed |
-| `--verbose` | Show detailed build output |
+| `--verbose`, `-v` | Show detailed build output |
 
 Bundles land in `target/release` (or `target/debug`) and are named after
 the package: `BeamerGain.component` (AUv2), `BeamerGain.app` (AUv3) and

@@ -107,7 +107,7 @@ fn main() {
             return;
         }
         "bundle" => {
-            if args.len() < 3 {
+            if args.len() < 3 || args[2].starts_with('-') {
                 print_error("bundle command requires a package name");
                 print_usage();
                 std::process::exit(1);
@@ -129,31 +129,42 @@ fn main() {
     let build_auv2 = args.iter().any(|a| a == "--auv2");
     let build_auv3 = args.iter().any(|a| a == "--auv3");
 
-    // Parse --arch flag
-    let arch = args.windows(2)
-        .find(|w| w[0] == "--arch")
-        .map(|w| {
-            Arch::from_str(&w[1]).unwrap_or_else(|| {
-                eprintln!("Warning: unrecognized arch '{}', using native", w[1]);
-                Arch::Native
-            })
-        })
-        .unwrap_or(Arch::Native);
-
-    // Check for unknown flags
+    // Check for unknown flags. Flags that take a value consume the next arg.
     let known_flags = ["--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv3", "--arch"];
-    let arch_values = ["native", "universal", "arm64", "x86_64"];
-    for arg in args.iter().skip(3) {
+    let value_flags = ["--arch"];
+    let mut rest = args.iter().skip(3);
+    while let Some(arg) = rest.next() {
+        if value_flags.contains(&arg.as_str()) {
+            // A following flag means the value is missing.
+            if rest.next().is_none_or(|value| value.starts_with('-')) {
+                print_error(&format!("'{}' requires a value", arg));
+                print_usage();
+                std::process::exit(1);
+            }
+            continue;
+        }
         if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
             print_error(&format!("unknown flag '{}'", arg));
             eprintln!("Known flags: {}", known_flags.join(", "));
             std::process::exit(1);
-        } else if !arg.starts_with("--") && !arch_values.contains(&arg.as_str()) {
+        } else if !arg.starts_with('-') {
             print_error(&format!("unexpected argument '{}'", arg));
             print_usage();
             std::process::exit(1);
         }
     }
+
+    // Parse --arch flag
+    let arch = args.windows(2)
+        .find(|w| w[0] == "--arch")
+        .map(|w| {
+            Arch::from_str(&w[1]).unwrap_or_else(|| {
+                print_error(&format!("unrecognized arch '{}'", w[1]));
+                print_usage();
+                std::process::exit(1);
+            })
+        })
+        .unwrap_or(Arch::Native);
 
     // Require at least one format flag
     if !build_vst3 && !build_auv2 && !build_auv3 {
@@ -254,7 +265,7 @@ fn print_usage() {
     eprintln!("  --clean      Force a rebuild of the plugin before building");
     eprintln!("               Removes its build artifacts, generated AU ObjC code and previous bundles.");
     eprintln!("               Normally not needed: use it when a change isn't being picked up.");
-    eprintln!("  --verbose    Show detailed build output (default: quiet)");
+    eprintln!("  --verbose    Show detailed build output (default: quiet). Short form: -v");
     eprintln!();
     eprintln!("Uninstall:");
     eprintln!("  Removes what --install copied to the plugin directories. After removing");
