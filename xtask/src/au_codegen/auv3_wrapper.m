@@ -63,6 +63,23 @@ static void BeamerAuv3ReadTransport(__unsafe_unretained AUHostMusicalContextBloc
 }
 
 // =============================================================================
+// MARK: - MIDI Output
+// =============================================================================
+
+// MIDI output of one render call: the host's block and the sample time of the
+// start of the buffer. The block is not retained, the wrapper holds it.
+typedef struct {
+    __unsafe_unretained AUMIDIOutputEventBlock block;
+    AUEventSampleTime bufferStart;
+} BeamerAuv3MidiOutput;
+
+// Forward one MIDI message from the plugin to the host (BeamerAuMidiOutputFn).
+static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length) {
+    const BeamerAuv3MidiOutput* output = (const BeamerAuv3MidiOutput*)context;
+    output->block(output->bufferStart + sampleOffset, 0, (NSInteger)length, bytes);
+}
+
+// =============================================================================
 // MARK: - {{WRAPPER_CLASS}} Interface
 // =============================================================================
 
@@ -83,6 +100,7 @@ static void BeamerAuv3ReadTransport(__unsafe_unretained AUHostMusicalContextBloc
     AUInternalRenderBlock _cachedInternalRenderBlock;
     AUHostMusicalContextBlock _hostMusicalContext;
     AUHostTransportStateBlock _hostTransportState;
+    AUMIDIOutputEventBlock _hostMidiOutput;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
     NSTimer* _syncTimer;
@@ -548,6 +566,7 @@ static void beamer_auv3_on_loaded(void* context) {
     // that the render thread does not have to read the properties.
     _hostMusicalContext = self.musicalContextBlock;
     _hostTransportState = self.transportStateBlock;
+    _hostMidiOutput = self.MIDIOutputEventBlock;
 
     OSStatus result = beamer_au_allocate_render_resources(
         _rustInstance,
@@ -576,6 +595,7 @@ static void beamer_auv3_on_loaded(void* context) {
     _inputPCMBuffer = nil;
     _hostMusicalContext = nil;
     _hostTransportState = nil;
+    _hostMidiOutput = nil;
 
     if (_rustInstance != NULL && _resourcesAllocated) {
         beamer_au_deallocate_render_resources(_rustInstance);
@@ -639,6 +659,12 @@ static void beamer_auv3_on_loaded(void* context) {
                                     &transport);
         }
 
+        // The plugin's MIDI output goes to the host's block, if it set one.
+        BeamerAuv3MidiOutput midiOutput;
+        midiOutput.block = blockSelf->_hostMidiOutput;
+        midiOutput.bufferStart = (AUEventSampleTime)timestamp->mSampleTime;
+        BOOL sendsMidi = (outputBusNumber == 0 && midiOutput.block != nil);
+
         return beamer_au_render(
             rustInstance,
             actionFlags,
@@ -650,7 +676,8 @@ static void beamer_auv3_on_loaded(void* context) {
             pullInputBlock,
             inputData,
             hasTransport ? &transport : NULL,
-            NULL
+            sendsMidi ? BeamerAuv3SendMidi : NULL,
+            sendsMidi ? &midiOutput : NULL
         );
     };
 
@@ -1034,6 +1061,11 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 - (NSArray<NSString*>*)MIDIOutputNames {
+    // One output for the plugin types that can produce MIDI. The host then
+    // sets MIDIOutputEventBlock to receive it.
+    if (_rustInstance != NULL && beamer_au_produces_midi(_rustInstance)) {
+        return @[@"MIDI Out"];
+    }
     return @[];
 }
 

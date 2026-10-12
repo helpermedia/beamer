@@ -12,7 +12,6 @@ categories = ["multimedia::audio"]
 default = ["webview"]
 ## WebView GUI support.
 webview = ["beamer-webview"]
-sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 
 [lints]
 workspace = true

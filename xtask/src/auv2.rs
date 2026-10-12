@@ -131,6 +131,7 @@ pub fn bundle_auv2(
                 "-framework", "AVFoundation",
                 "-framework", "CoreAudio",
                 "-framework", "CoreAudioKit",
+                "-framework", "CoreMIDI",
                 "-framework", "WebKit",
                 "-I", bridge_header_dir.to_str_safe()?,
                 "-I", ipc_header_dir.to_str_safe()?,

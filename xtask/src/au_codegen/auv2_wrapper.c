@@ -7,6 +7,7 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <AudioUnit/AudioUnit.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreMIDI/CoreMIDI.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -45,6 +46,11 @@
 #define MAX_PROPERTY_LISTENERS 64
 #define MAX_RENDER_NOTIFY 32
 #define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
+
+// Size of the packet list that collects the MIDI output of one render call.
+// Enough for a full buffer of channel messages. When more is produced, the
+// list goes to the host in parts.
+#define MIDI_OUTPUT_LIST_BYTES 32768
 
 // Private property for view factory to retrieve the Rust instance handle.
 // Uses the AU custom property range (64000+).
@@ -119,7 +125,22 @@ typedef struct BeamerAuv2Instance {
     AURenderEvent midiRingBuffer[BEAMER_AU_MAX_MIDI_EVENTS];
     _Atomic UInt32 midiWriteHead; // only written by producer (MIDIEvent)
     _Atomic UInt32 midiReadHead; // only written by consumer (Render)
+
+    // MIDI output. The list is only allocated for plugin types that can
+    // produce MIDI, and the host sets the callback when it listens.
+    bool isMidiEffect;
+    MIDIPacketList* midiOutputList;
+    AUMIDIOutputCallbackStruct midiOutputCallback;
 } BeamerAuv2Instance;
+
+// MIDI output of one render call.
+typedef struct {
+    AUMIDIOutputCallbackStruct callback;
+    const AudioTimeStamp* timeStamp;
+    MIDIPacketList* list;
+    // Write position in the list.
+    MIDIPacket* packet;
+} BeamerAuv2MidiOutput;
 
 // =============================================================================
 // MARK: - Forward Declarations
@@ -306,6 +327,14 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         InitDefaultFormat(&inst->outputFormats[i], inst->sampleRate, ch);
     }
 
+    // Prepare MIDI output for the plugin types that can produce MIDI.
+    AudioComponentDescription desc;
+    beamer_au_get_component_description(&desc);
+    inst->isMidiEffect = (desc.componentType == kAudioUnitType_MIDIProcessor);
+    if (beamer_au_produces_midi(inst->rustInstance)) {
+        inst->midiOutputList = (MIDIPacketList*)calloc(1, MIDI_OUTPUT_LIST_BYTES);
+    }
+
     // Build factory presets cache
     uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
     inst->presetCount = presetCount;
@@ -363,6 +392,9 @@ static OSStatus BeamerAuv2Close(void* self) {
     }
 
     FreeInputBufferList(inst);
+
+    free(inst->midiOutputList);
+    inst->midiOutputList = NULL;
 
     // Release current preset name
     if (inst->currentPresetName) {
@@ -730,6 +762,24 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         case kAudioUnitProperty_LastRenderError:
             if (outDataSize) *outDataSize = sizeof(OSStatus);
             if (outWritable) *outWritable = false;
+            return noErr;
+
+        // MIDI output - only supported when the plugin can produce MIDI.
+        case kAudioUnitProperty_MIDIOutputCallbackInfo:
+        case kAudioUnitProperty_MIDIOutputCallback:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (propID == kAudioUnitProperty_MIDIOutputCallbackInfo) {
+                if (outDataSize) *outDataSize = sizeof(CFArrayRef);
+                if (outWritable) *outWritable = false;
+            } else {
+                if (outDataSize) *outDataSize = sizeof(AUMIDIOutputCallbackStruct);
+                if (outWritable) *outWritable = true;
+            }
             return noErr;
 
         // CocoaUI - only supported when the plugin has a GUI
@@ -1181,6 +1231,24 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             return noErr;
         }
 
+        case kAudioUnitProperty_MIDIOutputCallbackInfo: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(CFArrayRef)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            // One MIDI output. The caller owns the array.
+            CFStringRef name = CFSTR("MIDI Out");
+            *(CFArrayRef*)outData = CFArrayCreate(kCFAllocatorDefault,
+                (const void**)&name, 1, &kCFTypeArrayCallBacks);
+            *ioDataSize = sizeof(CFArrayRef);
+            return noErr;
+        }
+
         case kAudioUnitProperty_LastRenderError: {
             if (!outData || !ioDataSize || *ioDataSize < sizeof(OSStatus)) {
                 return kAudioUnitErr_InvalidPropertyValue;
@@ -1363,6 +1431,20 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             // Clear callback when connection is set
             inst->inputCallback.inputProc = NULL;
             inst->inputCallback.inputProcRefCon = NULL;
+            return noErr;
+        }
+
+        case kAudioUnitProperty_MIDIOutputCallback: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!inData || inDataSize < sizeof(AUMIDIOutputCallbackStruct)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            inst->midiOutputCallback = *(const AUMIDIOutputCallbackStruct*)inData;
             return noErr;
         }
 
@@ -1580,6 +1662,60 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
 }
 
 // =============================================================================
+// MARK: - MIDI Output
+// =============================================================================
+
+// Start collecting the MIDI output of a render call. Returns false if the
+// plugin produces no MIDI or the host does not listen.
+static bool BeamerAuv2BeginMidiOutput(BeamerAuv2Instance* inst, const AudioTimeStamp* timeStamp,
+    BeamerAuv2MidiOutput* output) {
+
+    output->callback = inst->midiOutputCallback;
+    if (!inst->midiOutputList || !output->callback.midiOutputCallback) {
+        return false;
+    }
+    output->timeStamp = timeStamp;
+    output->list = inst->midiOutputList;
+    output->packet = MIDIPacketListInit(output->list);
+    return true;
+}
+
+// Hand the collected packets to the host and start a new list.
+static void BeamerAuv2FlushMidiOutput(BeamerAuv2MidiOutput* output) {
+    if (output->list->numPackets > 0) {
+        output->callback.midiOutputCallback(output->callback.userData,
+            output->timeStamp, 0, output->list);
+    }
+    output->packet = MIDIPacketListInit(output->list);
+}
+
+// Add one MIDI message from the plugin to the list (BeamerAuMidiOutputFn).
+// The time stamp of a packet is its sample offset in the buffer.
+static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length) {
+    BeamerAuv2MidiOutput* output = (BeamerAuv2MidiOutput*)context;
+
+    MIDIPacket* next = MIDIPacketListAdd(output->list, MIDI_OUTPUT_LIST_BYTES,
+        output->packet, sampleOffset, length, bytes);
+    if (next == NULL) {
+        // The list is full: pass it on and retry in an empty one. A message
+        // that does not fit there either is dropped.
+        BeamerAuv2FlushMidiOutput(output);
+        next = MIDIPacketListAdd(output->list, MIDI_OUTPUT_LIST_BYTES,
+            output->packet, sampleOffset, length, bytes);
+        if (next == NULL) {
+            return;
+        }
+    }
+    output->packet = next;
+}
+
+// Number of bytes of a channel message, from its status byte.
+static uint32_t BeamerAuv2MidiMessageLength(uint8_t status) {
+    uint8_t type = status & 0xF0;
+    return (type == 0xC0 || type == 0xD0) ? 2 : 3;
+}
+
+// =============================================================================
 // MARK: - Host Transport
 // =============================================================================
 
@@ -1706,6 +1842,29 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
             }
         }
 
+        // Consume the pending MIDI input, so that it does not play when bypass
+        // ends. A bypassed MIDI effect passes it on unchanged.
+        if (inOutputBusNumber == 0) {
+            UInt32 pendingRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
+            UInt32 pendingWrite = atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire);
+            BeamerAuv2MidiOutput thru;
+            if (pendingRead != pendingWrite && inst->isMidiEffect
+                && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru)) {
+                for (UInt32 idx = pendingRead; idx != pendingWrite; idx = (idx + 1) & MIDI_RING_MASK) {
+                    const AURenderEvent* ev = &inst->midiRingBuffer[idx];
+                    // Only channel messages, as in normal processing.
+                    uint8_t status = ev->MIDI.data[0];
+                    if (status < 0x80 || status >= 0xF0) {
+                        continue;
+                    }
+                    BeamerAuv2SendMidi(&thru, (uint32_t)ev->MIDI.eventSampleTime, ev->MIDI.data,
+                        BeamerAuv2MidiMessageLength(status));
+                }
+                BeamerAuv2FlushMidiOutput(&thru);
+            }
+            atomic_store_explicit(&inst->midiReadHead, pendingWrite, memory_order_release);
+        }
+
         // Call post-render notifications
         pthread_mutex_lock(&inst->renderNotifyMutex);
         for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
@@ -1774,6 +1933,11 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         BeamerAuv2ReadTransport(&hostCallbacks, &transport);
     }
 
+    // The plugin's MIDI output is collected in a packet list during the call.
+    BeamerAuv2MidiOutput midiOutput;
+    bool sendsMidi = (inOutputBusNumber == 0)
+        && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &midiOutput);
+
     // Call Rust render function
     OSStatus status = beamer_au_render(
         inst->rustInstance,
@@ -1786,8 +1950,14 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         NULL,  // pull_input_block (we pre-pulled via callback/connection)
         inputData,
         hasTransport ? &transport : NULL,
-        NULL   // schedule_midi_block
+        sendsMidi ? BeamerAuv2SendMidi : NULL,
+        sendsMidi ? &midiOutput : NULL
     );
+
+    // Pass the collected MIDI output to the host.
+    if (sendsMidi) {
+        BeamerAuv2FlushMidiOutput(&midiOutput);
+    }
 
     // Release consumed MIDI events back to the ring buffer
     if (midiRead != midiWrite) {

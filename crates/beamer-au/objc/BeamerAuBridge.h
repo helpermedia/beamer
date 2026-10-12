@@ -51,7 +51,6 @@ typedef struct AudioBufferList { uint32_t mNumberBuffers; } AudioBufferList;
 typedef struct AudioComponentDescription { uint32_t componentType; } AudioComponentDescription;
 typedef struct AURenderEvent { int type; } AURenderEvent;
 typedef void* AURenderPullInputBlock;
-typedef void* AUScheduleMIDIEventBlock;
 #endif
 
 // Nullability annotation fallbacks for non-clang or missing SDK
@@ -485,6 +484,27 @@ typedef struct {
 } BeamerAuTransport;
 
 /**
+ * Receives one MIDI message the plugin produced during beamer_au_render().
+ *
+ * The wrapper passes a function of this type when the host listens to the
+ * plugin's MIDI output, and forwards the message to the host. Called on the
+ * render thread, from inside beamer_au_render().
+ *
+ * @param context       The midi_output_context passed to beamer_au_render().
+ * @param sample_offset Position of the message in the current buffer.
+ * @param bytes         One complete MIDI 1.0 message: a channel message without
+ *                      running status, or a SysEx message from F0 to F7. Only
+ *                      valid during the call.
+ * @param length        Number of bytes in the message.
+ */
+typedef void (*BeamerAuMidiOutputFn)(
+    void* _Nullable context,
+    uint32_t sample_offset,
+    const uint8_t* bytes,
+    uint32_t length
+);
+
+/**
  * Process audio through the plugin.
  *
  * This is the main audio processing entry point, called from the AU host's
@@ -511,8 +531,10 @@ typedef struct {
  * @param transport             Transport and musical context the wrapper got from the host
  *                              for this call. May be NULL, as it is for the renders of
  *                              output buses other than 0, which do not process audio.
- * @param schedule_midi_block   Block to send MIDI output events. Not used yet:
- *                              both wrappers pass NULL and the bridge ignores it.
+ * @param midi_output           Function that receives the MIDI the plugin produces in
+ *                              this call. NULL if the host does not listen, the MIDI
+ *                              output is then discarded.
+ * @param midi_output_context   Passed to midi_output unchanged.
  *
  * @return OSStatus:
  *         - noErr (0): Success
@@ -529,7 +551,7 @@ typedef struct {
  *
  * Post-conditions on success:
  * - output_data buffers contain processed audio
- * - MIDI output events (if any) have been dropped, see schedule_midi_block
+ * - MIDI output events (if any) have been passed to midi_output
  */
 OSStatus beamer_au_render(
     BeamerAuInstanceHandle _Nullable instance,
@@ -542,7 +564,8 @@ OSStatus beamer_au_render(
     AURenderPullInputBlock _Nullable pull_input_block,
     const AudioBufferList* _Nullable input_data,
     const BeamerAuTransport* _Nullable transport,
-    AUScheduleMIDIEventBlock _Nullable schedule_midi_block
+    BeamerAuMidiOutputFn _Nullable midi_output,
+    void* _Nullable midi_output_context
 );
 
 /**

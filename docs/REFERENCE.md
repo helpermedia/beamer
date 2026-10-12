@@ -64,14 +64,14 @@ email = "support@example.com"
 | Field | Type | Description |
 |-------|------|-------------|
 | `vst3_controller_id` | String | VST3 controller UUID for split component/controller architecture (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
-| `sysex_slots` | Integer | Number of pre-allocated SysEx output slots (default: 16) |
-| `sysex_buffer_size` | Integer | Maximum SysEx message size in bytes (default: 512) |
+| `sysex_slots` | Integer | Number of pre-allocated SysEx output slots for VST3 (default: 16) |
+| `sysex_buffer_size` | Integer | Maximum SysEx output message size in bytes for VST3 (default: 512) |
 
 **SysEx Configuration:**
 - Advanced settings for plugins that send SysEx messages
 - Defaults (16 slots, 512 bytes) cover most use cases
 - Higher values use more memory but allow more concurrent/larger SysEx messages
-- Both AU and VST3 formats use these settings
+- The settings size the VST3 output pool. The AU formats pass SysEx output to the host directly, without a pool
 
 **Notes:**
 
@@ -1467,6 +1467,10 @@ sysex_buffer_size = 4096
 Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
 - Your plugin sends many SysEx messages per buffer (increase slots)
 - Your plugin sends large SysEx messages like sample dumps (increase buffer size)
+
+These settings apply to VST3, which needs a pool to keep the data alive after
+processing. The AU formats hand each message to the host during the render
+call, limited only by the buffer size of the Cargo feature above.
 
 **Heap Fallback (optional feature: `sysex-heap-fallback`):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.

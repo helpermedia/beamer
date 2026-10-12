@@ -387,7 +387,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
-- [sysex_pool.rs](crates/beamer-core/src/sysex_pool.rs) - SysEx output pool (in beamer-core, shared with VST3)
+- [transport.rs](crates/beamer-au/src/transport.rs) - Host transport conversion
 
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters, state and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
@@ -396,7 +396,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Supports Note On/Off, CC, Pitch Bend, Channel Pressure, SysEx
 - 1024 event buffer (matches VST3)
 - `MidiCcState` tracking for CC/pitch bend queries
-- `SysExOutputPool` for real-time safe SysEx output
+- MIDI output (channel messages and SysEx) is handed to the host during the render call
 
 **Parameters**: Push model via KVO (Key-Value Observing)
 - `AUParameterTree` built from `ParameterStore`
@@ -450,7 +450,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
 | **MIDI Output** | ✓ (instruments/MIDI effects only) | ✓ |
-| **SysEx Output** | ✓ (pool) | ✓ (pool) |
+| **SysEx Output** | ✓ | ✓ (pool) |
 | **Parameter Sync** | Push (KVO callbacks) | Pull (COM methods) |
 | **Param Automation** | Sample-accurate (sub-block) | Buffer-quantized + smoothing |
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |

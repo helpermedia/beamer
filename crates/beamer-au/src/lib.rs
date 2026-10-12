@@ -120,7 +120,7 @@ mod transport;
 
 // Re-exports for macOS-only modules
 #[cfg(target_os = "macos")]
-pub use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, SysExOutputPool};
+pub use beamer_core::{BusType, CachedBusConfig, CachedBusInfo};
 #[cfg(target_os = "macos")]
 pub use error_helpers::{DEFAULT_CHANNEL_COUNT, DEFAULT_MAX_FRAMES, DEFAULT_SAMPLE_RATE};
 #[cfg(target_os = "macos")]

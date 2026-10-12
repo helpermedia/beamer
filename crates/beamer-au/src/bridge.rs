@@ -42,7 +42,7 @@ use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
-    RenderBlockTrait,
+    BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait,
 };
 use crate::transport::BeamerAuTransport;
 use beamer_core::ParameterStore;
@@ -791,11 +791,6 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             handle.param_store = ParamStorePtr::capture(plugin.as_ref());
         }
 
-        // Get SysEx configuration from plugin config
-        let config = factory::plugin_config().expect("Plugin config not registered");
-        let sysex_slots = config.sysex_slots;
-        let sysex_buffer_size = config.sysex_buffer_size;
-
         // Create the render block based on sample format
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
             BeamerAuSampleFormat::Float32 => {
@@ -806,11 +801,8 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 Arc::from(create_render_block_f32(
                     Arc::clone(&handle.plugin),
                     storage,
-                    None, // schedule_midi_event_block passed at render time
                     max_frames,
                     sample_rate,
-                    sysex_slots,
-                    sysex_buffer_size,
                 ))
             }
             BeamerAuSampleFormat::Float64 => {
@@ -821,11 +813,8 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 Arc::from(create_render_block_f64(
                     Arc::clone(&handle.plugin),
                     storage,
-                    None,
                     max_frames,
                     sample_rate,
-                    sysex_slots,
-                    sysex_buffer_size,
                 ))
             }
         };
@@ -1010,7 +999,8 @@ pub extern "C" fn beamer_au_is_prepared(instance: BeamerAuInstanceHandle) -> boo
 /// - `transport` must be null (no transport information, as for the renders of
 ///   output buses other than 0) or point to a `BeamerAuTransport` that is valid
 ///   for the duration of the call
-/// - `_schedule_midi_block` may be null
+/// - `midi_output` must be null or a function that is safe to call with
+///   `midi_output_context` on this thread during the call
 /// - This function validates `instance`, `action_flags`, `timestamp` and
 ///   `output_data` are non-null; returns `K_AUDIO_UNIT_ERR_INVALID_PARAMETER` if any are null
 /// - Thread safety: Designed for real-time audio thread; uses non-blocking
@@ -1028,7 +1018,8 @@ pub extern "C" fn beamer_au_render(
     pull_input_block: *const c_void,
     input_data: *const AudioBufferList, // Input buffer list from ObjC (after pulling)
     transport: *const BeamerAuTransport,
-    _schedule_midi_block: *const c_void,
+    midi_output: Option<BeamerAuMidiOutputFn>,
+    midi_output_context: *mut c_void,
 ) -> i32 {
     // Validate instance handle
     if instance.is_null() {
@@ -1082,6 +1073,8 @@ pub extern "C" fn beamer_au_render(
             input_data,
             // SAFETY: The caller passes null or a pointer that is valid for this call.
             unsafe { transport.as_ref() },
+            // SAFETY: The caller guarantees the function is callable with the context.
+            midi_output.map(|send| unsafe { MidiOutputSink::new(send, midi_output_context) }),
         )
     }));
 
@@ -3037,7 +3030,8 @@ mod tests {
                 ptr::null(),
                 ptr::null(), // input_data
                 ptr::null(), // transport
-                ptr::null(),
+                None,        // midi_output
+                ptr::null_mut(),
             ),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER
         );

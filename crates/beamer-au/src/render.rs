@@ -23,7 +23,8 @@
 //!
 //! The host's musical context and transport state are not queried here: the
 //! wrappers do that in their own language and pass the result as plain data
-//! (see `transport.rs`).
+//! (see `transport.rs`). MIDI output goes the other way through a plain
+//! function the wrapper passes (see `MidiOutputSink`).
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -38,7 +39,7 @@ use crate::instance::AuPluginInstance;
 use crate::objc_block;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
-    MidiEvent, MidiEventKind, ProcessContext, Sample, SysExOutputPool, MAX_BUSES, MAX_CHANNELS,
+    MidiEvent, MidiEventKind, ProcessContext, Sample, MAX_BUSES, MAX_CHANNELS, MAX_SYSEX_SIZE,
 };
 
 // =============================================================================
@@ -743,6 +744,157 @@ fn update_midi_cc_state(
 }
 
 // =============================================================================
+// MIDI Output
+// =============================================================================
+
+/// Function that receives one MIDI message the plugin produced (matches
+/// BeamerAuMidiOutputFn in header).
+///
+/// `bytes` holds one complete MIDI 1.0 message of `length` bytes that is only
+/// valid during the call. `sample_offset` is its position in the current buffer.
+pub type BeamerAuMidiOutputFn =
+    unsafe extern "C" fn(context: *mut c_void, sample_offset: u32, bytes: *const u8, length: u32);
+
+/// Where the MIDI output of a render call goes.
+///
+/// The wrapper passes it to `beamer_au_render` when the host listens to the
+/// plugin's MIDI output, and forwards each message to the host in the form its
+/// API generation expects.
+#[derive(Clone, Copy)]
+pub struct MidiOutputSink {
+    send: BeamerAuMidiOutputFn,
+    context: *mut c_void,
+}
+
+impl MidiOutputSink {
+    /// Create a sink from the function and context a wrapper passed.
+    ///
+    /// # Safety
+    ///
+    /// `send` must be safe to call with `context` from the render thread for as
+    /// long as the sink is used.
+    pub unsafe fn new(send: BeamerAuMidiOutputFn, context: *mut c_void) -> Self {
+        Self { send, context }
+    }
+
+    fn send(&self, sample_offset: u32, bytes: &[u8]) {
+        // SAFETY: Guaranteed by the caller of `new`. The slice is valid for the call.
+        unsafe {
+            (self.send)(
+                self.context,
+                sample_offset,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+            )
+        }
+    }
+}
+
+/// Convert a normalized value to a 7-bit MIDI data byte.
+///
+/// Rounds, so that a value that came in as a data byte goes out as the same byte.
+fn to_data_byte(value: f32) -> u8 {
+    (value * 127.0).round().clamp(0.0, 127.0) as u8
+}
+
+/// Encode a MIDI event as a MIDI 1.0 channel message.
+///
+/// Returns the bytes and how many of them are used (2 or 3). Returns `None`
+/// for SysEx, which `send_midi_output` handles, and for events that have no
+/// MIDI 1.0 encoding (note expression, chord and scale info).
+fn encode_midi_event(event: &MidiEventKind) -> Option<([u8; 3], usize)> {
+    match event {
+        MidiEventKind::NoteOn(note) => Some((
+            [
+                0x90 | (note.channel & 0x0F),
+                note.pitch & 0x7F,
+                // A Note On with velocity 0 means Note Off on the wire.
+                to_data_byte(note.velocity).max(1),
+            ],
+            3,
+        )),
+        MidiEventKind::NoteOff(note) => Some((
+            [
+                0x80 | (note.channel & 0x0F),
+                note.pitch & 0x7F,
+                to_data_byte(note.velocity),
+            ],
+            3,
+        )),
+        MidiEventKind::PolyPressure(pp) => Some((
+            [
+                0xA0 | (pp.channel & 0x0F),
+                pp.pitch & 0x7F,
+                to_data_byte(pp.pressure),
+            ],
+            3,
+        )),
+        MidiEventKind::ControlChange(cc) => Some((
+            [
+                0xB0 | (cc.channel & 0x0F),
+                cc.controller & 0x7F,
+                to_data_byte(cc.value),
+            ],
+            3,
+        )),
+        MidiEventKind::ProgramChange(pc) => {
+            Some(([0xC0 | (pc.channel & 0x0F), pc.program & 0x7F, 0], 2))
+        }
+        MidiEventKind::ChannelPressure(cp) => Some((
+            [0xD0 | (cp.channel & 0x0F), to_data_byte(cp.pressure), 0],
+            2,
+        )),
+        MidiEventKind::PitchBend(pb) => {
+            // -1.0..1.0 maps to the 14-bit range 0..16383 with the center at 8192.
+            let raw = (pb.value * 8192.0 + 8192.0).round().clamp(0.0, 16383.0) as u16;
+            let lsb = (raw & 0x7F) as u8;
+            let msb = (raw >> 7) as u8;
+            Some(([0xE0 | (pb.channel & 0x0F), lsb, msb], 3))
+        }
+        MidiEventKind::SysEx(_)
+        | MidiEventKind::NoteExpressionValue(_)
+        | MidiEventKind::NoteExpressionInt(_)
+        | MidiEventKind::NoteExpressionText(_)
+        | MidiEventKind::ChordInfo(_)
+        | MidiEventKind::ScaleInfo(_) => None,
+    }
+}
+
+/// Send the MIDI events a plugin produced to the host.
+///
+/// Every event becomes one complete MIDI 1.0 message. Events without a MIDI 1.0
+/// encoding are skipped.
+fn send_midi_output(events: &[MidiEvent], sink: MidiOutputSink) {
+    for event in events {
+        match &event.event {
+            MidiEventKind::SysEx(sysex) => {
+                // The event holds the payload. On the wire the message is framed
+                // by F0 and F7, which are added unless the payload has them.
+                let data = sysex.as_slice();
+                let mut message = [0u8; MAX_SYSEX_SIZE + 2];
+                let mut len = 0;
+                if data.first() != Some(&0xF0) {
+                    message[len] = 0xF0;
+                    len += 1;
+                }
+                message[len..len + data.len()].copy_from_slice(data);
+                len += data.len();
+                if data.last() != Some(&0xF7) {
+                    message[len] = 0xF7;
+                    len += 1;
+                }
+                sink.send(event.sample_offset, &message[..len]);
+            }
+            other => {
+                if let Some((bytes, len)) = encode_midi_event(other) {
+                    sink.send(event.sample_offset, &bytes[..len]);
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Parameter Event Extraction
 // =============================================================================
 
@@ -848,6 +1000,7 @@ pub trait RenderBlockTrait: Send + Sync {
     /// * `pull_input_block` - Block to pull aux bus inputs
     /// * `input_data` - Input audio buffer list (already pulled by ObjC)
     /// * `host_transport` - Transport and musical context from the host, if any
+    /// * `midi_output` - Receiver of the plugin's MIDI output, if the host listens
     fn process(
         &self,
         action_flags: *mut u32,
@@ -859,6 +1012,7 @@ pub trait RenderBlockTrait: Send + Sync {
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
         host_transport: Option<&BeamerAuTransport>,
+        midi_output: Option<MidiOutputSink>,
     ) -> i32;
 
     /// Get a raw pointer to this render block.
@@ -898,14 +1052,6 @@ pub struct RenderBlock<S: Sample> {
     aux_input_buffer_lists: UnsafeCell<Vec<Box<AudioBufferList>>>,
     /// Pre-allocated MIDI output buffer for zero-allocation MIDI output processing
     midi_output: UnsafeCell<MidiBuffer>,
-    /// SysEx output pool for real-time safe SysEx message output
-    sysex_output_pool: UnsafeCell<SysExOutputPool>,
-    /// Host-provided block for sending MIDI output events.
-    ///
-    /// Neither AU wrapper passes this block yet, so it is always `None` and
-    /// MIDI output events are dropped. It is meant for the component types
-    /// that produce MIDI: `aumu` (instrument) and `aumi` (MIDI effect).
-    schedule_midi_event_block: Option<*const c_void>,
     /// Per-instance warmup counter to silence initial renders.
     ///
     /// The first few render calls may contain garbage from host-provided buffers.
@@ -989,20 +1135,13 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// * `plugin` - Arc-wrapped plugin instance for audio processing
     /// * `storage` - Pre-allocated buffer storage (created from bus config)
-    /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
-    /// * `sysex_slots` - Number of SysEx message slots to pre-allocate
-    /// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
         storage: ProcessBufferStorage<S>,
-        schedule_midi_event_block: Option<*const c_void>,
         max_frames: u32,
         sample_rate: f64,
-        sysex_slots: usize,
-        sysex_buffer_size: usize,
     ) -> Self {
         let aux_input_bus_count = storage.aux_input_bus_count();
         let sample_type_size = std::mem::size_of::<S>();
@@ -1040,11 +1179,6 @@ impl<S: Sample> RenderBlock<S> {
             sample_rate,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
-            sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
-                sysex_slots,
-                sysex_buffer_size,
-            )),
-            schedule_midi_event_block,
             warmup_count: AtomicUsize::new(0),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
             last_render_sample_time: UnsafeCell::new(f64::NAN),
@@ -1141,249 +1275,6 @@ impl<S: Sample> RenderBlock<S> {
         unsafe { (*timestamp).sample_time }
     }
 
-    /// Output a MIDI event to the host via the MIDI output block.
-    ///
-    /// This function sends MIDI data to the AU host if the block was provided.
-    /// Neither AU wrapper passes it yet (see `schedule_midi_event_block`).
-    ///
-    /// # Arguments
-    ///
-    /// * `midi_bytes` - Raw MIDI bytes to send (status + data bytes, or full SysEx)
-    /// * `sample_offset` - Sample offset within the current buffer
-    ///
-    /// # Returns
-    ///
-    /// `true` if the event was sent successfully, `false` if MIDI output is not available.
-    ///
-    /// # Safety
-    ///
-    /// This function is safe to call from the render thread. The MIDI output block
-    /// is guaranteed to be valid for the duration of the render callback by the AU host.
-    fn output_midi_to_host(&self, midi_bytes: &[u8], sample_offset: u32) -> bool {
-        let Some(block) = self.schedule_midi_event_block else {
-            return false;
-        };
-
-        // AUScheduleMIDIEventBlock signature (from Apple's Audio Unit v3 API):
-        //
-        // typedef void (^AUScheduleMIDIEventBlock)(
-        //     AUEventSampleTime eventSampleTime,  // i64
-        //     uint8_t cable,                      // u8
-        //     NSInteger length,                   // isize
-        //     const uint8_t *midiBytes            // *const u8
-        // );
-        //
-        // Define the function signature that matches Apple's AUScheduleMIDIEventBlock.
-        // The first parameter is the block pointer itself (Objective-C block convention).
-        type AUScheduleMIDIEventBlockFn = unsafe extern "C" fn(
-            block: *const c_void,   // Block pointer itself (Objective-C convention)
-            event_sample_time: i64, // AUEventSampleTime
-            cable: u8,              // Virtual cable number (typically 0)
-            length: isize,          // NSInteger - number of MIDI bytes
-            midi_bytes: *const u8,  // Pointer to MIDI data
-        );
-
-        // SAFETY: This transmute is required because Rust doesn't have native Objective-C block support.
-        //
-        // Why this transmute is needed:
-        // - AU hosts provide the MIDI output callback as an Objective-C block (*const c_void)
-        // - We need to call this block to send MIDI events to the host
-        // - The block must be cast to a function pointer with the correct signature
-        //
-        // Invariants that must hold:
-        // 1. `block` must be a valid AUScheduleMIDIEventBlock provided by AU host
-        // 2. The block must remain valid for the duration of this render callback
-        // 3. The function signature must exactly match Apple's documented AUScheduleMIDIEventBlock
-        // 4. Must be called from the AU render thread only
-        // 5. midi_bytes must point to valid MIDI data for the duration of the call
-        //
-        // What could go wrong:
-        // - If block pointer is invalid/corrupted -> undefined behavior (crash)
-        // - If signature doesn't match -> argument misalignment, undefined behavior
-        // - If called from wrong thread -> race conditions (violates AU threading model)
-        //
-        // Why this is safe in practice:
-        // - AU hosts guarantee the block is valid during the render callback
-        // - Our signature matches Apple's documented API exactly
-        // - We only call from within render callback, never store the pointer
-        // - midi_bytes points to our pre-allocated pool which outlives this call
-        unsafe {
-            let invoke = objc_block::invoke_ptr(block);
-            let block_fn: AUScheduleMIDIEventBlockFn = std::mem::transmute(invoke);
-            block_fn(
-                block,
-                sample_offset as i64,
-                0, // cable 0 (default virtual cable)
-                midi_bytes.len() as isize,
-                midi_bytes.as_ptr(),
-            );
-        }
-
-        true
-    }
-
-    /// Output a SysEx message to the host.
-    ///
-    /// SysEx messages are sent as raw MIDI bytes including F0 (start) and F7 (end).
-    ///
-    /// # Arguments
-    ///
-    /// * `sysex_data` - Full SysEx message bytes (F0 ... F7)
-    /// * `sample_offset` - Sample offset within the current buffer
-    ///
-    /// # Returns
-    ///
-    /// `true` if sent successfully, `false` if MIDI output is not available.
-    #[inline]
-    fn output_sysex_to_host(&self, sysex_data: &[u8], sample_offset: u32) -> bool {
-        self.output_midi_to_host(sysex_data, sample_offset)
-    }
-
-    /// Encode a MIDI event to bytes for transmission.
-    ///
-    /// Returns `Some([bytes])` for standard MIDI 1.0 messages that can be sent via
-    /// `scheduleMIDIEventBlock`. Returns `None` for SysEx (which requires separate handling)
-    /// and unsupported event types (MPE/expression data, DAW metadata).
-    ///
-    /// # MIDI 1.0 Status Bytes
-    ///
-    /// - 0x80: Note Off
-    /// - 0x90: Note On
-    /// - 0xA0: Polyphonic Key Pressure (Aftertouch)
-    /// - 0xB0: Control Change
-    /// - 0xC0: Program Change
-    /// - 0xD0: Channel Pressure (Aftertouch)
-    /// - 0xE0: Pitch Bend Change
-    ///
-    /// All status bytes are OR'd with the channel (0x00-0x0F) to create the final status byte.
-    fn encode_midi_event(event: &MidiEventKind) -> Option<[u8; 3]> {
-        match event {
-            MidiEventKind::NoteOn(note) => Some([
-                0x90 | (note.channel & 0x0F),
-                note.pitch & 0x7F,
-                ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-            ]),
-            MidiEventKind::NoteOff(note) => Some([
-                0x80 | (note.channel & 0x0F),
-                note.pitch & 0x7F,
-                ((note.velocity * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-            ]),
-            MidiEventKind::ControlChange(cc) => Some([
-                0xB0 | (cc.channel & 0x0F),
-                cc.controller & 0x7F,
-                ((cc.value * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-            ]),
-            MidiEventKind::PitchBend(pb) => {
-                // Convert -1.0..1.0 to 0..16383 (14-bit)
-                let raw = (((pb.value + 1.0) * 8192.0).clamp(0.0, 16383.0) as u16) & 0x3FFF;
-                let lsb = (raw & 0x7F) as u8;
-                let msb = ((raw >> 7) & 0x7F) as u8;
-                Some([0xE0 | (pb.channel & 0x0F), lsb, msb])
-            }
-            MidiEventKind::PolyPressure(pp) => Some([
-                0xA0 | (pp.channel & 0x0F),
-                pp.pitch & 0x7F,
-                ((pp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-            ]),
-            MidiEventKind::ChannelPressure(cp) => Some([
-                0xD0 | (cp.channel & 0x0F),
-                ((cp.pressure * 127.0).clamp(0.0, 127.0) as u8) & 0x7F,
-                0, // Unused third byte (2-byte message)
-            ]),
-            MidiEventKind::ProgramChange(pc) => Some([
-                0xC0 | (pc.channel & 0x0F),
-                pc.program & 0x7F,
-                0, // Unused third byte (2-byte message)
-            ]),
-            // SysEx requires separate handling via output_sysex_to_host
-            MidiEventKind::SysEx(_) => None,
-            // The following event types don't have standard MIDI 1.0 wire encodings
-            // and cannot be output via AU's scheduleMIDIEventBlock:
-            // - NoteExpressionValue/Int/Text: MPE/MIDI 2.0 per-note expressions
-            // - ChordInfo/ScaleInfo: DAW-specific metadata (not MIDI messages)
-            MidiEventKind::NoteExpressionValue(_)
-            | MidiEventKind::NoteExpressionInt(_)
-            | MidiEventKind::NoteExpressionText(_)
-            | MidiEventKind::ChordInfo(_)
-            | MidiEventKind::ScaleInfo(_) => None,
-        }
-    }
-
-    /// Output all MIDI events from the output buffer to the host.
-    ///
-    /// This function iterates through the MIDI output buffer and sends each event
-    /// to the host via the MIDI output block. If no block is available, which is
-    /// always the case until the AU wrappers pass one, events are counted and reported.
-    ///
-    /// # Arguments
-    ///
-    /// * `midi_output` - Buffer containing MIDI events to send
-    /// * `sysex_pool` - Pool containing allocated SysEx data
-    ///
-    /// # Returns
-    ///
-    /// The number of events that could not be sent (0 if all sent or no events).
-    fn output_all_midi_events(
-        &self,
-        midi_output: &MidiBuffer,
-        sysex_pool: &SysExOutputPool,
-    ) -> usize {
-        if midi_output.is_empty() {
-            return 0;
-        }
-
-        // If no MIDI output block is available, count dropped events
-        if self.schedule_midi_event_block.is_none() {
-            return midi_output.len();
-        }
-
-        let mut dropped = 0;
-
-        // Track SysEx slot index to match events with pool allocations
-        let mut sysex_slot = 0;
-
-        for event in midi_output.iter() {
-            let sample_offset = event.sample_offset;
-
-            match &event.event {
-                MidiEventKind::SysEx(sysex) => {
-                    // SysEx data was allocated to the pool; use it if available
-                    // The pool stores SysEx in order, so we track the slot index
-                    if sysex_slot < sysex_pool.used() {
-                        // Send the SysEx data directly from the event
-                        // (pool allocation was for stability, but we can use original data here)
-                        if !self.output_sysex_to_host(sysex.as_slice(), sample_offset) {
-                            dropped += 1;
-                        }
-                        sysex_slot += 1;
-                    } else {
-                        // Pool exhausted for this SysEx
-                        dropped += 1;
-                    }
-                }
-                other => {
-                    // Try to encode as standard MIDI 1.0 message
-                    if let Some(bytes) = Self::encode_midi_event(other) {
-                        // Determine actual message length (some messages are 2 bytes)
-                        let len = match other {
-                            MidiEventKind::ProgramChange(_) | MidiEventKind::ChannelPressure(_) => {
-                                2
-                            }
-                            _ => 3,
-                        };
-                        if !self.output_midi_to_host(&bytes[..len], sample_offset) {
-                            dropped += 1;
-                        }
-                    }
-                    // Note: unsupported events (MPE/expression, DAW metadata) are silently
-                    // skipped and not counted as dropped since they have no MIDI 1.0 encoding
-                }
-            }
-        }
-
-        dropped
-    }
-
     /// Process audio through this render block (generic implementation).
     ///
     /// This is the core audio processing function that would be called
@@ -1405,6 +1296,7 @@ impl<S: Sample> RenderBlock<S> {
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
         host_transport: Option<&BeamerAuTransport>,
+        midi_output_sink: Option<MidiOutputSink>,
     ) -> i32 {
         let num_samples = frame_count as usize;
 
@@ -1473,11 +1365,6 @@ impl<S: Sample> RenderBlock<S> {
         let midi_output = unsafe { &mut *self.midi_output.get() };
         midi_output.clear();
 
-        // Clear SysEx pool for new block
-        // SAFETY: AU guarantees single-threaded render calls. No aliasing possible.
-        let sysex_pool = unsafe { &mut *self.sysex_output_pool.get() };
-        sysex_pool.clear();
-
         // AU's eventSampleTime is an absolute sample position on the timeline of
         // the render timestamp. The extraction below turns it into an offset in
         // this buffer.
@@ -1503,6 +1390,18 @@ impl<S: Sample> RenderBlock<S> {
         // Process MIDI events (input → output transformation)
         // This allows plugins to transform, generate, or pass through MIDI
         plugin_guard.process_midi(midi_buffer.as_slice(), midi_output);
+
+        // Hand the plugin's MIDI output to the host. Without a sink the host is
+        // not listening and the events are discarded.
+        if let Some(sink) = midi_output_sink {
+            send_midi_output(midi_output.as_slice(), sink);
+        }
+        if midi_output.has_overflowed() {
+            log::warn!(
+                "MIDI output buffer overflow: {} events reached capacity, some events were dropped",
+                midi_output.len()
+            );
+        }
 
         // Clear and extract parameter events from AU event list
         // SAFETY: Same reasoning as storage - single-threaded render calls
@@ -1926,58 +1825,6 @@ impl<S: Sample> RenderBlock<S> {
             block_start = next_boundary;
         }
 
-        // Handle MIDI output via the MIDI output block (if available).
-        //
-        // Neither AU wrapper passes the block yet, so the events are dropped
-        // and reported below at debug level.
-
-        // First, allocate SysEx messages to the pool for stable pointers
-        for midi_event in midi_output.iter() {
-            if let MidiEventKind::SysEx(sysex) = &midi_event.event {
-                // Allocate from pool for stable pointer during output
-                let _ = sysex_pool.allocate_slice(sysex.as_slice());
-            }
-        }
-
-        // Now output all MIDI events to the host
-        let dropped_events = self.output_all_midi_events(midi_output, sysex_pool);
-
-        // Log warnings for dropped events
-        if dropped_events > 0 {
-            if self.schedule_midi_event_block.is_none() {
-                // No MIDI output block: the AU wrappers do not pass one yet.
-                // Only log at debug level to avoid spamming for plugins that
-                // generate MIDI output.
-                log::debug!(
-                    "AU MIDI output not available: {} events dropped. \
-                     The AU wrappers do not pass a MIDI output block yet.",
-                    dropped_events
-                );
-            } else {
-                // Block is available but events still dropped (shouldn't happen)
-                log::warn!(
-                    "MIDI output error: {} events could not be sent to host",
-                    dropped_events
-                );
-            }
-        }
-
-        // Check for MIDI output buffer overflow
-        if midi_output.has_overflowed() {
-            log::warn!(
-                "MIDI output buffer overflow: {} events reached capacity, some events were dropped",
-                midi_output.len()
-            );
-        }
-
-        // Check for SysEx pool overflow
-        if sysex_pool.has_overflowed() {
-            log::warn!(
-                "SysEx output pool overflow: {} slots exhausted, some SysEx messages were dropped",
-                sysex_pool.capacity()
-            );
-        }
-
         // Record the sample time for this render cycle so that subsequent
         // aux bus calls (output_bus_number > 0) can detect they belong to
         // the same cycle and copy cached data instead of re-rendering.
@@ -2123,6 +1970,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
         host_transport: Option<&BeamerAuTransport>,
+        midi_output: Option<MidiOutputSink>,
     ) -> i32 {
         self.process_impl(
             action_flags,
@@ -2134,6 +1982,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
             pull_input_block,
             input_data,
             host_transport,
+            midi_output,
         )
     }
 
@@ -2154,29 +2003,19 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
 ///
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
-/// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-/// * `sysex_slots` - Number of SysEx message slots to pre-allocate
-/// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
-#[allow(clippy::too_many_arguments)]
 pub fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f32>,
-    schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
-    sysex_slots: usize,
-    sysex_buffer_size: usize,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
         storage,
-        schedule_midi_event_block,
         max_frames,
         sample_rate,
-        sysex_slots,
-        sysex_buffer_size,
     ))
 }
 
@@ -2188,29 +2027,19 @@ pub fn create_render_block_f32(
 ///
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
-/// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-/// * `sysex_slots` - Number of SysEx message slots to pre-allocate
-/// * `sysex_buffer_size` - Maximum size per SysEx message in bytes
-#[allow(clippy::too_many_arguments)]
 pub fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f64>,
-    schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
-    sysex_slots: usize,
-    sysex_buffer_size: usize,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
         storage,
-        schedule_midi_event_block,
         max_frames,
         sample_rate,
-        sysex_slots,
-        sysex_buffer_size,
     ))
 }
 
@@ -2376,5 +2205,101 @@ mod tests {
         assert!(matches!(events[0].event, MidiEventKind::NoteOn(_)));
         assert_eq!(events[1].sample_offset, 511);
         assert!(matches!(events[1].event, MidiEventKind::NoteOff(_)));
+    }
+
+    /// A sink function that records what it receives.
+    unsafe extern "C" fn record(
+        context: *mut c_void,
+        sample_offset: u32,
+        bytes: *const u8,
+        length: u32,
+    ) {
+        // SAFETY: `sent` passes a pointer to its vector, and the bytes are valid
+        // for the call.
+        let (received, bytes) = unsafe {
+            (
+                &mut *context.cast::<Vec<(u32, Vec<u8>)>>(),
+                slice::from_raw_parts(bytes, length as usize),
+            )
+        };
+        received.push((sample_offset, bytes.to_vec()));
+    }
+
+    /// Send the events through a sink and return the messages it received.
+    fn sent(events: &[MidiEvent]) -> Vec<(u32, Vec<u8>)> {
+        let mut received: Vec<(u32, Vec<u8>)> = Vec::new();
+        let context: *mut Vec<(u32, Vec<u8>)> = &mut received;
+        // SAFETY: `record` only uses the context while `received` is alive.
+        let sink = unsafe { MidiOutputSink::new(record, context.cast()) };
+        send_midi_output(events, sink);
+        received
+    }
+
+    #[test]
+    fn test_midi_output_matches_midi_input() {
+        // Every channel message that can come in goes out as the same bytes.
+        let messages: &[&[u8]] = &[
+            &[0x90, 60, 100],
+            &[0x93, 0, 1],
+            &[0x80, 60, 64],
+            &[0xA1, 61, 127],
+            &[0xB2, 1, 33],
+            &[0xC4, 5],
+            &[0xD5, 99],
+            &[0xE0, 0x00, 0x40],
+            &[0xE6, 0x7F, 0x7F],
+            &[0xE6, 0x00, 0x00],
+        ];
+        for (i, message) in messages.iter().enumerate() {
+            let data1 = message[1];
+            let data2 = message.get(2).copied().unwrap_or(0);
+            let event = MidiEvent::from_midi1_bytes(
+                i as u32,
+                message[0] & 0xF0,
+                message[0] & 0x0F,
+                data1,
+                data2,
+            )
+            .expect("channel message");
+            assert_eq!(sent(&[event]), vec![(i as u32, message.to_vec())]);
+        }
+
+        // All velocities survive the round trip through the normalized value.
+        for velocity in 1..=127u8 {
+            let event = MidiEvent::from_midi1_bytes(0, 0x90, 0, 60, velocity).unwrap();
+            assert_eq!(sent(&[event])[0].1, vec![0x90, 60, velocity]);
+        }
+    }
+
+    #[test]
+    fn test_midi_output_note_on_keeps_a_velocity() {
+        // A velocity that rounds to 0 would turn the Note On into a Note Off.
+        let event = MidiEvent::note_on(0, 0, 60, 0.001, 60, 0.0, 0);
+        assert_eq!(sent(&[event])[0].1, vec![0x90, 60, 1]);
+    }
+
+    #[test]
+    fn test_midi_output_frames_sysex() {
+        let payload = MidiEvent::sysex(7, &[0x7E, 0x00, 0x06, 0x01]);
+        let framed = MidiEvent::sysex(9, &[0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7]);
+        let expected = vec![0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7];
+
+        assert_eq!(
+            sent(&[payload, framed]),
+            vec![(7, expected.clone()), (9, expected)]
+        );
+
+        // A payload of the maximum size still fits with its framing.
+        let largest = MidiEvent::sysex(0, &[0x01; MAX_SYSEX_SIZE]);
+        assert_eq!(sent(&[largest])[0].1.len(), MAX_SYSEX_SIZE + 2);
+    }
+
+    #[test]
+    fn test_midi_output_skips_events_without_midi_encoding() {
+        let events = [
+            MidiEvent::note_expression_value(0, 1, 0, 0.5),
+            MidiEvent::from_midi1_bytes(3, 0x90, 0, 60, 100).unwrap(),
+        ];
+        assert_eq!(sent(&events), vec![(3, vec![0x90, 60, 100])]);
     }
 }
