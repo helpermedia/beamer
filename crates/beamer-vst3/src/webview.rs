@@ -719,7 +719,13 @@ fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
     use objc2_foundation::NSObject;
     use objc2::ClassType;
 
-    let c_name = c"BeamerSyncTimerTarget";
+    // The name is unique to this binary, so that plugin binaries in one host
+    // process do not share the class and each other's timer callback.
+    let c_name = beamer_webview::platform::macos_class::class_name(
+        "BeamerSyncTimerTarget",
+        sync_timer_fired as usize,
+    );
+    let c_name = c_name.as_c_str();
 
     if let Some(existing) = AnyClass::get(c_name) {
         return existing;

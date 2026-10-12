@@ -26,42 +26,26 @@ mod macos_ffi {
 
     /// Create a WebView serving embedded assets via custom scheme.
     ///
-    /// Each plugin must pass its 4-byte plugin code so that the scheme handler
-    /// gets a unique ObjC class name (avoiding collisions when multiple Beamer
-    /// plugins are loaded in the same host process).
-    ///
     /// Returns an opaque handle, or null on failure.
     ///
     /// # Safety
     ///
     /// - `parent` must be a valid `NSView*` pointer
     /// - `assets` must be a valid `*const EmbeddedAssets` with `'static` lifetime
-    /// - `plugin_code` must point to exactly 4 ASCII bytes
     /// - `background_color` must point to 4 bytes (RGBA) or be null
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create(
         parent: *mut c_void,
         assets: *const c_void,
-        plugin_code: *const u8,
         dev_tools: bool,
         background_color: *const u8,
     ) -> *mut c_void {
-        if parent.is_null() || assets.is_null() || plugin_code.is_null() {
+        if parent.is_null() || assets.is_null() {
             return ptr::null_mut();
         }
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: caller guarantees plugin_code points to 4 bytes.
-            let code = unsafe {
-                [
-                    *plugin_code,
-                    *plugin_code.add(1),
-                    *plugin_code.add(2),
-                    *plugin_code.add(3),
-                ]
-            };
-
             // SAFETY: caller guarantees assets is a valid *const EmbeddedAssets
             // with 'static lifetime (it comes from Config.gui_assets).
             let assets_ref: &'static crate::assets::EmbeddedAssets =
@@ -71,7 +55,6 @@ mod macos_ffi {
             let bg = unsafe { read_rgba(background_color) };
 
             let config = WebViewConfig {
-                plugin_code: code,
                 assets: Some(assets_ref),
                 url: None,
                 dev_tools,
@@ -99,18 +82,16 @@ mod macos_ffi {
     ///
     /// - `parent` must be a valid `NSView*` pointer
     /// - `url` must be a valid null-terminated UTF-8 C string
-    /// - `plugin_code` must point to exactly 4 ASCII bytes
     /// - `background_color` must point to 4 bytes (RGBA) or be null
     /// - Must be called from the main thread
     #[no_mangle]
     pub extern "C" fn beamer_webview_create_url(
         parent: *mut c_void,
         url: *const c_char,
-        plugin_code: *const u8,
         dev_tools: bool,
         background_color: *const u8,
     ) -> *mut c_void {
-        if parent.is_null() || url.is_null() || plugin_code.is_null() {
+        if parent.is_null() || url.is_null() {
             return ptr::null_mut();
         }
 
@@ -118,21 +99,10 @@ mod macos_ffi {
             // SAFETY: caller guarantees url is a valid C string.
             let url_str = unsafe { CStr::from_ptr(url) }.to_str().ok()?;
 
-            // SAFETY: caller guarantees plugin_code points to 4 bytes.
-            let code = unsafe {
-                [
-                    *plugin_code,
-                    *plugin_code.add(1),
-                    *plugin_code.add(2),
-                    *plugin_code.add(3),
-                ]
-            };
-
             // SAFETY: read_rgba handles null safely.
             let bg = unsafe { read_rgba(background_color) };
 
             let config = WebViewConfig {
-                plugin_code: code,
                 assets: None,
                 url: Some(url_str),
                 dev_tools,
@@ -238,28 +208,17 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create_with_ipc(
         parent: *mut c_void,
         assets: *const c_void,
-        plugin_code: *const u8,
         dev_tools: bool,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
         callback_context: *mut c_void,
     ) -> *mut c_void {
-        if parent.is_null() || assets.is_null() || plugin_code.is_null() {
+        if parent.is_null() || assets.is_null() {
             return ptr::null_mut();
         }
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: caller guarantees plugin_code points to 4 bytes.
-            let code = unsafe {
-                [
-                    *plugin_code,
-                    *plugin_code.add(1),
-                    *plugin_code.add(2),
-                    *plugin_code.add(3),
-                ]
-            };
-
             // SAFETY: caller guarantees assets is a valid *const EmbeddedAssets
             // with 'static lifetime.
             let assets_ref: &'static crate::assets::EmbeddedAssets =
@@ -269,7 +228,6 @@ mod macos_ffi {
             let bg = unsafe { read_rgba(background_color) };
 
             let config = WebViewConfig {
-                plugin_code: code,
                 assets: Some(assets_ref),
                 url: None,
                 dev_tools,
@@ -298,14 +256,13 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create_url_with_ipc(
         parent: *mut c_void,
         url: *const c_char,
-        plugin_code: *const u8,
         dev_tools: bool,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
         callback_context: *mut c_void,
     ) -> *mut c_void {
-        if parent.is_null() || url.is_null() || plugin_code.is_null() {
+        if parent.is_null() || url.is_null() {
             return ptr::null_mut();
         }
 
@@ -313,21 +270,10 @@ mod macos_ffi {
             // SAFETY: caller guarantees url is a valid C string.
             let url_str = unsafe { CStr::from_ptr(url) }.to_str().ok()?;
 
-            // SAFETY: caller guarantees plugin_code points to 4 bytes.
-            let code = unsafe {
-                [
-                    *plugin_code,
-                    *plugin_code.add(1),
-                    *plugin_code.add(2),
-                    *plugin_code.add(3),
-                ]
-            };
-
             // SAFETY: read_rgba handles null safely.
             let bg = unsafe { read_rgba(background_color) };
 
             let config = WebViewConfig {
-                plugin_code: code,
                 assets: None,
                 url: Some(url_str),
                 dev_tools,

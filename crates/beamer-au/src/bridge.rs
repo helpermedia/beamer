@@ -2331,38 +2331,6 @@ pub extern "C" fn beamer_au_get_gui_assets() -> *const std::ffi::c_void {
     result.unwrap_or(ptr::null())
 }
 
-/// Write the 4-byte plugin subtype code to `out`.
-///
-/// The code is used to generate a unique ObjC class name per plugin type,
-/// allowing multiple Beamer plugins to coexist in the same host process.
-///
-/// # Safety
-///
-/// - `out` must point to at least 4 writable bytes
-/// - Thread safety: Safe to call from any thread
-#[no_mangle]
-pub extern "C" fn beamer_au_get_plugin_code(out: *mut u8) {
-    if out.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let config = match factory::plugin_config() {
-            Some(c) => c,
-            None => return,
-        };
-
-        let bytes = config.subtype.0;
-        // SAFETY: caller guarantees out points to at least 4 writable bytes.
-        unsafe {
-            *out = bytes[0];
-            *out.add(1) = bytes[1];
-            *out.add(2) = bytes[2];
-            *out.add(3) = bytes[3];
-        }
-    }));
-}
-
 /// Get the initial GUI size in pixels.
 ///
 /// # Safety

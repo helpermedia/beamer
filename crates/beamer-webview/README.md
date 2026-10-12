@@ -9,7 +9,7 @@ This crate provides web-based plugin interfaces using WKWebView, with bidirectio
 - **WKWebView integration**: Native macOS WebView with no external dependencies
 - **Bidirectional IPC**: Parameter sync and custom message passing between Rust and JavaScript
 - **Custom URL scheme**: Embedded asset serving (HTML, CSS, JS) without a local HTTP server
-- **Per-plugin class isolation**: Unique ObjC class names prevent collisions when multiple Beamer plugins load in the same host process
+- **Class isolation per plugin binary**: Unique ObjC class names prevent collisions when multiple Beamer plugins load in the same host process
 - **Background color**: Configurable background color to prevent white flash during content load
 
 ## Platform Requirements

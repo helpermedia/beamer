@@ -2299,7 +2299,6 @@ where
             }
 
             let config = WebViewConfig {
-                plugin_code: self.config.subtype.0,
                 assets: self.config.gui_assets,
                 url: self.config.gui_url,
                 dev_tools: cfg!(debug_assertions),

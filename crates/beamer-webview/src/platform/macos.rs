@@ -69,7 +69,7 @@ impl MacosWebView {
         if let Some(assets) = config.assets {
             // SAFETY: assets is &'static; new_scheme_handler stores the pointer.
             let handler =
-                unsafe { new_scheme_handler(assets, config.plugin_code, mtm) };
+                unsafe { new_scheme_handler(assets, mtm) };
             // SAFETY: handler conforms to WKURLSchemeHandler (protocol declared
             // by ClassBuilder). The pointer cast is sound because AnyObject has
             // the same layout as ProtocolObject<dyn WKURLSchemeHandler>.

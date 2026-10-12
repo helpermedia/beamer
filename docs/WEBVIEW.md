@@ -390,7 +390,7 @@ static WEBVIEW_ASSETS: EmbeddedAssets = EmbeddedAssets::new(&[
 
 When embedded assets are available, the WebView navigates to `beamer://localhost/index.html`. A per-plugin `WKURLSchemeHandler` intercepts requests to the `beamer://` scheme and serves files from the `EmbeddedAssets` table.
 
-The scheme handler class name is unique per plugin type (`BeamerSchemeHandler_{hex_plugin_code}`) so multiple Beamer plugins loaded in the same host process do not collide. Each handler instance stores its own assets pointer as an ObjC ivar, avoiding any global state.
+The Objective-C classes behind the WebView (the scheme handler, the message handler and the navigation delegate) are registered at runtime under names that are unique to the plugin binary, so multiple Beamer plugins loaded in the same host process do not share them. Each handler instance stores its own assets pointer as an ObjC ivar, avoiding any global state.
 
 Path lookup uses `NSURL::path()` to get the decoded path component, stripping query strings, fragments and percent-encoding. The MIME type is inferred from the file extension.
 

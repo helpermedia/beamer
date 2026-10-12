@@ -1,15 +1,8 @@
 //! IPC support: WKScriptMessageHandler and WKNavigationDelegate.
 //!
-//! These ObjC classes use fixed names (`BeamerMessageHandler`,
-//! `BeamerNavigationDelegate`) shared across all Beamer plugins in a process.
-//! This is safe because the method implementations are identical for every
-//! plugin - they simply forward to per-instance callback function pointers
-//! stored in ivars. If two plugins built with different Beamer versions load
-//! in the same process, the first-registered class wins, but since the
-//! signatures and forwarding behavior are the same, this is benign.
-//!
-//! This differs from the scheme handler (`macos_scheme.rs`) which embeds
-//! per-plugin-type assets in ivars and therefore needs unique class names.
+//! The two ObjC classes are registered at runtime under names that are unique
+//! to this binary (see `macos_class.rs`), so every plugin binary in a host
+//! process uses its own classes and its own method implementations.
 
 use std::ffi::{c_void, CStr};
 
@@ -18,6 +11,7 @@ use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
 use objc2::{msg_send, sel, ClassType, MainThreadMarker};
 use objc2_foundation::NSObject;
 
+use crate::platform::macos_class::class_name;
 use crate::{LoadedCallback, MessageCallback};
 
 // ---------------------------------------------------------------------------
@@ -33,9 +27,10 @@ const NAV_CONTEXT_IVAR: &CStr = c"_beamerNavContext";
 // BeamerMessageHandler (WKScriptMessageHandler)
 // ---------------------------------------------------------------------------
 
-/// Get or register the BeamerMessageHandler ObjC class.
+/// Get or register the BeamerMessageHandler ObjC class of this binary.
 fn message_handler_class() -> &'static AnyClass {
-    let c_name = c"BeamerMessageHandler";
+    let c_name = class_name("BeamerMessageHandler", did_receive_script_message as usize);
+    let c_name = c_name.as_c_str();
 
     if let Some(existing) = AnyClass::get(c_name) {
         return existing;
@@ -158,9 +153,10 @@ pub unsafe fn new_message_handler(
 // BeamerNavigationDelegate (WKNavigationDelegate)
 // ---------------------------------------------------------------------------
 
-/// Get or register the BeamerNavigationDelegate ObjC class.
+/// Get or register the BeamerNavigationDelegate ObjC class of this binary.
 fn navigation_delegate_class() -> &'static AnyClass {
-    let c_name = c"BeamerNavigationDelegate";
+    let c_name = class_name("BeamerNavigationDelegate", did_finish_navigation as usize);
+    let c_name = c_name.as_c_str();
 
     if let Some(existing) = AnyClass::get(c_name) {
         return existing;

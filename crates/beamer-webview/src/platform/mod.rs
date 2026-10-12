@@ -4,6 +4,9 @@
 pub mod macos;
 
 #[cfg(target_os = "macos")]
+pub mod macos_class;
+
+#[cfg(target_os = "macos")]
 pub mod macos_scheme;
 
 #[cfg(target_os = "macos")]

@@ -976,18 +976,6 @@ const char* _Nullable beamer_au_get_gui_url(BeamerAuInstanceHandle _Nullable ins
 const void* _Nullable beamer_au_get_gui_assets(void);
 
 /**
- * Write the 4-byte plugin subtype code to out.
- *
- * The code is used to generate a unique ObjC class name per plugin type,
- * allowing multiple Beamer plugins to coexist in the same host process.
- *
- * Thread Safety: Safe to call from any thread.
- *
- * @param out Pointer to at least 4 writable bytes.
- */
-void beamer_au_get_plugin_code(uint8_t* _Nonnull out);
-
-/**
  * Get the initial GUI size in pixels.
  *
  * Thread Safety: Can be called from any thread.
@@ -1165,15 +1153,10 @@ void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
 /**
  * Create a WebView serving embedded assets via custom URL scheme.
  *
- * Each plugin passes its 4-byte subtype code so the scheme handler gets a
- * unique ObjC class name, allowing multiple Beamer plugins to coexist in
- * the same host process.
- *
  * Thread Safety: Must be called from the main thread.
  *
  * @param parent           A valid NSView* pointer to attach the WebView to.
  * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
- * @param plugin_code      Pointer to 4 bytes of the plugin subtype code.
  * @param dev_tools        Whether to enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
@@ -1182,7 +1165,6 @@ void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
  */
 void* _Nullable beamer_webview_create(void* _Nonnull parent,
                                       const void* _Nonnull assets,
-                                      const uint8_t* _Nonnull plugin_code,
                                       bool dev_tools,
                                       const uint8_t* _Nullable background_color);
 
@@ -1193,7 +1175,6 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
  *
  * @param parent           A valid NSView* pointer to attach the WebView to.
  * @param url              Null-terminated UTF-8 URL to navigate to.
- * @param plugin_code      Pointer to 4 bytes of the plugin subtype code.
  * @param dev_tools        Whether to enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
@@ -1202,7 +1183,6 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
  */
 void* _Nullable beamer_webview_create_url(void* _Nonnull parent,
                                           const char* _Nonnull url,
-                                          const uint8_t* _Nonnull plugin_code,
                                           bool dev_tools,
                                           const uint8_t* _Nullable background_color);
 
@@ -1241,7 +1221,6 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
  *
  * @param parent           NSView* to attach the WebView to.
  * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
- * @param plugin_code      Pointer to 4 bytes of plugin subtype code.
  * @param dev_tools        Enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
@@ -1252,7 +1231,6 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
 void* _Nullable beamer_webview_create_with_ipc(
     void* _Nonnull parent,
     const void* _Nonnull assets,
-    const uint8_t* _Nonnull plugin_code,
     bool dev_tools,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
@@ -1265,7 +1243,6 @@ void* _Nullable beamer_webview_create_with_ipc(
  *
  * @param parent           NSView* to attach the WebView to.
  * @param url              Null-terminated UTF-8 URL.
- * @param plugin_code      Pointer to 4 bytes of plugin subtype code.
  * @param dev_tools        Enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
@@ -1276,7 +1253,6 @@ void* _Nullable beamer_webview_create_with_ipc(
 void* _Nullable beamer_webview_create_url_with_ipc(
     void* _Nonnull parent,
     const char* _Nonnull url,
-    const uint8_t* _Nonnull plugin_code,
     bool dev_tools,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),

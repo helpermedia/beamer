@@ -1,14 +1,14 @@
 //! Custom URL scheme handler for serving embedded assets.
 //!
 //! Uses `ClassBuilder` instead of `define_class!` so that the ObjC class name
-//! can be generated at runtime (one per plugin code). This allows multiple
+//! can be generated at runtime (see `macos_class.rs`). This allows multiple
 //! Beamer plugins in the same host process to each register their own scheme
 //! handler without colliding on a shared class name.
 //!
 //! Each handler instance stores a pointer to its plugin's `EmbeddedAssets` as
 //! an ivar, so asset lookup is per-instance rather than global.
 
-use std::ffi::{c_void, CString};
+use std::ffi::c_void;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, ClassBuilder, Sel};
@@ -19,25 +19,20 @@ use objc2_foundation::{
 
 use crate::assets::EmbeddedAssets;
 use crate::mime::mime_for_path;
+use crate::platform::macos_class::class_name;
 
 /// Ivar name for the `*const EmbeddedAssets` pointer on each handler instance.
 const ASSETS_IVAR: &std::ffi::CStr = c"_beamerAssets";
 
-/// Get or register the per-plugin scheme handler ObjC class.
+/// Get or register the scheme handler ObjC class of this binary.
 ///
-/// The class name is `BeamerSchemeHandler_{AABBCCDD}` where `AABBCCDD` is
-/// the hex-encoded 4-byte plugin code. `ClassBuilder::new` returns `None`
-/// if the class already exists (e.g. when reopening the same plugin), in
-/// which case we look it up and return the existing class.
+/// `ClassBuilder::new` returns `None` if the class already exists (e.g. when
+/// reopening the same plugin), in which case we look it up and return the
+/// existing class.
 ///
 /// Must be called from the main thread (class registration is not thread-safe).
-fn scheme_handler_class(plugin_code: [u8; 4]) -> &'static AnyClass {
-    let class_name = format!(
-        "BeamerSchemeHandler_{:02x}{:02x}{:02x}{:02x}",
-        plugin_code[0], plugin_code[1], plugin_code[2], plugin_code[3],
-    );
-    // Hex encoding is always ASCII, so CString::new cannot fail.
-    let c_name = CString::new(class_name.as_str()).expect("hex class name is always valid");
+fn scheme_handler_class() -> &'static AnyClass {
+    let c_name = class_name("BeamerSchemeHandler", start_url_scheme_task as usize);
 
     // Fast path: class was already registered (same plugin reopened, or
     // another instance of the same plugin type).
@@ -96,10 +91,9 @@ fn scheme_handler_class(plugin_code: [u8; 4]) -> &'static AnyClass {
 /// Must be called from the main thread. `assets` must be `&'static`.
 pub unsafe fn new_scheme_handler(
     assets: &'static EmbeddedAssets,
-    plugin_code: [u8; 4],
     _mtm: MainThreadMarker,
 ) -> Retained<AnyObject> {
-    let cls = scheme_handler_class(plugin_code);
+    let cls = scheme_handler_class();
 
     // SAFETY: standard ObjC alloc + init pattern on a class we just built.
     let obj: *mut AnyObject = unsafe { msg_send![cls, alloc] };

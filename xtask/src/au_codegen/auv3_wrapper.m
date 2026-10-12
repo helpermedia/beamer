@@ -1168,9 +1168,6 @@ static void beamer_auv3_on_loaded(void* context) {
     bool devTools = false;
 #endif
 
-    uint8_t pluginCode[4];
-    beamer_au_get_plugin_code(pluginCode);
-
     uint8_t bgColor[4];
     beamer_au_get_gui_background_color(bgColor);
 
@@ -1178,13 +1175,13 @@ static void beamer_auv3_on_loaded(void* context) {
     void* webviewHandle;
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url_with_ipc(
-            (__bridge void*)container, devUrl, pluginCode, devTools, bgColor,
+            (__bridge void*)container, devUrl, devTools, bgColor,
             beamer_auv3_on_message, beamer_auv3_on_loaded,
             (__bridge void*)self);
     } else {
         const void* assets = beamer_au_get_gui_assets();
         webviewHandle = beamer_webview_create_with_ipc(
-            (__bridge void*)container, assets, pluginCode, devTools, bgColor,
+            (__bridge void*)container, assets, devTools, bgColor,
             beamer_auv3_on_message, beamer_auv3_on_loaded,
             (__bridge void*)self);
     }

@@ -28,9 +28,6 @@ pub type LoadedCallback = unsafe extern "C-unwind" fn(context: *mut c_void);
 
 /// Configuration for a WebView GUI.
 pub struct WebViewConfig<'a> {
-    /// 4-byte plugin subtype code used to generate a unique ObjC class name
-    /// per plugin type so multiple plugins can coexist in the same host process.
-    pub plugin_code: [u8; 4],
     /// Embedded web assets. When set, the WebView navigates to
     /// `beamer://localhost/index.html` and a per-instance scheme handler
     /// serves files from this table.
