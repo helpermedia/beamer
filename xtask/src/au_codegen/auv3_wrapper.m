@@ -930,13 +930,11 @@ static void beamer_auv3_on_loaded(void* context) {
         [strongSelf->_instanceLock lock];
         AUValue result = param.value;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
-            float parsedNormalized = 0.0f;
-            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedNormalized)) {
-                if (param.unit == kAudioUnitParameterUnit_Indexed && param.maxValue > 0) {
-                    result = roundf(parsedNormalized * param.maxValue);
-                } else {
-                    result = param.minValue + parsedNormalized * (param.maxValue - param.minValue);
-                }
+            // Rust parses to AU format: the plain value, or the index for an
+            // indexed parameter.
+            float parsedValue = 0.0f;
+            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedValue)) {
+                result = parsedValue;
             }
         }
         [strongSelf->_instanceLock unlock];

@@ -1316,12 +1316,7 @@ pub extern "C" fn beamer_au_get_parameter_value_au(
         // SAFETY: handle validated by with_instance! macro.
         unsafe {
             with_param_store(handle, |store| {
-                let normalized = store.get_normalized(param_id);
-
-                match store.info_by_id(param_id) {
-                    Some(info) => normalized_to_au_value(store, info, normalized),
-                    None => store.normalized_to_plain(param_id, normalized) as f32,
-                }
+                normalized_to_au_value_by_id(store, param_id, store.get_normalized(param_id))
             })
         }
         .unwrap_or(0.0)
@@ -1393,6 +1388,20 @@ fn normalized_to_au_value(
     }
 }
 
+/// [`normalized_to_au_value`] for a parameter that is known by its ID.
+fn normalized_to_au_value_by_id(store: &dyn ParameterStore, param_id: u32, normalized: f64) -> f32 {
+    match store.info_by_id(param_id) {
+        Some(info) => normalized_to_au_value(store, info, normalized),
+        None => store.normalized_to_plain(param_id, normalized) as f32,
+    }
+}
+
+/// Parse a display string to a parameter value in AU format.
+fn string_to_au_value(store: &dyn ParameterStore, param_id: u32, string: &str) -> Option<f32> {
+    let normalized = store.string_to_normalized(param_id, string)?;
+    Some(normalized_to_au_value_by_id(store, param_id, normalized))
+}
+
 /// Format a parameter value in AU format as a display string.
 ///
 /// The value is what the host holds: the actual (plain) value, or the index
@@ -1452,7 +1461,10 @@ pub extern "C" fn beamer_au_format_parameter_value(
     })
 }
 
-/// Parse a display string to a normalized value.
+/// Parse a display string to a parameter value in AU format.
+///
+/// The result is what the host holds: the actual (plain) value, or the index
+/// for an indexed parameter.
 ///
 /// # Safety
 ///
@@ -1486,14 +1498,14 @@ pub extern "C" fn beamer_au_parse_parameter_value(
         // SAFETY: handle validated by with_instance! macro.
         let result = unsafe {
             with_param_store(handle, |store| {
-                store.string_to_normalized(param_id, rust_string)
+                string_to_au_value(store, param_id, rust_string)
             })
         };
 
         match result {
             Some(Some(value)) => {
                 // SAFETY: out_value was validated as non-null at function start.
-                unsafe { *out_value = value as f32 };
+                unsafe { *out_value = value };
                 true
             }
             _ => false,
@@ -2945,7 +2957,9 @@ pub unsafe extern "C" fn beamer_au_on_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beamer_core::{EnumParameter, EnumParameterValue, IntParameter, ParameterRef};
+    use beamer_core::{
+        EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef,
+    };
 
     #[test]
     fn test_main_bus_channels() {
@@ -3078,6 +3092,9 @@ mod tests {
             assert_eq!(au_values(&store)[3], index as f32);
             assert_eq!(store.0.get(), Waveform::from_index(index).unwrap());
         }
+
+        // A name parses to its index.
+        assert_eq!(string_to_au_value(&store, id, "Triangle"), Some(3.0));
     }
 
     #[test]
@@ -3098,6 +3115,9 @@ mod tests {
         };
         assert_eq!(string_for(0.0), "1");
         assert_eq!(string_for(3.0), "4");
+
+        // And the other way around.
+        assert_eq!(string_to_au_value(&store, id, "4"), Some(3.0));
     }
 
     #[test]
@@ -3109,6 +3129,29 @@ mod tests {
         let id = store.info(0).unwrap().id;
         store.set_normalized(id, au_value_to_normalized(&store, id, 3.0));
         assert_eq!(store.0.get(), 3);
+
+        assert_eq!(string_to_au_value(&store, id, "3"), Some(3.0));
+        assert_eq!(string_to_au_value(&store, id, "three"), None);
+    }
+
+    #[test]
+    fn test_string_parses_to_the_plain_value() {
+        // A typed value comes back as the plain value, also when the range is
+        // not linear: the host must not get a normalized value, and the plain
+        // value is not a linear interpolation between minimum and maximum.
+        let store = OneParameter(FloatParameter::hz("Cutoff", 800.0, 20.0..=20000.0));
+        let id = store.info(0).unwrap().id;
+        let cutoff = string_to_au_value(&store, id, "800").unwrap();
+        assert!((cutoff - 800.0).abs() < 0.01, "{}", cutoff);
+
+        // A value outside the range ends at its limit, and text is no value.
+        assert_eq!(string_to_au_value(&store, id, "50000"), Some(20000.0));
+        assert_eq!(string_to_au_value(&store, id, "abc"), None);
+
+        let store = OneParameter(FloatParameter::db("Gain", -6.0, -60.0..=6.0));
+        let id = store.info(0).unwrap().id;
+        let gain = string_to_au_value(&store, id, "-6.0").unwrap();
+        assert!((gain + 6.0).abs() < 0.001, "{}", gain);
     }
 
     #[test]

@@ -726,17 +726,18 @@ uint32_t beamer_au_format_parameter_value(
 );
 
 /**
- * Parse a display string to a normalized value.
+ * Parse a display string to a parameter value in AU format.
  *
- * Converts a human-readable string to a normalized value using the parameter's
- * string-to-value function (e.g., "-6.0 dB" -> 0.5).
+ * Converts a human-readable string using the parameter's string-to-value
+ * function. The result is what the host holds: the plain (actual) value
+ * (e.g., "-6.0 dB" -> -6.0), or the index for an indexed parameter.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance   Handle to the plugin instance.
  * @param param_id   Parameter ID.
  * @param string     Display string to parse (UTF-8, null-terminated).
- * @param out_value  Pointer to receive the normalized value.
+ * @param out_value  Pointer to receive the value in AU format.
  *
  * @return true if parsing succeeded, false if string is invalid.
  */

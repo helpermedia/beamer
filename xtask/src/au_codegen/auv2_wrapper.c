@@ -1022,19 +1022,10 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
 
+            // Rust parses to AU format: the plain value, or the index for an
+            // indexed parameter.
             float parsedValue = 0.0f;
             if (beamer_au_parse_parameter_value(inst->rustInstance, paramID, buffer, &parsedValue)) {
-                // For indexed parameters, convert normalized to index
-                uint32_t count = beamer_au_get_parameter_count(inst->rustInstance);
-                for (uint32_t i = 0; i < count; i++) {
-                    BeamerAuParameterInfo info;
-                    if (beamer_au_get_parameter_info(inst->rustInstance, i, &info) && info.id == paramID) {
-                        if (info.unit_type == kAudioUnitParameterUnit_Indexed && info.step_count > 0) {
-                            parsedValue = roundf(parsedValue * (float)info.step_count);
-                        }
-                        break;
-                    }
-                }
                 params->outValue = parsedValue;
             } else {
                 // Parsing failed, try to interpret as a number directly
