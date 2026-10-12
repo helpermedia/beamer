@@ -127,6 +127,15 @@ pub fn to_pascal_case(name: &str) -> String {
         .collect()
 }
 
+/// Whether `name` can be a Cargo package name: letters, digits, `-` and `_`.
+///
+/// The bundle names below are built from the package name, so a name with
+/// anything else in it (a path separator in particular) must not reach them.
+#[must_use]
+pub fn is_package_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Convert package name to the name of the binary inside a VST3 bundle.
 /// "gain" -> "BeamerGain"
 /// "midi-transform" -> "BeamerMidiTransform"
@@ -323,12 +332,7 @@ pub fn install_bundle(
     install_subdir: &[&str],
     verbose: bool,
 ) -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
-
-    let mut dest_dir = PathBuf::from(&home);
-    for part in install_subdir {
-        dest_dir = dest_dir.join(part);
-    }
+    let dest_dir = home_subdir(install_subdir)?;
 
     // Create directory if needed
     fs::create_dir_all(&dest_dir)
@@ -348,6 +352,62 @@ pub fn install_bundle(
     crate::verbose!(verbose, "    Installed to: {}", dest.display());
 
     Ok(dest)
+}
+
+/// Remove an installed plugin bundle from a directory under the user's home
+/// directory.
+///
+/// Prints what happened and returns whether a bundle was removed. A bundle
+/// that is not installed is not an error.
+pub fn uninstall_bundle(bundle_name: &str, install_subdir: &[&str]) -> Result<bool, String> {
+    let dest_dir = home_subdir(install_subdir)?;
+    let dest = dest_dir.join(bundle_name);
+
+    // Unlike `exists`, this also finds a symlink whose target is gone.
+    if dest.symlink_metadata().is_err() {
+        crate::status!("  {} is not installed", bundle_name);
+        return Ok(false);
+    }
+
+    fs::remove_dir_all(&dest)
+        .map_err(|e| format!("Failed to remove {}: {}", dest.display(), e))?;
+    crate::status!("  {} removed from {}", bundle_name, shorten_path(&dest_dir));
+
+    Ok(true)
+}
+
+/// Build a path under the user's home directory from path components.
+fn home_subdir(parts: &[&str]) -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
+
+    let mut dir = PathBuf::from(&home);
+    for part in parts {
+        dir = dir.join(part);
+    }
+
+    Ok(dir)
+}
+
+/// Restart the system's Audio Unit registry.
+///
+/// The registry rescans the installed Audio Units when it starts again, which
+/// is how hosts learn about an installed or removed one.
+pub fn refresh_au_registry(verbose: bool) {
+    use std::process::Command;
+
+    let killall_result = Command::new("killall")
+        .arg("-9")
+        .arg("AudioComponentRegistrar")
+        .output();
+
+    if verbose {
+        if let Ok(output) = killall_result {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines() {
+                crate::verbose!(verbose, "    {}", line);
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -562,6 +622,18 @@ mod tests {
             Category::Instrument => "instrument",
             Category::MidiEffect => "midi_effect",
             Category::Generator => "generator",
+        }
+    }
+
+    #[test]
+    fn test_is_package_name() {
+        for name in ["gain", "midi-transform", "webview_demo", "fx2"] {
+            assert!(is_package_name(name), "\"{}\"", name);
+        }
+
+        // None of these may end up in a path that gets removed.
+        for name in ["", ".", "..", "/", "gain/", "a/b", "../x", "gain.vst3/../../Other", "a\\b", "a b"] {
+            assert!(!is_package_name(name), "\"{}\"", name);
         }
     }
 

@@ -6,7 +6,10 @@ use std::fs;
 use std::path::Path;
 
 use crate::build::get_version_info;
-use crate::util::{install_bundle, shorten_path, to_vst3_bundle_name};
+use crate::util::{install_bundle, shorten_path, to_vst3_bundle_name, uninstall_bundle};
+
+/// Where an installed bundle lives, relative to the home directory.
+const INSTALL_DIR: &[&str] = &["Library", "Audio", "Plug-Ins", "VST3"];
 
 /// Creates a VST3 bundle from a compiled dylib.
 ///
@@ -120,12 +123,12 @@ fn create_vst3_info_plist(package: &str, version: &str) -> String {
 ///
 /// The bundle is copied to `~/Library/Audio/Plug-Ins/VST3/`.
 fn install_vst3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let dest = install_bundle(
-        bundle_dir,
-        bundle_name,
-        &["Library", "Audio", "Plug-Ins", "VST3"],
-        verbose,
-    )?;
+    let dest = install_bundle(bundle_dir, bundle_name, INSTALL_DIR, verbose)?;
     crate::status!("  {} -> {}", bundle_name, shorten_path(&dest));
     Ok(())
+}
+
+/// Removes an installed VST3 bundle and returns whether there was one.
+pub fn uninstall_vst3(package: &str) -> Result<bool, String> {
+    uninstall_bundle(&to_vst3_bundle_name(package), INSTALL_DIR)
 }

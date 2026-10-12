@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_auv2_component_name, to_pascal_case, uninstall_bundle, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
+
+/// Where an installed component lives, relative to the home directory.
+const INSTALL_DIR: &[&str] = &["Library", "Audio", "Plug-Ins", "Components"];
 
 // AUv2 C code generation template (large embedded C implementation)
 include!("au_codegen/auv2_c.rs");
@@ -285,29 +288,19 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
 }
 
 fn install_auv2(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let dest = install_bundle(
-        bundle_dir,
-        bundle_name,
-        &["Library", "Audio", "Plug-Ins", "Components"],
-        verbose,
-    )?;
+    let dest = install_bundle(bundle_dir, bundle_name, INSTALL_DIR, verbose)?;
 
     // Refresh AU cache to pick up the new component
-    let killall_result = Command::new("killall")
-        .arg("-9")
-        .arg("AudioComponentRegistrar")
-        .output();
-
-    if verbose {
-        if let Ok(output) = killall_result {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for line in stderr.lines() {
-                crate::verbose!(verbose, "    {}", line);
-            }
-        }
-    }
+    refresh_au_registry(verbose);
     crate::verbose!(verbose, "    Audio Unit cache refreshed");
     crate::status!("  {} -> {}", bundle_name, shorten_path(&dest));
 
     Ok(())
+}
+
+/// Removes an installed AUv2 component and returns whether there was one.
+///
+/// The caller refreshes the Audio Unit registry afterwards.
+pub fn uninstall_auv2(package: &str) -> Result<bool, String> {
+    uninstall_bundle(&to_auv2_component_name(package), INSTALL_DIR)
 }

@@ -191,6 +191,25 @@ registry (`AudioComponentRegistrar`), which then restarts and picks up the
 new build. For an AUv3 it also launches the container app once, which
 registers the extension. Rescan in your DAW if the plugin does not appear.
 
+## Uninstalling
+
+```bash
+cargo xtask uninstall <package> [formats]
+```
+
+This removes the bundles that `--install` copied to the plugin folders.
+With format flags it removes only those formats. Without one it removes
+every format:
+
+```bash
+cargo xtask uninstall gain
+cargo xtask uninstall gain --auv3
+```
+
+A format that is not installed is skipped. After removing an Audio Unit,
+xtask restarts the system's Audio Unit registry, so that hosts stop listing
+the plugin. The bundles in `target/` are left alone.
+
 ## Testing
 
 ### Validators
@@ -224,11 +243,10 @@ macOS treats an AUv2 and an AUv3 with the same type, plugin code and
 manufacturer code as one plugin, and hosts show only one of them, usually
 the AUv3. This is intended: an AUv3 can replace its AUv2 without breaking
 existing projects. To test both formats of one plugin, build one format
-with a different `plugin_code` in `Config.toml`, or uninstall one format
-and refresh the registry:
+with a different `plugin_code` in `Config.toml`, or uninstall one format:
 
 ```bash
-killall -9 AudioComponentRegistrar
+cargo xtask uninstall gain --auv3
 ```
 
 ### Running the tests

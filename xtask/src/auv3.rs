@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_au_bundle_name, to_pascal_case, uninstall_bundle, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::AppexPlistConfig;
+
+/// Where an installed app lives, relative to the home directory.
+const INSTALL_DIR: &[&str] = &["Applications"];
 
 /// Creates an AUv3 app extension bundle from a compiled dylib.
 ///
@@ -502,7 +505,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
 /// AUv3 app extensions must be installed as apps (not in the Components folder).
 /// The system discovers them when the containing app is launched.
 fn install_auv3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(), String> {
-    let dest = install_bundle(bundle_dir, bundle_name, &["Applications"], verbose)?;
+    let dest = install_bundle(bundle_dir, bundle_name, INSTALL_DIR, verbose)?;
 
     // Launch the app briefly to trigger pluginkit registration.
     // AUv3 extensions are registered when their containing app is first launched.
@@ -530,21 +533,18 @@ fn install_auv3(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(
     }
 
     // Also refresh AU cache
-    let killall_au = Command::new("killall")
-        .arg("-9")
-        .arg("AudioComponentRegistrar")
-        .output();
-
-    if verbose {
-        if let Ok(output) = killall_au {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for line in stderr.lines() {
-                crate::verbose!(verbose, "    {}", line);
-            }
-        }
-    }
+    refresh_au_registry(verbose);
     crate::verbose!(verbose, "    Audio Unit registered");
     crate::status!("  {} -> {}", bundle_name, shorten_path(&dest));
 
     Ok(())
+}
+
+/// Removes an installed AUv3 app and returns whether there was one.
+///
+/// The caller refreshes the Audio Unit registry afterwards.
+pub fn uninstall_auv3(package: &str) -> Result<bool, String> {
+    // The system drops the extension's registration by itself once the app is
+    // gone, so removing the app is all it takes here.
+    uninstall_bundle(&to_au_bundle_name(package), INSTALL_DIR)
 }
