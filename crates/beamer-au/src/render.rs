@@ -29,7 +29,6 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::slice;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
@@ -1052,12 +1051,6 @@ pub struct RenderBlock<S: Sample> {
     aux_input_buffer_lists: UnsafeCell<Vec<Box<AudioBufferList>>>,
     /// Pre-allocated MIDI output buffer for zero-allocation MIDI output processing
     midi_output: UnsafeCell<MidiBuffer>,
-    /// Per-instance warmup counter to silence initial renders.
-    ///
-    /// The first few render calls may contain garbage from host-provided buffers.
-    /// This counter ensures each RenderBlock instance independently silences its
-    /// first 4 renders, even after channel config changes that recreate the instance.
-    warmup_count: AtomicUsize,
     /// Pre-allocated cache for auxiliary output bus data.
     ///
     /// AU hosts call the render block once per output bus. On bus 0, the plugin
@@ -1179,7 +1172,6 @@ impl<S: Sample> RenderBlock<S> {
             sample_rate,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
-            warmup_count: AtomicUsize::new(0),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
             last_render_sample_time: UnsafeCell::new(f64::NAN),
         }
@@ -1430,27 +1422,6 @@ impl<S: Sample> RenderBlock<S> {
         // Collect pointers from AudioBufferList
         // SAFETY: output_data is valid for the duration of this render call
         unsafe {
-            // Silence the first few renders entirely to avoid any host-provided garbage making it
-            // to the outputs.
-            let warmup_idx = self.warmup_count.fetch_add(1, Ordering::Relaxed);
-            if warmup_idx < 4 {
-                // Zero output buffers during warmup
-                if !output_data.is_null() {
-                    let list = &mut *output_data;
-                    for i in 0..list.number_buffers {
-                        let buf = list.buffer_at_mut(i);
-                        if !buf.data.is_null() && buf.data_byte_size > 0 {
-                            let bytes = std::slice::from_raw_parts_mut(
-                                buf.data as *mut u8,
-                                buf.data_byte_size as usize,
-                            );
-                            bytes.fill(0);
-                        }
-                    }
-                }
-                return os_status::NO_ERR;
-            }
-
             // Use input_data provided by ObjC (already pulled using AVAudioPCMBuffer).
             // This matches Apple's pattern where input pulling happens in ObjC.
             if !input_data.is_null() {
@@ -1487,10 +1458,22 @@ impl<S: Sample> RenderBlock<S> {
                     }
                 }
             }
-            // If input_data is null, the plugin has no input bus or the host did not feed it.
 
             // Now collect output pointers (after in-place fixup)
             storage.collect_outputs(output_data, num_samples);
+
+            if input_data.is_null() {
+                // No main input: the plugin has no input bus or the host did not
+                // feed it. Start from silence, so that a processor that only
+                // transforms its input does not leave whatever was in the
+                // buffers (the host's, or our own for null output pointers) in
+                // the output.
+                for &channel in &storage.main_outputs {
+                    // SAFETY: collect_outputs only keeps pointers that are valid
+                    // for num_samples samples.
+                    std::ptr::write_bytes(channel, 0, num_samples);
+                }
+            }
 
             // Collect auxiliary output pointers from pre-allocated cache buffers.
             // AU calls render per-bus, so we render aux outputs into our cache on
@@ -1509,7 +1492,7 @@ impl<S: Sample> RenderBlock<S> {
                 }
             }
 
-            // Note: We do NOT zero output buffers here because:
+            // Note: With a main input we do NOT zero output buffers here because:
             // 1. For in-place processing, output now points to input data which we need
             // 2. The plugin's process() will overwrite output anyway
             // 3. Zeroing would destroy the input data in the in-place case
@@ -1603,14 +1586,9 @@ impl<S: Sample> RenderBlock<S> {
             // the host provided null output buffers but there were no input buffers to use.
             // In this case, we can't process audio (instruments would need their own output buffers).
             if storage.output_channel_count() == 0 && storage.main_inputs.is_empty() {
-                // No inputs and no outputs collected - return silence
+                // No inputs and no outputs collected: there is nothing to write to.
                 return os_status::NO_ERR;
             }
-
-            // Note: We intentionally do NOT zero output buffers here because:
-            // 1. For in-place processing, output pointers point to input data which we need
-            // 2. The plugin's process() will overwrite output anyway
-            // 3. Zeroing would destroy the input data in the in-place case (Logic Pro uses this)
         }
 
         let _main_inputs = storage.input_channel_count();
