@@ -156,8 +156,28 @@ impl MacosWebView {
         }
 
         if config.dev_tools {
-            // SAFETY: setInspectable is safe to call on a valid WKWebView.
-            unsafe { webview.setInspectable(true) };
+            // The `inspectable` property exists from macOS 13.3. Earlier
+            // systems switch the Web Inspector on through a preferences key.
+            // SAFETY: webview is valid and we are on the main thread. The
+            // selector is only sent when the web view responds to it, and
+            // WKPreferences supports KVC for developerExtrasEnabled.
+            unsafe {
+                let has_inspectable: bool = objc2::msg_send![
+                    &webview,
+                    respondsToSelector: objc2::sel!(setInspectable:)
+                ];
+                if has_inspectable {
+                    webview.setInspectable(true);
+                } else {
+                    // The web view shares the preferences object of the
+                    // configuration it was created with.
+                    let preferences: Retained<AnyObject> =
+                        objc2::msg_send![&wk_config, preferences];
+                    let key = NSString::from_str("developerExtrasEnabled");
+                    let value = NSNumber::new_bool(true);
+                    let _: () = objc2::msg_send![&*preferences, setValue: &*value, forKey: &*key];
+                }
+            }
         }
 
         // Background color on parent layer to prevent white flash.
@@ -170,7 +190,7 @@ impl MacosWebView {
                 fn CGColorRelease(color: *const CGColor);
             }
             // SAFETY: parent_view is valid; we are on the main thread.
-            // CGColorCreateSRGB returns a +1 retained CGColor (macOS 13+).
+            // CGColorCreateSRGB returns a +1 retained CGColor.
             unsafe {
                 let _: () = objc2::msg_send![parent_view, setWantsLayer: true];
                 let layer: *mut objc2::runtime::AnyObject =
