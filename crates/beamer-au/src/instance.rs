@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
 use beamer_core::{
-    CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext, WebViewHandler,
+    CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext, ProcessMode,
+    WebViewHandler,
 };
 
 /// Type-erased interface for AU plugin instances.
@@ -41,11 +42,13 @@ pub trait AuPluginInstance: Send + 'static {
     /// * `sample_rate` - The sample rate in Hz
     /// * `max_frames` - Maximum number of frames per render call
     /// * `bus_config` - The cached bus configuration from the host
+    /// * `process_mode` - Whether the host renders in real time or offline
     fn allocate_render_resources(
         &mut self,
         sample_rate: f64,
         max_frames: u32,
         bus_config: &CachedBusConfig,
+        process_mode: ProcessMode,
     ) -> PluginResult<()>;
 
     /// Deallocate render resources (return to unprepared state).

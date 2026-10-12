@@ -36,8 +36,8 @@ use crate::instance::AuPluginInstance;
 use crate::lifecycle::AuState;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ParameterGroups, ParameterStore, ProcessContext, Processor, Transport,
-    WebViewHandler,
+    MidiEvent, NoPresets, ParameterGroups, ParameterStore, ProcessContext, ProcessMode, Processor,
+    Transport, WebViewHandler,
 };
 
 /// Generic AU processor wrapper.
@@ -107,9 +107,10 @@ where
         sample_rate: f64,
         max_frames: u32,
         bus_config: &CachedBusConfig,
+        process_mode: ProcessMode,
     ) -> PluginResult<()> {
         self.state
-            .prepare(sample_rate, max_frames, bus_config)
+            .prepare(sample_rate, max_frames, bus_config, process_mode)
             .map_err(PluginError::InitializationFailed)
     }
 
@@ -1154,7 +1155,7 @@ mod tests {
         );
 
         processor
-            .allocate_render_resources(44100.0, 512, &bus_config)
+            .allocate_render_resources(44100.0, 512, &bus_config, ProcessMode::Realtime)
             .expect("Failed to prepare processor");
 
         processor
@@ -1350,5 +1351,357 @@ mod tests {
             "Last PC (Boost) should set gain to 0.75, got {}",
             norm_value
         );
+    }
+
+    // =========================================================================
+    // Render Tests
+    // =========================================================================
+
+    use crate::buffer_storage::ProcessBufferStorage;
+    use crate::buffers::{AudioBuffer, AudioBufferList};
+    use crate::render::{create_render_block_f32, AudioTimeStamp, RenderBlockTrait, SMPTETime};
+    use std::sync::{Arc, Mutex};
+
+    const FRAMES: usize = 64;
+
+    /// A plugin whose processor fills its output with a value that tells in
+    /// which process mode it was prepared.
+    #[derive(Default)]
+    struct ModePlugin {
+        parameters: TestParameters,
+    }
+
+    struct ModeProcessor {
+        parameters: TestParameters,
+        value: f32,
+    }
+
+    const REALTIME_VALUE: f32 = 1.0;
+    const OFFLINE_VALUE: f32 = 2.0;
+
+    impl HasParameters for ModePlugin {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, params: Self::Parameters) {
+            self.parameters = params;
+        }
+    }
+
+    impl Descriptor for ModePlugin {
+        type Setup = ProcessMode;
+        type Processor = ModeProcessor;
+
+        fn prepare(self, mode: ProcessMode) -> Self::Processor {
+            ModeProcessor {
+                parameters: self.parameters,
+                value: match mode {
+                    ProcessMode::Offline => OFFLINE_VALUE,
+                    _ => REALTIME_VALUE,
+                },
+            }
+        }
+    }
+
+    impl HasParameters for ModeProcessor {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, params: Self::Parameters) {
+            self.parameters = params;
+        }
+    }
+
+    impl Processor for ModeProcessor {
+        type Descriptor = ModePlugin;
+
+        fn process(
+            &mut self,
+            buffer: &mut Buffer,
+            _aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            for (_, output) in buffer.zip_channels() {
+                output.fill(self.value);
+            }
+        }
+
+        fn save_state(&self) -> PluginResult<Vec<u8>> {
+            Ok(vec![])
+        }
+
+        fn load_state(&mut self, _data: &[u8]) -> PluginResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A stereo AudioBufferList with its sample memory.
+    #[repr(C)]
+    struct StereoList {
+        number_buffers: u32,
+        buffers: [AudioBuffer; 2],
+        samples: [[f32; FRAMES]; 2],
+    }
+
+    impl StereoList {
+        fn filled(value: f32) -> Box<Self> {
+            let mut list = Box::new(Self {
+                number_buffers: 2,
+                buffers: [
+                    AudioBuffer {
+                        number_channels: 1,
+                        data_byte_size: (FRAMES * 4) as u32,
+                        data: std::ptr::null_mut(),
+                    },
+                    AudioBuffer {
+                        number_channels: 1,
+                        data_byte_size: (FRAMES * 4) as u32,
+                        data: std::ptr::null_mut(),
+                    },
+                ],
+                samples: [[value; FRAMES]; 2],
+            });
+            for channel in 0..2 {
+                list.buffers[channel].data = list.samples[channel].as_mut_ptr().cast();
+            }
+            list
+        }
+
+        fn as_list(&mut self) -> *mut AudioBufferList {
+            (self as *mut Self).cast()
+        }
+    }
+
+    fn stereo_bus_config() -> CachedBusConfig {
+        CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+        )
+    }
+
+    /// Prepare the plugin and create its render block, like the bridge does.
+    fn render_block_for(
+        plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
+        process_mode: ProcessMode,
+    ) -> Box<dyn RenderBlockTrait> {
+        let bus_config = stereo_bus_config();
+        plugin
+            .lock()
+            .unwrap()
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, process_mode)
+            .expect("prepare");
+        let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
+        create_render_block_f32(Arc::clone(plugin), storage, FRAMES as u32, 44100.0)
+    }
+
+    /// Render one buffer of the main bus and return the first output sample
+    /// of each channel.
+    fn render(
+        block: &dyn RenderBlockTrait,
+        input: Option<&mut StereoList>,
+        output: &mut StereoList,
+    ) -> [f32; 2] {
+        let timestamp = AudioTimeStamp {
+            sample_time: 0.0,
+            host_time: 0,
+            rate_scalar: 1.0,
+            word_clock_time: 0,
+            smpte_time: SMPTETime::default(),
+            flags: 1,
+            reserved: 0,
+        };
+        let mut action_flags = 0u32;
+        let input_list = input.map_or(std::ptr::null(), |list| list.as_list().cast_const());
+        let status = block.process(
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            input_list,
+            None,
+            None,
+        );
+        assert_eq!(status, 0);
+        [output.samples[0][0], output.samples[1][FRAMES - 1]]
+    }
+
+    fn boxed<T: AuPluginInstance + 'static>(instance: T) -> Arc<Mutex<Box<dyn AuPluginInstance>>> {
+        Arc::new(Mutex::new(Box::new(instance)))
+    }
+
+    #[test]
+    fn test_first_render_call_is_processed() {
+        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+        assert_eq!(
+            render(block.as_ref(), Some(&mut input), &mut output),
+            [REALTIME_VALUE; 2]
+        );
+    }
+
+    #[test]
+    fn test_preparing_again_delivers_the_process_mode() {
+        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+
+        let block = render_block_for(&plugin, ProcessMode::Offline);
+        assert_eq!(
+            render(block.as_ref(), Some(&mut input), &mut output),
+            [OFFLINE_VALUE; 2]
+        );
+
+        // The host leaves offline rendering while the plugin is prepared.
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        assert_eq!(
+            render(block.as_ref(), Some(&mut input), &mut output),
+            [REALTIME_VALUE; 2]
+        );
+    }
+
+    #[test]
+    fn test_output_starts_silent_without_main_input() {
+        // TestProcessor does not write its output.
+        let plugin = boxed(AuProcessor::<TestPlugin, TestPresets>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+
+        // Without input, what the host left in the buffers must not come out.
+        let mut output = StereoList::filled(0.77);
+        assert_eq!(render(block.as_ref(), None, &mut output), [0.0; 2]);
+
+        // With input the output is the processor's business: the buffers may
+        // be the input itself when the host processes in place.
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.77);
+        assert_eq!(
+            render(block.as_ref(), Some(&mut input), &mut output),
+            [0.77; 2]
+        );
+    }
+
+    // =========================================================================
+    // Bridge Tests
+    // =========================================================================
+
+    use crate::bridge::{
+        beamer_au_allocate_render_resources, beamer_au_deallocate_render_resources,
+        beamer_au_get_parameter_value, beamer_au_set_parameter_value, BeamerAuBusConfig,
+        BeamerAuBusInfo, BeamerAuBusType, BeamerAuSampleFormat, BeamerInstanceHandle,
+    };
+    use beamer_core::MAX_BUSES;
+
+    fn test_handle() -> Box<BeamerInstanceHandle> {
+        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        Box::new(BeamerInstanceHandle::new(Box::new(plugin)))
+    }
+
+    fn gain_id() -> u32 {
+        fnv1a_hash("gain")
+    }
+
+    /// Allocate render resources for a stereo effect through the C-ABI.
+    fn allocate(instance: *mut BeamerInstanceHandle, rendering_offline: bool) -> i32 {
+        let stereo = BeamerAuBusInfo {
+            channel_count: 2,
+            bus_type: BeamerAuBusType::Main,
+        };
+        let bus_config = BeamerAuBusConfig {
+            input_bus_count: 1,
+            output_bus_count: 1,
+            input_buses: [stereo; MAX_BUSES],
+            output_buses: [stereo; MAX_BUSES],
+        };
+        beamer_au_allocate_render_resources(
+            instance,
+            44100.0,
+            FRAMES as u32,
+            BeamerAuSampleFormat::Float32,
+            &bus_config,
+            rendering_offline,
+        )
+    }
+
+    #[test]
+    fn test_parameter_access_follows_the_parameters() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+
+        // Preparing moves the parameters into the processor.
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+        beamer_au_set_parameter_value(instance, gain_id(), 0.75);
+
+        // Preparing again for offline rendering moves them twice.
+        assert_eq!(allocate(instance, true), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
+
+        // Deallocating moves them back.
+        beamer_au_deallocate_render_resources(instance);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
+    }
+
+    #[test]
+    fn test_parameter_access_while_the_parameters_are_locked() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+
+        // SAFETY: The handle is alive, and the calls below only use it shared.
+        let shared = unsafe { &*instance };
+        // With the cached pointer locked, as it is during a move, access goes
+        // through the plugin instead of failing or using the pointer.
+        shared.with_param_store_locked(|| {
+            beamer_au_set_parameter_value(instance, gain_id(), 0.125);
+            assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
+        });
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
+    }
+
+    #[test]
+    fn test_parameter_access_during_repeated_preparing() {
+        struct Instance(*mut BeamerInstanceHandle);
+        // SAFETY: The bridge functions are made to be called from any thread.
+        unsafe impl Send for Instance {}
+
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+
+        // One thread sets and reads the parameter like an automation thread,
+        // while this one switches the offline state back and forth.
+        let setter = Instance(instance);
+        let worker = std::thread::spawn(move || {
+            let setter = setter;
+            for i in 0..20_000u32 {
+                let value = (i % 5) as f32 * 0.25;
+                beamer_au_set_parameter_value(setter.0, gain_id(), value);
+                let read = beamer_au_get_parameter_value(setter.0, gain_id());
+                assert!((0.0..=1.0).contains(&read));
+            }
+        });
+        for i in 0..200 {
+            assert_eq!(allocate(instance, i % 2 == 0), 0);
+        }
+        worker.join().expect("the parameter thread panicked");
+
+        beamer_au_set_parameter_value(instance, gain_id(), 0.5);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.5);
     }
 }

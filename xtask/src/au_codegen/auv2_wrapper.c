@@ -87,6 +87,7 @@ typedef struct BeamerAuv2Instance {
     UInt32 maxFramesPerSlice;
     bool initialized;
     bool bypassed;
+    bool offlineRender;
 
     // Stream formats per bus (indexed by element number)
     AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
@@ -468,13 +469,10 @@ static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector) {
 // MARK: - Initialize/Uninitialize
 // =============================================================================
 
-static OSStatus BeamerAuv2Initialize(void* self) {
-    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
-
-    if (inst->initialized) {
-        return noErr; // Already initialized
-    }
-
+// Allocate the render resources in Rust for the current stream formats, frame
+// count and offline state. On an initialized unit this prepares the plugin
+// again with the new configuration.
+static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     // Build bus config from current stream formats
     BeamerAuBusConfig busConfig;
     memset(&busConfig, 0, sizeof(busConfig));
@@ -517,13 +515,24 @@ static OSStatus BeamerAuv2Initialize(void* self) {
     }
 
     // Allocate render resources in Rust
-    OSStatus status = beamer_au_allocate_render_resources(
+    return beamer_au_allocate_render_resources(
         inst->rustInstance,
         inst->sampleRate,
         inst->maxFramesPerSlice,
         format,
-        &busConfig
+        &busConfig,
+        inst->offlineRender
     );
+}
+
+static OSStatus BeamerAuv2Initialize(void* self) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    if (inst->initialized) {
+        return noErr; // Already initialized
+    }
+
+    OSStatus status = BeamerAuv2AllocateRenderResources(inst);
 
     if (status == noErr) {
         inst->initialized = true;
@@ -533,7 +542,7 @@ static OSStatus BeamerAuv2Initialize(void* self) {
         atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
 
         // Pre-allocate input buffer if we have input buses
-        if (inputBusCount > 0) {
+        if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
             EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inst->maxFramesPerSlice);
         }
     }
@@ -746,8 +755,11 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = true;
             return noErr;
 
-        // Offline render
+        // Offline render (Global scope only)
         case kAudioUnitProperty_OfflineRender:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
             if (outDataSize) *outDataSize = sizeof(UInt32);
             if (outWritable) *outWritable = true;
             return noErr;
@@ -1063,6 +1075,18 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 *(Float64*)outData = (inst->sampleRate > 0) ? (Float64)samples / inst->sampleRate : 0.0;
             }
             *ioDataSize = sizeof(Float64);
+            return noErr;
+        }
+
+        case kAudioUnitProperty_OfflineRender: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            *(UInt32*)outData = inst->offlineRender ? 1 : 0;
+            *ioDataSize = sizeof(UInt32);
             return noErr;
         }
 
@@ -1531,7 +1555,33 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             return noErr;
         }
 
-        case kAudioUnitProperty_OfflineRender:
+        case kAudioUnitProperty_OfflineRender: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inData || inDataSize < sizeof(UInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            bool offline = (*(const UInt32*)inData != 0);
+            if (offline == inst->offlineRender) {
+                return noErr;
+            }
+            inst->offlineRender = offline;
+            // The plugin learns its process mode when it is prepared, so an
+            // initialized unit is prepared again.
+            if (inst->initialized) {
+                OSStatus status = BeamerAuv2AllocateRenderResources(inst);
+                if (status != noErr) {
+                    // Go back to the state the plugin was prepared for.
+                    inst->offlineRender = !offline;
+                    BeamerAuv2AllocateRenderResources(inst);
+                    return status;
+                }
+            }
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }
+
         case kAudioUnitProperty_InPlaceProcessing:
         case kAudioUnitProperty_ShouldAllocateBuffer:
             // Accept but ignore these

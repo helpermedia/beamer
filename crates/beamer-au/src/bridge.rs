@@ -37,7 +37,9 @@ use std::sync::{Arc, Mutex};
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
 use crate::error::os_status;
-use beamer_core::{BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, WebViewHandler, MAX_BUSES};
+use beamer_core::{
+    BusType, CachedBusConfig, CachedBusInfo, ParameterUnit, ProcessMode, WebViewHandler, MAX_BUSES,
+};
 use crate::factory;
 use crate::instance::AuPluginInstance;
 use crate::render::{
@@ -332,8 +334,9 @@ impl Default for BeamerAuChannelCapabilities {
 ///
 /// The stored pointer must remain valid for as long as it is used. In practice,
 /// it points into the `Box<dyn AuPluginInstance>` heap allocation which lives
-/// for the entire instance lifetime. The pointer is updated (on the main thread)
-/// during allocate/deallocate when the parameter storage moves.
+/// for the entire instance lifetime. The parameter storage moves inside that
+/// allocation when the plugin is prepared or unprepared, which is why the
+/// handle keeps the pointer behind a lock (see `BeamerInstanceHandle`).
 struct ParamStorePtr {
     raw: [usize; 2],
 }
@@ -419,25 +422,61 @@ pub struct BeamerInstanceHandle {
     /// Cached WebView handler, captured at instance creation to avoid
     /// locking the plugin mutex on every invoke/event call.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
-    /// Cached ParameterStore pointer for lock-free parameter access.
+    /// Cached ParameterStore pointer, so that parameter functions do not have
+    /// to take the plugin mutex.
     ///
-    /// Updated on the main thread during instance creation, allocate and
-    /// deallocate. Read without locking by parameter functions. This is safe
-    /// because:
-    /// - Writes happen on the main thread (allocate/deallocate/create)
-    /// - The 60Hz webview sync timer also runs on the main thread
-    /// - AU host parameter callbacks (`set_parameter_value_au`) may run on the
-    ///   audio thread, but only between allocate and deallocate when the pointer
-    ///   is stable
-    /// - The pointee lives inside the `Box<dyn AuPluginInstance>` heap allocation
-    ///   which is never freed or reallocated during the instance lifetime
-    param_store: ParamStorePtr,
+    /// The parameters move when the plugin is prepared or unprepared (from the
+    /// Descriptor to the Processor and back). Whoever moves them holds the
+    /// write side of this lock for the whole move and stores the new pointer
+    /// before releasing it. Parameter functions use the pointer under the read
+    /// side, which they only try to take: while a move is going on they fall
+    /// back to the plugin mutex (see `with_param_store`). A pointer can so
+    /// never be used while its target is being moved, whatever thread the
+    /// host calls from.
+    param_store: std::sync::RwLock<ParamStorePtr>,
+}
+
+impl BeamerInstanceHandle {
+    /// Create the handle for a new plugin instance.
+    pub(crate) fn new(plugin: Box<dyn AuPluginInstance>) -> Self {
+        // Cache the WebView handler and ParameterStore pointer before wrapping
+        // in the Mutex so we don't need to lock on every invoke/event/param call.
+        let webview_handler = plugin.webview_handler();
+        let param_store = ParamStorePtr::capture(plugin.as_ref());
+
+        Self {
+            plugin: Arc::new(Mutex::new(plugin)),
+            render_block: std::sync::RwLock::new(None),
+            sample_format: BeamerAuSampleFormat::Float32,
+            sample_rate: 44100.0,
+            max_frames: 1024,
+            bus_config: None,
+            webview_handler,
+            param_store: std::sync::RwLock::new(param_store),
+        }
+    }
+
+    /// Take the write side of the parameter pointer lock for a move.
+    fn lock_param_store(&self) -> std::sync::RwLockWriteGuard<'_, ParamStorePtr> {
+        // A poisoned lock only means a panic elsewhere: the pointer is
+        // replaced by the caller anyway.
+        self.param_store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Run `f` while the parameter pointer is locked like during a move.
+    #[cfg(test)]
+    pub(crate) fn with_param_store_locked<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.lock_param_store();
+        f()
+    }
 }
 
 // SAFETY: BeamerInstanceHandle is designed for FFI use. Thread safety is ensured by:
 // - `plugin` is wrapped in Arc<Mutex<>> for synchronized access
 // - `render_block` is wrapped in RwLock to prevent data races
-// - `param_store` is only written on the main thread (allocate/deallocate)
+// - `param_store` is wrapped in RwLock and held for writing while the parameters move
 // - Other fields are only modified during allocate/deallocate which holds exclusive access
 unsafe impl Send for BeamerInstanceHandle {}
 
@@ -465,36 +504,35 @@ fn lock_plugin(
         .map_err(|_| os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
 }
 
-/// Access the cached ParameterStore without locking.
+/// Access the plugin's ParameterStore.
 ///
-/// Uses the `param_store` pointer cached on the handle. This pointer is
-/// updated on the main thread during create/allocate/deallocate and read
-/// without locking by parameter functions. Falls back to the mutex path
-/// if the cached pointer is null (should not happen in normal operation).
+/// Uses the pointer cached on the handle when it can take the read side of
+/// its lock without waiting, which is the normal case and costs no more than
+/// that. While the plugin is being prepared or unprepared, or when no pointer
+/// is cached, it takes the plugin mutex instead and so waits until the
+/// parameters are in their new place.
 ///
 /// # Safety
 ///
-/// The `param_store` pointer cached on `handle` must point to a live
-/// `ParameterStore` (i.e. the `Box<dyn AuPluginInstance>` must not have been
-/// dropped, and the plugin state must not have transitioned through
-/// prepare/unprepare since the pointer was captured). If the pointer is null,
-/// the function falls back to the mutex path safely.
+/// `handle` must belong to a live instance: the `Box<dyn AuPluginInstance>`
+/// the cached pointer points into must not have been dropped.
 unsafe fn with_param_store<R>(
     handle: &BeamerInstanceHandle,
     f: impl FnOnce(&dyn ParameterStore) -> R,
 ) -> Option<R> {
-    if !handle.param_store.is_null() {
-        // SAFETY: The pointer was captured from the plugin's ParameterStore while
-        // the mutex was held. The pointee lives inside Box<dyn AuPluginInstance>
-        // which is alive for the entire instance lifetime. The pointer is only
-        // updated on the main thread (allocate/deallocate), which serializes with
-        // the 60Hz webview timer. Audio-thread callers only run between allocate
-        // and deallocate when the pointer is stable.
-        let store = unsafe { handle.param_store.get() };
-        return Some(f(store));
+    if let Ok(cached) = handle.param_store.try_read() {
+        if !cached.is_null() {
+            // SAFETY: The pointer was captured from the plugin's ParameterStore
+            // while the plugin mutex was held, and the pointee lives inside the
+            // Box<dyn AuPluginInstance> of this instance. The parameters only
+            // move under the write side of the lock, which cannot be taken
+            // while this read guard is alive.
+            let store = unsafe { cached.get() };
+            return Some(f(store));
+        }
     }
 
-    // Fallback: should not happen, but handle gracefully.
+    // The parameters are being moved, or no pointer is cached.
     let plugin = lock_plugin(handle).ok()?;
     let store = plugin.parameter_store().ok()?;
     Some(f(store))
@@ -621,21 +659,7 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
         // Use the factory to create a new plugin instance
         let plugin = factory::create_instance()?;
 
-        // Cache the WebView handler and ParameterStore pointer before wrapping
-        // in the Mutex so we don't need to lock on every invoke/event/param call.
-        let webview_handler = plugin.webview_handler();
-        let param_store = ParamStorePtr::capture(plugin.as_ref());
-
-        let handle = Box::new(BeamerInstanceHandle {
-            plugin: Arc::new(Mutex::new(plugin)),
-            render_block: std::sync::RwLock::new(None),
-            sample_format: BeamerAuSampleFormat::Float32,
-            sample_rate: 44100.0,
-            max_frames: 1024,
-            bus_config: None,
-            webview_handler,
-            param_store,
-        });
+        let handle = Box::new(BeamerInstanceHandle::new(plugin));
 
         Some(Box::into_raw(handle))
     });
@@ -687,6 +711,10 @@ const MAX_FRAMES_PER_RENDER: u32 = 8192;
 
 /// Allocate render resources and prepare for audio processing.
 ///
+/// Calling it on a prepared instance prepares the plugin again with the new
+/// configuration. `rendering_offline` tells the plugin that the host renders
+/// without realtime deadlines, as [`ProcessMode::Offline`].
+///
 /// # Safety
 ///
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`
@@ -694,8 +722,9 @@ const MAX_FRAMES_PER_RENDER: u32 = 8192;
 /// - `bus_config` must be a valid pointer to a properly initialized `BeamerAuBusConfig`
 /// - This function validates both pointers are non-null before dereferencing
 /// - If either pointer is null, returns `K_AUDIO_UNIT_ERR_INVALID_PARAMETER`
-/// - Thread safety: Must not be called concurrently with render or deallocate
-///   operations on the same instance
+/// - Thread safety: Must not be called concurrently with deallocate or with
+///   itself on the same instance. Render calls may arrive at any time: they
+///   return an error while the plugin is being prepared
 #[no_mangle]
 pub extern "C" fn beamer_au_allocate_render_resources(
     instance: BeamerAuInstanceHandle,
@@ -703,6 +732,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
     max_frames: u32,
     sample_format: BeamerAuSampleFormat,
     bus_config: *const BeamerAuBusConfig,
+    rendering_offline: bool,
 ) -> i32 {
     if instance.is_null() || bus_config.is_null() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
@@ -749,6 +779,16 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         // SAFETY: bus_config validated non-null at function start.
         let c_bus_config = unsafe { &*bus_config };
 
+        // Take the current render block out first. This waits for a render call
+        // that is in progress (it holds the read lock while it processes) and
+        // makes the following calls return an error until the new block is
+        // installed. A prepared instance can so be prepared again while the
+        // host keeps rendering.
+        match handle.render_block.write() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+        }
+
         // Store configuration
         handle.sample_format = sample_format;
         handle.sample_rate = sample_rate;
@@ -762,9 +802,11 @@ pub extern "C" fn beamer_au_allocate_render_resources(
             return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
         }
 
-        // Invalidate the cached pointer before prepare() moves the parameters.
-        // Readers that arrive during the transition will fall back to the mutex.
-        handle.param_store = ParamStorePtr::null();
+        // Lock the cached pointer before prepare() moves the parameters, and
+        // invalidate it in case the move does not complete. Readers that arrive
+        // during the transition fall back to the mutex.
+        let mut param_store = handle.lock_param_store();
+        *param_store = ParamStorePtr::null();
 
         // Allocate resources on the plugin (calls prepare(), which moves parameters).
         {
@@ -773,23 +815,32 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 Err(status) => return status,
             };
 
-            if let Err(_e) =
-                plugin.allocate_render_resources(sample_rate, max_frames, &rust_bus_config)
-            {
+            // AU has two modes: rendering in real time or offline.
+            let process_mode = if rendering_offline {
+                ProcessMode::Offline
+            } else {
+                ProcessMode::Realtime
+            };
+
+            if let Err(_e) = plugin.allocate_render_resources(
+                sample_rate,
+                max_frames,
+                &rust_bus_config,
+                process_mode,
+            ) {
                 return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
             }
         }
         // Refresh the cached ParameterStore pointer. The parameters have moved
-        // from the Descriptor to the Processor during prepare(). Lock through
-        // the Arc clone to avoid borrowing `handle` (which we need to write to).
+        // from the Descriptor to the Processor during prepare().
         {
-            let plugin_arc = Arc::clone(&handle.plugin);
-            let plugin = match plugin_arc.lock() {
+            let plugin = match lock_plugin(handle) {
                 Ok(guard) => guard,
-                Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+                Err(status) => return status,
             };
-            handle.param_store = ParamStorePtr::capture(plugin.as_ref());
+            *param_store = ParamStorePtr::capture(plugin.as_ref());
         }
+        drop(param_store);
 
         // Create the render block based on sample format
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
@@ -905,8 +956,10 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
             return;
         }
 
-        // Invalidate the cached pointer before unprepare() moves the parameters.
-        handle.param_store = ParamStorePtr::null();
+        // Lock the cached pointer before unprepare() moves the parameters, and
+        // invalidate it in case the move does not complete.
+        let mut param_store = handle.lock_param_store();
+        *param_store = ParamStorePtr::null();
 
         // Use try_lock() for the plugin mutex, consistent with render path.
         // At this point the render_block is None, so even if a render call
@@ -937,10 +990,9 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         // Refresh the cached ParameterStore pointer. The parameters have moved
         // from the Processor back to the Descriptor during unprepare().
         {
-            let plugin_arc = Arc::clone(&handle.plugin);
-            match plugin_arc.lock() {
+            match handle.plugin.lock() {
                 Ok(plugin) => {
-                    handle.param_store = ParamStorePtr::capture(plugin.as_ref());
+                    *param_store = ParamStorePtr::capture(plugin.as_ref());
                 }
                 Err(_) => {
                     log::warn!(
@@ -950,6 +1002,7 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
                 }
             };
         }
+        drop(param_store);
 
         // Clear bus config only after successful deallocation.
         handle.bus_config = None;
@@ -2980,6 +3033,7 @@ mod tests {
                 1024,
                 BeamerAuSampleFormat::Float32,
                 ptr::null(),
+                false,
             ),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER
         );
@@ -3061,6 +3115,7 @@ mod tests {
                 1024,
                 BeamerAuSampleFormat::Float32,
                 &bus_config,
+                false,
             ),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER // null instance check first
         );

@@ -21,8 +21,9 @@
 //! Unprepared <--[deallocateRenderResources]-----|
 //! ```
 //!
-//! If the sample rate or buffer size changes while prepared, the state machine
-//! automatically unprepares and re-prepares to adapt to the new configuration.
+//! If the sample rate, buffer size or process mode changes while prepared, the
+//! state machine automatically unprepares and re-prepares to adapt to the new
+//! configuration.
 //!
 //! # Setup Extraction
 //!
@@ -34,7 +35,7 @@
 
 use beamer_core::{
     BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, HasParameters, MidiCcConfig,
-    PluginSetup, Processor,
+    PluginSetup, ProcessMode, Processor,
 };
 use log;
 
@@ -183,17 +184,15 @@ impl<P: Descriptor> Default for AuState<P> {
 ///
 /// Creates a HostSetup with all available information, then uses the
 /// `PluginSetup::extract` method to extract only what the plugin needs.
-fn build_setup<S: PluginSetup>(sample_rate: f64, max_frames: u32, layout: &BusLayout) -> S {
-    use beamer_core::{HostSetup, ProcessMode};
+fn build_setup<S: PluginSetup>(
+    sample_rate: f64,
+    max_frames: u32,
+    layout: &BusLayout,
+    process_mode: ProcessMode,
+) -> S {
+    use beamer_core::HostSetup;
 
-    // AU doesn't distinguish offline rendering at the API level,
-    // so we default to Realtime
-    let host_setup = HostSetup::new(
-        sample_rate,
-        max_frames as usize,
-        layout.clone(),
-        ProcessMode::Realtime,
-    );
+    let host_setup = HostSetup::new(sample_rate, max_frames as usize, layout.clone(), process_mode);
 
     S::extract(&host_setup)
 }
@@ -260,12 +259,15 @@ impl<P: Descriptor> AuState<P> {
     /// Transition from Unprepared to Prepared.
     ///
     /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for
-    /// proper conversion buffer allocation.
+    /// proper conversion buffer allocation. A prepared plugin is prepared
+    /// again, which is how a changed sample rate, buffer size or process mode
+    /// reaches it.
     pub fn prepare(
         &mut self,
         sample_rate: f64,
         max_frames: u32,
         bus_config: &CachedBusConfig,
+        process_mode: ProcessMode,
     ) -> Result<(), String> {
         // Convert CachedBusConfig to BusLayout for plugin config
         let layout = bus_config.to_bus_layout();
@@ -279,7 +281,7 @@ impl<P: Descriptor> AuState<P> {
                 // Capture MIDI CC config before consuming the plugin
                 let midi_cc_config = plugin.midi_cc_config();
 
-                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout);
+                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
                 let mut processor = plugin.prepare(plugin_setup);
 
                 // Apply any pending state that was set before preparation
@@ -312,7 +314,7 @@ impl<P: Descriptor> AuState<P> {
                 Ok(())
             }
             Self::Prepared { processor, .. } => {
-                // Sample rate or buffer size changed - need to unprepare and re-prepare
+                // The configuration changed - need to unprepare and re-prepare
                 log::debug!("Re-preparing plugin due to config change (was prepared)");
 
                 let plugin = processor.unprepare();
@@ -320,7 +322,7 @@ impl<P: Descriptor> AuState<P> {
                 // Capture MIDI CC config before consuming the plugin
                 let midi_cc_config = plugin.midi_cc_config();
 
-                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout);
+                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
                 let new_processor = plugin.prepare(plugin_setup);
 
                 let (conversion_buffers, midi_cc_state, midi_output_buffer) =
@@ -343,6 +345,19 @@ impl<P: Descriptor> AuState<P> {
                 Ok(())
             }
             Self::Transitioning => Err("Invalid state: transitioning".to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_setup_carries_the_process_mode() {
+        let layout = BusLayout::default();
+        for mode in [ProcessMode::Realtime, ProcessMode::Offline] {
+            assert_eq!(build_setup::<ProcessMode>(48000.0, 512, &layout, mode), mode);
         }
     }
 }

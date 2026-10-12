@@ -356,6 +356,8 @@ void beamer_au_destroy_instance(BeamerAuInstanceHandle _Nullable instance);
  *
  * This transitions the plugin from Unprepared to Prepared state.
  * After this call succeeds, the plugin is ready for `beamer_au_render()` calls.
+ * Calling it on a prepared instance prepares the plugin again with the new
+ * configuration.
  *
  * This function:
  * 1. Validates the bus configuration
@@ -370,6 +372,8 @@ void beamer_au_destroy_instance(BeamerAuInstanceHandle _Nullable instance);
  * @param max_frames    Maximum number of frames per render call.
  * @param sample_format Sample format (float32 or float64).
  * @param bus_config    Pointer to bus configuration (copied internally).
+ * @param rendering_offline Whether the host renders without realtime deadlines
+ *                      (an offline bounce). The plugin sees it as its process mode.
  *
  * @return OSStatus:
  *         - noErr (0): Success, plugin is ready for processing
@@ -393,7 +397,8 @@ OSStatus beamer_au_allocate_render_resources(
     double sample_rate,
     uint32_t max_frames,
     BeamerAuSampleFormat sample_format,
-    const BeamerAuBusConfig* bus_config
+    const BeamerAuBusConfig* bus_config,
+    bool rendering_offline
 );
 
 /**

@@ -573,7 +573,8 @@ static void beamer_auv3_on_loaded(void* context) {
         _sampleRate,
         _maxFrames,
         _sampleFormat,
-        &_busConfig
+        &_busConfig,
+        self.renderingOffline
     );
 
     if (result != noErr) {
@@ -603,6 +604,28 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     [super deallocateRenderResources];
+}
+
+// A host should set this before it allocates render resources. When it
+// changes afterwards, prepare the plugin again, because the plugin learns its
+// process mode when it is prepared.
+- (void)setRenderingOffline:(BOOL)renderingOffline {
+    BOOL changed = (renderingOffline != self.renderingOffline);
+    [super setRenderingOffline:renderingOffline];
+
+    if (changed && _rustInstance != NULL && _resourcesAllocated) {
+        OSStatus result = beamer_au_allocate_render_resources(
+            _rustInstance,
+            _sampleRate,
+            _maxFrames,
+            _sampleFormat,
+            &_busConfig,
+            renderingOffline
+        );
+        if (result != noErr) {
+            os_log_error(OS_LOG_DEFAULT, "Preparing for the new offline state failed: %d", (int)result);
+        }
+    }
 }
 
 - (AUInternalRenderBlock)internalRenderBlock {

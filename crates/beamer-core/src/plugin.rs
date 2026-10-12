@@ -298,6 +298,9 @@ impl PluginSetup for AuxOutputCount {
 /// for realtime vs offline rendering (e.g., higher quality
 /// oversampling when rendering offline).
 ///
+/// Hosts report it in every plugin format. When a host changes the mode,
+/// the plugin is prepared again with the new one.
+///
 /// # Example
 ///
 /// ```ignore
@@ -319,7 +322,8 @@ pub enum ProcessMode {
     Realtime,
     /// Offline rendering (bounce, export).
     Offline,
-    /// Prefetch (used by some hosts for look-ahead).
+    /// Prefetch (used by some hosts for look-ahead). VST3 only: Audio Units
+    /// know realtime and offline rendering.
     Prefetch,
 }
 
