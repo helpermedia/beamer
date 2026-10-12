@@ -316,7 +316,7 @@ unsafe extern "C-unwind" fn sync_timer_fired(
     }
 
     // SAFETY: userInfo is an NSValue wrapping our context pointer.
-    let ptr: *const objc2::runtime::AnyObject = unsafe { objc2::msg_send![user_info, pointerValue] };
+    let ptr: *mut c_void = unsafe { objc2::msg_send![user_info, pointerValue] };
     if ptr.is_null() {
         return;
     }
