@@ -1,10 +1,11 @@
 /*
  * BeamerAuBridge.h
  *
- * C-ABI bridge between Objective-C AUAudioUnit wrapper and Rust plugin instance.
+ * C-ABI bridge between the native Audio Unit wrappers and the Rust plugin instance.
  *
  * This header defines the interface for the hybrid AU implementation where:
- * - Objective-C provides the AUAudioUnit subclass (BeamerAuWrapper)
+ * - Native wrappers, generated per plugin, implement the AUv2 plug-in interface
+ *   and the AUv3 AUAudioUnit subclass (Beamer<Name>AuWrapper)
  * - Rust provides all DSP, parameter handling and state management
  *
  * The bridge is designed for:
@@ -285,10 +286,10 @@ typedef struct {
  *
  * This function verifies that the Rust plugin factory has been registered
  * (via the `export_au!` macro's static initializer). The factory is
- * automatically registered when the .component bundle binary loads.
+ * automatically registered when the plugin library loads.
  *
- * Called by BeamerAuWrapper's initialization methods before creating plugin
- * instances to ensure the factory is ready.
+ * Called by the wrappers before creating plugin instances to ensure the
+ * factory is ready.
  *
  * The function is idempotent - calling it multiple times is safe.
  *

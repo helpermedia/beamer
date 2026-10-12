@@ -2,7 +2,7 @@
 name = "beamer-au"
 version.workspace = true
 edition.workspace = true
-description = "Audio Unit support for Beamer audio plugin framework (hybrid v2/v3 architecture)"
+description = "Audio Unit (AUv2 and AUv3) support for the Beamer audio plugin framework"
 license.workspace = true
 repository = "https://github.com/helpermedia/beamer"
 keywords = ["audio", "plugin", "au", "audiounit", "music"]

@@ -1,20 +1,21 @@
 //! Export macro for Audio Unit plugins.
 //!
-//! This module provides the `export_au!` macro that generates the necessary
-//! entry points and registration code for Audio Unit `.component` bundles.
+//! This module provides the `export_au!` macro that generates the registration
+//! code for Audio Units, for AUv2 `.component` bundles and AUv3 app extensions
+//! alike.
 //!
-//! ## Hybrid v2/v3 Architecture
+//! ## Hybrid Objective-C/Rust Architecture
 //!
-//! The AU wrapper uses AUv2-style `.component` bundles with a modern v3 `AUAudioUnit` internally:
-//! - **AUv2 bundle**: Simple `.component` distribution, works with ad-hoc code signing
-//! - **v3 AUAudioUnit**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for modern API
+//! - **Native wrappers**: `cargo xtask bundle` generates them for each plugin. The AUv2 wrapper
+//!   implements `AudioComponentPlugInInterface`, the AUv3 wrapper is an `AUAudioUnit` subclass
+//!   (`Beamer<Name>AuWrapper`)
 //! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 
 /// Generate Audio Unit export entry points.
 ///
 /// This macro registers the plugin factory, enabling the AU host to instantiate
-/// your plugin. It works in conjunction with the native Objective-C wrapper
-/// (`BeamerAuWrapper`) that implements the actual `AUAudioUnit` subclass.
+/// your plugin. It works in conjunction with the native wrappers that xtask
+/// generates for the plugin, which implement the AUv2 and AUv3 APIs.
 ///
 /// Plugins normally do not call this macro themselves: `beamer::export_plugin!`
 /// calls it for plugins built with the `au` feature.
@@ -45,17 +46,20 @@
 /// ## `__beamer_au_manual_init()` (public function)
 ///
 /// A public function that registers the plugin factory. This is called automatically
-/// via a `#[ctor]`-style initializer when the extension loads, but is also available
+/// via a `#[ctor]`-style initializer when the plugin library loads, but is also available
 /// for explicit use in testing scenarios.
 ///
 /// # How It Works
 ///
-/// When the `.component` bundle loads, the initialization flow is:
+/// The plugin library loads with the `.component` bundle or the app extension. The
+/// initialization flow is:
 ///
-/// 1. Component bundle loads
+/// 1. Plugin library loads
 /// 2. Static initializer runs, registering the factory via [`OnceLock`]
-/// 3. Host calls `+[BeamerAuWrapper createAudioUnitWithComponentDescription:error:]`
-/// 4. That method calls `beamer_au_create_instance()` which uses the registered factory
+/// 3. Host asks the generated wrapper for an Audio Unit (AUv2: the component's factory
+///    function and `Open`, AUv3: `createAudioUnitWithComponentDescription:error:` of the
+///    extension or the extension's factory function)
+/// 4. The wrapper calls `beamer_au_create_instance()` which uses the registered factory
 /// 5. `AuProcessor<YourPlugin, Presets>::new()` creates the actual plugin instance
 ///
 /// # Initialization Guarantees
@@ -84,7 +88,7 @@ macro_rules! export_au {
         }
 
         // Static initializer using ctor crate pattern.
-        // This runs when the .component/.appex bundle binary loads.
+        // This runs when the plugin library loads.
         #[used]
         #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
         static __BEAMER_AU_INIT: extern "C" fn() = {

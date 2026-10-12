@@ -1,14 +1,14 @@
 //! Type-erased AU plugin instance trait.
 //!
 //! This module provides the `AuPluginInstance` trait which enables the native
-//! Objective-C wrapper (`BeamerAuWrapper`) to work with any plugin through
-//! dynamic dispatch via the C-ABI bridge.
+//! AUv2 and AUv3 wrappers to work with any plugin through dynamic dispatch via
+//! the C-ABI bridge.
 //!
 //! # Why Type Erasure?
 //!
-//! Rust generics don't translate to Objective-C. The Objective-C wrapper
-//! (`BeamerAuWrapper.m`) is a single concrete class that works with all
-//! plugins through dynamic dispatch.
+//! Rust generics don't translate to C. The wrappers that xtask generates call
+//! the same C-ABI functions for every plugin, so the bridge needs one concrete
+//! type to hold whatever plugin the library exports.
 //!
 //! The solution is type erasure: we define a trait that captures all the
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
@@ -24,8 +24,8 @@ use beamer_core::{
 
 /// Type-erased interface for AU plugin instances.
 ///
-/// This trait enables the ObjC wrapper (`BeamerAuWrapper`) to work with
-/// any `Descriptor` implementation through dynamic dispatch.
+/// This trait enables the native wrappers to work with any `Descriptor`
+/// implementation through dynamic dispatch.
 ///
 /// # Implementation
 ///

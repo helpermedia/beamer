@@ -1,22 +1,22 @@
 //! C-ABI bridge for hybrid Audio Unit architecture.
 //!
-//! This module implements all the C-ABI functions that the Objective-C wrapper calls.
+//! This module implements all the C-ABI functions that the native AUv2 and AUv3 wrappers call.
 //! It bridges to the existing beamer-au Rust infrastructure (AuPluginInstance, RenderBlock, etc.).
 //!
 //! # Architecture
 //!
-//! The hybrid AU architecture uses a thin Objective-C wrapper that delegates to Rust:
+//! The hybrid AU architecture uses thin native wrappers that delegate to Rust:
 //!
 //! ```text
 //! AU Host (Logic Pro, etc.)
 //!        ↓
-//! Objective-C Wrapper (BeamerAuWrapper.m)
+//! Generated wrapper (AUv2 or AUv3, from xtask/src/au_codegen)
 //!        ↓ (C-ABI calls)
 //! bridge.rs (this module)
 //!        ↓
 //! AuPluginInstance / RenderBlock
 //!        ↓
-//! beamer_core::Plugin
+//! beamer_core::Descriptor / Processor
 //! ```
 //!
 //! # Safety

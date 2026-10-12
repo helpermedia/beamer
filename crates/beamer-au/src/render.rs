@@ -1,14 +1,15 @@
 //! Render block implementation for Audio Unit.
 //!
 //! This module provides the `RenderBlock` type that handles audio processing for AU plugins.
-//! The render block is created during `allocateRenderResources` and called by the native
-//! Objective-C wrapper via C-ABI (`beamer_au_render`).
+//! The render block is created when render resources are allocated and called by the native
+//! wrappers via C-ABI (`beamer_au_render`).
 //!
 //! # Architecture
 //!
 //! In the hybrid ObjC/Rust AU architecture:
-//! - Native Objective-C (`BeamerAuWrapper.m`) creates the ObjC render block
-//! - The ObjC render block calls `beamer_au_render()` via C-ABI
+//! - The generated wrapper receives the host's render call (the `internalRenderBlock` of the
+//!   AUv3 wrapper, `BeamerAuv2Render` of the AUv2 wrapper)
+//! - The wrapper calls `beamer_au_render()` via C-ABI
 //! - `beamer_au_render()` delegates to `RenderBlock::process()`
 //!
 //! # Objective-C Block Callbacks

@@ -2,12 +2,12 @@
 //!
 //! Audio Unit implementation layer for the Beamer framework.
 //!
-//! This crate uses a **hybrid v2/v3 architecture**: AUv2-style `.component` bundles for simple
-//! distribution, with a modern v3 `AUAudioUnit` implementation internally. It handles all the
-//! AU-specific details like:
+//! This crate supports **both AUv2 and AUv3**: a `.component` bundle that implements the AUv2
+//! API and an app extension (`.appex`) with an `AUAudioUnit` subclass. Both formats reach the
+//! plugin through the same C-ABI bridge. It handles all the AU-specific details like:
 //!
 //! - Audio component registration and factory management
-//! - Native Objective-C AUAudioUnit subclass with C-ABI bridge to Rust
+//! - C-ABI bridge that the native AUv2 and AUv3 wrappers call
 //! - Parameter tree mapping with bidirectional KVO callbacks
 //! - Render block creation with zero-allocation audio processing
 //! - MIDI input/output extraction (both MIDI 1.0 and MIDI 2.0 UMP formats)
@@ -26,7 +26,9 @@
 //! ## Architecture
 //!
 //! Uses a **hybrid Objective-C/Rust architecture**:
-//! - **Objective-C**: Native `AUAudioUnit` subclass (`BeamerAuWrapper`) for Apple runtime compatibility
+//! - **Native wrappers**: `cargo xtask bundle` generates them for each plugin from the templates
+//!   in `xtask/src/au_codegen`. The AUv2 wrapper implements `AudioComponentPlugInInterface`, the
+//!   AUv3 wrapper is an `AUAudioUnit` subclass (`Beamer<Name>AuWrapper`)
 //! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 //!
 //! ```text
@@ -38,7 +40,7 @@
 //!        ↓
 //! C-ABI bridge (src/bridge.rs ↔ objc/BeamerAuBridge.h)
 //!        ↓
-//! BeamerAuWrapper (native ObjC AUAudioUnit subclass)
+//! Generated wrapper (AUv2 plug-in interface or AUv3 AUAudioUnit subclass)
 //!        ↓
 //! AU host (Logic Pro, GarageBand, etc.)
 //! ```

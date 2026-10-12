@@ -368,7 +368,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 
 **Architecture**: Hybrid Objective-C/Rust
 - AUv2: `AudioComponentPlugInInterface` with selector-based dispatch
-- AUv3: `BeamerAuWrapper` native ObjC class (subclass of `AUAudioUnit`)
+- AUv3: `Beamer<Name>AuWrapper`, a native ObjC subclass of `AUAudioUnit` generated per plugin
 - Shared C-ABI bridge layer (`BeamerAuBridge.h` ↔ `bridge.rs`) with 40+ functions
 - Uses type erasure (`AuPluginInstance` trait) for generic plugin support
 - Render blocks call into Rust via `beamer_au_render()`
