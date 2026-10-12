@@ -262,27 +262,16 @@ impl Formatter {
             }
 
             Formatter::Frequency => {
-                // Try kHz first. A bare "k" is what `text` writes.
-                if let Some(khz_str) = s
-                    .strip_suffix(" kHz")
-                    .or_else(|| s.strip_suffix("kHz"))
-                    .or_else(|| s.strip_suffix(" khz"))
-                    .or_else(|| s.strip_suffix("khz"))
-                    .or_else(|| s.strip_suffix('k'))
-                    .or_else(|| s.strip_suffix('K'))
-                {
-                    return khz_str.trim().parse::<f64>().ok().map(|v| v * 1000.0);
+                // The unit is optional and its case does not matter. A "k"
+                // multiplies by 1000, with or without "Hz" after it: `text`
+                // writes "1.50k", and a host may append the unit.
+                let lower = s.to_ascii_lowercase();
+                let number = lower.strip_suffix("hz").unwrap_or(&lower).trim_end();
+
+                match number.strip_suffix('k') {
+                    Some(khz) => khz.trim_end().parse::<f64>().ok().map(|v| v * 1000.0),
+                    None => number.parse().ok(),
                 }
-
-                // Then Hz
-                let hz_str = s
-                    .trim_end_matches(" Hz")
-                    .trim_end_matches("Hz")
-                    .trim_end_matches(" hz")
-                    .trim_end_matches("hz")
-                    .trim();
-
-                hz_str.parse().ok()
             }
 
             Formatter::Milliseconds { .. } => {
@@ -567,7 +556,17 @@ mod tests {
         assert_eq!(formatter.parse("4 K"), Some(4000.0));
         assert_eq!(formatter.parse("1.5 kHz"), Some(1500.0));
         assert_eq!(formatter.parse("440 Hz"), Some(440.0));
-        assert_eq!(formatter.parse("k"), None);
+        assert_eq!(formatter.parse("2e3"), Some(2000.0));
+
+        // The text with the unit after it, and the unit in any case.
+        assert_eq!(formatter.parse("1.50k Hz"), Some(1500.0));
+        assert_eq!(formatter.parse("1.5 Khz"), Some(1500.0));
+        assert_eq!(formatter.parse("1.5KHZ"), Some(1500.0));
+        assert_eq!(formatter.parse("440HZ"), Some(440.0));
+
+        for text in ["", "k", "Hz", "kHz", "abc", "1.5 kHz Hz", "4 kk"] {
+            assert_eq!(formatter.parse(text), None, "\"{}\"", text);
+        }
     }
 
     #[test]
