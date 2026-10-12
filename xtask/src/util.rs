@@ -340,8 +340,9 @@ pub fn install_bundle(
 
     let dest = dest_dir.join(bundle_name);
 
-    // Remove existing installation
-    if dest.exists() {
+    // Remove existing installation. Unlike `exists`, this also finds a symlink
+    // whose target is gone.
+    if dest.symlink_metadata().is_ok() {
         fs::remove_dir_all(&dest)
             .map_err(|e| format!("Failed to remove old installation: {}", e))?;
     }
