@@ -249,9 +249,7 @@ enum PluginState<P: Descriptor> {
 /// PluginState::Unprepared { plugin }
 ///     ↓ setupProcessing() calls definition.prepare(config)
 /// PluginState::Prepared { processor }
-///     ↓ sample rate change: processor.unprepare()
-/// PluginState::Unprepared { plugin }
-///     ↓ setupProcessing() again
+///     ↓ setupProcessing() with a new setup: processor.unprepare(), then prepare()
 /// PluginState::Prepared { processor }
 /// ```
 ///
@@ -292,6 +290,8 @@ where
     max_block_size: UnsafeCell<usize>,
     /// Current symbolic sample size (kSample32 or kSample64)
     symbolic_sample_size: UnsafeCell<i32>,
+    /// Process mode of the current setup (a `ProcessModes` value)
+    process_mode: UnsafeCell<int32>,
     /// MIDI input buffer (reused each process call to avoid stack overflow)
     midi_input: UnsafeCell<MidiBuffer>,
     /// MIDI output buffer (reused each process call)
@@ -364,6 +364,7 @@ where
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
+            process_mode: UnsafeCell::new(ProcessModes_::kRealtime as int32),
             midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
@@ -1526,12 +1527,22 @@ where
         // SAFETY: setup is non-null and host guarantees it points to valid ProcessSetup.
         let setup = unsafe { &*setup };
 
+        // Compare with the setup of the previous call before it is replaced.
+        // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
+        let setup_changed = unsafe {
+            *self.sample_rate.get() != setup.sampleRate
+                || *self.max_block_size.get() != setup.maxSamplesPerBlock as usize
+                || *self.symbolic_sample_size.get() != setup.symbolicSampleSize
+                || *self.process_mode.get() != setup.processMode
+        };
+
         // Store setup parameters
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
         unsafe {
             *self.sample_rate.get() = setup.sampleRate;
             *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
             *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
+            *self.process_mode.get() = setup.processMode;
         }
 
         // Handle state transition
@@ -1607,53 +1618,74 @@ where
                     output_buses,
                 };
             }
-            PluginState::Prepared { processor, input_buses, output_buses } => {
-                // Already prepared - check if sample rate changed
+            // A host may repeat a setup. Preparing again would then only throw
+            // away what the processor holds besides its parameters.
+            PluginState::Prepared { .. } if !setup_changed => {}
+            PluginState::Prepared { .. } => {
+                // The sample rate, block size, sample size or process mode is
+                // new. The plugin learns those when it is prepared, so unprepare
+                // it and prepare it again with the new setup.
+                let placeholder = PluginState::Unprepared {
+                    plugin: P::default(),
+                    pending_state: None,
+                };
+                let PluginState::Prepared {
+                    processor,
+                    input_buses,
+                    output_buses,
+                } = std::mem::replace(state, placeholder)
+                else {
+                    unreachable!("the state was matched as prepared");
+                };
+
+                let bus_layout = BusLayout {
+                    main_input_channels: input_buses
+                        .first()
+                        .map(|b| b.channel_count)
+                        .unwrap_or(2),
+                    main_output_channels: output_buses
+                        .first()
+                        .map(|b| b.channel_count)
+                        .unwrap_or(2),
+                    aux_input_count: input_buses.len().saturating_sub(1),
+                    aux_output_count: output_buses.len().saturating_sub(1),
+                };
+
+                // Unprepare to get the plugin back, then prepare it again.
+                let plugin = processor.unprepare();
+                let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
+                let processor = plugin.prepare(plugin_setup);
+
+                // Size the buffer storage for the new block size.
+                let bus_config = CachedBusConfig::new(
+                    input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+                    output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+                );
+                let max_frames = setup.maxSamplesPerBlock as usize;
                 // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                let current_sample_rate = unsafe { *self.sample_rate.get() };
-                if (current_sample_rate - setup.sampleRate).abs() > 0.001 {
-                    // Sample rate changed - unprepare and re-prepare
-                    let bus_layout = BusLayout {
-                        main_input_channels: input_buses
-                            .first()
-                            .map(|b| b.channel_count)
-                            .unwrap_or(2),
-                        main_output_channels: output_buses
-                            .first()
-                            .map(|b| b.channel_count)
-                            .unwrap_or(2),
-                        aux_input_count: input_buses.len().saturating_sub(1),
-                        aux_output_count: output_buses.len().saturating_sub(1),
-                    };
-
-                    // Take ownership of the processor
-                    // SAFETY: mem::zeroed is used as a placeholder that will be immediately overwritten.
-                    let old_processor = std::mem::replace(
-                        processor,
-                        unsafe { std::mem::zeroed() },
-                    );
-
-                    // Unprepare to get the plugin back
-                    let plugin = old_processor.unprepare();
-
-                    // Build new setup and re-prepare
-                    let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
-                    let new_processor = plugin.prepare(plugin_setup);
-
-                    // Pre-allocate conversion buffers if needed
-                    if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
-                        && !new_processor.supports_double_precision()
-                    {
-                        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                        unsafe {
-                            *self.conversion_buffers.get() =
-                                ConversionBuffers::allocate_from_buses(input_buses, output_buses, setup.maxSamplesPerBlock as usize);
-                        }
-                    }
-
-                    *processor = new_processor;
+                unsafe {
+                    *self.buffer_storage_f32.get() =
+                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                    *self.buffer_storage_f64.get() =
+                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
                 }
-                // If sample rate hasn't changed, nothing to do
+
+                // Pre-allocate conversion buffers for f64→f32 processing
+                if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
+                    && !processor.supports_double_precision()
+                {
+                    // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                    unsafe {
+                        *self.conversion_buffers.get() =
+                            ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, max_frames);
+                    }
+                }
+
+                *state = PluginState::Prepared {
+                    processor,
+                    input_buses,
+                    output_buses,
+                };
             }
         }
 
@@ -3384,7 +3416,8 @@ fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beamer_core::ProcessMode;
+    use beamer_core::config::Category;
+    use beamer_core::{NoParameters, ProcessMode};
 
     fn process_mode_for(process_mode: int32) -> ProcessMode {
         let setup = ProcessSetup {
@@ -3403,5 +3436,133 @@ mod tests {
         assert_eq!(process_mode_for(ProcessModes_::kOffline as int32), ProcessMode::Offline);
         // Unknown modes fall back to realtime.
         assert_eq!(process_mode_for(-1), ProcessMode::Realtime);
+    }
+
+    // A plugin that keeps the setup it was prepared with.
+    type RecordedSetup = (beamer_core::SampleRate, beamer_core::MaxBufferSize, ProcessMode);
+
+    #[derive(Default)]
+    struct SetupPlugin {
+        parameters: NoParameters,
+    }
+
+    struct SetupProcessor {
+        parameters: NoParameters,
+        setup: RecordedSetup,
+    }
+
+    impl HasParameters for SetupPlugin {
+        type Parameters = NoParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, parameters: Self::Parameters) {
+            self.parameters = parameters;
+        }
+    }
+
+    impl Descriptor for SetupPlugin {
+        type Setup = RecordedSetup;
+        type Processor = SetupProcessor;
+
+        fn prepare(self, setup: RecordedSetup) -> SetupProcessor {
+            PREPARE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            SetupProcessor {
+                parameters: self.parameters,
+                setup,
+            }
+        }
+    }
+
+    impl HasParameters for SetupProcessor {
+        type Parameters = NoParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, parameters: Self::Parameters) {
+            self.parameters = parameters;
+        }
+    }
+
+    impl Processor for SetupProcessor {
+        type Descriptor = SetupPlugin;
+
+        fn process(
+            &mut self,
+            _buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+        }
+    }
+
+    /// Number of `prepare` calls on `SetupPlugin`. Only one test uses the plugin.
+    static PREPARE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    static TEST_CONFIG: Config = Config::new("Setup Test", Category::Effect, "Test", "stup");
+
+    /// Call setupProcessing like a host and return the setup the plugin holds.
+    fn setup_processing(
+        wrapper: &Vst3Processor<SetupPlugin>,
+        sample_rate: f64,
+        max_block: int32,
+        mode: int32,
+    ) -> (f64, usize, ProcessMode) {
+        let mut setup = ProcessSetup {
+            processMode: mode,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: max_block,
+            sampleRate: sample_rate,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+
+        // SAFETY: No other reference to the state exists in this test.
+        match unsafe { &*wrapper.state.get() } {
+            PluginState::Prepared { processor, .. } => {
+                let (rate, block, mode) = processor.setup;
+                (rate.0, block.0, mode)
+            }
+            PluginState::Unprepared { .. } => panic!("the plugin is not prepared"),
+        }
+    }
+
+    #[test]
+    fn test_setup_processing_prepares_again_for_a_new_setup() {
+        let wrapper = Vst3Processor::<SetupPlugin>::new(&TEST_CONFIG);
+        let realtime = ProcessModes_::kRealtime as int32;
+        let offline = ProcessModes_::kOffline as int32;
+
+        assert_eq!(
+            setup_processing(&wrapper, 44100.0, 512, realtime),
+            (44100.0, 512, ProcessMode::Realtime)
+        );
+        // Each part of the setup can change on its own.
+        assert_eq!(
+            setup_processing(&wrapper, 96000.0, 512, realtime),
+            (96000.0, 512, ProcessMode::Realtime)
+        );
+        assert_eq!(
+            setup_processing(&wrapper, 96000.0, 2048, realtime),
+            (96000.0, 2048, ProcessMode::Realtime)
+        );
+        assert_eq!(
+            setup_processing(&wrapper, 96000.0, 2048, offline),
+            (96000.0, 2048, ProcessMode::Offline)
+        );
+        assert_eq!(PREPARE_COUNT.load(std::sync::atomic::Ordering::Relaxed), 4);
+
+        // A repeated setup leaves the processor alone.
+        assert_eq!(
+            setup_processing(&wrapper, 96000.0, 2048, offline),
+            (96000.0, 2048, ProcessMode::Offline)
+        );
+        assert_eq!(PREPARE_COUNT.load(std::sync::atomic::Ordering::Relaxed), 4);
     }
 }
