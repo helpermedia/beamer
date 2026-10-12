@@ -24,3 +24,6 @@ beamer-macros = { workspace = true, optional = true }
 beamer-au = { workspace = true, optional = true }
 beamer-vst3 = { workspace = true, optional = true }
 vst3 = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

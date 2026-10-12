@@ -113,6 +113,9 @@ pub trait ParameterRef: Send + Sync {
     fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue;
 
     /// Get the formatter kind string (e.g. "db", "pan", "hz").
+    ///
+    /// The WebView reports it as the `format` of a parameter. Besides the
+    /// kinds of [`Formatter::kind`], enum parameters report "enum".
     fn formatter_kind(&self) -> &'static str {
         "float"
     }
@@ -1881,6 +1884,10 @@ impl ParameterRef for BoolParameter {
         plain
     }
 
+    fn formatter_kind(&self) -> &'static str {
+        self.formatter.kind()
+    }
+
     fn info(&self) -> &ParameterInfo {
         &self.info
     }
@@ -2234,6 +2241,10 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
 
     fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
         index_to_normalized(plain.round() as usize, E::COUNT)
+    }
+
+    fn formatter_kind(&self) -> &'static str {
+        "enum"
     }
 
     fn info(&self) -> &ParameterInfo {
@@ -2664,6 +2675,12 @@ mod tests {
     }
 
     #[test]
+    fn test_bool_parameter_formatter_kind() {
+        assert_eq!(BoolParameter::new("Enabled", true).formatter_kind(), "boolean");
+        assert_eq!(BoolParameter::bypass().formatter_kind(), "boolean");
+    }
+
+    #[test]
     fn test_enum_parameter_unit_indexed() {
         #[derive(Debug, Clone, Copy, Default, PartialEq)]
         enum TestEnum {
@@ -2714,6 +2731,7 @@ mod tests {
 
         let param = EnumParameter::<TestEnum>::new("Mode");
         assert_eq!(param.info().unit, ParameterUnit::Indexed);
+        assert_eq!(param.formatter_kind(), "enum");
     }
 
     #[test]

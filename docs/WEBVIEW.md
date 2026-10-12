@@ -262,7 +262,7 @@ Each entry corresponds to a `ParamInitEntry`:
 | `value` | `f64` | Current value in normalized form (0.0 - 1.0) |
 | `plainValue` | `f64` | Current value in plain units |
 | `displayText` | `string` | Current value as formatted by the parameter, without the unit |
-| `format` | `string` | Formatter kind as reported by the parameter: `float`, `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio`, `semitones` or `boolean` |
+| `format` | `string` | Formatter kind as reported by the parameter. Float and integer parameters report the kind of their formatter: `float` (the default), `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio` or `semitones`. Boolean parameters report `boolean` and enum parameters `enum` |
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
 

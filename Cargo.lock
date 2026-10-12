@@ -10,6 +10,7 @@ dependencies = [
  "beamer-core",
  "beamer-macros",
  "beamer-vst3",
+ "serde_json",
  "vst3",
 ]
 
