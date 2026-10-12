@@ -262,12 +262,14 @@ impl Formatter {
             }
 
             Formatter::Frequency => {
-                // Try kHz first
+                // Try kHz first. A bare "k" is what `text` writes.
                 if let Some(khz_str) = s
                     .strip_suffix(" kHz")
                     .or_else(|| s.strip_suffix("kHz"))
                     .or_else(|| s.strip_suffix(" khz"))
                     .or_else(|| s.strip_suffix("khz"))
+                    .or_else(|| s.strip_suffix('k'))
+                    .or_else(|| s.strip_suffix('K'))
                 {
                     return khz_str.trim().parse::<f64>().ok().map(|v| v * 1000.0);
                 }
@@ -549,6 +551,23 @@ mod tests {
         let updated = formatter.with_precision(5);
         assert_eq!(updated, Formatter::Frequency);
         assert_eq!(updated.precision(), None);
+    }
+
+    #[test]
+    fn test_frequency_parses_its_own_text() {
+        let formatter = Formatter::Frequency;
+
+        for hz in [20.0, 440.0, 1500.0, 4000.0, 20000.0] {
+            let text = formatter.text(hz);
+            assert_eq!(formatter.parse(&text), Some(hz), "\"{}\"", text);
+        }
+
+        // What a user types.
+        assert_eq!(formatter.parse("4k"), Some(4000.0));
+        assert_eq!(formatter.parse("4 K"), Some(4000.0));
+        assert_eq!(formatter.parse("1.5 kHz"), Some(1500.0));
+        assert_eq!(formatter.parse("440 Hz"), Some(440.0));
+        assert_eq!(formatter.parse("k"), None);
     }
 
     #[test]
