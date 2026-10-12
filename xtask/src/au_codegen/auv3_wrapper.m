@@ -1141,7 +1141,13 @@ static void beamer_auv3_on_loaded(void* context) {
         return;
     }
 
-    // Destroy previous WebView if host calls this method again
+    // Tear down the previous view if the host calls this method again: the
+    // sync timer and its value cache first, then the WebView.
+    [_syncTimer invalidate];
+    _syncTimer = nil;
+    free(_lastParamValues);
+    _lastParamValues = NULL;
+    _paramCount = 0;
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
