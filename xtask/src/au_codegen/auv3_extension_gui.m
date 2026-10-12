@@ -208,10 +208,13 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
     // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
     __weak typeof(self) weakSelf = self;
-    _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
+    _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
         (void)t;
         [weakSelf _pollParams];
     }];
+    // Schedule in the common modes, so that the UI keeps following the host
+    // while it runs a tracking loop (a drag, a resize or an open menu).
+    [[NSRunLoop currentRunLoop] addTimer:_syncTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)_pollParams {

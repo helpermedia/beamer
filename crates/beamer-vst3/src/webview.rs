@@ -448,13 +448,30 @@ impl IPlugViewTrait for WebViewPlugView {
                     let timer: *mut objc2::runtime::AnyObject = unsafe {
                         msg_send![
                             objc2::runtime::AnyClass::get(c"NSTimer").unwrap(),
-                            scheduledTimerWithTimeInterval: (1.0 / 60.0f64),
+                            timerWithTimeInterval: (1.0 / 60.0f64),
                             target: target,
                             selector: objc2::sel!(beamerSyncTimerFired:),
                             userInfo: ns_value,
                             repeats: true
                         ]
                     };
+
+                    // Schedule in the common modes, so that the UI keeps following
+                    // the host while it runs a tracking loop (a drag, a resize or
+                    // an open menu). The run loop retains the timer.
+                    // SAFETY: NSRunLoop class is always available, the timer is valid
+                    // and NSRunLoopCommonModes is a constant of Foundation.
+                    unsafe {
+                        let run_loop: *mut objc2::runtime::AnyObject = msg_send![
+                            objc2::runtime::AnyClass::get(c"NSRunLoop").unwrap(),
+                            currentRunLoop
+                        ];
+                        let _: () = msg_send![
+                            run_loop,
+                            addTimer: timer,
+                            forMode: objc2_foundation::NSRunLoopCommonModes
+                        ];
+                    }
 
                     // SAFETY: target is a valid +1 retained object from alloc+init above.
                     // The timer retains the target, so we balance the alloc's +1 here.

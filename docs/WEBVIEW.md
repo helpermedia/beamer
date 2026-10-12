@@ -270,7 +270,7 @@ The runtime resolves the `ready` promise after processing this dump, so any code
 
 ### 60Hz Polling
 
-Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. Each tick:
+Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It also runs while the host is in a tracking loop (a drag, a resize or an open menu), so the UI keeps following the host. Each tick:
 
 1. Iterates over all parameters
 2. Compares each normalized value against a cached snapshot
