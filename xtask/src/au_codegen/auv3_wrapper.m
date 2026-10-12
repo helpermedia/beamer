@@ -19,6 +19,50 @@ static const double kDefaultSampleRate = 44100.0;
 static const AUAudioFrameCount kDefaultMaxFrames = 4096;
 
 // =============================================================================
+// MARK: - Host Transport
+// =============================================================================
+
+// Ask the host for its musical context and transport state. Called on the
+// render thread, so the blocks are passed without retaining them.
+static void BeamerAuv3ReadTransport(__unsafe_unretained AUHostMusicalContextBlock musicalContext,
+                                    __unsafe_unretained AUHostTransportStateBlock transportState,
+                                    BeamerAuTransport* transport) {
+    memset(transport, 0, sizeof(*transport));
+
+    if (musicalContext != nil) {
+        double tempo = 0.0;
+        double numerator = 0.0;
+        NSInteger denominator = 0;
+        double beatPosition = 0.0;
+        double downbeatPosition = 0.0;
+        if (musicalContext(&tempo, &numerator, &denominator, &beatPosition, NULL, &downbeatPosition)) {
+            transport->flags |= BeamerAuTransportHasBeatAndTempo | BeamerAuTransportHasTimeSignature;
+            transport->tempo = tempo;
+            transport->beat_position = beatPosition;
+            transport->time_sig_numerator = numerator;
+            transport->time_sig_denominator = (int32_t)denominator;
+            transport->measure_downbeat_position = downbeatPosition;
+        }
+    }
+
+    if (transportState != nil) {
+        AUHostTransportStateFlags state = 0;
+        double samplePosition = 0.0;
+        double cycleStart = 0.0;
+        double cycleEnd = 0.0;
+        if (transportState(&state, &samplePosition, &cycleStart, &cycleEnd)) {
+            transport->flags |= BeamerAuTransportHasState;
+            if (state & AUHostTransportStateMoving) transport->flags |= BeamerAuTransportPlaying;
+            if (state & AUHostTransportStateRecording) transport->flags |= BeamerAuTransportRecording;
+            if (state & AUHostTransportStateCycling) transport->flags |= BeamerAuTransportCycling;
+            transport->sample_position = samplePosition;
+            transport->cycle_start_beat = cycleStart;
+            transport->cycle_end_beat = cycleEnd;
+        }
+    }
+}
+
+// =============================================================================
 // MARK: - {{WRAPPER_CLASS}} Interface
 // =============================================================================
 
@@ -37,6 +81,8 @@ static const AUAudioFrameCount kDefaultMaxFrames = 4096;
     AudioBufferList* _inputMutableABL;
     AUAudioUnitPreset* _currentPreset;
     AUInternalRenderBlock _cachedInternalRenderBlock;
+    AUHostMusicalContextBlock _hostMusicalContext;
+    AUHostTransportStateBlock _hostTransportState;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
     NSTimer* _syncTimer;
@@ -498,6 +544,11 @@ static void beamer_auv3_on_loaded(void* context) {
         }
     }
 
+    // The host sets these blocks before it allocates. Keep them in ivars so
+    // that the render thread does not have to read the properties.
+    _hostMusicalContext = self.musicalContextBlock;
+    _hostTransportState = self.transportStateBlock;
+
     OSStatus result = beamer_au_allocate_render_resources(
         _rustInstance,
         _sampleRate,
@@ -523,6 +574,8 @@ static void beamer_auv3_on_loaded(void* context) {
 - (void)deallocateRenderResources {
     _inputMutableABL = NULL;
     _inputPCMBuffer = nil;
+    _hostMusicalContext = nil;
+    _hostTransportState = nil;
 
     if (_rustInstance != NULL && _resourcesAllocated) {
         beamer_au_deallocate_render_resources(_rustInstance);
@@ -577,8 +630,14 @@ static void beamer_auv3_on_loaded(void* context) {
             }
         }
 
-        AUHostMusicalContextBlock musicalContext = blockSelf.musicalContextBlock;
-        AUHostTransportStateBlock transportState = blockSelf.transportStateBlock;
+        // Only the render of the main bus processes audio and needs the transport.
+        BeamerAuTransport transport;
+        BOOL hasTransport = (outputBusNumber == 0);
+        if (hasTransport) {
+            BeamerAuv3ReadTransport(blockSelf->_hostMusicalContext,
+                                    blockSelf->_hostTransportState,
+                                    &transport);
+        }
 
         return beamer_au_render(
             rustInstance,
@@ -590,8 +649,7 @@ static void beamer_auv3_on_loaded(void* context) {
             realtimeEventListHead,
             pullInputBlock,
             inputData,
-            musicalContext,
-            transportState,
+            hasTransport ? &transport : NULL,
             NULL
         );
     };

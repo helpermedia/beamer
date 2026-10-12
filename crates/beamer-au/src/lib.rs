@@ -116,7 +116,7 @@ pub mod processor;
 #[cfg(target_os = "macos")]
 pub mod render;
 #[cfg(target_os = "macos")]
-mod transport; // Keep private for now
+mod transport;
 
 // Re-exports for macOS-only modules
 #[cfg(target_os = "macos")]
@@ -140,3 +140,5 @@ pub use bridge::{
     BeamerAuBusConfig, BeamerAuBusInfo, BeamerAuBusType, BeamerAuInstanceHandle,
     BeamerAuParameterInfo, BeamerAuPresetInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
 };
+#[cfg(target_os = "macos")]
+pub use transport::BeamerAuTransport;

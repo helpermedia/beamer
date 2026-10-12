@@ -44,6 +44,7 @@ use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     RenderBlockTrait,
 };
+use crate::transport::BeamerAuTransport;
 use beamer_core::ParameterStore;
 
 // =============================================================================
@@ -796,7 +797,6 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         let sysex_buffer_size = config.sysex_buffer_size;
 
         // Create the render block based on sample format
-        // Note: We don't store host block pointers here - they're passed per-render call
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
             BeamerAuSampleFormat::Float32 => {
                 let storage = ProcessBufferStorage::<f32>::allocate_from_config(
@@ -806,8 +806,6 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 Arc::from(create_render_block_f32(
                     Arc::clone(&handle.plugin),
                     storage,
-                    None, // musical_context_block passed at render time
-                    None, // transport_state_block passed at render time
                     None, // schedule_midi_event_block passed at render time
                     max_frames,
                     sample_rate,
@@ -823,8 +821,6 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 Arc::from(create_render_block_f64(
                     Arc::clone(&handle.plugin),
                     storage,
-                    None,
-                    None,
                     None,
                     max_frames,
                     sample_rate,
@@ -1011,8 +1007,10 @@ pub extern "C" fn beamer_au_is_prepared(instance: BeamerAuInstanceHandle) -> boo
 ///   allocated buffers sized for at least `frame_count` frames
 /// - `events` may be null if there are no events to process
 /// - `pull_input_block` may be null for generator plugins that don't need input
-/// - Context block pointers (`_musical_context_block`, `_transport_state_block`,
-///   `_schedule_midi_block`) may be null if those features aren't used
+/// - `transport` must be null (no transport information, as for the renders of
+///   output buses other than 0) or point to a `BeamerAuTransport` that is valid
+///   for the duration of the call
+/// - `_schedule_midi_block` may be null
 /// - This function validates `instance`, `action_flags`, `timestamp` and
 ///   `output_data` are non-null; returns `K_AUDIO_UNIT_ERR_INVALID_PARAMETER` if any are null
 /// - Thread safety: Designed for real-time audio thread; uses non-blocking
@@ -1029,8 +1027,7 @@ pub extern "C" fn beamer_au_render(
     events: *const AURenderEvent,
     pull_input_block: *const c_void,
     input_data: *const AudioBufferList, // Input buffer list from ObjC (after pulling)
-    _musical_context_block: *const c_void,
-    _transport_state_block: *const c_void,
+    transport: *const BeamerAuTransport,
     _schedule_midi_block: *const c_void,
 ) -> i32 {
     // Validate instance handle
@@ -1083,6 +1080,8 @@ pub extern "C" fn beamer_au_render(
             events,
             pull_input_block,
             input_data,
+            // SAFETY: The caller passes null or a pointer that is valid for this call.
+            unsafe { transport.as_ref() },
         )
     }));
 
@@ -3037,8 +3036,7 @@ mod tests {
                 ptr::null(),
                 ptr::null(),
                 ptr::null(), // input_data
-                ptr::null(),
-                ptr::null(),
+                ptr::null(), // transport
                 ptr::null(),
             ),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER

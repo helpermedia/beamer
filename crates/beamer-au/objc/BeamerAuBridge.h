@@ -51,8 +51,6 @@ typedef struct AudioBufferList { uint32_t mNumberBuffers; } AudioBufferList;
 typedef struct AudioComponentDescription { uint32_t componentType; } AudioComponentDescription;
 typedef struct AURenderEvent { int type; } AURenderEvent;
 typedef void* AURenderPullInputBlock;
-typedef void* AUHostMusicalContextBlock;
-typedef void* AUHostTransportStateBlock;
 typedef void* AUScheduleMIDIEventBlock;
 #endif
 
@@ -436,6 +434,57 @@ bool beamer_au_is_prepared(BeamerAuInstanceHandle _Nullable instance);
 // =============================================================================
 
 /**
+ * Flags for BeamerAuTransport.
+ *
+ * The "Has" flags tell which groups of fields the host provided. The other
+ * flags describe the transport state and are valid with
+ * BeamerAuTransportHasState.
+ */
+typedef enum {
+    /// tempo and beat_position are valid
+    BeamerAuTransportHasBeatAndTempo = 1 << 0,
+    /// The time signature and measure_downbeat_position are valid
+    BeamerAuTransportHasTimeSignature = 1 << 1,
+    /// The state flags below, sample_position and the cycle range are valid
+    BeamerAuTransportHasState = 1 << 2,
+    /// The transport is moving
+    BeamerAuTransportPlaying = 1 << 3,
+    /// The host is recording
+    BeamerAuTransportRecording = 1 << 4,
+    /// Cycle (loop) mode is on
+    BeamerAuTransportCycling = 1 << 5,
+} BeamerAuTransportFlags;
+
+/**
+ * Host transport and musical context for one render call.
+ *
+ * The wrapper asks the host on the render thread (the musical context and
+ * transport state blocks of an AUv3, the host callbacks of an AUv2) and passes
+ * the answers to beamer_au_render(). Fields of a group the host did not
+ * provide are zero.
+ */
+typedef struct {
+    /// Combination of BeamerAuTransportFlags
+    uint32_t flags;
+    /// Time signature denominator (e.g., 4 in 3/4)
+    int32_t time_sig_denominator;
+    /// Tempo in beats per minute
+    double tempo;
+    /// Position on the timeline in beats (quarter notes)
+    double beat_position;
+    /// Time signature numerator (e.g., 3 in 3/4)
+    double time_sig_numerator;
+    /// Position of the start of the current measure in beats
+    double measure_downbeat_position;
+    /// Position on the timeline in samples
+    double sample_position;
+    /// Start of the cycle (loop) range in beats
+    double cycle_start_beat;
+    /// End of the cycle (loop) range in beats
+    double cycle_end_beat;
+} BeamerAuTransport;
+
+/**
  * Process audio through the plugin.
  *
  * This is the main audio processing entry point, called from the AU host's
@@ -459,10 +508,9 @@ bool beamer_au_is_prepared(BeamerAuInstanceHandle _Nullable instance);
  *                              May be NULL if no events.
  * @param pull_input_block      Block to pull audio from auxiliary input buses.
  *                              May be NULL if no aux inputs or for instruments.
- * @param musical_context_block Block to query host musical context (tempo, time signature).
- *                              May be NULL if host doesn't provide musical context.
- * @param transport_state_block Block to query host transport state (playing, recording).
- *                              May be NULL if host doesn't provide transport state.
+ * @param transport             Transport and musical context the wrapper got from the host
+ *                              for this call. May be NULL, as it is for the renders of
+ *                              output buses other than 0, which do not process audio.
  * @param schedule_midi_block   Block to send MIDI output events. Not used yet:
  *                              both wrappers pass NULL and the bridge ignores it.
  *
@@ -493,8 +541,7 @@ OSStatus beamer_au_render(
     const AURenderEvent* _Nullable events,
     AURenderPullInputBlock _Nullable pull_input_block,
     const AudioBufferList* _Nullable input_data,
-    AUHostMusicalContextBlock _Nullable musical_context_block,
-    AUHostTransportStateBlock _Nullable transport_state_block,
+    const BeamerAuTransport* _Nullable transport,
     AUScheduleMIDIEventBlock _Nullable schedule_midi_block
 );
 

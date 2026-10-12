@@ -13,20 +13,17 @@
 //!
 //! # Objective-C Block Callbacks
 //!
-//! For calling AU host callbacks (musical context, transport state, pull input),
-//! we use `std::mem::transmute` to cast block pointers to function pointers.
-//! This works because:
+//! To pull audio from auxiliary input buses, the render block calls the host's
+//! `AURenderPullInputBlock`. We use `std::mem::transmute` to cast the block
+//! pointer to a function pointer. This works because:
 //! - Objective-C blocks have a function pointer at a known offset
 //! - The first parameter is always the block pointer itself
 //! - AU hosts guarantee block validity during render callbacks
 //! - We never store blocks beyond the render callback
 //!
-//! ## Block Types Called
-//!
-//! 1. **AUHostMusicalContextBlock** (transport.rs): Query tempo, time signature, position
-//! 2. **AUHostTransportStateBlock** (render.rs): Query play/stop/record state
-//! 3. **AURenderPullInputBlock** (render.rs): Pull audio from auxiliary buses
-//! 4. **AUScheduleMIDIEventBlock** (render.rs): Send MIDI output to host
+//! The host's musical context and transport state are not queried here: the
+//! wrappers do that in their own language and pass the result as plain data
+//! (see `transport.rs`).
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -39,7 +36,7 @@ use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;
 use crate::objc_block;
-use crate::transport::extract_transport_from_au;
+use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
     MidiEvent, MidiEventKind, ProcessContext, Sample, SysExOutputPool, MAX_BUSES, MAX_CHANNELS,
 };
@@ -417,44 +414,6 @@ pub struct AudioTimeStamp {
     pub flags: u32,
     /// Reserved
     pub reserved: u32,
-}
-
-
-/// AU host transport state flags.
-///
-/// These flags are returned from the AUHostTransportStateBlock callback
-/// to indicate the current transport state (playing, recording, cycling).
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AUHostTransportStateFlags(pub u32);
-
-impl AUHostTransportStateFlags {
-    /// Transport state has changed since last query
-    pub const CHANGED: u32 = 1 << 0;
-    /// Transport is moving (playing/recording)
-    pub const MOVING: u32 = 1 << 1;
-    /// Transport is currently recording
-    pub const RECORDING: u32 = 1 << 2;
-    /// Transport is cycling (looping)
-    pub const CYCLING: u32 = 1 << 3;
-
-    /// Check if transport is moving (playing)
-    #[inline]
-    pub fn is_playing(self) -> bool {
-        (self.0 & Self::MOVING) != 0
-    }
-
-    /// Check if transport is recording
-    #[inline]
-    pub fn is_recording(self) -> bool {
-        (self.0 & Self::RECORDING) != 0
-    }
-
-    /// Check if transport is cycling (looping)
-    #[inline]
-    pub fn is_cycling(self) -> bool {
-        (self.0 & Self::CYCLING) != 0
-    }
 }
 
 /// AU render pull input block function signature.
@@ -873,8 +832,8 @@ pub unsafe fn extract_parameter_events(
 ///
 /// Clippy Allow: too_many_arguments
 ///
-/// The `process()` signature matches Apple's AU API which requires 8 parameters.
-/// Cannot be refactored into a struct without breaking AU host compatibility.
+/// The `process()` signature follows the arguments of an AU render call, plus
+/// what the wrapper collected from the host for it.
 #[allow(clippy::too_many_arguments)]
 pub trait RenderBlockTrait: Send + Sync {
     /// Process audio through this render block.
@@ -888,6 +847,7 @@ pub trait RenderBlockTrait: Send + Sync {
     /// * `event_list` - Linked list of render events (MIDI, parameter changes)
     /// * `pull_input_block` - Block to pull aux bus inputs
     /// * `input_data` - Input audio buffer list (already pulled by ObjC)
+    /// * `host_transport` - Transport and musical context from the host, if any
     fn process(
         &self,
         action_flags: *mut u32,
@@ -898,6 +858,7 @@ pub trait RenderBlockTrait: Send + Sync {
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
+        host_transport: Option<&BeamerAuTransport>,
     ) -> i32;
 
     /// Get a raw pointer to this render block.
@@ -922,10 +883,6 @@ pub struct RenderBlock<S: Sample> {
     midi_buffer: UnsafeCell<MidiBuffer>,
     /// Pre-allocated parameter event buffer for zero-allocation parameter automation
     parameter_events: UnsafeCell<ParameterEventBuffer>,
-    /// Musical context block from AU host for transport info
-    musical_context_block: Option<*const c_void>,
-    /// Transport state block from AU host for playback state (is_playing, etc.)
-    transport_state_block: Option<*const c_void>,
     /// Current sample rate for ProcessContext
     sample_rate: f64,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
@@ -1032,8 +989,6 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// * `plugin` - Arc-wrapped plugin instance for audio processing
     /// * `storage` - Pre-allocated buffer storage (created from bus config)
-    /// * `musical_context_block` - Optional AU host musical context block for transport info
-    /// * `transport_state_block` - Optional AU host transport state block for playback state
     /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
@@ -1043,8 +998,6 @@ impl<S: Sample> RenderBlock<S> {
     pub fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
         storage: ProcessBufferStorage<S>,
-        musical_context_block: Option<*const c_void>,
-        transport_state_block: Option<*const c_void>,
         schedule_midi_event_block: Option<*const c_void>,
         max_frames: u32,
         sample_rate: f64,
@@ -1084,8 +1037,6 @@ impl<S: Sample> RenderBlock<S> {
             storage: UnsafeCell::new(storage),
             midi_buffer: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
-            musical_context_block,
-            transport_state_block,
             sample_rate,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1453,6 +1404,7 @@ impl<S: Sample> RenderBlock<S> {
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
+        host_transport: Option<&BeamerAuTransport>,
     ) -> i32 {
         let num_samples = frame_count as usize;
 
@@ -1572,99 +1524,9 @@ impl<S: Sample> RenderBlock<S> {
         parameter_events.immediate.sort_by_key(|e| e.sample_offset);
         parameter_events.ramps.sort_by_key(|e| e.sample_offset);
 
-        // Extract transport info from AU host
-        // SAFETY: timestamp and transport_state_block are valid for this render call
-        let transport = unsafe {
-            // Extract is_playing from transport state block if available
-            let is_playing = match self.transport_state_block {
-                Some(block) => {
-                    // AUHostTransportStateBlock signature (from Apple's Audio Unit v3 API):
-                    // BOOL (^)(AUHostTransportStateFlags *outTransportStateFlags,
-                    //          double *outCurrentSamplePosition,
-                    //          double *outCycleStartBeatPosition,
-                    //          double *outCycleEndBeatPosition)
-                    //
-                    // Define the function signature that matches Apple's AUHostTransportStateBlock.
-                    // The first parameter is the block pointer itself (Objective-C block convention).
-                    type TransportStateBlockFn = unsafe extern "C" fn(
-                        *const c_void, // Block pointer itself (Objective-C convention)
-                        *mut u32,      // outTransportStateFlags (AUHostTransportStateFlags)
-                        *mut f64,      // outCurrentSamplePosition
-                        *mut f64,      // outCycleStartBeatPosition
-                        *mut f64,      // outCycleEndBeatPosition
-                    ) -> bool; // Returns true if successful
-
-                    let mut flags: u32 = 0;
-                    let mut current_sample_pos: f64 = 0.0;
-                    let mut cycle_start: f64 = 0.0;
-                    let mut cycle_end: f64 = 0.0;
-
-                    // SAFETY: This transmute is required because Rust doesn't have native Objective-C block support.
-                    //
-                    // Why this transmute is needed:
-                    // - AU hosts provide callbacks as Objective-C blocks (*const c_void)
-                    // - Objective-C blocks are callable objects with a function pointer at a known offset
-                    // - We must call this function with the correct signature to retrieve transport state
-                    //
-                    // Invariants that must hold:
-                    // 1. `block` must be a valid AUHostTransportStateBlock provided by the AU host
-                    // 2. The block must remain valid for the duration of this render callback
-                    // 3. The function signature must exactly match Apple's documented AUHostTransportStateBlock:
-                    //    - First arg: block pointer itself (Objective-C convention)
-                    //    - outTransportStateFlags: bitfield indicating state (playing, recording, cycling)
-                    //    - outCurrentSamplePosition: current sample position in timeline
-                    //    - outCycleStartBeatPosition: loop start position in beats
-                    //    - outCycleEndBeatPosition: loop end position in beats
-                    // 4. The block must be called from the AU render thread only
-                    //
-                    // What could go wrong:
-                    // - If block pointer is invalid/corrupted → undefined behavior (crash likely)
-                    // - If signature doesn't match → argument misalignment, undefined behavior
-                    // - If called from wrong thread → race conditions (violates AU threading model)
-                    // - If block is used after render callback → use-after-free
-                    //
-                    // Why this is safe in practice:
-                    // - AU hosts guarantee the block is valid during the render callback
-                    // - Our signature matches Apple's documented API exactly
-                    // - We only call from within render callback, never store the pointer
-                    // - The block is host-provided, not user-created
-                    //
-                    // Alternative approach:
-                    // - Use `block2` crate for proper Objective-C block handling (adds dependency)
-                    let invoke = objc_block::invoke_ptr(block);
-                    let block_fn: TransportStateBlockFn = std::mem::transmute(invoke);
-
-                    // Call the block to retrieve transport state
-                    let success = block_fn(
-                        block,
-                        &mut flags,
-                        &mut current_sample_pos,
-                        &mut cycle_start,
-                        &mut cycle_end,
-                    );
-
-                    // If call succeeded, check if MOVING flag is set
-                    if success {
-                        AUHostTransportStateFlags(flags).is_playing()
-                    } else {
-                        false
-                    }
-                }
-                None => false, // No transport state block, default to stopped
-            };
-
-            // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
-            let sample_position = (*timestamp).sample_time as i64;
-
-            match self.musical_context_block {
-                Some(block) => extract_transport_from_au(block, sample_position, is_playing),
-                None => beamer_core::Transport {
-                    project_time_samples: Some(sample_position),
-                    is_playing,
-                    ..Default::default()
-                },
-            }
-        };
+        // Transport info from the AU host, with the render clock as fallback
+        // for the position.
+        let transport = transport_from_host(host_transport, buffer_start_sample);
 
         // Collect pointers from AudioBufferList
         // SAFETY: output_data is valid for the duration of this render call
@@ -2021,10 +1883,13 @@ impl<S: Sample> RenderBlock<S> {
                 ev.sample_offset = ev.sample_offset.saturating_sub(block_start_u32);
             }
 
-            // Adjust transport sample position for this sub-block.
+            // Adjust transport sample positions for this sub-block.
             let mut seg_transport = transport;
             if let Some(t) = seg_transport.project_time_samples {
                 seg_transport.project_time_samples = Some(t + block_start as i64);
+            }
+            if let Some(t) = seg_transport.continuous_time_samples {
+                seg_transport.continuous_time_samples = Some(t + block_start as i64);
             }
 
             let context = if let Some(cc_ptr) = cc_state_ptr {
@@ -2257,6 +2122,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
         event_list: *const AURenderEvent,
         pull_input_block: *const c_void,
         input_data: *const AudioBufferList,
+        host_transport: Option<&BeamerAuTransport>,
     ) -> i32 {
         self.process_impl(
             action_flags,
@@ -2267,6 +2133,7 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
             event_list,
             pull_input_block,
             input_data,
+            host_transport,
         )
     }
 
@@ -2287,8 +2154,6 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
 ///
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
-/// * `musical_context_block` - Optional AU host musical context block for transport info
-/// * `transport_state_block` - Optional AU host transport state block for playback state
 /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
@@ -2298,8 +2163,6 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
 pub fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f32>,
-    musical_context_block: Option<*const c_void>,
-    transport_state_block: Option<*const c_void>,
     schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
@@ -2309,8 +2172,6 @@ pub fn create_render_block_f32(
     Box::new(RenderBlock::<f32>::new(
         plugin,
         storage,
-        musical_context_block,
-        transport_state_block,
         schedule_midi_event_block,
         max_frames,
         sample_rate,
@@ -2327,8 +2188,6 @@ pub fn create_render_block_f32(
 ///
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
-/// * `musical_context_block` - Optional AU host musical context block for transport info
-/// * `transport_state_block` - Optional AU host transport state block for playback state
 /// * `schedule_midi_event_block` - Optional AU host MIDI output block (for instruments/MIDI effects)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
@@ -2338,8 +2197,6 @@ pub fn create_render_block_f32(
 pub fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     storage: ProcessBufferStorage<f64>,
-    musical_context_block: Option<*const c_void>,
-    transport_state_block: Option<*const c_void>,
     schedule_midi_event_block: Option<*const c_void>,
     max_frames: u32,
     sample_rate: f64,
@@ -2349,8 +2206,6 @@ pub fn create_render_block_f64(
     Box::new(RenderBlock::<f64>::new(
         plugin,
         storage,
-        musical_context_block,
-        transport_state_block,
         schedule_midi_event_block,
         max_frames,
         sample_rate,

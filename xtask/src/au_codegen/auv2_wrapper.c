@@ -1367,10 +1367,16 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
         }
 
         case kAudioUnitProperty_HostCallbacks: {
-            if (!inData || inDataSize < sizeof(HostCallbackInfo)) {
+            if (!inData) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            inst->hostCallbacks = *(HostCallbackInfo*)inData;
+            // The struct has grown over time, so a host may pass a shorter one.
+            // The callbacks it does not know stay NULL.
+            HostCallbackInfo callbacks;
+            memset(&callbacks, 0, sizeof(callbacks));
+            memcpy(&callbacks, inData,
+                inDataSize < sizeof(callbacks) ? inDataSize : sizeof(callbacks));
+            inst->hostCallbacks = callbacks;
             return noErr;
         }
 
@@ -1574,6 +1580,66 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
 }
 
 // =============================================================================
+// MARK: - Host Transport
+// =============================================================================
+
+// Ask the host for its musical context and transport state through the
+// callbacks it registered. Called on the render thread.
+static void BeamerAuv2ReadTransport(const HostCallbackInfo* host, BeamerAuTransport* transport) {
+    memset(transport, 0, sizeof(*transport));
+
+    if (host->beatAndTempoProc) {
+        Float64 beatPosition = 0.0;
+        Float64 tempo = 0.0;
+        if (host->beatAndTempoProc(host->hostUserData, &beatPosition, &tempo) == noErr) {
+            transport->flags |= BeamerAuTransportHasBeatAndTempo;
+            transport->tempo = tempo;
+            transport->beat_position = beatPosition;
+        }
+    }
+
+    if (host->musicalTimeLocationProc) {
+        UInt32 samplesToNextBeat = 0;
+        Float32 numerator = 0.0f;
+        UInt32 denominator = 0;
+        Float64 downbeatPosition = 0.0;
+        if (host->musicalTimeLocationProc(host->hostUserData, &samplesToNextBeat,
+                &numerator, &denominator, &downbeatPosition) == noErr) {
+            transport->flags |= BeamerAuTransportHasTimeSignature;
+            transport->time_sig_numerator = numerator;
+            transport->time_sig_denominator = (int32_t)denominator;
+            transport->measure_downbeat_position = downbeatPosition;
+        }
+    }
+
+    Boolean isPlaying = false;
+    Boolean isRecording = false;
+    Boolean stateChanged = false;
+    Boolean isCycling = false;
+    Float64 samplePosition = 0.0;
+    Float64 cycleStart = 0.0;
+    Float64 cycleEnd = 0.0;
+    OSStatus stateStatus = kAudioUnitErr_CannotDoInCurrentContext;
+    if (host->transportStateProc2) {
+        stateStatus = host->transportStateProc2(host->hostUserData, &isPlaying, &isRecording,
+            &stateChanged, &samplePosition, &isCycling, &cycleStart, &cycleEnd);
+    } else if (host->transportStateProc) {
+        // The older callback does not report recording.
+        stateStatus = host->transportStateProc(host->hostUserData, &isPlaying,
+            &stateChanged, &samplePosition, &isCycling, &cycleStart, &cycleEnd);
+    }
+    if (stateStatus == noErr) {
+        transport->flags |= BeamerAuTransportHasState;
+        if (isPlaying) transport->flags |= BeamerAuTransportPlaying;
+        if (isRecording) transport->flags |= BeamerAuTransportRecording;
+        if (isCycling) transport->flags |= BeamerAuTransportCycling;
+        transport->sample_position = samplePosition;
+        transport->cycle_start_beat = cycleStart;
+        transport->cycle_end_beat = cycleEnd;
+    }
+}
+
+// =============================================================================
 // MARK: - Render
 // =============================================================================
 
@@ -1699,6 +1765,15 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
     }
 
+    // Only the render of the main bus processes audio and needs the transport.
+    BeamerAuTransport transport;
+    bool hasTransport = (inOutputBusNumber == 0);
+    if (hasTransport) {
+        // Work on a copy, so that all callbacks of this call come from one set.
+        HostCallbackInfo hostCallbacks = inst->hostCallbacks;
+        BeamerAuv2ReadTransport(&hostCallbacks, &transport);
+    }
+
     // Call Rust render function
     OSStatus status = beamer_au_render(
         inst->rustInstance,
@@ -1710,8 +1785,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         midiEventList,
         NULL,  // pull_input_block (we pre-pulled via callback/connection)
         inputData,
-        NULL,  // musical_context_block (TODO: wrap host callbacks)
-        NULL,  // transport_state_block (TODO: wrap host callbacks)
+        hasTransport ? &transport : NULL,
         NULL   // schedule_midi_block
     );
 
