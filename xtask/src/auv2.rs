@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_auv2_component_name, to_pascal_case, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
 // AUv2 C code generation template (large embedded C implementation)
@@ -123,6 +123,7 @@ pub fn bundle_auv2(
         let clang_status = Command::new("clang")
             .args([
                 "-arch", target_arch,
+                MACOS_MIN_VERSION_FLAG,
                 "-bundle",  // Create a bundle (loadable module), not an executable
                 "-fobjc-arc",
                 "-fmodules",
@@ -239,7 +240,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     <key>CFBundleShortVersionString</key>
     <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>
+    <string>{min_os}</string>
     <key>AudioComponents</key>
     <array>
         <dict>
@@ -268,6 +269,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
 </dict>
 </plist>
 "#,
+        min_os = MACOS_DEPLOYMENT_TARGET,
         executable = config.executable_name,
         package = config.package,
         manufacturer = manufacturer,

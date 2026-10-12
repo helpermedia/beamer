@@ -16,7 +16,7 @@ This crate provides **both AUv2 and AUv3** support through a shared C-ABI bridge
 
 ## Platform Requirements
 
-- **macOS 10.11+** (AUAudioUnit API minimum)
+- **macOS 11.0+**
 - **Apple Silicon and Intel** supported
 
 ## Usage

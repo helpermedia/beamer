@@ -1131,8 +1131,7 @@ static void beamer_auv3_on_loaded(void* context) {
 // Prefer zero-sized view configurations so Logic and GarageBand defer to
 // preferredContentSize. If no {0, 0} entry exists (Reaper, other hosts),
 // accept all configurations so the host knows we have a GUI.
-- (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations
-    API_AVAILABLE(macos(10.13), ios(11)) {
+- (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations {
     NSMutableIndexSet* zeroSized = [[NSMutableIndexSet alloc] init];
     for (NSUInteger i = 0; i < availableViewConfigurations.count; i++) {
         AUAudioUnitViewConfiguration* config = availableViewConfigurations[i];

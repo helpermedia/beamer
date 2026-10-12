@@ -6,6 +6,17 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+/// Oldest macOS version the bundles run on.
+///
+/// Every binary of a bundle is built for it: the Rust library through
+/// `MACOSX_DEPLOYMENT_TARGET`, and what clang compiles through
+/// [`MACOS_MIN_VERSION_FLAG`]. Without them clang targets the macOS version of
+/// the build machine and the bundle does not load on anything older.
+pub const MACOS_DEPLOYMENT_TARGET: &str = "11.0";
+
+/// The clang flag that selects [`MACOS_DEPLOYMENT_TARGET`].
+pub const MACOS_MIN_VERSION_FLAG: &str = "-mmacosx-version-min=11.0";
+
 /// Simplified plugin config from Config.toml for xtask use.
 #[derive(Deserialize)]
 struct ConfigFile {
@@ -532,6 +543,14 @@ mod tests {
     use beamer_core::config::Category;
 
     use super::*;
+
+    #[test]
+    fn test_min_version_flag_matches_the_deployment_target() {
+        assert_eq!(
+            MACOS_MIN_VERSION_FLAG,
+            format!("-mmacosx-version-min={MACOS_DEPLOYMENT_TARGET}")
+        );
+    }
 
     /// Name of a category in `Config.toml`.
     ///

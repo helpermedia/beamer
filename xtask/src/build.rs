@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, to_vst3_executable_name, Arch, PathExt};
+use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, to_vst3_executable_name, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::BundleConfig;
 
 /// Read version from workspace Cargo.toml and convert to Apple's version integer format
@@ -72,6 +72,7 @@ fn au_rustc_args(
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_{}", wrapper_class)),
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_{}", extension_class)),
         ("-C", format!("link-arg=-Wl,-exported_symbol,_{}", factory_func)),
+        ("-C", deployment_target_link_arg()),
     ];
 
     // Every flag and its value is a separate argument for rustc.
@@ -216,7 +217,18 @@ fn vst3_rustc_args(package: &str, target: &str) -> Vec<String> {
     vec![
         "-C".to_string(),
         format!("link-arg=-Wl,-install_name,@loader_path/{}", to_vst3_executable_name(package)),
+        "-C".to_string(),
+        deployment_target_link_arg(),
     ]
+}
+
+/// The minimum macOS version as a linker argument for the plugin crate.
+///
+/// The build also gets the version through `MACOSX_DEPLOYMENT_TARGET`, but
+/// cargo does not notice when that variable changes. It does notice a changed
+/// argument, so this makes it link the library again when the version changes.
+fn deployment_target_link_arg() -> String {
+    format!("link-arg={MACOS_MIN_VERSION_FLAG}")
 }
 
 /// Create the cargo command that builds the plugin crate for one target.
@@ -266,6 +278,13 @@ fn plugin_build_command(
 
     if let Some(encoded) = encode_rustflags(&user, &remap) {
         cmd.env("CARGO_ENCODED_RUSTFLAGS", encoded);
+    }
+
+    // Build the library for the same minimum macOS version as the parts of
+    // the bundle that clang compiles. The compiler's own default differs per
+    // architecture.
+    if target.ends_with("-apple-darwin") {
+        cmd.env("MACOSX_DEPLOYMENT_TARGET", MACOS_DEPLOYMENT_TARGET);
     }
 
     Ok(cmd)
@@ -517,7 +536,7 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
 }
 
 /// Flags for compiling the generated ObjC sources.
-const OBJC_FLAGS: [&str; 2] = ["-fobjc-arc", "-fmodules"];
+const OBJC_FLAGS: [&str; 3] = ["-fobjc-arc", "-fmodules", MACOS_MIN_VERSION_FLAG];
 
 /// Hash the inputs of a compile step into a directory name.
 fn hash_inputs(inputs: &[&[u8]]) -> String {
@@ -835,10 +854,31 @@ mod tests {
     }
 
     #[test]
+    fn test_deployment_target_is_set_for_apple_targets() {
+        let target_of = |target: &str| {
+            let cmd = plugin_build_command("gain", target, "vst3", false, Path::new("."), &[])
+                .expect("command");
+            cmd.get_envs()
+                .find(|(key, _)| *key == "MACOSX_DEPLOYMENT_TARGET")
+                .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        };
+
+        let expected = Some(Some(MACOS_DEPLOYMENT_TARGET.to_string()));
+        assert_eq!(target_of("aarch64-apple-darwin"), expected);
+        assert_eq!(target_of("x86_64-apple-darwin"), expected);
+        assert_eq!(target_of("x86_64-pc-windows-msvc"), None);
+    }
+
+    #[test]
     fn test_vst3_rustc_args() {
         assert_eq!(
             vst3_rustc_args("midi-transform", "aarch64-apple-darwin"),
-            ["-C", "link-arg=-Wl,-install_name,@loader_path/BeamerMidiTransform"]
+            [
+                "-C",
+                "link-arg=-Wl,-install_name,@loader_path/BeamerMidiTransform",
+                "-C",
+                "link-arg=-mmacosx-version-min=11.0",
+            ]
         );
 
         // Only Mach-O has install names.

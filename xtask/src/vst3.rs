@@ -104,9 +104,12 @@ fn create_vst3_info_plist(package: &str, version: &str) -> String {
     <string>{version}</string>
     <key>CFBundleShortVersionString</key>
     <string>{version}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>{min_os}</string>
 </dict>
 </plist>
 "#,
+        min_os = crate::util::MACOS_DEPLOYMENT_TARGET,
         executable = executable_name,
         package = package,
         version = version

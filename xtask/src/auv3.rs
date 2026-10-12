@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, shorten_path, to_au_bundle_name, to_pascal_case, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::AppexPlistConfig;
 
 /// Creates an AUv3 app extension bundle from a compiled dylib.
@@ -192,6 +192,7 @@ pub fn bundle_auv3(
         let clang_status = Command::new("clang")
             .args([
                 "-arch", target_arch,
+                MACOS_MIN_VERSION_FLAG,
                 "-fobjc-arc",
                 "-fmodules",
                 "-framework", "Foundation",
@@ -277,6 +278,7 @@ pub fn bundle_auv3(
         let clang_status = Command::new("clang")
             .args([
                 "-arch", target_arch,
+                MACOS_MIN_VERSION_FLAG,
                 "-framework", "Foundation",
                 "-o", host_arch_path.to_str_safe()?,
                 stub_main_path.to_str_safe()?,
@@ -365,12 +367,13 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
     <key>CFBundleShortVersionString</key>
     <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>
+    <string>{min_os}</string>
     <key>LSBackgroundOnly</key>
     <true/>
 </dict>
 </plist>
 "#,
+        min_os = MACOS_DEPLOYMENT_TARGET,
         executable = executable_name,
         package = package,
         version = version
@@ -438,7 +441,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     <key>CFBundleShortVersionString</key>
     <string>{version}</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>
+    <string>{min_os}</string>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>
@@ -477,6 +480,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
 </dict>
 </plist>
 "#,
+        min_os = MACOS_DEPLOYMENT_TARGET,
         executable = config.executable_name,
         package = config.package,
         extension_point = extension_point,

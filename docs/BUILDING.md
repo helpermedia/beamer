@@ -25,6 +25,9 @@ under `examples/<package>`, where it reads `Config.toml` and the optional
 
 ### macOS
 
+- Bundles are built for macOS 11.0 and later, on Apple Silicon and Intel.
+  xtask sets that minimum for every binary in a bundle, whatever macOS
+  version the build machine runs.
 - The Xcode Command Line Tools (`xcode-select --install`). Rust needs them
   to link, and xtask uses clang, ar, install_name_tool and codesign for the
   Audio Unit formats and lipo for universal binaries.

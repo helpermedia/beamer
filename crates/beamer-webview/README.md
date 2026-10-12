@@ -14,7 +14,7 @@ This crate provides web-based plugin interfaces using WKWebView, with bidirectio
 
 ## Platform Requirements
 
-- **macOS 10.11+** (WKWebView minimum)
+- **macOS 11.0+**
 - **Apple Silicon and Intel** supported
 
 ## Usage
