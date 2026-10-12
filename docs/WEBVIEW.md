@@ -22,7 +22,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 ├──────────────┼──────────────────────────────┼────────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
-│  - 60Hz parameter sync timer                                    │
+│  - 60 Hz parameter sync timer                                    │
 │  - Dispatches IPC messages to WebViewHandler                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview (platform layer)                                │
@@ -38,8 +38,8 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 |-------|------|
 | `beamer-core` | `WebViewHandler` trait, `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
-| `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60Hz sync timer, IPC dispatch |
-| `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60Hz sync timer and IPC dispatch |
+| `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
+| `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
 
 ## Configuration
 
@@ -268,7 +268,7 @@ Each entry corresponds to a `ParamInitEntry`:
 
 The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `params.get()`.
 
-### 60Hz Polling
+### 60 Hz Polling
 
 Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It also runs while the host is in a tracking loop (a drag, a resize or an open menu), so the UI keeps following the host. Each tick:
 
@@ -442,7 +442,7 @@ Lock-free data transfer from the audio thread to the WebView for spectrum analyz
 
 - A lock-free ring buffer in `beamer-core` for fixed-size visualization payloads
 - An `emit_rt()` method that writes into the ring buffer without allocating
-- The 60Hz sync timer drains the ring buffer on the main thread and calls `evaluateJavaScript` to push data to the JS runtime
+- The 60 Hz sync timer drains the ring buffer on the main thread and calls `evaluateJavaScript` to push data to the JS runtime
 
 This is a core-level feature (not webview-specific) because the ring buffer and thread-safety guarantees belong in `beamer-core`.
 

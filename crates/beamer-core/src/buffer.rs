@@ -112,7 +112,7 @@ use crate::types::{MAX_AUX_BUSES, MAX_CHANNELS};
 /// during construction or use.
 pub struct Buffer<'a, S: Sample = f32> {
     /// Input channel slices (immutable audio from host)
-    /// Option<&[S]> is Copy, so [None; N] works
+    /// `Option<&[S]>` is Copy, so `[None; N]` works
     inputs: [Option<&'a [S]>; MAX_CHANNELS],
     /// Output channel slices (mutable audio to host)
     outputs: [Option<&'a mut [S]>; MAX_CHANNELS],
@@ -647,7 +647,7 @@ impl<'a, S: Sample> AuxInput<'a, S> {
 
     /// Get a single sample from a channel.
     ///
-    /// Returns [`S::ZERO`] if the channel or sample index doesn't exist.
+    /// Returns [`Sample::ZERO`] if the channel or sample index doesn't exist.
     /// This is a convenience method for sample-by-sample processing.
     ///
     /// # Example

@@ -553,7 +553,7 @@ fn copy_str_to_char_array(s: &str, dest: &mut [c_char]) {
     }
 }
 
-/// Convert a C bus info array to a Vec<CachedBusInfo>.
+/// Convert a C bus info array to a `Vec<CachedBusInfo>`.
 ///
 /// This helper converts FFI bus information from the C-ABI format to Rust's internal
 /// representation, handling the bus type conversion and respecting MAX_BUSES bounds.

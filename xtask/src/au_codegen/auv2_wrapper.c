@@ -2197,7 +2197,7 @@ static void beamer_auv2_on_loaded(void* context) {
             }
         }
 
-        // Start 60Hz parameter sync timer.
+        // Start 60 Hz parameter sync timer.
         // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
         __weak typeof(self) weakSelf = self;
         _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {

@@ -5,8 +5,9 @@
 //! contains runtime state with atomic values for thread-safe access.
 //!
 //! **This type is framework-internal.** Plugin authors don't need to create
-//! or manage `MidiCcState` - the VST3 wrapper handles it automatically.
-//! Plugins can read current CC values via [`ProcessContext::midi_cc()`].
+//! or manage `MidiCcState` - the format wrappers handle it automatically.
+//! Plugins can read current CC values via
+//! [`ProcessContext::midi_cc()`](crate::ProcessContext::midi_cc).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -39,7 +40,8 @@ pub const MIDI_CC_PARAM_BASE: u32 = 0x10000000; // 268435456
 /// Created by the framework from a [`MidiCcConfig`]. Holds current controller
 /// values as atomic floats for thread-safe access from both host and audio threads.
 ///
-/// Plugin authors can read values via [`ProcessContext::midi_cc()`]:
+/// Plugin authors can read values via
+/// [`ProcessContext::midi_cc()`](crate::ProcessContext::midi_cc):
 ///
 /// ```ignore
 /// fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {

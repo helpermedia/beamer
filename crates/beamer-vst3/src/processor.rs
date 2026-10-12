@@ -1,7 +1,7 @@
 //! Generic VST3 processor wrapper.
 //!
 //! This module provides [`Vst3Processor`], a generic wrapper that bridges any
-//! [`beamer_core::Plugin`] implementation to VST3 COM interfaces.
+//! [`beamer_core::Descriptor`] implementation to VST3 COM interfaces.
 //!
 //! # Architecture
 //!
@@ -84,7 +84,7 @@ macro_rules! valid_if {
 
 /// Extract transport information from VST3 ProcessContext.
 ///
-/// Converts VST3's validity flags to Rust's Option<T> idiom.
+/// Converts VST3's validity flags to Rust's `Option<T>` idiom.
 /// Returns a default Transport if the context pointer is null.
 ///
 /// # Safety

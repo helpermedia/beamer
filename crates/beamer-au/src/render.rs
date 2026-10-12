@@ -1835,7 +1835,7 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// 2. **Invariants that must hold:**
     ///    - S must be either f32 or f64 (enforced by Sample trait bound)
-    ///    - The RenderBlock<S> is created with the same S used by the host's format
+    ///    - The `RenderBlock<S>` is created with the same S used by the host's format
     ///    - Audio Unit v3 only supports f32 and f64 (kAudioFormatFlagsNativeFloatPacked)
     ///    - The TypeId check ensures we only transmute when types actually match
     ///
@@ -1847,11 +1847,11 @@ impl<S: Sample> RenderBlock<S> {
     ///
     /// 4. **Why this is safe in practice:**
     ///    - Sample trait is sealed and only implemented for f32 and f64
-    ///    - RenderBlock<S> is created based on AU format (kAudioFormatFlagIsFloat + bits per channel)
+    ///    - `RenderBlock<S>` is created based on AU format (kAudioFormatFlagIsFloat + bits per channel)
     ///    - create_render_block_f32/f64 ensure S matches the actual host format
     ///    - TypeId check is a runtime guarantee that S == f32 or S == f64
     ///    - Buffer slices have the same memory layout regardless of Sample type
-    ///      (both are just &[T] where T is a 32-bit or 64-bit float)
+    ///      (both are just `&[T]` where T is a 32-bit or 64-bit float)
     ///
     /// 5. **Alternative approaches:**
     ///    - Use an enum for sample format and store non-generic buffers (requires Vec allocation)
@@ -1868,7 +1868,7 @@ impl<S: Sample> RenderBlock<S> {
     /// **Auxiliary bus transmutes:**
     /// - Transmutes `&[Vec<&[S]>]` to `&[Vec<&[f32]>]` or `&[Vec<&[f64]>]`
     /// - Each aux bus is a Vec of channel slices
-    /// - Vec<&[S]> and Vec<&[f32]> have identical memory layout
+    /// - `Vec<&[S]>` and `Vec<&[f32]>` have identical memory layout
     /// - Vec stores pointer + length + capacity (no type-specific data)
     /// - The slice references point to host-provided audio buffers in the correct format
     ///

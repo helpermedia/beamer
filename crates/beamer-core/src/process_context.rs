@@ -326,7 +326,8 @@ impl Transport {
 ///
 /// Contains sample rate, buffer size, transport/timing information and
 /// optional MIDI CC state for direct access to controller values.
-/// Passed as the third parameter to [`Processor::process()`].
+/// Passed as the third parameter to
+/// [`Processor::process()`](crate::Processor::process).
 ///
 /// # Lifetime
 ///
@@ -364,13 +365,14 @@ impl Transport {
 pub struct ProcessContext<'a> {
     /// Current sample rate in Hz.
     ///
-    /// Same value passed to [`Processor::setup()`], provided here
-    /// for convenience during processing.
+    /// Same value the plugin gets as [`SampleRate`](crate::SampleRate) when
+    /// it is prepared, provided here for convenience during processing.
     pub sample_rate: f64,
 
     /// Number of samples in this processing block.
     ///
-    /// Same as [`Buffer::num_samples()`], provided here for convenience.
+    /// Same as [`Buffer::num_samples()`](crate::Buffer::num_samples), provided
+    /// here for convenience.
     pub num_samples: usize,
 
     /// Host transport and timing information.

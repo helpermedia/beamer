@@ -40,13 +40,13 @@ use crate::BusInfo;
 ///
 /// Fields are public for direct iteration access in format wrappers.
 pub struct ConversionBuffers {
-    /// Main input bus conversion buffers: [channel][samples]
+    /// Main input bus conversion buffers: `[channel][samples]`
     pub main_input_f32: Vec<Vec<f32>>,
-    /// Main output bus conversion buffers: [channel][samples]
+    /// Main output bus conversion buffers: `[channel][samples]`
     pub main_output_f32: Vec<Vec<f32>>,
-    /// Auxiliary input buses: [bus_index][channel_index][samples]
+    /// Auxiliary input buses: `[bus_index][channel_index][samples]`
     pub aux_input_f32: Vec<Vec<Vec<f32>>>,
-    /// Auxiliary output buses: [bus_index][channel_index][samples]
+    /// Auxiliary output buses: `[bus_index][channel_index][samples]`
     pub aux_output_f32: Vec<Vec<Vec<f32>>>,
 }
 

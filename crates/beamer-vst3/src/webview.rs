@@ -303,7 +303,7 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
     webview.evaluate_js(&js);
 }
 
-/// NSTimer callback for 60Hz parameter sync.
+/// NSTimer callback for 60 Hz parameter sync.
 unsafe extern "C-unwind" fn sync_timer_fired(
     _this: *mut objc2::runtime::AnyObject,
     _cmd: objc2::runtime::Sel,
@@ -421,7 +421,7 @@ impl IPlugViewTrait for WebViewPlugView {
                     *v = f64::NAN;
                 }
 
-                // Start 60Hz sync timer.
+                // Start 60 Hz sync timer.
                 #[cfg(target_os = "macos")]
                 {
                     use objc2::msg_send;

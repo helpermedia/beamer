@@ -12,15 +12,15 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! // Parameter group hierarchy:
-//! // Root (id=0)
-//! // ├── Filter (id=1)
-//! // │   ├── cutoff
-//! // │   └── resonance
-//! // └── Envelope (id=2)
-//! //     ├── attack
-//! //     └── release
+//! ```text
+//! Parameter group hierarchy:
+//! Root (id=0)
+//! ├── Filter (id=1)
+//! │   ├── cutoff
+//! │   └── resonance
+//! └── Envelope (id=2)
+//!     ├── attack
+//!     └── release
 //! ```
 
 /// Parameter group ID type.

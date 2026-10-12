@@ -1,6 +1,6 @@
 //! Build tooling for Beamer plugins.
 //!
-//! Usage: cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean]
+//! Usage: `cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean]`
 
 mod auv2;
 mod auv3;
@@ -142,7 +142,7 @@ fn main() {
 
     // Require at least one format flag
     if !build_vst3 && !build_auv2 && !build_auv3 {
-        print_error("at least one format flag is required (--auv2, --auv3, or --vst3)");
+        print_error("at least one format flag is required (--auv2, --auv3 or --vst3)");
         print_usage();
         std::process::exit(1);
     }
