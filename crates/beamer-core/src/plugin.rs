@@ -949,12 +949,22 @@ pub trait Processor: Send + 'static {
 /// }
 /// ```
 ///
+/// # Thread Safety
+///
+/// A host asks the descriptor about buses and MIDI from its own threads,
+/// also while audio is processed and from more than one thread at the same
+/// time. A descriptor is therefore `Sync`: its `&self` methods must be
+/// callable from several threads at once. The methods that change it, such
+/// as [`on_midi_learn()`](Descriptor::on_midi_learn), take `&mut self` and
+/// have it to themselves. No method of the descriptor is called on the
+/// audio thread.
+///
 /// # Note on HasParameters
 ///
 /// The `Descriptor` trait requires [`HasParameters`] as a supertrait, which provides the
 /// `parameters()` method. Use `#[derive(HasParameters)]` with a
 /// `#[parameters]` field annotation to implement this automatically.
-pub trait Descriptor: HasParameters + Default {
+pub trait Descriptor: HasParameters + Sync + Default {
     /// The setup information this plugin needs to prepare.
     ///
     /// Request exactly what you need:
@@ -994,11 +1004,17 @@ pub trait Descriptor: HasParameters + Default {
     // =========================================================================
     // Bus Configuration (static, known before prepare)
     // =========================================================================
+    //
+    // The host and the framework size their buffers from these answers, so
+    // they must stay the same for the life of a plugin instance.
 
     /// Returns the number of audio input buses.
     ///
     /// Default returns 1 (single stereo input). A plugin without audio input,
     /// such as most instruments and generators, overrides this to return 0.
+    ///
+    /// The bus methods must give the same answers for the life of a plugin
+    /// instance: the host and the framework size their buffers from them.
     fn input_bus_count(&self) -> usize {
         1
     }

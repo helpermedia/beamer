@@ -22,7 +22,7 @@ use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
@@ -203,19 +203,6 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 // to avoid collision with vst3::Steinberg::Vst::BusInfo used in COM interfaces.
 // We use CoreBusInfo throughout this module for the beamer type.
 
-/// A processor and what was derived from the plugin when it was created.
-///
-/// It exists after `setupProcessing()`. The descriptor that created it stays
-/// in the wrapper, next to it.
-struct Prepared<P: Descriptor> {
-    /// The prepared processor (ready for audio).
-    processor: P::Processor,
-    /// Input bus info as it was when the processor was created.
-    input_buses: Vec<CoreBusInfo>,
-    /// Output bus info as it was when the processor was created.
-    output_buses: Vec<CoreBusInfo>,
-}
-
 // =============================================================================
 // Vst3Processor Wrapper
 // =============================================================================
@@ -228,8 +215,8 @@ struct Prepared<P: Descriptor> {
 ///
 /// # Lifecycle
 ///
-/// The wrapper keeps the plugin's descriptor for its whole life and a
-/// processor while the plugin is prepared:
+/// The wrapper keeps the plugin's descriptor and its parameters for its
+/// whole life, and a processor while the plugin is prepared:
 ///
 /// ```text
 /// Vst3Processor::new()
@@ -263,20 +250,31 @@ struct Prepared<P: Descriptor> {
 /// VST3 guarantees that `process()` is called from a single thread at a time.
 /// We use `UnsafeCell` for interior mutability in `process()` since the COM
 /// interface only provides `&self`.
+///
+/// A host calls the other interfaces from its own threads while `process()`
+/// runs. What those calls use is kept apart from what `process()` uses: the
+/// descriptor sits behind a lock that `process()` never takes, the parameters
+/// are shared in an `Arc` and work through a shared reference, and latency,
+/// tail and the smoother reset are exchanged through atomics.
 pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
 where
     P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     /// The plugin as the host sees it. It lives as long as the wrapper and
-    /// is only used by host threads, never by `process()`.
-    descriptor: UnsafeCell<P>,
+    /// is only used by host threads, never by `process()`. Host threads
+    /// read it at the same time, also while `setupProcessing()` lets it
+    /// create a processor. The write side is for its few methods that
+    /// change it (MIDI learn, MPE settings).
+    descriptor: RwLock<P>,
     /// The parameters of the plugin, shared with the descriptor and with
     /// every processor it creates. `process()` and the host threads use
     /// them through this handle at the same time.
     parameters: Arc<P::Parameters>,
-    /// The processor, once `setupProcessing()` has created one.
-    prepared: UnsafeCell<Option<Prepared<P>>>,
+    /// The processor, once `setupProcessing()` has created one. It belongs
+    /// to `process()`. Host calls only touch it when the host guarantees
+    /// that `process()` does not run (`setupProcessing()`, `setActive()`).
+    processor: UnsafeCell<Option<P::Processor>>,
     /// Plugin configuration reference
     config: &'static Config,
     /// Current sample rate
@@ -337,8 +335,9 @@ where
 // - VST3 guarantees process() is called from one thread at a time
 // - The parameters are Sync, and process() reaches them through its own
 //   `Arc`, not through the descriptor
-// - The descriptor is only used by host threads. It is handed out mutably
-//   only while unprepared, when process() does not run
+// - The descriptor is Sync and behind an RwLock that only host threads take
+// - current_preset_index and component_handler are used by the controller
+//   thread alone
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), latency, tail and the
 //   request to reset the smoothers
@@ -368,9 +367,9 @@ where
         let parameters = Arc::clone(plugin.parameters());
 
         Self {
-            descriptor: UnsafeCell::new(plugin),
+            descriptor: RwLock::new(plugin),
             parameters,
-            prepared: UnsafeCell::new(None),
+            processor: UnsafeCell::new(None),
             config,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
@@ -417,7 +416,7 @@ where
     ///
     /// # Safety
     /// - Must only be called from contexts where VST3 guarantees single-threaded access
-    ///   (e.g., process(), setupProcessing()).
+    ///   to the processor (`process()`).
     /// - Must only be called when prepared.
     ///
     /// # Panics
@@ -426,114 +425,66 @@ where
     #[allow(clippy::mut_from_ref)]
     unsafe fn processor_mut(&self) -> &mut P::Processor {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        match unsafe { &mut *self.prepared.get() } {
-            Some(prepared) => &mut prepared.processor,
+        match unsafe { &mut *self.processor.get() } {
+            Some(processor) => processor,
             None => panic!("Attempted to access processor before setupProcessing()"),
         }
     }
 
-    /// Get a reference to the descriptor.
+    /// Read the descriptor for a call of the host.
     ///
-    /// # Safety
-    /// Must only be called from a host thread, never from `process()`, and
-    /// only while no mutable reference to the descriptor exists
-    /// (`try_plugin_mut` hands one out while unprepared).
-    #[inline]
-    unsafe fn descriptor(&self) -> &P {
-        // SAFETY: The caller is a host thread and no mutable reference
-        // exists. `process()` does not use the descriptor.
-        unsafe { &*self.descriptor.get() }
+    /// Not for `process()`: a host thread may hold the write side.
+    fn descriptor(&self) -> RwLockReadGuard<'_, P> {
+        // A poisoned lock only means a panic in an earlier call. The
+        // descriptor answers the host all the same.
+        self.descriptor
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Check if the wrapper is in prepared state.
+    /// Lock the descriptor for a call of the host that changes it.
     ///
-    /// # Safety
-    /// Must only be called from a host thread. It reads the cell that
-    /// `process()` uses mutably, and only looks at whether a processor
-    /// exists, which changes in `setupProcessing()` alone.
-    #[inline]
-    unsafe fn is_prepared(&self) -> bool {
-        // SAFETY: Only `setupProcessing()` changes whether a processor
-        // exists, and the host does not call it while it calls this.
-        unsafe { &*self.prepared.get() }.is_some()
-    }
-
-    /// Try to get a reference to the descriptor of an unprepared plugin.
-    ///
-    /// Returns Some(&P) when in unprepared state, None when prepared.
-    ///
-    /// # Safety
-    /// Same as `descriptor` and `is_prepared`.
-    #[inline]
-    unsafe fn try_plugin(&self) -> Option<&P> {
-        // SAFETY: The caller upholds the contracts of both calls.
-        unsafe { (!self.is_prepared()).then(|| self.descriptor()) }
-    }
-
-    /// Try to get a mutable reference to the descriptor of an unprepared
-    /// plugin.
-    ///
-    /// Returns Some(&mut P) when in unprepared state, None when prepared.
-    ///
-    /// # Safety
-    /// Must only be called from a host thread, while no other reference to
-    /// the descriptor exists.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn try_plugin_mut(&self) -> Option<&mut P> {
-        // SAFETY: The caller is a host thread and holds no other reference
-        // to the descriptor. `process()` does not use it.
-        unsafe { (!self.is_prepared()).then(|| &mut *self.descriptor.get()) }
+    /// Not for `process()`.
+    fn descriptor_mut(&self) -> RwLockWriteGuard<'_, P> {
+        self.descriptor
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     // =========================================================================
-    // Bus Info Access (works in both states)
+    // Descriptor Access (works in both states, not for process())
     // =========================================================================
 
-    /// Get input bus count (works in both states).
+    /// Get input bus count.
     #[inline]
-    unsafe fn input_bus_count(&self) -> usize {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.prepared.get() } {
-            // SAFETY: The caller upholds the contract of `descriptor`.
-            None => unsafe { self.descriptor() }.input_bus_count(),
-            Some(prepared) => prepared.input_buses.len(),
-        }
+    fn input_bus_count(&self) -> usize {
+        self.descriptor().input_bus_count()
     }
 
-    /// Get output bus count (works in both states).
+    /// Get output bus count.
     #[inline]
-    unsafe fn output_bus_count(&self) -> usize {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.prepared.get() } {
-            // SAFETY: The caller upholds the contract of `descriptor`.
-            None => unsafe { self.descriptor() }.output_bus_count(),
-            Some(prepared) => prepared.output_buses.len(),
-        }
+    fn output_bus_count(&self) -> usize {
+        self.descriptor().output_bus_count()
     }
 
-    /// Get input bus info (works in both states).
+    /// Get input bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
-    unsafe fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.prepared.get() } {
-            // SAFETY: The caller upholds the contract of `descriptor`.
-            None => unsafe { self.descriptor() }.input_bus_info(index),
-            Some(prepared) => prepared.input_buses.get(index).cloned(),
-        }
+    fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+        self.descriptor().input_bus_info(index)
     }
 
-    /// Get output bus info (works in both states).
+    /// Get output bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
-    unsafe fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.prepared.get() } {
-            // SAFETY: The caller upholds the contract of `descriptor`.
-            None => unsafe { self.descriptor() }.output_bus_info(index),
-            Some(prepared) => prepared.output_buses.get(index).cloned(),
-        }
+    fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+        self.descriptor().output_bus_info(index)
+    }
+
+    /// Check if plugin wants MIDI.
+    #[inline]
+    fn wants_midi(&self) -> bool {
+        self.descriptor().wants_midi()
     }
 
     // =========================================================================
@@ -546,15 +497,13 @@ where
         &self.parameters
     }
 
-    // =========================================================================
-    // Plugin Method Access (works in both states)
-    // =========================================================================
-
-    /// Check if plugin wants MIDI (works in both states).
-    #[inline]
-    unsafe fn wants_midi(&self) -> bool {
-        // SAFETY: The caller upholds the contract of `descriptor`.
-        unsafe { self.descriptor() }.wants_midi()
+    /// Get a handle to the parameters for an editor view. The view may
+    /// live longer than a processor and uses the parameters from its own
+    /// thread.
+    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
+    fn shared_parameter_store(&self) -> Arc<dyn ParameterStore> {
+        let parameters: Arc<P::Parameters> = Arc::clone(&self.parameters);
+        parameters
     }
 
     // =========================================================================
@@ -1084,20 +1033,13 @@ where
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => {
-                    // SAFETY: VST3 guarantees single-threaded access for this call.
-                    (unsafe { self.input_bus_count() }) as i32
-                }
-                BusDirections_::kOutput => {
-                    // SAFETY: VST3 guarantees single-threaded access for this call.
-                    (unsafe { self.output_bus_count() }) as i32
-                }
+                BusDirections_::kInput => self.input_bus_count() as i32,
+                BusDirections_::kOutput => self.output_bus_count() as i32,
                 _ => 0,
             },
             MediaTypes_::kEvent => {
                 // Return 1 event bus in each direction if plugin wants MIDI
-                // SAFETY: VST3 guarantees single-threaded access for this call.
-                if unsafe { self.wants_midi() } {
+                if self.wants_midi() {
                     1
                 } else {
                     0
@@ -1121,14 +1063,8 @@ where
         match media_type as MediaTypes {
             MediaTypes_::kAudio => {
                 let info = match dir as BusDirections {
-                    BusDirections_::kInput => {
-                        // SAFETY: VST3 guarantees single-threaded access for this call.
-                        unsafe { self.core_input_bus_info(index as usize) }
-                    }
-                    BusDirections_::kOutput => {
-                        // SAFETY: VST3 guarantees single-threaded access for this call.
-                        unsafe { self.core_output_bus_info(index as usize) }
-                    }
+                    BusDirections_::kInput => self.core_input_bus_info(index as usize),
+                    BusDirections_::kOutput => self.core_output_bus_info(index as usize),
                     _ => None,
                 };
 
@@ -1155,8 +1091,7 @@ where
             }
             MediaTypes_::kEvent => {
                 // Only index 0 for event bus and only if plugin wants MIDI
-                // SAFETY: VST3 guarantees single-threaded access for this call.
-                if index != 0 || !unsafe { self.wants_midi() } {
+                if index != 0 || !self.wants_midi() {
                     return kInvalidArgument;
                 }
 
@@ -1200,10 +1135,10 @@ where
     unsafe fn setActive(&self, state: TBool) -> tresult {
         // set_active is only meaningful when prepared (processor exists)
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        if let Some(prepared) = unsafe { &mut *self.prepared.get() } {
-            prepared.processor.set_active(state != 0);
+        if let Some(processor) = unsafe { &mut *self.processor.get() } {
+            processor.set_active(state != 0);
             // A host asks for the latency after activating.
-            self.publish_timing(&prepared.processor);
+            self.publish_timing(processor);
         }
         // When unprepared, silently succeed (host may call this before setupProcessing)
         kResultOk
@@ -1330,10 +1265,8 @@ where
         }
 
         // Check if the requested arrangement matches our bus configuration
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let input_count = unsafe { self.input_bus_count() };
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let output_count = unsafe { self.output_bus_count() };
+        let input_count = self.input_bus_count();
+        let output_count = self.output_bus_count();
         if num_ins as usize != input_count || num_outs as usize != output_count {
             return kResultFalse;
         }
@@ -1347,8 +1280,7 @@ where
                 return kResultFalse;
             }
 
-            // SAFETY: VST3 guarantees single-threaded access for this call.
-            if let Some(info) = unsafe { self.core_input_bus_info(i) } {
+            if let Some(info) = self.core_input_bus_info(i) {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1365,8 +1297,7 @@ where
                 return kResultFalse;
             }
 
-            // SAFETY: VST3 guarantees single-threaded access for this call.
-            if let Some(info) = unsafe { self.core_output_bus_info(i) } {
+            if let Some(info) = self.core_output_bus_info(i) {
                 let expected = channel_count_to_speaker_arrangement(info.channel_count);
                 if requested != expected {
                     return kResultFalse;
@@ -1388,14 +1319,8 @@ where
         }
 
         let info = match dir as BusDirections {
-            BusDirections_::kInput => {
-                // SAFETY: VST3 guarantees single-threaded access for this call.
-                unsafe { self.core_input_bus_info(index as usize) }
-            }
-            BusDirections_::kOutput => {
-                // SAFETY: VST3 guarantees single-threaded access for this call.
-                unsafe { self.core_output_bus_info(index as usize) }
-            }
+            BusDirections_::kInput => self.core_input_bus_info(index as usize),
+            BusDirections_::kOutput => self.core_output_bus_info(index as usize),
             _ => None,
         };
 
@@ -1437,16 +1362,18 @@ where
                 || *self.process_mode.get() != setup.processMode
         };
 
+        // Host threads keep reading the descriptor while it creates the
+        // processor below.
+        let plugin = self.descriptor();
+        let plugin = &*plugin;
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
-        let plugin = unsafe { &*self.descriptor.get() };
-        // SAFETY: As above.
-        let prepared = unsafe { &mut *self.prepared.get() };
+        let slot = unsafe { &mut *self.processor.get() };
 
         // A host may repeat a setup. Preparing again would then only throw
         // away what the processor holds. With a new sample rate, block size,
         // sample size or process mode the plugin is prepared again: it
         // learns those when a processor is created.
-        if prepared.is_none() || setup_changed {
+        if slot.is_none() || setup_changed {
             let input_bus_count = plugin.input_bus_count();
             let output_bus_count = plugin.output_bus_count();
             let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
@@ -1480,7 +1407,7 @@ where
 
             // A processor of an earlier setup goes first, so that its
             // buffers are free before the new ones are allocated.
-            *prepared = None;
+            *slot = None;
 
             // The smoothers ramp at the host's rate unless the plugin
             // sets another one in prepare.
@@ -1515,16 +1442,12 @@ where
                 }
             }
 
-            *prepared = Some(Prepared {
-                processor,
-                input_buses,
-                output_buses,
-            });
+            *slot = Some(processor);
         }
 
         // The host may ask for latency and tail before the first process() call.
-        if let Some(prepared) = prepared {
-            self.publish_timing(&prepared.processor);
+        if let Some(processor) = slot {
+            self.publish_timing(processor);
         }
 
         kResultOk
@@ -1543,24 +1466,16 @@ where
         let process_data = unsafe { &*data };
         let num_samples = process_data.numSamples as usize;
 
-        if num_samples == 0 {
-            return kResultOk;
+        // A state was loaded since the last block: the smoothers jump to the
+        // loaded values before anything else happens to the parameters. They
+        // belong to this thread.
+        if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
+            use beamer_core::Parameters;
+            self.parameters().reset_smoothing();
         }
 
-        // Host threads do not touch the processor while audio runs. What they
-        // asked for since the last block happens here, before this block is
-        // processed, and what they want to know is published for them.
-        {
-            // SAFETY: process() has the processor to itself.
-            let processor = unsafe { self.processor_mut() };
-            if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
-                use beamer_core::Parameters;
-                self.parameters().reset_smoothing();
-            }
-            self.publish_timing(processor);
-        }
-
-        // 1. Handle incoming parameter changes from host
+        // 1. Handle incoming parameter changes from host. This needs the
+        // parameters only, so it also works for a call without samples.
         // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
         if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
             let parameters = self.parameters();
@@ -1588,6 +1503,22 @@ where
                     }
                 }
             }
+        }
+
+        // Host threads do not touch the processor while audio runs. What they
+        // want to know about it is published for them with each call, after
+        // the parameter changes that may have changed it.
+        // SAFETY: process() has the processor to itself.
+        if let Some(processor) = unsafe { &*self.processor.get() } {
+            self.publish_timing(processor);
+        }
+
+        // A host sends a block without samples to flush parameter changes
+        // while it does not process audio. The parameter values are applied
+        // above. Controller changes that arrive as parameter changes become
+        // MIDI events only in a block with samples.
+        if num_samples == 0 {
+            return kResultOk;
         }
 
         // 2. Handle MIDI events (reuse pre-allocated buffer to avoid stack overflow)
@@ -2185,18 +2116,15 @@ where
             };
             let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
 
-            // Get raw pointers to parameters and handler for the WebView IPC.
-            let params: *const dyn beamer_core::ParameterStore =
-                self.parameters() as &dyn beamer_core::ParameterStore;
             // SAFETY: VST3 guarantees single-threaded access. No aliasing.
             let component_handler = unsafe { *self.component_handler.get() };
 
-            // SAFETY: params points to the plugin's parameter struct which outlives the view.
+            // SAFETY: component_handler is null or the handler the host set.
             let view = unsafe {
                 crate::webview::WebViewPlugView::new(
                     config,
                     delegate,
-                    params,
+                    self.shared_parameter_store(),
                     component_handler,
                     self.webview_handler.clone(),
                 )
@@ -2378,9 +2306,9 @@ where
 
         let controller = midi_controller_number as u8;
 
-        // 1. First check plugin's custom mappings (only available in unprepared state)
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin() } {
+        // 1. First check plugin's custom mappings.
+        {
+            let plugin = self.descriptor();
             if let Some(parameter_id) = plugin.midi_cc_to_parameter(bus_index, channel, controller) {
                 // SAFETY: id is non-null (checked above) and host guarantees validity.
                 unsafe { *id = parameter_id };
@@ -2415,9 +2343,8 @@ where
         channel: i16,
         midi_cc: i16,
     ) -> tresult {
-        // on_midi_learn is on Plugin, only available in unprepared state
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
+        {
+            let mut plugin = self.descriptor_mut();
             if plugin.on_midi_learn(bus_index, channel, midi_cc as u8) {
                 return kResultOk;
             }
@@ -2439,11 +2366,7 @@ where
         if direction != BusDirections_::kInput {
             return 0;
         }
-        // midi1_assignments is on Plugin, only available in unprepared state
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.try_plugin() }
-            .map(|p| p.midi1_assignments().len() as u32)
-            .unwrap_or(0)
+        self.descriptor().midi1_assignments().len() as u32
     }
 
     unsafe fn getMidi1ControllerAssignments(
@@ -2455,11 +2378,7 @@ where
             return kInvalidArgument;
         }
 
-        // midi1_assignments is on Plugin, only available in unprepared state
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kResultFalse;
-        };
+        let plugin = self.descriptor();
         let assignments = plugin.midi1_assignments();
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &*list };
@@ -2491,11 +2410,7 @@ where
         if direction != BusDirections_::kInput {
             return 0;
         }
-        // midi2_assignments is on Plugin, only available in unprepared state
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.try_plugin() }
-            .map(|p| p.midi2_assignments().len() as u32)
-            .unwrap_or(0)
+        self.descriptor().midi2_assignments().len() as u32
     }
 
     unsafe fn getMidi2ControllerAssignments(
@@ -2507,11 +2422,7 @@ where
             return kInvalidArgument;
         }
 
-        // midi2_assignments is on Plugin, only available in unprepared state
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kResultFalse;
-        };
+        let plugin = self.descriptor();
         let assignments = plugin.midi2_assignments();
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &*list };
@@ -2558,8 +2469,8 @@ where
         channel: u8,
         midi_cc: i16,
     ) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
+        {
+            let mut plugin = self.descriptor_mut();
             if plugin.on_midi1_learn(bus_index, channel, midi_cc as u8) {
                 return kResultOk;
             }
@@ -2573,8 +2484,8 @@ where
         channel: u8,
         midi_cc: Midi2Controller,
     ) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
+        {
+            let mut plugin = self.descriptor_mut();
             let controller = beamer_core::Midi2Controller {
                 bank: midi_cc.bank,
                 registered: midi_cc.registered != 0,
@@ -2597,10 +2508,7 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.try_plugin() }
-            .map(|p| p.note_expression_count(bus_index, channel) as i32)
-            .unwrap_or(0)
+        self.descriptor().note_expression_count(bus_index, channel) as i32
     }
 
     unsafe fn getNoteExpressionInfo(
@@ -2614,10 +2522,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kInvalidArgument;
-        };
+        let plugin = self.descriptor();
         if let Some(expr_info) =
             plugin.note_expression_info(bus_index, channel, note_expression_index as usize)
         {
@@ -2652,10 +2557,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kInvalidArgument;
-        };
+        let plugin = self.descriptor();
         let display = plugin.note_expression_value_to_string(bus_index, channel, id, value_normalized);
         // SAFETY: string is non-null (checked above) and host guarantees validity.
         copy_wstring(&display, unsafe { &mut *string });
@@ -2678,8 +2580,8 @@ where
         let len = unsafe { len_wstring(string) };
         // SAFETY: string is valid for len elements.
         if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string, len) }) {
-            // SAFETY: VST3 guarantees single-threaded access for this call.
-            if let Some(plugin) = unsafe { self.try_plugin() } {
+            {
+                let plugin = self.descriptor();
                 if let Some(value) = plugin.note_expression_string_to_value(bus_index, channel, id, &s) {
                     // SAFETY: value_normalized is non-null (checked above).
                     unsafe { *value_normalized = value };
@@ -2700,10 +2602,7 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.try_plugin() }
-            .map(|p| p.keyswitch_count(bus_index, channel) as i32)
-            .unwrap_or(0)
+        self.descriptor().keyswitch_count(bus_index, channel) as i32
     }
 
     unsafe fn getKeyswitchInfo(
@@ -2717,10 +2616,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kInvalidArgument;
-        };
+        let plugin = self.descriptor();
         if let Some(ks_info) =
             plugin.keyswitch_info(bus_index, channel, keyswitch_index as usize)
         {
@@ -2759,10 +2655,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let Some(plugin) = (unsafe { self.try_plugin() }) else {
-            return kInvalidArgument;
-        };
+        let plugin = self.descriptor();
         let mappings = plugin.physical_ui_mappings(bus_index, channel);
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &mut *list };
@@ -2791,8 +2684,8 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
+        {
+            let mut plugin = self.descriptor_mut();
             if plugin.enable_mpe_input_processing(state != 0) {
                 return kResultOk;
             }
@@ -2806,8 +2699,8 @@ where
         member_begin_channel: i32,
         member_end_channel: i32,
     ) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        if let Some(plugin) = unsafe { self.try_plugin_mut() } {
+        {
+            let mut plugin = self.descriptor_mut();
             let settings = beamer_core::MpeInputDeviceSettings {
                 master_channel,
                 member_begin_channel,
@@ -3331,9 +3224,9 @@ mod tests {
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
 
         // SAFETY: No other reference to the processor exists in this test.
-        match unsafe { &*wrapper.prepared.get() } {
-            Some(prepared) => {
-                let (rate, block, mode) = prepared.processor.setup;
+        match unsafe { &*wrapper.processor.get() } {
+            Some(processor) => {
+                let (rate, block, mode) = processor.setup;
                 (rate.0, block.0, mode)
             }
             None => panic!("the plugin is not prepared"),
@@ -3543,6 +3436,8 @@ mod tests {
     #[derive(Default)]
     struct MidiPlugin {
         parameters: Arc<NoParameters>,
+        /// The controller of the last MIDI learn call.
+        learned: Option<u8>,
     }
 
     struct MidiProcessor;
@@ -3565,7 +3460,33 @@ mod tests {
         fn wants_midi(&self) -> bool {
             true
         }
+
+        fn input_bus_count(&self) -> usize {
+            2
+        }
+
+        fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+            match index {
+                0 => Some(CoreBusInfo::stereo("Input")),
+                1 => Some(CoreBusInfo::aux("Sidechain", 2)),
+                _ => None,
+            }
+        }
+
+        fn midi_cc_to_parameter(&self, _bus_index: i32, _channel: i16, cc: u8) -> Option<u32> {
+            (cc == MAPPED_CC).then_some(MAPPED_PARAMETER)
+        }
+
+        fn on_midi_learn(&mut self, _bus_index: i32, _channel: i16, cc: u8) -> bool {
+            assert_ne!(cc, PANICKING_CC, "a plugin that panics in a callback");
+            self.learned = Some(cc);
+            true
+        }
     }
+
+    const MAPPED_CC: u8 = 74;
+    const PANICKING_CC: u8 = 99;
+    const MAPPED_PARAMETER: u32 = 1234;
 
     impl Processor for MidiProcessor {
         fn process(
@@ -3579,19 +3500,49 @@ mod tests {
 
     static MIDI_CONFIG: Config = Config::new("Midi Test", Category::Instrument, "Test", "midi");
 
+    /// The bus counts a host sees: audio in, audio out, event in, event out.
+    fn bus_counts(wrapper: &Vst3Processor<MidiPlugin>) -> [i32; 4] {
+        let audio = MediaTypes_::kAudio as MediaType;
+        let event = MediaTypes_::kEvent as MediaType;
+        let input = BusDirections_::kInput as BusDirection;
+        let output = BusDirections_::kOutput as BusDirection;
+        // SAFETY: The wrapper is alive for the calls.
+        unsafe {
+            [
+                wrapper.getBusCount(audio, input),
+                wrapper.getBusCount(audio, output),
+                wrapper.getBusCount(event, input),
+                wrapper.getBusCount(event, output),
+            ]
+        }
+    }
+
+    /// The channel count of an audio input bus as a host sees it.
+    fn input_channels(wrapper: &Vst3Processor<MidiPlugin>, index: i32) -> Option<i32> {
+        // SAFETY: A zeroed BusInfo is valid, and it is alive for the call.
+        let mut info: BusInfo = unsafe { std::mem::zeroed() };
+        // SAFETY: The wrapper and the info are alive for the call.
+        let result = unsafe {
+            wrapper.getBusInfo(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                index,
+                &mut info,
+            )
+        };
+        (result == kResultOk).then_some(info.channelCount)
+    }
+
     #[test]
-    fn test_event_buses_are_reported_prepared_or_not() {
+    fn test_buses_are_reported_prepared_or_not() {
         let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
         let event_buses = |wrapper: &Vst3Processor<MidiPlugin>| {
-            // SAFETY: The wrapper is alive for the calls.
-            unsafe {
-                [
-                    wrapper.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection),
-                    wrapper.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kOutput as BusDirection),
-                ]
-            }
+            let [.., event_in, event_out] = bus_counts(wrapper);
+            [event_in, event_out]
         };
-        assert_eq!(event_buses(&wrapper), [1, 1]);
+        assert_eq!(bus_counts(&wrapper), [2, 1, 1, 1]);
+        assert_eq!(input_channels(&wrapper, 1), Some(2));
+        assert_eq!(input_channels(&wrapper, 2), None);
 
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
@@ -3602,6 +3553,61 @@ mod tests {
         // SAFETY: The setup is valid for the call.
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
         assert_eq!(event_buses(&wrapper), [1, 1]);
+        assert_eq!(bus_counts(&wrapper), [2, 1, 1, 1]);
+        assert_eq!(input_channels(&wrapper, 1), Some(2));
+        assert_eq!(input_channels(&wrapper, 2), None);
+    }
+
+    #[test]
+    fn test_descriptor_answers_after_a_panic_in_one_of_its_calls() {
+        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
+
+        // The plugin panics while the wrapper holds its descriptor for
+        // writing.
+        let learn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: The wrapper is alive for the call.
+            unsafe { wrapper.onLiveMIDIControllerInput(0, 0, PANICKING_CC as i16) }
+        }));
+        assert!(learn.is_err());
+
+        // The host still gets its answers.
+        assert_eq!(bus_counts(&wrapper), [2, 1, 1, 1]);
+        // SAFETY: The wrapper is alive for the call.
+        assert_eq!(unsafe { wrapper.onLiveMIDIControllerInput(0, 0, 1) }, kResultOk);
+        assert_eq!(wrapper.descriptor().learned, Some(1));
+    }
+
+    #[test]
+    fn test_descriptor_answers_midi_mapping_prepared_or_not() {
+        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
+        let mapped = |wrapper: &Vst3Processor<MidiPlugin>| {
+            let mut id = 0u32;
+            // SAFETY: The wrapper and the id are alive for the call.
+            let result = unsafe {
+                wrapper.getMidiControllerAssignment(0, 0, MAPPED_CC as i16, &mut id)
+            };
+            (result, id)
+        };
+        let learn = |wrapper: &Vst3Processor<MidiPlugin>, cc: u8| {
+            // SAFETY: The wrapper is alive for the call.
+            let result = unsafe { wrapper.onLiveMIDIControllerInput(0, 0, cc as i16) };
+            (result, wrapper.descriptor().learned)
+        };
+        assert_eq!(mapped(&wrapper), (kResultOk, MAPPED_PARAMETER));
+        assert_eq!(learn(&wrapper, 1), (kResultOk, Some(1)));
+
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+
+        // A prepared plugin still has its descriptor to answer.
+        assert_eq!(mapped(&wrapper), (kResultOk, MAPPED_PARAMETER));
+        assert_eq!(learn(&wrapper, 7), (kResultOk, Some(7)));
     }
 
     fn prepared_state_wrapper() -> Vst3Processor<StatePlugin> {
@@ -3623,6 +3629,16 @@ mod tests {
 
     /// Process one stereo block like a host.
     fn process_block(wrapper: &Vst3Processor<StatePlugin>) {
+        process_with(wrapper, 64, std::ptr::null_mut());
+    }
+
+    /// Call process like a host, with `frames` of the 64 frames the buffers
+    /// hold and with the parameter changes of the block, if any.
+    fn process_with(
+        wrapper: &Vst3Processor<StatePlugin>,
+        frames: int32,
+        changes: *mut IParameterChanges,
+    ) {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];
         let mut output = [[0.0f32; FRAMES]; 2];
@@ -3645,12 +3661,12 @@ mod tests {
         let mut data = ProcessData {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-            numSamples: FRAMES as int32,
+            numSamples: frames,
             numInputs: 1,
             numOutputs: 1,
             inputs: &mut input_bus,
             outputs: &mut output_bus,
-            inputParameterChanges: std::ptr::null_mut(),
+            inputParameterChanges: changes,
             outputParameterChanges: std::ptr::null_mut(),
             inputEvents: std::ptr::null_mut(),
             outputEvents: std::ptr::null_mut(),
@@ -3658,6 +3674,85 @@ mod tests {
         };
         // SAFETY: The data and its buffers are valid for the call.
         assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+    }
+
+    /// The change of one parameter to one value at the start of a block.
+    struct OneChange {
+        id: u32,
+        value: f64,
+    }
+
+    impl Class for OneChange {
+        type Interfaces = (IParamValueQueue,);
+    }
+
+    impl IParamValueQueueTrait for OneChange {
+        unsafe fn getParameterId(&self) -> ParamID {
+            self.id
+        }
+
+        unsafe fn getPointCount(&self) -> int32 {
+            1
+        }
+
+        unsafe fn getPoint(
+            &self,
+            index: int32,
+            sample_offset: *mut int32,
+            value: *mut ParamValue,
+        ) -> tresult {
+            if index != 0 {
+                return kResultFalse;
+            }
+            // SAFETY: The caller provides valid pointers.
+            unsafe {
+                *sample_offset = 0;
+                *value = self.value;
+            }
+            kResultOk
+        }
+
+        unsafe fn addPoint(&self, _sample_offset: int32, _value: ParamValue, _index: *mut int32) -> tresult {
+            kNotImplemented
+        }
+    }
+
+    /// The parameter changes a host sends with a process call: one here.
+    struct Changes {
+        queue: vst3::ComPtr<IParamValueQueue>,
+    }
+
+    impl Class for Changes {
+        type Interfaces = (IParameterChanges,);
+    }
+
+    impl IParameterChangesTrait for Changes {
+        unsafe fn getParameterCount(&self) -> int32 {
+            1
+        }
+
+        unsafe fn getParameterData(&self, index: int32) -> *mut IParamValueQueue {
+            if index == 0 {
+                self.queue.as_ptr()
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        unsafe fn addParameterData(&self, _id: *const ParamID, _index: *mut int32) -> *mut IParamValueQueue {
+            std::ptr::null_mut()
+        }
+    }
+
+    /// Call process with one parameter change and `frames` frames.
+    fn process_change(wrapper: &Vst3Processor<StatePlugin>, frames: int32, id: u32, value: f64) {
+        let queue = vst3::ComWrapper::new(OneChange { id, value })
+            .to_com_ptr::<IParamValueQueue>()
+            .expect("the queue is an IParamValueQueue");
+        let changes = vst3::ComWrapper::new(Changes { queue })
+            .to_com_ptr::<IParameterChanges>()
+            .expect("the changes are IParameterChanges");
+        process_with(wrapper, frames, changes.as_ptr());
     }
 
     /// A stream in memory, like the one a host hands to getState and setState.
@@ -3853,6 +3948,115 @@ mod tests {
         process_block(&wrapper);
         // SAFETY: The wrapper is alive.
         assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.5));
+    }
+
+    #[test]
+    fn test_process_call_without_samples_applies_its_parameter_changes() {
+        let wrapper = prepared_state_wrapper();
+        set_gain(&wrapper, 0.25);
+
+        // A host flushes parameter changes this way while it does not
+        // process audio.
+        process_change(&wrapper, 0, GAIN_ID, 0.75);
+        assert_eq!(gain(&wrapper), 0.75);
+
+        // A block with samples applies its changes as well.
+        process_change(&wrapper, 64, GAIN_ID, 0.5);
+        assert_eq!(gain(&wrapper), 0.5);
+    }
+
+    #[test]
+    fn test_process_call_without_samples_on_an_unprepared_plugin() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        set_gain(&wrapper, 0.25);
+
+        // There is no processor yet. The values are applied all the same.
+        process_change(&wrapper, 0, GAIN_ID, 0.75);
+        assert_eq!(gain(&wrapper), 0.75);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, 0);
+    }
+
+    #[test]
+    fn test_process_call_without_samples_publishes_the_latency() {
+        let wrapper = prepared_state_wrapper();
+
+        process_change(&wrapper, 0, GAIN_ID, 0.75);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.75));
+    }
+
+    #[test]
+    fn test_process_does_not_wait_for_the_descriptor() {
+        let wrapper = prepared_state_wrapper();
+
+        // A host thread holds the descriptor for a call that changes it,
+        // while the audio thread processes.
+        let host_call = wrapper.descriptor_mut();
+        let (done, processed) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let wrapper = &wrapper;
+            scope.spawn(move || {
+                process_block(wrapper);
+                done.send(()).expect("the test thread waits");
+            });
+            let in_time = processed.recv_timeout(std::time::Duration::from_secs(10));
+            // Release the descriptor first, so that a process call that did
+            // wait can end and the scope can close.
+            drop(host_call);
+            assert!(in_time.is_ok(), "process() waited for the descriptor");
+        });
+    }
+
+    #[test]
+    fn test_process_call_without_samples_resets_the_smoothers_after_a_state_load() {
+        let wrapper = prepared_state_wrapper();
+        let state = saved_state(&wrapper);
+        assert_eq!(load_state(&wrapper, &state), kResultOk);
+        let before = smoothing_resets();
+
+        process_with(&wrapper, 0, std::ptr::null_mut());
+        assert_eq!(smoothing_resets(), before + 1);
+        process_block(&wrapper);
+        assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_editor_shares_the_parameters_in_both_states() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+
+        // An editor that is opened before audio is set up.
+        let editor = wrapper.shared_parameter_store();
+        editor.set_normalized(GAIN_ID, 0.25);
+        assert_eq!(gain(&wrapper), 0.25);
+
+        // Setting up and changing the setup creates processors. The editor
+        // keeps reaching the parameters they use.
+        prepare_state_wrapper(&wrapper);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 96000.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        editor.set_normalized(GAIN_ID, 0.5);
+        process_block(&wrapper);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.5));
+        assert_eq!(editor.get_normalized(GAIN_ID), 0.5);
+
+        // An editor that is opened now gets the same parameters.
+        let later = wrapper.shared_parameter_store();
+        assert!(std::ptr::addr_eq(Arc::as_ptr(&editor), Arc::as_ptr(&later)));
+
+        // An editor that outlives the plugin still has its parameters.
+        drop(later);
+        drop(wrapper);
+        assert_eq!(editor.get_normalized(GAIN_ID), 0.5);
+        editor.set_normalized(GAIN_ID, 0.75);
+        assert_eq!(editor.get_normalized(GAIN_ID), 0.75);
     }
 
     #[test]

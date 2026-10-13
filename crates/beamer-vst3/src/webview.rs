@@ -17,8 +17,9 @@ use vst3::Class;
 /// This struct is heap-allocated and pinned. Raw pointers to it are passed
 /// as the callback context for the WebView's message and loaded callbacks.
 struct IpcContext {
-    /// Parameter store (trait object for type-erased access).
-    params: *const dyn ParameterStore,
+    /// The parameters of the plugin (trait object for type-erased access).
+    /// The view shares them with the plugin for as long as it lives.
+    params: Arc<dyn ParameterStore>,
     /// Component handler for host notification. Null until set.
     handler: *mut IComponentHandler,
     /// Custom WebView message handler (invoke/event routing).
@@ -80,15 +81,12 @@ impl WebViewPlugView {
     ///
     /// # Safety
     ///
-    /// `params` must be a valid pointer that remains valid for the lifetime
-    /// of this view (it points to the plugin's parameter struct which
-    /// outlives the editor).
     /// `component_handler` is the IComponentHandler pointer (may be null initially).
     /// If non-null, this function AddRefs it; the view owns a reference until dropped.
     pub unsafe fn new(
         config: WebViewConfig<'static>,
         delegate: Box<dyn GuiDelegate>,
-        params: *const dyn ParameterStore,
+        params: Arc<dyn ParameterStore>,
         component_handler: *mut IComponentHandler,
         webview_handler: Option<Arc<dyn WebViewHandler>>,
     ) -> Self {
@@ -96,8 +94,7 @@ impl WebViewPlugView {
 
         // Pre-allocate last_values cache.
         // NAN as sentinel: NAN != NAN guarantees the first sync tick sends all values.
-        // SAFETY: Caller guarantees params is valid.
-        let param_count = unsafe { &*params }.count();
+        let param_count = params.count();
         let last_values = vec![f64::NAN; param_count];
 
         // AddRef the handler so the view owns an independent reference.
@@ -171,8 +168,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
         return;
     };
 
-    // SAFETY: params pointer remains valid for the lifetime of the view.
-    let params = unsafe { &*ipc.params };
+    let params = &*ipc.params;
 
     match msg_type {
         "param:set" => {
@@ -293,8 +289,7 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
         return;
     }
 
-    // SAFETY: params and webview pointers remain valid for the view lifetime.
-    let params = unsafe { &*ipc.params };
+    let params = &*ipc.params;
     // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
     let webview = unsafe { &*ipc.webview };
 
@@ -328,8 +323,7 @@ unsafe extern "C-unwind" fn sync_timer_fired(
         return;
     }
 
-    // SAFETY: params and webview pointers remain valid for the view lifetime.
-    let params = unsafe { &*ipc.params };
+    let params = &*ipc.params;
     // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
     let webview = unsafe { &*ipc.webview };
 
