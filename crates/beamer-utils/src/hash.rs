@@ -39,16 +39,16 @@
 ///
 /// # Collision Handling
 ///
-/// The derive macro (`#[derive(Parameters)]`) performs compile-time collision
-/// detection across all parameter IDs in a struct. If two different string
-/// IDs produce the same hash, the macro will emit a compilation error with
-/// the colliding identifiers.
+/// Two different strings can have the same hash. The derive macro
+/// (`#[derive(Parameters)]`) reports that at compile time for the
+/// parameter ids of one struct, and the format wrappers check the ids of
+/// the whole parameter struct when a plugin instance is created.
 ///
 /// # VST3 Integration
 ///
-/// VST3 parameter IDs are `uint32` values. This function maps human-readable
-/// string IDs (like `"cutoff"` or `"resonance"`) to the numeric IDs that
-/// VST3 expects.
+/// VST3 parameter IDs are `uint32` values. This function maps the path of a
+/// parameter (like `"cutoff"` or `"filter/resonance"`) to the numeric ID
+/// that VST3 expects.
 #[inline]
 pub const fn fnv1a_32(s: &str) -> u32 {
     const FNV_OFFSET: u32 = 2166136261;

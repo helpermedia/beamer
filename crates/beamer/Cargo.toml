@@ -27,3 +27,6 @@ vst3 = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# Tests create plugin instances through the format wrappers.
+beamer-au = { workspace = true }
+beamer-vst3 = { workspace = true }

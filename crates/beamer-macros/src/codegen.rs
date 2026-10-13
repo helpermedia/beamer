@@ -12,9 +12,7 @@ use crate::ir::{
 
 /// Generate all code for the derive macro.
 pub fn generate(ir: &ParametersIR) -> TokenStream {
-    let const_ids = generate_const_ids(ir);
     let unit_consts = generate_group_consts(ir);
-    let collision_check = generate_collision_check(ir);
     let units_impl = generate_groups_impl(ir);
     let vst3_parameters_impl = generate_parameter_store_impl(ir);
     let parameters_impl = generate_parameters_impl(ir);
@@ -22,40 +20,12 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
     let default_impl = generate_default_impl(ir);
 
     quote! {
-        #const_ids
         #unit_consts
-        #collision_check
         #units_impl
         #vst3_parameters_impl
         #parameters_impl
         #set_group_ids_impl
         #default_impl
-    }
-}
-
-/// Generate const ID declarations for each parameter.
-fn generate_const_ids(ir: &ParametersIR) -> TokenStream {
-    let struct_name = &ir.struct_name;
-
-    let const_defs: Vec<TokenStream> = ir
-        .parameter_fields()
-        .map(|parameter| {
-            let const_name = parameter.const_name();
-            let hash = parameter.hash_id;
-            quote! {
-                const #const_name: u32 = #hash;
-            }
-        })
-        .collect();
-
-    if const_defs.is_empty() {
-        quote! {}
-    } else {
-        quote! {
-            impl #struct_name {
-                #(#const_defs)*
-            }
-        }
     }
 }
 
@@ -89,7 +59,10 @@ fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
         .enumerate()
         .map(|(idx, nested)| {
             let const_name = syn::Ident::new(
-                &format!("GROUP_{}", nested.field_name.to_string().to_uppercase()),
+                &format!(
+                    "GROUP_{}",
+                    syn::ext::IdentExt::unraw(&nested.field_name).to_string().to_uppercase()
+                ),
                 nested.span,
             );
             let group_id = flat_group_count + (idx as i32) + 1;
@@ -291,50 +264,6 @@ fn generate_set_group_ids(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate compile-time collision detection.
-fn generate_collision_check(ir: &ParametersIR) -> TokenStream {
-    let parameter_fields: Vec<_> = ir.parameter_fields().collect();
-
-    if parameter_fields.len() < 2 {
-        // No collision possible with 0 or 1 parameters
-        return quote! {};
-    }
-
-    let id_pairs: Vec<TokenStream> = parameter_fields
-        .iter()
-        .map(|parameter| {
-            let id_str = &parameter.string_id;
-            let hash = parameter.hash_id;
-            quote! { (#id_str, #hash) }
-        })
-        .collect();
-
-    let struct_name = &ir.struct_name;
-
-    quote! {
-        const _: () = {
-            const IDS: &[(&str, u32)] = &[#(#id_pairs),*];
-
-            // Compile-time collision detection
-            let mut i = 0;
-            while i < IDS.len() {
-                let mut j = i + 1;
-                while j < IDS.len() {
-                    if IDS[i].1 == IDS[j].1 {
-                        panic!(concat!(
-                            "Parameter ID hash collision in ",
-                            stringify!(#struct_name),
-                            ": two IDs hash to the same value"
-                        ));
-                    }
-                    j += 1;
-                }
-                i += 1;
-            }
-        };
-    }
-}
-
 /// Generate the `Parameters` trait implementation.
 fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
@@ -343,6 +272,7 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let count_impl = generate_count(ir);
     let iter_impl = generate_iter(ir);
     let by_id_impl = generate_by_id(ir);
+    let assign_ids_impl = generate_assign_ids(ir);
     let save_state_impl = generate_save_state(ir);
     let load_state_impl = generate_load_state(ir);
     let set_all_group_ids_impl = generate_set_all_group_ids(ir);
@@ -363,6 +293,8 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
             fn by_id(&self, id: ::beamer::core::types::ParameterId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
                 #by_id_impl
             }
+
+            #assign_ids_impl
 
             #set_all_group_ids_impl
 
@@ -527,16 +459,18 @@ fn generate_iter(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the by_id() method body.
+///
+/// The ids are compared at run time: a parameter of a nested struct has an
+/// id that depends on where the struct sits.
 fn generate_by_id(ir: &ParametersIR) -> TokenStream {
-    let struct_name = &ir.struct_name;
-
-    let match_arms: Vec<TokenStream> = ir
+    let parameter_lookups: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
             let field = &parameter.field_name;
-            let const_name = parameter.const_name();
             quote! {
-                #struct_name::#const_name => Some(&self.#field),
+                if ::beamer::core::parameter_types::ParameterRef::id(&self.#field) == id {
+                    return Some(&self.#field);
+                }
             }
         })
         .collect();
@@ -546,24 +480,64 @@ fn generate_by_id(ir: &ParametersIR) -> TokenStream {
         .map(|nested| {
             let field = &nested.field_name;
             quote! {
-                if let Some(parameter) = self.#field.by_id(id) {
+                if let Some(parameter) =
+                    ::beamer::core::parameter_types::Parameters::by_id(&self.#field, id)
+                {
                     return Some(parameter);
                 }
             }
         })
         .collect();
 
-    if match_arms.is_empty() && nested_lookups.is_empty() {
-        quote! { None }
-    } else {
-        quote! {
-            match id {
-                #(#match_arms)*
-                _ => {
-                    #(#nested_lookups)*
-                    None
-                }
+    quote! {
+        #(#parameter_lookups)*
+        #(#nested_lookups)*
+        None
+    }
+}
+
+/// Generate `assign_ids()`: every parameter gets its path as string id and
+/// the hash of the path as the id that hosts see.
+///
+/// The path segments are the same as in `save_entries()`: the `id` of a
+/// parameter and the field name of a nested struct.
+fn generate_assign_ids(ir: &ParametersIR) -> TokenStream {
+    let parameter_assignments: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            let id_str = &parameter.string_id;
+            quote! {
+                self.#field.set_path(
+                    ::beamer::core::parameter_types::parameter_path(prefix, #id_str),
+                );
             }
+        })
+        .collect();
+
+    let nested_assignments: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
+            quote! {
+                ::beamer::core::parameter_types::Parameters::assign_ids(
+                    &mut self.#field,
+                    &::beamer::core::state_format::join_path(prefix, #segment),
+                );
+            }
+        })
+        .collect();
+
+    if parameter_assignments.is_empty() && nested_assignments.is_empty() {
+        // Nothing to name: use the default no-op.
+        return quote! {};
+    }
+
+    quote! {
+        fn assign_ids(&mut self, prefix: &str) {
+            #(#parameter_assignments)*
+            #(#nested_assignments)*
         }
     }
 }
@@ -698,30 +672,6 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
     // Generate info() - iterate and return by index
     let info_impl = generate_info(ir);
 
-    // Generate get_normalized - match on ID
-    let get_match_arms: Vec<TokenStream> = ir
-        .parameter_fields()
-        .map(|parameter| {
-            let field = &parameter.field_name;
-            let const_name = parameter.const_name();
-            quote! {
-                #struct_name::#const_name => self.#field.get_normalized(),
-            }
-        })
-        .collect();
-
-    // Generate set_normalized - match on ID
-    let set_match_arms: Vec<TokenStream> = ir
-        .parameter_fields()
-        .map(|parameter| {
-            let field = &parameter.field_name;
-            let const_name = parameter.const_name();
-            quote! {
-                #struct_name::#const_name => self.#field.set_normalized(value),
-            }
-        })
-        .collect();
-
     quote! {
         impl #impl_generics ::beamer::core::parameter_store::ParameterStore for #struct_name #ty_generics #where_clause {
             fn count(&self) -> usize {
@@ -731,26 +681,14 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
             #info_impl
 
             fn get_normalized(&self, id: ::beamer::core::types::ParameterId) -> ::beamer::core::types::ParameterValue {
-                match id {
-                    #(#get_match_arms)*
-                    _ => {
-                        // Check nested or use default
-                        use ::beamer::core::parameter_types::Parameters;
-                        self.by_id(id).map(|p| p.get_normalized()).unwrap_or(0.0)
-                    }
-                }
+                use ::beamer::core::parameter_types::Parameters;
+                self.by_id(id).map(|p| p.get_normalized()).unwrap_or(0.0)
             }
 
             fn set_normalized(&self, id: ::beamer::core::types::ParameterId, value: ::beamer::core::types::ParameterValue) {
-                match id {
-                    #(#set_match_arms)*
-                    _ => {
-                        // Check nested
-                        use ::beamer::core::parameter_types::Parameters;
-                        if let Some(parameter) = self.by_id(id) {
-                            parameter.set_normalized(value);
-                        }
-                    }
+                use ::beamer::core::parameter_types::Parameters;
+                if let Some(parameter) = self.by_id(id) {
+                    parameter.set_normalized(value);
                 }
             }
 
@@ -934,7 +872,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
         .fields
         .iter()
         .map(|field| match field {
-            FieldIR::Parameter(p) => generate_parameter_initializer(p, struct_name),
+            FieldIR::Parameter(p) => generate_parameter_initializer(p),
             FieldIR::Nested(n) => {
                 let field = &n.field_name;
                 quote! { #field: Default::default() }
@@ -963,6 +901,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
                 let mut parameters = Self {
                     #(#field_inits),*
                 };
+                ::beamer::core::parameter_types::Parameters::assign_ids(&mut parameters, "");
                 #group_id_init
                 parameters
             }
@@ -971,14 +910,15 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the initializer for a single parameter field.
-fn generate_parameter_initializer(parameter: &ParameterFieldIR, struct_name: &syn::Ident) -> TokenStream {
+fn generate_parameter_initializer(parameter: &ParameterFieldIR) -> TokenStream {
     let field = &parameter.field_name;
 
     // Generate constructor call
     let constructor = generate_constructor(parameter);
 
-    // Generate builder chain (with_id, with_short_name, with_smoother)
-    let builder_chain = generate_builder_chain(parameter, struct_name);
+    // Generate builder chain (with_short_name, with_smoother). The ids
+    // are set by assign_ids().
+    let builder_chain = generate_builder_chain(parameter);
 
     quote! {
         #field: #constructor #builder_chain
@@ -1121,21 +1061,8 @@ fn generate_enum_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     }
 }
 
-/// Generate the builder method chain (.with_id(), .with_short_name(), .with_smoother(), .with_step_size()).
-fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident) -> TokenStream {
-    let const_name = parameter.const_name();
-
-    // Always add .with_id()
-    let with_id = quote! {
-        .with_id(#struct_name::#const_name)
-    };
-
-    // Always add .with_string_id()
-    let id_str = &parameter.string_id;
-    let with_string_id = quote! {
-        .with_string_id(#id_str)
-    };
-
+/// Generate the builder method chain (.with_short_name(), .with_smoother(), .with_step_size()).
+fn generate_builder_chain(parameter: &ParameterFieldIR) -> TokenStream {
     // Optional: .with_short_name()
     let with_short_name = parameter.attributes.short_name.as_ref().map(|short| {
         quote! { .with_short_name(#short) }
@@ -1169,8 +1096,6 @@ fn generate_builder_chain(parameter: &ParameterFieldIR, struct_name: &syn::Ident
     };
 
     quote! {
-        #with_id
-        #with_string_id
         #with_short_name
         #with_smoother
         #with_step_size

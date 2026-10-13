@@ -248,7 +248,7 @@ impl MidiCcState {
 
         ParameterInfo {
             id,
-            string_id: "",
+            string_id: std::borrow::Cow::Borrowed(""),
             name,
             short_name,
             units: "",

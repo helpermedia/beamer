@@ -768,7 +768,7 @@ mod tests {
                 value: AtomicU64::new(default.to_bits()),
                 info: ParameterInfo {
                     id,
-                    string_id: "",
+                    string_id: std::borrow::Cow::Borrowed(""),
                     name,
                     short_name: name,
                     units: "dB",

@@ -91,30 +91,34 @@ pub enum CcTransformMode {
 ///
 /// This is a nested parameter group that appears as "Note Transform" in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
+///
+/// Its parameters are known by their path: the field this struct sits in and
+/// the `id` below, such as `note/enabled`. That is why "enabled" can be used
+/// again in the CC group.
 #[derive(Parameters)]
 pub struct NoteTransformParameters {
     /// Enable note transformation
-    #[parameter(id = "note_enabled", name = "Enabled", default = true)]
+    #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
 
     /// Transformation mode
-    #[parameter(id = "note_mode", name = "Mode")]
+    #[parameter(id = "mode", name = "Mode")]
     pub mode: EnumParameter<NoteTransformMode>,
 
     /// Transpose amount in semitones (-24 to +24)
-    #[parameter(id = "note_transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
+    #[parameter(id = "transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
     pub transpose: IntParameter,
 
     /// Input note for remap mode (0-127)
-    #[parameter(id = "note_input", name = "Input Note", default = 60, range = 0..=127)]
+    #[parameter(id = "input", name = "Input Note", default = 60, range = 0..=127)]
     pub input_note: IntParameter,
 
     /// Output note for remap mode (0-127)
-    #[parameter(id = "note_output", name = "Output Note", default = 60, range = 0..=127)]
+    #[parameter(id = "output", name = "Output Note", default = 60, range = 0..=127)]
     pub output_note: IntParameter,
 
     /// Velocity scale (0.0 to 2.0, where 1.0 = 100%)
-    #[parameter(id = "note_velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
+    #[parameter(id = "velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
     pub velocity_scale: FloatParameter,
 }
 
@@ -125,23 +129,23 @@ pub struct NoteTransformParameters {
 #[derive(Parameters)]
 pub struct CcTransformParameters {
     /// Enable CC transformation
-    #[parameter(id = "cc_enabled", name = "Enabled", default = true)]
+    #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
 
     /// Transformation mode
-    #[parameter(id = "cc_mode", name = "Mode")]
+    #[parameter(id = "mode", name = "Mode")]
     pub mode: EnumParameter<CcTransformMode>,
 
     /// Input CC number (0-127) - Default: Mod wheel (CC 1)
-    #[parameter(id = "cc_input", name = "Input CC", default = 1, range = 0..=127)]
+    #[parameter(id = "input", name = "Input CC", default = 1, range = 0..=127)]
     pub input_cc: IntParameter,
 
     /// Output CC number (0-127) - Default: Expression (CC 11)
-    #[parameter(id = "cc_output", name = "Output CC", default = 11, range = 0..=127)]
+    #[parameter(id = "output", name = "Output CC", default = 11, range = 0..=127)]
     pub output_cc: IntParameter,
 
     /// Value scale (0.0 to 2.0, where 1.0 = 100%)
-    #[parameter(id = "cc_scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
+    #[parameter(id = "scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
     pub value_scale: FloatParameter,
 }
 

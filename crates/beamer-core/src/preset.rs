@@ -48,11 +48,12 @@ pub struct PresetInfo {
 
 /// A single parameter value within a preset.
 ///
-/// The parameter is identified by its hash ID (computed at compile time
-/// by the derive macro from the string ID).
+/// The parameter is identified by the id that hosts see: the hash of its
+/// path (`"gain"`, or `"filter/cutoff"` for a parameter in the nested field
+/// `filter`).
 #[derive(Debug, Clone, Copy)]
 pub struct PresetValue {
-    /// Parameter hash ID (FNV-1a hash of the string ID).
+    /// Parameter hash ID (FNV-1a hash of the path of the parameter).
     pub id: ParameterId,
     /// Plain value in natural units (e.g., dB, Hz, ms).
     /// Converted to normalized at apply time using the parameter's range.
@@ -146,7 +147,8 @@ unsafe impl<P> Sync for NoPresets<P> {}
 /// Compute the FNV-1a hash of a string at compile time.
 ///
 /// This is the same hash algorithm used by the Parameters derive macro
-/// for parameter IDs. Use this to compute preset parameter IDs.
+/// for parameter IDs. Use this to compute preset parameter IDs from the
+/// path of a parameter.
 pub const fn fnv1a_hash(s: &str) -> u32 {
     const FNV_OFFSET_BASIS: u32 = 2166136261;
     const FNV_PRIME: u32 = 16777619;
@@ -190,7 +192,7 @@ mod tests {
                 value: AtomicU64::new(0.0f64.to_bits()),
                 info: ParameterInfo {
                     id,
-                    string_id: "",
+                    string_id: std::borrow::Cow::Borrowed(""),
                     name,
                     short_name: name,
                     units: "",

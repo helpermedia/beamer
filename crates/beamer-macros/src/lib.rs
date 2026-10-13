@@ -68,12 +68,15 @@ mod validate;
 /// - `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
 /// - `ParameterStore` trait implementation (host integration)
 /// - `Default` implementation (when declarative attributes are complete)
-/// - Compile-time hash collision detection
+/// - The ids of every parameter (`assign_ids`), and a compile error for
+///   two ids in a struct that are equal or hash to the same value
 ///
 /// # Attributes
 ///
 /// ## Required
-/// - `id = "..."` - String ID that gets hashed to u32.
+/// - `id = "..."` - String ID. A parameter is known by its path: this id
+///   behind the names of the nested fields it sits in (`osc1/attack`). The
+///   hash of the path is the u32 that hosts see.
 ///
 /// ## Declarative (enables auto-generated Default)
 /// - `name = "..."` - Display name

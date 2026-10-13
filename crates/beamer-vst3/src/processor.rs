@@ -959,8 +959,19 @@ impl<P: Descriptor + 'static, Presets> ComponentFactory for Vst3Processor<P, Pre
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
-    fn create(config: &'static Config) -> Self {
-        Self::new(config)
+    fn create(config: &'static Config) -> Option<Self> {
+        let processor = Self::new(config);
+
+        // Two parameters with one id would be one parameter to the host.
+        // The reason also goes to standard error: a plugin has no logger
+        // unless its author installs one.
+        if let Err(error) = beamer_core::parameter_types::check_unique_ids(&*processor.parameters) {
+            log::error!("{}: {}", config.name, error);
+            eprintln!("{}: {}", config.name, error);
+            return None;
+        }
+
+        Some(processor)
     }
 }
 

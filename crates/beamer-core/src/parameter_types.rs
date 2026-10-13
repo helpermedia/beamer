@@ -33,6 +33,7 @@
 //! - [`BoolParameter`] - Toggle/boolean values
 //! - [`EnumParameter`] - Discrete enum choices (use with `#[derive(EnumParameter)]`)
 
+use std::borrow::Cow;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
@@ -132,6 +133,68 @@ pub trait ParameterRef: Send + Sync {
 // Parameters Trait - Parameter collection
 // =============================================================================
 
+/// The path of a parameter: its `id` behind the path of its struct.
+///
+/// Used by the code that `#[derive(Parameters)]` generates. The path of a
+/// parameter in the root struct is its `id`, which needs no allocation.
+pub fn parameter_path(prefix: &str, id: &'static str) -> Cow<'static, str> {
+    if prefix.is_empty() {
+        Cow::Borrowed(id)
+    } else {
+        Cow::Owned(join_path(prefix, id))
+    }
+}
+
+/// Check that no two parameters share the id that hosts see.
+///
+/// That id is a 32-bit hash of the parameter's path, so two different
+/// paths can hash to the same value. It is unlikely, and when it happens a
+/// host would treat the two parameters as one. The same error shows when
+/// ids were never set, for example by a hand-written `Default` that does
+/// not call [`Parameters::assign_ids`].
+///
+/// The format wrappers call this when a plugin instance is created. They
+/// refuse the instance and report the error, which names both parameters.
+/// A test of the plugin that calls this shows it earlier.
+pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
+    let mut seen: Vec<(ParameterId, &dyn ParameterRef)> = parameters
+        .iter()
+        .map(|parameter| (parameter.id(), parameter))
+        .collect();
+    seen.sort_unstable_by_key(|(id, _)| *id);
+
+    // A parameter by its path, or by its name when it has no string id.
+    let label = |parameter: &dyn ParameterRef| {
+        let info = parameter.info();
+        if info.string_id.is_empty() {
+            format!("\"{}\" (no string id)", info.name)
+        } else {
+            format!("\"{}\"", info.string_id)
+        }
+    };
+
+    for pair in seen.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            let (first, second) = (pair[0].1, pair[1].1);
+            // Without string ids, the ids were most likely never set.
+            let unset = first.info().string_id.is_empty() && second.info().string_id.is_empty();
+            let advice = if unset {
+                "set their ids, which a hand-written `Default` does with `assign_ids(\"\")`"
+            } else {
+                "give one of them another id"
+            };
+            return Err(format!(
+                "parameters {} and {} both have the host id 0x{:08x}; {}",
+                label(first),
+                label(second),
+                pair[0].0,
+                advice
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Trait for parameter collections.
 ///
 /// Implement this trait to declare your plugin's parameters. This trait
@@ -171,6 +234,23 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Get a parameter by its ID.
     fn by_id(&self, id: ParameterId) -> Option<&dyn ParameterRef>;
+
+    /// Give every parameter of this struct its ids.
+    ///
+    /// The string id of a parameter is its path: the `id` of its attribute
+    /// behind `prefix`, which is the path of this struct in the struct that
+    /// holds it (empty for the root). A parameter `attack` in the nested
+    /// field `osc1` gets `osc1/attack`. The id that hosts see is the hash
+    /// of that path, so the same nested struct can sit in several fields.
+    ///
+    /// `#[derive(Parameters)]` generates this and calls it in the `Default`
+    /// it generates. A hand-written `Default` of a derived struct calls
+    /// `assign_ids("")` itself.
+    ///
+    /// The default does nothing, for hand-written implementations that set
+    /// their ids themselves. Such a struct keeps its ids wherever it is
+    /// nested, so it can be nested in one field only.
+    fn assign_ids(&mut self, _prefix: &str) {}
 
     /// Set group ID for all direct parameters in this collection.
     ///
@@ -451,7 +531,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0, // Set via with_id() or macro
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: "",
@@ -510,7 +590,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -559,7 +639,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -611,7 +691,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -657,7 +737,7 @@ impl FloatParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: formatter.unit(),
@@ -776,9 +856,9 @@ impl FloatParameter {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Parameters)]` macro to assign
-    /// the FNV-1a hash of the string ID. For manual usage, you can pass
-    /// any unique u32 value.
+    /// For parameters that are set up by hand: any u32 that is unique in
+    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// [`set_path`](Self::set_path).
     ///
     /// # Example
     ///
@@ -790,10 +870,17 @@ impl FloatParameter {
         self
     }
 
-    /// Set the string identifier from `#[parameter(id = "...")]`.
+    /// Set the string identifier, for parameters that are set up by hand.
     pub fn with_string_id(mut self, string_id: &'static str) -> Self {
-        self.info.string_id = string_id;
+        self.info.string_id = Cow::Borrowed(string_id);
         self
+    }
+
+    /// Set both ids from the path of the parameter in its parameter struct.
+    ///
+    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    pub fn set_path(&mut self, path: Cow<'static, str>) {
+        self.info.set_path(path);
     }
 
     /// Set the short name for constrained UIs.
@@ -1308,7 +1395,7 @@ impl IntParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: "",
@@ -1350,17 +1437,25 @@ impl IntParameter {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Parameters)]` macro to assign
-    /// the FNV-1a hash of the string ID.
+    /// For parameters that are set up by hand: any u32 that is unique in
+    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
 
-    /// Set the string identifier from `#[parameter(id = "...")]`.
+    /// Set the string identifier, for parameters that are set up by hand.
     pub fn with_string_id(mut self, string_id: &'static str) -> Self {
-        self.info.string_id = string_id;
+        self.info.string_id = Cow::Borrowed(string_id);
         self
+    }
+
+    /// Set both ids from the path of the parameter in its parameter struct.
+    ///
+    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    pub fn set_path(&mut self, path: Cow<'static, str>) {
+        self.info.set_path(path);
     }
 
     /// Set the short name for constrained UIs.
@@ -1596,7 +1691,7 @@ impl BoolParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: "",
@@ -1625,7 +1720,7 @@ impl BoolParameter {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name: "Bypass",
                 short_name: "Byp",
                 units: "",
@@ -1650,17 +1745,25 @@ impl BoolParameter {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Parameters)]` macro to assign
-    /// the FNV-1a hash of the string ID.
+    /// For parameters that are set up by hand: any u32 that is unique in
+    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
 
-    /// Set the string identifier from `#[parameter(id = "...")]`.
+    /// Set the string identifier, for parameters that are set up by hand.
     pub fn with_string_id(mut self, string_id: &'static str) -> Self {
-        self.info.string_id = string_id;
+        self.info.string_id = Cow::Borrowed(string_id);
         self
+    }
+
+    /// Set both ids from the path of the parameter in its parameter struct.
+    ///
+    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    pub fn set_path(&mut self, path: Cow<'static, str>) {
+        self.info.set_path(path);
     }
 
     /// Set the short name for constrained UIs.
@@ -1875,17 +1978,9 @@ pub trait EnumParameterValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 ///
 /// #[derive(Parameters)]
 /// pub struct FilterParameters {
-///     #[parameter(id = "filter_type")]
+///     // Uses HighPass as default (from the #[default] attribute).
+///     #[parameter(id = "filter_type", name = "Filter Type")]
 ///     pub filter_type: EnumParameter<FilterType>,
-/// }
-///
-/// impl Default for FilterParameters {
-///     fn default() -> Self {
-///         Self {
-///             // Uses HighPass as default (from #[default] attribute)
-///             filter_type: EnumParameter::new("Filter Type"),
-///         }
-///     }
 /// }
 ///
 /// // In DSP code:
@@ -1950,7 +2045,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
         Self {
             info: ParameterInfo {
                 id: 0,
-                string_id: "",
+                string_id: Cow::Borrowed(""),
                 name,
                 short_name: name,
                 units: "",
@@ -1973,17 +2068,25 @@ impl<E: EnumParameterValue> EnumParameter<E> {
 
     /// Set the parameter ID.
     ///
-    /// This is typically called by the `#[derive(Parameters)]` macro to assign
-    /// the FNV-1a hash of the string ID.
+    /// For parameters that are set up by hand: any u32 that is unique in
+    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
         self
     }
 
-    /// Set the string identifier from `#[parameter(id = "...")]`.
+    /// Set the string identifier, for parameters that are set up by hand.
     pub fn with_string_id(mut self, string_id: &'static str) -> Self {
-        self.info.string_id = string_id;
+        self.info.string_id = Cow::Borrowed(string_id);
         self
+    }
+
+    /// Set both ids from the path of the parameter in its parameter struct.
+    ///
+    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    pub fn set_path(&mut self, path: Cow<'static, str>) {
+        self.info.set_path(path);
     }
 
     /// Set the short name for constrained UIs.

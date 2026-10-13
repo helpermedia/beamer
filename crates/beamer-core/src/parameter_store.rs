@@ -206,7 +206,7 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
             let normalized = store.get_normalized(info.id);
             Some(ParamInitEntry {
                 id: info.id,
-                string_id: info.string_id,
+                string_id: &info.string_id,
                 name: info.name,
                 min: store.normalized_to_plain(info.id, 0.0),
                 max: store.normalized_to_plain(info.id, 1.0),
@@ -225,9 +225,9 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ParamInitEntry {
+struct ParamInitEntry<'a> {
     id: u32,
-    string_id: &'static str,
+    string_id: &'a str,
     name: &'static str,
     min: f64,
     max: f64,

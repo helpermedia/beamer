@@ -195,8 +195,8 @@ The `#[derive(Parameters)]` macro generates:
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present; `State` fields and fields without an attribute get their own default)
-- Compile-time FNV-1a hash constants: `PARAM_GAIN_ID`, `PARAM_BYPASS_ID`
-- Compile-time collision detection for duplicate IDs
+- The ids of every parameter: its path as text and the FNV-1a hash of the path as the number hosts see (see [Parameter Ids](#parameter-ids))
+- Compile-time detection of duplicate ids in a struct
 
 Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework access to the parameters. Its `#[parameters]` field is an `Arc` of the parameter struct.
 
@@ -204,7 +204,7 @@ Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework ac
 
 | Attribute | Description | Required |
 |-----------|-------------|----------|
-| `id = "..."` | String ID (hashed to u32) | Yes |
+| `id = "..."` | String ID (its path is hashed to u32, see [Parameter Ids](#parameter-ids)) | Yes |
 | `name = "..."` | Display name in DAW | For Default |
 | `default = <value>` | Default value (float, int, or bool) | For Default |
 | `range = start..=end` | Value range | For FloatParameter/IntParameter |
@@ -304,7 +304,7 @@ All parameter types support builder methods for customization. Chain these after
 
 | Method | Description |
 |--------|-------------|
-| `.with_id(id)` | Set parameter ID (usually via macro) |
+| `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
 | `.with_group(group_id)` | Assign to parameter group |
 | `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments) |
@@ -318,7 +318,7 @@ All parameter types support builder methods for customization. Chain these after
 
 | Method | Description |
 |--------|-------------|
-| `.with_id(id)` | Set parameter ID (usually via macro) |
+| `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
 | `.with_group(group_id)` | Assign to parameter group |
 | `.with_precision(n)` | Display precision (for Float formatter) |
@@ -519,6 +519,52 @@ pub struct EnvelopeParameters {
 
 With declarative attributes, `set_group_ids()` is called automatically in the generated `Default` implementation.
 
+#### Parameter Ids
+
+A parameter is known by its path: the `id` of its attribute, behind the names of the nested fields it sits in.
+
+```
+"master"              - parameter of the root struct
+"filter/cutoff"       - parameter in the nested field `filter`
+"osc1/filter/res"     - deeply nested parameter
+```
+
+The path is used in every place that names a parameter:
+
+| Where | What is used |
+|-------|--------------|
+| Host (automation, parameter list) | The FNV-1a hash of the path, a `u32`. Read it with `parameters.filter.cutoff.id()`. |
+| Saved state | The path |
+| `Presets.toml` | The path as key |
+| WebView | The path as `stringId` |
+
+The same nested struct can therefore be used in several fields. Each use has its own paths and its own host ids:
+
+```rust
+#[nested(group = "Osc 1")]
+pub osc1: OscParameters,
+
+// The same struct with other paths: "osc1/attack" and "osc2/attack".
+#[nested(group = "Osc 2")]
+pub osc2: OscParameters,
+```
+
+Paths use the name of the field, not the display name of its group, so renaming a group changes nothing for hosts and saved states. Renaming a field or a parameter id does: a host no longer finds its automation and a saved state no longer finds its value.
+
+The generated `Default` gives all parameters their ids with `assign_ids("")`. A hand-written `Default` of a derived struct calls `assign_ids("")` and `set_group_ids()` itself.
+
+Two different paths can have the same hash, although it is unlikely. The derive reports it at compile time for two ids in one struct. Across nested structs it shows when a plugin instance is created: the plugin does not load. The error names both paths. It is written to standard error and passed to the `log` crate, which a host does not always show, so the dependable way to see it is a test of the plugin that calls the same check:
+
+```rust
+#[test]
+fn test_parameter_ids_are_unique() {
+    let parameters = SynthesizerParameters::default();
+    beamer::core::parameter_types::check_unique_ids(&parameters).unwrap();
+}
+```
+
+Give one of the two parameters another id.
+
 #### State Serialization Format
 
 The state of a plugin is the state of its parameter struct. It is saved as a list of entries, one per field, each under a path. All numbers are little-endian:
@@ -536,17 +582,7 @@ Path examples:
 - "osc1/filter/res"   - deeply nested parameter
 ```
 
-A nested struct is saved under the name of its field, not under the display name of its group, so renaming a group keeps saved states valid. Renaming the field or a parameter id does not.
-
-The same nested struct can be used in several fields, each with its own paths:
-
-```rust
-#[nested(group = "Osc 1")]
-pub osc1: OscParameters,
-
-#[nested(group = "Osc 2")]
-pub osc2: OscParameters, // Same struct, different paths: "osc1/attack" vs "osc2/attack"
-```
+The paths are the ones described under [Parameter Ids](#parameter-ids). A `State` field has a path of the same form, built from its `#[state(id = "...")]`.
 
 Loading follows these rules:
 
@@ -948,6 +984,7 @@ gain = 6.0
 - `name` field specifies the display name in the DAW
 - Other fields are parameter IDs with their plain values (e.g., `-6.0` for dB)
 - Parameter IDs match the `id` attribute from `#[parameter(id = "gain", ...)]`
+- A parameter in a nested struct is named by its path, as a quoted key: `"filter/cutoff" = 800.0` (see [Parameter Ids](#parameter-ids))
 
 #### Sparse Presets
 

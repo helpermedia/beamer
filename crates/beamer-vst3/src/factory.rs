@@ -48,7 +48,11 @@ impl<C> Factory<C> {
 
 /// Trait implemented by component types that can be constructed from plugin configs.
 pub trait ComponentFactory: Class {
-    fn create(config: &'static Config) -> Self;
+    /// Create a component, or `None` when the plugin cannot be used as it
+    /// is. The reason is logged and written to standard error.
+    fn create(config: &'static Config) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl<C> Class for Factory<C>
@@ -140,7 +144,12 @@ where
         }
 
         // Create component and query requested interface
-        let component = ComWrapper::new(C::create(self.config));
+        let Some(component) = C::create(self.config) else {
+            // SAFETY: obj validated non-null above. Host guarantees it is writable.
+            unsafe { *obj = std::ptr::null_mut() };
+            return kResultFalse;
+        };
+        let component = ComWrapper::new(component);
         let unknown = component.as_com_ref::<FUnknown>().unwrap();
         let ptr = unknown.as_ptr();
         // SAFETY: ptr is valid COM pointer from ComWrapper. vtbl and queryInterface

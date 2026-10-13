@@ -9,7 +9,7 @@ This crate provides procedural macros that generate boilerplate code for plugins
 - **`#[derive(HasParameters)]`**: Generates the `parameters()` accessor for a Descriptor, which holds its parameters in an `Arc`
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
 - **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`
-- **Compile-time validation**: ID collision detection and hash generation
+- **Compile-time validation**: Duplicate parameter ids in a struct are compile errors
 
 ## Usage
 

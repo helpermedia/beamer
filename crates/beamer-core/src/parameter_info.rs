@@ -5,6 +5,10 @@
 //! - [`ParameterFlags`] - Behavioral flags (automation, bypass, list, etc.)
 //! - [`ParameterUnit`] - Unit type hints for AU host control rendering
 
+use std::borrow::Cow;
+
+use beamer_utils::fnv1a_32;
+
 use crate::parameter_groups::{GroupId, ROOT_GROUP_ID};
 use crate::types::{ParameterId, ParameterValue};
 
@@ -123,9 +127,11 @@ impl Default for ParameterFlags {
 pub struct ParameterInfo {
     /// Unique parameter identifier.
     pub id: ParameterId,
-    /// Original string identifier from `#[parameter(id = "...")]`.
-    /// Empty string for parameters defined without a string ID.
-    pub string_id: &'static str,
+    /// The id of the parameter as text: the `id` of `#[parameter(id = "...")]`,
+    /// behind the field names of the nested structs the parameter sits in
+    /// (`"gain"`, `"osc1/attack"`). Empty for parameters defined without a
+    /// string id.
+    pub string_id: Cow<'static, str>,
     /// Full parameter name (e.g., "Master Volume").
     pub name: &'static str,
     /// Short parameter name for constrained UIs (e.g., "Vol").
@@ -152,7 +158,7 @@ impl ParameterInfo {
     pub const fn new(id: ParameterId, name: &'static str) -> Self {
         Self {
             id,
-            string_id: "",
+            string_id: Cow::Borrowed(""),
             name,
             short_name: name,
             units: "",
@@ -171,9 +177,18 @@ impl ParameterInfo {
     }
 
     /// Set the string identifier.
-    pub const fn with_string_id(mut self, string_id: &'static str) -> Self {
-        self.string_id = string_id;
+    pub fn with_string_id(mut self, string_id: &'static str) -> Self {
+        self.string_id = Cow::Borrowed(string_id);
         self
+    }
+
+    /// Set both ids from the path of the parameter in its parameter struct.
+    ///
+    /// The path becomes the string id, and its FNV-1a hash the id that
+    /// hosts see. `#[derive(Parameters)]` calls this for every parameter.
+    pub fn set_path(&mut self, path: Cow<'static, str>) {
+        self.id = fnv1a_32(&path);
+        self.string_id = path;
     }
 
     /// Set the short name.
@@ -236,7 +251,7 @@ impl ParameterInfo {
     pub const fn bypass(id: ParameterId) -> Self {
         Self {
             id,
-            string_id: "",
+            string_id: Cow::Borrowed(""),
             name: "Bypass",
             short_name: "Byp",
             units: "",

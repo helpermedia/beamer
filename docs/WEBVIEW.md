@@ -112,7 +112,7 @@ declare const __BEAMER__: Beamer;
 
 ### Parameter Methods
 
-All parameter methods use string identifiers (the `id` from the `#[parameter(id = "...")]` attribute, e.g. `"gain"`).
+All parameter methods use string identifiers: the `id` from the `#[parameter(id = "...")]` attribute, e.g. `"gain"`. A parameter in a nested struct has the names of the fields before it, e.g. `"filter/cutoff"`.
 
 | Method | Description |
 |--------|-------------|
@@ -278,7 +278,7 @@ Each entry corresponds to a `ParamInitEntry`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `u32` | Numeric parameter ID, a hash of the string ID (used internally for host calls) |
-| `stringId` | `string` | String identifier from the `#[parameter(id = "...")]` attribute |
+| `stringId` | `string` | String identifier: the `id` of the `#[parameter(id = "...")]` attribute, behind the names of the nested fields it sits in (`"filter/cutoff"`) |
 | `name` | `string` | Display name |
 | `min` | `f64` | Minimum plain value (`normalized_to_plain(0.0)`) |
 | `max` | `f64` | Maximum plain value (`normalized_to_plain(1.0)`) |

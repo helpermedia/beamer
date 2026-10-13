@@ -651,12 +651,25 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
 ///
 /// # Returns
 ///
-/// A pointer to the instance handle, or null if creation failed.
+/// A pointer to the instance handle, or null if creation failed. It fails
+/// when no factory is registered and when two parameters of the plugin have
+/// the same id, which is logged and written to standard error.
 #[no_mangle]
 pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
     let result = catch_unwind(|| {
         // Use the factory to create a new plugin instance
         let plugin = factory::create_instance()?;
+
+        // Two parameters with one id would be one parameter to the host.
+        // The reason also goes to standard error: a plugin has no logger
+        // unless its author installs one.
+        let parameters = plugin.shared_parameters();
+        if let Err(error) = beamer_core::parameter_types::check_unique_ids(parameters.parameters()) {
+            let name = factory::plugin_config().map_or("plugin", |config| config.name);
+            log::error!("{}: {}", name, error);
+            eprintln!("{}: {}", name, error);
+            return None;
+        }
 
         let handle = Box::new(BeamerInstanceHandle::new(plugin));
 

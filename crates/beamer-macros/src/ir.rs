@@ -206,7 +206,8 @@ pub struct ParameterFieldIR {
     pub parameter_type: ParameterType,
     /// String ID from `#[parameter(id = "...")]`
     pub string_id: String,
-    /// FNV-1a hash of the string ID
+    /// FNV-1a hash of the string ID: the id that hosts see when the
+    /// struct is the root. Only used to find collisions within the struct.
     pub hash_id: u32,
     /// Span for error reporting
     pub span: Span,
@@ -218,14 +219,6 @@ impl ParameterFieldIR {
     /// Check if this parameter has all required declarative attributes.
     pub fn has_declarative_attributes(&self) -> bool {
         self.attributes.has_required_for(self.parameter_type)
-    }
-
-    /// Generate the const identifier name for this parameter's ID.
-    ///
-    /// E.g., `gain` -> `PARAM_GAIN_ID`
-    pub fn const_name(&self) -> syn::Ident {
-        let name = self.field_name.to_string().to_uppercase();
-        syn::Ident::new(&format!("PARAM_{}_ID", name), self.span)
     }
 }
 

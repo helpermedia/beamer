@@ -52,7 +52,13 @@ fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
     Ok(())
 }
 
-/// Check that no two parameter IDs hash to the same value.
+/// Check that no two parameter IDs of this struct hash to the same value.
+///
+/// The id that hosts see is the hash of the whole path of a parameter, and
+/// only the root struct knows all paths. This check compares the ids as
+/// they are when the struct is the root, which is the common case. The
+/// format wrappers check the ids that are really in use, across nested
+/// structs, when a plugin instance is created (`check_unique_ids()`).
 fn check_no_hash_collisions(ir: &ParametersIR) -> syn::Result<()> {
     let mut seen: HashMap<u32, &str> = HashMap::new();
 
