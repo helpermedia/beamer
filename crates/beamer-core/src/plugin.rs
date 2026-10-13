@@ -28,6 +28,7 @@ use crate::midi_cc_config::MidiCcConfig;
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_store::ParameterStore;
 use crate::process_context::ProcessContext;
+use crate::webview_events::WebViewEvents;
 use crate::webview_handler::WebViewHandler;
 
 // =============================================================================
@@ -1351,6 +1352,18 @@ pub trait Descriptor: HasParameters + Sync + Default {
     ///
     /// Default returns `None` (no custom message handling).
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        None
+    }
+
+    /// Returns the queue of events for the web UI.
+    ///
+    /// Override to send events from Rust to JavaScript: keep a
+    /// [`WebViewEvents`] as a field of the parameter struct and return it
+    /// here. The framework delivers what is emitted into it while an
+    /// editor is open. Called once, when the plugin instance is created.
+    ///
+    /// Default returns `None` (the plugin sends no events).
+    fn webview_events(&self) -> Option<&WebViewEvents> {
         None
     }
 }

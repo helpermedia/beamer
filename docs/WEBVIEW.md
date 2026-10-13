@@ -460,7 +460,7 @@ This is independent from any background set in HTML, CSS or JS. You can use eith
 
 Lock-free data transfer from the audio thread to the WebView for spectrum analyzers, level meters, waveform displays and other real-time visualizations.
 
-**Problem:** The current `WebViewHandle::emit()` allocates (JSON serialization) and is therefore not safe to call from the audio thread.
+**Problem:** `WebViewEvents::emit()` allocates (JSON serialization) and takes a lock, and is therefore not safe to call from the audio thread.
 
 **Planned approach:**
 
@@ -470,7 +470,7 @@ Lock-free data transfer from the audio thread to the WebView for spectrum analyz
 
 This is a core-level feature (not webview-specific) because the ring buffer and thread-safety guarantees belong in `beamer-core`.
 
-**Status:** `WebViewHandle` is defined in `beamer-core` but not yet connected to the format wrappers. The ring buffer and `emit_rt()` are not yet implemented.
+**Status:** `WebViewEvents` is defined in `beamer-core` but not yet delivered by the format wrappers. The ring buffer and `emit_rt()` are not yet implemented.
 
 ### Windows WebView2 Support
 

@@ -55,7 +55,7 @@ pub mod state;
 pub mod state_format;
 pub mod sysex_pool;
 pub mod types;
-pub mod webview_handle;
+pub mod webview_events;
 pub mod webview_handler;
 
 // Re-exports for convenience
@@ -115,7 +115,7 @@ pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use sysex_pool::SysExOutputPool;
 pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
-pub use webview_handle::WebViewHandle;
+pub use webview_events::WebViewEvents;
 pub use webview_handler::WebViewHandler;
 
 // Re-export serde_json so plugins can use WebViewHandler without adding
