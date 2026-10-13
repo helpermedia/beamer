@@ -130,22 +130,18 @@ pub trait AuPluginInstance: Send + 'static {
 
     /// Get the parameters as the bridge shares them with host threads.
     ///
-    /// The bridge caches a pointer to them, so that parameter values, state,
-    /// groups and presets need no plugin mutex (see `SharedParameters`).
-    fn shared_parameters(&self) -> &(dyn SharedParameters + 'static);
+    /// The bridge keeps this `Arc` for the life of the instance, so that
+    /// parameter values, state, groups and presets need no plugin mutex
+    /// (see `SharedParameters`). It must be the `Arc` that the processors
+    /// of this instance use: what the host sets through it is what the
+    /// audio thread reads.
+    fn shared_parameters(&self) -> Arc<dyn SharedParameters>;
 
     /// Reset DSP state (clear delay lines, reset filters, etc.).
     ///
     /// The render call runs this on the audio thread at the start of the
     /// block that follows a reset request of the host.
     fn reset(&mut self);
-
-    /// Reset the parameter smoothers to the current parameter values.
-    ///
-    /// The render call runs this on the audio thread at the start of the
-    /// block that follows a state load, so that the loaded values apply at
-    /// once instead of ramping in.
-    fn reset_smoothing(&mut self);
 
     /// Get the tail length in samples.
     ///

@@ -126,8 +126,10 @@ where
         self.state.max_frames()
     }
 
-    fn shared_parameters(&self) -> &(dyn SharedParameters + 'static) {
-        &**self.state.descriptor.parameters()
+    fn shared_parameters(&self) -> Arc<dyn SharedParameters> {
+        // Clone the concrete `Arc`, then let it coerce to the trait object.
+        let parameters: Arc<P::Parameters> = Arc::clone(self.state.descriptor.parameters());
+        parameters
     }
 
     fn reset(&mut self) {
@@ -136,13 +138,6 @@ where
             // This matches VST3 behavior and beamer_core documentation
             processor.set_active(false);
             processor.set_active(true);
-        }
-    }
-
-    fn reset_smoothing(&mut self) {
-        if self.state.is_prepared() {
-            use beamer_core::parameter_types::Parameters;
-            self.state.descriptor.parameters().reset_smoothing();
         }
     }
 
@@ -1114,14 +1109,16 @@ mod tests {
 
     /// Get the gain parameter's normalized value.
     fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
-        let params = processor.shared_parameters().store();
+        let params = processor.shared_parameters();
+        let params = params.store();
         let gain_id = params.info(0).unwrap().id;
         params.get_normalized(gain_id)
     }
 
     /// Set the gain parameter's normalized value.
     fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
-        let params = processor.shared_parameters().store();
+        let params = processor.shared_parameters();
+        let params = params.store();
         let gain_id = params.info(0).unwrap().id;
         params.set_normalized(gain_id, value);
     }
@@ -1417,9 +1414,17 @@ mod tests {
             .unwrap()
             .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, process_mode)
             .expect("prepare");
+        let parameters = plugin.lock().unwrap().shared_parameters();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
         let shared = Arc::new(SharedState::default());
-        create_render_block_f32(Arc::clone(plugin), shared, storage, FRAMES as u32, 44100.0)
+        create_render_block_f32(
+            Arc::clone(plugin),
+            parameters,
+            shared,
+            storage,
+            FRAMES as u32,
+            44100.0,
+        )
     }
 
     /// The timestamp of a first buffer.
@@ -1553,20 +1558,31 @@ mod tests {
 
     /// Allocate render resources for a stereo effect through the C-ABI.
     fn allocate(instance: *mut BeamerInstanceHandle, rendering_offline: bool) -> i32 {
-        let stereo = BeamerAuBusInfo {
-            channel_count: 2,
+        allocate_with(instance, 2, FRAMES as u32, rendering_offline)
+    }
+
+    /// Allocate render resources for an effect with one input and one output
+    /// bus of `channels` channels.
+    fn allocate_with(
+        instance: *mut BeamerInstanceHandle,
+        channels: u32,
+        max_frames: u32,
+        rendering_offline: bool,
+    ) -> i32 {
+        let bus = BeamerAuBusInfo {
+            channel_count: channels,
             bus_type: BeamerAuBusType::Main,
         };
         let bus_config = BeamerAuBusConfig {
             input_bus_count: 1,
             output_bus_count: 1,
-            input_buses: [stereo; MAX_BUSES],
-            output_buses: [stereo; MAX_BUSES],
+            input_buses: [bus; MAX_BUSES],
+            output_buses: [bus; MAX_BUSES],
         };
         beamer_au_allocate_render_resources(
             instance,
             44100.0,
-            FRAMES as u32,
+            max_frames,
             BeamerAuSampleFormat::Float32,
             &bus_config,
             rendering_offline,
@@ -1593,23 +1609,6 @@ mod tests {
         // Deallocating drops the processor.
         beamer_au_deallocate_render_resources(instance);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
-    }
-
-    #[test]
-    fn test_parameter_access_while_the_parameters_are_locked() {
-        let mut handle = test_handle();
-        let instance: *mut BeamerInstanceHandle = &mut *handle;
-        assert_eq!(allocate(instance, false), 0);
-
-        // SAFETY: The handle is alive, and the calls below only use it shared.
-        let shared = unsafe { &*instance };
-        // With the cached pointer locked, access goes through the plugin
-        // instead of failing or using the pointer.
-        shared.with_shared_parameters_locked(|| {
-            beamer_au_set_parameter_value(instance, gain_id(), 0.125);
-            assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
-        });
-        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
     }
 
     #[test]
@@ -1648,6 +1647,12 @@ mod tests {
 
     /// Render one buffer of the main bus through the C-ABI.
     fn render_instance(instance: *mut BeamerInstanceHandle) -> i32 {
+        render_frames(instance, FRAMES as u32)
+    }
+
+    /// Ask for `frames` frames of the main bus through the C-ABI. The
+    /// buffers hold `FRAMES` frames.
+    fn render_frames(instance: *mut BeamerInstanceHandle, frames: u32) -> i32 {
         let timestamp = timestamp();
         let mut action_flags = 0u32;
         let mut input = StereoList::filled(0.5);
@@ -1656,7 +1661,7 @@ mod tests {
             instance,
             &mut action_flags,
             &timestamp,
-            FRAMES as u32,
+            frames,
             0,
             output.as_list(),
             std::ptr::null(),
@@ -1956,6 +1961,67 @@ mod tests {
     }
 
     #[test]
+    fn test_render_refuses_more_frames_than_were_negotiated() {
+        use crate::error::os_status::K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS;
+
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_frames(instance, FRAMES as u32), 0);
+        assert_eq!(
+            render_frames(instance, FRAMES as u32 + 1),
+            K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS
+        );
+
+        // A smaller maximum of a new allocation applies at once.
+        assert_eq!(allocate_with(instance, 2, FRAMES as u32 / 2, false), 0);
+        assert_eq!(render_frames(instance, FRAMES as u32 / 2), 0);
+        assert_eq!(
+            render_frames(instance, FRAMES as u32),
+            K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS
+        );
+    }
+
+    #[test]
+    fn test_channel_count_follows_the_negotiated_bus_configuration() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let channel_counts = || {
+            [
+                beamer_au_get_input_bus_channel_count(instance, 0),
+                beamer_au_get_output_bus_channel_count(instance, 0),
+            ]
+        };
+
+        // Declared: stereo.
+        assert_eq!(channel_counts(), [2, 2]);
+
+        // The host negotiates mono.
+        assert_eq!(allocate_with(instance, 1, FRAMES as u32, false), 0);
+        assert_eq!(channel_counts(), [1, 1]);
+
+        // Without render resources the declared buses count again.
+        beamer_au_deallocate_render_resources(instance);
+        assert_eq!(channel_counts(), [2, 2]);
+    }
+
+    #[test]
+    fn test_dropping_the_instance_frees_the_parameters() {
+        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        let parameters = Arc::downgrade(&plugin.shared_parameters());
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // The handle, the processor and the render block each hold them.
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        assert!(parameters.upgrade().is_some());
+
+        drop(handle);
+        assert!(parameters.upgrade().is_none());
+    }
+
+    #[test]
     fn test_host_queries_during_repeated_preparing() {
         let mut handle = test_handle();
         let instance: *mut BeamerInstanceHandle = &mut *handle;
@@ -1974,6 +2040,7 @@ mod tests {
                 assert!(beamer_au_apply_preset(asker.0, i % 3));
                 assert_eq!(beamer_au_get_group_count(asker.0), 2);
                 assert_eq!(beamer_au_get_input_bus_count(asker.0), 1);
+                assert_eq!(beamer_au_get_input_bus_channel_count(asker.0, 0), 2);
                 let tail = beamer_au_get_tail_samples(asker.0);
                 assert!(tail == 0 || tail == TEST_TAIL_SAMPLES);
                 beamer_au_reset(asker.0);

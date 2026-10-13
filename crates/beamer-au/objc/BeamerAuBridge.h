@@ -14,10 +14,11 @@
  * - Comprehensive error handling via OSStatus return codes
  *
  * Thread Safety:
- * - Lifecycle functions (create/destroy/allocate/deallocate) must be called from main thread
+ * - Lifecycle functions (create/destroy/allocate/deallocate) must not be called
+ *   at the same time as each other
  * - Render function is called from real-time audio thread (no allocations, no locks)
  * - Parameter get/set may be called from any thread (uses atomics internally)
- * - State save/load should be called from main thread
+ * - State save/load may be called from any thread, also while audio is rendered
  */
 
 #ifndef BEAMER_AU_BRIDGE_H
