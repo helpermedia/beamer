@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::fmt::Write;
 use std::sync::Arc;
 
-use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewHandler};
+use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
 use vst3::Steinberg::Vst::IComponentHandler;
@@ -24,6 +24,10 @@ struct IpcContext {
     handler: *mut IComponentHandler,
     /// Custom WebView message handler (invoke/event routing).
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// The plugin's queue of events for the web UI, if it has one.
+    events: Option<WebViewEvents>,
+    /// Whether this view told the queue that an editor is open.
+    events_open: bool,
     /// Cached parameter values from the last sync tick.
     /// Index corresponds to ParameterStore::info(index).
     last_values: Vec<f64>,
@@ -32,6 +36,36 @@ struct IpcContext {
     webview: *const PlatformWebView,
     /// NSTimer handle for parameter sync. Null when not running.
     sync_timer: *mut objc2::runtime::AnyObject,
+}
+
+impl IpcContext {
+    /// Tell the event queue that this view shows an editor.
+    fn open_events(&mut self) {
+        if let Some(events) = &self.events {
+            if !self.events_open {
+                events.editor_opened();
+                self.events_open = true;
+            }
+        }
+    }
+
+    /// Tell the event queue that this view's editor is gone.
+    ///
+    /// Does nothing when the view did not open it, so that `removed()`
+    /// followed by the drop of the view closes once.
+    fn close_events(&mut self) {
+        if let Some(events) = &self.events {
+            if self.events_open {
+                events.editor_closed();
+                self.events_open = false;
+            }
+        }
+    }
+
+    /// The script that delivers the events that wait for the editor.
+    fn take_event_script(&self) -> Option<String> {
+        self.events.as_ref()?.take_script()
+    }
 }
 
 /// VST3 IPlugView implementation backed by a platform WebView.
@@ -89,6 +123,7 @@ impl WebViewPlugView {
         params: Arc<dyn ParameterStore>,
         component_handler: *mut IComponentHandler,
         webview_handler: Option<Arc<dyn WebViewHandler>>,
+        events: Option<WebViewEvents>,
     ) -> Self {
         let size = delegate.gui_size();
 
@@ -111,6 +146,8 @@ impl WebViewPlugView {
                 params,
                 handler: component_handler,
                 webview_handler,
+                events,
+                events_open: false,
                 last_values,
                 webview: std::ptr::null(),
                 sync_timer: std::ptr::null_mut(),
@@ -354,6 +391,11 @@ unsafe extern "C-unwind" fn sync_timer_fired(
         script.push_str("})");
         webview.evaluate_js(&script);
     }
+
+    // Deliver the events the plugin emitted since the last tick.
+    if let Some(script) = ipc.take_event_script() {
+        webview.evaluate_js(&script);
+    }
 }
 
 #[allow(non_snake_case)]
@@ -414,6 +456,9 @@ impl IPlugViewTrait for WebViewPlugView {
                 for v in &mut ipc.last_values {
                     *v = f64::NAN;
                 }
+
+                // Events the plugin emits from now on reach this editor.
+                ipc.open_events();
 
                 // Start 60 Hz sync timer.
                 #[cfg(target_os = "macos")]
@@ -512,6 +557,9 @@ impl IPlugViewTrait for WebViewPlugView {
 
         // Clear webview pointer before detaching.
         ipc.webview = std::ptr::null();
+
+        // Without an editor, events are dropped.
+        ipc.close_events();
 
         // Dropping the platform WebView detaches it from the parent.
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
@@ -659,6 +707,9 @@ impl Drop for WebViewPlugView {
         // Clear webview pointer to prevent stale dereferences.
         ipc.webview = std::ptr::null();
 
+        // Close the event queue if removed() did not.
+        ipc.close_events();
+
         // Detach the WebView while the IPC context it calls into is still alive,
         // and tell the delegate, which removed() would have done.
         if self.platform.get_mut().take().is_some() {
@@ -750,4 +801,65 @@ fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
     }
 
     builder.register()
+}
+
+#[cfg(test)]
+mod tests {
+    use beamer_core::NoParameters;
+
+    use super::*;
+
+    /// The context of a view of a plugin with this event queue.
+    fn context(events: Option<WebViewEvents>) -> IpcContext {
+        IpcContext {
+            params: Arc::new(NoParameters),
+            handler: std::ptr::null_mut(),
+            webview_handler: None,
+            events,
+            events_open: false,
+            last_values: Vec::new(),
+            webview: std::ptr::null(),
+            sync_timer: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn test_view_opens_and_closes_the_event_queue_once() {
+        let events = WebViewEvents::new();
+        events.claim();
+        let mut ipc = context(Some(events.clone()));
+
+        events.emit("before", &1);
+        assert_eq!(ipc.take_event_script(), None);
+
+        // attached(), then a timer tick.
+        ipc.open_events();
+        ipc.open_events();
+        events.emit("open", &2);
+        assert_eq!(
+            ipc.take_event_script().as_deref(),
+            Some("window.__BEAMER__._onEvent(\"open\",2);")
+        );
+
+        // removed(), then the drop of the view.
+        ipc.close_events();
+        ipc.close_events();
+        events.emit("closed", &3);
+        assert_eq!(ipc.take_event_script(), None);
+
+        // A second view of the same plugin was not closed by the first.
+        let mut second = context(Some(events.clone()));
+        second.open_events();
+        ipc.close_events();
+        events.emit("second", &4);
+        assert!(second.take_event_script().is_some());
+    }
+
+    #[test]
+    fn test_view_of_a_plugin_without_events() {
+        let mut ipc = context(None);
+        ipc.open_events();
+        assert_eq!(ipc.take_event_script(), None);
+        ipc.close_events();
+    }
 }

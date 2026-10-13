@@ -34,7 +34,8 @@ use beamer_core::{
     MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, Processor, ScaleInfo, SysEx,
-    SysExOutputPool, Transport, WebViewHandler, MAX_BUSES, MAX_CHANNELS, MAX_CHORD_NAME_SIZE,
+    SysExOutputPool, Transport, WebViewEvents, WebViewHandler, MAX_BUSES, MAX_CHANNELS,
+    MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
@@ -308,6 +309,8 @@ where
     component_handler: UnsafeCell<*mut IComponentHandler>,
     /// Custom WebView message handler (invoke/event routing).
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// The plugin's queue of events for the web UI, if it has one.
+    webview_events: Option<WebViewEvents>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
     /// the answer must not need the processor (see `publish_timing`).
@@ -364,6 +367,13 @@ where
         // The WebView handler (if any) of the plugin.
         let webview_handler = plugin.webview_handler();
 
+        // The plugin's queue of events for the web UI. Taking it here
+        // marks it as delivered by this instance.
+        let webview_events = plugin.webview_events().cloned();
+        if let Some(events) = &webview_events {
+            events.claim();
+        }
+
         let parameters = Arc::clone(plugin.parameters());
 
         Self {
@@ -388,6 +398,7 @@ where
             current_preset_index: UnsafeCell::new(0), // Default to first preset
             component_handler: UnsafeCell::new(std::ptr::null_mut()),
             webview_handler,
+            webview_events,
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
@@ -2138,6 +2149,7 @@ where
                     self.shared_parameter_store(),
                     component_handler,
                     self.webview_handler.clone(),
+                    self.webview_events.clone(),
                 )
             };
             let wrapper = vst3::ComWrapper::new(view);
