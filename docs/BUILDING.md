@@ -225,13 +225,28 @@ auval -v aufx gain Bmer
 The type is `aufx` for effects, `aumu` for instruments, `aumi` for MIDI
 effects and `augn` for generators.
 
-[pluginval](https://github.com/Tracktion/pluginval) validates VST3 and
-Audio Unit plugins. Its command-line binary is inside the app bundle (the
+[pluginval](https://github.com/Tracktion/pluginval) validates VST3 plugins
+and AUv2 components. Its command-line binary is inside the app bundle (the
 example assumes the app is in `/Applications`):
 
 ```bash
 /Applications/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --validate ~/Library/Audio/Plug-Ins/VST3/BeamerGain.vst3
 ```
+
+A VST3 bundle is validated by its path, also straight from `target/`. An
+AUv2 has to be installed, because pluginval looks it up in the Audio Unit
+registry. Name it by the path of the installed component or by the same
+type and codes as for `auval`:
+
+```bash
+/Applications/pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --validate "AudioUnit:Effects/aufx,gain,Bmer"
+```
+
+The word before the slash is a label that pluginval ignores.
+
+pluginval (as of 1.0.4) does not find an AUv3. While the AUv3 of a plugin
+is installed, it does not find the AUv2 with the same codes either: see
+"AUv2 and AUv3 side by side" below. Use `auval` to validate an AUv3.
 
 ### In a DAW
 
