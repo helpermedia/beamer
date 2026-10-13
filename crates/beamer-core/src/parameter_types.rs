@@ -41,6 +41,7 @@ use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID
 use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 use crate::smoothing::{AtomicSmoother, SmoothingStyle};
+use crate::state_format::{join_path, StateEntries, StateWriter};
 use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
@@ -286,135 +287,68 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     }
 
     // =========================================================================
-    // State Serialization (with path support for nested groups)
+    // State (see `state_format` for the bytes)
     // =========================================================================
 
-    /// Serialize parameters with a path prefix for nested group support.
+    /// Add the entries of this parameter struct to a state that is being
+    /// saved.
     ///
-    /// This is called by macro-generated `save_state` to handle hierarchical
-    /// parameter structures. Each nested group adds its name to the path.
+    /// `#[derive(Parameters)]` generates this: every field under its id,
+    /// with the entries of a nested struct under the name of its field.
+    /// `prefix` is the path of this struct, empty for the root.
     ///
-    /// # Format
+    /// A host may save the state from one of its own threads while audio
+    /// runs, so this may only read parameter values (they are atomic),
+    /// `State` fields and immutable data.
     ///
-    /// Each entry: `[path_len: u8][path: utf8 bytes][value: f64]`
-    ///
-    /// Path examples:
-    /// - `"gain"` - top-level parameter
-    /// - `"filter/cutoff"` - parameter in nested "Filter" group
-    /// - `"osc1/filter/resonance"` - deeply nested parameter
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - Buffer to append serialized data to
-    /// * `prefix` - Current path prefix (empty for root level)
-    fn save_state_prefixed(&self, data: &mut Vec<u8>, prefix: &str) {
-        // Default implementation for flat parameter structs (no nesting)
-        // The macro generates an override for structs with nested groups
+    /// The default is for hand-written flat implementations: every
+    /// parameter under its numeric id.
+    fn save_entries(&self, writer: &mut StateWriter, prefix: &str) {
         for parameter in self.iter() {
-            // For default impl, use numeric ID as string
-            let id_str = parameter.id().to_string();
-            let path = if prefix.is_empty() {
-                id_str
-            } else {
-                format!("{}/{}", prefix, id_str)
-            };
-
-            let path_bytes = path.as_bytes();
-            data.push(path_bytes.len() as u8);
-            data.extend_from_slice(path_bytes);
-            data.extend_from_slice(&parameter.get_normalized().to_le_bytes());
+            let path = join_path(prefix, &parameter.id().to_string());
+            writer.parameter(&path, parameter);
         }
     }
 
-    /// Serialize all parameters to bytes.
+    /// Take the values of this parameter struct from the entries of a saved
+    /// state.
     ///
-    /// Format: `[path_len: u8, path: utf8, value: f64]*`
-    ///
-    /// Parameters in nested groups use path-based IDs like "filter/cutoff"
-    /// to avoid collisions when the same nested struct is reused.
-    ///
-    /// This is the whole state of a plugin. A host may save it from one of
-    /// its own threads while audio runs, so this and `save_state_prefixed`
-    /// may only read parameter values (they are atomic) and immutable data.
-    fn save_state(&self) -> Vec<u8> {
-        let mut data = Vec::with_capacity(self.count() * 20);
-        self.save_state_prefixed(&mut data, "");
-        data
-    }
-
-    /// Load a single parameter by its path.
-    ///
-    /// This is called during state restoration to route each (path, value) pair
-    /// to the correct parameter. The path may include group prefixes like
-    /// "filter/cutoff" for nested parameters.
-    ///
-    /// Returns `true` if the parameter was found and set, `false` otherwise.
-    ///
-    /// The default implementation handles flat parameter structs by matching
-    /// the path against numeric IDs. The macro generates an override for
-    /// structs with nested groups that routes based on path segments.
-    fn load_state_path(&self, path: &str, value: f64) -> bool {
-        // Default implementation for flat structs (no nesting)
-        // Try to parse as numeric ID
-        if let Ok(id) = path.parse::<u32>() {
-            if let Some(parameter) = self.by_id(id) {
-                parameter.set_normalized(value.clamp(0.0, 1.0));
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Restore parameters from bytes.
-    ///
-    /// Format: `[path_len: u8, path: utf8, value: f64]*`
-    /// Unknown parameter paths are silently ignored for forward compatibility.
+    /// The counterpart of [`save_entries`](Self::save_entries), generated
+    /// by `#[derive(Parameters)]` as well. Every field asks for its entry
+    /// and goes back to its default when there is none it can use.
     ///
     /// Takes `&self`: a host may load a state from one of its own threads
-    /// while audio runs. This and `load_state_path` may only write parameter
-    /// values (they are atomic). The framework resets the smoothers on the
-    /// audio thread afterwards.
+    /// while audio runs. This may only write parameter values (they are
+    /// atomic) and `State` fields. The framework resets the smoothers on
+    /// the audio thread afterwards.
+    fn load_entries(&self, entries: &StateEntries<'_>, prefix: &str) {
+        for parameter in self.iter() {
+            let path = join_path(prefix, &parameter.id().to_string());
+            entries.load_parameter(&path, parameter);
+        }
+    }
+
+    /// Save the state of the plugin: all parameters and `State` fields.
+    ///
+    /// See [`state_format`](crate::state_format) for the bytes.
+    fn save_state(&self) -> Vec<u8> {
+        let mut writer = StateWriter::new();
+        self.save_entries(&mut writer, "");
+        writer.finish()
+    }
+
+    /// Load a state that [`save_state`](Self::save_state) produced.
+    ///
+    /// Empty data changes nothing. Data that is not a state of this format
+    /// is refused and changes nothing. Otherwise every field gets the value
+    /// of its entry or its default: a load is always a whole state and
+    /// cannot be used to change some fields only.
     fn load_state(&self, data: &[u8]) -> Result<(), String> {
-        if data.is_empty() {
+        let Some(entries) = StateEntries::parse(data)? else {
             return Ok(());
-        }
-
-        let mut cursor = 0;
-        while cursor < data.len() {
-            // Read path length
-            let path_len = data[cursor] as usize;
-            cursor += 1;
-
-            if cursor + path_len + 8 > data.len() {
-                break; // Incomplete data
-            }
-
-            // Read path string
-            let path = match std::str::from_utf8(&data[cursor..cursor + path_len]) {
-                Ok(s) => s,
-                Err(_) => {
-                    cursor += path_len + 8;
-                    continue; // Skip invalid UTF-8
-                }
-            };
-            cursor += path_len;
-
-            // Read value
-            let value_bytes: [u8; 8] = data[cursor..cursor + 8]
-                .try_into()
-                .map_err(|_| "Invalid state data")?;
-            let value = f64::from_le_bytes(value_bytes);
-            cursor += 8;
-
-            // Try to set parameter by path
-            // Default implementation uses numeric ID parsing
-            if let Ok(id) = path.parse::<u32>() {
-                if let Some(parameter) = self.by_id(id) {
-                    parameter.set_normalized(value.clamp(0.0, 1.0));
-                }
-            }
-        }
-
+        };
+        self.load_entries(&entries, "");
+        entries.log_unused();
         Ok(())
     }
 

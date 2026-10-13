@@ -44,6 +44,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::handover::{Handover, HandoverReader};
+use crate::state_format::SavedState;
 
 /// A value that is saved with the plugin state and handed over to the audio
 /// thread.
@@ -119,6 +120,27 @@ where
         let value: T = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         self.set(value);
         Ok(())
+    }
+}
+
+impl<T> SavedState for State<T>
+where
+    T: Serialize + DeserializeOwned + Send + Sync,
+{
+    fn save_json(&self) -> Result<Vec<u8>, String> {
+        self.save()
+    }
+
+    fn load_json(&self, json: &[u8]) -> Result<(), String> {
+        self.load(json)
+    }
+
+    fn reset_to_default(&self) {
+        // A state that holds its initial value already is left alone, so
+        // that its readers do not see a change that is none.
+        if !Arc::ptr_eq(&self.get(), &self.initial) {
+            self.reset();
+        }
     }
 }
 

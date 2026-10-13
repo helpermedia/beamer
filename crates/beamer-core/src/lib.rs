@@ -52,6 +52,7 @@ pub mod sample;
 pub mod setup;
 pub mod smoothing;
 pub mod state;
+pub mod state_format;
 pub mod sysex_pool;
 pub mod types;
 pub mod webview_handle;

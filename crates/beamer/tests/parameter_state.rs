@@ -23,12 +23,31 @@ struct TestParameters {
     filter: FilterParameters,
 }
 
-/// One state entry: the length of the path, the path and the normalized value.
+/// One parameter entry: kind, path and the normalized value.
 fn entry(path: &str, normalized: f64) -> Vec<u8> {
-    let mut bytes = vec![path.len() as u8];
+    let mut bytes = vec![1u8];
+    bytes.extend_from_slice(&(path.len() as u16).to_le_bytes());
     bytes.extend_from_slice(path.as_bytes());
+    bytes.extend_from_slice(&8u32.to_le_bytes());
     bytes.extend_from_slice(&normalized.to_le_bytes());
     bytes
+}
+
+/// A state of format version 1 with the given entries.
+fn state(entries: &[Vec<u8>]) -> Vec<u8> {
+    let payload = entries.concat();
+    let mut bytes = vec![0x42, 0x4D, 0x52, 0x53, 1, 0, 0, 0];
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
+fn values(parameters: &TestParameters) -> [f64; 3] {
+    [
+        parameters.gain.get_normalized(),
+        parameters.enabled.get_normalized(),
+        parameters.filter.cutoff.get_normalized(),
+    ]
 }
 
 #[test]
@@ -40,14 +59,27 @@ fn test_state_has_the_documented_bytes() {
 
     // Written out in full, so that a change of the format fails here.
     let expected: Vec<u8> = [
-        &[4u8][..],
+        // Magic, version 1, 69 bytes of payload.
+        &[0x42, 0x4D, 0x52, 0x53][..],
+        &[1, 0, 0, 0],
+        &[69, 0, 0, 0],
+        // Kind 1 (parameter), path, eight bytes of f64.
+        &[1],
+        &[4, 0],
         b"gain",
+        &[8, 0, 0, 0],
         &[0, 0, 0, 0, 0, 0, 0xD0, 0x3F],
-        &[7],
+        &[1],
+        &[7, 0],
         b"enabled",
+        &[8, 0, 0, 0],
         &[0, 0, 0, 0, 0, 0, 0xF0, 0x3F],
-        &[13],
-        b"Filter/cutoff",
+        // A nested struct is saved under the name of its field, not under
+        // the display name of its group.
+        &[1],
+        &[13, 0],
+        b"filter/cutoff",
+        &[8, 0, 0, 0],
         &[0, 0, 0, 0, 0, 0, 0xE0, 0x3F],
     ]
     .concat();
@@ -65,40 +97,72 @@ fn test_state_round_trip_restores_every_value() {
     let loaded = TestParameters::default();
     loaded.load_state(&saved.save_state()).expect("state loads");
 
-    assert_eq!(loaded.gain.get_normalized(), 0.25);
-    assert_eq!(loaded.enabled.get_normalized(), 1.0);
-    assert_eq!(loaded.filter.cutoff.get_normalized(), 0.5);
+    assert_eq!(values(&loaded), [0.25, 1.0, 0.5]);
 }
 
 #[test]
-fn test_load_ignores_unknown_paths_and_keeps_the_rest() {
-    let state = [
+fn test_load_skips_unknown_paths_and_keeps_the_rest() {
+    let state = state(&[
         entry("removed", 0.75),
         entry("gain", 0.25),
-        entry("Removed Group/cutoff", 0.75),
-        entry("Filter/removed", 0.75),
-        entry("Filter/cutoff", 0.5),
-    ]
-    .concat();
+        entry("removed_group/cutoff", 0.75),
+        entry("filter/removed", 0.75),
+        entry("filter/cutoff", 0.5),
+    ]);
 
     let parameters = TestParameters::default();
     parameters.load_state(&state).expect("state loads");
 
-    assert_eq!(parameters.gain.get_normalized(), 0.25);
-    assert_eq!(parameters.enabled.get_normalized(), 0.0);
-    assert_eq!(parameters.filter.cutoff.get_normalized(), 0.5);
+    assert_eq!(values(&parameters), [0.25, 0.0, 0.5]);
 }
 
 #[test]
-fn test_load_clamps_values_and_stops_at_a_cut_off_entry() {
-    let mut state = entry("gain", 1.5);
-    // The last entry misses its value.
-    state.extend_from_slice(&[13]);
-    state.extend_from_slice(b"Filter/cutoff");
+fn test_load_depends_on_the_state_alone() {
+    // Only one of the three parameters is in the state.
+    let state = state(&[entry("filter/cutoff", 0.5)]);
+
+    let parameters = TestParameters::default();
+    parameters.gain.set_normalized(0.9);
+    parameters.enabled.set_normalized(1.0);
+    parameters.load_state(&state).expect("state loads");
+
+    // The others are back at their defaults, whatever they were before.
+    assert_eq!(values(&parameters), [0.0, 0.0, 0.5]);
+}
+
+#[test]
+fn test_load_clamps_values() {
+    let state = state(&[entry("gain", 1.5), entry("filter/cutoff", -1.0)]);
 
     let parameters = TestParameters::default();
     parameters.load_state(&state).expect("state loads");
 
-    assert_eq!(parameters.gain.get_normalized(), 1.0);
-    assert_eq!(parameters.filter.cutoff.get_normalized(), 0.0);
+    assert_eq!(values(&parameters), [1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn test_empty_data_changes_nothing() {
+    let parameters = TestParameters::default();
+    parameters.gain.set_normalized(0.9);
+
+    parameters.load_state(&[]).expect("no state is not an error");
+    assert_eq!(values(&parameters), [0.9, 0.0, 0.0]);
+}
+
+#[test]
+fn test_data_that_is_not_a_state_is_refused_and_changes_nothing() {
+    let parameters = TestParameters::default();
+    parameters.gain.set_normalized(0.9);
+    let valid = state(&[entry("gain", 0.25), entry("filter/cutoff", 0.5)]);
+
+    // Cut off in the middle of the second entry.
+    assert!(parameters.load_state(&valid[..valid.len() - 4]).is_err());
+    // Another version.
+    let mut newer = valid.clone();
+    newer[4] = 2;
+    assert!(parameters.load_state(&newer).is_err());
+    // Something else entirely.
+    assert!(parameters.load_state(b"not a state at all").is_err());
+
+    assert_eq!(values(&parameters), [0.9, 0.0, 0.0]);
 }

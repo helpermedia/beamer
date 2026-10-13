@@ -191,7 +191,7 @@ pub struct GainParameters {
 ```
 
 The `#[derive(Parameters)]` macro generates:
-- `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
+- `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present)
@@ -521,18 +521,24 @@ With declarative attributes, `set_group_ids()` is called automatically in the ge
 
 #### State Serialization Format
 
-Parameters are serialized using path-based IDs to support nested groups without collisions:
+The state of a plugin is the state of its parameter struct. It is saved as a list of entries, one per field, each under a path. All numbers are little-endian:
 
 ```
-Format: [path_len: u8][path: utf8][value: f64]*
+Header:  42 4D 52 53 | version: u32 = 1 | payload length: u32
+Entry:   kind: u8 | path length: u16 | path: utf8 | value length: u32 | value
+
+kind 1   a parameter: the normalized value as f64
+kind 2   a State field: its value as JSON
 
 Path examples:
-- "gain"              - top-level parameter
-- "filter/cutoff"     - parameter in "Filter" group
+- "gain"              - top-level parameter or state, by its id
+- "filter/cutoff"     - parameter in the nested field `filter`
 - "osc1/filter/res"   - deeply nested parameter
 ```
 
-The same nested struct can be reused in multiple groups without ID collision:
+A nested struct is saved under the name of its field, not under the display name of its group, so renaming a group keeps saved states valid. Renaming the field or a parameter id does not.
+
+The same nested struct can be used in several fields, each with its own paths:
 
 ```rust
 #[nested(group = "Osc 1")]
@@ -541,6 +547,14 @@ pub osc1: OscParameters,
 #[nested(group = "Osc 2")]
 pub osc2: OscParameters, // Same struct, different paths: "osc1/attack" vs "osc2/attack"
 ```
+
+Loading follows these rules:
+
+- Empty data changes nothing. Data with another header or version, or data that is cut off, is refused as a whole and changes nothing.
+- Every field takes the value of its entry. A field without a usable entry goes back to its default (a `State` to the value it was created with), so the result of a load depends on the saved data alone.
+- An entry that no field asks for is skipped. Parameter values are clamped to 0.0-1.0.
+
+The format is defined in one place, `beamer::core::state_format`.
 
 #### Low-Level Parameters Trait
 

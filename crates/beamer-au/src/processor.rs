@@ -882,9 +882,9 @@ mod tests {
                     hook();
                 }
             });
-            let mut data = Vec::new();
-            self.save_state_prefixed(&mut data, "");
-            data
+            let mut writer = beamer_core::state_format::StateWriter::new();
+            self.save_entries(&mut writer, "");
+            writer.finish()
         }
         fn set_sample_rate(&self, sample_rate: f64) {
             SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));

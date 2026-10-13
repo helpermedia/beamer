@@ -568,180 +568,91 @@ fn generate_by_id(ir: &ParametersIR) -> TokenStream {
     }
 }
 
-/// Generate the save_state_prefixed() method body.
+/// Generate `save_entries()`: what this struct adds to a saved state.
 ///
-/// This generates path-based serialization that supports nested groups.
-/// Paths like "filter/cutoff" disambiguate parameters with the same ID
-/// in different nested groups.
+/// Parameters come first, in declaration order, then the nested structs.
+/// The bytes are laid out by `beamer_core::state_format`.
 fn generate_save_state(ir: &ParametersIR) -> TokenStream {
-    // Generate saves for direct parameters using string IDs with prefix
     let parameter_saves: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
             let field = &parameter.field_name;
             let id_str = &parameter.string_id;
             quote! {
-                // Build path: prefix + "/" + id (or just id if prefix is empty)
-                let path = if prefix.is_empty() {
-                    #id_str.to_string()
-                } else {
-                    format!("{}/{}", prefix, #id_str)
-                };
-                let path_bytes = path.as_bytes();
-                data.push(path_bytes.len() as u8);
-                data.extend_from_slice(path_bytes);
-                data.extend_from_slice(&self.#field.get_normalized().to_le_bytes());
+                writer.parameter(
+                    &::beamer::core::state_format::join_path(prefix, #id_str),
+                    &self.#field,
+                );
             }
         })
         .collect();
 
-    // Generate recursive calls for nested groups with updated prefix
+    // A nested struct is saved under the name of its field, which stays
+    // the same when the group gets another display name.
     let nested_saves: Vec<TokenStream> = ir
         .nested_fields()
         .map(|nested| {
             let field = &nested.field_name;
-            let group_name = &nested.group_name;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
             quote! {
-                // Build nested prefix: prefix + "/" + group_name (or just group_name)
-                let nested_prefix = if prefix.is_empty() {
-                    #group_name.to_string()
-                } else {
-                    format!("{}/{}", prefix, #group_name)
-                };
-                self.#field.save_state_prefixed(data, &nested_prefix);
+                self.#field.save_entries(
+                    writer,
+                    &::beamer::core::state_format::join_path(prefix, #segment),
+                );
             }
         })
         .collect();
 
-    let parameter_count = ir.parameter_count();
-    // Estimate capacity: ~20 bytes per parameter (path_len + avg 10 char path + 8 byte f64)
-    let estimated_capacity = parameter_count * 20;
-
     quote! {
-        fn save_state_prefixed(&self, data: &mut Vec<u8>, prefix: &str) {
+        fn save_entries(
+            &self,
+            writer: &mut ::beamer::core::state_format::StateWriter,
+            prefix: &str,
+        ) {
             #(#parameter_saves)*
             #(#nested_saves)*
-        }
-
-        fn save_state(&self) -> Vec<u8> {
-            let mut data = Vec::with_capacity(#estimated_capacity);
-            self.save_state_prefixed(&mut data, "");
-            data
         }
     }
 }
 
-/// Generate the load_state() method body.
-///
-/// This generates path-based deserialization that supports nested groups.
-/// Paths like "filter/cutoff" are split to route to the correct nested group.
+/// Generate `load_entries()`: every field takes its value from its entry.
 fn generate_load_state(ir: &ParametersIR) -> TokenStream {
-    // Generate match arms for direct parameter string IDs (no path prefix)
-    let direct_match_arms: Vec<TokenStream> = ir
+    let parameter_loads: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
             let field = &parameter.field_name;
             let id_str = &parameter.string_id;
             quote! {
-                #id_str => {
-                    self.#field.set_normalized(value.clamp(0.0, 1.0));
-                    true
-                }
+                entries.load_parameter(
+                    &::beamer::core::state_format::join_path(prefix, #id_str),
+                    &self.#field,
+                );
             }
         })
         .collect();
 
-    // Generate nested group routing - match group name and delegate rest of path
-    let nested_routes: Vec<TokenStream> = ir
+    let nested_loads: Vec<TokenStream> = ir
         .nested_fields()
         .map(|nested| {
             let field = &nested.field_name;
-            let group_name = &nested.group_name;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
             quote! {
-                #group_name => {
-                    // Delegate to nested group with remaining path
-                    self.#field.load_state_path(rest, value);
-                    true
-                }
+                self.#field.load_entries(
+                    entries,
+                    &::beamer::core::state_format::join_path(prefix, #segment),
+                );
             }
         })
         .collect();
 
-    let nested_routing = if nested_routes.is_empty() {
-        quote! { false }
-    } else {
-        quote! {
-            match group {
-                #(#nested_routes)*
-                _ => false
-            }
-        }
-    };
-
-    let direct_matching = if direct_match_arms.is_empty() {
-        quote! { false }
-    } else {
-        quote! {
-            match path {
-                #(#direct_match_arms)*
-                _ => false
-            }
-        }
-    };
-
     quote! {
-        /// Load a single parameter by its path.
-        ///
-        /// Called recursively for nested groups. The path is relative to this struct.
-        fn load_state_path(&self, path: &str, value: f64) -> bool {
-            // Check if path contains a group prefix
-            if let Some(slash_pos) = path.find('/') {
-                let group = &path[..slash_pos];
-                let rest = &path[slash_pos + 1..];
-                #nested_routing
-            } else {
-                // Direct parameter match
-                #direct_matching
-            }
-        }
-
-        fn load_state(&self, data: &[u8]) -> Result<(), String> {
-            if data.is_empty() {
-                return Ok(());
-            }
-
-            let mut cursor = 0;
-            while cursor < data.len() {
-                // Read path length
-                let path_len = data[cursor] as usize;
-                cursor += 1;
-
-                if cursor + path_len + 8 > data.len() {
-                    break; // Incomplete data
-                }
-
-                // Read path string
-                let path = match ::std::str::from_utf8(&data[cursor..cursor + path_len]) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        cursor += path_len + 8;
-                        continue; // Skip invalid UTF-8
-                    }
-                };
-                cursor += path_len;
-
-                // Read value
-                let value_bytes: [u8; 8] = data[cursor..cursor + 8]
-                    .try_into()
-                    .map_err(|_| "Invalid state data")?;
-                let value = f64::from_le_bytes(value_bytes);
-                cursor += 8;
-
-                // Route to correct parameter by path
-                self.load_state_path(path, value);
-            }
-
-            Ok(())
+        fn load_entries(
+            &self,
+            entries: &::beamer::core::state_format::StateEntries<'_>,
+            prefix: &str,
+        ) {
+            #(#parameter_loads)*
+            #(#nested_loads)*
         }
     }
 }

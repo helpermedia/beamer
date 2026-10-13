@@ -208,12 +208,12 @@ fn parse_parameter_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Pa
         )
     })?;
 
-    // Validate that the ID doesn't contain path separators (used for nested group routing)
+    // The id is one segment of the path the value is saved under.
     if string_id.contains('/') {
         return Err(syn::Error::new_spanned(
             attr,
             format!(
-                "parameter id '{}' cannot contain '/' (reserved for nested group path routing)",
+                "parameter id '{}' cannot contain '/' (it separates path segments in the saved state)",
                 string_id
             ),
         ));
@@ -389,17 +389,6 @@ fn parse_nested_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Neste
             ),
         )
     })?;
-
-    // Validate that the group name doesn't contain path separators (used for nested group routing)
-    if group_name.contains('/') {
-        return Err(syn::Error::new_spanned(
-            attr,
-            format!(
-                "group name '{}' cannot contain '/' (reserved for nested group path routing)",
-                group_name
-            ),
-        ));
-    }
 
     Ok(NestedFieldIR {
         field_name,

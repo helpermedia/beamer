@@ -65,7 +65,7 @@ mod validate;
 /// Derive macro for implementing parameter traits.
 ///
 /// This macro generates:
-/// - `Parameters` trait implementation (count, iter, by_id, save_state, load_state)
+/// - `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
 /// - `ParameterStore` trait implementation (host integration)
 /// - `Default` implementation (when declarative attributes are complete)
 /// - Compile-time hash collision detection

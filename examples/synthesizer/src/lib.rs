@@ -80,7 +80,7 @@ enum EnvelopeStage {
 /// Synthesizer plugin parameters.
 ///
 /// The `#[derive(Parameters)]` macro generates:
-/// - `Parameters` trait (count, iter, by_id, save_state, load_state)
+/// - `Parameters` trait (count, iter, by_id and the entries of the saved state)
 /// - `ParameterStore` trait (host integration)
 /// - `Default` trait (from attribute values)
 ///
