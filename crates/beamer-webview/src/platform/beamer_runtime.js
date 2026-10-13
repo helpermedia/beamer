@@ -20,6 +20,17 @@
     if (nativeHandler) nativeHandler.postMessage(JSON.stringify(msg));
   }
 
+  // Call a listener of the UI. Native code delivers several changes and
+  // events in one script, so a listener that throws must not stop the
+  // delivery of what comes after it.
+  function notify(cb, value) {
+    try {
+      cb(value);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   window.__BEAMER__ = {
     ready: readyPromise,
 
@@ -127,7 +138,7 @@
           entry.info.value = tuple[0];
           entry.info.plainValue = tuple[1];
           entry.info.displayText = tuple[2];
-          entry.listeners.forEach(function(cb) { cb(entry.value); });
+          entry.listeners.forEach(function(cb) { notify(cb, entry.value); });
         }
       }
     },
@@ -145,7 +156,7 @@
 
     _onEvent: function(name, data) {
       var cbs = eventListeners[name];
-      if (cbs) cbs.forEach(function(cb) { cb(data); });
+      if (cbs) cbs.forEach(function(cb) { notify(cb, data); });
     }
   };
 })();
