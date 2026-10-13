@@ -885,7 +885,7 @@ pub trait Processor: Send + 'static {
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         // Default: pass through
         for event in input {
-            output.push(*event);
+            output.push(event.clone());
         }
     }
 
@@ -915,7 +915,10 @@ pub trait Processor: Send + 'static {
         aux: &mut AuxiliaryBuffers<f64>,
         context: &ProcessContext,
     ) {
-        // Default: no-op (framework converts via f32 path)
+        // Default: converts to f32, calls process() and converts back.
+        // The format wrappers do not use it for a plugin without f64
+        // support: they convert themselves, with buffers they allocated
+        // in advance, and call process().
     }
 }
 ```
@@ -1405,16 +1408,16 @@ impl Processor for ReverbProcessor {
 
 ### Event Types
 
-All MIDI types are `Copy` for real-time safety.
+The structs of the single messages (`NoteOn`, `ControlChange` and so on) are `Copy`. `MidiEvent` and `MidiEventKind` are `Clone` only, because a SysEx message is boxed to keep the enum small. Cloning an event copies it without allocating, except for a SysEx event, whose clone allocates.
 
 ```rust
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MidiEvent {
     pub sample_offset: u32,
     pub event: MidiEventKind,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MidiEventKind {
     // Note events
     NoteOn(NoteOn),
@@ -1428,7 +1431,7 @@ pub enum MidiEventKind {
     ProgramChange(ProgramChange),
 
     // Advanced VST3 events
-    SysEx(SysEx),
+    SysEx(Box<SysEx>),
     NoteExpressionValue(NoteExpressionValue),
     NoteExpressionInt(NoteExpressionInt),
     NoteExpressionText(NoteExpressionText),
@@ -1521,7 +1524,8 @@ pub struct MidiBuffer { /* Fixed capacity: 1024 events */ }
 
 impl MidiBuffer {
     pub fn new() -> Self;
-    pub fn push(&mut self, event: MidiEvent);
+    // Returns false when the buffer is full and the event was dropped.
+    pub fn push(&mut self, event: MidiEvent) -> bool;
     pub fn iter(&self) -> impl Iterator<Item = &MidiEvent>;
     pub fn len(&self) -> usize;
     pub fn clear(&mut self);
@@ -1531,25 +1535,29 @@ impl MidiBuffer {
 
 ### Event Modification
 
-Use `event.with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
+Use `event.clone().with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
 
 ```rust
 fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
     for event in input {
         match &event.event {
             MidiEventKind::NoteOn(note) => {
-                output.push(event.with(MidiEventKind::NoteOn(NoteOn {
+                output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
                     pitch: note.pitch.saturating_add(2).min(127),
-                    ..*note // copies channel, velocity, note_id, tuning, length
+                    // Copies channel, velocity, note_id, tuning and length.
+                    ..*note
                 })));
             }
             MidiEventKind::NoteOff(note) => {
-                output.push(event.with(MidiEventKind::NoteOff(NoteOff {
+                output.push(event.clone().with(MidiEventKind::NoteOff(NoteOff {
                     pitch: note.pitch.saturating_add(2).min(127),
-                    ..*note // copies channel, velocity, note_id, tuning
+                    // Copies channel, velocity, note_id and tuning.
+                    ..*note
                 })));
             }
-            _ => output.push(*event),
+            _ => {
+                output.push(event.clone());
+            }
         }
     }
 }
