@@ -8,25 +8,18 @@ use std::process::Command;
 use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, to_vst3_executable_name, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::BundleConfig;
 
-/// Read version from workspace Cargo.toml and convert to Apple's version integer format
-pub fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> {
-    let cargo_toml_path = workspace_root.join("Cargo.toml");
-    let cargo_toml = fs::read_to_string(&cargo_toml_path)
-        .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
-
-    // Parse version from workspace.package.version
-    let version = cargo_toml
-        .lines()
-        .skip_while(|line| !line.contains("[workspace.package]"))
-        .skip(1)
-        .find(|line| line.trim().starts_with("version"))
-        .and_then(|line| line.split('=').nth(1))
-        .map(|v| v.trim().trim_matches('"').to_string())
-        .ok_or("Could not find version in Cargo.toml")?;
+/// The version of a bundle, from the version of its package.
+///
+/// Returns the version as `major.minor.patch` and as Apple's version
+/// integer. A bundle version is made of numbers only, so a pre-release or
+/// build suffix of the package version (`1.0.0-rc.1`, `1.0.0+5`) is left
+/// out.
+pub fn get_version_info(version: &str) -> Result<(String, u32), String> {
+    let numbers = version.split(['-', '+']).next().unwrap_or(version);
 
     // Parse version into major.minor.patch
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() < 3 {
+    let parts: Vec<&str> = numbers.split('.').collect();
+    if parts.len() != 3 {
         return Err(format!("Invalid version format: {}", version));
     }
 
@@ -37,7 +30,7 @@ pub fn get_version_info(workspace_root: &Path) -> Result<(String, u32), String> 
     // Convert to Apple's version format: (major << 16) | (minor << 8) | patch
     let version_int = (major << 16) | (minor << 8) | patch;
 
-    Ok((version, version_int))
+    Ok((numbers.to_string(), version_int))
 }
 
 /// Extra rustc arguments for the plugin crate of an AU build.
@@ -586,7 +579,8 @@ pub fn compile_plugin_objc(
 
     // Generate plugin-specific ObjC source files.
     let wrapper_source = generate_au_wrapper_source(plugin_name);
-    let has_gui = crate::util::detect_has_gui(plugin_name, workspace_root);
+    let package_dir = crate::util::find_package(plugin_name, workspace_root)?.dir;
+    let has_gui = crate::util::detect_has_gui(&package_dir);
     let extension_source = generate_au_extension_source(plugin_name, has_gui);
 
     // Header search paths for clang.
@@ -784,6 +778,19 @@ include!("au_codegen/auv3_objc.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_bundle_version_is_the_numbers_of_the_package_version() {
+        assert_eq!(get_version_info("0.2.4"), Ok(("0.2.4".to_string(), 0x000204)));
+        assert_eq!(get_version_info("3.1.4"), Ok(("3.1.4".to_string(), 196868)));
+
+        // A bundle version has no pre-release or build suffix.
+        assert_eq!(get_version_info("1.0.0-rc.1"), Ok(("1.0.0".to_string(), 0x010000)));
+        assert_eq!(get_version_info("1.2.3+5"), Ok(("1.2.3".to_string(), 0x010203)));
+
+        assert!(get_version_info("1.2").is_err());
+        assert!(get_version_info("one.2.3").is_err());
+    }
 
     #[test]
     fn test_clang_arches() {

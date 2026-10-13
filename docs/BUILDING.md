@@ -10,9 +10,11 @@ the bundle each plugin format expects and optionally installs it.
 | AUv3 | `--auv3` | macOS |
 | VST3 | `--vst3` | macOS (Windows in progress) |
 
-xtask is the build tool of this workspace. It looks for the plugin package
-under `examples/<package>`, where it reads `Config.toml` and the optional
-`webview/` folder.
+xtask is the build tool of this workspace. It finds the plugin package by
+its name among the members of the workspace, wherever its folder is, and
+reads `Config.toml` and the optional `webview/` folder from that folder.
+The version of the package becomes the version of the bundle, without a
+pre-release or build suffix.
 
 ## Prerequisites
 

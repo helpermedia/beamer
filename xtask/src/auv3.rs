@@ -44,8 +44,9 @@ pub fn bundle_auv3(
     arch: Arch,
     verbose: bool,
 ) -> Result<(), String> {
-    // Get version from Cargo.toml
-    let (version_string, version_int) = get_version_info(workspace_root)?;
+    // Get the version of the plugin package.
+    let package_info = crate::util::find_package(package, workspace_root)?;
+    let (version_string, version_int) = get_version_info(&package_info.version)?;
 
     let bundle_name = to_au_bundle_name(package);
     let bundle_dir = target_dir.join(&bundle_name);
@@ -225,7 +226,7 @@ pub fn bundle_auv3(
     crate::verbose!(verbose, "    Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(package, workspace_root);
+    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(&package_info.dir);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",

@@ -300,14 +300,16 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     // Get workspace root
     let workspace_root = get_workspace_root()?;
 
+    // Find the plugin package, wherever it sits in the workspace.
+    let package_info = util::find_package(&config.package, &workspace_root)?;
+
     // Clean build caches if requested
     if config.clean {
         build::clean_build_caches(&workspace_root, config)?;
     }
 
     // Build webview assets (must happen before cargo build so dist/ exists for proc macro)
-    let package_dir = workspace_root.join("examples").join(&config.package);
-    build::build_webview(&package_dir, config.verbose)?;
+    build::build_webview(&package_info.dir, config.verbose)?;
 
     // Determine paths
     let target_dir = workspace_root.join("target").join(profile_str);

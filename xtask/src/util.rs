@@ -1,8 +1,11 @@
 //! Shared utilities for xtask.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -412,18 +415,104 @@ pub fn refresh_au_registry(verbose: bool) {
 }
 
 // =============================================================================
+// Workspace Packages
+// =============================================================================
+
+/// A package of the workspace, as `cargo metadata` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspacePackage {
+    /// The folder that holds the `Cargo.toml` of the package. The plugin's
+    /// `Config.toml` and its optional `webview/` folder sit next to it.
+    pub dir: PathBuf,
+    /// The version of the package.
+    pub version: String,
+}
+
+/// The part of the output of `cargo metadata` that xtask reads.
+#[derive(Deserialize)]
+struct Metadata {
+    packages: Vec<MetadataPackage>,
+}
+
+#[derive(Deserialize)]
+struct MetadataPackage {
+    name: String,
+    version: String,
+    manifest_path: PathBuf,
+}
+
+/// Read the packages of a workspace from the output of `cargo metadata`.
+fn parse_metadata(json: &str) -> Result<HashMap<String, WorkspacePackage>, String> {
+    let metadata: Metadata = serde_json::from_str(json)
+        .map_err(|e| format!("Failed to read the output of cargo metadata: {}", e))?;
+
+    metadata
+        .packages
+        .into_iter()
+        .map(|package| {
+            let dir = package
+                .manifest_path
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| format!("Invalid manifest path of package `{}`", package.name))?;
+            let info = WorkspacePackage {
+                dir,
+                version: package.version,
+            };
+            Ok((package.name, info))
+        })
+        .collect()
+}
+
+/// Ask cargo for the packages of the workspace.
+fn workspace_packages(workspace_root: &Path) -> Result<HashMap<String, WorkspacePackage>, String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace_root)
+        .output()
+        .map_err(|e| format!("Failed to run cargo metadata: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    parse_metadata(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Find a package of the workspace by its name.
+///
+/// The package can sit anywhere in the workspace. Cargo is asked once per
+/// run of xtask, which works on one workspace.
+pub fn find_package(package: &str, workspace_root: &Path) -> Result<WorkspacePackage, String> {
+    static PACKAGES: OnceLock<Result<HashMap<String, WorkspacePackage>, String>> = OnceLock::new();
+
+    let packages = PACKAGES
+        .get_or_init(|| workspace_packages(workspace_root))
+        .as_ref()
+        .map_err(Clone::clone)?;
+
+    packages.get(package).cloned().ok_or_else(|| {
+        format!(
+            "No package named `{}` in this workspace. To make a plugin package a member, add its folder to `members` in the Cargo.toml of the workspace.",
+            package
+        )
+    })
+}
+
+// =============================================================================
 // Plugin Feature Detection
 // =============================================================================
 
 /// Detect whether a plugin has a custom GUI (WebView UI).
 ///
 /// Checks `Config.toml` for `has_gui = true` and also checks for
-/// a `webview/index.html` file in the example directory.
-pub fn detect_has_gui(package: &str, workspace_root: &Path) -> bool {
-    let example_dir = workspace_root.join("examples").join(package);
-
+/// a `webview/index.html` file in the folder of the package.
+pub fn detect_has_gui(package_dir: &Path) -> bool {
     // Check Config.toml for explicit has_gui flag
-    let config_path = example_dir.join("Config.toml");
+    let config_path = package_dir.join("Config.toml");
     if let Ok(toml_str) = fs::read_to_string(&config_path) {
         if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
             if config.has_gui == Some(true) {
@@ -433,7 +522,7 @@ pub fn detect_has_gui(package: &str, workspace_root: &Path) -> bool {
     }
 
     // Also check for webview/index.html (mirrors macro behavior)
-    example_dir.join("webview/index.html").exists()
+    package_dir.join("webview/index.html").exists()
 }
 
 // =============================================================================
@@ -445,17 +534,17 @@ pub fn detect_has_gui(package: &str, workspace_root: &Path) -> bool {
 /// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name, has_gui).
 /// Used by both AUv2 and AUv3 bundlers.
 ///
-/// Tries to read `examples/{package}/Config.toml` first. Falls back to
-/// parsing the source code in `examples/{package}/src/lib.rs` if the TOML
-/// file is missing or cannot be parsed.
+/// Tries to read `Config.toml` in the folder of the package first. Falls
+/// back to parsing the source code in its `src/lib.rs` if the TOML file is
+/// missing or cannot be parsed.
 ///
 /// The `has_gui` field is computed via `detect_has_gui`, avoiding
 /// a second parse of Config.toml by callers that need both pieces of info.
-pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
-    let has_gui = detect_has_gui(package, workspace_root);
+pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
+    let has_gui = detect_has_gui(package_dir);
 
     // Try Config.toml first
-    let config_path = workspace_root.join("examples").join(package).join("Config.toml");
+    let config_path = package_dir.join("Config.toml");
     if let Ok(toml_str) = fs::read_to_string(&config_path) {
         if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
             let component_type = au_component_type(&config.category).to_string();
@@ -472,7 +561,7 @@ pub fn detect_au_component_info(package: &str, workspace_root: &Path) -> (String
     }
 
     // Fall back to source code parsing
-    let lib_path = workspace_root.join("examples").join(package).join("src/lib.rs");
+    let lib_path = package_dir.join("src/lib.rs");
 
     if let Ok(content) = fs::read_to_string(&lib_path) {
         // Detect component type from Category enum in Config::new().
@@ -611,6 +700,54 @@ mod tests {
             MACOS_MIN_VERSION_FLAG,
             format!("-mmacosx-version-min={MACOS_DEPLOYMENT_TARGET}")
         );
+    }
+
+    #[test]
+    fn test_packages_are_read_from_cargo_metadata() {
+        let json = r#"{
+            "packages": [
+                {
+                    "name": "gain",
+                    "version": "0.2.4",
+                    "manifest_path": "/work/examples/gain/Cargo.toml",
+                    "dependencies": []
+                },
+                {
+                    "name": "my-synth",
+                    "version": "1.3.0",
+                    "manifest_path": "/work/plugins/synths/my-synth/Cargo.toml"
+                }
+            ],
+            "workspace_root": "/work"
+        }"#;
+
+        let packages = parse_metadata(json).expect("valid metadata");
+        assert_eq!(packages.len(), 2);
+        assert_eq!(
+            packages["my-synth"],
+            WorkspacePackage {
+                dir: PathBuf::from("/work/plugins/synths/my-synth"),
+                version: "1.3.0".to_string(),
+            }
+        );
+        assert_eq!(packages["gain"].dir, PathBuf::from("/work/examples/gain"));
+
+        assert!(parse_metadata("not json").is_err());
+    }
+
+    #[test]
+    fn test_package_of_this_workspace_is_found() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits in the workspace root");
+
+        let gain = find_package("gain", workspace_root).expect("gain is a member");
+        assert!(gain.dir.join("Config.toml").exists());
+        assert_eq!(gain.dir, workspace_root.join("examples").join("gain"));
+        assert!(crate::build::get_version_info(&gain.version).is_ok());
+
+        let error = find_package("no-such-plugin", workspace_root).expect_err("not a member");
+        assert!(error.contains("no-such-plugin"), "{error}");
     }
 
     /// Name of a category in `Config.toml`.

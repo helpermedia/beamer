@@ -31,8 +31,9 @@ pub fn bundle_vst3(
     workspace_root: &Path,
     verbose: bool,
 ) -> Result<(), String> {
-    // Get version from Cargo.toml
-    let (version_string, _version_int) = get_version_info(workspace_root)?;
+    // Get the version of the plugin package.
+    let package_info = crate::util::find_package(package, workspace_root)?;
+    let (version_string, _version_int) = get_version_info(&package_info.version)?;
 
     // Create bundle name (convert to CamelCase and add .vst3)
     let bundle_name = to_vst3_bundle_name(package);
