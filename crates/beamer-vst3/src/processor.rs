@@ -21,6 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use log::warn;
@@ -215,8 +216,6 @@ enum PluginState<P: Descriptor> {
     Unprepared {
         /// The unprepared definition (holds parameters)
         plugin: P,
-        /// State data received before prepare (deferred loading)
-        pending_state: Option<Vec<u8>>,
     },
     /// After setupProcessing() - processor is ready for audio.
     Prepared {
@@ -315,6 +314,15 @@ where
     component_handler: UnsafeCell<*mut IComponentHandler>,
     /// Custom WebView message handler (invoke/event routing).
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// Latency in samples as the processor reported it last, 0 while unprepared.
+    /// The host asks for it from its own threads while `process()` runs, so
+    /// the answer must not need the processor (see `publish_timing`).
+    latency_samples: AtomicU32,
+    /// Tail in samples, with the bypass ramp, as the processor reported it last.
+    tail_samples: AtomicU32,
+    /// A state was loaded: `process()` resets the parameter smoothers before
+    /// its next block. They belong to the audio thread.
+    smoothing_reset_requested: AtomicBool,
     /// Marker for the plugin type and preset collection
     _marker: PhantomData<(P, Presets)>,
 }
@@ -332,6 +340,9 @@ where
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
 // - Parameter access through Parameters trait requires Sync
+// - What a host thread uses while process() runs is atomic: the parameter
+//   values (also for saving and loading the state), latency, tail and the
+//   request to reset the smoothers
 unsafe impl<P: Descriptor, Presets> Sync for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
@@ -356,10 +367,7 @@ where
         let webview_handler = plugin.webview_handler();
 
         Self {
-            state: UnsafeCell::new(PluginState::Unprepared {
-                plugin,
-                pending_state: None,
-            }),
+            state: UnsafeCell::new(PluginState::Unprepared { plugin }),
             config,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
@@ -378,8 +386,28 @@ where
             current_preset_index: UnsafeCell::new(0), // Default to first preset
             component_handler: UnsafeCell::new(std::ptr::null_mut()),
             webview_handler,
+            latency_samples: AtomicU32::new(0),
+            tail_samples: AtomicU32::new(0),
+            smoothing_reset_requested: AtomicBool::new(false),
             _marker: PhantomData,
         }
+    }
+
+    /// Publish the latency and tail of the processor for the host.
+    ///
+    /// The host calls `getLatencySamples()` and `getTailSamples()` from its
+    /// own threads while `process()` runs. Whoever has the processor to
+    /// itself stores the values here: `setupProcessing()`, `setActive()` and
+    /// each `process()` call.
+    fn publish_timing(&self, processor: &P::Processor) {
+        self.latency_samples
+            .store(processor.latency_samples(), Ordering::Relaxed);
+        self.tail_samples.store(
+            processor
+                .tail_samples()
+                .saturating_add(processor.bypass_ramp_samples()),
+            Ordering::Relaxed,
+        );
     }
 
     /// Get a reference to the prepared processor.
@@ -595,31 +623,6 @@ where
         match unsafe { &*self.state.get() } {
             PluginState::Unprepared { plugin, .. } => plugin.wants_midi(),
             PluginState::Prepared { processor, .. } => processor.wants_midi(),
-        }
-    }
-
-    /// Get latency samples (works in both states).
-    ///
-    /// Returns 0 when unprepared (conservative default), processor's value when prepared.
-    #[inline]
-    unsafe fn latency_samples(&self) -> u32 {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { .. } => 0,
-            PluginState::Prepared { processor, .. } => processor.latency_samples(),
-        }
-    }
-
-    /// Get tail samples (works in both states).
-    ///
-    /// Returns 0 when unprepared (conservative default), processor's value when prepared.
-    #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    unsafe fn tail_samples(&self) -> u32 {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { .. } => 0,
-            PluginState::Prepared { processor, .. } => processor.tail_samples(),
         }
     }
 
@@ -1281,6 +1284,8 @@ where
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
         if let PluginState::Prepared { processor, .. } = unsafe { &mut *self.state.get() } {
             processor.set_active(state != 0);
+            // A host asks for the latency after activating.
+            self.publish_timing(processor);
         }
         // When unprepared, silently succeed (host may call this before setupProcessing)
         kResultOk
@@ -1322,30 +1327,20 @@ where
             return kResultOk;
         }
 
-        // Load state based on current state
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &mut *self.state.get() } {
-            PluginState::Unprepared { pending_state, .. } => {
-                // Store for deferred loading when prepare() is called
-                *pending_state = Some(buffer);
+        // The state is the parameters. Their values are atomic, so they are
+        // loaded through a shared reference: in both states, and also while
+        // process() runs, which is when a host loads a preset during playback.
+        use beamer_core::Parameters;
+        // SAFETY: Only the parameters are used, and only shared.
+        match unsafe { self.parameters() }.load_state(&buffer) {
+            Ok(()) => {
+                // The smoothers belong to the audio thread: the next process()
+                // call makes them jump to the loaded values, so that those do
+                // not ramp in.
+                self.smoothing_reset_requested.store(true, Ordering::Release);
                 kResultOk
             }
-            PluginState::Prepared { processor, .. } => {
-                use beamer_core::parameter_types::Parameters;
-                match processor.parameters().load_state(&buffer) {
-                    Ok(()) => {
-                        // Apply current sample rate and reset smoothers
-                        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                        let sample_rate = unsafe { *self.sample_rate.get() };
-                        if sample_rate > 0.0 {
-                            processor.parameters_mut().set_sample_rate(sample_rate);
-                        }
-                        processor.parameters_mut().reset_smoothing();
-                        kResultOk
-                    }
-                    Err(_) => kResultFalse,
-                }
-            }
+            Err(_) => kResultFalse,
         }
     }
 
@@ -1354,19 +1349,12 @@ where
             return kInvalidArgument;
         }
 
-        // Get state from processor (only available when prepared)
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        let data: Vec<u8> = match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { .. } => {
-                // When unprepared, we can't save processor state
-                // Return empty success (some hosts call this before prepare)
-                return kResultOk;
-            }
-            PluginState::Prepared { processor, .. } => {
-                use beamer_core::Parameters;
-                processor.parameters().save_state()
-            }
-        };
+        // The state is the parameters. Their values are atomic, so they are
+        // saved through a shared reference: in both states, and also while
+        // process() runs, which is when a host saves during playback.
+        use beamer_core::Parameters;
+        // SAFETY: Only the parameters are used, and only shared.
+        let data: Vec<u8> = unsafe { self.parameters() }.save_state();
 
         if data.is_empty() {
             return kResultOk;
@@ -1513,8 +1501,7 @@ where
     }
 
     unsafe fn getLatencySamples(&self) -> u32 {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.latency_samples() }
+        self.latency_samples.load(Ordering::Relaxed)
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
@@ -1547,7 +1534,7 @@ where
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
         let state = unsafe { &mut *self.state.get() };
         match state {
-            PluginState::Unprepared { plugin, pending_state } => {
+            PluginState::Unprepared { plugin } => {
                 // Cache bus info before consuming the plugin
                 let input_bus_count = plugin.input_bus_count();
                 let output_bus_count = plugin.output_bus_count();
@@ -1569,20 +1556,12 @@ where
                 // Build the plugin setup
                 let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
 
-                // Take ownership of the plugin and any pending state
+                // Take ownership of the plugin
                 let plugin = std::mem::take(plugin);
-                let pending = pending_state.take();
 
-                // Prepare the processor
-                let mut processor = plugin.prepare(plugin_setup);
-
-                // Apply any pending state that was set before preparation
-                if let Some(data) = pending {
-                    use beamer_core::Parameters;
-                    let _ = processor.parameters().load_state(&data);
-                    // Update parameters sample rate after loading
-                    processor.parameters_mut().set_sample_rate(setup.sampleRate);
-                }
+                // Prepare the processor. A state that was loaded before is in
+                // the parameters it takes over.
+                let processor = plugin.prepare(plugin_setup);
 
                 // Pre-allocate buffer storage based on bus config
                 let bus_config = CachedBusConfig::new(
@@ -1625,7 +1604,6 @@ where
                 // it and prepare it again with the new setup.
                 let placeholder = PluginState::Unprepared {
                     plugin: P::default(),
-                    pending_state: None,
                 };
                 let PluginState::Prepared {
                     processor,
@@ -1687,6 +1665,11 @@ where
             }
         }
 
+        // The host may ask for latency and tail before the first process() call.
+        if let PluginState::Prepared { processor, .. } = state {
+            self.publish_timing(processor);
+        }
+
         kResultOk
     }
 
@@ -1705,6 +1688,19 @@ where
 
         if num_samples == 0 {
             return kResultOk;
+        }
+
+        // Host threads do not touch the processor while audio runs. What they
+        // asked for since the last block happens here, before this block is
+        // processed, and what they want to know is published for them.
+        {
+            // SAFETY: process() has the processor to itself.
+            let processor = unsafe { self.processor_mut() };
+            if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
+                use beamer_core::Parameters;
+                processor.parameters_mut().reset_smoothing();
+            }
+            self.publish_timing(processor);
         }
 
         // 1. Handle incoming parameter changes from host
@@ -1924,14 +1920,8 @@ where
     }
 
     unsafe fn getTailSamples(&self) -> u32 {
-        // tail_samples and bypass_ramp_samples are on Processor
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { .. } => 0,
-            PluginState::Prepared { processor, .. } => {
-                processor.tail_samples().saturating_add(processor.bypass_ramp_samples())
-            }
-        }
+        // The tail and the bypass ramp of the processor (see `publish_timing`).
+        self.tail_samples.load(Ordering::Relaxed)
     }
 }
 
@@ -3562,5 +3552,396 @@ mod tests {
             (96000.0, 2048, ProcessMode::Offline)
         );
         assert_eq!(PREPARE_COUNT.load(std::sync::atomic::Ordering::Relaxed), 4);
+    }
+
+    // =========================================================================
+    // State, latency and tail while process() runs
+    // =========================================================================
+    //
+    // A host saves and loads the state, and asks for latency and tail, from
+    // its own threads while process() runs. None of that may use the
+    // processor.
+
+    use beamer_core::parameter_types::{FloatParameter, ParameterRef, Parameters};
+    use beamer_core::{ParameterGroups, ParameterInfo, ParameterStore};
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    const GAIN_ID: u32 = 1;
+    const STATE_TAIL_SAMPLES: u32 = 4410;
+    const STATE_BYPASS_RAMP_SAMPLES: u32 = 128;
+
+    thread_local! {
+        /// How often the smoothers were reset on this thread.
+        static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn smoothing_resets() -> usize {
+        SMOOTHING_RESETS.with(Cell::get)
+    }
+
+    /// Latency the `StateProcessor` reports for a gain value.
+    fn latency_for(gain: f64) -> u32 {
+        (gain * 100.0).round() as u32
+    }
+
+    struct StateParameters {
+        gain: FloatParameter,
+    }
+
+    impl Default for StateParameters {
+        fn default() -> Self {
+            Self {
+                gain: FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_id(GAIN_ID),
+            }
+        }
+    }
+
+    impl ParameterGroups for StateParameters {}
+
+    impl Parameters for StateParameters {
+        fn count(&self) -> usize {
+            1
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(std::iter::once(&self.gain as &dyn ParameterRef))
+        }
+        fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
+            (id == GAIN_ID).then_some(&self.gain as &dyn ParameterRef)
+        }
+        fn reset_smoothing(&mut self) {
+            SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
+        }
+    }
+
+    impl ParameterStore for StateParameters {
+        fn count(&self) -> usize {
+            1
+        }
+        fn info(&self, index: usize) -> Option<&ParameterInfo> {
+            (index == 0).then(|| ParameterRef::info(&self.gain))
+        }
+        fn get_normalized(&self, id: u32) -> f64 {
+            Parameters::by_id(self, id).map_or(0.0, |parameter| parameter.get_normalized())
+        }
+        fn set_normalized(&self, id: u32, value: f64) {
+            if let Some(parameter) = Parameters::by_id(self, id) {
+                parameter.set_normalized(value);
+            }
+        }
+        fn normalized_to_string(&self, id: u32, normalized: f64) -> String {
+            Parameters::by_id(self, id)
+                .map_or_else(String::new, |parameter| parameter.display_normalized(normalized))
+        }
+        fn string_to_normalized(&self, id: u32, string: &str) -> Option<f64> {
+            Parameters::by_id(self, id)?.parse(string)
+        }
+        fn normalized_to_plain(&self, id: u32, normalized: f64) -> f64 {
+            Parameters::by_id(self, id)
+                .map_or(0.0, |parameter| parameter.normalized_to_plain(normalized))
+        }
+        fn plain_to_normalized(&self, id: u32, plain: f64) -> f64 {
+            Parameters::by_id(self, id).map_or(0.0, |parameter| parameter.plain_to_normalized(plain))
+        }
+    }
+
+    #[derive(Default)]
+    struct StatePlugin {
+        parameters: StateParameters,
+    }
+
+    struct StateProcessor {
+        parameters: StateParameters,
+    }
+
+    impl HasParameters for StatePlugin {
+        type Parameters = StateParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, parameters: Self::Parameters) {
+            self.parameters = parameters;
+        }
+    }
+
+    impl Descriptor for StatePlugin {
+        type Setup = ();
+        type Processor = StateProcessor;
+
+        fn prepare(self, _setup: ()) -> StateProcessor {
+            StateProcessor {
+                parameters: self.parameters,
+            }
+        }
+    }
+
+    impl HasParameters for StateProcessor {
+        type Parameters = StateParameters;
+        fn parameters(&self) -> &Self::Parameters {
+            &self.parameters
+        }
+        fn parameters_mut(&mut self) -> &mut Self::Parameters {
+            &mut self.parameters
+        }
+        fn set_parameters(&mut self, parameters: Self::Parameters) {
+            self.parameters = parameters;
+        }
+    }
+
+    impl Processor for StateProcessor {
+        type Descriptor = StatePlugin;
+
+        fn process(
+            &mut self,
+            _buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+        }
+
+        fn latency_samples(&self) -> u32 {
+            latency_for(self.parameters.gain.get_normalized())
+        }
+
+        fn tail_samples(&self) -> u32 {
+            STATE_TAIL_SAMPLES
+        }
+
+        fn bypass_ramp_samples(&self) -> u32 {
+            STATE_BYPASS_RAMP_SAMPLES
+        }
+    }
+
+    static STATE_CONFIG: Config = Config::new("State Test", Category::Effect, "Test", "stat");
+
+    fn prepared_state_wrapper() -> Vst3Processor<StatePlugin> {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        prepare_state_wrapper(&wrapper);
+        wrapper
+    }
+
+    fn prepare_state_wrapper(wrapper: &Vst3Processor<StatePlugin>) {
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+    }
+
+    /// Process one stereo block like a host.
+    fn process_block(wrapper: &Vst3Processor<StatePlugin>) {
+        const FRAMES: usize = 64;
+        let mut input = [[0.5f32; FRAMES]; 2];
+        let mut output = [[0.0f32; FRAMES]; 2];
+        let mut input_channels = [input[0].as_mut_ptr(), input[1].as_mut_ptr()];
+        let mut output_channels = [output[0].as_mut_ptr(), output[1].as_mut_ptr()];
+        let mut input_bus = AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: input_channels.as_mut_ptr(),
+            },
+        };
+        let mut output_bus = AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: output_channels.as_mut_ptr(),
+            },
+        };
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            numSamples: FRAMES as int32,
+            numInputs: 1,
+            numOutputs: 1,
+            inputs: &mut input_bus,
+            outputs: &mut output_bus,
+            inputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: std::ptr::null_mut(),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: std::ptr::null_mut(),
+        };
+        // SAFETY: The data and its buffers are valid for the call.
+        assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+    }
+
+    /// A stream in memory, like the one a host hands to getState and setState.
+    #[derive(Default)]
+    struct MemoryStream {
+        /// The bytes and the read position.
+        content: Mutex<(Vec<u8>, usize)>,
+    }
+
+    impl Class for MemoryStream {
+        type Interfaces = (IBStream,);
+    }
+
+    impl IBStreamTrait for MemoryStream {
+        unsafe fn read(
+            &self,
+            buffer: *mut c_void,
+            num_bytes: int32,
+            num_bytes_read: *mut int32,
+        ) -> tresult {
+            let mut content = self.content.lock().unwrap();
+            let (bytes, position) = &mut *content;
+            let count = (num_bytes.max(0) as usize).min(bytes.len() - *position);
+            // SAFETY: The caller provides a buffer of at least num_bytes.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes[*position..].as_ptr(), buffer.cast::<u8>(), count);
+            }
+            *position += count;
+            if !num_bytes_read.is_null() {
+                // SAFETY: Checked for null above.
+                unsafe { *num_bytes_read = count as int32 };
+            }
+            kResultOk
+        }
+
+        unsafe fn write(
+            &self,
+            buffer: *mut c_void,
+            num_bytes: int32,
+            num_bytes_written: *mut int32,
+        ) -> tresult {
+            // SAFETY: The caller provides a buffer of num_bytes.
+            let written = unsafe { slice::from_raw_parts(buffer.cast::<u8>(), num_bytes.max(0) as usize) };
+            self.content.lock().unwrap().0.extend_from_slice(written);
+            if !num_bytes_written.is_null() {
+                // SAFETY: Checked for null above.
+                unsafe { *num_bytes_written = num_bytes.max(0) };
+            }
+            kResultOk
+        }
+
+        unsafe fn seek(&self, _pos: int64, _mode: int32, _result: *mut int64) -> tresult {
+            kNotImplemented
+        }
+
+        unsafe fn tell(&self, _pos: *mut int64) -> tresult {
+            kNotImplemented
+        }
+    }
+
+    /// Save the state of a wrapper like a host and return the bytes.
+    fn saved_state(wrapper: &Vst3Processor<StatePlugin>) -> Vec<u8> {
+        let stream = vst3::ComWrapper::new(MemoryStream::default());
+        let pointer = stream.to_com_ptr::<IBStream>().expect("the stream is an IBStream");
+        // SAFETY: The stream is alive for the call.
+        assert_eq!(unsafe { IComponentTrait::getState(wrapper, pointer.as_ptr()) }, kResultOk);
+        let bytes = stream.content.lock().unwrap().0.clone();
+        bytes
+    }
+
+    /// Load a state into a wrapper like a host.
+    fn load_state(wrapper: &Vst3Processor<StatePlugin>, bytes: &[u8]) -> tresult {
+        let stream = vst3::ComWrapper::new(MemoryStream {
+            content: Mutex::new((bytes.to_vec(), 0)),
+        });
+        let pointer = stream.to_com_ptr::<IBStream>().expect("the stream is an IBStream");
+        // SAFETY: The stream is alive for the call.
+        unsafe { IComponentTrait::setState(wrapper, pointer.as_ptr()) }
+    }
+
+    fn gain(wrapper: &Vst3Processor<StatePlugin>) -> f64 {
+        // SAFETY: The wrapper is alive.
+        unsafe { wrapper.getParamNormalized(GAIN_ID) }
+    }
+
+    fn set_gain(wrapper: &Vst3Processor<StatePlugin>, value: f64) {
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.setParamNormalized(GAIN_ID, value) }, kResultOk);
+    }
+
+    #[test]
+    fn test_state_is_the_same_prepared_or_not() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+
+        // Before preparing: the state is saved and a loaded one applies.
+        set_gain(&wrapper, 0.25);
+        let quiet = saved_state(&wrapper);
+        assert!(!quiet.is_empty());
+        set_gain(&wrapper, 0.75);
+        assert_eq!(load_state(&wrapper, &quiet), kResultOk);
+        assert_eq!(gain(&wrapper), 0.25);
+
+        // It moves into the processor, and is saved to the same bytes there.
+        prepare_state_wrapper(&wrapper);
+        assert_eq!(saved_state(&wrapper), quiet);
+        set_gain(&wrapper, 0.75);
+        assert_eq!(load_state(&wrapper, &quiet), kResultOk);
+        assert_eq!(gain(&wrapper), 0.25);
+
+        // An empty state changes nothing.
+        assert_eq!(load_state(&wrapper, &[]), kResultOk);
+        assert_eq!(gain(&wrapper), 0.25);
+    }
+
+    #[test]
+    fn test_loaded_state_resets_the_smoothers_in_the_next_block() {
+        let wrapper = prepared_state_wrapper();
+        process_block(&wrapper);
+        let state = saved_state(&wrapper);
+        let before = smoothing_resets();
+
+        // The smoothers belong to the audio thread: loading leaves them alone.
+        assert_eq!(load_state(&wrapper, &state), kResultOk);
+        assert_eq!(smoothing_resets(), before);
+
+        // The next block resets them, once.
+        process_block(&wrapper);
+        assert_eq!(smoothing_resets(), before + 1);
+        process_block(&wrapper);
+        assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_state_loaded_before_preparing_resets_the_smoothers_in_the_first_block() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let state = saved_state(&wrapper);
+        assert_eq!(load_state(&wrapper, &state), kResultOk);
+        let before = smoothing_resets();
+
+        prepare_state_wrapper(&wrapper);
+        process_block(&wrapper);
+        assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_latency_and_tail_are_published_for_the_host() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let tail = STATE_TAIL_SAMPLES + STATE_BYPASS_RAMP_SAMPLES;
+
+        // SAFETY: The wrapper is alive for all calls below.
+        unsafe {
+            // Unprepared: neither.
+            assert_eq!(wrapper.getLatencySamples(), 0);
+            assert_eq!(wrapper.getTailSamples(), 0);
+
+            // Prepared: known before the first process call.
+            prepare_state_wrapper(&wrapper);
+            assert_eq!(wrapper.getLatencySamples(), latency_for(0.5));
+            assert_eq!(wrapper.getTailSamples(), tail);
+
+            // A change shows with the next block.
+            set_gain(&wrapper, 0.25);
+            assert_eq!(wrapper.getLatencySamples(), latency_for(0.5));
+            process_block(&wrapper);
+            assert_eq!(wrapper.getLatencySamples(), latency_for(0.25));
+
+            // And after activating, which is when a host asks again.
+            set_gain(&wrapper, 0.75);
+            assert_eq!(wrapper.setActive(1), kResultOk);
+            assert_eq!(wrapper.getLatencySamples(), latency_for(0.75));
+            assert_eq!(wrapper.getTailSamples(), tail);
+        }
     }
 }
