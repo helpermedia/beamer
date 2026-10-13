@@ -37,6 +37,7 @@ use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::error::os_status;
 use crate::instance::AuPluginInstance;
 use crate::objc_block;
+use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
     MidiEvent, MidiEventKind, ProcessContext, Sample, MAX_BUSES, MAX_CHANNELS, MAX_SYSEX_SIZE,
@@ -1029,6 +1030,8 @@ pub trait RenderBlockTrait: Send + Sync {
 /// lifetime management - the pointer returned by internalRenderBlock
 /// remains valid as long as the Arc is held.
 pub struct RenderBlock<S: Sample> {
+    /// What this render block exchanges with host threads without a lock.
+    shared: Arc<SharedState>,
     /// Reference to the plugin for audio processing
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     /// Pre-allocated buffer storage for zero-allocation rendering
@@ -1128,11 +1131,13 @@ impl<S: Sample> RenderBlock<S> {
     /// # Arguments
     ///
     /// * `plugin` - Arc-wrapped plugin instance for audio processing
+    /// * `shared` - State shared with the host threads of the instance
     /// * `storage` - Pre-allocated buffer storage (created from bus config)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
-    pub fn new(
+    pub(crate) fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
+        shared: Arc<SharedState>,
         storage: ProcessBufferStorage<S>,
         max_frames: u32,
         sample_rate: f64,
@@ -1166,6 +1171,7 @@ impl<S: Sample> RenderBlock<S> {
             aux_output_cache.push(bus_cache);
         }
         Self {
+            shared,
             plugin,
             storage: UnsafeCell::new(storage),
             midi_buffer: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1338,6 +1344,18 @@ impl<S: Sample> RenderBlock<S> {
         if !plugin_guard.is_prepared() {
             return os_status::K_AUDIO_UNIT_ERR_UNINITIALIZED;
         }
+
+        // Host threads do not touch the processor while audio runs. What they
+        // asked for since the last block happens here, before this block is
+        // processed, and what they want to know is published for them.
+        if self.shared.take_reset_request() {
+            plugin_guard.reset();
+        }
+        if self.shared.take_smoothing_reset_request() {
+            plugin_guard.reset_smoothing();
+        }
+        self.shared
+            .publish_timing(plugin_guard.latency_samples(), plugin_guard.tail_samples());
 
         // Use pre-allocated storage instead of Vec allocations
         // SAFETY: We have exclusive access via &self and AU guarantees
@@ -1981,17 +1999,20 @@ impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
 /// # Arguments
 ///
 /// * `plugin` - Arc-wrapped plugin instance
+/// * `shared` - State shared with the host threads of the instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-pub fn create_render_block_f32(
+pub(crate) fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
+    shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f32>,
     max_frames: u32,
     sample_rate: f64,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
+        shared,
         storage,
         max_frames,
         sample_rate,
@@ -2005,17 +2026,20 @@ pub fn create_render_block_f32(
 /// # Arguments
 ///
 /// * `plugin` - Arc-wrapped plugin instance
+/// * `shared` - State shared with the host threads of the instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-pub fn create_render_block_f64(
+pub(crate) fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
+    shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f64>,
     max_frames: u32,
     sample_rate: f64,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
+        shared,
         storage,
         max_frames,
         sample_rate,

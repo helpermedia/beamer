@@ -581,7 +581,8 @@ OSStatus beamer_au_render(
  * Clears delay lines, filter states and other DSP memory.
  * Called when transport stops/starts or when the plugin is bypassed/un-bypassed.
  *
- * Thread Safety: Call from main thread only.
+ * Thread Safety: Can be called from any thread, also while audio is rendered.
+ * The reset itself runs on the audio thread, at the start of the next render call.
  *
  * @param instance Handle to the plugin instance.
  *
@@ -840,7 +841,7 @@ bool beamer_au_get_group_info(
  *
  * Call this before `beamer_au_get_state()` to allocate an appropriately sized buffer.
  *
- * Thread Safety: Call from main thread only.
+ * Thread Safety: Can be called from any thread, also while audio is rendered.
  *
  * @param instance Handle to the plugin instance.
  * @return Size of state in bytes, or 0 if no state to save.
@@ -853,7 +854,7 @@ uint32_t beamer_au_get_state_size(BeamerAuInstanceHandle _Nullable instance);
  * The state format is compatible with VST3 for cross-format preset sharing.
  * The buffer must be at least `beamer_au_get_state_size()` bytes.
  *
- * Thread Safety: Call from main thread only.
+ * Thread Safety: Can be called from any thread, also while audio is rendered.
  *
  * @param instance Handle to the plugin instance.
  * @param buffer   Buffer to write state data.
@@ -872,7 +873,9 @@ uint32_t beamer_au_get_state(
  *
  * The state format is compatible with VST3 for cross-format preset loading.
  *
- * Thread Safety: Call from main thread only.
+ * Thread Safety: Can be called from any thread, also while audio is rendered.
+ * The parameter smoothers jump to the loaded values on the audio thread, at the
+ * start of the next render call.
  *
  * @param instance Handle to the plugin instance.
  * @param buffer   Buffer containing state data.
@@ -900,7 +903,8 @@ OSStatus beamer_au_set_state(
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return Latency in samples (0 if no latency).
+ * @return Latency in samples as of the most recent render call (0 if no latency
+ *         or if render resources are not allocated).
  */
 uint32_t beamer_au_get_latency_samples(BeamerAuInstanceHandle _Nullable instance);
 
@@ -914,7 +918,8 @@ uint32_t beamer_au_get_latency_samples(BeamerAuInstanceHandle _Nullable instance
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return Tail time in samples (0 if no tail, UINT32_MAX for infinite tail).
+ * @return Tail time in samples as of the most recent render call (0 if no tail or
+ *         if render resources are not allocated, UINT32_MAX for infinite tail).
  */
 uint32_t beamer_au_get_tail_samples(BeamerAuInstanceHandle _Nullable instance);
 

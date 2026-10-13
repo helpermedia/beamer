@@ -34,7 +34,7 @@
 //! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
 use beamer_core::{
-    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, HasParameters, MidiCcConfig,
+    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig,
     PluginSetup, ProcessMode, Processor,
 };
 use log;
@@ -50,11 +50,9 @@ pub(crate) enum AuState<P: Descriptor> {
     /// - Parameters are accessible
     /// - Audio processing is not possible
     /// - Bus configuration can be queried
-    /// - State can be loaded but deferred until prepare()
-    Unprepared {
-        plugin: P,
-        pending_state: Option<Vec<u8>>,
-    },
+    /// - State can be saved and loaded: it is the parameters, which move
+    ///   into the processor on prepare()
+    Unprepared { plugin: P },
 
     /// Resources allocated, ready to process audio.
     ///
@@ -87,16 +85,12 @@ impl<P: Descriptor> AuState<P> {
     pub fn new() -> Self {
         Self::Unprepared {
             plugin: P::default(),
-            pending_state: None,
         }
     }
 
     /// Create a new state machine with an existing descriptor instance.
     pub fn with_descriptor(plugin: P) -> Self {
-        Self::Unprepared {
-            plugin,
-            pending_state: None,
-        }
+        Self::Unprepared { plugin }
     }
 
     /// Check if in prepared state.
@@ -143,20 +137,11 @@ impl<P: Descriptor> AuState<P> {
         match old_state {
             Self::Prepared { processor, .. } => {
                 let plugin = processor.unprepare();
-                *self = Self::Unprepared {
-                    plugin,
-                    pending_state: None,
-                };
+                *self = Self::Unprepared { plugin };
                 Ok(())
             }
-            Self::Unprepared {
-                plugin,
-                pending_state,
-            } => {
-                *self = Self::Unprepared {
-                    plugin,
-                    pending_state,
-                };
+            Self::Unprepared { plugin } => {
+                *self = Self::Unprepared { plugin };
                 Ok(()) // Already unprepared, no-op
             }
             Self::Transitioning => Err("Invalid state: transitioning".to_string()),
@@ -274,25 +259,12 @@ impl<P: Descriptor> AuState<P> {
         let old_state = std::mem::replace(self, Self::Transitioning);
 
         match old_state {
-            Self::Unprepared {
-                plugin,
-                pending_state,
-            } => {
+            Self::Unprepared { plugin } => {
                 // Capture MIDI CC config before consuming the plugin
                 let midi_cc_config = plugin.midi_cc_config();
 
                 let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
-                let mut processor = plugin.prepare(plugin_setup);
-
-                // Apply any pending state that was set before preparation
-                if let Some(data) = pending_state {
-                    use beamer_core::parameter_types::Parameters;
-                    if let Err(e) = processor.parameters().load_state(&data) {
-                        log::warn!("Failed to load pending state: {:?}", e);
-                    }
-                    processor.parameters_mut().set_sample_rate(sample_rate);
-                    processor.parameters_mut().reset_smoothing();
-                }
+                let processor = plugin.prepare(plugin_setup);
 
                 let (conversion_buffers, midi_cc_state, midi_output_buffer) =
                     allocate_processing_resources(

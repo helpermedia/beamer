@@ -14,13 +14,71 @@
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
 //! plugin implementation.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
+use beamer_core::parameter_types::Parameters;
+use beamer_core::preset::PresetInfo;
 use beamer_core::{
-    CachedBusConfig, MidiEvent, ParameterGroups, ParameterStore, ProcessContext, ProcessMode,
-    WebViewHandler,
+    CachedBusConfig, MidiEvent, ParameterStore, ProcessContext, ProcessMode, WebViewHandler,
 };
+
+/// The parameters of a plugin as the bridge uses them from host threads.
+///
+/// Everything behind this trait works through a shared reference: the
+/// parameter values are atomic and the rest is immutable. That is what lets
+/// the bridge answer the host without the plugin mutex while the audio thread
+/// renders.
+pub trait SharedParameters: Send + Sync {
+    /// The values and metadata of the parameters.
+    fn store(&self) -> &dyn ParameterStore;
+
+    /// The parameter collection: its state and its groups.
+    fn parameters(&self) -> &dyn Parameters;
+
+    /// The parameters as `Any`, to get back at their concrete type.
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: ParameterStore + Parameters + 'static> SharedParameters for T {
+    fn store(&self) -> &dyn ParameterStore {
+        self
+    }
+
+    fn parameters(&self) -> &dyn Parameters {
+        self
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// The factory presets of a plugin type.
+///
+/// The presets are static data, so the bridge captures this once when an
+/// instance is created and never has to ask the plugin again.
+#[derive(Clone, Copy)]
+pub struct FactoryPresetAccess {
+    /// Number of factory presets.
+    pub count: usize,
+    /// Returns the info of the preset at an index.
+    pub info: fn(usize) -> Option<PresetInfo>,
+    /// Applies the preset at an index to the parameters of the plugin.
+    pub apply: fn(&dyn SharedParameters, usize) -> bool,
+}
+
+impl FactoryPresetAccess {
+    /// A plugin without factory presets.
+    pub fn none() -> Self {
+        Self {
+            count: 0,
+            info: |_| None,
+            apply: |_, _| false,
+        }
+    }
+}
 
 /// Type-erased interface for AU plugin instances.
 ///
@@ -70,16 +128,14 @@ pub trait AuPluginInstance: Send + 'static {
     /// Get the maximum frame count (only valid when prepared).
     fn max_frames(&self) -> Option<u32>;
 
-    /// Get parameter store for building AUParameterTree.
+    /// Get the parameters as the bridge shares them with host threads.
     ///
-    /// Returns a reference to the parameter store which provides:
-    /// - Parameter count and metadata
-    /// - Normalized value get/set
-    /// - Value formatting
+    /// The bridge caches a pointer to them, so that parameter values, state,
+    /// groups and presets need no plugin mutex (see `SharedParameters`).
     ///
     /// # Errors
     /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn parameter_store(&self) -> Result<&dyn ParameterStore, PluginError>;
+    fn shared_parameters(&self) -> Result<&(dyn SharedParameters + 'static), PluginError>;
 
     /// Get mutable parameter store for setting values from host.
     ///
@@ -87,33 +143,18 @@ pub trait AuPluginInstance: Send + 'static {
     /// Returns an error if the plugin is in an invalid state (transitioning).
     fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError>;
 
-    /// Get parameter groups for building hierarchical AUParameterTree.
-    ///
-    /// Returns a reference to the `ParameterGroups` trait object which provides:
-    /// - Group count and metadata
-    /// - Hierarchical group relationships
-    ///
-    /// # Errors
-    /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn parameter_groups(&self) -> Result<&dyn ParameterGroups, PluginError>;
-
-    /// Save plugin state to bytes.
-    ///
-    /// Uses the same format as VST3 for cross-format compatibility.
-    /// Called by AU host for preset saving.
-    fn save_state(&self) -> Vec<u8>;
-
-    /// Load plugin state from bytes.
-    ///
-    /// Uses the same format as VST3 for cross-format compatibility.
-    /// Called by AU host for preset loading.
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()>;
-
     /// Reset DSP state (clear delay lines, reset filters, etc.).
     ///
-    /// Called when the transport stops/starts or when the plugin is
-    /// activated/deactivated.
+    /// The render call runs this on the audio thread at the start of the
+    /// block that follows a reset request of the host.
     fn reset(&mut self);
+
+    /// Reset the parameter smoothers to the current parameter values.
+    ///
+    /// The render call runs this on the audio thread at the start of the
+    /// block that follows a state load, so that the loaded values apply at
+    /// once instead of ramping in.
+    fn reset_smoothing(&mut self);
 
     /// Get the tail length in samples.
     ///
@@ -387,28 +428,8 @@ pub trait AuPluginInstance: Send + 'static {
     // Factory Presets
     // =========================================================================
 
-    /// Returns the number of factory presets.
-    ///
-    /// Returns 0 if the plugin has no factory presets.
-    fn preset_count(&self) -> u32 {
-        0
-    }
-
-    /// Returns preset info (number, name) for given index.
-    ///
-    /// Returns `None` if the index is out of range.
-    fn preset_info(&self, _index: u32) -> Option<(i32, &str)> {
-        None
-    }
-
-    /// Applies a factory preset by index.
-    ///
-    /// Only parameters specified in the preset are modified; other parameters
-    /// retain their current values (sparse application).
-    ///
-    /// Returns `true` if the preset was applied successfully, `false` if the
-    /// index is out of range.
-    fn apply_preset(&self, _index: u32) -> bool {
-        false
+    /// Returns the factory presets of the plugin.
+    fn factory_presets(&self) -> FactoryPresetAccess {
+        FactoryPresetAccess::none()
     }
 }

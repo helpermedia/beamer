@@ -118,6 +118,8 @@ pub mod processor;
 #[cfg(target_os = "macos")]
 pub mod render;
 #[cfg(target_os = "macos")]
+mod shared_state;
+#[cfg(target_os = "macos")]
 mod transport;
 
 // Re-exports for macOS-only modules

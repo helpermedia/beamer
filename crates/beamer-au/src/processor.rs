@@ -32,11 +32,11 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
-use crate::instance::AuPluginInstance;
+use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
 use crate::lifecycle::AuState;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ParameterGroups, ParameterStore, ProcessContext, ProcessMode, Processor,
+    MidiEvent, NoPresets, ParameterStore, ProcessContext, ProcessMode, Processor,
     Transport, WebViewHandler,
 };
 
@@ -130,7 +130,7 @@ where
         self.state.max_frames()
     }
 
-    fn parameter_store(&self) -> Result<&dyn ParameterStore, PluginError> {
+    fn shared_parameters(&self) -> Result<&(dyn SharedParameters + 'static), PluginError> {
         match &self.state {
             AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
             AuState::Prepared { processor, .. } => Ok(processor.parameters()),
@@ -150,59 +150,19 @@ where
         }
     }
 
-    fn parameter_groups(&self) -> Result<&dyn ParameterGroups, PluginError> {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
-            AuState::Prepared { processor, .. } => Ok(processor.parameters()),
-            AuState::Transitioning => {
-                Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
-        }
-    }
-
-    fn save_state(&self) -> Vec<u8> {
-        match &self.state {
-            AuState::Unprepared { .. } => {
-                // Can't save processor state when not prepared
-                Vec::new()
-            }
-            AuState::Prepared { processor, .. } => {
-                use beamer_core::parameter_types::Parameters;
-                processor.parameters().save_state()
-            }
-            AuState::Transitioning => Vec::new(),
-        }
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        match &mut self.state {
-            AuState::Unprepared { pending_state, .. } => {
-                // Defer loading until prepare() is called
-                *pending_state = Some(data.to_vec());
-                Ok(())
-            }
-            AuState::Prepared { processor, .. } => {
-                // Load state immediately and reset smoothing
-                use beamer_core::parameter_types::Parameters;
-                processor
-                    .parameters()
-                    .load_state(data)
-                    .map_err(PluginError::StateError)?;
-                processor.parameters_mut().reset_smoothing();
-                Ok(())
-            }
-            AuState::Transitioning => {
-                Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
-        }
-    }
-
     fn reset(&mut self) {
         if let Some(processor) = self.state.processor_mut() {
             // Full reset sequence: deactivate then reactivate
             // This matches VST3 behavior and beamer_core documentation
             processor.set_active(false);
             processor.set_active(true);
+        }
+    }
+
+    fn reset_smoothing(&mut self) {
+        if let Some(processor) = self.state.processor_mut() {
+            use beamer_core::parameter_types::Parameters;
+            processor.parameters_mut().reset_smoothing();
         }
     }
 
@@ -758,27 +718,23 @@ where
         self.webview_handler.clone()
     }
 
-    fn preset_count(&self) -> u32 {
-        Presets::count() as u32
-    }
-
-    fn preset_info(&self, index: u32) -> Option<(i32, &str)> {
-        if (index as usize) < Presets::count() {
-            Presets::info(index as usize).map(|info| (index as i32, info.name))
-        } else {
-            None
+    fn factory_presets(&self) -> FactoryPresetAccess {
+        FactoryPresetAccess {
+            count: Presets::count(),
+            info: Presets::info,
+            apply: apply_preset::<Presets>,
         }
     }
+}
 
-    fn apply_preset(&self, index: u32) -> bool {
-        // Always apply unconditionally - never guard with "if changed".
-        // Hosts may re-send the same preset and skipping would break preset 0.
-        let params = match &self.state {
-            AuState::Unprepared { plugin, .. } => plugin.parameters(),
-            AuState::Prepared { processor, .. } => processor.parameters(),
-            AuState::Transitioning => return false,
-        };
-        Presets::apply(index as usize, params)
+/// Apply a factory preset to the shared parameters of a plugin.
+///
+/// Always applies, also when the preset is the current one: hosts send the
+/// same preset again and expect its values back.
+fn apply_preset<Presets: FactoryPresets>(parameters: &dyn SharedParameters, index: usize) -> bool {
+    match parameters.as_any().downcast_ref::<Presets::Parameters>() {
+        Some(parameters) => Presets::apply(index, parameters),
+        None => false,
     }
 }
 
@@ -813,7 +769,38 @@ mod tests {
     use beamer_core::parameter_types::{ParameterRef, Parameters};
     use beamer_core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
     use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind};
+    use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // =========================================================================
+    // What the mocks report
+    // =========================================================================
+    //
+    // Kept per thread, so that tests running in parallel do not see each other.
+
+    thread_local! {
+        /// Runs inside `TestParameters::save_state` on the thread that set it.
+        static SAVE_STATE_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+        /// How often the smoothers were reset on this thread.
+        static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
+        /// How often a `TestProcessor` was activated on this thread.
+        static ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn smoothing_resets() -> usize {
+        SMOOTHING_RESETS.with(Cell::get)
+    }
+
+    fn activations() -> usize {
+        ACTIVATIONS.with(Cell::get)
+    }
+
+    /// Latency the `TestProcessor` reports for a gain value.
+    fn latency_for(gain: f64) -> u32 {
+        (gain * 100.0).round() as u32
+    }
+
+    const TEST_TAIL_SAMPLES: u32 = 4410;
 
     // =========================================================================
     // Mock Parameter
@@ -918,13 +905,13 @@ mod tests {
 
     impl ParameterGroups for TestParameters {
         fn group_count(&self) -> usize {
-            1
+            2
         }
         fn group_info(&self, index: usize) -> Option<GroupInfo> {
-            if index == 0 {
-                Some(GroupInfo::root())
-            } else {
-                None
+            match index {
+                0 => Some(GroupInfo::root()),
+                1 => Some(GroupInfo::new(1, "Filter", 0)),
+                _ => None,
             }
         }
     }
@@ -942,6 +929,19 @@ mod tests {
             } else {
                 None
             }
+        }
+        fn save_state(&self) -> Vec<u8> {
+            SAVE_STATE_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow().as_ref() {
+                    hook();
+                }
+            });
+            let mut data = Vec::new();
+            self.save_state_prefixed(&mut data, "");
+            data
+        }
+        fn reset_smoothing(&mut self) {
+            SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
         }
     }
 
@@ -1080,6 +1080,20 @@ mod tests {
         ) {
             // No-op for testing
         }
+
+        fn set_active(&mut self, active: bool) {
+            if active {
+                ACTIVATIONS.with(|activations| activations.set(activations.get() + 1));
+            }
+        }
+
+        fn latency_samples(&self) -> u32 {
+            latency_for(self.parameters.gain.get_normalized())
+        }
+
+        fn tail_samples(&self) -> u32 {
+            TEST_TAIL_SAMPLES
+        }
     }
 
     // =========================================================================
@@ -1156,14 +1170,14 @@ mod tests {
 
     /// Get the gain parameter's normalized value.
     fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
-        let params = processor.parameter_store().unwrap();
+        let params = processor.shared_parameters().unwrap().store();
         let gain_id = params.info(0).unwrap().id;
         params.get_normalized(gain_id)
     }
 
     /// Set the gain parameter's normalized value.
     fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
-        let params = processor.parameter_store().unwrap();
+        let params = processor.shared_parameters().unwrap().store();
         let gain_id = params.info(0).unwrap().id;
         processor
             .parameter_store_mut()
@@ -1180,7 +1194,8 @@ mod tests {
         // The test plugin declares one stereo input and keeps the default
         // stereo output.
         let processor = AuProcessor::<TestPlugin, TestPresets>::new();
-        assert_eq!(crate::bridge::main_channels_of(&processor), (2, 2));
+        let declared = crate::bridge::DeclaredBuses::capture(&processor);
+        assert_eq!(declared.main_channels(), (2, 2));
     }
 
     // =========================================================================
@@ -1353,6 +1368,7 @@ mod tests {
     use crate::buffer_storage::ProcessBufferStorage;
     use crate::buffers::{AudioBuffer, AudioBufferList};
     use crate::render::{create_render_block_f32, AudioTimeStamp, RenderBlockTrait, SMPTETime};
+    use crate::shared_state::SharedState;
     use std::sync::{Arc, Mutex};
 
     const FRAMES: usize = 64;
@@ -1484,7 +1500,21 @@ mod tests {
             .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, process_mode)
             .expect("prepare");
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
-        create_render_block_f32(Arc::clone(plugin), storage, FRAMES as u32, 44100.0)
+        let shared = Arc::new(SharedState::default());
+        create_render_block_f32(Arc::clone(plugin), shared, storage, FRAMES as u32, 44100.0)
+    }
+
+    /// The timestamp of a first buffer.
+    fn timestamp() -> AudioTimeStamp {
+        AudioTimeStamp {
+            sample_time: 0.0,
+            host_time: 0,
+            rate_scalar: 1.0,
+            word_clock_time: 0,
+            smpte_time: SMPTETime::default(),
+            flags: 1,
+            reserved: 0,
+        }
     }
 
     /// Render one buffer of the main bus and return the first output sample
@@ -1494,15 +1524,7 @@ mod tests {
         input: Option<&mut StereoList>,
         output: &mut StereoList,
     ) -> [f32; 2] {
-        let timestamp = AudioTimeStamp {
-            sample_time: 0.0,
-            host_time: 0,
-            rate_scalar: 1.0,
-            word_clock_time: 0,
-            smpte_time: SMPTETime::default(),
-            flags: 1,
-            reserved: 0,
-        };
+        let timestamp = timestamp();
         let mut action_flags = 0u32;
         let input_list = input.map_or(std::ptr::null(), |list| list.as_list().cast_const());
         let status = block.process(
@@ -1583,11 +1605,24 @@ mod tests {
     // =========================================================================
 
     use crate::bridge::{
-        beamer_au_allocate_render_resources, beamer_au_deallocate_render_resources,
-        beamer_au_get_parameter_value, beamer_au_set_parameter_value, BeamerAuBusConfig,
-        BeamerAuBusInfo, BeamerAuBusType, BeamerAuSampleFormat, BeamerInstanceHandle,
+        beamer_au_allocate_render_resources, beamer_au_apply_preset,
+        beamer_au_deallocate_render_resources, beamer_au_get_group_count,
+        beamer_au_get_group_info, beamer_au_get_input_bus_channel_count,
+        beamer_au_get_input_bus_count, beamer_au_get_latency_samples,
+        beamer_au_get_output_bus_channel_count, beamer_au_get_output_bus_count,
+        beamer_au_get_parameter_value, beamer_au_get_preset_count, beamer_au_get_preset_info,
+        beamer_au_get_state, beamer_au_get_state_size, beamer_au_get_tail_samples,
+        beamer_au_render, beamer_au_reset, beamer_au_set_parameter_value, beamer_au_set_state,
+        BeamerAuBusConfig, BeamerAuBusInfo, BeamerAuBusType, BeamerAuGroupInfo,
+        BeamerAuPresetInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
     };
     use beamer_core::MAX_BUSES;
+    use std::ffi::CStr;
+
+    /// An instance pointer that a test hands to a second thread.
+    struct Instance(*mut BeamerInstanceHandle);
+    // SAFETY: The bridge functions are made to be called from any thread.
+    unsafe impl Send for Instance {}
 
     fn test_handle() -> Box<BeamerInstanceHandle> {
         let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
@@ -1652,7 +1687,7 @@ mod tests {
         let shared = unsafe { &*instance };
         // With the cached pointer locked, as it is during a move, access goes
         // through the plugin instead of failing or using the pointer.
-        shared.with_param_store_locked(|| {
+        shared.with_shared_parameters_locked(|| {
             beamer_au_set_parameter_value(instance, gain_id(), 0.125);
             assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
         });
@@ -1661,10 +1696,6 @@ mod tests {
 
     #[test]
     fn test_parameter_access_during_repeated_preparing() {
-        struct Instance(*mut BeamerInstanceHandle);
-        // SAFETY: The bridge functions are made to be called from any thread.
-        unsafe impl Send for Instance {}
-
         let mut handle = test_handle();
         let instance: *mut BeamerInstanceHandle = &mut *handle;
         assert_eq!(allocate(instance, false), 0);
@@ -1688,5 +1719,313 @@ mod tests {
 
         beamer_au_set_parameter_value(instance, gain_id(), 0.5);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.5);
+    }
+
+    // =========================================================================
+    // Host queries while audio runs
+    // =========================================================================
+    //
+    // The render call fails when it finds the plugin mutex held, so nothing a
+    // host calls during playback may take it.
+
+    /// Render one buffer of the main bus through the C-ABI.
+    fn render_instance(instance: *mut BeamerInstanceHandle) -> i32 {
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+        beamer_au_render(
+            instance,
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            input.as_list().cast_const(),
+            std::ptr::null(),
+            None,
+            std::ptr::null_mut(),
+        )
+    }
+
+    /// The state of the instance, as a host reads it.
+    fn saved_state(instance: *mut BeamerInstanceHandle) -> Vec<u8> {
+        let mut state = vec![0u8; beamer_au_get_state_size(instance) as usize];
+        let written = beamer_au_get_state(instance, state.as_mut_ptr(), state.len() as u32);
+        assert_eq!(written as usize, state.len());
+        state
+    }
+
+    fn load_state(instance: *mut BeamerInstanceHandle, state: &[u8]) -> i32 {
+        beamer_au_set_state(instance, state.as_ptr(), state.len() as u32)
+    }
+
+    fn plugin_lock_count(instance: *mut BeamerInstanceHandle) -> usize {
+        // SAFETY: The handle is alive, and it is only used shared.
+        unsafe { &*instance }.plugin_lock_count()
+    }
+
+    #[test]
+    fn test_host_queries_do_not_lock_the_plugin() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        let locks = plugin_lock_count(instance);
+
+        // State: saved, changed and loaded again.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        let state = saved_state(instance);
+        assert!(!state.is_empty());
+        beamer_au_set_parameter_value(instance, gain_id(), 0.75);
+        assert_eq!(load_state(instance, &state), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+
+        // Presets.
+        assert_eq!(beamer_au_get_preset_count(instance), 3);
+        let mut preset = BeamerAuPresetInfo::default();
+        assert!(beamer_au_get_preset_info(instance, 2, &mut preset));
+        assert_eq!(preset.number, 2);
+        // SAFETY: The bridge terminates the name.
+        assert_eq!(unsafe { CStr::from_ptr(preset.name.as_ptr()) }.to_str(), Ok("Boost"));
+        assert!(!beamer_au_get_preset_info(instance, 3, &mut preset));
+        assert!(beamer_au_apply_preset(instance, 2));
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
+        assert!(!beamer_au_apply_preset(instance, 3));
+
+        // Groups.
+        assert_eq!(beamer_au_get_group_count(instance), 2);
+        let mut group = BeamerAuGroupInfo::default();
+        assert!(beamer_au_get_group_info(instance, 1, &mut group));
+        assert_eq!(group.id, 1);
+        // SAFETY: The bridge terminates the name.
+        assert_eq!(unsafe { CStr::from_ptr(group.name.as_ptr()) }.to_str(), Ok("Filter"));
+        assert!(!beamer_au_get_group_info(instance, 2, &mut group));
+
+        // Buses: the test plugin declares one stereo input and keeps the
+        // default stereo output.
+        assert_eq!(beamer_au_get_input_bus_count(instance), 1);
+        assert_eq!(beamer_au_get_output_bus_count(instance), 1);
+        assert_eq!(beamer_au_get_input_bus_channel_count(instance, 0), 2);
+        assert_eq!(beamer_au_get_output_bus_channel_count(instance, 0), 2);
+
+        // Latency, tail and a reset.
+        assert_eq!(beamer_au_get_tail_samples(instance), TEST_TAIL_SAMPLES);
+        beamer_au_get_latency_samples(instance);
+        beamer_au_reset(instance);
+
+        assert_eq!(plugin_lock_count(instance), locks);
+    }
+
+    #[test]
+    fn test_render_is_not_refused_while_the_state_is_saved() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+
+        // A host thread saves the state and stays inside the save until the
+        // render call below is through.
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let saver = Instance(instance);
+        let host = std::thread::spawn(move || {
+            let saver = saver;
+            SAVE_STATE_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    inside_tx.send(()).expect("the test waits for the save");
+                    let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                }));
+            });
+            let mut state = [0u8; 64];
+            beamer_au_get_state(saver.0, state.as_mut_ptr(), state.len() as u32)
+        });
+        inside_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the host thread reaches the save");
+
+        let status = render_instance(instance);
+
+        release_tx.send(()).expect("the host thread waits");
+        let written = host.join().expect("the host thread panicked");
+        assert_eq!(status, 0);
+        assert!(written > 0);
+    }
+
+    #[test]
+    fn test_state_is_the_same_prepared_or_not() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // Before preparing: the state is saved and a loaded one applies.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        let quiet = saved_state(instance);
+        assert!(!quiet.is_empty());
+        beamer_au_set_parameter_value(instance, gain_id(), 0.75);
+        assert_eq!(load_state(instance, &quiet), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+
+        // It moves into the processor, and is saved to the same bytes there.
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(saved_state(instance), quiet);
+
+        // And back.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.75);
+        let boost = saved_state(instance);
+        beamer_au_deallocate_render_resources(instance);
+        assert_eq!(saved_state(instance), boost);
+        assert_eq!(load_state(instance, &quiet), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+
+        // An empty state changes nothing.
+        assert_eq!(load_state(instance, &[]), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+    }
+
+    #[test]
+    fn test_loaded_state_resets_the_smoothers_in_the_next_block() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        let state = saved_state(instance);
+        let before = smoothing_resets();
+
+        // The smoothers belong to the audio thread: loading leaves them alone.
+        assert_eq!(load_state(instance, &state), 0);
+        assert_eq!(smoothing_resets(), before);
+
+        // The next block resets them, once.
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(smoothing_resets(), before + 1);
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_state_loaded_before_preparing_resets_the_smoothers_in_the_first_block() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let state = saved_state(instance);
+        assert_eq!(load_state(instance, &state), 0);
+        let before = smoothing_resets();
+
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_reset_runs_in_the_next_block() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        let before = activations();
+
+        // The processor belongs to the audio thread: the request waits.
+        beamer_au_reset(instance);
+        assert_eq!(activations(), before);
+
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(activations(), before + 1);
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(activations(), before + 1);
+    }
+
+    #[test]
+    fn test_reset_before_preparing_is_dropped() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // A new processor starts clean, there is nothing left to reset.
+        beamer_au_reset(instance);
+        assert_eq!(allocate(instance, false), 0);
+        let before = activations();
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(activations(), before);
+    }
+
+    #[test]
+    fn test_latency_and_tail_are_published_by_the_audio_thread() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // Unprepared: neither.
+        assert_eq!(beamer_au_get_latency_samples(instance), 0);
+        assert_eq!(beamer_au_get_tail_samples(instance), 0);
+
+        // Prepared: known before the first render call.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.5);
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(beamer_au_get_latency_samples(instance), latency_for(0.5));
+        assert_eq!(beamer_au_get_tail_samples(instance), TEST_TAIL_SAMPLES);
+
+        // A change shows with the next block.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(beamer_au_get_latency_samples(instance), latency_for(0.5));
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(beamer_au_get_latency_samples(instance), latency_for(0.25));
+
+        // Unprepared again: neither.
+        beamer_au_deallocate_render_resources(instance);
+        assert_eq!(beamer_au_get_latency_samples(instance), 0);
+        assert_eq!(beamer_au_get_tail_samples(instance), 0);
+    }
+
+    #[test]
+    fn test_deallocate_that_cannot_take_the_plugin_keeps_the_parameters() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+
+        // SAFETY: The handle is alive, and it is only used shared here.
+        let shared = unsafe { &*instance };
+        // With the plugin held elsewhere nothing is unprepared and nothing
+        // moves, so the cached parameters stay valid.
+        shared.with_plugin_locked(|| beamer_au_deallocate_render_resources(instance));
+
+        let locks = plugin_lock_count(instance);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+        assert!(!saved_state(instance).is_empty());
+        assert_eq!(plugin_lock_count(instance), locks);
+        assert_eq!(beamer_au_get_tail_samples(instance), TEST_TAIL_SAMPLES);
+    }
+
+    #[test]
+    fn test_host_queries_during_repeated_preparing() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+        let state = saved_state(instance);
+
+        // One thread asks what a host asks during playback, while this one
+        // switches the offline state back and forth.
+        let asker = Instance(instance);
+        let expected = state.clone();
+        let worker = std::thread::spawn(move || {
+            let asker = asker;
+            for i in 0..5_000u32 {
+                assert_eq!(saved_state(asker.0).len(), expected.len());
+                assert_eq!(load_state(asker.0, &expected), 0);
+                assert!(beamer_au_apply_preset(asker.0, i % 3));
+                assert_eq!(beamer_au_get_group_count(asker.0), 2);
+                assert_eq!(beamer_au_get_input_bus_count(asker.0), 1);
+                let tail = beamer_au_get_tail_samples(asker.0);
+                assert!(tail == 0 || tail == TEST_TAIL_SAMPLES);
+                beamer_au_reset(asker.0);
+            }
+        });
+        for i in 0..200 {
+            assert_eq!(allocate(instance, i % 2 == 0), 0);
+        }
+        worker.join().expect("the host thread panicked");
+
+        assert_eq!(load_state(instance, &state), 0);
+        assert_eq!(saved_state(instance), state);
     }
 }

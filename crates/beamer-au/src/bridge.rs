@@ -31,7 +31,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
@@ -42,11 +42,12 @@ use beamer_core::{
     WebViewHandler, MAX_BUSES,
 };
 use crate::factory;
-use crate::instance::AuPluginInstance;
+use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
 use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait,
 };
+use crate::shared_state::SharedState;
 use crate::transport::BeamerAuTransport;
 use beamer_core::ParameterStore;
 
@@ -326,12 +327,7 @@ impl Default for BeamerAuChannelCapabilities {
 // Instance Handle
 // =============================================================================
 
-/// Cached fat pointer to a `dyn ParameterStore` trait object.
-///
-/// `*const dyn ParameterStore` is a fat pointer (data + vtable, 16 bytes) that
-/// carries an implicit `'static` bound in Rust's type system. We store it as
-/// `[usize; 2]` to avoid borrow-checker conflicts when extracting the pointer
-/// from a `MutexGuard` scope.
+/// Cached pointer to the parameters of the plugin (see `SharedParameters`).
 ///
 /// # Safety
 ///
@@ -340,60 +336,96 @@ impl Default for BeamerAuChannelCapabilities {
 /// for the entire instance lifetime. The parameter storage moves inside that
 /// allocation when the plugin is prepared or unprepared, which is why the
 /// handle keeps the pointer behind a lock (see `BeamerInstanceHandle`).
-struct ParamStorePtr {
-    raw: [usize; 2],
-}
+struct SharedParametersPtr(Option<NonNull<dyn SharedParameters>>);
 
-const _: () = assert!(
-    std::mem::size_of::<*const dyn ParameterStore>() == std::mem::size_of::<[usize; 2]>(),
-    "Fat pointer size mismatch"
-);
-
-impl ParamStorePtr {
+impl SharedParametersPtr {
     /// Create a null (invalid) pointer.
     fn null() -> Self {
-        Self { raw: [0; 2] }
+        Self(None)
     }
 
-    /// Capture the current ParameterStore pointer from a plugin instance.
+    /// Capture the current parameters pointer from a plugin instance.
     fn capture(plugin: &dyn AuPluginInstance) -> Self {
-        match plugin.parameter_store() {
-            Ok(store) => {
-                let ptr: *const dyn ParameterStore = store;
-                // SAFETY: A fat pointer (data + vtable) is exactly two usizes on all
-                // supported platforms. The compile-time assertion above guards this.
-                let raw: [usize; 2] = unsafe { std::mem::transmute(ptr) };
-                Self { raw }
-            }
-            Err(_) => Self::null(),
-        }
+        Self(plugin.shared_parameters().ok().map(NonNull::from))
     }
 
-    /// Check if the pointer is null (invalid).
-    fn is_null(&self) -> bool {
-        self.raw[0] == 0
-    }
-
-    /// Get a reference to the ParameterStore.
+    /// Get a reference to the parameters, `None` for a null pointer.
     ///
     /// # Safety
     ///
     /// The caller must ensure the pointee is still alive (i.e. the
     /// `Box<dyn AuPluginInstance>` has not been dropped or its state
     /// changed since `capture()` was called).
-    unsafe fn get(&self) -> &dyn ParameterStore {
-        // SAFETY: `raw` was created from a valid fat pointer via `transmute` in `capture()`.
-        let ptr: *const dyn ParameterStore = unsafe { std::mem::transmute(self.raw) };
+    unsafe fn get(&self) -> Option<&dyn SharedParameters> {
         // SAFETY: The caller guarantees the pointee is still alive.
-        unsafe { &*ptr }
+        self.0.map(|parameters| unsafe { parameters.as_ref() })
     }
 }
 
-// SAFETY: The ParameterStore trait requires Send + Sync. The pointer targets
+// SAFETY: SharedParameters requires Send + Sync. The pointer targets
 // parameter data backed by atomics, which are inherently thread-safe.
-unsafe impl Send for ParamStorePtr {}
+unsafe impl Send for SharedParametersPtr {}
 // SAFETY: Same rationale as Send. All parameter value access uses atomic operations.
-unsafe impl Sync for ParamStorePtr {}
+unsafe impl Sync for SharedParametersPtr {}
+
+/// The buses a plugin declares, captured when the instance is created.
+///
+/// A host asks for them at any time, also while audio runs, so the answers
+/// must not need the plugin.
+pub(crate) struct DeclaredBuses {
+    input_count: usize,
+    output_count: usize,
+    /// Info of the first `MAX_BUSES` input buses, by index.
+    inputs: Vec<Option<beamer_core::BusInfo>>,
+    /// Info of the first `MAX_BUSES` output buses, by index.
+    outputs: Vec<Option<beamer_core::BusInfo>>,
+}
+
+impl DeclaredBuses {
+    /// Capture the bus declaration of a plugin.
+    ///
+    /// The infos are taken for every index, not only below the bus count: a
+    /// plugin may describe a main bus it does not count (see `main_channels`).
+    pub(crate) fn capture(plugin: &dyn AuPluginInstance) -> Self {
+        Self {
+            input_count: plugin.declared_input_bus_count(),
+            output_count: plugin.declared_output_bus_count(),
+            inputs: (0..MAX_BUSES)
+                .map(|index| plugin.declared_input_bus_info(index))
+                .collect(),
+            outputs: (0..MAX_BUSES)
+                .map(|index| plugin.declared_output_bus_info(index))
+                .collect(),
+        }
+    }
+
+    /// Number of buses in a direction.
+    fn count(&self, direction: BusDirection) -> usize {
+        match direction {
+            BusDirection::Input => self.input_count,
+            BusDirection::Output => self.output_count,
+        }
+    }
+
+    /// Info of the bus at an index in a direction.
+    fn info(&self, direction: BusDirection, index: usize) -> Option<&beamer_core::BusInfo> {
+        let infos = match direction {
+            BusDirection::Input => &self.inputs,
+            BusDirection::Output => &self.outputs,
+        };
+        infos.get(index)?.as_ref()
+    }
+
+    /// Main bus channel counts (see `main_channels`).
+    pub(crate) fn main_channels(&self) -> (u32, u32) {
+        main_channels(
+            self.input_count,
+            self.info(BusDirection::Input, 0).cloned(),
+            self.output_count,
+            self.info(BusDirection::Output, 0).cloned(),
+        )
+    }
+}
 
 /// Opaque handle to a beamer AU plugin instance.
 ///
@@ -407,6 +439,11 @@ unsafe impl Sync for ParamStorePtr {}
 /// while resource allocation/deallocation uses `write()` for exclusive access.
 /// This prevents data races when the host calls render from the audio thread
 /// while other threads may be allocating/deallocating resources.
+///
+/// The render call only tries to take the plugin mutex and fails when it is
+/// held. Nothing a host calls while audio runs may therefore take it: those
+/// functions use the cached parameters, the values captured at creation and
+/// `shared`. The mutex is for preparing and unpreparing.
 pub struct BeamerInstanceHandle {
     /// The plugin instance (wrapped in Arc<Mutex<>> for thread-safe access)
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
@@ -425,27 +462,39 @@ pub struct BeamerInstanceHandle {
     /// Cached WebView handler, captured at instance creation to avoid
     /// locking the plugin mutex on every invoke/event call.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
-    /// Cached ParameterStore pointer, so that parameter functions do not have
-    /// to take the plugin mutex.
+    /// Cached pointer to the parameters, so that the functions that only
+    /// need them (values, state, groups, presets) do not have to take the
+    /// plugin mutex.
     ///
     /// The parameters move when the plugin is prepared or unprepared (from the
     /// Descriptor to the Processor and back). Whoever moves them holds the
     /// write side of this lock for the whole move and stores the new pointer
     /// before releasing it. Parameter functions use the pointer under the read
     /// side, which they only try to take: while a move is going on they fall
-    /// back to the plugin mutex (see `with_param_store`). A pointer can so
+    /// back to the plugin mutex (see `with_parameters`). A pointer can so
     /// never be used while its target is being moved, whatever thread the
     /// host calls from.
-    param_store: std::sync::RwLock<ParamStorePtr>,
+    shared_parameters: std::sync::RwLock<SharedParametersPtr>,
+    /// The factory presets, captured at instance creation.
+    presets: FactoryPresetAccess,
+    /// The declared buses, captured at instance creation.
+    declared_buses: DeclaredBuses,
+    /// What the host threads and the render call exchange without a lock.
+    shared: Arc<SharedState>,
+    /// How often `lock_plugin` took the plugin mutex.
+    #[cfg(test)]
+    plugin_locks: std::sync::atomic::AtomicUsize,
 }
 
 impl BeamerInstanceHandle {
     /// Create the handle for a new plugin instance.
     pub(crate) fn new(plugin: Box<dyn AuPluginInstance>) -> Self {
-        // Cache the WebView handler and ParameterStore pointer before wrapping
-        // in the Mutex so we don't need to lock on every invoke/event/param call.
+        // Capture what host threads ask for before wrapping the plugin in the
+        // Mutex, so that those calls never need to lock it.
         let webview_handler = plugin.webview_handler();
-        let param_store = ParamStorePtr::capture(plugin.as_ref());
+        let shared_parameters = SharedParametersPtr::capture(plugin.as_ref());
+        let presets = plugin.factory_presets();
+        let declared_buses = DeclaredBuses::capture(plugin.as_ref());
 
         Self {
             plugin: Arc::new(Mutex::new(plugin)),
@@ -455,23 +504,41 @@ impl BeamerInstanceHandle {
             max_frames: 1024,
             bus_config: None,
             webview_handler,
-            param_store: std::sync::RwLock::new(param_store),
+            shared_parameters: std::sync::RwLock::new(shared_parameters),
+            presets,
+            declared_buses,
+            shared: Arc::new(SharedState::default()),
+            #[cfg(test)]
+            plugin_locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Take the write side of the parameter pointer lock for a move.
-    fn lock_param_store(&self) -> std::sync::RwLockWriteGuard<'_, ParamStorePtr> {
+    fn lock_shared_parameters(&self) -> std::sync::RwLockWriteGuard<'_, SharedParametersPtr> {
         // A poisoned lock only means a panic elsewhere: the pointer is
         // replaced by the caller anyway.
-        self.param_store
+        self.shared_parameters
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Run `f` while the parameter pointer is locked like during a move.
     #[cfg(test)]
-    pub(crate) fn with_param_store_locked<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = self.lock_param_store();
+    pub(crate) fn with_shared_parameters_locked<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.lock_shared_parameters();
+        f()
+    }
+
+    /// How often `lock_plugin` took the plugin mutex for this instance.
+    #[cfg(test)]
+    pub(crate) fn plugin_lock_count(&self) -> usize {
+        self.plugin_locks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Run `f` while the plugin mutex is held, as by another thread.
+    #[cfg(test)]
+    pub(crate) fn with_plugin_locked<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.plugin.lock().expect("plugin mutex");
         f()
     }
 }
@@ -479,7 +546,9 @@ impl BeamerInstanceHandle {
 // SAFETY: BeamerInstanceHandle is designed for FFI use. Thread safety is ensured by:
 // - `plugin` is wrapped in Arc<Mutex<>> for synchronized access
 // - `render_block` is wrapped in RwLock to prevent data races
-// - `param_store` is wrapped in RwLock and held for writing while the parameters move
+// - `shared_parameters` is wrapped in RwLock and held for writing while the parameters move
+// - `presets` and `declared_buses` do not change after creation
+// - `shared` consists of atomics
 // - Other fields are only modified during allocate/deallocate which holds exclusive access
 unsafe impl Send for BeamerInstanceHandle {}
 
@@ -498,47 +567,68 @@ pub type BeamerAuInstanceHandle = *mut BeamerInstanceHandle;
 ///
 /// This is a convenience wrapper around `handle.plugin.lock()` that handles
 /// the common error case where the mutex is poisoned.
+///
+/// Not for anything a host may call while audio runs: the render call fails
+/// when it finds the mutex held.
 fn lock_plugin(
     handle: &BeamerInstanceHandle,
 ) -> Result<std::sync::MutexGuard<'_, Box<dyn AuPluginInstance>>, i32> {
+    #[cfg(test)]
+    handle
+        .plugin_locks
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     handle
         .plugin
         .lock()
         .map_err(|_| os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
 }
 
-/// Access the plugin's ParameterStore.
+/// Access the plugin's parameters as host threads share them.
 ///
 /// Uses the pointer cached on the handle when it can take the read side of
 /// its lock without waiting, which is the normal case and costs no more than
 /// that. While the plugin is being prepared or unprepared, or when no pointer
 /// is cached, it takes the plugin mutex instead and so waits until the
-/// parameters are in their new place.
+/// parameters are in their new place. No render call runs during that time,
+/// so the mutex taken here never makes one fail.
 ///
 /// # Safety
 ///
 /// `handle` must belong to a live instance: the `Box<dyn AuPluginInstance>`
 /// the cached pointer points into must not have been dropped.
-unsafe fn with_param_store<R>(
+unsafe fn with_parameters<R>(
     handle: &BeamerInstanceHandle,
-    f: impl FnOnce(&dyn ParameterStore) -> R,
+    f: impl FnOnce(&dyn SharedParameters) -> R,
 ) -> Option<R> {
-    if let Ok(cached) = handle.param_store.try_read() {
-        if !cached.is_null() {
-            // SAFETY: The pointer was captured from the plugin's ParameterStore
-            // while the plugin mutex was held, and the pointee lives inside the
-            // Box<dyn AuPluginInstance> of this instance. The parameters only
-            // move under the write side of the lock, which cannot be taken
-            // while this read guard is alive.
-            let store = unsafe { cached.get() };
-            return Some(f(store));
+    if let Ok(cached) = handle.shared_parameters.try_read() {
+        // SAFETY: The pointer was captured from the plugin's parameters
+        // while the plugin mutex was held, and the pointee lives inside the
+        // Box<dyn AuPluginInstance> of this instance. The parameters only
+        // move under the write side of the lock, which cannot be taken
+        // while this read guard is alive.
+        if let Some(parameters) = unsafe { cached.get() } {
+            return Some(f(parameters));
         }
     }
 
     // The parameters are being moved, or no pointer is cached.
     let plugin = lock_plugin(handle).ok()?;
-    let store = plugin.parameter_store().ok()?;
-    Some(f(store))
+    let parameters = plugin.shared_parameters().ok()?;
+    Some(f(parameters))
+}
+
+/// Access the plugin's ParameterStore (see `with_parameters`).
+///
+/// # Safety
+///
+/// Same as `with_parameters`.
+unsafe fn with_param_store<R>(
+    handle: &BeamerInstanceHandle,
+    f: impl FnOnce(&dyn ParameterStore) -> R,
+) -> Option<R> {
+    // SAFETY: Forwarded to the caller.
+    unsafe { with_parameters(handle, |parameters| f(parameters.store())) }
 }
 
 /// Copy a Rust string into a fixed-size C char array.
@@ -808,8 +898,8 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         // Lock the cached pointer before prepare() moves the parameters, and
         // invalidate it in case the move does not complete. Readers that arrive
         // during the transition fall back to the mutex.
-        let mut param_store = handle.lock_param_store();
-        *param_store = ParamStorePtr::null();
+        let mut shared_parameters = handle.lock_shared_parameters();
+        *shared_parameters = SharedParametersPtr::null();
 
         // Allocate resources on the plugin (calls prepare(), which moves parameters).
         {
@@ -825,25 +915,31 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 ProcessMode::Realtime
             };
 
-            if let Err(_e) = plugin.allocate_render_resources(
+            let prepared = plugin.allocate_render_resources(
                 sample_rate,
                 max_frames,
                 &rust_bus_config,
                 process_mode,
-            ) {
+            );
+
+            // Refresh the cached parameters pointer. The parameters have moved
+            // from the Descriptor to the Processor during prepare(). If that
+            // failed, this stores what the plugin still offers, which may be
+            // nothing: the functions that need them then use the plugin mutex.
+            *shared_parameters = SharedParametersPtr::capture(plugin.as_ref());
+
+            if prepared.is_err() {
                 return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
             }
+
+            // A new processor needs no reset any more, and the host may ask
+            // for its latency and tail before the first render call.
+            handle.shared.clear_reset_request();
+            handle
+                .shared
+                .publish_timing(plugin.latency_samples(), plugin.tail_samples());
         }
-        // Refresh the cached ParameterStore pointer. The parameters have moved
-        // from the Descriptor to the Processor during prepare().
-        {
-            let plugin = match lock_plugin(handle) {
-                Ok(guard) => guard,
-                Err(status) => return status,
-            };
-            *param_store = ParamStorePtr::capture(plugin.as_ref());
-        }
-        drop(param_store);
+        drop(shared_parameters);
 
         // Create the render block based on sample format
         let render_block: Arc<dyn RenderBlockTrait> = match handle.sample_format {
@@ -854,6 +950,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 );
                 Arc::from(create_render_block_f32(
                     Arc::clone(&handle.plugin),
+                    Arc::clone(&handle.shared),
                     storage,
                     max_frames,
                     sample_rate,
@@ -866,6 +963,7 @@ pub extern "C" fn beamer_au_allocate_render_resources(
                 );
                 Arc::from(create_render_block_f64(
                     Arc::clone(&handle.plugin),
+                    Arc::clone(&handle.shared),
                     storage,
                     max_frames,
                     sample_rate,
@@ -961,8 +1059,7 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
 
         // Lock the cached pointer before unprepare() moves the parameters, and
         // invalidate it in case the move does not complete.
-        let mut param_store = handle.lock_param_store();
-        *param_store = ParamStorePtr::null();
+        let mut shared_parameters = handle.lock_shared_parameters();
 
         // Use try_lock() for the plugin mutex, consistent with render path.
         // At this point the render_block is None, so even if a render call
@@ -970,7 +1067,15 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         // the plugin.
         match handle.plugin.try_lock() {
             Ok(mut plugin) => {
+                // Invalidate the cached pointer in case the move does not
+                // complete, then store it again: the parameters move from
+                // the Processor back to the Descriptor during unprepare().
+                *shared_parameters = SharedParametersPtr::null();
                 plugin.deallocate_render_resources();
+                *shared_parameters = SharedParametersPtr::capture(plugin.as_ref());
+
+                // An unprepared plugin has no latency and no tail.
+                handle.shared.publish_timing(0, 0);
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 // This shouldn't normally happen since we cleared render_block first,
@@ -989,23 +1094,7 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
                 return;
             }
         }
-
-        // Refresh the cached ParameterStore pointer. The parameters have moved
-        // from the Processor back to the Descriptor during unprepare().
-        {
-            match handle.plugin.lock() {
-                Ok(plugin) => {
-                    *param_store = ParamStorePtr::capture(plugin.as_ref());
-                }
-                Err(_) => {
-                    log::warn!(
-                        "beamer_au_deallocate_render_resources: \
-                         failed to refresh param_store cache"
-                    );
-                }
-            };
-        }
-        drop(param_store);
+        drop(shared_parameters);
 
         // Clear bus config only after successful deallocation.
         handle.bus_config = None;
@@ -1145,13 +1234,14 @@ pub extern "C" fn beamer_au_render(
 ///   or null (in which case this function does nothing)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free. The audio thread
+///   runs the reset at the start of its next render call
 #[no_mangle]
 pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
     with_instance_void!(instance, |handle| {
-        if let Ok(mut plugin) = lock_plugin(handle) {
-            plugin.reset();
-        }
+        // The processor belongs to the audio thread while audio runs: the
+        // next render call resets it before it processes.
+        handle.shared.request_reset();
     })
 }
 
@@ -1167,7 +1257,7 @@ pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
@@ -1274,7 +1364,7 @@ pub extern "C" fn beamer_au_get_parameter_value(
 ///   or null (in which case this function does nothing)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_set_parameter_value(
     instance: BeamerAuInstanceHandle,
@@ -1339,7 +1429,7 @@ pub extern "C" fn beamer_au_get_parameter_value_au(
 ///   or null (in which case this function does nothing)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_set_parameter_value_au(
     instance: BeamerAuInstanceHandle,
@@ -1417,7 +1507,7 @@ fn string_to_au_value(store: &dyn ParameterStore, param_id: u32, string: &str) -
 /// - `buffer_len` must be greater than 0
 /// - This function validates `instance` and `out_buffer` are non-null and
 ///   `buffer_len > 0` before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_format_parameter_value(
     instance: BeamerAuInstanceHandle,
@@ -1476,7 +1566,7 @@ pub extern "C" fn beamer_au_format_parameter_value(
 /// - `out_value` must be a valid pointer to a writable `f32`,
 ///   or null (in which case this function returns `false`)
 /// - This function validates all three pointers are non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_parse_parameter_value(
     instance: BeamerAuInstanceHandle,
@@ -1523,7 +1613,7 @@ pub extern "C" fn beamer_au_parse_parameter_value(
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_count(
     instance: BeamerAuInstanceHandle,
@@ -1566,7 +1656,7 @@ pub extern "C" fn beamer_au_get_parameter_value_count(
 /// - `out_string` must be a valid pointer to a writable buffer of at least
 ///   `max_length` bytes, or null (in which case this function returns `false`)
 /// - `max_length` must be greater than 0
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_string(
     instance: BeamerAuInstanceHandle,
@@ -1651,19 +1741,19 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_group_count(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        let group_count = unsafe {
+            with_parameters(handle, |parameters| {
+                parameters.parameters().group_count() as u32
+            })
         };
 
-        match plugin.parameter_groups() {
-            Ok(groups) => groups.group_count() as u32,
-            Err(_) => 1, // At least root group
-        }
+        // There is always the root group.
+        group_count.unwrap_or(1)
     })
 }
 
@@ -1679,7 +1769,7 @@ pub extern "C" fn beamer_au_get_group_count(instance: BeamerAuInstanceHandle) ->
 /// - `instance` must not have been destroyed
 /// - `out_info` must be a valid pointer to a `BeamerAuGroupInfo` struct,
 ///   or null (in which case this function returns `false`)
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_group_info(
     instance: BeamerAuInstanceHandle,
@@ -1691,19 +1781,14 @@ pub extern "C" fn beamer_au_get_group_info(
     }
 
     with_instance!(instance, false, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
-
-        let groups = match plugin.parameter_groups() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-
-        let group_info = match groups.group_info(index as usize) {
-            Some(info) => info,
-            None => return false,
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        let group_info = match unsafe {
+            with_parameters(handle, |parameters| {
+                parameters.parameters().group_info(index as usize)
+            })
+        } {
+            Some(Some(info)) => info,
+            _ => return false,
         };
 
         // SAFETY: out_info was validated as non-null at function start.
@@ -1728,16 +1813,17 @@ pub extern "C" fn beamer_au_get_group_info(
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_state_size(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        plugin.save_state().len() as u32
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        unsafe {
+            with_parameters(handle, |parameters| {
+                parameters.parameters().save_state().len() as u32
+            })
+        }
+        .unwrap_or(0)
     })
 }
 
@@ -1751,7 +1837,7 @@ pub extern "C" fn beamer_au_get_state_size(instance: BeamerAuInstanceHandle) -> 
 /// - `buffer` must be a valid pointer to a writable buffer of at least `size` bytes,
 ///   or null (in which case this function returns `0`)
 /// - This function validates both pointers are non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_get_state(
     instance: BeamerAuInstanceHandle,
@@ -1763,12 +1849,13 @@ pub extern "C" fn beamer_au_get_state(
     }
 
     with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        let state = match unsafe {
+            with_parameters(handle, |parameters| parameters.parameters().save_state())
+        } {
+            Some(state) => state,
+            None => return 0,
         };
-
-        let state = plugin.save_state();
         let copy_len = state.len().min(size as usize);
 
         if copy_len > 0 {
@@ -1791,7 +1878,8 @@ pub extern "C" fn beamer_au_get_state(
 ///   or null if `size` is 0 (empty state is allowed)
 /// - This function validates `instance` is non-null and that `buffer` is non-null
 ///   when `size > 0` before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer.
+///   The audio thread resets the smoothers at the start of its next render call
 #[no_mangle]
 pub extern "C" fn beamer_au_set_state(
     instance: BeamerAuInstanceHandle,
@@ -1810,17 +1898,26 @@ pub extern "C" fn beamer_au_set_state(
             &[]
         };
 
-        let mut plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(status) => return status,
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        let loaded = unsafe {
+            with_parameters(handle, |parameters| {
+                parameters.parameters().load_state(state_slice)
+            })
         };
 
-        match plugin.load_state(state_slice) {
-            Ok(()) => os_status::NO_ERR,
-            Err(e) => {
+        match loaded {
+            Some(Ok(())) => {
+                // The values are in place. The smoothers belong to the audio
+                // thread: the next render call makes them jump to the loaded
+                // values, so that those do not ramp in.
+                handle.shared.request_smoothing_reset();
+                os_status::NO_ERR
+            }
+            Some(Err(e)) => {
                 log::error!("Failed to load state: {}", e);
                 os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE
             }
+            None => os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
         }
     })
 }
@@ -1837,17 +1934,11 @@ pub extern "C" fn beamer_au_set_state(
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free. Returns the value
+///   of the most recent render call, 0 while unprepared
 #[no_mangle]
 pub extern "C" fn beamer_au_get_latency_samples(instance: BeamerAuInstanceHandle) -> u32 {
-    with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        plugin.latency_samples()
-    })
+    with_instance!(instance, 0, |handle| handle.shared.latency_samples())
 }
 
 /// Get the plugin's tail time in samples.
@@ -1858,17 +1949,11 @@ pub extern "C" fn beamer_au_get_latency_samples(instance: BeamerAuInstanceHandle
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free. Returns the value
+///   of the most recent render call, 0 while unprepared
 #[no_mangle]
 pub extern "C" fn beamer_au_get_tail_samples(instance: BeamerAuInstanceHandle) -> u32 {
-    with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        plugin.tail_samples()
-    })
+    with_instance!(instance, 0, |handle| handle.shared.tail_samples())
 }
 
 /// Get float64 processing support level.
@@ -2001,25 +2086,10 @@ enum BusDirection {
 /// This function consolidates the logic for both input and output bus count queries.
 fn get_bus_count_impl(instance: BeamerAuInstanceHandle, direction: BusDirection) -> u32 {
     with_instance!(instance, 0, |handle| {
-        // If resources are allocated, the host-provided bus config is the source of truth.
-        if let Some(cfg) = handle.bus_config.as_ref() {
-            let count = match direction {
-                BusDirection::Input => cfg.input_bus_count,
-                BusDirection::Output => cfg.output_bus_count,
-            };
-            return count.min(MAX_BUSES) as u32;
-        }
-
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        let count = match direction {
-            BusDirection::Input => plugin.declared_input_bus_count(),
-            BusDirection::Output => plugin.declared_output_bus_count(),
-        };
-        count.min(MAX_BUSES) as u32
+        // The declared count is also the allocated one: the wrappers build
+        // the bus configuration they allocate with from this answer. The
+        // AUv2 render call asks for the input count, so this must not wait.
+        handle.declared_buses.count(direction).min(MAX_BUSES) as u32
     })
 }
 
@@ -2041,16 +2111,11 @@ fn get_bus_channel_count_impl(
             return info.map(|b| b.channel_count as u32).unwrap_or(0);
         }
 
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-
-        let info = match direction {
-            BusDirection::Input => plugin.declared_input_bus_info(bus_index as usize),
-            BusDirection::Output => plugin.declared_output_bus_info(bus_index as usize),
-        };
-        info.map(|b| b.channel_count).unwrap_or(0)
+        handle
+            .declared_buses
+            .info(direction, bus_index as usize)
+            .map(|b| b.channel_count)
+            .unwrap_or(0)
     })
 }
 
@@ -2118,19 +2183,8 @@ fn declared_main_channels(instance: BeamerAuInstanceHandle) -> Option<(u32, u32)
     // SAFETY: instance validated non-null above. Caller guarantees a valid
     // pointer from beamer_au_create_instance.
     let handle = unsafe { &*instance };
-    let plugin = lock_plugin(handle).ok()?;
 
-    Some(main_channels_of(&**plugin))
-}
-
-/// Main bus channel counts of a plugin, from the buses it declares.
-pub(crate) fn main_channels_of(plugin: &dyn AuPluginInstance) -> (u32, u32) {
-    main_channels(
-        plugin.declared_input_bus_count(),
-        plugin.declared_input_bus_info(0),
-        plugin.declared_output_bus_count(),
-        plugin.declared_output_bus_info(0),
-    )
+    Some(handle.declared_buses.main_channels())
 }
 
 /// Main bus channel counts for the given bus counts and main bus infos.
@@ -2516,16 +2570,11 @@ impl Default for BeamerAuPresetInfo {
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
 ///   or null (in which case this function returns `0`)
 /// - `instance` must not have been destroyed
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free, the presets are
+///   captured when the instance is created
 #[no_mangle]
 pub extern "C" fn beamer_au_get_preset_count(instance: BeamerAuInstanceHandle) -> u32 {
-    with_instance!(instance, 0, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return 0,
-        };
-        plugin.preset_count()
-    })
+    with_instance!(instance, 0, |handle| handle.presets.count as u32)
 }
 
 /// Get information about a factory preset by index.
@@ -2537,7 +2586,8 @@ pub extern "C" fn beamer_au_get_preset_count(instance: BeamerAuInstanceHandle) -
 /// - `instance` must not have been destroyed
 /// - `out_info` must be a valid pointer to a `BeamerAuPresetInfo` struct,
 ///   or null (in which case this function returns `false`)
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free, the presets are
+///   captured when the instance is created
 #[no_mangle]
 pub extern "C" fn beamer_au_get_preset_info(
     instance: BeamerAuInstanceHandle,
@@ -2549,16 +2599,15 @@ pub extern "C" fn beamer_au_get_preset_info(
     }
 
     with_instance!(instance, false, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
+        if index as usize >= handle.presets.count {
+            return false;
+        }
 
-        if let Some((number, name)) = plugin.preset_info(index) {
+        if let Some(info) = (handle.presets.info)(index as usize) {
             // SAFETY: out_info was validated as non-null at function start.
             let out = unsafe { &mut *out_info };
-            out.number = number;
-            copy_str_to_char_array(name, &mut out.name);
+            out.number = index as i32;
+            copy_str_to_char_array(info.name, &mut out.name);
             true
         } else {
             false
@@ -2576,18 +2625,20 @@ pub extern "C" fn beamer_au_get_preset_info(
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
 ///   or null (in which case this function returns `false`)
 /// - `instance` must not have been destroyed
-/// - Thread safety: Safe to call from any thread; uses mutex for synchronization
+/// - Thread safety: Safe to call from any thread; lock-free via cached pointer
 #[no_mangle]
 pub extern "C" fn beamer_au_apply_preset(
     instance: BeamerAuInstanceHandle,
     preset_index: u32,
 ) -> bool {
     with_instance!(instance, false, |handle| {
-        let plugin = match lock_plugin(handle) {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
-        plugin.apply_preset(preset_index)
+        // SAFETY: handle is from a live instance (validated by with_instance!).
+        unsafe {
+            with_parameters(handle, |parameters| {
+                (handle.presets.apply)(parameters, preset_index as usize)
+            })
+        }
+        .unwrap_or(false)
     })
 }
 
