@@ -162,10 +162,7 @@ impl Descriptor for SynthesizerDescriptor {
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> SynthesizerProcessor {
-        // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
-
+    fn prepare(self, setup: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
             parameters: self.parameters,
             voices: [Voice::new(); NUM_VOICES],

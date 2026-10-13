@@ -901,9 +901,11 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
 
 /// Generate the `set_sample_rate()` method for the Parameters trait.
 fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
-    // Generate calls for direct parameter fields
+    // Generate calls for the float parameter fields. Only they can have a
+    // smoother.
     let parameter_calls: Vec<TokenStream> = ir
         .parameter_fields()
+        .filter(|parameter| parameter.parameter_type == crate::ir::ParameterType::Float)
         .map(|parameter| {
             let field = &parameter.field_name;
             quote! { self.#field.set_sample_rate(sample_rate); }
@@ -920,11 +922,11 @@ fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
         .collect();
 
     if parameter_calls.is_empty() && nested_calls.is_empty() {
-        // No parameters = use default no-op
+        // Nothing to smooth: use the default no-op.
         quote! {}
     } else {
         quote! {
-            fn set_sample_rate(&mut self, sample_rate: f64) {
+            fn set_sample_rate(&self, sample_rate: f64) {
                 #(#parameter_calls)*
                 #(#nested_calls)*
             }
@@ -934,9 +936,11 @@ fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
 
 /// Generate the `reset_smoothing()` method for the Parameters trait.
 fn generate_reset_smoothing(ir: &ParametersIR) -> TokenStream {
-    // Generate calls for direct parameter fields
+    // Generate calls for the float parameter fields. Only they can have a
+    // smoother.
     let parameter_calls: Vec<TokenStream> = ir
         .parameter_fields()
+        .filter(|parameter| parameter.parameter_type == crate::ir::ParameterType::Float)
         .map(|parameter| {
             let field = &parameter.field_name;
             quote! { self.#field.reset_smoothing(); }
@@ -953,11 +957,11 @@ fn generate_reset_smoothing(ir: &ParametersIR) -> TokenStream {
         .collect();
 
     if parameter_calls.is_empty() && nested_calls.is_empty() {
-        // No parameters = use default no-op
+        // Nothing to smooth: use the default no-op.
         quote! {}
     } else {
         quote! {
-            fn reset_smoothing(&mut self) {
+            fn reset_smoothing(&self) {
                 #(#parameter_calls)*
                 #(#nested_calls)*
             }

@@ -162,7 +162,7 @@ where
     fn reset_smoothing(&mut self) {
         if let Some(processor) = self.state.processor_mut() {
             use beamer_core::parameter_types::Parameters;
-            processor.parameters_mut().reset_smoothing();
+            processor.parameters().reset_smoothing();
         }
     }
 
@@ -785,6 +785,11 @@ mod tests {
         static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
         /// How often a `TestProcessor` was activated on this thread.
         static ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
+        /// The sample rate the smoothers were last given on this thread.
+        static SMOOTHING_SAMPLE_RATE: Cell<f64> = const { Cell::new(0.0) };
+        /// What `SMOOTHING_SAMPLE_RATE` was when a `TestPlugin` was last
+        /// prepared on this thread.
+        static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
     }
 
     fn smoothing_resets() -> usize {
@@ -940,7 +945,10 @@ mod tests {
             self.save_state_prefixed(&mut data, "");
             data
         }
-        fn reset_smoothing(&mut self) {
+        fn set_sample_rate(&self, sample_rate: f64) {
+            SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));
+        }
+        fn reset_smoothing(&self) {
             SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
         }
     }
@@ -1031,6 +1039,8 @@ mod tests {
         type Processor = TestProcessor;
 
         fn prepare(self, _setup: ()) -> Self::Processor {
+            SMOOTHING_SAMPLE_RATE_AT_PREPARE
+                .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
             TestProcessor {
                 parameters: self.parameters,
             }
@@ -1916,6 +1926,22 @@ mod tests {
         assert_eq!(allocate(instance, false), 0);
         assert_eq!(render_instance(instance), 0);
         assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_preparing_gives_the_smoothers_the_host_sample_rate() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(0.0));
+
+        // The rate is there when the plugin creates its processor.
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 44100.0);
+
+        // Preparing again does it again.
+        SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(0.0));
+        assert_eq!(allocate(instance, true), 0);
+        assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 44100.0);
     }
 
     #[test]

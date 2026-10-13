@@ -187,14 +187,12 @@ pub struct MidiTransformDescriptor {
 }
 
 impl Descriptor for MidiTransformDescriptor {
-    // Needs sample rate for parameter smoothing.
+    // A MIDI transformer needs nothing from the host's audio setup.
     // See `beamer::setup` for all available types.
-    type Setup = SampleRate;
+    type Setup = ();
     type Processor = MidiTransformProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> MidiTransformProcessor {
-        self.parameters.set_sample_rate(setup.hz());
-
+    fn prepare(self, _: ()) -> MidiTransformProcessor {
         MidiTransformProcessor {
             parameters: self.parameters,
         }

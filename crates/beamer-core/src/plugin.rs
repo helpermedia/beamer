@@ -165,7 +165,7 @@ impl PluginSetup for () {
 /// Sample rate in Hz.
 ///
 /// Use for most plugins with time-dependent DSP: delays, filters,
-/// envelopes, parameter smoothing, etc. This is the most common choice.
+/// envelopes, etc. This is the most common choice.
 ///
 /// # Example
 ///

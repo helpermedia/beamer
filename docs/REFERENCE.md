@@ -372,18 +372,19 @@ let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
 | `SmoothingStyle::Exponential(ms)` | One-pole IIR, can cross zero | dB gain, most musical parameters |
 | `SmoothingStyle::Logarithmic(ms)` | Log-domain, positive values only | Frequencies (Hz), other positive-only parameters |
 
-**Sample Rate Initialization:**
+**Sample Rate:**
 
-Call `set_sample_rate()` in `prepare()` to initialize smoothers:
+The framework sets the host's sample rate on the smoothers before it calls `prepare()`, so a plugin that processes at the host's rate has nothing to do.
+
+If your plugin uses oversampling, set the rate it actually processes at in `prepare()`:
 
 ```rust
-// Initialize smoothers in prepare()
 impl Descriptor for MyDescriptor {
     type Setup = SampleRate;
     type Processor = MyProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> MyProcessor {
-        self.parameters.set_sample_rate(setup.hz());  // Initialize smoothers
+    fn prepare(self, setup: SampleRate) -> MyProcessor {
+        self.parameters.set_sample_rate(setup.hz() * OVERSAMPLING_FACTOR as f64);
         MyProcessor {
             parameters: self.parameters,
             sample_rate: setup.hz(),
@@ -391,9 +392,6 @@ impl Descriptor for MyDescriptor {
     }
 }
 ```
-
-> **Oversampling:** If your plugin uses oversampling, pass the actual processing rate:
-> `self.set_sample_rate(setup.hz() * oversampling_factor as f64);`
 
 **Per-Sample Processing:**
 
@@ -437,7 +435,7 @@ self.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 | Method | Description |
 |--------|-------------|
 | `.with_smoother(style)` | Builder: add smoothing to parameter |
-| `.set_sample_rate(sr)` | Initialize with sample rate (call in prepare) |
+| `.set_sample_rate(sr)` | Set the processing rate (only needed when it differs from the host's) |
 | `.tick_smoothed()` | Advance smoother, return value (per-sample) |
 | `.smoothed()` | Get current value without advancing |
 | `.skip_smoothing(n)` | Skip n samples (block processing) |
@@ -447,7 +445,7 @@ self.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 
 **Thread Safety Note:**
 
-Smoothing methods require `&mut self` and run on the audio thread only. The underlying parameter value uses atomic storage for thread-safe access from UI/host threads.
+Smoothing methods take `&self`, like the methods that read and write the value: a smoother keeps its state in atomics too. They are still meant for the audio thread only. Calling them from a second thread at the same time is memory-safe, but the two disturb each other's ramp.
 
 **Automatic Reset on State Load:**
 
@@ -712,7 +710,7 @@ impl Descriptor for GainDescriptor {
     }
 }
 
-// Plugin needing sample rate (delays, filters, smoothing)
+// Plugin needing sample rate (delays, filters, envelopes)
 impl Descriptor for DelayDescriptor {
     type Setup = SampleRate;
     type Processor = DelayProcessor;

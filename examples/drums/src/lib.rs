@@ -223,9 +223,7 @@ impl Descriptor for DrumsDescriptor {
     type Setup = SampleRate;
     type Processor = DrumsProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> DrumsProcessor {
-        self.parameters.set_sample_rate(setup.hz());
-
+    fn prepare(self, setup: SampleRate) -> DrumsProcessor {
         // Initialize voice pools (4 voices per drum type)
         let voices: [[DrumVoice; VOICES_PER_DRUM]; 4] = std::array::from_fn(|drum_idx| {
             std::array::from_fn(|voice_idx| DrumVoice::new(DRUM_TYPES[drum_idx], voice_idx))

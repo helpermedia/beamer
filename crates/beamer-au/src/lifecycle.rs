@@ -34,7 +34,7 @@
 //! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
 use beamer_core::{
-    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig,
+    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig, Parameters,
     PluginSetup, ProcessMode, Processor,
 };
 use log;
@@ -264,6 +264,9 @@ impl<P: Descriptor> AuState<P> {
                 let midi_cc_config = plugin.midi_cc_config();
 
                 let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
+                // The smoothers ramp at the host's rate unless the plugin
+                // sets another one in prepare.
+                plugin.parameters().set_sample_rate(sample_rate);
                 let processor = plugin.prepare(plugin_setup);
 
                 let (conversion_buffers, midi_cc_state, midi_output_buffer) =
@@ -295,6 +298,7 @@ impl<P: Descriptor> AuState<P> {
                 let midi_cc_config = plugin.midi_cc_config();
 
                 let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
+                plugin.parameters().set_sample_rate(sample_rate);
                 let new_processor = plugin.prepare(plugin_setup);
 
                 let (conversion_buffers, midi_cc_state, midi_output_buffer) =

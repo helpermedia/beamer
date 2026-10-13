@@ -1559,6 +1559,10 @@ where
                 // Take ownership of the plugin
                 let plugin = std::mem::take(plugin);
 
+                // The smoothers ramp at the host's rate unless the plugin
+                // sets another one in prepare.
+                beamer_core::Parameters::set_sample_rate(plugin.parameters(), setup.sampleRate);
+
                 // Prepare the processor. A state that was loaded before is in
                 // the parameters it takes over.
                 let processor = plugin.prepare(plugin_setup);
@@ -1630,6 +1634,7 @@ where
                 // Unprepare to get the plugin back, then prepare it again.
                 let plugin = processor.unprepare();
                 let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
+                beamer_core::Parameters::set_sample_rate(plugin.parameters(), setup.sampleRate);
                 let processor = plugin.prepare(plugin_setup);
 
                 // Size the buffer storage for the new block size.
@@ -1698,7 +1703,7 @@ where
             let processor = unsafe { self.processor_mut() };
             if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
                 use beamer_core::Parameters;
-                processor.parameters_mut().reset_smoothing();
+                processor.parameters().reset_smoothing();
             }
             self.publish_timing(processor);
         }
@@ -3574,6 +3579,11 @@ mod tests {
     thread_local! {
         /// How often the smoothers were reset on this thread.
         static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
+        /// The sample rate the smoothers were last given on this thread.
+        static SMOOTHING_SAMPLE_RATE: Cell<f64> = const { Cell::new(0.0) };
+        /// What `SMOOTHING_SAMPLE_RATE` was when a `StatePlugin` was last
+        /// prepared on this thread.
+        static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
     }
 
     fn smoothing_resets() -> usize {
@@ -3609,7 +3619,10 @@ mod tests {
         fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
             (id == GAIN_ID).then_some(&self.gain as &dyn ParameterRef)
         }
-        fn reset_smoothing(&mut self) {
+        fn set_sample_rate(&self, sample_rate: f64) {
+            SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));
+        }
+        fn reset_smoothing(&self) {
             SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
         }
     }
@@ -3672,6 +3685,8 @@ mod tests {
         type Processor = StateProcessor;
 
         fn prepare(self, _setup: ()) -> StateProcessor {
+            SMOOTHING_SAMPLE_RATE_AT_PREPARE
+                .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
             StateProcessor {
                 parameters: self.parameters,
             }
@@ -3913,6 +3928,26 @@ mod tests {
         prepare_state_wrapper(&wrapper);
         process_block(&wrapper);
         assert_eq!(smoothing_resets(), before + 1);
+    }
+
+    #[test]
+    fn test_setup_processing_gives_the_smoothers_the_host_sample_rate() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+
+        // The rate is there when the plugin creates its processor.
+        prepare_state_wrapper(&wrapper);
+        assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 44100.0);
+
+        // A new setup of a prepared plugin does it again.
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 96000.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 96000.0);
     }
 
     #[test]

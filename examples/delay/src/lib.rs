@@ -187,10 +187,7 @@ impl Descriptor for DelayDescriptor {
     type Setup = SampleRate;
     type Processor = DelayProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> DelayProcessor {
-        // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
-
+    fn prepare(self, setup: SampleRate) -> DelayProcessor {
         DelayProcessor {
             parameters: self.parameters,
             delay_l: DelayLine::new(setup.hz()),

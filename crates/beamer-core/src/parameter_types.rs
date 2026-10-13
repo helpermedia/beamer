@@ -40,7 +40,7 @@ use crate::parameter_format::Formatter;
 use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-use crate::smoothing::{Smoother, SmoothingStyle};
+use crate::smoothing::{AtomicSmoother, SmoothingStyle};
 use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
@@ -424,38 +424,30 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Set sample rate for all smoothers in this parameter collection.
     ///
-    /// Call this from `Descriptor::prepare()` to initialize smoothers
-    /// with the correct sample rate. Nothing else does, and without it a
-    /// smoother does not ramp as configured.
+    /// The framework calls this with the host's sample rate before
+    /// `Descriptor::prepare()`, so a plugin that processes at the host's
+    /// rate has nothing to do.
     ///
-    /// **Oversampling:** If your plugin uses oversampling, pass the actual
-    /// processing rate: `sample_rate * oversampling_factor`.
+    /// **Oversampling:** If your plugin uses oversampling, call this in
+    /// `prepare()` with the actual processing rate:
+    /// `sample_rate * oversampling_factor`.
     ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// impl Descriptor for MyPlugin {
-    ///     type Setup = SampleRate;
-    ///     type Processor = MyProcessor;
-    ///
-    ///     fn prepare(mut self, setup: SampleRate) -> MyProcessor {
-    ///         self.parameters.set_sample_rate(setup.hz());
-    ///         MyProcessor { parameters: self.parameters }
-    ///     }
-    /// }
-    /// ```
-    fn set_sample_rate(&mut self, _sample_rate: f64) {
+    /// Call this while no audio is processed (`prepare()` is such a
+    /// moment): the smoothers belong to the audio thread.
+    fn set_sample_rate(&self, _sample_rate: f64) {
         // Default no-op. The #[derive(Parameters)] macro generates an override
-        // that calls set_sample_rate on each parameter field.
+        // that calls set_sample_rate on each float parameter and nested field.
     }
 
     /// Reset all smoothers to their current values (no ramp).
     ///
     /// Called automatically by the framework after loading state to avoid
     /// ramps to loaded values. You typically don't need to call this directly.
-    fn reset_smoothing(&mut self) {
+    /// It belongs to the audio thread, like every method that advances a
+    /// smoother.
+    fn reset_smoothing(&self) {
         // Default no-op. The #[derive(Parameters)] macro generates an override
-        // that calls reset_smoothing on each parameter field.
+        // that calls reset_smoothing on each float parameter and nested field.
     }
 }
 
@@ -500,7 +492,7 @@ pub struct FloatParameter {
     /// Formatter for display string conversion
     formatter: Formatter,
     /// Optional smoother for avoiding zipper noise
-    smoother: Option<Smoother>,
+    smoother: Option<AtomicSmoother>,
     /// Whether this parameter stores dB values (for as_linear() optimization)
     is_db: bool,
     /// Optional step size for discrete stepping. None = continuous.
@@ -1096,6 +1088,12 @@ impl FloatParameter {
     }
 
     // === Smoothing methods ===
+    //
+    // These take `&self`, so that the audio thread can smooth parameters
+    // that it shares with the host and UI threads. The state of the
+    // smoother is kept in atomics for that. Only one thread at a time may
+    // advance a smoother (the audio thread): a second one would not break
+    // memory safety, but the two would disturb each other's ramp.
 
     /// Add smoothing to this parameter.
     ///
@@ -1106,22 +1104,29 @@ impl FloatParameter {
     ///     .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms
     /// ```
     pub fn with_smoother(mut self, style: SmoothingStyle) -> Self {
-        let current = self.get();
-        let mut smoother = Smoother::new(style);
-        smoother.reset(current);
-        self.smoother = Some(smoother);
+        self.smoother = match style {
+            SmoothingStyle::None => None,
+            _ => {
+                let bits = self.value.load(Ordering::Relaxed);
+                let value = self.range.denormalize(f64::from_bits(bits));
+                Some(AtomicSmoother::new(style, bits, value))
+            }
+        };
         self
     }
 
     /// Set sample rate for smoothing.
     ///
-    /// Call this from `Processor::setup()`. If using oversampling,
-    /// pass `sample_rate * oversampling_factor`.
-    pub fn set_sample_rate(&mut self, sample_rate: f64) {
-        let current_value = self.get();
-        if let Some(ref mut smoother) = self.smoother {
-            smoother.set_sample_rate(sample_rate);
-            smoother.set_target(current_value);
+    /// The framework calls this with the host's sample rate before
+    /// `Descriptor::prepare()`. If using oversampling, call it in
+    /// `prepare()` with `sample_rate * oversampling_factor`.
+    pub fn set_sample_rate(&self, sample_rate: f64) {
+        if let Some(smoother) = &self.smoother {
+            smoother.set_sample_rate(
+                sample_rate,
+                self.value.load(Ordering::Relaxed),
+                |normalized| self.range.denormalize(normalized),
+            );
         }
     }
 
@@ -1131,7 +1136,7 @@ impl FloatParameter {
     #[inline]
     pub fn smoothed(&self) -> f64 {
         match &self.smoother {
-            Some(s) => s.current(),
+            Some(smoother) => smoother.current(),
             None => self.get(),
         }
     }
@@ -1144,63 +1149,66 @@ impl FloatParameter {
 
     /// Advance the smoother by one sample and return the smoothed value.
     ///
-    /// Call once per sample in the audio loop. Requires `&mut self`.
+    /// Call once per sample in the audio loop, on the audio thread only.
     ///
     /// If no smoother is configured, returns the raw value.
     #[inline]
-    pub fn tick_smoothed(&mut self) -> f64 {
-        let current_value = self.get();
-        match &mut self.smoother {
-            Some(s) => {
-                // Update target from atomic value (in case host changed it)
-                s.set_target(current_value);
-                s.tick()
-            }
-            None => current_value,
+    pub fn tick_smoothed(&self) -> f64 {
+        match &self.smoother {
+            // The smoother follows the atomic value (in case the host
+            // changed it).
+            Some(smoother) => smoother.tick(self.value.load(Ordering::Relaxed), |normalized| {
+                self.range.denormalize(normalized)
+            }),
+            None => self.get(),
         }
     }
 
     /// Advance the smoother by one sample and return the smoothed value as f32.
     #[inline]
-    pub fn tick_smoothed_f32(&mut self) -> f32 {
+    pub fn tick_smoothed_f32(&self) -> f32 {
         self.tick_smoothed() as f32
     }
 
     /// Skip smoothing forward by n samples.
     ///
     /// Use for block processing when per-sample smoothing isn't needed.
-    pub fn skip_smoothing(&mut self, samples: usize) {
-        let current_value = self.get();
-        if let Some(ref mut smoother) = self.smoother {
-            smoother.set_target(current_value);
-            smoother.skip(samples);
+    pub fn skip_smoothing(&self, samples: usize) {
+        if let Some(smoother) = &self.smoother {
+            smoother.skip(
+                self.value.load(Ordering::Relaxed),
+                |normalized| self.range.denormalize(normalized),
+                samples,
+            );
         }
     }
 
     /// Fill buffer with smoothed values (f64).
-    pub fn fill_smoothed(&mut self, buffer: &mut [f64]) {
-        let current_value = self.get();
-        match &mut self.smoother {
-            Some(s) => {
-                s.set_target(current_value);
-                s.fill(buffer);
-            }
+    pub fn fill_smoothed(&self, buffer: &mut [f64]) {
+        match &self.smoother {
+            Some(smoother) => smoother.fill(
+                self.value.load(Ordering::Relaxed),
+                |normalized| self.range.denormalize(normalized),
+                buffer.len(),
+                |index, value| buffer[index] = value,
+            ),
             None => {
-                buffer.fill(current_value);
+                buffer.fill(self.get());
             }
         }
     }
 
     /// Fill buffer with smoothed values (f32).
-    pub fn fill_smoothed_f32(&mut self, buffer: &mut [f32]) {
-        let current_value = self.get();
-        match &mut self.smoother {
-            Some(s) => {
-                s.set_target(current_value);
-                s.fill_f32(buffer);
-            }
+    pub fn fill_smoothed_f32(&self, buffer: &mut [f32]) {
+        match &self.smoother {
+            Some(smoother) => smoother.fill(
+                self.value.load(Ordering::Relaxed),
+                |normalized| self.range.denormalize(normalized),
+                buffer.len(),
+                |index, value| buffer[index] = value as f32,
+            ),
             None => {
-                buffer.fill(current_value as f32);
+                buffer.fill(self.get() as f32);
             }
         }
     }
@@ -1216,10 +1224,10 @@ impl FloatParameter {
     /// Reset smoother to current value (no ramp).
     ///
     /// Use when loading state to avoid ramps to loaded values.
-    pub fn reset_smoothing(&mut self) {
-        let current_value = self.get();
-        if let Some(ref mut smoother) = self.smoother {
-            smoother.reset(current_value);
+    pub fn reset_smoothing(&self) {
+        if let Some(smoother) = &self.smoother {
+            let bits = self.value.load(Ordering::Relaxed);
+            smoother.reset(bits, self.range.denormalize(f64::from_bits(bits)));
         }
     }
 }
@@ -1531,24 +1539,6 @@ impl IntParameter {
         self.value
             .store(value.clamp(self.min, self.max), Ordering::Relaxed);
     }
-
-    // === Smoothing compatibility (no-ops for IntParameter) ===
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Integer parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: IntParameter doesn't support smoothing
-    }
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Integer parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn reset_smoothing(&mut self) {
-        // No-op: IntParameter doesn't support smoothing
-    }
 }
 
 impl ParameterRef for IntParameter {
@@ -1804,24 +1794,6 @@ impl BoolParameter {
     #[inline]
     pub fn set(&self, value: bool) {
         self.value.store(value, Ordering::Relaxed);
-    }
-
-    // === Smoothing compatibility (no-ops for BoolParameter) ===
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Boolean parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: BoolParameter doesn't support smoothing
-    }
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Boolean parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn reset_smoothing(&mut self) {
-        // No-op: BoolParameter doesn't support smoothing
     }
 }
 
@@ -2153,24 +2125,6 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     pub fn set(&self, value: E) {
         self.value.store(value.to_index(), Ordering::Relaxed);
     }
-
-    // === Smoothing compatibility (no-ops for EnumParameter) ===
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Enum parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn set_sample_rate(&mut self, _sample_rate: f64) {
-        // No-op: EnumParameter doesn't support smoothing
-    }
-
-    /// No-op for compatibility with the `#[derive(Parameters)]` macro.
-    ///
-    /// Enum parameters don't support smoothing, so this does nothing.
-    #[inline]
-    pub fn reset_smoothing(&mut self) {
-        // No-op: EnumParameter doesn't support smoothing
-    }
 }
 
 impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
@@ -2412,7 +2366,7 @@ mod tests {
 
     #[test]
     fn test_step_size_with_smoother() {
-        let mut param = FloatParameter::new("Test", 0.0, 0.0..=10.0)
+        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0)
             .with_step_size(1.0)
             .with_smoother(crate::smoothing::SmoothingStyle::Linear(10.0));
 
@@ -2421,6 +2375,244 @@ mod tests {
 
         // Target should be the snapped value
         assert!((param.get() - 5.0).abs() < 1e-10);
+    }
+
+    // =========================================================================
+    // Smoothing through a shared reference
+    // =========================================================================
+
+    use crate::smoothing::{Smoother, SmoothingStyle};
+
+    const SMOOTHED_STYLES: [SmoothingStyle; 3] = [
+        SmoothingStyle::Linear(10.0),
+        SmoothingStyle::Exponential(5.0),
+        SmoothingStyle::Logarithmic(5.0),
+    ];
+
+    /// A parameter and a `Smoother` that is driven the way the parameter
+    /// drives its own smoother: the target follows the value before every
+    /// step.
+    struct Pair {
+        parameter: FloatParameter,
+        reference: Smoother,
+    }
+
+    impl Pair {
+        fn new(style: SmoothingStyle) -> Self {
+            // The range stays positive for the logarithmic style.
+            let parameter = FloatParameter::new("Test", 100.0, 20.0..=20000.0).with_smoother(style);
+            let mut reference = Smoother::new(style);
+            reference.reset(parameter.get());
+            Self {
+                parameter,
+                reference,
+            }
+        }
+
+        fn set_sample_rate(&mut self, sample_rate: f64) {
+            self.parameter.set_sample_rate(sample_rate);
+            self.reference.set_sample_rate(sample_rate);
+            self.reference.set_target(self.parameter.get());
+        }
+
+        /// Advance both by `count` ticks and compare every value.
+        fn tick(&mut self, count: usize) {
+            for step in 0..count {
+                let value = self.parameter.tick_smoothed();
+                self.reference.set_target(self.parameter.get());
+                let expected = self.reference.tick();
+                assert_eq!(value.to_bits(), expected.to_bits(), "tick {step}");
+            }
+            self.assert_same_position();
+        }
+
+        fn skip(&mut self, samples: usize) {
+            self.parameter.skip_smoothing(samples);
+            self.reference.set_target(self.parameter.get());
+            self.reference.skip(samples);
+            self.assert_same_position();
+        }
+
+        fn fill(&mut self, count: usize) {
+            let mut values = vec![0.0; count];
+            self.parameter.fill_smoothed(&mut values);
+            self.reference.set_target(self.parameter.get());
+            let mut expected = vec![0.0; count];
+            self.reference.fill(&mut expected);
+            for (step, (value, expected)) in values.iter().zip(&expected).enumerate() {
+                assert_eq!(value.to_bits(), expected.to_bits(), "fill {step}");
+            }
+            self.assert_same_position();
+        }
+
+        fn fill_f32(&mut self, count: usize) {
+            let mut values = vec![0.0_f32; count];
+            self.parameter.fill_smoothed_f32(&mut values);
+            self.reference.set_target(self.parameter.get());
+            let mut expected = vec![0.0_f32; count];
+            self.reference.fill_f32(&mut expected);
+            for (step, (value, expected)) in values.iter().zip(&expected).enumerate() {
+                assert_eq!(value.to_bits(), expected.to_bits(), "fill_f32 {step}");
+            }
+            self.assert_same_position();
+        }
+
+        fn reset(&mut self) {
+            self.parameter.reset_smoothing();
+            self.reference.reset(self.parameter.get());
+            self.assert_same_position();
+        }
+
+        fn assert_same_position(&self) {
+            assert_eq!(
+                self.parameter.smoothed().to_bits(),
+                self.reference.current().to_bits()
+            );
+            assert_eq!(self.parameter.is_smoothing(), self.reference.is_smoothing());
+        }
+    }
+
+    #[test]
+    fn test_smoothing_matches_smoother_over_a_ramp() {
+        for style in SMOOTHED_STYLES {
+            let mut pair = Pair::new(style);
+            pair.set_sample_rate(1000.0);
+            pair.tick(3);
+
+            pair.parameter.set(5000.0);
+            pair.tick(4);
+            assert!(pair.parameter.is_smoothing(), "{style:?}");
+            assert!(pair.parameter.smoothed() > 100.0, "{style:?}");
+            assert!(pair.parameter.smoothed() < 5000.0, "{style:?}");
+
+            // Long enough for every style to arrive.
+            pair.tick(400);
+            assert!(!pair.parameter.is_smoothing(), "{style:?}");
+            assert_eq!(pair.parameter.smoothed(), pair.parameter.get(), "{style:?}");
+        }
+    }
+
+    #[test]
+    fn test_smoothing_matches_smoother_when_retargeted_during_a_ramp() {
+        for style in SMOOTHED_STYLES {
+            let mut pair = Pair::new(style);
+            pair.set_sample_rate(1000.0);
+            pair.parameter.set(5000.0);
+            pair.tick(4);
+            pair.parameter.set(40.0);
+            pair.tick(3);
+            pair.parameter.set(12000.0);
+            pair.tick(2);
+            // Back to a value it has seen before.
+            pair.parameter.set(40.0);
+            pair.tick(400);
+        }
+    }
+
+    #[test]
+    fn test_smoothing_matches_smoother_for_a_change_below_its_threshold() {
+        for style in SMOOTHED_STYLES {
+            // A narrow range, so that the next normalized value is a plain
+            // value the smoother takes for its target.
+            let parameter = FloatParameter::new("Test", 1.0, 1.0..=2.0).with_smoother(style);
+            let mut reference = Smoother::new(style);
+            reference.reset(parameter.get());
+            let mut pair = Pair {
+                parameter,
+                reference,
+            };
+            pair.set_sample_rate(1000.0);
+            pair.parameter.set(1.5);
+            pair.tick(4);
+
+            // The stored bits change, the target does not.
+            let nudged = f64::from_bits(pair.parameter.get_normalized().to_bits() + 1);
+            pair.parameter.set_normalized(nudged);
+            assert_ne!(nudged, 0.5);
+            assert!((pair.parameter.get() - 1.5).abs() < 1e-10);
+            pair.tick(3);
+
+            // A real change starts a ramp again.
+            pair.parameter.set(1.25);
+            pair.tick(400);
+            assert_eq!(pair.parameter.smoothed(), 1.25, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn test_smoothing_matches_smoother_for_skip_and_fill() {
+        for style in SMOOTHED_STYLES {
+            let mut pair = Pair::new(style);
+            pair.set_sample_rate(1000.0);
+            pair.parameter.set(5000.0);
+            pair.skip(3);
+            pair.fill(2);
+            pair.fill_f32(2);
+            pair.parameter.set(40.0);
+            pair.fill(5);
+            pair.skip(2);
+            pair.fill_f32(3);
+            pair.skip(1000);
+            pair.fill(0);
+            pair.tick(2);
+        }
+    }
+
+    #[test]
+    fn test_smoothing_matches_smoother_for_reset_and_sample_rate() {
+        for style in SMOOTHED_STYLES {
+            let mut pair = Pair::new(style);
+
+            // Without a sample rate.
+            pair.parameter.set(5000.0);
+            pair.tick(3);
+
+            pair.set_sample_rate(1000.0);
+            pair.parameter.set(40.0);
+            pair.tick(3);
+
+            pair.reset();
+            assert!(!pair.parameter.is_smoothing(), "{style:?}");
+            assert_eq!(pair.parameter.smoothed(), pair.parameter.get(), "{style:?}");
+            pair.tick(2);
+
+            // A new rate with a pending change of the value.
+            pair.parameter.set(9000.0);
+            pair.set_sample_rate(48000.0);
+            pair.tick(5);
+            pair.set_sample_rate(0.0);
+            pair.tick(5);
+        }
+    }
+
+    #[test]
+    fn test_smoothing_advances_through_a_shared_reference() {
+        let parameter =
+            FloatParameter::new("Test", 0.0, 0.0..=10.0).with_smoother(SmoothingStyle::Linear(10.0));
+        let shared: &FloatParameter = &parameter;
+        shared.set_sample_rate(1000.0);
+
+        shared.set(10.0);
+        assert_eq!(shared.smoothed(), 0.0);
+        assert!((shared.tick_smoothed() - 1.0).abs() < 1e-12);
+        shared.skip_smoothing(4);
+        assert!((shared.smoothed() - 5.0).abs() < 1e-12);
+        let mut rest = [0.0; 5];
+        shared.fill_smoothed(&mut rest);
+        assert_eq!(rest[4], 10.0);
+        assert!(!shared.is_smoothing());
+    }
+
+    #[test]
+    fn test_smoothing_style_none_returns_the_value() {
+        let parameter =
+            FloatParameter::new("Test", 0.0, 0.0..=10.0).with_smoother(SmoothingStyle::None);
+        parameter.set_sample_rate(1000.0);
+        parameter.set(7.0);
+
+        assert_eq!(parameter.smoothed(), 7.0);
+        assert_eq!(parameter.tick_smoothed(), 7.0);
+        assert!(!parameter.is_smoothing());
     }
 
     #[test]

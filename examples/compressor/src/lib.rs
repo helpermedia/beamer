@@ -178,10 +178,7 @@ impl Descriptor for CompressorDescriptor {
     type Setup = SampleRate;
     type Processor = CompressorProcessor;
 
-    fn prepare(mut self, setup: SampleRate) -> CompressorProcessor {
-        // Set sample rate on parameters for smoothing calculations
-        self.parameters.set_sample_rate(setup.hz());
-
+    fn prepare(self, setup: SampleRate) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
@@ -322,7 +319,7 @@ impl CompressorProcessor {
         process_compression_inner(
             buffer,
             aux,
-            &mut self.parameters,
+            &self.parameters,
             &mut self.state,
             self.sample_rate,
         );
@@ -339,7 +336,7 @@ impl CompressorProcessor {
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
-    params: &mut CompressorParameters,
+    params: &CompressorParameters,
     state: &mut CompressionState,
     sample_rate: f64,
 ) {
