@@ -451,7 +451,7 @@ Smoothing methods require `&mut self` and run on the audio thread only. The unde
 
 **Automatic Reset on State Load:**
 
-The framework automatically calls `reset_smoothing()` after loading state to prevent unwanted ramps to loaded parameter values.
+When a host loads a state, the framework calls `reset_smoothing()` on the audio thread at the start of the next block, so that the loaded values apply at once instead of ramping in.
 
 #### Flat Parameter Grouping
 
@@ -775,13 +775,19 @@ pub trait Processor: HasParameters {
     fn wants_midi(&self) -> bool { false }
 
     /// Tail length in samples (for reverbs, delays).
+    /// Called on the audio thread for every block.
     fn tail_samples(&self) -> u32 { 0 }
 
+    /// Latency in samples (for lookahead).
+    /// Called on the audio thread for every block.
+    fn latency_samples(&self) -> u32 { 0 }
+
     /// Called when plugin is activated/deactivated.
-    /// Reset DSP state when active == true.
+    /// Reset DSP state when active == true. Must be realtime-safe.
     fn set_active(&mut self, active: bool) { }
 
     /// Bypass crossfade duration in samples.
+    /// Called on the audio thread for every block.
     fn bypass_ramp_samples(&self) -> u32 { 64 }
 
     /// Whether this plugin supports f64 processing natively.
@@ -799,14 +805,18 @@ pub trait Processor: HasParameters {
 
     /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
-
-    /// State persistence (default: delegates to Parameters trait)
-    fn save_state(&self) -> PluginResult<Vec<u8>> { Ok(self.parameters().save_state()) }
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> { ... }
 }
 ```
 
+**State:** The state a host saves and restores is the state of the parameters. `#[derive(Parameters)]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods. State beyond the parameters is not supported at the moment.
+
 **When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
+
+**What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail and requests a reset from its own threads at the same time, and none of that touches the processor:
+
+- The state is read from and written to the parameter values, which are atomic.
+- `latency_samples()`, `tail_samples()` and `bypass_ramp_samples()` are called on the audio thread for every block. The host gets the values of the most recent block, so they must be realtime-safe.
+- An Audio Unit host's reset runs as `set_active(false)` then `set_active(true)` on the audio thread, at the start of the next block. `set_active()` must therefore be realtime-safe: no allocation, no locks.
 
 #### Plugin Lifecycle
 

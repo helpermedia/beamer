@@ -137,6 +137,12 @@ Both formats share the same core traits and processing logic:
 | **UI Thread** | Parameter changes, WebView, IPC | Can allocate, can block (briefly) |
 | **Host Thread** | Plugin lifecycle, state save/load | Varies by host |
 
+A host saves and loads the state, asks for latency and tail and resets a plugin from its own threads while the audio thread processes. While audio runs, the processor belongs to the audio thread, so the wrappers never hand it to another thread:
+
+- The state is the parameters. Their values are atomic, so the wrappers save and load them through a shared reference.
+- The audio thread publishes latency and tail for every block. Host threads read the published values.
+- A request that needs the processor (a reset, the smoother reset after a state load) is a flag the audio thread acts on at the start of its next block.
+
 ---
 
 ## Crate Structure
@@ -262,7 +268,7 @@ struct DelayProcessor {
 |-------|-------|------------------|
 | `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - use `#[derive(HasParameters)]` |
 | `Descriptor` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
-| `Processor` | Prepared | DSP processing, state persistence, MIDI processing, `unprepare()` (has default impl) |
+| `Processor` | Prepared | DSP processing, MIDI processing, `unprepare()` (has default impl) |
 
 ### Parameter Ownership
 
@@ -389,7 +395,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
 - [transport.rs](crates/beamer-au/src/transport.rs) - Host transport conversion
 
-`processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters, state and the per-sub-block `process()` call) that both the render block and the bridge functions use.
+`processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
 **MIDI**: UMP MIDI 1.0/2.0 → `beamer-core::MidiEvent`
 - Universal MIDI Packet format (32-bit packets)
@@ -405,8 +411,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
 
 **State**: NSDictionary with NSData
-- Full processor state persistence (`save_state`/`load_state`)
-- Deferred state loading via `pending_state` (matches VST3)
+- The state is the parameters (`Parameters::save_state`/`load_state`), prepared or not
+- Saved and loaded without the plugin mutex, also while audio renders
 - Compatible with VST3 format
 
 **Real-time Safety**:
@@ -456,7 +462,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |
 | **f64 Conversion** | Pre-allocated | Pre-allocated |
 | **State Format** | NSDictionary | Binary blob |
-| **Processor State** | ✓ | ✓ |
+| **State Save/Load** | ✓ | ✓ |
 | **Bundle Type** | `.component` (AUv2) / `.appex` (AUv3) | `.vst3` |
 | **Registration** | ObjC factory + module init | `GetPluginFactory()` |
 | **Feature Parity** | ✓ Full parity | Reference |

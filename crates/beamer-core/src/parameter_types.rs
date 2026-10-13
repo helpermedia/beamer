@@ -372,7 +372,8 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     ///
     /// Takes `&self`: a host may load a state from one of its own threads
     /// while audio runs. This and `load_state_path` may only write parameter
-    /// values (they are atomic).
+    /// values (they are atomic). The framework resets the smoothers on the
+    /// audio thread afterwards.
     fn load_state(&self, data: &[u8]) -> Result<(), String> {
         if data.is_empty() {
             return Ok(());
@@ -423,8 +424,9 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Set sample rate for all smoothers in this parameter collection.
     ///
-    /// Call this from `Processor::setup()` to initialize smoothers
-    /// with the correct sample rate.
+    /// Call this from `Descriptor::prepare()` to initialize smoothers
+    /// with the correct sample rate. Nothing else does, and without it a
+    /// smoother does not ramp as configured.
     ///
     /// **Oversampling:** If your plugin uses oversampling, pass the actual
     /// processing rate: `sample_rate * oversampling_factor`.
@@ -432,9 +434,13 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// # Example
     ///
     /// ```ignore
-    /// impl Processor for MyPlugin {
-    ///     fn setup(&mut self, sample_rate: f64, _max_buffer_size: usize) {
-    ///         self.parameters.set_sample_rate(sample_rate);
+    /// impl Descriptor for MyPlugin {
+    ///     type Setup = SampleRate;
+    ///     type Processor = MyProcessor;
+    ///
+    ///     fn prepare(mut self, setup: SampleRate) -> MyProcessor {
+    ///         self.parameters.set_sample_rate(setup.hz());
+    ///         MyProcessor { parameters: self.parameters }
     ///     }
     /// }
     /// ```

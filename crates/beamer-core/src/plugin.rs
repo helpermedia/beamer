@@ -675,6 +675,10 @@ pub trait Processor: HasParameters {
     /// Hosts call `setActive(false)` followed by `setActive(true)` to request
     /// a full state reset.
     ///
+    /// Must be realtime-safe (no allocation, no locks): when an Audio Unit
+    /// host asks for a reset while audio runs, the wrapper calls this at the
+    /// start of the next render call, on the audio thread.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -697,6 +701,10 @@ pub trait Processor: HasParameters {
     /// after input stops (e.g., reverb decay). Return 0 for no tail, or
     /// `u32::MAX` for infinite tail.
     ///
+    /// Called on the audio thread for every block, so it must be
+    /// realtime-safe. A host that asks for the tail gets the value of the
+    /// most recent block.
+    ///
     /// Default returns 0 (no tail).
     fn tail_samples(&self) -> u32 {
         0
@@ -707,6 +715,10 @@ pub trait Processor: HasParameters {
     /// If the plugin introduces processing latency (e.g., lookahead limiters),
     /// return the latency in samples here. The host can use this for delay
     /// compensation.
+    ///
+    /// Called on the audio thread for every block, so it must be
+    /// realtime-safe. A host that asks for the latency gets the value of the
+    /// most recent block.
     ///
     /// Default returns 0 (no latency).
     fn latency_samples(&self) -> u32 {
@@ -727,6 +739,9 @@ pub trait Processor: HasParameters {
     /// - 512+ samples - very smooth, for reverbs/delays with long tails
     ///
     /// Default returns 64 samples.
+    ///
+    /// Called on the audio thread for every block, so it must be
+    /// realtime-safe.
     ///
     /// # Example
     ///
