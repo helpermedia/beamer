@@ -88,6 +88,15 @@ mod validate;
 /// ## Nested Groups
 /// - `#[nested(group = "...")]` - For fields containing nested parameter structs
 ///
+/// ## State Beyond Parameters
+/// - `#[state(id = "...")]` - For `State<T>` fields: values that are saved
+///   with the plugin state under this id. Ids share one namespace with
+///   parameter ids.
+///
+/// A field without an attribute is not part of the parameters or the saved
+/// state. The generated `Default` initializes it with its own default,
+/// which is how a struct can hold a `Handover`.
+///
 /// # Example
 ///
 /// ```ignore
@@ -103,7 +112,7 @@ mod validate;
 ///     pub output: OutputParameters,
 /// }
 /// ```
-#[proc_macro_derive(Parameters, attributes(parameter, nested))]
+#[proc_macro_derive(Parameters, attributes(parameter, nested, state))]
 pub fn derive_parameters(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 

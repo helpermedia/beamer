@@ -179,6 +179,22 @@ pub enum FieldIR {
     Parameter(Box<ParameterFieldIR>),
     /// A nested parameter struct (boxed to reduce enum size)
     Nested(Box<NestedFieldIR>),
+    /// A `State` field that is saved with the plugin state.
+    State(Box<StateFieldIR>),
+    /// A field without an attribute. It is not part of the parameters or
+    /// the saved state. The generated `Default` initializes it with its
+    /// own default.
+    Other(syn::Ident),
+}
+
+/// A field with `#[state(id = "...")]`.
+pub struct StateFieldIR {
+    /// Field name (e.g., `sample_path`).
+    pub field_name: syn::Ident,
+    /// The id the value is saved under.
+    pub string_id: String,
+    /// Span for error reporting.
+    pub span: Span,
 }
 
 /// A direct parameter field.
@@ -244,15 +260,23 @@ impl ParametersIR {
     pub fn parameter_fields(&self) -> impl Iterator<Item = &ParameterFieldIR> {
         self.fields.iter().filter_map(|f| match f {
             FieldIR::Parameter(p) => Some(p.as_ref()),
-            FieldIR::Nested(_) => None,
+            _ => None,
         })
     }
 
     /// Iterate over all nested fields.
     pub fn nested_fields(&self) -> impl Iterator<Item = &NestedFieldIR> {
         self.fields.iter().filter_map(|f| match f {
-            FieldIR::Parameter(_) => None,
             FieldIR::Nested(n) => Some(n.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// Iterate over all `State` fields.
+    pub fn state_fields(&self) -> impl Iterator<Item = &StateFieldIR> {
+        self.fields.iter().filter_map(|f| match f {
+            FieldIR::State(s) => Some(s.as_ref()),
+            _ => None,
         })
     }
 

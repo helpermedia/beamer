@@ -4,12 +4,12 @@
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Field, Fields};
+use syn::{Data, DeriveInput, Field, Fields, LitStr};
 
 use beamer_utils::fnv1a_32;
 use crate::ir::{
     FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType,
-    ParametersIR, RangeSpec, SmoothingSpec, SmoothingStyle,
+    ParametersIR, RangeSpec, SmoothingSpec, SmoothingStyle, StateFieldIR,
 };
 use crate::range_eval;
 
@@ -51,16 +51,14 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
     // Parse each field
     let mut parsed_fields = Vec::new();
     for field in fields {
-        if let Some(field_ir) = parse_field(field)? {
-            parsed_fields.push(field_ir);
-        }
-        // Fields without #[parameter] or #[nested] are silently ignored
+        parsed_fields.push(parse_field(field)?);
     }
 
-    if parsed_fields.is_empty() {
+    // Fields without an attribute do not make a parameter struct.
+    if parsed_fields.iter().all(|field| matches!(field, FieldIR::Other(_))) {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[derive(Parameters)] requires at least one #[parameter] or #[nested] field",
+            "#[derive(Parameters)] requires at least one #[parameter], #[nested] or #[state] field",
         ));
     }
 
@@ -75,15 +73,35 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
     })
 }
 
-/// Parse a single field, returning None if it has no relevant attributes.
-fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
-    // Check for #[parameter] attribute
+/// Parse a single field. A field without one of the attributes is kept as
+/// `FieldIR::Other`.
+fn parse_field(field: &Field) -> syn::Result<FieldIR> {
+    // A field is one thing: a parameter, a nested struct or a state.
+    let kinds = field
+        .attrs
+        .iter()
+        .filter(|attr| {
+            ["parameter", "nested", "state"]
+                .iter()
+                .any(|kind| attr.path().is_ident(kind))
+        })
+        .count();
+    if kinds > 1 {
+        return Err(syn::Error::new_spanned(
+            field,
+            "a field can have only one of #[parameter], #[nested] and #[state]",
+        ));
+    }
+
     for attr in &field.attrs {
         if attr.path().is_ident("parameter") {
-            return parse_parameter_field(field, attr).map(|p| Some(FieldIR::Parameter(Box::new(p))));
+            return parse_parameter_field(field, attr).map(|p| FieldIR::Parameter(Box::new(p)));
         }
         if attr.path().is_ident("nested") {
-            return parse_nested_field(field, attr).map(|n| Some(FieldIR::Nested(Box::new(n))));
+            return parse_nested_field(field, attr).map(|n| FieldIR::Nested(Box::new(n)));
+        }
+        if attr.path().is_ident("state") {
+            return parse_state_field(field, attr).map(|s| FieldIR::State(Box::new(s)));
         }
     }
 
@@ -101,9 +119,74 @@ fn parse_field(field: &Field) -> syn::Result<Option<FieldIR>> {
                 ),
             ));
         }
+        // A `State` without the attribute would never be saved.
+        if type_name == "State" {
+            return Err(syn::Error::new_spanned(
+                field,
+                "State field is missing #[state(id = \"...\")] attribute",
+            ));
+        }
     }
 
-    Ok(None)
+    let field_name = field
+        .ident
+        .clone()
+        .ok_or_else(|| syn::Error::new_spanned(field, "expected named field"))?;
+    Ok(FieldIR::Other(field_name))
+}
+
+/// Parse a field with `#[state(id = "...")]` attribute.
+fn parse_state_field(field: &Field, attr: &syn::Attribute) -> syn::Result<StateFieldIR> {
+    let field_name = field
+        .ident
+        .clone()
+        .ok_or_else(|| syn::Error::new_spanned(field, "expected named field"))?;
+
+    if extract_type_name(&field.ty).as_deref() != Some("State") {
+        return Err(syn::Error::new_spanned(
+            &field.ty,
+            "#[state] can only be used on State<T> fields",
+        ));
+    }
+
+    let mut string_id: Option<String> = None;
+
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("id") {
+            let value: LitStr = meta.value()?.parse()?;
+            string_id = Some(value.value());
+            Ok(())
+        } else {
+            Err(meta.error("unknown attribute. Expected: id"))
+        }
+    })?;
+
+    let string_id = string_id.ok_or_else(|| {
+        syn::Error::new_spanned(
+            attr,
+            format!(
+                "#[state] on field `{}` requires an id: #[state(id = \"...\")]",
+                field_name
+            ),
+        )
+    })?;
+
+    // The id is one segment of the path the value is saved under.
+    if string_id.is_empty() || string_id.contains('/') {
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!(
+                "state id '{}' must not be empty and cannot contain '/' (it separates path segments in the saved state)",
+                string_id
+            ),
+        ));
+    }
+
+    Ok(StateFieldIR {
+        field_name,
+        string_id,
+        span: attr.span(),
+    })
 }
 
 /// Parse a field with `#[parameter(...)]` attribute.

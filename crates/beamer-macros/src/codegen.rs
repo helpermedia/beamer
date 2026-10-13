@@ -570,8 +570,9 @@ fn generate_by_id(ir: &ParametersIR) -> TokenStream {
 
 /// Generate `save_entries()`: what this struct adds to a saved state.
 ///
-/// Parameters come first, in declaration order, then the nested structs.
-/// The bytes are laid out by `beamer_core::state_format`.
+/// Parameters come first, in declaration order, then the `State` fields,
+/// then the nested structs. The bytes are laid out by
+/// `beamer_core::state_format`.
 fn generate_save_state(ir: &ParametersIR) -> TokenStream {
     let parameter_saves: Vec<TokenStream> = ir
         .parameter_fields()
@@ -580,6 +581,20 @@ fn generate_save_state(ir: &ParametersIR) -> TokenStream {
             let id_str = &parameter.string_id;
             quote! {
                 writer.parameter(
+                    &::beamer::core::state_format::join_path(prefix, #id_str),
+                    &self.#field,
+                );
+            }
+        })
+        .collect();
+
+    let state_saves: Vec<TokenStream> = ir
+        .state_fields()
+        .map(|state| {
+            let field = &state.field_name;
+            let id_str = &state.string_id;
+            quote! {
+                writer.state(
                     &::beamer::core::state_format::join_path(prefix, #id_str),
                     &self.#field,
                 );
@@ -610,6 +625,7 @@ fn generate_save_state(ir: &ParametersIR) -> TokenStream {
             prefix: &str,
         ) {
             #(#parameter_saves)*
+            #(#state_saves)*
             #(#nested_saves)*
         }
     }
@@ -624,6 +640,20 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
             let id_str = &parameter.string_id;
             quote! {
                 entries.load_parameter(
+                    &::beamer::core::state_format::join_path(prefix, #id_str),
+                    &self.#field,
+                );
+            }
+        })
+        .collect();
+
+    let state_loads: Vec<TokenStream> = ir
+        .state_fields()
+        .map(|state| {
+            let field = &state.field_name;
+            let id_str = &state.string_id;
+            quote! {
+                entries.load_state(
                     &::beamer::core::state_format::join_path(prefix, #id_str),
                     &self.#field,
                 );
@@ -652,6 +682,7 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
             prefix: &str,
         ) {
             #(#parameter_loads)*
+            #(#state_loads)*
             #(#nested_loads)*
         }
     }
@@ -908,6 +939,12 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
                 let field = &n.field_name;
                 quote! { #field: Default::default() }
             }
+            FieldIR::State(s) => {
+                let field = &s.field_name;
+                quote! { #field: Default::default() }
+            }
+            // A field without an attribute, such as a `Handover`.
+            FieldIR::Other(field) => quote! { #field: Default::default() },
         })
         .collect();
 

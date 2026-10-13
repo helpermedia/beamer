@@ -15,22 +15,38 @@ pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
 }
 
 /// Check that all string IDs are unique.
+///
+/// Parameters and `State` fields share one namespace: the id of a field is
+/// the path its value is saved under.
 fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
     let mut seen: HashMap<&str, &syn::Ident> = HashMap::new();
 
     for field in &ir.fields {
-        if let FieldIR::Parameter(parameter) = field {
-            if let Some(first_field) = seen.get(parameter.string_id.as_str()) {
-                return Err(syn::Error::new(
-                    parameter.span,
-                    format!(
-                        "Duplicate parameter id \"{}\": already used by field `{}`",
-                        parameter.string_id, first_field
-                    ),
-                ));
-            }
-            seen.insert(&parameter.string_id, &parameter.field_name);
+        let (id, field_name, span, kind) = match field {
+            FieldIR::Parameter(parameter) => (
+                parameter.string_id.as_str(),
+                &parameter.field_name,
+                parameter.span,
+                "parameter",
+            ),
+            FieldIR::State(state) => (
+                state.string_id.as_str(),
+                &state.field_name,
+                state.span,
+                "state",
+            ),
+            FieldIR::Nested(_) | FieldIR::Other(_) => continue,
+        };
+        if let Some(first_field) = seen.get(id) {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "Duplicate {} id \"{}\": already used by field `{}`",
+                    kind, id, first_field
+                ),
+            ));
         }
+        seen.insert(id, field_name);
     }
 
     Ok(())

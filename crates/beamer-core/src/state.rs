@@ -9,7 +9,21 @@
 //! it as a whole, and the audio thread reads it through a
 //! [`HandoverReader`] without waiting.
 //!
+//! `#[derive(Parameters)]` saves and loads the fields that are marked with
+//! `#[state(id = "...")]`. The id is what the value is saved under, so it
+//! has to stay the same from one version of a plugin to the next. Ids of
+//! states and parameters share one namespace.
+//!
 //! ```ignore
+//! #[derive(Parameters)]
+//! struct SamplerParameters {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     gain: FloatParameter,
+//!
+//!     #[state(id = "sample_path")]
+//!     sample_path: State<String>,
+//! }
+//!
 //! // On a host or UI thread, for example in a WebView handler:
 //! parameters.sample_path.set(String::from("kick.wav"));
 //!
