@@ -36,7 +36,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `WebViewHandler` trait, `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `WebViewHandler` trait, `WebViewEvents` queue, `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
@@ -152,16 +152,16 @@ const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info
 Events provide fire-and-forget communication in both directions:
 
 ```javascript
-// JS -> Rust
+// JS -> Rust, handled by WebViewHandler::on_event
 __BEAMER__.emit("myEvent", { some: "data" });
 
-// Rust -> JS (planned, see Status and Planned Work)
-__BEAMER__.on("spectrumData", (data) => {
-  drawSpectrum(data);
+// Rust -> JS, sent with WebViewEvents::emit
+__BEAMER__.on("sampleLoaded", (name) => {
+  showSample(name);
 });
 ```
 
-`on()` returns an unsubscribe function.
+`on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side.
 
 ### Ready Promise
 
@@ -170,6 +170,66 @@ __BEAMER__.on("spectrumData", (data) => {
 ```javascript
 await __BEAMER__.ready;
 // All params.get() calls now return real values.
+```
+
+## Events from Rust
+
+A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the parameter struct, without an attribute, and return it from `Descriptor::webview_events()`. The framework asks for it once, when the plugin instance is created:
+
+```rust
+#[derive(Parameters)]
+pub struct WebViewDemoParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
+
+    pub events: WebViewEvents,
+}
+
+impl Descriptor for WebViewDemoDescriptor {
+    // ...
+    fn webview_events(&self) -> Option<&WebViewEvents> {
+        Some(&self.parameters.events)
+    }
+}
+```
+
+Everything that holds the parameters can then send an event. The data can be anything that serializes to JSON:
+
+```rust
+self.parameters.events.emit("sampleRate", &48000.0);
+```
+
+```javascript
+__BEAMER__.on("sampleRate", (rate) => showSampleRate(rate));
+```
+
+What to know about events:
+
+- **They are for an open editor.** An event reaches JavaScript on the editor's next sync tick, about 16 ms later. While no editor is open, events are dropped, and so is an event that arrives before the page registered its listener. An editor that opens asks for what it shows with `invoke()`, as the example below does.
+- **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
+- **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
+- **A listener that throws does not stop the others.** The error goes to the console of the WebView.
+- **The method is needed.** A queue that the Descriptor does not return is not known to the framework. The first event emitted into it is reported on standard error and through the `log` crate.
+
+### Example (from `webview-demo`)
+
+The demo shows the sample rate the host runs at. `prepare()` is called on a host thread whenever the host sets up audio. It keeps the rate for an editor that opens later and tells the one that is open:
+
+```rust
+fn prepare(&self, setup: SampleRate) -> WebViewDemoProcessor {
+    let sample_rate = setup.hz();
+    self.parameters.sample_rate.set(sample_rate);
+    self.parameters.events.emit("sampleRate", &sample_rate);
+    // ...
+}
+```
+
+The web UI asks once and then follows the event:
+
+```javascript
+const unsubscribe = __BEAMER__.on("sampleRate", (rate) => show(rate));
+await __BEAMER__.ready;
+show(await __BEAMER__.invoke("getSampleRate"));
 ```
 
 ## WebViewHandler Trait
@@ -300,6 +360,7 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 2. Compares each normalized value against a cached snapshot
 3. For any parameter whose value changed, appends its normalized value, plain value and display text to a delta object
 4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
+5. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
 
 The delta format is a plain object mapping numeric parameter IDs to those three values:
 
@@ -465,12 +526,12 @@ Lock-free data transfer from the audio thread to the WebView for spectrum analyz
 **Planned approach:**
 
 - A lock-free ring buffer in `beamer-core` for fixed-size visualization payloads
-- An `emit_rt()` method that writes into the ring buffer without allocating
-- The 60 Hz sync timer drains the ring buffer on the main thread and calls `evaluateJavaScript` to push data to the JS runtime
+- An `emit_rt()` method that writes into the ring buffer without allocating, on an audio end of the event queue that the Descriptor creates in `prepare()`
+- The 60 Hz sync timer drains the ring buffer on the main thread, next to the events it already delivers
 
 This is a core-level feature (not webview-specific) because the ring buffer and thread-safety guarantees belong in `beamer-core`.
 
-**Status:** `WebViewEvents` is defined in `beamer-core` but not yet delivered by the format wrappers. The ring buffer and `emit_rt()` are not yet implemented.
+**Status:** Not implemented. Events from host and UI threads work (see [Events from Rust](#events-from-rust)).
 
 ### Windows WebView2 Support
 

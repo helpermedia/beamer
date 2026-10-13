@@ -7,6 +7,9 @@
 //! It also shows state beyond parameters: the pan law is a `State` field.
 //! The web UI sets it through the WebView handler, the processor reads it
 //! on the audio thread and the host saves it with the project.
+//!
+//! And it shows an event from Rust to the web UI: the plugin tells the
+//! editor the sample rate whenever the host prepares it.
 
 use beamer::prelude::*;
 use beamer::serde::{Deserialize, Serialize};
@@ -41,6 +44,14 @@ pub struct WebViewDemoParameters {
     /// Saved with the plugin state under the id "pan_law".
     #[state(id = "pan_law")]
     pub pan_law: State<PanLaw>,
+
+    /// The sample rate the host runs at, 0 until it prepared the plugin.
+    /// Not saved and not a parameter: the web UI shows it.
+    pub sample_rate: Handover<f64>,
+
+    /// Events for the web UI. What is emitted here reaches the editor
+    /// while it is open.
+    pub events: WebViewEvents,
 }
 
 // =============================================================================
@@ -59,10 +70,17 @@ pub struct WebViewDemoDescriptor {
 }
 
 impl Descriptor for WebViewDemoDescriptor {
-    type Setup = ();
+    type Setup = SampleRate;
     type Processor = WebViewDemoProcessor;
 
-    fn prepare(&self, _: ()) -> WebViewDemoProcessor {
+    fn prepare(&self, setup: SampleRate) -> WebViewDemoProcessor {
+        // Keep the sample rate for an editor that opens later and tell the
+        // one that is open. A host calls this on one of its own threads,
+        // never on the audio thread, so emitting is fine here.
+        let sample_rate = setup.hz();
+        self.parameters.sample_rate.set(sample_rate);
+        self.parameters.events.emit("sampleRate", &sample_rate);
+
         WebViewDemoProcessor {
             parameters: Arc::clone(&self.parameters),
             // The audio thread's end of the state field.
@@ -76,6 +94,12 @@ impl Descriptor for WebViewDemoDescriptor {
         Some(Arc::new(DemoHandler {
             parameters: Arc::clone(&self.parameters),
         }))
+    }
+
+    fn webview_events(&self) -> Option<&WebViewEvents> {
+        // Without this the framework does not know the queue and the
+        // events never leave it.
+        Some(&self.parameters.events)
     }
 }
 
@@ -100,6 +124,9 @@ impl WebViewHandler for DemoHandler {
                 "version": env!("CARGO_PKG_VERSION"),
                 "framework": "Beamer",
             })),
+            // The sample rate of the host, 0 before it prepared the plugin.
+            // An open editor then follows it through the "sampleRate" event.
+            "getSampleRate" => Ok(serde_json::json!(*self.parameters.sample_rate.get())),
             // The pan law as "constant_power" or "linear".
             "getPanLaw" => serde_json::to_value(*self.parameters.pan_law.get())
                 .map_err(|error| error.to_string()),

@@ -52,6 +52,26 @@ function App() {
     };
   }, []);
 
+  const [sampleRate, setSampleRate] = useState<number | null>(null);
+
+  // Ask for the sample rate when the editor opens, then follow the event
+  // the plugin sends whenever the host prepares it again.
+  useEffect(() => {
+    let mounted = true;
+    const show = (rate: unknown) => {
+      if (mounted && typeof rate === "number" && rate > 0) setSampleRate(rate);
+    };
+    const unsubscribe = __BEAMER__.on("sampleRate", show);
+    __BEAMER__.ready
+      .then(() => __BEAMER__.invoke("getSampleRate"))
+      .then(show)
+      .catch((error) => console.error("getSampleRate failed:", error));
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
+
   const togglePanLaw = () => {
     const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
     __BEAMER__
@@ -98,6 +118,10 @@ function App() {
       >
         Pan law: {panLaw === "linear" ? "Linear" : "Constant power"}
       </button>
+
+      <p className="absolute bottom-3 text-xs text-gray-500 font-mono">
+        {sampleRate === null ? "Not prepared" : `${sampleRate} Hz`}
+      </p>
     </div>
   );
 }
