@@ -1,15 +1,12 @@
-//! AU lifecycle state machine and configuration builder.
+//! AU lifecycle state and configuration builder.
 //!
-//! This module provides the `AuState` enum that manages the two-phase lifecycle:
-//! - **Unprepared**: Plugin created, parameters available, but no audio processing
-//! - **Prepared**: Resources allocated, ready for audio processing
-//!
-//! # Design Philosophy
-//!
-//! The state machine mirrors the VST3 wrapper's pattern, providing clean separation
-//! between plugin configuration (unprepared) and audio processing (prepared) phases.
-//! This design ensures that audio resources are only allocated when needed and that
-//! parameters remain accessible before and after allocation.
+//! This module provides `AuState`, which holds the two parts of a plugin
+//! instance:
+//! - the **Descriptor**, created with the instance and kept for its whole
+//!   life. It holds the parameters and answers the host's questions about
+//!   buses and MIDI.
+//! - the **Processor** with its buffers, which exists while render resources
+//!   are allocated.
 //!
 //! # State Transitions
 //!
@@ -21,9 +18,11 @@
 //! Unprepared <--[deallocateRenderResources]-----|
 //! ```
 //!
-//! If the sample rate, buffer size or process mode changes while prepared, the
-//! state machine automatically unprepares and re-prepares to adapt to the new
-//! configuration.
+//! Preparing creates a processor from the descriptor and unpreparing drops
+//! it. If the sample rate, buffer size or process mode changes while
+//! prepared, the processor is dropped and a new one is created for the new
+//! configuration. The parameters are not part of this: they stay where they
+//! are.
 //!
 //! # Setup Extraction
 //!
@@ -37,131 +36,80 @@ use beamer_core::{
     BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig, Parameters,
     PluginSetup, ProcessMode, Processor,
 };
-use log;
 
-/// AU lifecycle states with clean transitions.
+/// The two parts of an AU plugin instance.
 ///
-/// This mirrors the VST3 state machine and maps directly to AU's
+/// This mirrors the VST3 wrapper and maps directly to AU's
 /// `allocateRenderResources` / `deallocateRenderResources` lifecycle.
-pub(crate) enum AuState<P: Descriptor> {
-    /// Plugin created but not prepared for audio.
-    ///
-    /// In this state:
-    /// - Parameters are accessible
-    /// - Audio processing is not possible
-    /// - Bus configuration can be queried
-    /// - State can be saved and loaded: it is the parameters, which move
-    ///   into the processor on prepare()
-    Unprepared { plugin: P },
+pub(crate) struct AuState<P: Descriptor> {
+    /// The plugin as the host sees it. It holds the parameters and lives as
+    /// long as the instance.
+    pub(crate) descriptor: P,
+    /// What exists while render resources are allocated.
+    pub(crate) prepared: Option<Prepared<P>>,
+}
 
-    /// Resources allocated, ready to process audio.
-    ///
-    /// In this state:
-    /// - Parameters are accessible (through processor)
-    /// - Audio processing is possible
-    /// - Sample rate and max frames are known
-    Prepared {
-        processor: P::Processor,
-        sample_rate: f64,
-        max_frames: u32,
-        /// Pre-allocated conversion buffers (if processor doesn't support f64)
-        conversion_buffers: Option<ConversionBuffers>,
-        /// MIDI CC state for tracking controller values (boxed to reduce enum size).
-        /// Accessed via `midi_cc_state()` method by render block for CC event processing.
-        midi_cc_state: Option<Box<beamer_core::MidiCcState>>,
-        /// Pre-allocated MIDI output buffer for process_midi() (boxed to reduce enum size)
-        midi_output_buffer: Box<beamer_core::MidiBuffer>,
-    },
-
-    /// Temporary state during transitions.
-    ///
-    /// This state should never be observed externally. It exists only
-    /// to satisfy Rust's ownership rules during state transitions.
-    Transitioning,
+/// A processor and the resources that were allocated with it.
+pub(crate) struct Prepared<P: Descriptor> {
+    pub(crate) processor: P::Processor,
+    pub(crate) sample_rate: f64,
+    pub(crate) max_frames: u32,
+    /// Pre-allocated conversion buffers (if processor doesn't support f64).
+    pub(crate) conversion_buffers: Option<ConversionBuffers>,
+    /// MIDI CC state for tracking controller values.
+    /// Accessed via `midi_cc_state()` method by render block for CC event processing.
+    pub(crate) midi_cc_state: Option<Box<beamer_core::MidiCcState>>,
+    /// Pre-allocated MIDI output buffer for process_midi(). It is boxed
+    /// because it is too large for the stack of the audio thread.
+    pub(crate) midi_output_buffer: Box<beamer_core::MidiBuffer>,
 }
 
 impl<P: Descriptor> AuState<P> {
-    /// Create a new state machine in unprepared state.
-    pub fn new() -> Self {
-        Self::Unprepared {
-            plugin: P::default(),
+    /// Create an unprepared state around a descriptor.
+    pub fn with_descriptor(descriptor: P) -> Self {
+        Self {
+            descriptor,
+            prepared: None,
         }
-    }
-
-    /// Create a new state machine with an existing descriptor instance.
-    pub fn with_descriptor(plugin: P) -> Self {
-        Self::Unprepared { plugin }
     }
 
     /// Check if in prepared state.
     pub fn is_prepared(&self) -> bool {
-        matches!(self, Self::Prepared { .. })
+        self.prepared.is_some()
     }
 
     /// Get the current sample rate (only when prepared).
     pub fn sample_rate(&self) -> Option<f64> {
-        match self {
-            Self::Prepared { sample_rate, .. } => Some(*sample_rate),
-            _ => None,
-        }
+        self.prepared.as_ref().map(|prepared| prepared.sample_rate)
     }
 
     /// Get the maximum frame count (only when prepared).
     pub fn max_frames(&self) -> Option<u32> {
-        match self {
-            Self::Prepared { max_frames, .. } => Some(*max_frames),
-            _ => None,
-        }
+        self.prepared.as_ref().map(|prepared| prepared.max_frames)
     }
 
     /// Get reference to processor (only when prepared).
     pub fn processor(&self) -> Option<&P::Processor> {
-        match self {
-            Self::Prepared { processor, .. } => Some(processor),
-            _ => None,
-        }
+        self.prepared.as_ref().map(|prepared| &prepared.processor)
     }
 
     /// Get mutable reference to processor (only when prepared).
     pub fn processor_mut(&mut self) -> Option<&mut P::Processor> {
-        match self {
-            Self::Prepared { processor, .. } => Some(processor),
-            _ => None,
-        }
+        self.prepared.as_mut().map(|prepared| &mut prepared.processor)
     }
 
-    /// Transition from Prepared to Unprepared.
-    pub fn unprepare(&mut self) -> Result<(), String> {
-        let old_state = std::mem::replace(self, Self::Transitioning);
-
-        match old_state {
-            Self::Prepared { processor, .. } => {
-                let plugin = processor.unprepare();
-                *self = Self::Unprepared { plugin };
-                Ok(())
-            }
-            Self::Unprepared { plugin } => {
-                *self = Self::Unprepared { plugin };
-                Ok(()) // Already unprepared, no-op
-            }
-            Self::Transitioning => Err("Invalid state: transitioning".to_string()),
-        }
+    /// Drop the processor and its resources. Does nothing when unprepared.
+    pub fn unprepare(&mut self) {
+        self.prepared = None;
     }
 
     /// Get reference to MIDI CC state (only when prepared).
     ///
     /// Used by render block to track MIDI CC changes and update parameter smoothing.
     pub fn midi_cc_state(&self) -> Option<&beamer_core::MidiCcState> {
-        match self {
-            Self::Prepared { midi_cc_state, .. } => midi_cc_state.as_deref(),
-            _ => None,
-        }
-    }
-}
-
-impl<P: Descriptor> Default for AuState<P> {
-    fn default() -> Self {
-        Self::new()
+        self.prepared
+            .as_ref()
+            .and_then(|prepared| prepared.midi_cc_state.as_deref())
     }
 }
 
@@ -183,9 +131,6 @@ fn build_setup<S: PluginSetup>(
 }
 
 /// Allocate processing resources (conversion buffers, MIDI state) for a processor.
-///
-/// This is shared between initial preparation and re-preparation paths to avoid
-/// code duplication.
 fn allocate_processing_resources(
     supports_f64: bool,
     midi_cc_config: Option<MidiCcConfig>,
@@ -241,7 +186,7 @@ fn allocate_processing_resources(
 }
 
 impl<P: Descriptor> AuState<P> {
-    /// Transition from Unprepared to Prepared.
+    /// Create a processor for a configuration.
     ///
     /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for
     /// proper conversion buffer allocation. A prepared plugin is prepared
@@ -253,75 +198,39 @@ impl<P: Descriptor> AuState<P> {
         max_frames: u32,
         bus_config: &CachedBusConfig,
         process_mode: ProcessMode,
-    ) -> Result<(), String> {
+    ) {
         // Convert CachedBusConfig to BusLayout for plugin config
         let layout = bus_config.to_bus_layout();
-        let old_state = std::mem::replace(self, Self::Transitioning);
 
-        match old_state {
-            Self::Unprepared { plugin } => {
-                // Capture MIDI CC config before consuming the plugin
-                let midi_cc_config = plugin.midi_cc_config();
-
-                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
-                // The smoothers ramp at the host's rate unless the plugin
-                // sets another one in prepare.
-                plugin.parameters().set_sample_rate(sample_rate);
-                let processor = plugin.prepare(plugin_setup);
-
-                let (conversion_buffers, midi_cc_state, midi_output_buffer) =
-                    allocate_processing_resources(
-                        processor.supports_double_precision(),
-                        midi_cc_config,
-                        max_frames,
-                        &layout,
-                        bus_config,
-                    );
-
-                *self = Self::Prepared {
-                    processor,
-                    sample_rate,
-                    max_frames,
-                    conversion_buffers,
-                    midi_cc_state,
-                    midi_output_buffer,
-                };
-                Ok(())
-            }
-            Self::Prepared { processor, .. } => {
-                // The configuration changed - need to unprepare and re-prepare
-                log::debug!("Re-preparing plugin due to config change (was prepared)");
-
-                let plugin = processor.unprepare();
-
-                // Capture MIDI CC config before consuming the plugin
-                let midi_cc_config = plugin.midi_cc_config();
-
-                let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
-                plugin.parameters().set_sample_rate(sample_rate);
-                let new_processor = plugin.prepare(plugin_setup);
-
-                let (conversion_buffers, midi_cc_state, midi_output_buffer) =
-                    allocate_processing_resources(
-                        new_processor.supports_double_precision(),
-                        midi_cc_config,
-                        max_frames,
-                        &layout,
-                        bus_config,
-                    );
-
-                *self = Self::Prepared {
-                    processor: new_processor,
-                    sample_rate,
-                    max_frames,
-                    conversion_buffers,
-                    midi_cc_state,
-                    midi_output_buffer,
-                };
-                Ok(())
-            }
-            Self::Transitioning => Err("Invalid state: transitioning".to_string()),
+        // A processor of an earlier configuration goes first, so that its
+        // buffers are free before the new ones are allocated.
+        if self.prepared.take().is_some() {
+            log::debug!("Re-preparing plugin due to config change (was prepared)");
         }
+
+        let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
+        // The smoothers ramp at the host's rate unless the plugin sets
+        // another one in prepare.
+        self.descriptor.parameters().set_sample_rate(sample_rate);
+        let processor = self.descriptor.prepare(plugin_setup);
+
+        let (conversion_buffers, midi_cc_state, midi_output_buffer) =
+            allocate_processing_resources(
+                processor.supports_double_precision(),
+                self.descriptor.midi_cc_config(),
+                max_frames,
+                &layout,
+                bus_config,
+            );
+
+        self.prepared = Some(Prepared {
+            processor,
+            sample_rate,
+            max_frames,
+            conversion_buffers,
+            midi_cc_state,
+            midi_output_buffer,
+        });
     }
 }
 

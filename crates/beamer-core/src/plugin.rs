@@ -1,13 +1,18 @@
 //! Core plugin trait definitions.
 //!
-//! This module defines the two-phase plugin lifecycle:
+//! A plugin consists of three parts:
 //!
-//! - **[`Descriptor`]** (unprepared state): Holds parameters, created before audio config is known.
-//!   Transforms into a processor via [`Descriptor::prepare()`] when configuration arrives.
+//! - **[`Descriptor`]**: The plugin as the host sees it. It holds the parameters
+//!   and describes buses and MIDI behavior. It is created with the plugin
+//!   instance and lives as long as the instance does.
 //!
-//! - **[`Processor`]** (prepared state): Ready for audio processing with real sample rate
-//!   and buffer configuration. Created by [`Descriptor::prepare()`], can return to unprepared
-//!   state via [`Processor::unprepare()`] for sample rate changes.
+//! - **The parameters**: One struct in an [`Arc`], shared by the host, the UI
+//!   and the audio thread for the life of the instance.
+//!
+//! - **[`Processor`]**: What the audio thread owns. It is created by
+//!   [`Descriptor::prepare()`] with the real sample rate and buffer
+//!   configuration, and dropped when the host releases the audio resources or
+//!   changes the configuration.
 //!
 //! This design eliminates placeholder values by making it impossible to process audio
 //! until proper configuration is available.
@@ -26,14 +31,17 @@ use crate::process_context::ProcessContext;
 use crate::webview_handler::WebViewHandler;
 
 // =============================================================================
-// HasParameters Trait (Shared Parameter Access)
+// HasParameters Trait (Parameter Access)
 // =============================================================================
 
-/// Trait for types that hold parameters.
+/// Trait for the type that holds the parameters of a plugin: its
+/// [`Descriptor`].
 ///
-/// This trait provides a common interface for parameter access, shared between
-/// [`Descriptor`] (unprepared state) and [`Processor`] (prepared state).
-/// Both traits require `HasParameters` as a supertrait.
+/// The parameters live in one [`Arc`] for the life of the plugin instance.
+/// The host, the UI and the audio thread all use that one struct, which is
+/// why every parameter value is an atomic. The [`Processor`] gets its own
+/// handle in [`Descriptor::prepare()`]:
+/// `Arc::clone(&self.parameters)`.
 ///
 /// # Derive Macro
 ///
@@ -44,33 +52,37 @@ use crate::webview_handler::WebViewHandler;
 /// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
 ///     #[parameters]
-///     parameters: GainParameters,
-/// }
-///
-/// #[derive(HasParameters)]
-/// pub struct GainProcessor {
-///     #[parameters]
-///     parameters: GainParameters,
+///     parameters: Arc<GainParameters>,
 /// }
 /// ```
-///
-/// This eliminates the boilerplate of implementing `parameters()`, `parameters_mut()`,
-/// and `set_parameters()` on both your Plugin and Processor types.
 pub trait HasParameters: Send + 'static {
     /// The parameter collection type.
-    type Parameters: ParameterStore + ParameterGroups + crate::parameter_types::Parameters + Default;
+    type Parameters: ParameterStore
+        + ParameterGroups
+        + crate::parameter_types::Parameters
+        + Default
+        + 'static;
 
-    /// Returns a reference to the parameters.
-    fn parameters(&self) -> &Self::Parameters;
+    /// Returns the shared parameters.
+    fn parameters(&self) -> &Arc<Self::Parameters>;
+}
 
-    /// Returns a mutable reference to the parameters.
-    fn parameters_mut(&mut self) -> &mut Self::Parameters;
+/// The type of a `#[parameters]` field, for `#[derive(HasParameters)]`.
+///
+/// The derive reads the parameter struct from the field's type through this
+/// trait. It is implemented for [`Arc`] only.
+#[diagnostic::on_unimplemented(
+    message = "a `#[parameters]` field must be an `Arc` of the parameter struct",
+    label = "this is `{Self}`, not an `Arc`",
+    note = "write `parameters: Arc<MyParameters>`: the parameters are shared with the host and the UI for as long as the plugin instance lives"
+)]
+pub trait ParametersField {
+    /// The parameter struct inside the `Arc`.
+    type Parameters;
+}
 
-    /// Sets the parameters, replacing any existing values.
-    ///
-    /// This is used by the default [`Processor::unprepare()`] implementation
-    /// to transfer parameters from the processor back to the definition.
-    fn set_parameters(&mut self, params: Self::Parameters);
+impl<T> ParametersField for Arc<T> {
+    type Parameters = T;
 }
 
 // =============================================================================
@@ -149,8 +161,8 @@ pub trait PluginSetup: Clone + Send + 'static {
 /// ```ignore
 /// impl Descriptor for GainPlugin {
 ///     type Setup = ();
-///     fn prepare(self, _: ()) -> GainProcessor {
-///         GainProcessor { parameters: self.parameters }
+///     fn prepare(&self, _: ()) -> GainProcessor {
+///         GainProcessor { parameters: Arc::clone(&self.parameters) }
 ///     }
 /// }
 /// ```
@@ -172,7 +184,7 @@ impl PluginSetup for () {
 /// ```ignore
 /// impl Descriptor for DelayPlugin {
 ///     type Setup = SampleRate;
-///     fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+///     fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * sample_rate.0) as usize;
 ///         DelayProcessor {
 ///             sample_rate: sample_rate.0,
@@ -208,7 +220,7 @@ impl PluginSetup for SampleRate {
 /// ```ignore
 /// impl Descriptor for FftPlugin {
 ///     type Setup = (SampleRate, MaxBufferSize);
-///     fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+///     fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 ///         FftProcessor {
 ///             sample_rate: sr.0,
 ///             fft_buffer: vec![0.0; mbs.0],
@@ -248,7 +260,7 @@ impl PluginSetup for MainInputChannels {
 /// ```ignore
 /// impl Descriptor for SurroundPlugin {
 ///     type Setup = (SampleRate, MainOutputChannels);
-///     fn prepare(self, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
+///     fn prepare(&self, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
 ///         SurroundProcessor {
 ///             sample_rate: sr.0,
 ///             per_channel_state: vec![State::new(); channels.0 as usize],
@@ -304,7 +316,7 @@ impl PluginSetup for AuxOutputCount {
 /// ```ignore
 /// impl Descriptor for OversamplingPlugin {
 ///     type Setup = (SampleRate, ProcessMode);
-///     fn prepare(self, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
+///     fn prepare(&self, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
 ///         let oversampling = match mode {
 ///             ProcessMode::Realtime | ProcessMode::Prefetch => 2,
 ///             ProcessMode::Offline => 8,
@@ -511,25 +523,29 @@ impl BusInfo {
 /// plugin formats.
 ///
 /// A `Processor` is created by calling [`Descriptor::prepare()`] with the
-/// audio configuration. Unlike the old design where `setup()` was called
-/// after construction, here the processor is created with valid configuration
-/// from the start - no placeholder values.
+/// audio configuration, so it holds valid configuration from the start - no
+/// placeholder values. It belongs to the audio thread. Everything that other
+/// threads need to see or change lives in the shared parameters, of which
+/// the processor keeps its own `Arc`.
 ///
 /// # Lifecycle
 ///
 /// ```text
-/// Descriptor::default() -> Descriptor (unprepared, holds parameters)
+/// Descriptor::default() -> Descriptor (lives as long as the plugin instance)
 ///                      |
-///                      v  Descriptor::prepare(config)
-///                      |
-///                      v
-///                Processor (prepared, ready for audio)
-///                      |
-///                      v  Processor::unprepare()
+///                      v  Descriptor::prepare(&self, setup)
 ///                      |
 ///                      v
-///                 Descriptor (unprepared, parameters preserved)
+///                Processor (ready for audio)
+///                      |
+///                      v  the host releases the audio resources or
+///                      |  changes the configuration
+///                      v
+///                   dropped (the next prepare() creates a new one)
 /// ```
+///
+/// A processor is dropped on a host thread, never on the audio thread. What
+/// has to outlive a processor belongs in the parameters.
 ///
 /// # Thread Safety
 ///
@@ -539,19 +555,7 @@ impl BusInfo {
 /// - No locks (use lock-free structures)
 /// - No syscalls
 /// - No unbounded loops
-///
-/// # Note on HasParameters
-///
-/// The `Processor` trait requires [`HasParameters`] as a supertrait, which provides
-/// the `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
-/// `#[parameters]` field annotation to implement this automatically.
-pub trait Processor: HasParameters {
-    /// The unprepared definition type that created this processor.
-    ///
-    /// Used by [`Processor::unprepare()`] to return to the unprepared state.
-    /// The Parameters type must match the definition's Parameters type.
-    type Descriptor: Descriptor<Processor = Self, Parameters = Self::Parameters>;
-
+pub trait Processor: Send + 'static {
     /// Process an audio buffer with transport context.
     ///
     /// This is the main DSP entry point, called on the audio thread for each
@@ -616,49 +620,6 @@ pub trait Processor: HasParameters {
     /// }
     /// ```
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext);
-
-    /// Return to the unprepared definition state.
-    ///
-    /// This is used when sample rate or buffer configuration changes.
-    /// The processor is consumed and returns the original definition with
-    /// parameters preserved. The wrapper can then call `prepare()` again
-    /// with the new configuration.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation creates a new `Descriptor::default()` and
-    /// transfers the parameters from this processor to it. This works for
-    /// most plugins where the Descriptor struct only holds parameters.
-    ///
-    /// Override this method if your Descriptor has additional state beyond
-    /// parameters that needs to be preserved across unprepare/prepare cycles.
-    ///
-    /// # Example (custom implementation)
-    ///
-    /// ```ignore
-    /// impl Processor for DelayProcessor {
-    ///     type Descriptor = DelayPlugin;
-    ///
-    ///     fn unprepare(self) -> DelayPlugin {
-    ///         DelayPlugin {
-    ///             parameters: self.parameters,
-    ///             // DSP state (delay_lines, etc.) is discarded
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    fn unprepare(mut self) -> Self::Descriptor
-    where
-        Self: Sized,
-    {
-        let params = std::mem::take(self.parameters_mut());
-        let mut definition = Self::Descriptor::default();
-        definition.set_parameters(params);
-        definition
-    }
-
-    // Note: `parameters()` and `parameters_mut()` are provided by the `HasParameters` supertrait.
-    // Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation to implement them.
 
     // =========================================================================
     // Activation State
@@ -899,43 +860,35 @@ pub trait Processor: HasParameters {
         }
     }
 
-    /// Returns whether this plugin processes MIDI events.
-    ///
-    /// Override to return `true` if your plugin needs MIDI input/output.
-    /// This is used by the host to determine event bus configuration.
-    ///
-    /// Default returns `false`.
-    fn wants_midi(&self) -> bool {
-        false
-    }
-
 }
 
 // =============================================================================
 // Descriptor Trait
 // =============================================================================
 
-/// The unprepared plugin definition - holds parameters before audio config is known.
+/// The plugin as the host sees it: parameters, buses and MIDI behavior.
 ///
 /// This is the primary trait that plugin authors implement to create a complete
-/// audio plugin. It holds parameters and configuration that doesn't depend on
-/// sample rate and transforms into a [`Processor`] via [`Descriptor::prepare()`]
-/// when audio configuration becomes available.
+/// audio plugin. A `Descriptor` is created with the plugin instance and lives
+/// as long as the instance does. It holds the parameters and everything else
+/// that does not depend on the audio configuration, and it creates a
+/// [`Processor`] via [`Descriptor::prepare()`] when the configuration is
+/// known.
 ///
-/// # Two-Phase Lifecycle
+/// # Lifecycle
 ///
 /// ```text
-/// Descriptor::default() -> Descriptor (unprepared, holds parameters)
+/// Descriptor::default() -> Descriptor (lives as long as the plugin instance)
 ///                      |
-///                      v  Descriptor::prepare(config)
-///                      |
-///                      v
-///                Processor (prepared, ready for audio)
-///                      |
-///                      v  Processor::unprepare()
+///                      v  Descriptor::prepare(&self, setup)
 ///                      |
 ///                      v
-///                 Descriptor (unprepared, parameters preserved)
+///                Processor (ready for audio)
+///                      |
+///                      v  the host releases the audio resources or
+///                      |  changes the configuration
+///                      v
+///                   dropped (the next prepare() creates a new one)
 /// ```
 ///
 /// # Example: Simple Gain (no setup)
@@ -944,27 +897,23 @@ pub trait Processor: HasParameters {
 /// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
 ///     #[parameters]
-///     parameters: GainParameters,
+///     parameters: Arc<GainParameters>,
 /// }
 ///
 /// impl Descriptor for GainPlugin {
 ///     type Setup = ();
 ///     type Processor = GainProcessor;
 ///
-///     fn prepare(self, _: ()) -> GainProcessor {
-///         GainProcessor { parameters: self.parameters }
+///     fn prepare(&self, _: ()) -> GainProcessor {
+///         GainProcessor { parameters: Arc::clone(&self.parameters) }
 ///     }
 /// }
 ///
-/// #[derive(HasParameters)]
 /// pub struct GainProcessor {
-///     #[parameters]
-///     parameters: GainParameters,
+///     parameters: Arc<GainParameters>,
 /// }
 ///
 /// impl Processor for GainProcessor {
-///     type Descriptor = GainPlugin;
-///
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 ///         let gain = self.parameters.gain_linear();
 ///         for (input, output) in buffer.zip_channels() {
@@ -972,10 +921,6 @@ pub trait Processor: HasParameters {
 ///                 *o = *i * gain;
 ///             }
 ///         }
-///     }
-///
-///     fn unprepare(self) -> GainPlugin {
-///         GainPlugin { parameters: self.parameters }
 ///     }
 /// }
 /// ```
@@ -986,17 +931,17 @@ pub trait Processor: HasParameters {
 /// #[derive(Default, HasParameters)]
 /// pub struct DelayPlugin {
 ///     #[parameters]
-///     parameters: DelayParameters,
+///     parameters: Arc<DelayParameters>,
 /// }
 ///
 /// impl Descriptor for DelayPlugin {
 ///     type Setup = SampleRate;
 ///     type Processor = DelayProcessor;
 ///
-///     fn prepare(self, setup: SampleRate) -> DelayProcessor {
+///     fn prepare(&self, setup: SampleRate) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * setup.hz()) as usize;
 ///         DelayProcessor {
-///             parameters: self.parameters,
+///             parameters: Arc::clone(&self.parameters),
 ///             sample_rate: setup.hz(),  // Real value from start!
 ///             buffer: vec![0.0; buffer_size],   // Correct allocation!
 ///         }
@@ -1007,7 +952,7 @@ pub trait Processor: HasParameters {
 /// # Note on HasParameters
 ///
 /// The `Descriptor` trait requires [`HasParameters`] as a supertrait, which provides the
-/// `parameters()` and `parameters_mut()` methods. Use `#[derive(HasParameters)]` with a
+/// `parameters()` method. Use `#[derive(HasParameters)]` with a
 /// `#[parameters]` field annotation to implement this automatically.
 pub trait Descriptor: HasParameters + Default {
     /// The setup information this plugin needs to prepare.
@@ -1022,13 +967,20 @@ pub trait Descriptor: HasParameters + Default {
     type Setup: PluginSetup;
 
     /// The prepared processor type created by [`Descriptor::prepare()`].
-    type Processor: Processor<Descriptor = Self, Parameters = Self::Parameters>;
+    type Processor: Processor;
 
-    /// Transform this definition into a prepared processor.
+    /// Create a processor for an audio configuration.
     ///
     /// This is called when audio configuration becomes available (in VST3,
-    /// during `setupProcessing()`). The definition is consumed and transformed
-    /// into a processor with valid configuration - no placeholder values.
+    /// during `setupProcessing()`), and again when it changes: the previous
+    /// processor is dropped and a new one is created with the new setup.
+    ///
+    /// Give the processor its own handle to the parameters with
+    /// `Arc::clone(&self.parameters)`. The framework has set the host's
+    /// sample rate on the parameter smoothers before this call.
+    ///
+    /// This runs on a host thread, never on the audio thread, so it may
+    /// allocate.
     ///
     /// # Arguments
     ///
@@ -1037,7 +989,7 @@ pub trait Descriptor: HasParameters + Default {
     /// # Returns
     ///
     /// A prepared processor ready for audio processing.
-    fn prepare(self, setup: Self::Setup) -> Self::Processor;
+    fn prepare(&self, setup: Self::Setup) -> Self::Processor;
 
     // =========================================================================
     // Bus Configuration (static, known before prepare)
@@ -1084,10 +1036,6 @@ pub trait Descriptor: HasParameters + Default {
     ///
     /// Override to return `true` if your plugin needs MIDI input/output.
     /// This is used by the host to determine event bus configuration.
-    ///
-    /// **Note:** This method is also on [`Processor`], but the Descriptor
-    /// version is queried during bus configuration (before prepare).
-    /// Both should return the same value.
     ///
     /// Default returns `false`.
     fn wants_midi(&self) -> bool {

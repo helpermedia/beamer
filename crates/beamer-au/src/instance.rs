@@ -94,7 +94,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Allocate render resources (prepare for audio processing).
     ///
     /// Called when AU host calls `allocateRenderResourcesAndReturnError:`.
-    /// This triggers the Descriptor → Processor transition.
+    /// The Descriptor creates a Processor for this configuration.
     ///
     /// # Arguments
     /// * `sample_rate` - The sample rate in Hz
@@ -112,7 +112,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Deallocate render resources (return to unprepared state).
     ///
     /// Called when AU host calls `deallocateRenderResources`.
-    /// This triggers the Processor → Descriptor transition.
+    /// This drops the Processor. The Descriptor and the parameters stay.
     ///
     /// This method must be idempotent: calling it when already unprepared
     /// is a safe no-op. The destroy path relies on this to ensure cleanup
@@ -132,16 +132,7 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// The bridge caches a pointer to them, so that parameter values, state,
     /// groups and presets need no plugin mutex (see `SharedParameters`).
-    ///
-    /// # Errors
-    /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn shared_parameters(&self) -> Result<&(dyn SharedParameters + 'static), PluginError>;
-
-    /// Get mutable parameter store for setting values from host.
-    ///
-    /// # Errors
-    /// Returns an error if the plugin is in an invalid state (transitioning).
-    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError>;
+    fn shared_parameters(&self) -> &(dyn SharedParameters + 'static);
 
     /// Reset DSP state (clear delay lines, reset filters, etc.).
     ///

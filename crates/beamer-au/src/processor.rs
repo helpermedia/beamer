@@ -14,9 +14,10 @@
 //!
 //! # Lifecycle Management
 //!
-//! The processor manages two lifecycle states via `AuState<P>`:
-//! - **Unprepared**: Descriptor created, parameters available, no audio resources
-//! - **Prepared**: Resources allocated, ready for `process()` calls
+//! The processor keeps the plugin's `Descriptor` for the whole life of the
+//! instance and manages two lifecycle states via `AuState<P>`:
+//! - **Unprepared**: Parameters available, no audio resources
+//! - **Prepared**: A `Processor` and its resources exist, ready for `process()` calls
 //!
 //! Transitions are triggered by `allocate_render_resources()` and
 //! `deallocate_render_resources()` calls from the AU host.
@@ -33,11 +34,10 @@ use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
 use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
-use crate::lifecycle::AuState;
+use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ParameterStore, ProcessContext, ProcessMode, Processor,
-    Transport, WebViewHandler,
+    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, Transport, WebViewHandler,
 };
 
 /// Generic AU processor wrapper.
@@ -55,8 +55,7 @@ where
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     state: AuState<P>,
-    /// Cached WebView handler from the Descriptor. Captured at construction
-    /// so it remains accessible after prepare() consumes the Descriptor.
+    /// WebView handler of the Descriptor, asked for once at construction.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
     _presets: PhantomData<Presets>,
 }
@@ -72,10 +71,8 @@ where
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
     pub fn new() -> Self {
-        // Create a single descriptor instance and capture the WebView
-        // handler from it before passing ownership to AuState. This
-        // ensures the handler references the same instance that becomes
-        // the live plugin, not a discarded throw-away copy.
+        // The handler comes from the descriptor that stays the live plugin,
+        // so it can hold that plugin's parameters.
         let descriptor = P::default();
         let handler = descriptor.webview_handler();
         Self {
@@ -99,7 +96,6 @@ where
 impl<P, Presets> AuPluginInstance for AuProcessor<P, Presets>
 where
     P: Descriptor + 'static,
-    P::Processor: HasParameters<Parameters = P::Parameters>,
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     fn allocate_render_resources(
@@ -110,12 +106,12 @@ where
         process_mode: ProcessMode,
     ) -> PluginResult<()> {
         self.state
-            .prepare(sample_rate, max_frames, bus_config, process_mode)
-            .map_err(PluginError::InitializationFailed)
+            .prepare(sample_rate, max_frames, bus_config, process_mode);
+        Ok(())
     }
 
     fn deallocate_render_resources(&mut self) {
-        let _ = self.state.unprepare();
+        self.state.unprepare();
     }
 
     fn is_prepared(&self) -> bool {
@@ -130,24 +126,8 @@ where
         self.state.max_frames()
     }
 
-    fn shared_parameters(&self) -> Result<&(dyn SharedParameters + 'static), PluginError> {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => Ok(plugin.parameters()),
-            AuState::Prepared { processor, .. } => Ok(processor.parameters()),
-            AuState::Transitioning => {
-                Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
-        }
-    }
-
-    fn parameter_store_mut(&mut self) -> Result<&mut dyn ParameterStore, PluginError> {
-        match &mut self.state {
-            AuState::Unprepared { plugin, .. } => Ok(plugin.parameters_mut()),
-            AuState::Prepared { processor, .. } => Ok(processor.parameters_mut()),
-            AuState::Transitioning => {
-                Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
-        }
+    fn shared_parameters(&self) -> &(dyn SharedParameters + 'static) {
+        &**self.state.descriptor.parameters()
     }
 
     fn reset(&mut self) {
@@ -160,9 +140,9 @@ where
     }
 
     fn reset_smoothing(&mut self) {
-        if let Some(processor) = self.state.processor_mut() {
+        if self.state.is_prepared() {
             use beamer_core::parameter_types::Parameters;
-            processor.parameters().reset_smoothing();
+            self.state.descriptor.parameters().reset_smoothing();
         }
     }
 
@@ -188,32 +168,19 @@ where
     }
 
     fn declared_input_bus_count(&self) -> usize {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => plugin.input_bus_count(),
-            // Deterministic fallback that doesn't disrupt the prepared processor.
-            _ => P::default().input_bus_count(),
-        }
+        self.state.descriptor.input_bus_count()
     }
 
     fn declared_output_bus_count(&self) -> usize {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => plugin.output_bus_count(),
-            _ => P::default().output_bus_count(),
-        }
+        self.state.descriptor.output_bus_count()
     }
 
     fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
-            _ => P::default().input_bus_info(index),
-        }
+        self.state.descriptor.input_bus_info(index)
     }
 
     fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        match &self.state {
-            AuState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
-            _ => P::default().output_bus_info(index),
-        }
+        self.state.descriptor.output_bus_info(index)
     }
 
     fn process(
@@ -223,19 +190,15 @@ where
         num_samples: usize,
     ) -> PluginResult<()> {
         // Get processor and sample_rate from prepared state
-        let (processor, sample_rate) = match &mut self.state {
-            AuState::Prepared {
+        let Some(Prepared {
                 processor,
                 sample_rate,
                 ..
-            } => (processor, *sample_rate),
-            AuState::Unprepared { .. } => {
-                return Err(PluginError::ProcessingError("not prepared".to_string()))
-            }
-            AuState::Transitioning => {
-                return Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
+            }) = &mut self.state.prepared
+        else {
+            return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
+        let sample_rate = *sample_rate;
 
         // Build Buffer from input/output slices
         // The Buffer::new takes iterators, so we convert slices to iterators
@@ -264,20 +227,16 @@ where
         num_samples: usize,
     ) -> PluginResult<()> {
         // Get processor, sample_rate and conversion_buffers from prepared state
-        let (processor, sample_rate, conversion_buffers) = match &mut self.state {
-            AuState::Prepared {
+        let Some(Prepared {
                 processor,
                 sample_rate,
                 conversion_buffers,
                 ..
-            } => (processor, *sample_rate, conversion_buffers),
-            AuState::Unprepared { .. } => {
-                return Err(PluginError::ProcessingError("not prepared".to_string()))
-            }
-            AuState::Transitioning => {
-                return Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
+            }) = &mut self.state.prepared
+        else {
+            return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
+        let sample_rate = *sample_rate;
 
         // Check if processor supports native f64 processing
         if processor.supports_double_precision() {
@@ -348,18 +307,13 @@ where
         context: &ProcessContext,
     ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
-        let (processor, conversion_buffers) = match &mut self.state {
-            AuState::Prepared {
+        let Some(Prepared {
                 processor,
                 conversion_buffers,
                 ..
-            } => (processor, conversion_buffers),
-            AuState::Unprepared { .. } => {
-                return Err(PluginError::ProcessingError("not prepared".to_string()))
-            }
-            AuState::Transitioning => {
-                return Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
+            }) = &mut self.state.prepared
+        else {
+            return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
 
         let num_samples = context.num_samples;
@@ -429,14 +383,8 @@ where
         context: &ProcessContext,
     ) -> PluginResult<()> {
         // Get processor from prepared state
-        let processor = match &mut self.state {
-            AuState::Prepared { processor, .. } => processor,
-            AuState::Unprepared { .. } => {
-                return Err(PluginError::ProcessingError("not prepared".to_string()))
-            }
-            AuState::Transitioning => {
-                return Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
+        let Some(Prepared { processor, .. }) = &mut self.state.prepared else {
+            return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
 
         let num_samples = context.num_samples;
@@ -468,18 +416,13 @@ where
         context: &ProcessContext,
     ) -> PluginResult<()> {
         // Get processor and conversion_buffers from prepared state
-        let (processor, conversion_buffers) = match &mut self.state {
-            AuState::Prepared {
+        let Some(Prepared {
                 processor,
                 conversion_buffers,
                 ..
-            } => (processor, conversion_buffers),
-            AuState::Unprepared { .. } => {
-                return Err(PluginError::ProcessingError("not prepared".to_string()))
-            }
-            AuState::Transitioning => {
-                return Err(PluginError::ProcessingError("transitioning".to_string()))
-            }
+            }) = &mut self.state.prepared
+        else {
+            return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
 
         let num_samples = context.num_samples;
@@ -592,10 +535,9 @@ where
         ramps: &[crate::render::AuParameterRampEvent],
     ) -> PluginResult<()> {
         // Only apply if in prepared state
-        let processor = match &mut self.state {
-            AuState::Prepared { processor, .. } => processor,
-            _ => return Ok(()), // Ignore if not prepared
-        };
+        if !self.state.is_prepared() {
+            return Ok(());
+        }
 
         use beamer_core::parameter_types::Parameters;
 
@@ -604,7 +546,7 @@ where
         // its end value: the parameter's own smoother interpolates, with the time
         // constant configured at parameter construction, which is also what the
         // other format wrappers do.
-        let parameters = processor.parameters_mut();
+        let parameters: &P::Parameters = self.state.descriptor.parameters();
 
         // The values are in AU format (plain value, or index for an indexed
         // parameter), like the ones the host sets on the parameter directly.
@@ -614,9 +556,9 @@ where
         for (address, value) in immediate.chain(ramps) {
             // AU parameter addresses map directly to beamer parameter IDs.
             let param_id = address as u32;
-            let normalized = crate::bridge::au_value_to_normalized(&*parameters, param_id, value);
+            let normalized = crate::bridge::au_value_to_normalized(parameters, param_id, value);
 
-            if let Some(param) = Parameters::by_id(&*parameters, param_id) {
+            if let Some(param) = Parameters::by_id(parameters, param_id) {
                 param.set_normalized(normalized);
             }
         }
@@ -638,22 +580,22 @@ where
         // prepared state. This avoids mem::take, which would construct a new
         // default MidiBuffer on the stack - a ~80KB [MidiEvent; 1024] that
         // overflows the audio IO thread's small stack in debug builds.
-        let (processor, core_output) = match &mut self.state {
-            AuState::Prepared {
-                processor,
-                midi_output_buffer,
-                ..
-            } => (processor, midi_output_buffer.as_mut()),
-            _ => {
-                // Not prepared - pass through events unchanged
-                for event in input {
-                    let _ = output.push(event.clone());
-                }
-                return;
+        let Some(Prepared {
+            processor,
+            midi_output_buffer,
+            ..
+        }) = &mut self.state.prepared
+        else {
+            // Not prepared - pass through events unchanged
+            for event in input {
+                let _ = output.push(event.clone());
             }
+            return;
         };
+        let core_output = midi_output_buffer.as_mut();
+        let parameters: &P::Parameters = self.state.descriptor.parameters();
 
-        // Clear for reuse
+        // Clear for reuse.
         core_output.clear();
 
         // =========================================================================
@@ -684,7 +626,7 @@ where
                         if let MidiEventKind::ProgramChange(pc) = &event.event {
                             if (pc.program as usize) < preset_count {
                                 // Apply the factory preset
-                                Presets::apply(pc.program as usize, processor.parameters());
+                                Presets::apply(pc.program as usize, parameters);
                                 // Filter out this event - it's been handled
                                 return None;
                             }
@@ -749,7 +691,6 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
     P: Descriptor + 'static,
-    P::Processor: HasParameters<Parameters = P::Parameters>,
 {
     Box::new(AuProcessor::<P>::new())
 }
@@ -790,6 +731,11 @@ mod tests {
         /// What `SMOOTHING_SAMPLE_RATE` was when a `TestPlugin` was last
         /// prepared on this thread.
         static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
+        /// How many `TestProcessor`s exist on this thread.
+        static LIVE_PROCESSORS: Cell<usize> = const { Cell::new(0) };
+        /// What `LIVE_PROCESSORS` was when a `TestPlugin` was last prepared
+        /// on this thread.
+        static LIVE_PROCESSORS_AT_PREPARE: Cell<usize> = const { Cell::new(0) };
     }
 
     fn smoothing_resets() -> usize {
@@ -1012,7 +958,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestPlugin {
-        parameters: TestParameters,
+        parameters: Arc<TestParameters>,
     }
 
     impl Default for TestParameters {
@@ -1023,14 +969,8 @@ mod tests {
 
     impl HasParameters for TestPlugin {
         type Parameters = TestParameters;
-        fn parameters(&self) -> &Self::Parameters {
+        fn parameters(&self) -> &Arc<Self::Parameters> {
             &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, params: Self::Parameters) {
-            self.parameters = params;
         }
     }
 
@@ -1038,11 +978,13 @@ mod tests {
         type Setup = ();
         type Processor = TestProcessor;
 
-        fn prepare(self, _setup: ()) -> Self::Processor {
+        fn prepare(&self, _setup: ()) -> Self::Processor {
             SMOOTHING_SAMPLE_RATE_AT_PREPARE
                 .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
+            LIVE_PROCESSORS_AT_PREPARE.with(|live| live.set(LIVE_PROCESSORS.with(Cell::get)));
+            LIVE_PROCESSORS.with(|live| live.set(live.get() + 1));
             TestProcessor {
-                parameters: self.parameters,
+                parameters: Arc::clone(&self.parameters),
             }
         }
 
@@ -1063,25 +1005,17 @@ mod tests {
     // =========================================================================
 
     struct TestProcessor {
-        parameters: TestParameters,
+        parameters: Arc<TestParameters>,
     }
 
-    impl HasParameters for TestProcessor {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Self::Parameters {
-            &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, params: Self::Parameters) {
-            self.parameters = params;
+    impl Drop for TestProcessor {
+        fn drop(&mut self) {
+            // A thread that ends may have dropped its counter already.
+            let _ = LIVE_PROCESSORS.try_with(|live| live.set(live.get().saturating_sub(1)));
         }
     }
 
     impl Processor for TestProcessor {
-        type Descriptor = TestPlugin;
-
         fn process(
             &mut self,
             _buffer: &mut Buffer,
@@ -1180,19 +1114,16 @@ mod tests {
 
     /// Get the gain parameter's normalized value.
     fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
-        let params = processor.shared_parameters().unwrap().store();
+        let params = processor.shared_parameters().store();
         let gain_id = params.info(0).unwrap().id;
         params.get_normalized(gain_id)
     }
 
     /// Set the gain parameter's normalized value.
     fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
-        let params = processor.shared_parameters().unwrap().store();
+        let params = processor.shared_parameters().store();
         let gain_id = params.info(0).unwrap().id;
-        processor
-            .parameter_store_mut()
-            .unwrap()
-            .set_normalized(gain_id, value);
+        params.set_normalized(gain_id, value);
     }
 
     // =========================================================================
@@ -1387,11 +1318,10 @@ mod tests {
     /// which process mode it was prepared.
     #[derive(Default)]
     struct ModePlugin {
-        parameters: TestParameters,
+        parameters: Arc<TestParameters>,
     }
 
     struct ModeProcessor {
-        parameters: TestParameters,
         value: f32,
     }
 
@@ -1400,14 +1330,8 @@ mod tests {
 
     impl HasParameters for ModePlugin {
         type Parameters = TestParameters;
-        fn parameters(&self) -> &Self::Parameters {
+        fn parameters(&self) -> &Arc<Self::Parameters> {
             &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, params: Self::Parameters) {
-            self.parameters = params;
         }
     }
 
@@ -1415,9 +1339,8 @@ mod tests {
         type Setup = ProcessMode;
         type Processor = ModeProcessor;
 
-        fn prepare(self, mode: ProcessMode) -> Self::Processor {
+        fn prepare(&self, mode: ProcessMode) -> Self::Processor {
             ModeProcessor {
-                parameters: self.parameters,
                 value: match mode {
                     ProcessMode::Offline => OFFLINE_VALUE,
                     _ => REALTIME_VALUE,
@@ -1426,22 +1349,7 @@ mod tests {
         }
     }
 
-    impl HasParameters for ModeProcessor {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Self::Parameters {
-            &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, params: Self::Parameters) {
-            self.parameters = params;
-        }
-    }
-
     impl Processor for ModeProcessor {
-        type Descriptor = ModePlugin;
-
         fn process(
             &mut self,
             buffer: &mut Buffer,
@@ -1666,23 +1574,23 @@ mod tests {
     }
 
     #[test]
-    fn test_parameter_access_follows_the_parameters() {
+    fn test_parameter_values_stay_through_preparing() {
         let mut handle = test_handle();
         let instance: *mut BeamerInstanceHandle = &mut *handle;
 
         beamer_au_set_parameter_value(instance, gain_id(), 0.25);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
 
-        // Preparing moves the parameters into the processor.
+        // Preparing creates a processor that shares the parameters.
         assert_eq!(allocate(instance, false), 0);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
         beamer_au_set_parameter_value(instance, gain_id(), 0.75);
 
-        // Preparing again for offline rendering moves them twice.
+        // Preparing again for offline rendering replaces the processor.
         assert_eq!(allocate(instance, true), 0);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
 
-        // Deallocating moves them back.
+        // Deallocating drops the processor.
         beamer_au_deallocate_render_resources(instance);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.75);
     }
@@ -1695,8 +1603,8 @@ mod tests {
 
         // SAFETY: The handle is alive, and the calls below only use it shared.
         let shared = unsafe { &*instance };
-        // With the cached pointer locked, as it is during a move, access goes
-        // through the plugin instead of failing or using the pointer.
+        // With the cached pointer locked, access goes through the plugin
+        // instead of failing or using the pointer.
         shared.with_shared_parameters_locked(|| {
             beamer_au_set_parameter_value(instance, gain_id(), 0.125);
             assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.125);
@@ -1878,11 +1786,11 @@ mod tests {
         assert_eq!(load_state(instance, &quiet), 0);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
 
-        // It moves into the processor, and is saved to the same bytes there.
+        // The processor shares it: it is saved to the same bytes when prepared.
         assert_eq!(allocate(instance, false), 0);
         assert_eq!(saved_state(instance), quiet);
 
-        // And back.
+        // And when unprepared again.
         beamer_au_set_parameter_value(instance, gain_id(), 0.75);
         let boost = saved_state(instance);
         beamer_au_deallocate_render_resources(instance);
@@ -1942,6 +1850,31 @@ mod tests {
         SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(0.0));
         assert_eq!(allocate(instance, true), 0);
         assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 44100.0);
+    }
+
+    #[test]
+    fn test_preparing_again_drops_the_processor_before_it_creates_one() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
+        assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
+
+        // A new configuration: the buffers of the old processor are free
+        // before the new ones are allocated.
+        assert_eq!(allocate(instance, true), 0);
+        assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
+        assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
+
+        // The new processor shares the parameters: its latency follows them.
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(beamer_au_get_latency_samples(instance), latency_for(0.25));
+
+        beamer_au_deallocate_render_resources(instance);
+        assert_eq!(LIVE_PROCESSORS.with(Cell::get), 0);
+        assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
     }
 
     #[test]
@@ -2011,8 +1944,8 @@ mod tests {
 
         // SAFETY: The handle is alive, and it is only used shared here.
         let shared = unsafe { &*instance };
-        // With the plugin held elsewhere nothing is unprepared and nothing
-        // moves, so the cached parameters stay valid.
+        // With the plugin held elsewhere nothing is unprepared. The
+        // parameters do not depend on that.
         shared.with_plugin_locked(|| beamer_au_deallocate_render_resources(instance));
 
         let locks = plugin_lock_count(instance);

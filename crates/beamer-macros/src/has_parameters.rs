@@ -4,7 +4,8 @@
 //! implements the `HasParameters` trait for structs with a `#[parameters]` field.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{quote, quote_spanned};
+use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Fields, Ident, Type};
 
 /// Derive the `HasParameters` trait for a struct.
@@ -72,28 +73,28 @@ pub fn derive_has_parameters_impl(input: DeriveInput) -> syn::Result<TokenStream
             struct_name,
             "No field marked with #[parameters]. Add #[parameters] to the field containing your parameters.\n\
              Example:\n\
-             #[derive(HasParameters)]\n\
+             #[derive(Default, HasParameters)]\n\
              struct MyPlugin {\n\
                  #[parameters]\n\
-                 parameters: MyParameters,\n\
+                 parameters: Arc<MyParameters>,\n\
              }",
         )
     })?;
 
+    // The parameter struct is taken from the field's type by the compiler,
+    // through `ParametersField`, and not by reading the type's syntax here.
+    // A field that is not an `Arc` gets that trait's error message, at the
+    // field's type.
+    let parameters_type = quote_spanned! {field_type.span()=>
+        <#field_type as ::beamer::core::plugin::ParametersField>::Parameters
+    };
+
     Ok(quote! {
         impl #impl_generics ::beamer::core::plugin::HasParameters for #struct_name #ty_generics #where_clause {
-            type Parameters = #field_type;
+            type Parameters = #parameters_type;
 
-            fn parameters(&self) -> &Self::Parameters {
+            fn parameters(&self) -> &::std::sync::Arc<Self::Parameters> {
                 &self.#field_name
-            }
-
-            fn parameters_mut(&mut self) -> &mut Self::Parameters {
-                &mut self.#field_name
-            }
-
-            fn set_parameters(&mut self, params: Self::Parameters) {
-                self.#field_name = params;
             }
         }
     })

@@ -216,21 +216,21 @@ impl DrumVoice {
 #[derive(Default, HasParameters)]
 pub struct DrumsDescriptor {
     #[parameters]
-    pub parameters: DrumsParameters,
+    pub parameters: Arc<DrumsParameters>,
 }
 
 impl Descriptor for DrumsDescriptor {
     type Setup = SampleRate;
     type Processor = DrumsProcessor;
 
-    fn prepare(self, setup: SampleRate) -> DrumsProcessor {
+    fn prepare(&self, setup: SampleRate) -> DrumsProcessor {
         // Initialize voice pools (4 voices per drum type)
         let voices: [[DrumVoice; VOICES_PER_DRUM]; 4] = std::array::from_fn(|drum_idx| {
             std::array::from_fn(|voice_idx| DrumVoice::new(DRUM_TYPES[drum_idx], voice_idx))
         });
 
         DrumsProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             voices,
             sample_rate: setup.hz(),
             time_counter: 0,
@@ -274,10 +274,8 @@ impl Descriptor for DrumsDescriptor {
 const MAX_BUFFER_SIZE: usize = 8192;
 
 /// Runtime processor implementing the Processor trait.
-#[derive(HasParameters)]
 pub struct DrumsProcessor {
-    #[parameters]
-    parameters: DrumsParameters,
+    parameters: Arc<DrumsParameters>,
     voices: [[DrumVoice; VOICES_PER_DRUM]; 4], // [drum_type][voice_index]
     sample_rate: f64,
     time_counter: u64,
@@ -448,8 +446,6 @@ impl DrumsProcessor {
 }
 
 impl Processor for DrumsProcessor {
-    type Descriptor = DrumsDescriptor;
-
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
     }

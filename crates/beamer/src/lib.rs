@@ -27,6 +27,7 @@
 //! }
 //!
 //! // 2. Descriptor: holds the parameters and describes the plugin to the host.
+//! //    It lives as long as the plugin instance.
 //! # // The attribute reads Config.toml, which this crate does not have, so
 //! # // the doctest comments it out. The rendered page still shows the line.
 //! # /*
@@ -35,7 +36,7 @@
 //! #[derive(Default, HasParameters)]
 //! struct GainDescriptor {
 //!     #[parameters]
-//!     parameters: GainParameters,
+//!     parameters: Arc<GainParameters>,
 //! }
 //!
 //! impl Descriptor for GainDescriptor {
@@ -44,21 +45,18 @@
 //!     type Setup = ();
 //!     type Processor = GainProcessor;
 //!
-//!     fn prepare(self, _: ()) -> GainProcessor {
-//!         GainProcessor { parameters: self.parameters }
+//!     fn prepare(&self, _: ()) -> GainProcessor {
+//!         GainProcessor { parameters: Arc::clone(&self.parameters) }
 //!     }
 //! }
 //!
-//! // 3. Processor: the prepared state, ready for audio.
-//! #[derive(HasParameters)]
+//! // 3. Processor: what the audio thread owns. It shares the parameters
+//! //    with the host and the UI.
 //! struct GainProcessor {
-//!     #[parameters]
-//!     parameters: GainParameters,
+//!     parameters: Arc<GainParameters>,
 //! }
 //!
 //! impl Processor for GainProcessor {
-//!     type Descriptor = GainDescriptor;
-//!
 //!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 //!         let gain = self.parameters.gain.as_linear() as f32;
 //!         for (input, output) in buffer.zip_channels() {
@@ -192,6 +190,9 @@ macro_rules! export_plugin {
 /// ```
 pub mod prelude {
     // Core traits and types
+    // The parameters of a plugin live in an `Arc`.
+    pub use std::sync::Arc;
+
     pub use beamer_core::{
         // Asset types
         EmbeddedAsset, EmbeddedAssets,

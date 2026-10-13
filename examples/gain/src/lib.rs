@@ -47,24 +47,25 @@ impl GainParameters {
 // Descriptor
 // =============================================================================
 
-/// Gain plugin descriptor (unprepared state).
+/// Gain plugin descriptor.
 ///
-/// Holds parameters and describes the plugin to the host before audio
-/// configuration is known. Transforms into `GainProcessor` via `prepare()`.
+/// Holds the parameters and describes the plugin to the host, for as long as
+/// the plugin instance lives. Creates the `GainProcessor` via `prepare()`
+/// once the audio configuration is known.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
-    pub parameters: GainParameters,
+    pub parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {
     type Setup = ();
     type Processor = GainProcessor;
 
-    fn prepare(self, _: ()) -> GainProcessor {
+    fn prepare(&self, _: ()) -> GainProcessor {
         GainProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
         }
     }
 }
@@ -73,13 +74,11 @@ impl Descriptor for GainDescriptor {
 // Processor
 // =============================================================================
 
-/// Gain plugin processor (prepared state).
+/// Gain plugin processor.
 ///
 /// Ready for audio processing. Created by `GainDescriptor::prepare()`.
-#[derive(HasParameters)]
 pub struct GainProcessor {
-    #[parameters]
-    pub parameters: GainParameters,
+    pub parameters: Arc<GainParameters>,
 }
 
 impl GainProcessor {
@@ -96,8 +95,6 @@ impl GainProcessor {
 }
 
 impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

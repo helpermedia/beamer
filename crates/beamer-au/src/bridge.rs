@@ -346,7 +346,7 @@ impl SharedParametersPtr {
 
     /// Capture the current parameters pointer from a plugin instance.
     fn capture(plugin: &dyn AuPluginInstance) -> Self {
-        Self(plugin.shared_parameters().ok().map(NonNull::from))
+        Self(Some(NonNull::from(plugin.shared_parameters())))
     }
 
     /// Get a reference to the parameters, `None` for a null pointer.
@@ -614,8 +614,7 @@ unsafe fn with_parameters<R>(
 
     // The parameters are being moved, or no pointer is cached.
     let plugin = lock_plugin(handle).ok()?;
-    let parameters = plugin.shared_parameters().ok()?;
-    Some(f(parameters))
+    Some(f(plugin.shared_parameters()))
 }
 
 /// Access the plugin's ParameterStore (see `with_parameters`).

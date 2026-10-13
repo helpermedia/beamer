@@ -161,15 +161,16 @@ pub struct CompressorParameters {
 // Descriptor
 // =============================================================================
 
-/// Compressor plugin descriptor (unprepared state).
+/// Compressor plugin descriptor.
 ///
-/// Holds parameters and describes the plugin to the host before audio
-/// configuration is known. Transforms into `CompressorProcessor` via `prepare()`.
+/// Holds the parameters and describes the plugin to the host, for as long as
+/// the plugin instance lives. Creates the `CompressorProcessor` via `prepare()`
+/// once the audio configuration is known.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct CompressorDescriptor {
     #[parameters]
-    pub parameters: CompressorParameters,
+    pub parameters: Arc<CompressorParameters>,
 }
 
 impl Descriptor for CompressorDescriptor {
@@ -178,12 +179,12 @@ impl Descriptor for CompressorDescriptor {
     type Setup = SampleRate;
     type Processor = CompressorProcessor;
 
-    fn prepare(self, setup: SampleRate) -> CompressorProcessor {
+    fn prepare(&self, setup: SampleRate) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
             state: CompressionState {
                 env_db: DC_OFFSET,
@@ -276,15 +277,13 @@ const DC_OFFSET: f64 = 1e-25;
 // Processor
 // =============================================================================
 
-/// Compressor plugin processor (prepared state).
+/// Compressor plugin processor.
 ///
 /// Ready for audio processing. Created by `CompressorDescriptor::prepare()`
 /// with valid sample rate configuration. All DSP state is properly initialized.
-#[derive(HasParameters)]
 pub struct CompressorProcessor {
     /// Plugin parameters
-    #[parameters]
-    parameters: CompressorParameters,
+    parameters: Arc<CompressorParameters>,
 
     /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
@@ -463,8 +462,6 @@ fn process_compression_inner<S: Sample>(
 }
 
 impl Processor for CompressorProcessor {
-    type Descriptor = CompressorDescriptor;
-
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
         if active {

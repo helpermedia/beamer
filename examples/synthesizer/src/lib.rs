@@ -145,15 +145,16 @@ pub struct  SynthesizerParameters {
 // Descriptor
 // =============================================================================
 
-/// Synthesizer plugin descriptor (unprepared state).
+/// Synthesizer plugin descriptor.
 ///
-/// Holds parameters and describes the plugin to the host before audio
-/// configuration is known. Transforms into `SynthProcessor` via `prepare()`.
+/// Holds the parameters and describes the plugin to the host, for as long as
+/// the plugin instance lives. Creates the `SynthesizerProcessor` via `prepare()`
+/// once the audio configuration is known.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct SynthesizerDescriptor {
     #[parameters]
-    pub parameters: SynthesizerParameters,
+    pub parameters: Arc<SynthesizerParameters>,
 }
 
 impl Descriptor for SynthesizerDescriptor {
@@ -162,9 +163,9 @@ impl Descriptor for SynthesizerDescriptor {
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
 
-    fn prepare(self, setup: SampleRate) -> SynthesizerProcessor {
+    fn prepare(&self, setup: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: setup.hz(),
             time_counter: 0,
@@ -438,16 +439,14 @@ impl Voice {
 // Processor
 // =============================================================================
 
-/// Synthesizer plugin processor (prepared state).
+/// Synthesizer plugin processor.
 ///
 /// Ready for audio processing. Created by `SynthesizerDescriptor::prepare()`.
 /// Manages 8 polyphonic voices with sample-accurate MIDI timing and
 /// oldest-note voice stealing.
-#[derive(HasParameters)]
 pub struct SynthesizerProcessor {
     /// Plugin parameters
-    #[parameters]
-    parameters: SynthesizerParameters,
+    parameters: Arc<SynthesizerParameters>,
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -665,8 +664,6 @@ impl SynthesizerProcessor {
 }
 
 impl Processor for SynthesizerProcessor {
-    type Descriptor = SynthesizerDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,
@@ -692,10 +689,6 @@ impl Processor for SynthesizerProcessor {
     fn process_midi(&mut self, input: &[MidiEvent], _output: &mut MidiBuffer) {
         // Store events for sample-accurate processing in process()
         self.pending_events.extend_from_slice(input);
-    }
-
-    fn wants_midi(&self) -> bool {
-        true
     }
 
     fn tail_samples(&self) -> u32 {

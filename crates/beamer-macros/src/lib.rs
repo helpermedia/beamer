@@ -173,9 +173,8 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 
 /// Derive macro for implementing the `HasParameters` trait.
 ///
-/// This macro generates the `HasParameters` implementation for structs that hold
-/// parameter collections. It eliminates the boilerplate of implementing
-/// `parameters()` and `parameters_mut()` on both Descriptor and Processor types.
+/// This macro generates the `HasParameters` implementation for the
+/// Descriptor of a plugin, which holds the parameters in an `Arc`.
 ///
 /// # Usage
 ///
@@ -187,14 +186,7 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 /// #[derive(Default, HasParameters)]
 /// pub struct GainPlugin {
 ///     #[parameters]
-///     parameters: GainParameters,
-/// }
-///
-/// #[derive(HasParameters)]
-/// pub struct GainProcessor {
-///     #[parameters]
-///     parameters: GainParameters,
-///     // other processor-only fields...
+///     parameters: Arc<GainParameters>,
 /// }
 /// ```
 ///
@@ -202,7 +194,8 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 ///
 /// - The struct must have named fields
 /// - Exactly one field must be marked with `#[parameters]`
-/// - The marked field's type must implement `ParameterStore`, `ParameterGroups` and `Parameters`
+/// - The marked field must be an `Arc` of a type that implements
+///   `ParameterStore`, `ParameterGroups` and `Parameters`
 ///
 /// # What It Generates
 ///
@@ -210,12 +203,8 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 /// impl HasParameters for GainPlugin {
 ///     type Parameters = GainParameters;
 ///
-///     fn parameters(&self) -> &Self::Parameters {
+///     fn parameters(&self) -> &Arc<Self::Parameters> {
 ///         &self.parameters
-///     }
-///
-///     fn parameters_mut(&mut self) -> &mut Self::Parameters {
-///         &mut self.parameters
 ///     }
 /// }
 /// ```
@@ -251,7 +240,7 @@ pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
 /// #[derive(Default, HasParameters)]
 /// pub struct GainDescriptor {
 ///     #[parameters]
-///     pub parameters: GainParameters,
+///     pub parameters: Arc<GainParameters>,
 /// }
 ///
 /// impl Descriptor for GainDescriptor { /* ... */ }

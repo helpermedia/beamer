@@ -248,23 +248,23 @@ pub struct EqualizerParameters {
 // Descriptor
 // =============================================================================
 
-/// Equalizer plugin descriptor (unprepared state).
+/// Equalizer plugin descriptor.
 ///
-/// Configures stereo I/O buses and transforms into processor when prepared.
+/// Holds the parameters and creates the processor when prepared.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct EqualizerDescriptor {
     #[parameters]
-    pub parameters: EqualizerParameters,
+    pub parameters: Arc<EqualizerParameters>,
 }
 
 impl Descriptor for EqualizerDescriptor {
     type Setup = SampleRate;
     type Processor = EqualizerProcessor;
 
-    fn prepare(self, sample_rate: SampleRate) -> EqualizerProcessor {
+    fn prepare(&self, sample_rate: SampleRate) -> EqualizerProcessor {
         EqualizerProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
             low_state: [BiquadState::default(); 2],
             mid_state: [BiquadState::default(); 2],
@@ -300,13 +300,11 @@ impl Descriptor for EqualizerDescriptor {
 // Processor
 // =============================================================================
 
-/// Equalizer plugin processor (prepared state).
+/// Equalizer plugin processor.
 ///
 /// Contains filter state and coefficients for all three bands.
-#[derive(HasParameters)]
 pub struct EqualizerProcessor {
-    #[parameters]
-    pub parameters: EqualizerParameters,
+    pub parameters: Arc<EqualizerParameters>,
 
     /// Sample rate in Hz
     sample_rate: f64,
@@ -371,8 +369,6 @@ impl EqualizerProcessor {
 }
 
 impl Processor for EqualizerProcessor {
-    type Descriptor = EqualizerDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

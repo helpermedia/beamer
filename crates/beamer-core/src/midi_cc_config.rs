@@ -23,7 +23,6 @@
 //!     }
 //!
 //!     // No midi_cc field needed!
-//!     // No manual moving in prepare/unprepare!
 //! }
 //! ```
 //!

@@ -4,8 +4,6 @@
 //! in a Beamer plugin. Web assets are built with bun and embedded at
 //! compile time. The plugin is a simple gain effect with an interactive GUI.
 
-use std::sync::Arc;
-
 use beamer::prelude::*;
 
 // =============================================================================
@@ -23,7 +21,7 @@ pub struct WebViewDemoParameters {
 }
 
 // =============================================================================
-// Descriptor (unprepared state)
+// Descriptor
 // =============================================================================
 
 /// Plugin descriptor with WebView GUI support.
@@ -34,16 +32,16 @@ pub struct WebViewDemoParameters {
 #[derive(Default, HasParameters)]
 pub struct WebViewDemoDescriptor {
     #[parameters]
-    pub parameters: WebViewDemoParameters,
+    pub parameters: Arc<WebViewDemoParameters>,
 }
 
 impl Descriptor for WebViewDemoDescriptor {
     type Setup = ();
     type Processor = WebViewDemoProcessor;
 
-    fn prepare(self, _: ()) -> WebViewDemoProcessor {
+    fn prepare(&self, _: ()) -> WebViewDemoProcessor {
         WebViewDemoProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
         }
     }
 
@@ -77,19 +75,15 @@ impl WebViewHandler for DemoHandler {
 }
 
 // =============================================================================
-// Processor (prepared state)
+// Processor
 // =============================================================================
 
 /// Audio processor with simple gain.
-#[derive(HasParameters)]
 pub struct WebViewDemoProcessor {
-    #[parameters]
-    pub parameters: WebViewDemoParameters,
+    pub parameters: Arc<WebViewDemoParameters>,
 }
 
 impl Processor for WebViewDemoProcessor {
-    type Descriptor = WebViewDemoDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

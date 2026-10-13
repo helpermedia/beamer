@@ -203,29 +203,17 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 // to avoid collision with vst3::Steinberg::Vst::BusInfo used in COM interfaces.
 // We use CoreBusInfo throughout this module for the beamer type.
 
-/// Internal state machine for plugin lifecycle.
+/// A processor and what was derived from the plugin when it was created.
 ///
-/// The wrapper manages two states:
-/// - **Unprepared**: Descriptor exists, but audio config (sample rate) is unknown
-/// - **Prepared**: Processor exists with valid audio config, ready for processing
-///
-/// This enables the type-safe prepare/unprepare cycle where processors cannot
-/// be used until they have valid configuration.
-enum PluginState<P: Descriptor> {
-    /// Before setupProcessing() - definition exists but no audio config yet.
-    Unprepared {
-        /// The unprepared definition (holds parameters)
-        plugin: P,
-    },
-    /// After setupProcessing() - processor is ready for audio.
-    Prepared {
-        /// The prepared processor (ready for audio)
-        processor: P::Processor,
-        /// Cached input bus info (since Descriptor is consumed)
-        input_buses: Vec<CoreBusInfo>,
-        /// Cached output bus info (since Descriptor is consumed)
-        output_buses: Vec<CoreBusInfo>,
-    },
+/// It exists after `setupProcessing()`. The descriptor that created it stays
+/// in the wrapper, next to it.
+struct Prepared<P: Descriptor> {
+    /// The prepared processor (ready for audio).
+    processor: P::Processor,
+    /// Input bus info as it was when the processor was created.
+    input_buses: Vec<CoreBusInfo>,
+    /// Output bus info as it was when the processor was created.
+    output_buses: Vec<CoreBusInfo>,
 }
 
 // =============================================================================
@@ -238,18 +226,19 @@ enum PluginState<P: Descriptor> {
 /// `IComponent`, `IAudioProcessor` and `IEditController` interfaces that
 /// delegate to the wrapped plugin.
 ///
-/// # Two-Phase Lifecycle
+/// # Lifecycle
 ///
-/// The wrapper manages the plugin's two-phase lifecycle:
+/// The wrapper keeps the plugin's descriptor for its whole life and a
+/// processor while the plugin is prepared:
 ///
 /// ```text
 /// Vst3Processor::new()
 ///     ↓ creates Descriptor::default()
-/// PluginState::Unprepared { plugin }
-///     ↓ setupProcessing() calls definition.prepare(config)
-/// PluginState::Prepared { processor }
-///     ↓ setupProcessing() with a new setup: processor.unprepare(), then prepare()
-/// PluginState::Prepared { processor }
+/// descriptor, no processor
+///     ↓ setupProcessing() calls descriptor.prepare(setup)
+/// descriptor and processor
+///     ↓ setupProcessing() with a new setup: drops the processor, then prepare()
+/// descriptor and a new processor
 /// ```
 ///
 /// # Usage
@@ -259,10 +248,10 @@ enum PluginState<P: Descriptor> {
 /// use beamer_core::config::Category;
 ///
 /// #[derive(Default)]
-/// struct MyPlugin { parameters: MyParameters }
+/// struct MyPlugin { parameters: Arc<MyParameters> }
 /// impl Descriptor for MyPlugin { /* ... */ }
 ///
-/// struct MyProcessor { parameters: MyParameters, sample_rate: f64 }
+/// struct MyProcessor { parameters: Arc<MyParameters>, sample_rate: f64 }
 /// impl Processor for MyProcessor { /* ... */ }
 ///
 /// static CONFIG: Config = Config::new("MyPlugin", Category::Effect, "Mfgr", "plgn");
@@ -279,8 +268,15 @@ where
     P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
-    /// The plugin state machine (Unprepared or Prepared)
-    state: UnsafeCell<PluginState<P>>,
+    /// The plugin as the host sees it. It lives as long as the wrapper and
+    /// is only used by host threads, never by `process()`.
+    descriptor: UnsafeCell<P>,
+    /// The parameters of the plugin, shared with the descriptor and with
+    /// every processor it creates. `process()` and the host threads use
+    /// them through this handle at the same time.
+    parameters: Arc<P::Parameters>,
+    /// The processor, once `setupProcessing()` has created one.
+    prepared: UnsafeCell<Option<Prepared<P>>>,
     /// Plugin configuration reference
     config: &'static Config,
     /// Current sample rate
@@ -330,7 +326,7 @@ where
 // Safety: Vst3Processor is Send because:
 // - Descriptor: Send is required by the Descriptor trait
 // - Processor: Send is required by the Processor trait
-// - UnsafeCell contents are only accessed from VST3's guaranteed single-threaded contexts
+// - The parameters are Send + Sync
 unsafe impl<P: Descriptor, Presets> Send for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
@@ -339,7 +335,10 @@ where
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
-// - Parameter access through Parameters trait requires Sync
+// - The parameters are Sync, and process() reaches them through its own
+//   `Arc`, not through the descriptor
+// - The descriptor is only used by host threads. It is handed out mutably
+//   only while unprepared, when process() does not run
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), latency, tail and the
 //   request to reset the smoothers
@@ -355,7 +354,7 @@ where
 {
     /// Create a new VST3 processor wrapping the given plugin configuration.
     ///
-    /// The wrapper starts in the Unprepared state with a default plugin instance.
+    /// The wrapper starts unprepared, with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static Config) -> Self {
         let plugin = P::default();
@@ -363,11 +362,15 @@ where
         // Create MidiCcState from plugin's config (framework-managed)
         let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
 
-        // Capture the WebView handler (if any) before the descriptor is consumed.
+        // The WebView handler (if any) of the plugin.
         let webview_handler = plugin.webview_handler();
 
+        let parameters = Arc::clone(plugin.parameters());
+
         Self {
-            state: UnsafeCell::new(PluginState::Unprepared { plugin }),
+            descriptor: UnsafeCell::new(plugin),
+            parameters,
+            prepared: UnsafeCell::new(None),
             config,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
@@ -410,118 +413,77 @@ where
         );
     }
 
-    /// Get a reference to the prepared processor.
-    ///
-    /// # Safety
-    /// - Must only be called when no mutable reference exists.
-    /// - Must only be called when in Prepared state.
-    ///
-    /// # Panics
-    /// Panics if called when in Unprepared state (VST3 host violation).
-    #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    unsafe fn processor(&self) -> &P::Processor {
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Prepared { processor, .. } => processor,
-            PluginState::Unprepared { .. } => {
-                panic!("Attempted to access processor before setupProcessing()")
-            }
-        }
-    }
-
     /// Get a mutable reference to the prepared processor.
     ///
     /// # Safety
     /// - Must only be called from contexts where VST3 guarantees single-threaded access
     ///   (e.g., process(), setupProcessing()).
-    /// - Must only be called when in Prepared state.
+    /// - Must only be called when prepared.
     ///
     /// # Panics
-    /// Panics if called when in Unprepared state (VST3 host violation).
+    /// Panics if called when unprepared (VST3 host violation).
     #[inline]
     #[allow(clippy::mut_from_ref)]
     unsafe fn processor_mut(&self) -> &mut P::Processor {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        match unsafe { &mut *self.state.get() } {
-            PluginState::Prepared { processor, .. } => processor,
-            PluginState::Unprepared { .. } => {
-                panic!("Attempted to access processor before setupProcessing()")
-            }
+        match unsafe { &mut *self.prepared.get() } {
+            Some(prepared) => &mut prepared.processor,
+            None => panic!("Attempted to access processor before setupProcessing()"),
         }
     }
 
-    /// Get a reference to the unprepared plugin.
+    /// Get a reference to the descriptor.
     ///
     /// # Safety
-    /// Must only be called when no mutable reference exists.
-    ///
-    /// # Panics
-    /// Panics if called when in Prepared state.
+    /// Must only be called from a host thread, never from `process()`, and
+    /// only while no mutable reference to the descriptor exists
+    /// (`try_plugin_mut` hands one out while unprepared).
     #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    unsafe fn unprepared_plugin(&self) -> &P {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin,
-            PluginState::Prepared { .. } => {
-                panic!("Attempted to access unprepared plugin after setupProcessing()")
-            }
-        }
-    }
-
-    /// Get a mutable reference to the unprepared plugin.
-    ///
-    /// # Safety
-    /// Must only be called from contexts where VST3 guarantees single-threaded access.
-    ///
-    /// # Panics
-    /// Panics if called when in Prepared state.
-    #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn unprepared_plugin_mut(&self) -> &mut P {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &mut *self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin,
-            PluginState::Prepared { .. } => {
-                panic!("Attempted to access unprepared plugin after setupProcessing()")
-            }
-        }
+    unsafe fn descriptor(&self) -> &P {
+        // SAFETY: The caller is a host thread and no mutable reference
+        // exists. `process()` does not use the descriptor.
+        unsafe { &*self.descriptor.get() }
     }
 
     /// Check if the wrapper is in prepared state.
+    ///
+    /// # Safety
+    /// Must only be called from a host thread. It reads the cell that
+    /// `process()` uses mutably, and only looks at whether a processor
+    /// exists, which changes in `setupProcessing()` alone.
     #[inline]
-    #[allow(dead_code)] // API method for potential future use
     unsafe fn is_prepared(&self) -> bool {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        matches!(unsafe { &*self.state.get() }, PluginState::Prepared { .. })
+        // SAFETY: Only `setupProcessing()` changes whether a processor
+        // exists, and the host does not call it while it calls this.
+        unsafe { &*self.prepared.get() }.is_some()
     }
 
-    /// Try to get a reference to the unprepared plugin.
+    /// Try to get a reference to the descriptor of an unprepared plugin.
     ///
     /// Returns Some(&P) when in unprepared state, None when prepared.
-    /// Use this for Plugin methods that might be called in either state.
+    ///
+    /// # Safety
+    /// Same as `descriptor` and `is_prepared`.
     #[inline]
     unsafe fn try_plugin(&self) -> Option<&P> {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => Some(plugin),
-            PluginState::Prepared { .. } => None,
-        }
+        // SAFETY: The caller upholds the contracts of both calls.
+        unsafe { (!self.is_prepared()).then(|| self.descriptor()) }
     }
 
-    /// Try to get a mutable reference to the unprepared plugin.
+    /// Try to get a mutable reference to the descriptor of an unprepared
+    /// plugin.
     ///
     /// Returns Some(&mut P) when in unprepared state, None when prepared.
+    ///
+    /// # Safety
+    /// Must only be called from a host thread, while no other reference to
+    /// the descriptor exists.
     #[inline]
     #[allow(clippy::mut_from_ref)]
     unsafe fn try_plugin_mut(&self) -> Option<&mut P> {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &mut *self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => Some(plugin),
-            PluginState::Prepared { .. } => None,
-        }
+        // SAFETY: The caller is a host thread and holds no other reference
+        // to the descriptor. `process()` does not use it.
+        unsafe { (!self.is_prepared()).then(|| &mut *self.descriptor.get()) }
     }
 
     // =========================================================================
@@ -532,9 +494,10 @@ where
     #[inline]
     unsafe fn input_bus_count(&self) -> usize {
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.input_bus_count(),
-            PluginState::Prepared { input_buses, .. } => input_buses.len(),
+        match unsafe { &*self.prepared.get() } {
+            // SAFETY: The caller upholds the contract of `descriptor`.
+            None => unsafe { self.descriptor() }.input_bus_count(),
+            Some(prepared) => prepared.input_buses.len(),
         }
     }
 
@@ -542,9 +505,10 @@ where
     #[inline]
     unsafe fn output_bus_count(&self) -> usize {
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.output_bus_count(),
-            PluginState::Prepared { output_buses, .. } => output_buses.len(),
+        match unsafe { &*self.prepared.get() } {
+            // SAFETY: The caller upholds the contract of `descriptor`.
+            None => unsafe { self.descriptor() }.output_bus_count(),
+            Some(prepared) => prepared.output_buses.len(),
         }
     }
 
@@ -553,9 +517,10 @@ where
     #[inline]
     unsafe fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.input_bus_info(index),
-            PluginState::Prepared { input_buses, .. } => input_buses.get(index).cloned(),
+        match unsafe { &*self.prepared.get() } {
+            // SAFETY: The caller upholds the contract of `descriptor`.
+            None => unsafe { self.descriptor() }.input_bus_info(index),
+            Some(prepared) => prepared.input_buses.get(index).cloned(),
         }
     }
 
@@ -564,9 +529,10 @@ where
     #[inline]
     unsafe fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.output_bus_info(index),
-            PluginState::Prepared { output_buses, .. } => output_buses.get(index).cloned(),
+        match unsafe { &*self.prepared.get() } {
+            // SAFETY: The caller upholds the contract of `descriptor`.
+            None => unsafe { self.descriptor() }.output_bus_info(index),
+            Some(prepared) => prepared.output_buses.get(index).cloned(),
         }
     }
 
@@ -574,69 +540,21 @@ where
     // Parameter Access (works in both states)
     // =========================================================================
 
-    /// Get parameters (works in both states).
-    ///
-    /// # Safety
-    /// Must only be called when no mutable reference exists.
+    /// Get the parameters (works in both states, from every thread).
     #[inline]
-    unsafe fn parameters(&self) -> &P::Parameters {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.parameters(),
-            PluginState::Prepared { processor, .. } => {
-                // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
-                // Pointer cast through *const _ lets compiler verify type equality.
-                unsafe { &*(processor.parameters() as *const _) }
-            }
-        }
-    }
-
-    /// Get mutable parameters (works in both states).
-    ///
-    /// # Safety
-    /// Must only be called from contexts where VST3 guarantees single-threaded access.
-    #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn parameters_mut(&self) -> &mut P::Parameters {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &mut *self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.parameters_mut(),
-            PluginState::Prepared { processor, .. } => {
-                // SAFETY: Trait bounds guarantee P::Processor::Parameters == P::Parameters.
-                // Pointer cast through *mut _ lets compiler verify type equality.
-                unsafe { &mut *(processor.parameters_mut() as *mut _) }
-            }
-        }
+    fn parameters(&self) -> &P::Parameters {
+        &self.parameters
     }
 
     // =========================================================================
-    // Processor Method Access (works in both states)
+    // Plugin Method Access (works in both states)
     // =========================================================================
 
     /// Check if plugin wants MIDI (works in both states).
-    ///
-    /// Queries both Descriptor (unprepared) and Processor (prepared) for MIDI support.
     #[inline]
     unsafe fn wants_midi(&self) -> bool {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { plugin, .. } => plugin.wants_midi(),
-            PluginState::Prepared { processor, .. } => processor.wants_midi(),
-        }
-    }
-
-    /// Check if processor supports double precision (works in both states).
-    ///
-    /// Returns false when unprepared (conservative default), processor's value when prepared.
-    #[inline]
-    #[allow(dead_code)] // API method for potential future use
-    unsafe fn supports_double_precision(&self) -> bool {
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        match unsafe { &*self.state.get() } {
-            PluginState::Unprepared { .. } => false,
-            PluginState::Prepared { processor, .. } => processor.supports_double_precision(),
-        }
+        // SAFETY: The caller upholds the contract of `descriptor`.
+        unsafe { self.descriptor() }.wants_midi()
     }
 
     // =========================================================================
@@ -1282,10 +1200,10 @@ where
     unsafe fn setActive(&self, state: TBool) -> tresult {
         // set_active is only meaningful when prepared (processor exists)
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        if let PluginState::Prepared { processor, .. } = unsafe { &mut *self.state.get() } {
-            processor.set_active(state != 0);
+        if let Some(prepared) = unsafe { &mut *self.prepared.get() } {
+            prepared.processor.set_active(state != 0);
             // A host asks for the latency after activating.
-            self.publish_timing(processor);
+            self.publish_timing(&prepared.processor);
         }
         // When unprepared, silently succeed (host may call this before setupProcessing)
         kResultOk
@@ -1331,8 +1249,7 @@ where
         // loaded through a shared reference: in both states, and also while
         // process() runs, which is when a host loads a preset during playback.
         use beamer_core::Parameters;
-        // SAFETY: Only the parameters are used, and only shared.
-        match unsafe { self.parameters() }.load_state(&buffer) {
+        match self.parameters().load_state(&buffer) {
             Ok(()) => {
                 // The smoothers belong to the audio thread: the next process()
                 // call makes them jump to the loaded values, so that those do
@@ -1353,8 +1270,7 @@ where
         // saved through a shared reference: in both states, and also while
         // process() runs, which is when a host saves during playback.
         use beamer_core::Parameters;
-        // SAFETY: Only the parameters are used, and only shared.
-        let data: Vec<u8> = unsafe { self.parameters() }.save_state();
+        let data: Vec<u8> = self.parameters().save_state();
 
         if data.is_empty() {
             return kResultOk;
@@ -1521,158 +1437,94 @@ where
                 || *self.process_mode.get() != setup.processMode
         };
 
-        // Store setup parameters
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
-        unsafe {
-            *self.sample_rate.get() = setup.sampleRate;
-            *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
-            *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
-            *self.process_mode.get() = setup.processMode;
-        }
+        let plugin = unsafe { &*self.descriptor.get() };
+        // SAFETY: As above.
+        let prepared = unsafe { &mut *self.prepared.get() };
 
-        // Handle state transition
-        // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
-        let state = unsafe { &mut *self.state.get() };
-        match state {
-            PluginState::Unprepared { plugin } => {
-                // Cache bus info before consuming the plugin
-                let input_bus_count = plugin.input_bus_count();
-                let output_bus_count = plugin.output_bus_count();
-                let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
-                    .filter_map(|i| plugin.input_bus_info(i))
-                    .collect();
-                let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
-                    .filter_map(|i| plugin.output_bus_info(i))
-                    .collect();
+        // A host may repeat a setup. Preparing again would then only throw
+        // away what the processor holds. With a new sample rate, block size,
+        // sample size or process mode the plugin is prepared again: it
+        // learns those when a processor is created.
+        if prepared.is_none() || setup_changed {
+            let input_bus_count = plugin.input_bus_count();
+            let output_bus_count = plugin.output_bus_count();
+            let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
+                .filter_map(|i| plugin.input_bus_info(i))
+                .collect();
+            let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
+                .filter_map(|i| plugin.output_bus_info(i))
+                .collect();
 
-                let bus_layout = BusLayout::from_plugin(plugin);
+            let bus_layout = BusLayout::from_plugin(plugin);
 
-                // Validate plugin's bus configuration against compile-time limits
-                if let Err(msg) = CachedBusConfig::from_plugin(plugin).validate() {
-                    log::error!("Plugin bus configuration exceeds limits: {}", msg);
-                    return kResultFalse;
-                }
+            // Validate plugin's bus configuration against compile-time limits
+            if let Err(msg) = CachedBusConfig::from_plugin(plugin).validate() {
+                log::error!("Plugin bus configuration exceeds limits: {}", msg);
+                return kResultFalse;
+            }
 
-                // Build the plugin setup
-                let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
+            // Store the setup. A setup that was refused above is not kept,
+            // so that it does not count as the current one when it comes
+            // again.
+            // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
+            unsafe {
+                *self.sample_rate.get() = setup.sampleRate;
+                *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
+                *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
+                *self.process_mode.get() = setup.processMode;
+            }
 
-                // Take ownership of the plugin
-                let plugin = std::mem::take(plugin);
+            // Build the plugin setup
+            let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
 
-                // The smoothers ramp at the host's rate unless the plugin
-                // sets another one in prepare.
-                beamer_core::Parameters::set_sample_rate(plugin.parameters(), setup.sampleRate);
+            // A processor of an earlier setup goes first, so that its
+            // buffers are free before the new ones are allocated.
+            *prepared = None;
 
-                // Prepare the processor. A state that was loaded before is in
-                // the parameters it takes over.
-                let processor = plugin.prepare(plugin_setup);
+            // The smoothers ramp at the host's rate unless the plugin
+            // sets another one in prepare.
+            beamer_core::Parameters::set_sample_rate(self.parameters(), setup.sampleRate);
 
-                // Pre-allocate buffer storage based on bus config
-                let bus_config = CachedBusConfig::new(
-                    input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-                    output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-                );
-                let max_frames = setup.maxSamplesPerBlock as usize;
+            // Create the processor. A state that was loaded before is in
+            // the parameters it shares with the descriptor.
+            let processor = plugin.prepare(plugin_setup);
+
+            // Pre-allocate buffer storage based on bus config
+            let bus_config = CachedBusConfig::new(
+                input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+                output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
+            );
+            let max_frames = setup.maxSamplesPerBlock as usize;
+            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+            unsafe {
+                *self.buffer_storage_f32.get() =
+                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                *self.buffer_storage_f64.get() =
+                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+            }
+
+            // Pre-allocate conversion buffers for f64→f32 processing
+            if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
+                && !processor.supports_double_precision()
+            {
                 // SAFETY: VST3 guarantees single-threaded access. No aliasing.
                 unsafe {
-                    *self.buffer_storage_f32.get() =
-                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-                    *self.buffer_storage_f64.get() =
-                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
+                    *self.conversion_buffers.get() =
+                        ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, max_frames);
                 }
-
-                // Pre-allocate conversion buffers for f64→f32 processing
-                if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
-                    && !processor.supports_double_precision()
-                {
-                    // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                    unsafe {
-                        *self.conversion_buffers.get() =
-                            ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, setup.maxSamplesPerBlock as usize);
-                    }
-                }
-
-                // Update state to Prepared
-                *state = PluginState::Prepared {
-                    processor,
-                    input_buses,
-                    output_buses,
-                };
             }
-            // A host may repeat a setup. Preparing again would then only throw
-            // away what the processor holds besides its parameters.
-            PluginState::Prepared { .. } if !setup_changed => {}
-            PluginState::Prepared { .. } => {
-                // The sample rate, block size, sample size or process mode is
-                // new. The plugin learns those when it is prepared, so unprepare
-                // it and prepare it again with the new setup.
-                let placeholder = PluginState::Unprepared {
-                    plugin: P::default(),
-                };
-                let PluginState::Prepared {
-                    processor,
-                    input_buses,
-                    output_buses,
-                } = std::mem::replace(state, placeholder)
-                else {
-                    unreachable!("the state was matched as prepared");
-                };
 
-                let bus_layout = BusLayout {
-                    main_input_channels: input_buses
-                        .first()
-                        .map(|b| b.channel_count)
-                        .unwrap_or(2),
-                    main_output_channels: output_buses
-                        .first()
-                        .map(|b| b.channel_count)
-                        .unwrap_or(2),
-                    aux_input_count: input_buses.len().saturating_sub(1),
-                    aux_output_count: output_buses.len().saturating_sub(1),
-                };
-
-                // Unprepare to get the plugin back, then prepare it again.
-                let plugin = processor.unprepare();
-                let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
-                beamer_core::Parameters::set_sample_rate(plugin.parameters(), setup.sampleRate);
-                let processor = plugin.prepare(plugin_setup);
-
-                // Size the buffer storage for the new block size.
-                let bus_config = CachedBusConfig::new(
-                    input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-                    output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-                );
-                let max_frames = setup.maxSamplesPerBlock as usize;
-                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                unsafe {
-                    *self.buffer_storage_f32.get() =
-                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-                    *self.buffer_storage_f64.get() =
-                        ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-                }
-
-                // Pre-allocate conversion buffers for f64→f32 processing
-                if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
-                    && !processor.supports_double_precision()
-                {
-                    // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                    unsafe {
-                        *self.conversion_buffers.get() =
-                            ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, max_frames);
-                    }
-                }
-
-                *state = PluginState::Prepared {
-                    processor,
-                    input_buses,
-                    output_buses,
-                };
-            }
+            *prepared = Some(Prepared {
+                processor,
+                input_buses,
+                output_buses,
+            });
         }
 
         // The host may ask for latency and tail before the first process() call.
-        if let PluginState::Prepared { processor, .. } = state {
-            self.publish_timing(processor);
+        if let Some(prepared) = prepared {
+            self.publish_timing(&prepared.processor);
         }
 
         kResultOk
@@ -1703,7 +1555,7 @@ where
             let processor = unsafe { self.processor_mut() };
             if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
                 use beamer_core::Parameters;
-                processor.parameters().reset_smoothing();
+                self.parameters().reset_smoothing();
             }
             self.publish_timing(processor);
         }
@@ -1711,8 +1563,7 @@ where
         // 1. Handle incoming parameter changes from host
         // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
         if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
-            // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-            let parameters = unsafe { self.parameters() };
+            let parameters = self.parameters();
             // SAFETY: parameter_changes is valid ComRef.
             let parameter_count = unsafe { parameter_changes.getParameterCount() };
 
@@ -1984,8 +1835,7 @@ where
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let user_parameters = unsafe { self.parameters() }.count();
+        let user_parameters = self.parameters().count();
         // MIDI CC state is framework-owned, always available
         let cc_parameters = self
             .midi_cc_state
@@ -2002,8 +1852,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let parameters = unsafe { self.parameters() };
+        let parameters = self.parameters();
         let user_parameter_count = parameters.count();
 
         // User-defined parameters first
@@ -2123,8 +1972,7 @@ where
             return kResultOk;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let parameters = unsafe { self.parameters() };
+        let parameters = self.parameters();
         let display = parameters.normalized_to_string(id, value_normalized);
         // SAFETY: string is non-null (checked above) and host guarantees validity.
         copy_wstring(&display, unsafe { &mut *string });
@@ -2162,8 +2010,7 @@ where
                 return kInvalidArgument;
             }
 
-            // SAFETY: VST3 guarantees single-threaded access for this call.
-            let parameters = unsafe { self.parameters() };
+            let parameters = self.parameters();
             if let Some(value) = parameters.string_to_normalized(id, &s) {
                 // SAFETY: value_normalized is non-null (checked above).
                 unsafe { *value_normalized = value };
@@ -2183,8 +2030,7 @@ where
             }
             return 0.0;
         }
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.parameters() }.normalized_to_plain(id, value_normalized)
+        self.parameters().normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
@@ -2197,8 +2043,7 @@ where
             }
             return 0.0;
         }
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.parameters() }.plain_to_normalized(id, plain_value)
+        self.parameters().plain_to_normalized(id, plain_value)
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
@@ -2223,8 +2068,7 @@ where
             return 0.0;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.parameters() }.get_normalized(id)
+        self.parameters().get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
@@ -2250,8 +2094,7 @@ where
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
                 // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
-                // SAFETY: VST3 guarantees single-threaded access for this call.
-                Presets::apply(preset_index, unsafe { self.parameters() });
+                Presets::apply(preset_index, self.parameters());
 
                 // Store the current preset index
                 // SAFETY: VST3 guarantees single-threaded access. No aliasing.
@@ -2275,8 +2118,7 @@ where
             return kInvalidArgument;
         }
 
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.parameters() }.set_normalized(id, value);
+        self.parameters().set_normalized(id, value);
         kResultOk
     }
 
@@ -2344,9 +2186,8 @@ where
             let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
 
             // Get raw pointers to parameters and handler for the WebView IPC.
-            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
             let params: *const dyn beamer_core::ParameterStore =
-                unsafe { self.parameters() as &dyn beamer_core::ParameterStore };
+                self.parameters() as &dyn beamer_core::ParameterStore;
             // SAFETY: VST3 guarantees single-threaded access. No aliasing.
             let component_handler = unsafe { *self.component_handler.get() };
 
@@ -2384,8 +2225,7 @@ where
 {
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::parameter_groups::ParameterGroups;
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        unsafe { self.parameters() }.group_count() as i32
+        self.parameters().group_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2394,8 +2234,7 @@ where
         }
 
         use beamer_core::parameter_groups::ParameterGroups;
-        // SAFETY: VST3 guarantees single-threaded access for this call.
-        let parameters = unsafe { self.parameters() };
+        let parameters = self.parameters();
 
         if let Some(group_info) = parameters.group_info(unit_index as usize) {
             // SAFETY: info is non-null (checked above) and host guarantees validity.
@@ -3436,24 +3275,17 @@ mod tests {
 
     #[derive(Default)]
     struct SetupPlugin {
-        parameters: NoParameters,
+        parameters: Arc<NoParameters>,
     }
 
     struct SetupProcessor {
-        parameters: NoParameters,
         setup: RecordedSetup,
     }
 
     impl HasParameters for SetupPlugin {
         type Parameters = NoParameters;
-        fn parameters(&self) -> &Self::Parameters {
+        fn parameters(&self) -> &Arc<Self::Parameters> {
             &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, parameters: Self::Parameters) {
-            self.parameters = parameters;
         }
     }
 
@@ -3461,31 +3293,13 @@ mod tests {
         type Setup = RecordedSetup;
         type Processor = SetupProcessor;
 
-        fn prepare(self, setup: RecordedSetup) -> SetupProcessor {
+        fn prepare(&self, setup: RecordedSetup) -> SetupProcessor {
             PREPARE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            SetupProcessor {
-                parameters: self.parameters,
-                setup,
-            }
-        }
-    }
-
-    impl HasParameters for SetupProcessor {
-        type Parameters = NoParameters;
-        fn parameters(&self) -> &Self::Parameters {
-            &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, parameters: Self::Parameters) {
-            self.parameters = parameters;
+            SetupProcessor { setup }
         }
     }
 
     impl Processor for SetupProcessor {
-        type Descriptor = SetupPlugin;
-
         fn process(
             &mut self,
             _buffer: &mut beamer_core::Buffer,
@@ -3516,13 +3330,13 @@ mod tests {
         // SAFETY: The setup is valid for the call.
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
 
-        // SAFETY: No other reference to the state exists in this test.
-        match unsafe { &*wrapper.state.get() } {
-            PluginState::Prepared { processor, .. } => {
-                let (rate, block, mode) = processor.setup;
+        // SAFETY: No other reference to the processor exists in this test.
+        match unsafe { &*wrapper.prepared.get() } {
+            Some(prepared) => {
+                let (rate, block, mode) = prepared.processor.setup;
                 (rate.0, block.0, mode)
             }
-            PluginState::Unprepared { .. } => panic!("the plugin is not prepared"),
+            None => panic!("the plugin is not prepared"),
         }
     }
 
@@ -3584,6 +3398,11 @@ mod tests {
         /// What `SMOOTHING_SAMPLE_RATE` was when a `StatePlugin` was last
         /// prepared on this thread.
         static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
+        /// How many `StateProcessor`s exist on this thread.
+        static LIVE_PROCESSORS: Cell<usize> = const { Cell::new(0) };
+        /// What `LIVE_PROCESSORS` was when a `StatePlugin` was last prepared
+        /// on this thread.
+        static LIVE_PROCESSORS_AT_PREPARE: Cell<usize> = const { Cell::new(0) };
     }
 
     fn smoothing_resets() -> usize {
@@ -3660,23 +3479,24 @@ mod tests {
 
     #[derive(Default)]
     struct StatePlugin {
-        parameters: StateParameters,
+        parameters: Arc<StateParameters>,
     }
 
     struct StateProcessor {
-        parameters: StateParameters,
+        parameters: Arc<StateParameters>,
+    }
+
+    impl Drop for StateProcessor {
+        fn drop(&mut self) {
+            // A thread that ends may have dropped its counter already.
+            let _ = LIVE_PROCESSORS.try_with(|live| live.set(live.get().saturating_sub(1)));
+        }
     }
 
     impl HasParameters for StatePlugin {
         type Parameters = StateParameters;
-        fn parameters(&self) -> &Self::Parameters {
+        fn parameters(&self) -> &Arc<Self::Parameters> {
             &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, parameters: Self::Parameters) {
-            self.parameters = parameters;
         }
     }
 
@@ -3684,31 +3504,18 @@ mod tests {
         type Setup = ();
         type Processor = StateProcessor;
 
-        fn prepare(self, _setup: ()) -> StateProcessor {
+        fn prepare(&self, _setup: ()) -> StateProcessor {
             SMOOTHING_SAMPLE_RATE_AT_PREPARE
                 .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
+            LIVE_PROCESSORS_AT_PREPARE.with(|live| live.set(LIVE_PROCESSORS.with(Cell::get)));
+            LIVE_PROCESSORS.with(|live| live.set(live.get() + 1));
             StateProcessor {
-                parameters: self.parameters,
+                parameters: Arc::clone(&self.parameters),
             }
         }
     }
 
-    impl HasParameters for StateProcessor {
-        type Parameters = StateParameters;
-        fn parameters(&self) -> &Self::Parameters {
-            &self.parameters
-        }
-        fn parameters_mut(&mut self) -> &mut Self::Parameters {
-            &mut self.parameters
-        }
-        fn set_parameters(&mut self, parameters: Self::Parameters) {
-            self.parameters = parameters;
-        }
-    }
-
     impl Processor for StateProcessor {
-        type Descriptor = StatePlugin;
-
         fn process(
             &mut self,
             _buffer: &mut beamer_core::Buffer,
@@ -3731,6 +3538,71 @@ mod tests {
     }
 
     static STATE_CONFIG: Config = Config::new("State Test", Category::Effect, "Test", "stat");
+
+    /// A plugin that wants MIDI. Only its descriptor can say so.
+    #[derive(Default)]
+    struct MidiPlugin {
+        parameters: Arc<NoParameters>,
+    }
+
+    struct MidiProcessor;
+
+    impl HasParameters for MidiPlugin {
+        type Parameters = NoParameters;
+        fn parameters(&self) -> &Arc<Self::Parameters> {
+            &self.parameters
+        }
+    }
+
+    impl Descriptor for MidiPlugin {
+        type Setup = ();
+        type Processor = MidiProcessor;
+
+        fn prepare(&self, _setup: ()) -> MidiProcessor {
+            MidiProcessor
+        }
+
+        fn wants_midi(&self) -> bool {
+            true
+        }
+    }
+
+    impl Processor for MidiProcessor {
+        fn process(
+            &mut self,
+            _buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+        }
+    }
+
+    static MIDI_CONFIG: Config = Config::new("Midi Test", Category::Instrument, "Test", "midi");
+
+    #[test]
+    fn test_event_buses_are_reported_prepared_or_not() {
+        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
+        let event_buses = |wrapper: &Vst3Processor<MidiPlugin>| {
+            // SAFETY: The wrapper is alive for the calls.
+            unsafe {
+                [
+                    wrapper.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection),
+                    wrapper.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kOutput as BusDirection),
+                ]
+            }
+        };
+        assert_eq!(event_buses(&wrapper), [1, 1]);
+
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        assert_eq!(event_buses(&wrapper), [1, 1]);
+    }
 
     fn prepared_state_wrapper() -> Vst3Processor<StatePlugin> {
         let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
@@ -3888,7 +3760,7 @@ mod tests {
         assert_eq!(load_state(&wrapper, &quiet), kResultOk);
         assert_eq!(gain(&wrapper), 0.25);
 
-        // It moves into the processor, and is saved to the same bytes there.
+        // The processor shares it: it is saved to the same bytes when prepared.
         prepare_state_wrapper(&wrapper);
         assert_eq!(saved_state(&wrapper), quiet);
         set_gain(&wrapper, 0.75);
@@ -3948,6 +3820,39 @@ mod tests {
         // SAFETY: The setup is valid for the call.
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
         assert_eq!(SMOOTHING_SAMPLE_RATE_AT_PREPARE.with(Cell::get), 96000.0);
+    }
+
+    #[test]
+    fn test_new_setup_replaces_the_processor_and_keeps_the_parameters() {
+        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        set_gain(&wrapper, 0.25);
+
+        prepare_state_wrapper(&wrapper);
+        assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
+        assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
+
+        // A new sample rate: the old processor is gone before the new one
+        // is created.
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 96000.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
+        assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
+
+        // The value is still there, and the new processor shares it: the
+        // latency it reports follows the parameter.
+        assert_eq!(gain(&wrapper), 0.25);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.25));
+        set_gain(&wrapper, 0.5);
+        process_block(&wrapper);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.5));
     }
 
     #[test]

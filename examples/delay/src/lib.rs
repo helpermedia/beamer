@@ -170,15 +170,16 @@ impl DelayLine {
 // Descriptor
 // =============================================================================
 
-/// Delay plugin descriptor (unprepared state).
+/// Delay plugin descriptor.
 ///
-/// Holds parameters and describes the plugin to the host before audio
-/// configuration is known. Transforms into `DelayProcessor` via `prepare()`.
+/// Holds the parameters and describes the plugin to the host, for as long as
+/// the plugin instance lives. Creates the `DelayProcessor` via `prepare()`
+/// once the audio configuration is known.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct DelayDescriptor {
     #[parameters]
-    pub parameters: DelayParameters,
+    pub parameters: Arc<DelayParameters>,
 }
 
 impl Descriptor for DelayDescriptor {
@@ -187,9 +188,9 @@ impl Descriptor for DelayDescriptor {
     type Setup = SampleRate;
     type Processor = DelayProcessor;
 
-    fn prepare(self, setup: SampleRate) -> DelayProcessor {
+    fn prepare(&self, setup: SampleRate) -> DelayProcessor {
         DelayProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             delay_l: DelayLine::new(setup.hz()),
             delay_r: DelayLine::new(setup.hz()),
             sample_rate: setup.hz(),
@@ -201,15 +202,13 @@ impl Descriptor for DelayDescriptor {
 // Processor
 // =============================================================================
 
-/// Delay plugin processor (prepared state).
+/// Delay plugin processor.
 ///
 /// Ready for audio processing. Created by `DelayDescriptor::prepare()`
 /// with valid sample rate configuration. All fields have real values from the start.
-#[derive(HasParameters)]
 pub struct DelayProcessor {
     /// Plugin parameters
-    #[parameters]
-    parameters: DelayParameters,
+    parameters: Arc<DelayParameters>,
     /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
@@ -357,8 +356,6 @@ impl DelayProcessor {
 }
 
 impl Processor for DelayProcessor {
-    type Descriptor = DelayDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,

@@ -178,12 +178,13 @@ pub struct MidiTransformParameters {
 /// This struct implements the `Descriptor` trait and holds the plugin's
 /// parameters. It is the entry point for the plugin - the host creates
 /// this struct and calls `prepare()` to get a `MidiTransformProcessor`.
+/// The processor shares the parameters with it.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct MidiTransformDescriptor {
     /// Plugin parameters
     #[parameters]
-    pub parameters: MidiTransformParameters,
+    pub parameters: Arc<MidiTransformParameters>,
 }
 
 impl Descriptor for MidiTransformDescriptor {
@@ -192,9 +193,9 @@ impl Descriptor for MidiTransformDescriptor {
     type Setup = ();
     type Processor = MidiTransformProcessor;
 
-    fn prepare(self, _: ()) -> MidiTransformProcessor {
+    fn prepare(&self, _: ()) -> MidiTransformProcessor {
         MidiTransformProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
         }
     }
 
@@ -204,17 +205,15 @@ impl Descriptor for MidiTransformDescriptor {
 }
 
 // =============================================================================
-// Audio Processor (Prepared State)
+// Audio Processor
 // =============================================================================
 
 /// MIDI transformer processor, ready for audio/MIDI processing.
 ///
 /// Transforms MIDI notes and CC messages based on parameter settings.
 /// Created by `MidiTransformDescriptor::prepare()`.
-#[derive(HasParameters)]
 pub struct MidiTransformProcessor {
-    #[parameters]
-    parameters: MidiTransformParameters,
+    parameters: Arc<MidiTransformParameters>,
 }
 
 impl MidiTransformProcessor {
@@ -376,8 +375,6 @@ impl MidiTransformProcessor {
 }
 
 impl Processor for MidiTransformProcessor {
-    type Descriptor = MidiTransformDescriptor;
-
     fn process(
         &mut self,
         buffer: &mut Buffer,
@@ -454,9 +451,5 @@ impl Processor for MidiTransformProcessor {
                 }
             }
         }
-    }
-
-    fn wants_midi(&self) -> bool {
-        true
     }
 }

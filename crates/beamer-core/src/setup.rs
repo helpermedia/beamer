@@ -34,13 +34,15 @@
 //! // Stateless plugin (gain, pan)
 //! impl Descriptor for Gain {
 //!     type Setup = ();
-//!     fn prepare(self, _: ()) -> Self { self }
+//!     fn prepare(&self, _: ()) -> GainProcessor {
+//!         GainProcessor { parameters: Arc::clone(&self.parameters) }
+//!     }
 //! }
 //!
 //! // Time-based DSP (delay, filter, envelope, smoothing)
 //! impl Descriptor for Delay {
 //!     type Setup = SampleRate;
-//!     fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+//!     fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
 //!         let buffer_size = (2.0 * sample_rate.hz()) as usize;
 //!         DelayProcessor { buffer: vec![0.0; buffer_size], /* ... */ }
 //!     }
@@ -49,7 +51,7 @@
 //! // FFT or lookahead processing
 //! impl Descriptor for Fft {
 //!     type Setup = (SampleRate, MaxBufferSize);
-//!     fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+//!     fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 //!         FftProcessor { fft_buffer: vec![0.0; mbs.0], /* ... */ }
 //!     }
 //! }
