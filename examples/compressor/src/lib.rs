@@ -364,9 +364,13 @@ fn process_compression_inner<S: Sample>(
     // Only use sidechain when explicitly enabled by parameter and buffer exists
     let use_sidechain = params.use_sidechain.get() && aux.sidechain().is_some();
 
-    // Pre-calculate envelope coefficients from smoothed attack/release values
+    // Pre-calculate envelope coefficients from smoothed attack/release values.
+    // The times are read once per block, so the smoothers advance by a whole
+    // block here.
     let attack_ms = params.attack.smoothed();
     let release_ms = params.release.smoothed();
+    params.attack.skip_smoothing(num_samples);
+    params.release.skip_smoothing(num_samples);
     let attack_coeff = time_to_coeff(attack_ms, sample_rate);
     let release_coeff = time_to_coeff(release_ms, sample_rate);
 
