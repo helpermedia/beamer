@@ -171,14 +171,6 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// Get a parameter by its ID.
     fn by_id(&self, id: ParameterId) -> Option<&dyn ParameterRef>;
 
-    /// Get a mutable reference to a parameter by its ID.
-    ///
-    /// Note: This returns `&dyn ParameterRef` (not `&mut`) because atomic
-    /// parameters can be modified through shared references.
-    fn by_id_mut(&mut self, id: ParameterId) -> Option<&dyn ParameterRef> {
-        self.by_id(id)
-    }
-
     /// Set group ID for all direct parameters in this collection.
     ///
     /// Called by parent structs when initializing nested parameter groups.
@@ -340,6 +332,10 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     ///
     /// Parameters in nested groups use path-based IDs like "filter/cutoff"
     /// to avoid collisions when the same nested struct is reused.
+    ///
+    /// This is the whole state of a plugin. A host may save it from one of
+    /// its own threads while audio runs, so this and `save_state_prefixed`
+    /// may only read parameter values (they are atomic) and immutable data.
     fn save_state(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(self.count() * 20);
         self.save_state_prefixed(&mut data, "");
@@ -357,11 +353,11 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// The default implementation handles flat parameter structs by matching
     /// the path against numeric IDs. The macro generates an override for
     /// structs with nested groups that routes based on path segments.
-    fn load_state_path(&mut self, path: &str, value: f64) -> bool {
+    fn load_state_path(&self, path: &str, value: f64) -> bool {
         // Default implementation for flat structs (no nesting)
         // Try to parse as numeric ID
         if let Ok(id) = path.parse::<u32>() {
-            if let Some(parameter) = self.by_id_mut(id) {
+            if let Some(parameter) = self.by_id(id) {
                 parameter.set_normalized(value.clamp(0.0, 1.0));
                 return true;
             }
@@ -373,7 +369,11 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     ///
     /// Format: `[path_len: u8, path: utf8, value: f64]*`
     /// Unknown parameter paths are silently ignored for forward compatibility.
-    fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+    ///
+    /// Takes `&self`: a host may load a state from one of its own threads
+    /// while audio runs. This and `load_state_path` may only write parameter
+    /// values (they are atomic).
+    fn load_state(&self, data: &[u8]) -> Result<(), String> {
         if data.is_empty() {
             return Ok(());
         }
@@ -408,7 +408,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
             // Try to set parameter by path
             // Default implementation uses numeric ID parsing
             if let Ok(id) = path.parse::<u32>() {
-                if let Some(parameter) = self.by_id_mut(id) {
+                if let Some(parameter) = self.by_id(id) {
                     parameter.set_normalized(value.clamp(0.0, 1.0));
                 }
             }

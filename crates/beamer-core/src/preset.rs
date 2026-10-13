@@ -95,6 +95,10 @@ pub trait FactoryPresets: Send + Sync + 'static {
     ///
     /// Returns `true` if the preset was applied successfully,
     /// `false` if the index was out of range.
+    ///
+    /// A host may apply a preset from one of its own threads while audio
+    /// runs. An override may therefore only read and write parameter values
+    /// (they are atomic) and immutable data.
     fn apply(index: usize, parameters: &Self::Parameters) -> bool {
         if index >= Self::count() {
             return false;

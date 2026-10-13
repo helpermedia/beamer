@@ -1331,10 +1331,10 @@ where
                 kResultOk
             }
             PluginState::Prepared { processor, .. } => {
-                match processor.load_state(&buffer) {
+                use beamer_core::parameter_types::Parameters;
+                match processor.parameters().load_state(&buffer) {
                     Ok(()) => {
                         // Apply current sample rate and reset smoothers
-                        use beamer_core::parameter_types::Parameters;
                         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
                         let sample_rate = unsafe { *self.sample_rate.get() };
                         if sample_rate > 0.0 {
@@ -1363,10 +1363,8 @@ where
                 return kResultOk;
             }
             PluginState::Prepared { processor, .. } => {
-                match processor.save_state() {
-                    Ok(d) => d,
-                    Err(_) => return kResultFalse,
-                }
+                use beamer_core::Parameters;
+                processor.parameters().save_state()
             }
         };
 
@@ -1580,9 +1578,9 @@ where
 
                 // Apply any pending state that was set before preparation
                 if let Some(data) = pending {
-                    let _ = processor.load_state(&data);
-                    // Update parameters sample rate after loading
                     use beamer_core::Parameters;
+                    let _ = processor.parameters().load_state(&data);
+                    // Update parameters sample rate after loading
                     processor.parameters_mut().set_sample_rate(setup.sampleRate);
                 }
 

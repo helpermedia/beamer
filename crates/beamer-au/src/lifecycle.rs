@@ -286,10 +286,10 @@ impl<P: Descriptor> AuState<P> {
 
                 // Apply any pending state that was set before preparation
                 if let Some(data) = pending_state {
-                    if let Err(e) = processor.load_state(&data) {
+                    use beamer_core::parameter_types::Parameters;
+                    if let Err(e) = processor.parameters().load_state(&data) {
                         log::warn!("Failed to load pending state: {:?}", e);
                     }
-                    use beamer_core::parameter_types::Parameters;
                     processor.parameters_mut().set_sample_rate(sample_rate);
                     processor.parameters_mut().reset_smoothing();
                 }

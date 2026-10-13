@@ -167,8 +167,8 @@ where
                 Vec::new()
             }
             AuState::Prepared { processor, .. } => {
-                // Use processor's save_state which includes custom state
-                processor.save_state().unwrap_or_default()
+                use beamer_core::parameter_types::Parameters;
+                processor.parameters().save_state()
             }
             AuState::Transitioning => Vec::new(),
         }
@@ -183,10 +183,11 @@ where
             }
             AuState::Prepared { processor, .. } => {
                 // Load state immediately and reset smoothing
-                processor
-                    .load_state(data)
-                    .map_err(|e| PluginError::StateError(e.to_string()))?;
                 use beamer_core::parameter_types::Parameters;
+                processor
+                    .parameters()
+                    .load_state(data)
+                    .map_err(PluginError::StateError)?;
                 processor.parameters_mut().reset_smoothing();
                 Ok(())
             }
@@ -811,7 +812,7 @@ mod tests {
     use beamer_core::parameter_store::ParameterStore;
     use beamer_core::parameter_types::{ParameterRef, Parameters};
     use beamer_core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
-    use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind, PluginResult};
+    use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // =========================================================================
@@ -1078,14 +1079,6 @@ mod tests {
             _context: &ProcessContext,
         ) {
             // No-op for testing
-        }
-
-        fn save_state(&self) -> PluginResult<Vec<u8>> {
-            Ok(vec![])
-        }
-
-        fn load_state(&mut self, _data: &[u8]) -> PluginResult<()> {
-            Ok(())
         }
     }
 
@@ -1432,14 +1425,6 @@ mod tests {
             for (_, output) in buffer.zip_channels() {
                 output.fill(self.value);
             }
-        }
-
-        fn save_state(&self) -> PluginResult<Vec<u8>> {
-            Ok(vec![])
-        }
-
-        fn load_state(&mut self, _data: &[u8]) -> PluginResult<()> {
-            Ok(())
         }
     }
 

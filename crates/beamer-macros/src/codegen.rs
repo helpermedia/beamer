@@ -364,10 +364,6 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
                 #by_id_impl
             }
 
-            fn by_id_mut(&mut self, id: ::beamer::core::types::ParameterId) -> Option<&dyn ::beamer::core::parameter_types::ParameterRef> {
-                self.by_id(id)
-            }
-
             #set_all_group_ids_impl
 
             #nested_discovery_impl
@@ -697,7 +693,7 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
         /// Load a single parameter by its path.
         ///
         /// Called recursively for nested groups. The path is relative to this struct.
-        fn load_state_path(&mut self, path: &str, value: f64) -> bool {
+        fn load_state_path(&self, path: &str, value: f64) -> bool {
             // Check if path contains a group prefix
             if let Some(slash_pos) = path.find('/') {
                 let group = &path[..slash_pos];
@@ -709,7 +705,7 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
             }
         }
 
-        fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        fn load_state(&self, data: &[u8]) -> Result<(), String> {
             if data.is_empty() {
                 return Ok(());
             }

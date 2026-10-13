@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use crate::buffer::{AuxiliaryBuffers, Buffer};
-use crate::error::{PluginError, PluginResult};
 use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
     NoteExpressionTypeInfo, PhysicalUIMap,
@@ -23,7 +22,6 @@ use crate::midi::{
 use crate::midi_cc_config::MidiCcConfig;
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_store::ParameterStore;
-use crate::parameter_types::Parameters;
 use crate::process_context::ProcessContext;
 use crate::webview_handler::WebViewHandler;
 
@@ -852,33 +850,6 @@ pub trait Processor: HasParameters {
                 output_ch[i] = *sample as f64;
             }
         }
-    }
-
-    /// Save the plugin state to bytes.
-    ///
-    /// This is called when the DAW saves a project or preset. The returned
-    /// bytes should contain all state needed to restore the plugin to its
-    /// current configuration.
-    ///
-    /// The default implementation delegates to `Parameters::save_state()`,
-    /// which serializes all parameter values. Override this method if you
-    /// need to save additional state beyond parameters.
-    fn save_state(&self) -> PluginResult<Vec<u8>> {
-        Ok(self.parameters().save_state())
-    }
-
-    /// Load the plugin state from bytes.
-    ///
-    /// This is called when the DAW loads a project or preset. The data is
-    /// the same bytes returned from a previous `save_state` call.
-    ///
-    /// The default implementation delegates to `Parameters::load_state()`,
-    /// which restores all parameter values. Override this method if you
-    /// need to load additional state beyond parameters.
-    fn load_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        self.parameters_mut()
-            .load_state(data)
-            .map_err(PluginError::StateError)
     }
 
     // =========================================================================
