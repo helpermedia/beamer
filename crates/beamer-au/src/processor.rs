@@ -839,12 +839,15 @@ mod tests {
 
     struct TestParameters {
         gain: MockParameter,
+        /// State beyond parameters, of any size.
+        blob: beamer_core::State<Vec<u8>>,
     }
 
     impl TestParameters {
         fn new() -> Self {
             Self {
                 gain: MockParameter::new(fnv1a_hash("gain"), "Gain", 0.5),
+                blob: beamer_core::State::default(),
             }
         }
     }
@@ -885,6 +888,14 @@ mod tests {
             let mut writer = beamer_core::state_format::StateWriter::new();
             self.save_entries(&mut writer, "");
             writer.finish()
+        }
+        fn save_entries(&self, writer: &mut beamer_core::state_format::StateWriter, _prefix: &str) {
+            writer.parameter("gain", &self.gain);
+            writer.state("blob", &self.blob);
+        }
+        fn load_entries(&self, entries: &beamer_core::state_format::StateEntries<'_>, _prefix: &str) {
+            entries.load_parameter("gain", &self.gain);
+            entries.load_state("blob", &self.blob);
         }
         fn set_sample_rate(&self, sample_rate: f64) {
             SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));
@@ -1534,7 +1545,7 @@ mod tests {
         beamer_au_get_input_bus_count, beamer_au_get_latency_samples,
         beamer_au_get_output_bus_channel_count, beamer_au_get_output_bus_count,
         beamer_au_get_parameter_value, beamer_au_get_preset_count, beamer_au_get_preset_info,
-        beamer_au_get_state, beamer_au_get_state_size, beamer_au_get_tail_samples,
+        beamer_au_copy_state, beamer_au_free_state, beamer_au_get_tail_samples,
         beamer_au_render, beamer_au_reset, beamer_au_set_parameter_value, beamer_au_set_state,
         BeamerAuBusConfig, BeamerAuBusInfo, BeamerAuBusType, BeamerAuGroupInfo,
         BeamerAuPresetInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
@@ -1675,9 +1686,12 @@ mod tests {
 
     /// The state of the instance, as a host reads it.
     fn saved_state(instance: *mut BeamerInstanceHandle) -> Vec<u8> {
-        let mut state = vec![0u8; beamer_au_get_state_size(instance) as usize];
-        let written = beamer_au_get_state(instance, state.as_mut_ptr(), state.len() as u32);
-        assert_eq!(written as usize, state.len());
+        let mut size = 0u32;
+        let buffer = beamer_au_copy_state(instance, &mut size);
+        assert!(!buffer.is_null());
+        // SAFETY: The bridge returned a buffer of this size.
+        let state = unsafe { std::slice::from_raw_parts(buffer, size as usize) }.to_vec();
+        beamer_au_free_state(buffer, size);
         state
     }
 
@@ -1763,8 +1777,10 @@ mod tests {
                     let _ = release_rx.recv_timeout(Duration::from_secs(10));
                 }));
             });
-            let mut state = [0u8; 64];
-            beamer_au_get_state(saver.0, state.as_mut_ptr(), state.len() as u32)
+            let mut size = 0u32;
+            let buffer = beamer_au_copy_state(saver.0, &mut size);
+            beamer_au_free_state(buffer, size);
+            size
         });
         inside_rx
             .recv_timeout(Duration::from_secs(10))
@@ -1806,6 +1822,34 @@ mod tests {
         // An empty state changes nothing.
         assert_eq!(load_state(instance, &[]), 0);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
+    }
+
+    #[test]
+    fn test_state_of_any_size_is_saved_and_loaded_whole() {
+        // An instance whose state holds some hundred kilobytes.
+        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        let shared = plugin.shared_parameters();
+        let parameters = shared
+            .as_any()
+            .downcast_ref::<TestParameters>()
+            .expect("the parameters of the test plugin");
+        let blob: Vec<u8> = (0..300_000u32).map(|index| (index % 251) as u8).collect();
+        parameters.blob.set(blob.clone());
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+
+        // The bridge hands out exactly what the parameters save.
+        let state = saved_state(instance);
+        assert!(state.len() > blob.len());
+        assert_eq!(state, parameters.save_state());
+
+        // Another instance takes all of it.
+        let mut other = test_handle();
+        let other_instance: *mut BeamerInstanceHandle = &mut *other;
+        assert_eq!(load_state(other_instance, &state), 0);
+        assert_eq!(beamer_au_get_parameter_value(other_instance, gain_id()), 0.25);
+        assert_eq!(saved_state(other_instance), state);
     }
 
     #[test]

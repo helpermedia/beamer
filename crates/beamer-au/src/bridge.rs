@@ -1638,56 +1638,69 @@ pub extern "C" fn beamer_au_get_group_info(
 // State Persistence
 // =============================================================================
 
-/// Get the size of the serialized state in bytes.
+/// Save the plugin state and return it in a new buffer.
+///
+/// The state is serialized once, so the buffer always holds one whole
+/// state, whatever its size. The caller releases the buffer with
+/// `beamer_au_free_state`.
+///
+/// Returns null, with `*out_size` set to 0, when the state cannot be
+/// saved.
 ///
 /// # Safety
 ///
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function returns `0`)
+///   or null (in which case this function returns null)
 /// - `instance` must not have been destroyed
-/// - This function validates `instance` is non-null before dereferencing
+/// - `out_size` must be a valid pointer to a `u32`, or null (in which case
+///   this function returns null)
 /// - Thread safety: Safe to call from any thread; takes no lock
 #[no_mangle]
-pub extern "C" fn beamer_au_get_state_size(instance: BeamerAuInstanceHandle) -> u32 {
-    with_instance!(instance, 0, |handle| {
-        with_parameters(handle, |parameters| {
-            parameters.parameters().save_state().len() as u32
-        })
+pub extern "C" fn beamer_au_copy_state(
+    instance: BeamerAuInstanceHandle,
+    out_size: *mut u32,
+) -> *mut u8 {
+    if out_size.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: out_size was validated as non-null above.
+    unsafe { *out_size = 0 };
+
+    with_instance!(instance, ptr::null_mut(), |handle| {
+        let state = with_parameters(handle, |parameters| parameters.parameters().save_state());
+        let size = match u32::try_from(state.len()) {
+            Ok(size) if size > 0 => size,
+            Ok(_) => return ptr::null_mut(),
+            Err(_) => {
+                log::error!("The plugin state is too large to be saved.");
+                return ptr::null_mut();
+            }
+        };
+
+        // A boxed slice has no spare capacity, so its length is all that
+        // `beamer_au_free_state` needs to release it.
+        let state = Box::into_raw(state.into_boxed_slice());
+        // SAFETY: out_size was validated as non-null at function start.
+        unsafe { *out_size = size };
+        state.cast::<u8>()
     })
 }
 
-/// Serialize the plugin state to a buffer.
+/// Release a buffer that `beamer_au_copy_state` returned.
 ///
 /// # Safety
 ///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function returns `0`)
-/// - `instance` must not have been destroyed
-/// - `buffer` must be a valid pointer to a writable buffer of at least `size` bytes,
-///   or null (in which case this function returns `0`)
-/// - This function validates both pointers are non-null before dereferencing
-/// - Thread safety: Safe to call from any thread; takes no lock
+/// - `state` must be a pointer returned by `beamer_au_copy_state` that was
+///   not released before, or null (in which case this function does nothing)
+/// - `size` must be the size that call reported
 #[no_mangle]
-pub extern "C" fn beamer_au_get_state(
-    instance: BeamerAuInstanceHandle,
-    buffer: *mut u8,
-    size: u32,
-) -> u32 {
-    if buffer.is_null() {
-        return 0;
+pub extern "C" fn beamer_au_free_state(state: *mut u8, size: u32) {
+    if state.is_null() {
+        return;
     }
-
-    with_instance!(instance, 0, |handle| {
-        let state = with_parameters(handle, |parameters| parameters.parameters().save_state());
-        let copy_len = state.len().min(size as usize);
-
-        if copy_len > 0 {
-            // SAFETY: buffer was validated as non-null at function start, copy_len <= size.
-            unsafe { ptr::copy_nonoverlapping(state.as_ptr(), buffer, copy_len) };
-        }
-
-        copy_len as u32
-    })
+    // SAFETY: The caller passes the pointer and the size of a boxed slice
+    // that `beamer_au_copy_state` leaked.
+    drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(state, size as usize)) });
 }
 
 /// Restore plugin state from a buffer.
@@ -3092,8 +3105,11 @@ mod tests {
         ));
         assert_eq!(beamer_au_get_parameter_value(ptr::null_mut(), 0), 0.0);
         beamer_au_set_parameter_value(ptr::null_mut(), 0, 0.5);
-        assert_eq!(beamer_au_get_state_size(ptr::null_mut()), 0);
-        assert_eq!(beamer_au_get_state(ptr::null_mut(), ptr::null_mut(), 0), 0);
+        let mut size = 7u32;
+        assert!(beamer_au_copy_state(ptr::null_mut(), &mut size).is_null());
+        assert_eq!(size, 0);
+        assert!(beamer_au_copy_state(ptr::null_mut(), ptr::null_mut()).is_null());
+        beamer_au_free_state(ptr::null_mut(), 0);
         assert_eq!(
             beamer_au_set_state(ptr::null_mut(), ptr::null(), 0),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER

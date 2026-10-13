@@ -838,36 +838,32 @@ bool beamer_au_get_group_info(
 // =============================================================================
 
 /**
- * Get the size of the serialized state in bytes.
+ * Save the plugin state and return it in a new buffer.
  *
- * Call this before `beamer_au_get_state()` to allocate an appropriately sized buffer.
+ * The state is serialized once, so the buffer always holds one whole state.
+ * The state format is compatible with VST3 for cross-format preset sharing.
+ * Release the buffer with `beamer_au_free_state()`.
  *
  * Thread Safety: Can be called from any thread, also while audio is rendered.
  *
  * @param instance Handle to the plugin instance.
- * @return Size of state in bytes, or 0 if no state to save.
+ * @param out_size Receives the size of the state in bytes, 0 if it cannot
+ *                 be saved.
+ *
+ * @return The state, or NULL if it cannot be saved.
  */
-uint32_t beamer_au_get_state_size(BeamerAuInstanceHandle _Nullable instance);
+uint8_t* _Nullable beamer_au_copy_state(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t* _Nullable out_size
+);
 
 /**
- * Serialize the plugin state to a buffer.
+ * Release a buffer returned by `beamer_au_copy_state()`.
  *
- * The state format is compatible with VST3 for cross-format preset sharing.
- * The buffer must be at least `beamer_au_get_state_size()` bytes.
- *
- * Thread Safety: Can be called from any thread, also while audio is rendered.
- *
- * @param instance Handle to the plugin instance.
- * @param buffer   Buffer to write state data.
- * @param size     Size of buffer in bytes.
- *
- * @return Number of bytes written, or 0 on error.
+ * @param state The buffer, or NULL.
+ * @param size  The size that `beamer_au_copy_state()` reported for it.
  */
-uint32_t beamer_au_get_state(
-    BeamerAuInstanceHandle _Nullable instance,
-    uint8_t* buffer,
-    uint32_t size
-);
+void beamer_au_free_state(uint8_t* _Nullable state, uint32_t size);
 
 /**
  * Restore plugin state from a buffer.

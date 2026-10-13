@@ -1155,18 +1155,13 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             CFRelease(versionNum);
 
             // Get state from Rust (save as "data" key which is the standard AU key)
-            uint32_t stateSize = beamer_au_get_state_size(inst->rustInstance);
-            if (stateSize > 0) {
-                uint8_t* stateBuffer = (uint8_t*)malloc(stateSize);
-                if (stateBuffer) {
-                    uint32_t written = beamer_au_get_state(inst->rustInstance, stateBuffer, stateSize);
-                    if (written > 0) {
-                        CFDataRef data = CFDataCreate(NULL, stateBuffer, written);
-                        CFDictionarySetValue(dict, CFSTR("data"), data);
-                        CFRelease(data);
-                    }
-                    free(stateBuffer);
-                }
+            uint32_t stateSize = 0;
+            uint8_t* stateBuffer = beamer_au_copy_state(inst->rustInstance, &stateSize);
+            if (stateBuffer) {
+                CFDataRef data = CFDataCreate(NULL, stateBuffer, stateSize);
+                CFDictionarySetValue(dict, CFSTR("data"), data);
+                CFRelease(data);
+                beamer_au_free_state(stateBuffer, stateSize);
             }
 
             *(CFPropertyListRef*)outData = dict;

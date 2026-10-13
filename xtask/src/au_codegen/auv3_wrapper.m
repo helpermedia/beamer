@@ -949,17 +949,11 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     if (_rustInstance != NULL) {
-        uint32_t stateSize = beamer_au_get_state_size(_rustInstance);
-        if (stateSize > 0) {
-            uint8_t* buffer = (uint8_t*)malloc(stateSize);
-            if (buffer != NULL) {
-                uint32_t written = beamer_au_get_state(_rustInstance, buffer, stateSize);
-                if (written > 0) {
-                    NSData* stateData = [NSData dataWithBytes:buffer length:written];
-                    state[@"beamerState"] = stateData;
-                }
-                free(buffer);
-            }
+        uint32_t stateSize = 0;
+        uint8_t* buffer = beamer_au_copy_state(_rustInstance, &stateSize);
+        if (buffer != NULL) {
+            state[@"beamerState"] = [NSData dataWithBytes:buffer length:stateSize];
+            beamer_au_free_state(buffer, stateSize);
         }
     }
 
