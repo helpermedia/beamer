@@ -39,7 +39,7 @@ use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
     BusType, CachedBusConfig, CachedBusInfo, ParameterInfo, ParameterUnit, ProcessMode,
-    WebViewHandler, MAX_BUSES,
+    WebViewEvents, WebViewHandler, MAX_BUSES,
 };
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
@@ -420,6 +420,8 @@ pub struct BeamerInstanceHandle {
     /// Cached WebView handler, captured at instance creation to avoid
     /// locking the plugin mutex on every invoke/event call.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// The plugin's queue of events for the web UI, if it has one.
+    webview_events: Option<WebViewEvents>,
     /// The parameters of the plugin. They stay in this one place for the life
     /// of the instance, so the functions that only need them (values, state,
     /// groups, presets) never take the plugin mutex.
@@ -441,6 +443,7 @@ impl BeamerInstanceHandle {
         // Capture what host threads ask for before wrapping the plugin in the
         // Mutex, so that those calls never need to lock it.
         let webview_handler = plugin.webview_handler();
+        let webview_events = plugin.webview_events();
         let parameters = plugin.shared_parameters();
         let presets = plugin.factory_presets();
         let declared_buses = DeclaredBuses::capture(plugin.as_ref());
@@ -450,6 +453,7 @@ impl BeamerInstanceHandle {
             render_block: std::sync::RwLock::new(None),
             bus_config: Mutex::new(None),
             webview_handler,
+            webview_events,
             parameters,
             presets,
             declared_buses,
@@ -2824,6 +2828,94 @@ pub unsafe extern "C" fn beamer_au_on_event(
         }
 
         Some(())
+    }));
+}
+
+/// The events of a plugin for one open editor.
+///
+/// An editor holds this from the moment it opens until it closes. It shares
+/// the queue with the plugin instance and does not point into it, so it
+/// stays valid when a host destroys the instance before the editor.
+pub struct BeamerAuWebViewEvents(WebViewEvents);
+
+/// An editor was opened: get the events of the plugin for it.
+///
+/// Returns null when the plugin sends no events. Otherwise the editor calls
+/// `beamer_au_webview_events_take` from its sync timer and
+/// `beamer_au_webview_events_close` once when it closes.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function returns null)
+#[no_mangle]
+pub extern "C" fn beamer_au_webview_events_open(
+    instance: BeamerAuInstanceHandle,
+) -> *mut BeamerAuWebViewEvents {
+    if instance.is_null() {
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+
+        let events = handle.webview_events.clone()?;
+        events.editor_opened();
+        Some(Box::into_raw(Box::new(BeamerAuWebViewEvents(events))))
+    }));
+
+    result.ok().flatten().unwrap_or(ptr::null_mut())
+}
+
+/// Take the events the plugin emitted since the last call, as one script
+/// for the WebView.
+///
+/// Returns a heap-allocated null-terminated C string that the caller must
+/// free with `beamer_au_free_string`, or null when nothing waits.
+///
+/// # Safety
+///
+/// - `events` must be a pointer returned by `beamer_au_webview_events_open`
+///   that was not closed yet, or null (in which case this function returns
+///   null)
+#[no_mangle]
+pub extern "C" fn beamer_au_webview_events_take(events: *mut BeamerAuWebViewEvents) -> *mut c_char {
+    if events.is_null() {
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: events validated non-null above. Caller guarantees valid pointer.
+        let events = unsafe { &*events };
+
+        let script = events.0.take_script()?;
+        // The script is JSON inside JavaScript calls and has no NUL byte.
+        CString::new(script).ok().map(CString::into_raw)
+    }));
+
+    result.ok().flatten().unwrap_or(ptr::null_mut())
+}
+
+/// The editor was closed: stop keeping events for it and free the handle.
+///
+/// # Safety
+///
+/// - `events` must be a pointer returned by `beamer_au_webview_events_open`
+///   that was not closed yet, or null (in which case this function does
+///   nothing)
+/// - After calling this function, `events` is invalid and must not be used
+#[no_mangle]
+pub extern "C" fn beamer_au_webview_events_close(events: *mut BeamerAuWebViewEvents) {
+    if events.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: events validated non-null above. Caller guarantees it was
+        // returned by beamer_au_webview_events_open and not closed before.
+        let events = unsafe { Box::from_raw(events) };
+        events.0.editor_closed();
     }));
 }
 

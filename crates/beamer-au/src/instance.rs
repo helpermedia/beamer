@@ -21,7 +21,8 @@ use crate::error::{PluginError, PluginResult};
 use beamer_core::parameter_types::Parameters;
 use beamer_core::preset::PresetInfo;
 use beamer_core::{
-    CachedBusConfig, MidiEvent, ParameterStore, ProcessContext, ProcessMode, WebViewHandler,
+    CachedBusConfig, MidiEvent, ParameterStore, ProcessContext, ProcessMode, WebViewEvents,
+    WebViewHandler,
 };
 
 /// The parameters of a plugin as the bridge uses them from host threads.
@@ -408,6 +409,13 @@ pub trait AuPluginInstance: Send + 'static {
     /// Returns `None` if the plugin does not provide a custom handler.
     /// Parameter synchronization is automatic and does not require this.
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        None
+    }
+
+    /// Returns the plugin's queue of events for the web UI.
+    ///
+    /// Returns `None` if the plugin sends no events.
+    fn webview_events(&self) -> Option<WebViewEvents> {
         None
     }
 

@@ -27,6 +27,7 @@
     BeamerAuInstanceHandle _rustInstance;
     AudioUnit _audioUnit;
     NSTimer* _syncTimer;
+    BeamerAuWebViewEventsHandle _events;
     double* _lastParamValues;
     uint32_t _paramCount;
 }
@@ -2178,12 +2179,16 @@ static void beamer_auv2_on_loaded(void* context) {
             }
         }
 
+        // Events the plugin emits from now on are kept for this editor.
+        _events = beamer_au_webview_events_open(_rustInstance);
+
         // Start 60 Hz parameter sync timer.
         // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
         __weak typeof(self) weakSelf = self;
         _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
             (void)t;
             [weakSelf _pollParams];
+            [weakSelf _sendEvents];
         }];
         // Schedule in the common modes, so that the UI keeps following the host
         // while it runs a tracking loop (a drag, a resize or an open menu).
@@ -2194,6 +2199,7 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     free(_lastParamValues);
     _lastParamValues = NULL;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -2228,6 +2234,9 @@ static void beamer_auv2_on_loaded(void* context) {
         beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
     }
 }
+- (void)_sendEvents {
+    beamer_au_ipc_send_events(_events, _webviewHandle);
+}
 - (BOOL)mouseDownCanMoveWindow {
     return NO;
 }
@@ -2240,6 +2249,7 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)applicationWillTerminate:(NSNotification*)notification {
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     free(_lastParamValues);
     _lastParamValues = NULL;
     if (_webviewHandle != NULL) {

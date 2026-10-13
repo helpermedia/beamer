@@ -198,3 +198,33 @@ static void beamer_au_ipc_send_init_dump(
     beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
     beamer_au_free_string(json);
 }
+
+// ---------------------------------------------------------------------------
+// Events from Rust
+// ---------------------------------------------------------------------------
+
+/// Send the events the plugin emitted since the last tick to the WebView.
+///
+/// Called from the sync timer of an editor. `events` is what
+/// `beamer_au_webview_events_open` returned when the editor opened, NULL for
+/// a plugin that sends no events.
+static void beamer_au_ipc_send_events(
+    BeamerAuWebViewEventsHandle events,
+    void* webviewHandle
+) {
+    if (!events || !webviewHandle) return;
+
+    char* script = beamer_au_webview_events_take(events);
+    if (!script) return;
+
+    beamer_webview_eval_js(webviewHandle, (const uint8_t*)script, strlen(script));
+    beamer_au_free_string(script);
+}
+
+/// Close the events of an editor that goes away and clear its handle.
+static void beamer_au_ipc_close_events(BeamerAuWebViewEventsHandle* events) {
+    if (*events == NULL) return;
+
+    beamer_au_webview_events_close(*events);
+    *events = NULL;
+}

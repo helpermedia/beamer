@@ -37,7 +37,8 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, Transport, WebViewHandler,
+    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, Transport, WebViewEvents,
+    WebViewHandler,
 };
 
 /// Generic AU processor wrapper.
@@ -57,6 +58,8 @@ where
     state: AuState<P>,
     /// WebView handler of the Descriptor, asked for once at construction.
     webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// The Descriptor's queue of events for the web UI, if it has one.
+    webview_events: Option<WebViewEvents>,
     _presets: PhantomData<Presets>,
 }
 
@@ -75,9 +78,17 @@ where
         // so it can hold that plugin's parameters.
         let descriptor = P::default();
         let handler = descriptor.webview_handler();
+
+        // Taking the queue here marks it as delivered by this instance.
+        let events = descriptor.webview_events().cloned();
+        if let Some(events) = &events {
+            events.claim();
+        }
+
         Self {
             state: AuState::with_descriptor(descriptor),
             webview_handler: handler,
+            webview_events: events,
             _presets: PhantomData,
         }
     }
@@ -653,6 +664,10 @@ where
 
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
         self.webview_handler.clone()
+    }
+
+    fn webview_events(&self) -> Option<WebViewEvents> {
+        self.webview_events.clone()
     }
 
     fn factory_presets(&self) -> FactoryPresetAccess {

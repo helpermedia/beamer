@@ -1157,6 +1157,49 @@ void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
                         const uint8_t* _Nonnull data_json,
                         size_t data_json_len);
 
+/**
+ * The events of a plugin for one open editor.
+ *
+ * An editor holds this from the moment it opens until it closes. It stays
+ * valid when the host destroys the plugin instance before the editor.
+ */
+typedef struct BeamerAuWebViewEvents* BeamerAuWebViewEventsHandle;
+
+/**
+ * An editor was opened: get the events of the plugin for it.
+ *
+ * Events the plugin emits from now on are kept for this editor.
+ *
+ * Thread Safety: Can be called from the main thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return The events, or NULL when the plugin sends none. Must be closed
+ *         with beamer_au_webview_events_close.
+ */
+BeamerAuWebViewEventsHandle _Nullable beamer_au_webview_events_open(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Take the events the plugin emitted since the last call, as one script
+ * for the WebView.
+ *
+ * Thread Safety: Can be called from the main thread.
+ *
+ * @param events Handle from beamer_au_webview_events_open, or NULL.
+ * @return JavaScript to evaluate, or NULL when nothing waits. Caller must
+ *         free with beamer_au_free_string.
+ */
+char* _Nullable beamer_au_webview_events_take(BeamerAuWebViewEventsHandle _Nullable events);
+
+/**
+ * The editor was closed: stop keeping events for it and free the handle.
+ *
+ * Thread Safety: Can be called from the main thread.
+ *
+ * @param events Handle from beamer_au_webview_events_open, or NULL. Invalid
+ *               after this call.
+ */
+void beamer_au_webview_events_close(BeamerAuWebViewEventsHandle _Nullable events);
+
 // =============================================================================
 // MARK: - WebView C-ABI (beamer-webview)
 // =============================================================================

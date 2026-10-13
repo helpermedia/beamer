@@ -27,6 +27,7 @@
     uint32_t _guiHeight;
     {{WRAPPER_CLASS}}* _wrapper;
     NSTimer* _syncTimer;
+    BeamerAuWebViewEventsHandle _events;
     BOOL _webviewLoaded;
     double* _lastParamValues;
     uint32_t _paramCount;
@@ -38,6 +39,7 @@
 - (void)_sendInitDump;
 - (void)_startSyncTimer;
 - (void)_pollParams;
+- (void)_sendEvents;
 @end
 
 // =============================================================================
@@ -201,6 +203,10 @@ static void beamer_auv3_ext_on_loaded(void* context) {
                 _lastParamValues[i] = NAN;
             }
         }
+
+        // Events the plugin emits from now on are kept for this editor.
+        beamer_au_ipc_close_events(&_events);
+        _events = beamer_au_webview_events_open(instance);
     }
 
     // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
@@ -208,10 +214,15 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
         (void)t;
         [weakSelf _pollParams];
+        [weakSelf _sendEvents];
     }];
     // Schedule in the common modes, so that the UI keeps following the host
     // while it runs a tracking loop (a drag, a resize or an open menu).
     [[NSRunLoop currentRunLoop] addTimer:_syncTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)_sendEvents {
+    beamer_au_ipc_send_events(_events, _webviewHandle);
 }
 
 - (void)_pollParams {
@@ -258,6 +269,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     _webviewLoaded = NO;
     free(_lastParamValues);
     _lastParamValues = NULL;
@@ -273,6 +285,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     // Safety net in case -viewDidDisappear was not called
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     free(_lastParamValues);
     _lastParamValues = NULL;
 

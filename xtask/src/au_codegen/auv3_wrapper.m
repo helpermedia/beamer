@@ -104,6 +104,7 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
     NSTimer* _syncTimer;
+    BeamerAuWebViewEventsHandle _events;
     double* _lastParamValues;
     uint32_t _paramCount;
     _Atomic BOOL _settingFromWebView;
@@ -272,6 +273,7 @@ static void beamer_auv3_on_loaded(void* context) {
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     free(_lastParamValues);
     _lastParamValues = NULL;
 
@@ -293,6 +295,10 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     [_instanceLock unlock];
+}
+
+- (void)_sendEvents {
+    beamer_au_ipc_send_events(_events, _webviewHandle);
 }
 
 - (void)_pollParams {
@@ -1147,6 +1153,7 @@ static void beamer_auv3_on_loaded(void* context) {
     // sync timer and its value cache first, then the WebView.
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_au_ipc_close_events(&_events);
     free(_lastParamValues);
     _lastParamValues = NULL;
     _paramCount = 0;
@@ -1203,12 +1210,16 @@ static void beamer_auv3_on_loaded(void* context) {
         }
     }
 
+    // Events the plugin emits from now on are kept for this editor.
+    _events = beamer_au_webview_events_open(_rustInstance);
+
     // Start 60 Hz parameter sync timer.
     // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
     __weak typeof(self) weakSelf = self;
     _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
         (void)t;
         [weakSelf _pollParams];
+        [weakSelf _sendEvents];
     }];
     // Schedule in the common modes, so that the UI keeps following the host
     // while it runs a tracking loop (a drag, a resize or an open menu).
