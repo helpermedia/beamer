@@ -11,7 +11,7 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is MIT licensed (as of
 ## Features
 
 - **VST3 factory**: Plugin registration and entry points
-- **Plugin lifecycle**: Descriptor ↔ Processor state machine (prepare/unprepare)
+- **Plugin lifecycle**: A Descriptor for the life of the instance and a Processor per audio setup (`prepare`)
 - **Edit controller**: Parameter management and host communication
 - **MIDI conversion**: Bidirectional mapping between Beamer and VST3 MIDI events
 - **Real-time buffer management**: Zero-allocation audio processing

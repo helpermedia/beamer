@@ -6,7 +6,7 @@ This crate provides procedural macros that generate boilerplate code for plugins
 
 - **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration, factory presets (from `Presets.toml`) and format-specific entry points
 - **`#[derive(Parameters)]`**: Generates parameter traits, host integration, state persistence and `Default` implementation
-- **`#[derive(HasParameters)]`**: Generates `parameters()`, `parameters_mut()` and `set_parameters()` accessors for Descriptor and Processor types
+- **`#[derive(HasParameters)]`**: Generates the `parameters()` accessor for a Descriptor, which holds its parameters in an `Arc`
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
 - **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`
 - **Compile-time validation**: ID collision detection and hash generation
@@ -38,7 +38,7 @@ struct GainParameters {
 #[derive(Default, HasParameters)]
 struct GainDescriptor {
     #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {

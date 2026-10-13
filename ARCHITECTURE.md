@@ -87,8 +87,8 @@ The VST3 wrapper uses COM (Component Object Model) interfaces implemented direct
 │    ┌──────────────┐            │         ┌──────────────────┐   │
 │    │              │            │         │                  │   │
 │    │  Processor   │◄───────────┼────────►│  EditController  │   │
-│    │  (DSP code)  │  lock-free │         │                  │   │
-│    │              │  queue     │         └────────┬─────────┘   │
+│    │  (DSP code)  │  shared    │         │                  │   │
+│    │              │  params    │         └────────┬─────────┘   │
 │    └──────────────┘            │                  │             │
 │                                │                  │ IPlugView   │
 │                                │         ┌────────▼─────────┐   │
@@ -110,8 +110,8 @@ Both formats share the same core traits and processing logic:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       beamer-core                               │
-│  • Descriptor trait (unprepared state)                          │
-│  • Processor trait (prepared state)                             │
+│  • Descriptor trait (the plugin as the host sees it)            │
+│  • Processor trait (created for an audio configuration)         │
 │  • Buffer, AuxiliaryBuffers, MidiBuffer                         │
 │  • Parameters trait, ParameterStore                             │
 │  • ProcessContext, Transport                                    │
@@ -141,7 +141,7 @@ A host saves and loads the state, asks for latency and tail and resets a plugin 
 
 - The state is the parameters. Their values are atomic, so the wrappers save and load them through a shared reference.
 - The audio thread publishes latency and tail for every block. Host threads read the published values.
-- A request that needs the processor (a reset, the smoother reset after a state load) is a flag the audio thread acts on at the start of its next block.
+- A request that belongs to the audio thread (a processor reset, the smoother reset after a state load) is a flag the audio thread acts on at the start of its next block.
 
 ---
 
@@ -189,29 +189,30 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Descriptor (Unprepared)                     │
+│          Descriptor (lives as long as the plugin instance)      │
 │  • Created via Default::default()                               │
-│  • Holds parameters and bus configuration                       │
+│  • Holds the parameters (in an Arc) and bus configuration       │
 │  • No sample rate or audio state                                │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
-                                  │ self.prepare(setup)
+                                  │ descriptor.prepare(setup)
                                   │ [setupProcessing]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Processor (Prepared)                          │
 │  • Created with real sample rate and buffer size                │
+│  • Shares the parameters with the Descriptor                    │
 │  • Allocates DSP state (delay buffers, filter coefficients)     │
 │  • Ready for process() calls                                    │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
-                                  │ unprepare()
-                                  │ [sample rate change]
+                                  │ dropped
+                                  │ [sample rate change, resources released]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Descriptor (Unprepared)                     │
-│  • Parameters preserved                                         │
-│  • DSP state discarded                                          │
+│          Descriptor (still the same one)                        │
+│  • Parameters untouched                                         │
+│  • DSP state gone with the Processor                            │
 │  • Ready for prepare() with new setup                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -222,7 +223,7 @@ Audio plugins need sample rate for buffer allocation, filter coefficients and en
 
 ### Design Rationale
 
-Beamer's design follows the Rust principle of **making invalid states unrepresentable**. This is the **typestate pattern** - different types represent different states and the compiler enforces valid transitions.
+Beamer's design follows the Rust principle of **making invalid states unrepresentable**. A `Processor` can only come from `prepare()`, which receives the real audio configuration, so there is no processor that has not been set up.
 
 The `Processor` type is always fully initialized, so `process()` code is clean:
 
@@ -241,18 +242,16 @@ impl Processor for DelayProcessor {
 Beamer plugins use three structs for clear separation of concerns:
 
 1. **`*Parameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-2. **`*Descriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor`
+2. **`*Descriptor`** - Plugin descriptor that holds the parameters in an `Arc` and implements `Descriptor`
+3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor` and shares the parameters
 
 See [Three-Struct Pattern](docs/REFERENCE.md#three-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#parameters) for the parameter attributes.
 
 **Plugins with DSP state** add fields to the Processor:
 
 ```rust
-#[derive(HasParameters)]
 struct DelayProcessor {
-    #[parameters]
-    parameters: DelayParameters,
+    parameters: Arc<DelayParameters>,
     sample_rate: f64,    // Always valid
     buffer: Vec<f64>,    // Always allocated
 }
@@ -264,41 +263,46 @@ struct DelayProcessor {
 
 ### Trait Responsibilities
 
-| Trait | State | Responsibilities |
+| Trait | Lives | Responsibilities |
 |-------|-------|------------------|
-| `HasParameters` | Both | Parameter access (`parameters()`, `parameters_mut()`, `set_parameters()`) - use `#[derive(HasParameters)]` |
-| `Descriptor` | Unprepared | Bus configuration, MIDI mapping, `prepare()` transformation |
-| `Processor` | Prepared | DSP processing, MIDI processing, `unprepare()` (has default impl) |
+| `HasParameters` | With the Descriptor | Parameter access (`parameters()` returns the `Arc`) - use `#[derive(HasParameters)]` |
+| `Descriptor` | As long as the plugin instance | Bus configuration, MIDI mapping, creating a Processor with `prepare()` |
+| `Processor` | While audio resources are allocated | DSP processing, MIDI processing |
 
-### Parameter Ownership
+### Shared Parameters
 
-Parameters are **owned** by both `Descriptor` and `Processor`, moving between them during state transitions:
+The parameters are one struct in an `Arc`. The Descriptor holds it for the life of the plugin instance and hands a clone of the `Arc` to every Processor it creates:
 
 ```
 Descriptor                       Processor
 ┌─────────────────────┐        ┌─────────────────────┐
-│ parameters ─────────┼──────► │ parameters          │
-└─────────────────────┘        └─────────────────────┘
-       prepare() moves              unprepare() moves
-       parameters →                 ← parameters back
+│ Arc<Parameters> ────┼───┬────┼─ Arc<Parameters>    │
+└─────────────────────┘   │    └─────────────────────┘
+                          ▼
+                 ┌─────────────────┐
+                 │   Parameters    │  also used by the host
+                 │   (atomics)     │  and the UI
+                 └─────────────────┘
 ```
 
-This is the **type-state pattern** - a Rust idiom for encoding state machines at the type level. The same pattern appears in `std::fs::File` and session types.
+**Why shared?**
 
-**Why ownership instead of shared references?**
+A host reads and sets parameters, saves and loads state and opens the editor from its own threads while the audio thread processes. The parameters are therefore used by several threads at the same time whatever the plugin does, and the type says so:
 
-1. **Zero overhead**: Direct field access: `self.parameters.gain.get()`
-2. **No synchronization**: Owned data needs no Arc, Mutex, or atomics for internal access
-3. **Clear lifecycle**: Parameters exist exactly where they're used
-4. **Smoother mutation**: Smoothers advance state each sample; ownership makes this natural
+1. **One place**: The parameters never move. What the host sets is what the audio thread reads, before and after `prepare()`.
+2. **No locks**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.parameters.gain.get()`.
+3. **A lasting Descriptor**: Because `prepare(&self)` does not consume it, the Descriptor keeps answering the host (buses, MIDI mapping) while audio runs. Host threads may read it at the same time, so a Descriptor is `Sync`.
+4. **Clear roles**: What other threads need to see lives in the parameters. Everything else in the Processor belongs to the audio thread alone.
+
+Smoothing methods take `&self` like the value accessors. They are meant for the audio thread: a second thread advancing a smoother at the same time is memory-safe but disturbs the ramp.
 
 **The `HasParameters` trait:**
 
-Both `Descriptor` and `Processor` implement `HasParameters` because the host needs parameter access in both states:
+The Descriptor implements `HasParameters`, through which the framework reaches the parameters before and after `prepare()`:
 - Before `prepare()`: Host queries parameter info, user adjusts values
 - After `prepare()`: Host automates parameters during playback
 
-Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on both Descriptor and Processor. The derive macro generates the `parameters()`, `parameters_mut()` and `set_parameters()` methods.
+Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on the Descriptor. The field must be an `Arc` of the parameter struct. The Processor needs no derive: it keeps the `Arc` it got in `prepare()` as a plain field.
 
 ---
 
@@ -392,7 +396,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
-- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - State machine + prepare
+- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - Descriptor and Processor of an instance, prepare
 - [transport.rs](crates/beamer-au/src/transport.rs) - Host transport conversion
 
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
@@ -559,7 +563,7 @@ sysex_buffer_size = 4096 # Default: 512 bytes
 The buffer allocation flow ensures all memory is reserved before audio processing begins:
 
 ```
-Plugin Load (creates Descriptor in Unprepared state)
+Plugin Load (creates the Descriptor)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -581,7 +585,7 @@ Plugin Load (creates Descriptor in Unprepared state)
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
 │   • descriptor.prepare(setup) → Processor                   │
-│     - Descriptor consumed, Processor created                │
+│     - Descriptor stays, Processor created                   │
 │     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate()                        │
 │     - input_ptrs.reserve(main_channels)                     │
@@ -605,8 +609,8 @@ Plugin Load (creates Descriptor in Unprepared state)
     ▼ (on sample rate change)
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing() with new setup                            │
-│   • Processor::unprepare() → Descriptor                     │
-│     - Parameters preserved, DSP state discarded             │
+│   • The Processor is dropped                                │
+│     - Parameters untouched, DSP state discarded             │
 │   • descriptor.prepare(new_setup) → Processor               │
 │     - DSP state reallocated for new sample rate             │
 └─────────────────────────────────────────────────────────────┘

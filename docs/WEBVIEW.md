@@ -15,18 +15,18 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 │  │  Rust: WebViewHandler │  │  JS: React/Svelte/vanilla    │    │
 │  │  on_invoke / on_event │  │  window.__BEAMER__ runtime   │    │
 │  └───────────┬───────────┘  └──────────────┬───────────────┘    │
-│              │                              │                    │
-├──────────────┼──────────────────────────────┼────────────────────┤
-│  beamer-core │ WebViewHandler trait         │ beamer_runtime.js  │
-│              │ ParameterStore               │                    │
-├──────────────┼──────────────────────────────┼────────────────────┤
+│              │                              │                   │
+├──────────────┼──────────────────────────────┼───────────────────┤
+│  beamer-core │ WebViewHandler trait         │ beamer_runtime.js │
+│              │ ParameterStore               │                   │
+├──────────────┼──────────────────────────────┼───────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
-│  - 60 Hz parameter sync timer                                    │
+│  - 60 Hz parameter sync timer                                   │
 │  - Dispatches IPC messages to WebViewHandler                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview (platform layer)                                │
-│  - WKWebView on macOS, WebView2 stub on Windows                │
+│  - WKWebView on macOS, WebView2 stub on Windows                 │
 │  - Custom URL scheme handler (beamer://localhost/...)           │
 │  - Message handler (WKScriptMessageHandler)                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -224,6 +224,27 @@ impl Descriptor for MyDescriptor {
     // ...
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
         Some(Arc::new(DemoHandler))
+    }
+}
+```
+
+The framework asks for the handler once, when the plugin instance is created. A handler that needs the parameters can hold them: they live in an `Arc` for the life of the instance, and the Processor uses the same ones.
+
+```rust
+struct MyHandler {
+    parameters: Arc<MyParameters>,
+}
+
+impl WebViewHandler for MyHandler {
+    // on_invoke and on_event read and set self.parameters.
+}
+
+impl Descriptor for MyDescriptor {
+    // ...
+    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
+        Some(Arc::new(MyHandler {
+            parameters: Arc::clone(&self.parameters),
+        }))
     }
 }
 ```

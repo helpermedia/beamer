@@ -88,21 +88,21 @@ Beamer plugins use three structs for clear separation of concerns:
 | Struct | Derive | Purpose |
 |--------|--------|---------|
 | `*Parameters` | `#[derive(Parameters)]` | Pure parameter definitions with declarative attributes |
-| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds parameters, describes plugin to host before audio configuration is known |
-| `*Processor` | `#[derive(HasParameters)]` | Prepared state with DSP logic, created by `prepare()` |
+| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds the parameters in an `Arc` and describes the plugin to the host, for as long as the plugin instance lives |
+| `*Processor` | none | DSP logic and state, created by `prepare()`, shares the parameters |
 
 **Lifecycle:**
 
 ```
-Parameters (data) ──owns──▶ Descriptor (unprepared)
-                                │
-                                ▼ prepare(setup)
-                                │
-                            Processor (prepared, ready for audio)
-                                │
-                                ▼ unprepare()
-                                │
-                            Descriptor (parameters preserved)
+Parameters (data, in an Arc) ◀──holds─── Descriptor (lives as long as the instance)
+        ▲                                   │
+        │                                   ▼ prepare(setup)
+        │                                   │
+        └──────────────shares────────── Processor (ready for audio)
+                                            │
+                                            ▼ dropped when the host releases the audio
+                                              resources or changes the setup
+                                        (the Descriptor creates the next one)
 ```
 
 **Minimal Example:**
@@ -117,32 +117,29 @@ pub struct GainParameters {
     pub gain: FloatParameter,
 }
 
-// 2. Descriptor - holds parameters, describes plugin to host
+// 2. Descriptor - holds the parameters, describes the plugin to the host
 #[beamer::export]
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
+    fn prepare(&self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: Arc::clone(&self.parameters) }
     }
 }
 
-// 3. Processor - prepared state, ready for audio
-#[derive(HasParameters)]
+// 3. Processor - owned by the audio thread, shares the parameters
 pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
     fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
         let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -201,7 +198,7 @@ The `#[derive(Parameters)]` macro generates:
 - Compile-time FNV-1a hash constants: `PARAM_GAIN_ID`, `PARAM_BYPASS_ID`
 - Compile-time collision detection for duplicate IDs
 
-Use `#[derive(HasParameters)]` separately on Descriptor and Processor structs to generate parameter access methods.
+Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework access to the parameters. Its `#[parameters]` field is an `Arc` of the parameter struct.
 
 #### Declarative Attributes
 
@@ -383,10 +380,10 @@ impl Descriptor for MyDescriptor {
     type Setup = SampleRate;
     type Processor = MyProcessor;
 
-    fn prepare(self, setup: SampleRate) -> MyProcessor {
+    fn prepare(&self, setup: SampleRate) -> MyProcessor {
         self.parameters.set_sample_rate(setup.hz() * OVERSAMPLING_FACTOR as f64);
         MyProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             sample_rate: setup.hz(),
         }
     }
@@ -588,41 +585,46 @@ impl ParameterInfo {
 
 ### Descriptor Trait
 
-The `Descriptor` trait represents a plugin in its **unprepared state** - before the host provides audio setup information. When the host calls `setupProcessing()`, the plugin transforms into a `Processor` via the `prepare()` method.
+The `Descriptor` trait represents the plugin as the host sees it: parameters, buses and MIDI behavior. A Descriptor is created with the plugin instance and lives as long as the instance does. When the host provides audio setup information, the framework calls `prepare()` on it to create a `Processor`.
 
 ```rust
-pub trait Descriptor: HasParameters + Default {
+pub trait Descriptor: HasParameters + Sync + Default {
     /// Setup type for prepare() - determines what info is needed
     type Setup: PluginSetup;
 
     /// The prepared processor type
-    type Processor: Processor<Descriptor = Self, Parameters = Self::Parameters>;
+    type Processor: Processor;
 
-    /// Transform into a prepared processor with audio setup information.
-    /// Consumes self - the plugin moves into the prepared state.
-    fn prepare(self, setup: Self::Setup) -> Self::Processor;
+    /// Create a processor for the audio setup. Runs on a host thread and may
+    /// allocate. The smoothers already have the host's sample rate. Called
+    /// again when the setup changes: the previous processor is dropped first.
+    fn prepare(&self, setup: Self::Setup) -> Self::Processor;
 
     // Bus configuration (defaults provided). A plugin without audio input,
     // such as most instruments and generators, returns 0 from input_bus_count.
+    // The answers must stay the same for the life of an instance.
     fn input_bus_count(&self) -> usize { 1 }
     fn output_bus_count(&self) -> usize { 1 }
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
     fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
 
-    /// Whether this plugin processes MIDI events (queried before prepare).
+    /// Whether this plugin processes MIDI events.
     fn wants_midi(&self) -> bool { false }
+
+    /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
+    fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 }
 
 // HasParameters supertrait provides parameter access
 pub trait HasParameters: Send + 'static {
-    type Parameters: Parameters + ParameterGroups + Default;
-    fn parameters(&self) -> &Self::Parameters;
-    fn parameters_mut(&mut self) -> &mut Self::Parameters;
-    fn set_parameters(&mut self, params: Self::Parameters);
+    type Parameters: ParameterStore + ParameterGroups + Parameters + Default + 'static;
+    fn parameters(&self) -> &Arc<Self::Parameters>;
 }
 ```
 
-**HasParameters via Derive Macro:** Use `#[derive(HasParameters)]` on both Descriptor and Processor structs with a `#[parameters]` field annotation:
+`prepare()` takes `&self`, so the Descriptor stays and keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may read it at the same time: a Descriptor is `Sync`. Methods that change it, such as `on_midi_learn()`, take `&mut self` and get it exclusively.
+
+**HasParameters via Derive Macro:** Use `#[derive(HasParameters)]` on the Descriptor struct with a `#[parameters]` field annotation. The field is an `Arc` of the parameter struct, and `prepare()` gives the Processor a clone of it:
 
 ```rust
 // 1. Parameters - pure data with derive macros
@@ -632,31 +634,28 @@ pub struct GainParameters {
     pub gain: FloatParameter,
 }
 
-// 2. Descriptor - holds parameters, describes plugin to host
+// 2. Descriptor - holds the parameters, describes the plugin to the host
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
+    fn prepare(&self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: Arc::clone(&self.parameters) }
     }
 }
 
-// 3. Processor - prepared state, ready for audio
-#[derive(HasParameters)]
+// 3. Processor - owned by the audio thread, shares the parameters
 pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
     fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
         let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -671,10 +670,8 @@ impl Processor for GainProcessor {
 **Plugins with DSP state** add fields to the Processor:
 
 ```rust
-#[derive(HasParameters)]
 pub struct DelayProcessor {
-    #[parameters]
-    parameters: DelayParameters,
+    parameters: Arc<DelayParameters>,
     sample_rate: f64, // Always valid
     buffer: Vec<f64>, // Always allocated
     write_pos: usize,
@@ -705,8 +702,8 @@ Compose up to five types using a tuple:
 impl Descriptor for GainDescriptor {
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
+    fn prepare(&self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: Arc::clone(&self.parameters) }
     }
 }
 
@@ -714,9 +711,9 @@ impl Descriptor for GainDescriptor {
 impl Descriptor for DelayDescriptor {
     type Setup = SampleRate;
     type Processor = DelayProcessor;
-    fn prepare(self, sample_rate: SampleRate) -> DelayProcessor {
+    fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
         DelayProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
             /* DSP state... */
         }
@@ -727,9 +724,9 @@ impl Descriptor for DelayDescriptor {
 impl Descriptor for FftDescriptor {
     type Setup = (SampleRate, MaxBufferSize);
     type Processor = FftProcessor;
-    fn prepare(self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+    fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
         FftProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             sample_rate: sr.hz(),
             fft_buffer: vec![0.0; mbs.0],
         }
@@ -739,20 +736,10 @@ impl Descriptor for FftDescriptor {
 
 ### Processor Trait
 
-The `Processor` trait represents a plugin in its **prepared state** - ready for real-time audio processing. Created by `Descriptor::prepare()`, it can transform back to unprepared state via `unprepare()`.
+The `Processor` trait is what the audio thread owns: ready for real-time audio processing. It is created by `Descriptor::prepare()` and dropped when the host releases the audio resources or changes the setup. What has to outlive a Processor, or be seen by other threads, belongs in the parameters.
 
 ```rust
-pub trait Processor: HasParameters {
-    /// The unprepared definition type this processor came from
-    type Descriptor: Descriptor<Processor = Self, Parameters = Self::Parameters>;
-
-    /// Transform back to unprepared state.
-    /// Default implementation transfers parameters to a new Descriptor::default().
-    /// Override only if Descriptor has additional state beyond parameters.
-    fn unprepare(self) -> Self::Descriptor { /* default impl */ }
-
-    // Note: parameters() and parameters_mut() are provided by HasParameters supertrait
-
+pub trait Processor: Send + 'static {
     /// Process audio. Called on the audio thread.
     fn process(
         &mut self,
@@ -768,9 +755,6 @@ pub trait Processor: HasParameters {
             output.push(*event);
         }
     }
-
-    /// Whether this plugin wants MIDI input.
-    fn wants_midi(&self) -> bool { false }
 
     /// Tail length in samples (for reverbs, delays).
     /// Called on the audio thread for every block.
@@ -800,9 +784,6 @@ pub trait Processor: HasParameters {
     ) {
         // Default: no-op (framework converts via f32 path)
     }
-
-    /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
-    fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 }
 ```
 
@@ -818,30 +799,28 @@ pub trait Processor: HasParameters {
 
 #### Plugin Lifecycle
 
-The plugin transitions between states based on host actions:
+The Descriptor lives as long as the plugin instance. A Processor exists while the host has audio set up:
 
 ```
-                    ┌─────────────────┐
-                    │  Descriptor     │
-                    │  (unprepared)   │
-                    └────────┬────────┘
-                             │ setupProcessing(true)
-                             │ + prepare(setup)
-                             ▼
-                    ┌─────────────────┐
-                    │  Processor      │
-                    │  (prepared)     │◄───── process() calls
-                    └────────┬────────┘
-                             │ setProcessing(false)
-                             │ + unprepare()
-                             ▼
-                    ┌─────────────────┐
-                    │  Descriptor     │
-                    │  (unprepared)   │
-                    └─────────────────┘
+    ┌───────────────────────────────────────────────┐
+    │  Descriptor (created with the instance)       │
+    │  holds Arc<Parameters>                        │
+    └───────┬───────────────────────────────▲───────┘
+            │ audio setup arrives           │
+            │ prepare(&self, setup)         │ still there
+            ▼                               │
+    ┌─────────────────┐                     │
+    │  Processor      │◄── process()        │
+    │  (prepared)     │    calls            │
+    └───────┬─────────┘                     │
+            │ setup changes or audio        │
+            │ resources are released        │
+            ▼                               │
+         dropped ───────────────────────────┘
+         (the next prepare() creates a new one)
 ```
 
-This is the **typestate pattern**, a Rust idiom for encoding state machines at the type level. The `Processor` type is always fully initialized, so `process()` never needs `Option<T>` unwrapping or placeholder checks. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale) for detailed rationale.
+A `Processor` can only come from `prepare()`, so it is always fully initialized and `process()` never needs `Option<T>` unwrapping or placeholder checks. A Processor is dropped on a host thread, never on the audio thread. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale) for detailed rationale.
 
 ### Factory Presets
 
@@ -1149,23 +1128,21 @@ pub struct GainParameters {
 #[derive(Default, HasParameters)]
 pub struct GainDescriptor {
     #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
+    fn prepare(&self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: Arc::clone(&self.parameters) }
     }
 }
 
 // Processor with generic processing method
-#[derive(HasParameters)]
 pub struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl GainProcessor {
@@ -1186,8 +1163,6 @@ impl GainProcessor {
 }
 
 impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
     }
@@ -1258,17 +1233,13 @@ impl BypassHandler {
 
 ```rust
 // Processor struct holds parameters + DSP state
-#[derive(HasParameters)]
 struct ReverbProcessor {
-    #[parameters]
-    parameters: ReverbParameters,
+    parameters: Arc<ReverbParameters>,
     bypass_handler: BypassHandler,
     // ... other reverb state
 }
 
 impl Processor for ReverbProcessor {
-    type Descriptor = ReverbDescriptor;
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let is_bypassed = self.parameters.bypass.get();
 
@@ -1448,8 +1419,15 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         }
     }
 }
+```
 
-fn wants_midi(&self) -> bool { true }
+The plugin says that it processes MIDI on its Descriptor:
+
+```rust
+impl Descriptor for MyDescriptor {
+    // ...
+    fn wants_midi(&self) -> bool { true }
+}
 ```
 
 ### SysEx Handling
@@ -1564,16 +1542,16 @@ struct SynthesizerParameters {
 #[derive(Default, HasParameters)]
 struct SynthesizerDescriptor {
     #[parameters]
-    parameters: SynthesizerParameters,
+    parameters: Arc<SynthesizerParameters>,
 }
 
 impl Descriptor for SynthesizerDescriptor {
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
 
-    fn prepare(self, sample_rate: SampleRate) -> SynthesizerProcessor {
+    fn prepare(&self, sample_rate: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
-            parameters: self.parameters,
+            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
         }
     }
@@ -1592,16 +1570,12 @@ impl Descriptor for SynthesizerDescriptor {
 }
 
 // 3. Processor
-#[derive(HasParameters)]
 struct SynthesizerProcessor {
-    #[parameters]
-    parameters: SynthesizerParameters,
+    parameters: Arc<SynthesizerParameters>,
     sample_rate: f64,
 }
 
 impl Processor for SynthesizerProcessor {
-    type Descriptor = SynthesizerDescriptor;
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         // Access CC values directly via ProcessContext
         if let Some(cc) = context.midi_cc() {

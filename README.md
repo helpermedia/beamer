@@ -27,12 +27,13 @@ struct GainParameters {
     gain: FloatParameter,
 }
 
-// 2. Descriptor - holds parameters (and optional state), describes plugin to host
+// 2. Descriptor - holds the parameters and describes the plugin to the host.
+//    It lives as long as the plugin instance.
 #[beamer::export]
 #[derive(Default, HasParameters)]
 struct GainDescriptor {
     #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Descriptor for GainDescriptor {
@@ -40,21 +41,18 @@ impl Descriptor for GainDescriptor {
     type Setup = ();
     type Processor = GainProcessor;
 
-    fn prepare(self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: self.parameters }
+    fn prepare(&self, _: ()) -> GainProcessor {
+        GainProcessor { parameters: Arc::clone(&self.parameters) }
     }
 }
 
-// 3. Processor - prepared state, ready for audio
-#[derive(HasParameters)]
+// 3. Processor - what the audio thread owns. It shares the parameters
+//    with the host and the UI.
 struct GainProcessor {
-    #[parameters]
-    parameters: GainParameters,
+    parameters: Arc<GainParameters>,
 }
 
 impl Processor for GainProcessor {
-    type Descriptor = GainDescriptor;
-
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.parameters.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
@@ -80,7 +78,7 @@ email = "support@example.com"
 
 ## Plugin Structure
 
-Beamer plugins use three structs: **Parameters** (data), **Descriptor** (plugin blueprint) and **Processor** (audio and MIDI). The host calls `prepare(setup)` to transition from Descriptor to Processor when sample rate becomes available, ensuring audio buffers are properly allocated before `process()` runs.
+Beamer plugins use three structs: **Parameters** (data, shared by all threads), **Descriptor** (the plugin as the host sees it) and **Processor** (audio and MIDI). The Descriptor lives as long as the plugin instance. When the sample rate becomes available, the framework calls `prepare(setup)` on it to create the Processor, ensuring audio buffers are properly allocated before `process()` runs.
 
 See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
