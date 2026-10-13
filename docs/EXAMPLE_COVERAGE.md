@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-04-06
+**Last Updated:** 2026-10-13
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -27,6 +27,7 @@
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
 | | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Presets.toml file |
+| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Saved state beyond parameters, read on the audio thread |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
 | | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Delay decay, envelope release |

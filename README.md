@@ -119,7 +119,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
 - **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
-- **State persistence** - Automatic preset/state save and restore
+- **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
 - **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC and built-in React/Vite tooling (macOS)
 
 ## Documentation

@@ -139,7 +139,7 @@ Both formats share the same core traits and processing logic:
 
 A host saves and loads the state, asks for latency and tail and resets a plugin from its own threads while the audio thread processes. While audio runs, the processor belongs to the audio thread, so the wrappers never hand it to another thread:
 
-- The state is the parameters. Their values are atomic, so the wrappers save and load them through a shared reference.
+- The state is the parameter struct. Parameter values are atomic and `State` fields are replaced as a whole, so the wrappers save and load it through a shared reference.
 - The audio thread publishes latency and tail for every block. Host threads read the published values.
 - A request that belongs to the audio thread (a processor reset, the smoother reset after a state load) is a flag the audio thread acts on at the start of its next block.
 
@@ -290,9 +290,10 @@ Descriptor                       Processor
 A host reads and sets parameters, saves and loads state and opens the editor from its own threads while the audio thread processes. The parameters are therefore used by several threads at the same time whatever the plugin does, and the type says so:
 
 1. **One place**: The parameters never move. What the host sets is what the audio thread reads, before and after `prepare()`.
-2. **No locks**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.parameters.gain.get()`.
+2. **No locks on the audio thread**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.parameters.gain.get()`.
 3. **A lasting Descriptor**: Because `prepare(&self)` does not consume it, the Descriptor keeps answering the host (buses, MIDI mapping) while audio runs. Host threads may read it at the same time, so a Descriptor is `Sync`.
-4. **Clear roles**: What other threads need to see lives in the parameters. Everything else in the Processor belongs to the audio thread alone.
+4. **Clear roles**: What other threads need to see lives in the parameter struct. Everything else in the Processor belongs to the audio thread alone.
+5. **Room for more than numbers**: Data that is not a parameter (a sample path, a table, a setting) is a `State` or `Handover` field of the same struct. Host and UI threads replace such a value as a whole, and the audio thread reads it through a reader without waiting.
 
 Smoothing methods take `&self` like the value accessors. They are meant for the audio thread: a second thread advancing a smoother at the same time is memory-safe but disturbs the ramp.
 
@@ -415,7 +416,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
 
 **State**: NSDictionary with NSData
-- The state is the parameters (`Parameters::save_state`/`load_state`), prepared or not
+- The state is the parameter struct with its parameters and `State` fields (`Parameters::save_state`/`load_state`), prepared or not
 - Saved and loaded without the plugin mutex, also while audio renders
 - Compatible with VST3 format
 
@@ -446,7 +447,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - `setParamNormalized()` - Host sets parameter value
 - `getParamNormalized()` - Host reads parameter value
 
-**State**: Binary blob via `IBStream`
+**State**: Binary blob via `IBStream`, the same bytes as in the AU: the parameter struct with its parameters and `State` fields
 
 ### Comparison Table
 

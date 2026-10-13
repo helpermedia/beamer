@@ -287,11 +287,18 @@ Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
 | Parameter | Description |
 |-----------|-------------|
 | **Gain** | Volume adjustment from -60 dB to +12 dB |
-| **Pan** | Stereo panning with constant-power law |
+| **Pan** | Stereo panning |
+
+**State beyond parameters:**
+
+| State | Description |
+|-------|-------------|
+| **Pan law** | Constant power or linear, set in the web UI and saved with the project |
 
 **Demonstrates:**
 - `WebViewHandler` for bidirectional IPC between Rust and JavaScript
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
+- A `State` field: set through the handler, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
 - React parameter binding via `useSyncExternalStore`
 - Circular knob with angular and linear drag modes

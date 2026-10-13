@@ -194,7 +194,7 @@ The `#[derive(Parameters)]` macro generates:
 - `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
-- `Default` implementation (when all required attributes are present)
+- `Default` implementation (when all required attributes are present; `State` fields and fields without an attribute get their own default)
 - Compile-time FNV-1a hash constants: `PARAM_GAIN_ID`, `PARAM_BYPASS_ID`
 - Compile-time collision detection for duplicate IDs
 
@@ -220,7 +220,7 @@ Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework ac
 - `db_log` - Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
 - `db_log_offset` - True logarithmic mapping for dB ranges (geometric mean at midpoint)
 
-Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter<E>`
+Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `EnumParameter<E>` with `#[parameter]`, another parameter struct with `#[nested]` and `State<T>` with `#[state]` (see [State Beyond Parameters](#state-beyond-parameters)). A field without an attribute is not a parameter and is not saved.
 
 #### Parameter Types
 
@@ -556,9 +556,92 @@ Loading follows these rules:
 
 The format is defined in one place, `beamer::core::state_format`.
 
+#### State Beyond Parameters
+
+Not everything a plugin has to remember is a number a host can automate: the path of a loaded sample, a table the user drew, a setting of the editor. Such values go into `State` fields of the parameter struct:
+
+```rust
+#[derive(Parameters)]
+pub struct SamplerParameters {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+    pub gain: FloatParameter,
+
+    #[state(id = "sample_path")]
+    pub sample_path: State<String>,
+}
+```
+
+A `State<T>` is saved and loaded with the parameters, under its id. Ids of states and parameters share one namespace, and like a parameter id a state id has to stay the same from one version of a plugin to the next.
+
+The value is set as a whole by host and UI threads and read by the audio thread through a reader:
+
+```rust
+// On a host or UI thread, for example in a WebView handler.
+parameters.sample_path.set(String::from("kick.wav"));
+let current: Arc<String> = parameters.sample_path.get();
+
+// In prepare(): the audio thread's end.
+fn prepare(&self, _: SampleRate) -> SamplerProcessor {
+    SamplerProcessor {
+        parameters: Arc::clone(&self.parameters),
+        sample_path: self.parameters.sample_path.reader(),
+        // ...
+    }
+}
+
+// In process(): takes no lock, does not allocate and does not free.
+if let Some(path) = self.sample_path.changed() {
+    // The value was set since the last call, by the plugin or by a loaded state.
+}
+let path = self.sample_path.current();
+```
+
+| Method | Thread | Description |
+|--------|--------|-------------|
+| `state.set(value)` | Host, UI | Replace the value |
+| `state.get()` | Host, UI | The current value as an `Arc<T>` |
+| `state.generation()` | Any | How often the value was set (a UI can poll this) |
+| `state.reader()` | Host (in `prepare()`) | Create the audio thread's reader |
+| `reader.changed()` | Audio | A value that was set since the last call, once |
+| `reader.latest()` | Audio | Take over a new value if there is one and return the current |
+| `reader.current()` | Audio | The value the reader took over last |
+
+**What `T` can be:** any type that derives serde's `Serialize` and `Deserialize`. The value is saved as JSON. A plugin without a serde dependency of its own derives through the re-export:
+
+```rust
+use beamer::serde::{Deserialize, Serialize};
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(crate = "beamer::serde")]
+pub struct Sample {
+    pub path: String,
+    pub root_note: u8,
+}
+```
+
+JSON cannot hold floats that are not finite (NaN, infinity): a value that contains one does not come back from a saved state. A `HashMap` is saved in a different order each time, so use a `BTreeMap` where the saved bytes should be stable.
+
+**Defaults:** `#[derive(Parameters)]` creates a state with `T::default()`. That is also the value it goes back to when a saved state has no entry for it. A struct whose `Default` is written by hand (because a parameter has no declarative attributes) creates its states itself, with `State::new(value)`: that value is then the default. It also initializes its fields without an attribute.
+
+**Data that is not saved:** A `Handover<T>` is the same hand-over without the saving, for data the plugin derives from its state, such as the decoded audio of a sample. A field without an attribute is not part of the parameters or the saved state, so a `Handover` can sit next to the parameters:
+
+```rust
+#[derive(Parameters)]
+pub struct SamplerParameters {
+    // ...
+    #[state(id = "sample_path")]
+    pub sample_path: State<String>,
+
+    // Set by a background thread that decoded the file.
+    pub decoded: Handover<Vec<f32>>,
+}
+```
+
+**Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps a setting in a `State`.
+
 #### Low-Level Parameters Trait
 
-For manual control, implement `Parameters` directly:
+For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`):
 
 ```rust
 pub trait Parameters: Send + Sync {
@@ -801,7 +884,7 @@ pub trait Processor: Send + 'static {
 }
 ```
 
-**State:** The state a host saves and restores is the state of the parameters. `#[derive(Parameters)]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods. State beyond the parameters is not supported at the moment.
+**State:** The state a host saves and restores is the state of the parameter struct: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[derive(Parameters)]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods.
 
 **When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
 

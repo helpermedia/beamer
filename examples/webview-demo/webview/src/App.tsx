@@ -1,10 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Slider from "./components/Slider";
 
 interface PluginInfo {
   name: string;
   version: string;
   framework: string;
+}
+
+// State beyond parameters: the plugin keeps the pan law in a State field.
+type PanLaw = "constant_power" | "linear";
+
+function isPanLaw(value: unknown): value is PanLaw {
+  return value === "constant_power" || value === "linear";
 }
 
 function App() {
@@ -22,6 +29,36 @@ function App() {
   };
 
   const closeAbout = () => setShowAbout(false);
+
+  const [panLaw, setPanLaw] = useState<PanLaw | null>(null);
+
+  // Read the pan law when the editor opens and keep following it: a host
+  // can change it behind the UI by loading a preset or a project.
+  useEffect(() => {
+    let mounted = true;
+    const read = () => {
+      __BEAMER__
+        .invoke("getPanLaw")
+        .then((law) => {
+          if (mounted && isPanLaw(law)) setPanLaw(law);
+        })
+        .catch((error) => console.error("getPanLaw failed:", error));
+    };
+    __BEAMER__.ready.then(read);
+    const timer = setInterval(read, 500);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const togglePanLaw = () => {
+    const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
+    __BEAMER__
+      .invoke("setPanLaw", next)
+      .then(() => setPanLaw(next))
+      .catch((error) => console.error("setPanLaw failed:", error));
+  };
 
   return (
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">
@@ -53,6 +90,14 @@ function App() {
         <Slider type="circular" paramId="gain" size={80} />
         <Slider type="circular" paramId="pan" size={80} />
       </div>
+
+      <button
+        onClick={togglePanLaw}
+        disabled={panLaw === null}
+        className="mt-6 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer disabled:cursor-default"
+      >
+        Pan law: {panLaw === "linear" ? "Linear" : "Constant power"}
+      </button>
     </div>
   );
 }

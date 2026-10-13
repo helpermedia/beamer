@@ -194,16 +194,20 @@ Both methods are called on the main thread.
 
 ### Example (from `webview-demo`)
 
+The handler of the demo holds the parameters of the plugin. They live in an `Arc` for the life of the instance, and the Processor uses the same ones, so what the web UI sets through the handler is what the audio thread reads. Here the handler reads and sets a `State` field, a setting that is saved with the plugin state without being a parameter (see [State Beyond Parameters](REFERENCE.md#state-beyond-parameters)):
+
 ```rust
 use beamer::prelude::*;
 
-struct DemoHandler;
+struct DemoHandler {
+    parameters: Arc<WebViewDemoParameters>,
+}
 
 impl WebViewHandler for DemoHandler {
     fn on_invoke(
         &self,
         method: &str,
-        _args: &[serde_json::Value],
+        args: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
         match method {
             "getInfo" => Ok(serde_json::json!({
@@ -211,43 +215,42 @@ impl WebViewHandler for DemoHandler {
                 "version": env!("CARGO_PKG_VERSION"),
                 "framework": "Beamer",
             })),
+            "getPanLaw" => serde_json::to_value(*self.parameters.pan_law.get())
+                .map_err(|error| error.to_string()),
+            "setPanLaw" => {
+                let law = args.first().cloned().ok_or("setPanLaw needs a pan law")?;
+                let law: PanLaw = serde_json::from_value(law).map_err(|error| error.to_string())?;
+                self.parameters.pan_law.set(law);
+                Ok(serde_json::Value::Null)
+            }
             _ => Err(format!("unknown method: {method}")),
         }
     }
 }
 ```
 
-The handler is provided by implementing `Descriptor::webview_handler()`:
+The handler is provided by implementing `Descriptor::webview_handler()`. The framework asks for it once, when the plugin instance is created:
 
 ```rust
-impl Descriptor for MyDescriptor {
+impl Descriptor for WebViewDemoDescriptor {
     // ...
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        Some(Arc::new(DemoHandler))
-    }
-}
-```
-
-The framework asks for the handler once, when the plugin instance is created. A handler that needs the parameters can hold them: they live in an `Arc` for the life of the instance, and the Processor uses the same ones.
-
-```rust
-struct MyHandler {
-    parameters: Arc<MyParameters>,
-}
-
-impl WebViewHandler for MyHandler {
-    // on_invoke and on_event read and set self.parameters.
-}
-
-impl Descriptor for MyDescriptor {
-    // ...
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        Some(Arc::new(MyHandler {
+        Some(Arc::new(DemoHandler {
             parameters: Arc::clone(&self.parameters),
         }))
     }
 }
 ```
+
+On the JavaScript side the UI asks for the value when it opens and sets it on a click:
+
+```javascript
+await __BEAMER__.ready;
+const law = await __BEAMER__.invoke("getPanLaw"); // "constant_power" or "linear"
+await __BEAMER__.invoke("setPanLaw", "linear");
+```
+
+A state that changes behind the UI, for example when the host loads a preset while the editor is open, is not pushed to JavaScript. A UI that has to follow it asks again on a timer, as the demo does. For a value that is expensive to send, the handler can expose `State::generation()`, which counts how often the value was set, and the UI asks for the value only when that number changed.
 
 ## Parameter Synchronization
 
