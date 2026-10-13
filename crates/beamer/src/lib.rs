@@ -107,6 +107,11 @@ pub use beamer_core as core;
 /// See [`beamer_core::setup`] for documentation and examples.
 pub use beamer_core::setup;
 
+// serde, for the types a plugin keeps in a `State`. A plugin without a
+// serde dependency of its own derives through this path:
+// `#[serde(crate = "beamer::serde")]`.
+pub use beamer_core::serde;
+
 #[cfg(feature = "vst3")]
 pub use beamer_vst3 as vst3_impl;
 
@@ -221,6 +226,8 @@ pub mod prelude {
         MidiCcConfig,
         // Parameter smoothing
         Smoother, SmoothingStyle,
+        // Values for the audio thread and state beyond parameters
+        Handover, HandoverReader, State,
         // Parameter group system
         GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID,
         // Range mapping
@@ -238,6 +245,8 @@ pub mod prelude {
         FourCharCode,
         // WebView support
         WebViewHandler, serde_json,
+        // For the types kept in a `State`
+        serde,
     };
 
     // Plugin configuration

@@ -34,6 +34,7 @@ pub mod bypass;
 pub mod conversion_buffers;
 pub mod config;
 pub mod gui;
+pub mod handover;
 pub mod error;
 pub mod midi;
 pub mod midi_cc_config;
@@ -50,6 +51,7 @@ pub mod process_context;
 pub mod sample;
 pub mod setup;
 pub mod smoothing;
+pub mod state;
 pub mod sysex_pool;
 pub mod types;
 pub mod webview_handle;
@@ -64,6 +66,7 @@ pub use config::{Config, FourCharCode};
 pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use gui::{GuiConstraints, GuiDelegate, NoGui};
+pub use handover::{Handover, HandoverReader};
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types
@@ -98,6 +101,7 @@ pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 pub use parameter_store::{params_to_init_json, NoParameters, ParameterStore};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
+pub use state::State;
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
@@ -116,3 +120,8 @@ pub use webview_handler::WebViewHandler;
 // Re-export serde_json so plugins can use WebViewHandler without adding
 // serde_json to their own Cargo.toml.
 pub use serde_json;
+
+// Re-export serde for the types a plugin keeps in a `State`. A plugin that
+// derives `Serialize` and `Deserialize` without a serde dependency of its
+// own adds `#[serde(crate = "beamer::serde")]` to the type.
+pub use serde;
