@@ -565,6 +565,8 @@ fn test_parameter_ids_are_unique() {
 
 Give one of the two parameters another id.
 
+The VST3 wrapper also refuses a parameter whose host id is one it uses for its own parameters: the MIDI CC parameters (`0x10000000` to `0x10000081`) and the program change parameter (`0x20000000`). The error names the parameter.
+
 #### State Serialization Format
 
 The state of a plugin is the state of its parameter struct. It is saved as a list of entries, one per field, each under a path. All numbers are little-endian:

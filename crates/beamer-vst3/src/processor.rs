@@ -65,6 +65,32 @@ const DATA_TYPE_MIDI_SYSEX: u32 = 0;
 // Program change parameter ID (for preset selection, distinct from MIDI CC range)
 const PROGRAM_CHANGE_PARAM_ID: u32 = 0x20000000;
 
+/// Check that no parameter of the plugin has an id this wrapper uses for
+/// its own parameters: the MIDI CC parameters and the program change.
+///
+/// The id of a parameter is a hash of its path, so it can land on one of
+/// them. The wrapper would then answer for its own parameter and the
+/// plugin's would be unreachable. The error names the parameter.
+fn check_reserved_ids(parameters: &dyn beamer_core::parameter_types::Parameters) -> Result<(), String> {
+    for parameter in parameters.iter() {
+        let id = parameter.id();
+        let reserved_for = if MidiCcState::is_midi_cc_parameter(id) {
+            "the MIDI CC parameters"
+        } else if id == PROGRAM_CHANGE_PARAM_ID {
+            "the program change parameter"
+        } else {
+            continue;
+        };
+        return Err(format!(
+            "parameter \"{}\" has the host id 0x{:08x}, which the VST3 wrapper uses for {}; give it another id",
+            parameter.info().string_id,
+            id,
+            reserved_for
+        ));
+    }
+    Ok(())
+}
+
 // Program list ID for factory presets
 const FACTORY_PRESETS_LIST_ID: i32 = 0;
 
@@ -973,10 +999,14 @@ where
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
 
-        // Two parameters with one id would be one parameter to the host.
-        // The reason also goes to standard error: a plugin has no logger
-        // unless its author installs one.
-        if let Err(error) = beamer_core::parameter_types::check_unique_ids(&*processor.parameters) {
+        // Two parameters with one id would be one parameter to the host,
+        // and so would a parameter with an id of the wrapper's own. The
+        // reason also goes to standard error: a plugin has no logger unless
+        // its author installs one.
+        let parameters: &dyn beamer_core::parameter_types::Parameters = &*processor.parameters;
+        let checked = beamer_core::parameter_types::check_unique_ids(parameters)
+            .and_then(|()| check_reserved_ids(parameters));
+        if let Err(error) = checked {
             log::error!("{}: {}", config.name, error);
             eprintln!("{}: {}", config.name, error);
             return None;

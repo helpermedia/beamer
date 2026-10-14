@@ -103,6 +103,68 @@ fn test_vst3_refuses_an_instance_with_a_clash() {
     assert!(<Fine as ComponentFactory>::create(&CONFIG).is_some());
 }
 
+/// A parameter whose id, the hash of `hvcbaeyv`, is the one the VST3
+/// wrapper uses for the parameter of MIDI CC 7.
+#[derive(Parameters)]
+struct MidiCcIdParameters {
+    #[parameter(id = "hvcbaeyv", name = "Volume", default = 0.0, range = 0.0..=1.0)]
+    value: FloatParameter,
+}
+
+/// A parameter whose id, the hash of `ukaqaxdz`, is the one the VST3
+/// wrapper uses for its program change parameter.
+#[derive(Parameters)]
+struct ProgramIdParameters {
+    #[parameter(id = "ukaqaxdz", name = "Program", default = 0.0, range = 0.0..=1.0)]
+    value: FloatParameter,
+}
+
+#[derive(Default, HasParameters)]
+struct MidiCcIdDescriptor {
+    #[parameters]
+    parameters: Arc<MidiCcIdParameters>,
+}
+
+impl Descriptor for MidiCcIdDescriptor {
+    type Setup = ();
+    type Processor = Silence;
+
+    fn prepare(&self, _: ()) -> Silence {
+        Silence
+    }
+}
+
+#[derive(Default, HasParameters)]
+struct ProgramIdDescriptor {
+    #[parameters]
+    parameters: Arc<ProgramIdParameters>,
+}
+
+impl Descriptor for ProgramIdDescriptor {
+    type Setup = ();
+    type Processor = Silence;
+
+    fn prepare(&self, _: ()) -> Silence {
+        Silence
+    }
+}
+
+#[test]
+fn test_vst3_refuses_an_id_it_uses_itself() {
+    type MidiCcId = Vst3Processor<MidiCcIdDescriptor, NoPresets<MidiCcIdParameters>>;
+    type ProgramId = Vst3Processor<ProgramIdDescriptor, NoPresets<ProgramIdParameters>>;
+
+    assert_eq!(fnv1a_hash("hvcbaeyv"), 0x1000_0007);
+    assert_eq!(fnv1a_hash("ukaqaxdz"), 0x2000_0000);
+
+    // The ids are unique within each plugin.
+    assert!(check_unique_ids(&MidiCcIdParameters::default()).is_ok());
+    assert!(check_unique_ids(&ProgramIdParameters::default()).is_ok());
+
+    assert!(<MidiCcId as ComponentFactory>::create(&CONFIG).is_none());
+    assert!(<ProgramId as ComponentFactory>::create(&CONFIG).is_none());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn test_au_refuses_an_instance_with_a_clash() {
