@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::build::get_version_info;
+use crate::build::bundle_version;
 use crate::util::{install_bundle, shorten_path, to_vst3_bundle_name, uninstall_bundle};
 
 /// Where an installed bundle lives, relative to the home directory.
@@ -33,7 +33,7 @@ pub fn bundle_vst3(
 ) -> Result<(), String> {
     // Get the version of the plugin package.
     let package_info = crate::util::find_package(package, workspace_root)?;
-    let (version_string, _version_int) = get_version_info(&package_info.version)?;
+    let version_string = bundle_version(&package_info.version)?;
 
     // Create bundle name (convert to CamelCase and add .vst3)
     let bundle_name = to_vst3_bundle_name(package);

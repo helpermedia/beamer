@@ -10,27 +10,48 @@ use crate::BundleConfig;
 
 /// The version of a bundle, from the version of its package.
 ///
-/// Returns the version as `major.minor.patch` and as Apple's version
-/// integer. A bundle version is made of numbers only, so a pre-release or
-/// build suffix of the package version (`1.0.0-rc.1`, `1.0.0+5`) is left
-/// out.
-pub fn get_version_info(version: &str) -> Result<(String, u32), String> {
+/// Returns the version as `major.minor.patch`. A bundle version is made of
+/// numbers only, so a pre-release or build suffix of the package version
+/// (`1.0.0-rc.1`, `1.0.0+5`) is left out.
+pub fn bundle_version(version: &str) -> Result<String, String> {
     let numbers = version.split(['-', '+']).next().unwrap_or(version);
 
-    // Parse version into major.minor.patch
     let parts: Vec<&str> = numbers.split('.').collect();
-    if parts.len() != 3 {
+    if parts.len() != 3 || parts.iter().any(|part| part.parse::<u32>().is_err()) {
         return Err(format!("Invalid version format: {}", version));
     }
 
-    let major: u32 = parts[0].parse().map_err(|_| "Invalid major version")?;
-    let minor: u32 = parts[1].parse().map_err(|_| "Invalid minor version")?;
-    let patch: u32 = parts[2].parse().map_err(|_| "Invalid patch version")?;
+    Ok(numbers.to_string())
+}
+
+/// The version of an Audio Unit bundle: as `major.minor.patch` and as
+/// Apple's version integer.
+///
+/// The integer is `(major << 16) | (minor << 8) | patch`, so the minor and
+/// the patch version must be at most 255 and the major version at most
+/// 65535. A larger number would run into its neighbour and give the
+/// component another version than the bundle.
+pub fn get_version_info(version: &str) -> Result<(String, u32), String> {
+    let numbers = bundle_version(version)?;
+
+    let parts: Vec<u32> = numbers
+        .split('.')
+        .map(|part| part.parse().map_err(|_| format!("Invalid version format: {}", version)))
+        .collect::<Result<_, _>>()?;
+    let (major, minor, patch) = (parts[0], parts[1], parts[2]);
+
+    if major > 0xffff || minor > 0xff || patch > 0xff {
+        return Err(format!(
+            "Version {} does not fit an Audio Unit version: the major version can be at most 65535, \
+             the minor and the patch version at most 255",
+            version
+        ));
+    }
 
     // Convert to Apple's version format: (major << 16) | (minor << 8) | patch
     let version_int = (major << 16) | (minor << 8) | patch;
 
-    Ok((numbers.to_string(), version_int))
+    Ok((numbers, version_int))
 }
 
 /// Extra rustc arguments for the plugin crate of an AU build.
@@ -790,6 +811,22 @@ mod tests {
 
         assert!(get_version_info("1.2").is_err());
         assert!(get_version_info("one.2.3").is_err());
+    }
+
+    #[test]
+    fn test_audio_unit_version_numbers_stay_in_their_fields() {
+        assert_eq!(get_version_info("65535.255.255"), Ok(("65535.255.255".to_string(), 0xffff_ffff)));
+
+        // Each of these would run into the field next to it.
+        assert!(get_version_info("1.0.256").is_err());
+        assert!(get_version_info("1.256.0").is_err());
+        assert!(get_version_info("65536.0.0").is_err());
+
+        // A VST3 bundle has no version integer and takes them.
+        assert_eq!(bundle_version("1.0.256"), Ok("1.0.256".to_string()));
+        assert_eq!(bundle_version("2.300.0-beta"), Ok("2.300.0".to_string()));
+        assert!(bundle_version("1.2").is_err());
+        assert!(bundle_version("1.x.3").is_err());
     }
 
     #[test]

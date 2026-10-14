@@ -14,7 +14,8 @@ xtask is the build tool of this workspace. It finds the plugin package by
 its name among the members of the workspace, wherever its folder is, and
 reads `Config.toml` and the optional `webview/` folder from that folder.
 The version of the package becomes the version of the bundle, without a
-pre-release or build suffix.
+pre-release or build suffix. An Audio Unit stores it as one number, so for
+AUv2 and AUv3 the minor and the patch version can be at most 255.
 
 ## Prerequisites
 
