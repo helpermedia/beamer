@@ -21,7 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use log::warn;
@@ -362,6 +362,10 @@ where
     /// A state was loaded: `process()` resets the parameter smoothers before
     /// its next block. They belong to the audio thread.
     smoothing_reset_requested: AtomicBool,
+    /// The `state_generation()` of the parameters that the host knows
+    /// about: at creation and after a load. Shared with the editor, which
+    /// tells the host when it changed.
+    known_state_generation: Arc<AtomicU64>,
     /// Marker for the plugin type and preset collection
     _marker: PhantomData<(P, Presets)>,
 }
@@ -416,6 +420,7 @@ where
         }
 
         let parameters = Arc::clone(plugin.parameters());
+        let known_state_generation = Arc::new(AtomicU64::new(parameters.state_generation()));
 
         Self {
             descriptor: RwLock::new(plugin),
@@ -444,6 +449,7 @@ where
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
+            known_state_generation,
             _marker: PhantomData,
         }
     }
@@ -1332,6 +1338,9 @@ where
                 // call makes them jump to the loaded values, so that those do
                 // not ramp in.
                 self.smoothing_reset_requested.store(true, Ordering::Release);
+                // A loaded state is one the host knows.
+                self.known_state_generation
+                    .store(self.parameters().state_generation(), Ordering::Relaxed);
                 kResultOk
             }
             Err(_) => kResultFalse,
@@ -2235,6 +2244,7 @@ where
                     component_handler,
                     self.webview_handler.clone(),
                     self.webview_events.clone(),
+                    Arc::clone(&self.known_state_generation),
                 )
             };
             let wrapper = vst3::ComWrapper::new(view);

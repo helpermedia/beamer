@@ -677,9 +677,11 @@ pub struct SamplerParameters {
 
 **Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps a setting in a `State`.
 
+**Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change. Audio Units have no such call.
+
 #### Low-Level Parameters Trait
 
-For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`):
+For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), and `ParameterStore::state_generation()` to return the sum of their `generation()`s:
 
 ```rust
 pub trait Parameters: Send + Sync {

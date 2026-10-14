@@ -3,14 +3,15 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::fmt::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
-use vst3::Steinberg::Vst::IComponentHandler;
+use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandler2, IComponentHandler2Trait};
 use vst3::Steinberg::*;
-use vst3::Class;
+use vst3::{Class, ComRef};
 
 /// Shared context between WebViewPlugView and its IPC callbacks.
 ///
@@ -26,6 +27,9 @@ struct IpcContext {
     webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEvents>,
+    /// The `state_generation()` of the parameters that the host knows
+    /// about, shared with the processor.
+    known_state_generation: Arc<AtomicU64>,
     /// Whether this view told the queue that an editor is open.
     events_open: bool,
     /// Cached parameter values from the last sync tick.
@@ -65,6 +69,27 @@ impl IpcContext {
     /// The script that delivers the events that wait for the editor.
     fn take_event_script(&self) -> Option<String> {
         self.events.as_ref()?.take_script()
+    }
+
+    /// Tell the host that the plugin state changed when a `State` field was
+    /// set since the last check: by the web UI or by any other thread.
+    /// Parameters do not count here: the host learns about their changes
+    /// through the edits.
+    fn report_state_change(&self) {
+        let generation = self.params.state_generation();
+        if self.known_state_generation.swap(generation, Ordering::Relaxed) == generation {
+            return;
+        }
+        // SAFETY: handler is null or a valid COM pointer the view holds a
+        // reference to.
+        let Some(handler) = (unsafe { ComRef::from_raw(self.handler) }) else {
+            return;
+        };
+        // A host without IComponentHandler2 cannot be told.
+        if let Some(handler) = handler.cast::<IComponentHandler2>() {
+            // SAFETY: handler is a valid COM pointer.
+            unsafe { handler.setDirty(1) };
+        }
     }
 }
 
@@ -124,6 +149,7 @@ impl WebViewPlugView {
         component_handler: *mut IComponentHandler,
         webview_handler: Option<Arc<dyn WebViewHandler>>,
         events: Option<WebViewEvents>,
+        known_state_generation: Arc<AtomicU64>,
     ) -> Self {
         let size = delegate.gui_size();
 
@@ -147,6 +173,7 @@ impl WebViewPlugView {
                 handler: component_handler,
                 webview_handler,
                 events,
+                known_state_generation,
                 events_open: false,
                 last_values,
                 webview: std::ptr::null(),
@@ -398,6 +425,8 @@ unsafe extern "C-unwind" fn sync_timer_fired(
     if let Some(script) = ipc.take_event_script() {
         webview.evaluate_js(&script);
     }
+
+    ipc.report_state_change();
 }
 
 #[allow(non_snake_case)]
@@ -818,6 +847,7 @@ mod tests {
             handler: std::ptr::null_mut(),
             webview_handler: None,
             events,
+            known_state_generation: Arc::new(AtomicU64::new(0)),
             events_open: false,
             last_values: Vec::new(),
             webview: std::ptr::null(),
@@ -863,6 +893,136 @@ mod tests {
             init_script(&NoParameters),
             "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\"})"
         );
+    }
+
+    /// A component handler of a host that counts the calls of setDirty.
+    #[derive(Default)]
+    struct DirtyRecorder {
+        dirty: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Class for DirtyRecorder {
+        type Interfaces = (IComponentHandler, IComponentHandler2);
+    }
+
+    impl vst3::Steinberg::Vst::IComponentHandlerTrait for DirtyRecorder {
+        unsafe fn beginEdit(&self, _id: vst3::Steinberg::Vst::ParamID) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn performEdit(
+            &self,
+            _id: vst3::Steinberg::Vst::ParamID,
+            _value: vst3::Steinberg::Vst::ParamValue,
+        ) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn endEdit(&self, _id: vst3::Steinberg::Vst::ParamID) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn restartComponent(&self, _flags: int32) -> tresult {
+            kResultOk
+        }
+    }
+
+    impl IComponentHandler2Trait for DirtyRecorder {
+        unsafe fn setDirty(&self, state: TBool) -> tresult {
+            if state != 0 {
+                self.dirty.fetch_add(1, Ordering::Relaxed);
+            }
+            kResultOk
+        }
+
+        unsafe fn requestOpenEditor(&self, _name: FIDString) -> tresult {
+            kNotImplemented
+        }
+
+        unsafe fn startGroupEdit(&self) -> tresult {
+            kNotImplemented
+        }
+
+        unsafe fn finishGroupEdit(&self) -> tresult {
+            kNotImplemented
+        }
+    }
+
+    /// The parameters of a plugin with one `State` field and no parameters.
+    #[derive(Default)]
+    struct OneState {
+        zoom: beamer_core::State<u32>,
+    }
+
+    impl ParameterStore for OneState {
+        fn count(&self) -> usize {
+            0
+        }
+
+        fn info(&self, _index: usize) -> Option<&beamer_core::ParameterInfo> {
+            None
+        }
+
+        fn get_normalized(&self, _id: u32) -> f64 {
+            0.0
+        }
+
+        fn set_normalized(&self, _id: u32, _value: f64) {}
+
+        fn normalized_to_string(&self, _id: u32, _normalized: f64) -> String {
+            String::new()
+        }
+
+        fn string_to_normalized(&self, _id: u32, _string: &str) -> Option<f64> {
+            None
+        }
+
+        fn normalized_to_plain(&self, _id: u32, normalized: f64) -> f64 {
+            normalized
+        }
+
+        fn plain_to_normalized(&self, _id: u32, plain: f64) -> f64 {
+            plain
+        }
+
+        fn state_generation(&self) -> u64 {
+            self.zoom.generation()
+        }
+    }
+
+    #[test]
+    fn test_view_tells_the_host_when_the_state_changed() {
+        let parameters = Arc::new(OneState::default());
+        let host = vst3::ComWrapper::new(DirtyRecorder::default());
+        let handler = host
+            .as_com_ref::<IComponentHandler>()
+            .expect("the recorder is an IComponentHandler")
+            .as_ptr();
+        let known = Arc::new(AtomicU64::new(parameters.state_generation()));
+        let ipc = IpcContext {
+            params: Arc::clone(&parameters) as Arc<dyn ParameterStore>,
+            handler,
+            known_state_generation: Arc::clone(&known),
+            ..context(None)
+        };
+        let dirty = || host.dirty.load(Ordering::Relaxed);
+
+        // A tick after nothing changed.
+        ipc.report_state_change();
+        assert_eq!(dirty(), 0);
+
+        // A tick after a State field was set, then one after nothing changed.
+        parameters.zoom.set(2);
+        ipc.report_state_change();
+        assert_eq!(dirty(), 1);
+        ipc.report_state_change();
+        assert_eq!(dirty(), 1);
+
+        // A state the host loaded is one it knows.
+        parameters.zoom.set(3);
+        known.store(parameters.state_generation(), Ordering::Relaxed);
+        ipc.report_state_change();
+        assert_eq!(dirty(), 1);
     }
 
     #[test]
