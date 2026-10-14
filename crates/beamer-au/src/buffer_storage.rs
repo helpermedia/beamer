@@ -634,22 +634,20 @@ mod tests {
         // The pointer remains valid for the entire test scope.
         storage.aux_outputs[0].push(unsafe { aux_output_buffer.as_ptr().add(4) as *mut f32 });
 
-        // Build slices
-        // SAFETY: Pointers are still valid (within test scope) and num_samples (4) matches
-        // what was pushed: 2 pointers × 4 samples each covers the 8-element test arrays.
-        let aux_input_slices = unsafe { storage.aux_input_slices(4) };
-        // SAFETY: Same justification as aux_input_slices - pointers valid, num_samples matches.
-        let aux_output_slices = unsafe { storage.aux_output_slices(4) };
+        // One aux bus with two channels in each direction.
+        assert_eq!(storage.aux_inputs.len(), 1);
+        assert_eq!(storage.aux_inputs[0].len(), 2);
+        assert_eq!(storage.aux_outputs.len(), 1);
+        assert_eq!(storage.aux_outputs[0].len(), 2);
 
-        // Verify aux input slices
-        assert_eq!(aux_input_slices.len(), 1); // One aux bus
-        assert_eq!(aux_input_slices[0].len(), 2); // Two channels
-        assert_eq!(aux_input_slices[0][0], &[1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(aux_input_slices[0][1], &[5.0, 6.0, 7.0, 8.0]);
-
-        // Verify aux output slices
-        assert_eq!(aux_output_slices.len(), 1); // One aux bus
-        assert_eq!(aux_output_slices[0].len(), 2); // Two channels
+        // SAFETY: The pointers point into the 8-element test arrays, which
+        // live for the whole test, and each channel covers 4 samples.
+        let channels: Vec<&[f32]> = storage.aux_inputs[0]
+            .iter()
+            .map(|&ptr| unsafe { std::slice::from_raw_parts(ptr, 4) })
+            .collect();
+        assert_eq!(channels[0], &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(channels[1], &[5.0, 6.0, 7.0, 8.0]);
     }
 
     #[test]
@@ -742,13 +740,12 @@ mod tests {
         );
 
         // Verify we can write to the output slices and they're backed by internal buffers
+        assert_eq!(storage.main_outputs.len(), 2);
+        // SAFETY: The pointers point into the internal buffers of the
+        // storage, which hold num_samples samples per channel.
         unsafe {
-            let mut slices = storage.output_slices(num_samples);
-            assert_eq!(slices.len(), 2);
-
-            // Write test data
-            slices[0][0] = 0.5;
-            slices[1][0] = -0.5;
+            *storage.main_outputs[0] = 0.5;
+            *storage.main_outputs[1] = -0.5;
         }
 
         // Verify the data is in the internal buffers

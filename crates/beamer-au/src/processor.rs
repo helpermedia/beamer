@@ -37,8 +37,8 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, Transport, WebViewEvents,
-    WebViewHandler,
+    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, WebViewEvents,
+    WebViewHandler, MAX_AUX_BUSES,
 };
 
 /// Generic AU processor wrapper.
@@ -189,239 +189,26 @@ where
         self.state.descriptor.output_bus_info(index)
     }
 
-    fn process(
+    fn process_block(
         &mut self,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-        num_samples: usize,
-    ) -> PluginResult<()> {
-        // Get processor and sample_rate from prepared state
-        let Some(Prepared {
-                processor,
-                sample_rate,
-                ..
-            }) = &mut self.state.prepared
-        else {
-            return Err(PluginError::ProcessingError("not prepared".to_string()));
-        };
-        let sample_rate = *sample_rate;
-
-        // Build Buffer from input/output slices
-        // The Buffer::new takes iterators, so we convert slices to iterators
-        let input_iter = inputs.iter().copied();
-        let output_iter = outputs.iter_mut().map(|s| &mut **s);
-        let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-        // Build AuxiliaryBuffers (empty for now - sidechain support is future work)
-        let mut aux = AuxiliaryBuffers::empty();
-
-        // Build ProcessContext with transport info
-        // For now, use empty transport. Transport extraction from AU is handled separately.
-        let transport = Transport::default();
-        let context = ProcessContext::new(sample_rate, num_samples, transport);
-
-        // Call the actual processor
-        processor.process(&mut buffer, &mut aux, &context);
-
-        Ok(())
-    }
-
-    fn process_f64(
-        &mut self,
-        inputs: &[&[f64]],
-        outputs: &mut [&mut [f64]],
-        num_samples: usize,
-    ) -> PluginResult<()> {
-        // Get processor, sample_rate and conversion_buffers from prepared state
-        let Some(Prepared {
-                processor,
-                sample_rate,
-                conversion_buffers,
-                ..
-            }) = &mut self.state.prepared
-        else {
-            return Err(PluginError::ProcessingError("not prepared".to_string()));
-        };
-        let sample_rate = *sample_rate;
-
-        // Check if processor supports native f64 processing
-        if processor.supports_double_precision() {
-            // Native f64 processing
-            let input_iter = inputs.iter().copied();
-            let output_iter = outputs.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-            let mut aux = AuxiliaryBuffers::empty();
-            let transport = Transport::default();
-            let context = ProcessContext::new(sample_rate, num_samples, transport);
-
-            processor.process_f64(&mut buffer, &mut aux, &context);
-        } else {
-            // Convert f64 → f32 using pre-allocated buffers, process, convert back
-            let conversion = conversion_buffers.as_mut().expect(
-                "conversion_buffers should be allocated when processor doesn't support f64",
-            );
-
-            // Convert f64 → f32 using pre-allocated input buffers
-            for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.main_input_mut(ch_idx) {
-                    for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
-                        buf[i] = sample as f32;
-                    }
-                }
-            }
-
-            // Build f32 buffer views for processing
-            let input_f32_slices: Vec<&[f32]> = conversion
-                .main_input_f32
-                .iter()
-                .map(|v| &v[..num_samples])
-                .collect();
-            let mut output_f32_slices: Vec<&mut [f32]> = conversion
-                .main_output_f32
-                .iter_mut()
-                .map(|v| &mut v[..num_samples])
-                .collect();
-
-            let input_iter = input_f32_slices.iter().copied();
-            let output_iter = output_f32_slices.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-            let mut aux = AuxiliaryBuffers::empty();
-            let transport = Transport::default();
-            let context = ProcessContext::new(sample_rate, num_samples, transport);
-
-            processor.process(&mut buffer, &mut aux, &context);
-
-            // Convert f32 → f64 back to output
-            for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
-                    for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
-                        *sample = buf[i] as f64;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn process_with_context_f64(
-        &mut self,
-        inputs: &[&[f64]],
-        outputs: &mut [&mut [f64]],
+        buffer: &mut Buffer<'_, f32>,
+        aux: &mut AuxiliaryBuffers<'_, f32>,
         context: &ProcessContext,
     ) -> PluginResult<()> {
-        // Get processor and conversion_buffers from prepared state
-        let Some(Prepared {
-                processor,
-                conversion_buffers,
-                ..
-            }) = &mut self.state.prepared
-        else {
-            return Err(PluginError::ProcessingError("not prepared".to_string()));
-        };
-
-        let num_samples = context.num_samples;
-
-        // Check if processor supports native f64 processing
-        if processor.supports_double_precision() {
-            // Native f64 processing
-            let input_iter = inputs.iter().copied();
-            let output_iter = outputs.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-            let mut aux = AuxiliaryBuffers::empty();
-            processor.process_f64(&mut buffer, &mut aux, context);
-        } else {
-            // Convert f64 → f32 using pre-allocated buffers, process, convert back
-            let conversion = conversion_buffers.as_mut().expect(
-                "conversion_buffers should be allocated when processor doesn't support f64",
-            );
-
-            // Convert f64 → f32 using pre-allocated input buffers
-            for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.main_input_mut(ch_idx) {
-                    for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
-                        buf[i] = sample as f32;
-                    }
-                }
-            }
-
-            // Build f32 buffer views for processing
-            let input_f32_slices: Vec<&[f32]> = conversion
-                .main_input_f32
-                .iter()
-                .map(|v| &v[..num_samples])
-                .collect();
-            let mut output_f32_slices: Vec<&mut [f32]> = conversion
-                .main_output_f32
-                .iter_mut()
-                .map(|v| &mut v[..num_samples])
-                .collect();
-
-            let input_iter = input_f32_slices.iter().copied();
-            let output_iter = output_f32_slices.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-            let mut aux = AuxiliaryBuffers::empty();
-            processor.process(&mut buffer, &mut aux, context);
-
-            // Convert f32 → f64 back to output
-            for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
-                    for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
-                        *sample = buf[i] as f64;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn process_with_aux(
-        &mut self,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-        aux_inputs: &[Vec<&[f32]>],
-        aux_outputs: &mut [Vec<&mut [f32]>],
-        context: &ProcessContext,
-    ) -> PluginResult<()> {
-        // Get processor from prepared state
         let Some(Prepared { processor, .. }) = &mut self.state.prepared else {
             return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
 
-        let num_samples = context.num_samples;
-
-        // Build Buffer from input/output slices
-        let input_iter = inputs.iter().copied();
-        let output_iter = outputs.iter_mut().map(|s| &mut **s);
-        let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
-
-        // Build AuxiliaryBuffers from aux input/output slices
-        let aux_input_iter = aux_inputs.iter().map(|bus| bus.iter().copied());
-        let aux_output_iter = aux_outputs
-            .iter_mut()
-            .map(|bus| bus.iter_mut().map(|s| &mut **s));
-        let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
-
-        // Call the actual processor
-        processor.process(&mut buffer, &mut aux, context);
-
+        processor.process(buffer, aux, context);
         Ok(())
     }
 
-    fn process_with_aux_f64(
+    fn process_block_f64(
         &mut self,
-        inputs: &[&[f64]],
-        outputs: &mut [&mut [f64]],
-        aux_inputs: &[Vec<&[f64]>],
-        aux_outputs: &mut [Vec<&mut [f64]>],
+        buffer: &mut Buffer<'_, f64>,
+        aux: &mut AuxiliaryBuffers<'_, f64>,
         context: &ProcessContext,
     ) -> PluginResult<()> {
-        // Get processor and conversion_buffers from prepared state
         let Some(Prepared {
                 processor,
                 conversion_buffers,
@@ -431,102 +218,121 @@ where
             return Err(PluginError::ProcessingError("not prepared".to_string()));
         };
 
-        let num_samples = context.num_samples;
-
-        // Check if processor supports native f64 processing
         if processor.supports_double_precision() {
-            // Native f64 processing
-            let input_iter = inputs.iter().copied();
-            let output_iter = outputs.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
+            processor.process_f64(buffer, aux, context);
+            return Ok(());
+        }
 
-            let aux_input_iter = aux_inputs.iter().map(|bus| bus.iter().copied());
-            let aux_output_iter = aux_outputs
-                .iter_mut()
-                .map(|bus| bus.iter_mut().map(|s| &mut **s));
-            let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
+        // Convert f64 to f32 in the buffers allocated when the plugin was
+        // prepared, process and convert back. Nothing here allocates.
+        let conversion = conversion_buffers.as_mut().ok_or_else(|| {
+            PluginError::ProcessingError("no conversion buffers for f64 processing".to_string())
+        })?;
+        let num_samples = buffer.num_samples();
 
-            processor.process_f64(&mut buffer, &mut aux, context);
-        } else {
-            // Convert f64 → f32 using pre-allocated buffers, process, convert back
-            let conversion = conversion_buffers.as_mut().expect(
-                "conversion_buffers should be allocated when processor doesn't support f64",
-            );
-
-            // Convert main inputs f64 → f32
-            for (ch_idx, input_ch) in inputs.iter().enumerate() {
-                if let Some(buf) = conversion.main_input_mut(ch_idx) {
-                    for (i, &sample) in input_ch.iter().take(num_samples).enumerate() {
-                        buf[i] = sample as f32;
+        for (ch, input) in buffer.inputs().enumerate() {
+            if let Some(converted) = conversion.main_input_mut(ch) {
+                for (to, from) in converted.iter_mut().zip(input) {
+                    *to = *from as f32;
+                }
+            }
+        }
+        // Walk the buses by index, so that a bus after an unconnected one
+        // keeps its own conversion buffers.
+        for bus_index in 0..aux.num_input_buses() {
+            let Some(bus) = aux.input(bus_index) else {
+                continue;
+            };
+            for (ch, input) in bus.iter_inputs().enumerate() {
+                if let Some(converted) = conversion.aux_input_mut(bus_index, ch, num_samples) {
+                    for (to, from) in converted.iter_mut().zip(input) {
+                        *to = *from as f32;
                     }
                 }
             }
+        }
 
-            // Convert aux inputs f64 → f32
-            for (bus_idx, bus) in aux_inputs.iter().enumerate() {
-                for (ch_idx, ch) in bus.iter().enumerate() {
-                    if let Some(buf) = conversion.aux_input_mut(bus_idx, ch_idx, num_samples)
-                    {
-                        for (i, &sample) in ch.iter().take(num_samples).enumerate() {
-                            buf[i] = sample as f32;
-                        }
+        // The processor starts from what the host's output buffers hold, as
+        // in the 32-bit path, where it writes into them directly. They are
+        // silent when there is no main input.
+        for (ch, output) in buffer.outputs_mut().enumerate() {
+            if let Some(converted) = conversion.main_output_mut(ch) {
+                for (to, from) in converted.iter_mut().zip(output.iter()) {
+                    *to = *from as f32;
+                }
+            }
+        }
+        for bus_index in 0..aux.num_output_buses() {
+            let Some(mut bus) = aux.output(bus_index) else {
+                continue;
+            };
+            for (ch, output) in bus.iter_outputs().enumerate() {
+                if let Some(converted) = conversion.aux_output_mut(bus_index, ch, num_samples) {
+                    for (to, from) in converted.iter_mut().zip(output.iter()) {
+                        *to = *from as f32;
                     }
                 }
             }
+        }
 
-            // Build f32 slices for processing
-            let input_f32_slices: Vec<&[f32]> = conversion
+        // The channels the host connected on each bus. The processor sees
+        // only those, as in the 32-bit path, and not a channel holding the
+        // samples of the last block in which it was connected.
+        let main_input_channels = buffer.num_input_channels();
+        let main_output_channels = buffer.num_output_channels();
+        let mut aux_input_channels = [0usize; MAX_AUX_BUSES];
+        for (bus_index, channels) in aux_input_channels.iter_mut().enumerate() {
+            *channels = aux.input(bus_index).map_or(0, |bus| bus.num_channels());
+        }
+        let mut aux_output_channels = [0usize; MAX_AUX_BUSES];
+        for (bus_index, channels) in aux_output_channels.iter_mut().enumerate() {
+            *channels = aux.output(bus_index).map_or(0, |bus| bus.num_channels());
+        }
+
+        {
+            let main_inputs = conversion
                 .main_input_f32
                 .iter()
-                .map(|v| &v[..num_samples])
-                .collect();
-            let mut output_f32_slices: Vec<&mut [f32]> = conversion
+                .take(main_input_channels)
+                .map(|ch| &ch[..num_samples]);
+            let main_outputs = conversion
                 .main_output_f32
                 .iter_mut()
-                .map(|v| &mut v[..num_samples])
-                .collect();
-
-            // Build aux f32 slices
-            let aux_input_f32_slices: Vec<Vec<&[f32]>> = conversion
+                .take(main_output_channels)
+                .map(|ch| &mut ch[..num_samples]);
+            let aux_inputs = conversion
                 .aux_input_f32
                 .iter()
-                .map(|bus| bus.iter().map(|ch| &ch[..num_samples]).collect())
-                .collect();
-            let mut aux_output_f32_slices: Vec<Vec<&mut [f32]>> = conversion
+                .zip(aux_input_channels)
+                .map(|(bus, channels)| bus.iter().take(channels).map(|ch| &ch[..num_samples]));
+            let aux_outputs = conversion
                 .aux_output_f32
                 .iter_mut()
-                .map(|bus| bus.iter_mut().map(|ch| &mut ch[..num_samples]).collect())
-                .collect();
+                .zip(aux_output_channels)
+                .map(|(bus, channels)| {
+                    bus.iter_mut().take(channels).map(|ch| &mut ch[..num_samples])
+                });
 
-            // Build Buffer and AuxiliaryBuffers
-            let input_iter = input_f32_slices.iter().copied();
-            let output_iter = output_f32_slices.iter_mut().map(|s| &mut **s);
-            let mut buffer = Buffer::new(input_iter, output_iter, num_samples);
+            let mut buffer_f32 = Buffer::new(main_inputs, main_outputs, num_samples);
+            let mut aux_f32 = AuxiliaryBuffers::new(aux_inputs, aux_outputs, num_samples);
+            processor.process(&mut buffer_f32, &mut aux_f32, context);
+        }
 
-            let aux_input_iter = aux_input_f32_slices.iter().map(|bus| bus.iter().copied());
-            let aux_output_iter = aux_output_f32_slices
-                .iter_mut()
-                .map(|bus| bus.iter_mut().map(|s| &mut **s));
-            let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
-
-            processor.process(&mut buffer, &mut aux, context);
-
-            // Convert main outputs f32 → f64
-            for (ch_idx, output_ch) in outputs.iter_mut().enumerate() {
-                if let Some(buf) = conversion.main_output_f32.get(ch_idx) {
-                    for (i, sample) in output_ch.iter_mut().take(num_samples).enumerate() {
-                        *sample = buf[i] as f64;
-                    }
+        for (ch, output) in buffer.outputs_mut().enumerate() {
+            if let Some(converted) = conversion.main_output(ch) {
+                for (to, from) in output.iter_mut().zip(converted) {
+                    *to = *from as f64;
                 }
             }
-
-            // Convert aux outputs f32 → f64
-            for (bus_idx, bus) in aux_outputs.iter_mut().enumerate() {
-                for (ch_idx, ch) in bus.iter_mut().enumerate() {
-                    if let Some(buf) = conversion.aux_output(bus_idx, ch_idx, num_samples) {
-                        for (i, sample) in ch.iter_mut().take(num_samples).enumerate() {
-                            *sample = buf[i] as f64;
-                        }
+        }
+        for bus_index in 0..aux.num_output_buses() {
+            let Some(mut bus) = aux.output(bus_index) else {
+                continue;
+            };
+            for (ch, output) in bus.iter_outputs().enumerate() {
+                if let Some(converted) = conversion.aux_output(bus_index, ch, num_samples) {
+                    for (to, from) in output.iter_mut().zip(converted) {
+                        *to = *from as f64;
                     }
                 }
             }
@@ -576,7 +382,7 @@ where
         self.state.midi_cc_state()
     }
 
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut crate::render::MidiBuffer) {
+    fn process_midi(&mut self, input: &mut [MidiEvent], output: &mut crate::render::MidiBuffer) {
         use beamer_core::MidiEventKind;
 
         // Check if we have factory presets for automatic MIDI PC mapping
@@ -594,7 +400,7 @@ where
         else {
             // Not prepared - pass through events unchanged
             for event in input {
-                let _ = output.push(event.clone());
+                let _ = output.push(std::mem::take(event));
             }
             return;
         };
@@ -625,25 +431,23 @@ where
             });
 
             if has_preset_pc {
-                // Filter input: apply presets for matching PCs, pass through others
-                let filtered: Vec<MidiEvent> = input
-                    .iter()
-                    .filter_map(|event| {
-                        if let MidiEventKind::ProgramChange(pc) = &event.event {
-                            if (pc.program as usize) < preset_count {
-                                // Apply the factory preset
-                                Presets::apply(pc.program as usize, parameters);
-                                // Filter out this event - it's been handled
-                                return None;
-                            }
+                // Apply the presets of the matching program changes and move
+                // the other events to the front, in their order. This works
+                // in the render call's own buffer, without allocating.
+                let mut kept = 0;
+                for index in 0..input.len() {
+                    if let MidiEventKind::ProgramChange(pc) = &input[index].event {
+                        if (pc.program as usize) < preset_count {
+                            Presets::apply(pc.program as usize, parameters);
+                            continue;
                         }
-                        // Pass through all other events (including out-of-range PCs)
-                        Some(event.clone())
-                    })
-                    .collect();
+                    }
+                    input.swap(kept, index);
+                    kept += 1;
+                }
 
                 // Process remaining events through the plugin
-                processor.process_midi(&filtered, core_output);
+                processor.process_midi(&input[..kept], core_output);
 
                 // Move events to AU's MidiBuffer (avoids cloning Box<SysEx>).
                 for event in core_output.drain() {
@@ -1174,10 +978,10 @@ mod tests {
         set_gain_normalized(&mut processor, 1.0);
 
         // Send PC 1 (Quiet preset: gain = 0.25)
-        let input = vec![MidiEvent::program_change(0, 0, 1)];
+        let mut input = vec![MidiEvent::program_change(0, 0, 1)];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // PC event should be filtered out (preset was applied)
         assert_eq!(output.len(), 0, "PC event should be filtered out");
@@ -1200,10 +1004,10 @@ mod tests {
         let initial_norm = get_gain_normalized(&processor);
 
         // Send PC 10 (out of range - only 3 presets)
-        let input = vec![MidiEvent::program_change(0, 0, 10)];
+        let mut input = vec![MidiEvent::program_change(0, 0, 10)];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // Out-of-range PC should pass through
         assert_eq!(output.len(), 1, "Out-of-range PC should pass through");
@@ -1228,14 +1032,14 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Send control change events
-        let input = vec![
+        let mut input = vec![
             MidiEvent::control_change(0, 0, 1, 0.5),
             MidiEvent::control_change(10, 0, 7, 0.8),
             MidiEvent::control_change(20, 0, 10, 0.5),
         ];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // All events should pass through
         assert_eq!(output.len(), 3, "Non-PC events should pass through");
@@ -1246,7 +1050,7 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Mix of events: CC, valid PC, CC, invalid PC, CC
-        let input = vec![
+        let mut input = vec![
             MidiEvent::control_change(0, 0, 1, 0.5),
             MidiEvent::program_change(0, 0, 2), // Boost preset (valid)
             MidiEvent::control_change(10, 0, 7, 0.8),
@@ -1255,7 +1059,7 @@ mod tests {
         ];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // 5 input events, but valid PC (program 2) should be filtered
         // Remaining: CC, CC, PC(50), CC = 4 events
@@ -1282,10 +1086,10 @@ mod tests {
         set_gain_normalized(&mut processor, 0.3);
 
         // Send PC 0 (Unity preset: gain = 0.5)
-        let input = vec![MidiEvent::program_change(0, 0, 0)];
+        let mut input = vec![MidiEvent::program_change(0, 0, 0)];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // PC should be filtered
         assert_eq!(output.len(), 0);
@@ -1304,14 +1108,14 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Send multiple PC events - last valid one should win
-        let input = vec![
+        let mut input = vec![
             MidiEvent::program_change(0, 0, 0),  // Unity (0.5)
             MidiEvent::program_change(10, 0, 1), // Quiet (0.25)
             MidiEvent::program_change(20, 0, 2), // Boost (0.75) - last, should win
         ];
         let mut output = MidiBuffer::with_capacity(16);
 
-        processor.process_midi(&input, &mut output);
+        processor.process_midi(&mut input, &mut output);
 
         // All PC events should be filtered
         assert_eq!(output.len(), 0);
@@ -1331,7 +1135,9 @@ mod tests {
 
     use crate::buffer_storage::ProcessBufferStorage;
     use crate::buffers::{AudioBuffer, AudioBufferList};
-    use crate::render::{create_render_block_f32, AudioTimeStamp, RenderBlockTrait, SMPTETime};
+    use crate::render::{
+        create_render_block_f32, create_render_block_f64, AudioTimeStamp, RenderBlockTrait, SMPTETime,
+    };
     use crate::shared_state::SharedState;
     use std::sync::{Arc, Mutex};
 
@@ -1507,6 +1313,369 @@ mod tests {
             render(block.as_ref(), Some(&mut input), &mut output),
             [REALTIME_VALUE; 2]
         );
+    }
+
+    /// Counts the heap allocations of the thread that asks for it.
+    mod allocations {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            /// Allocations counted on this thread, `None` while not counting.
+            static COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+        }
+
+        pub struct Counting;
+
+        // SAFETY: Every call is passed on to the system allocator unchanged.
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                // A thread that ends may have dropped its counter already.
+                let _ = COUNT.try_with(|count| {
+                    if let Some(n) = count.get() {
+                        count.set(Some(n + 1));
+                    }
+                });
+                // SAFETY: The caller's guarantees for `alloc` are passed on.
+                unsafe { System.alloc(layout) }
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                // SAFETY: The caller's guarantees for `dealloc` are passed on.
+                unsafe { System.dealloc(ptr, layout) }
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                let _ = COUNT.try_with(|count| {
+                    if let Some(n) = count.get() {
+                        count.set(Some(n + 1));
+                    }
+                });
+                // SAFETY: The caller's guarantees for `realloc` are passed on.
+                unsafe { System.realloc(ptr, layout, new_size) }
+            }
+        }
+
+        #[global_allocator]
+        static ALLOCATOR: Counting = Counting;
+
+        /// How many allocations `f` makes on this thread.
+        pub fn count(f: impl FnOnce()) -> usize {
+            COUNT.with(|count| count.set(Some(0)));
+            f();
+            COUNT.with(|count| count.replace(None)).unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn test_render_call_does_not_allocate() {
+        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+
+        // The first call may set up what stays for the life of the block.
+        render(block.as_ref(), Some(&mut input), &mut output);
+
+        let allocations = allocations::count(|| {
+            for _ in 0..8 {
+                render(block.as_ref(), Some(&mut input), &mut output);
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    /// A plugin whose processor doubles its input, in f32 only.
+    #[derive(Default)]
+    struct DoublingPlugin {
+        parameters: Arc<TestParameters>,
+    }
+
+    struct DoublingProcessor;
+
+    impl HasParameters for DoublingPlugin {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Arc<Self::Parameters> {
+            &self.parameters
+        }
+    }
+
+    impl Descriptor for DoublingPlugin {
+        type Setup = ();
+        type Processor = DoublingProcessor;
+
+        fn prepare(&self, _: ()) -> Self::Processor {
+            DoublingProcessor
+        }
+    }
+
+    impl Processor for DoublingProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut Buffer,
+            _aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            for (input, output) in buffer.zip_channels() {
+                for (from, to) in input.iter().zip(output) {
+                    *to = from * 2.0;
+                }
+            }
+        }
+    }
+
+    /// A stereo AudioBufferList of 64-bit samples with its sample memory.
+    #[repr(C)]
+    struct StereoList64 {
+        number_buffers: u32,
+        buffers: [AudioBuffer; 2],
+        samples: [[f64; FRAMES]; 2],
+    }
+
+    impl StereoList64 {
+        fn filled(value: f64) -> Box<Self> {
+            let buffer = AudioBuffer {
+                number_channels: 1,
+                data_byte_size: (FRAMES * 8) as u32,
+                data: std::ptr::null_mut(),
+            };
+            let mut list = Box::new(Self {
+                number_buffers: 2,
+                buffers: [buffer, buffer],
+                samples: [[value; FRAMES]; 2],
+            });
+            for channel in 0..2 {
+                list.buffers[channel].data = list.samples[channel].as_mut_ptr().cast();
+            }
+            list
+        }
+
+        fn as_list(&mut self) -> *mut AudioBufferList {
+            (self as *mut Self).cast()
+        }
+    }
+
+    #[test]
+    fn test_render_call_with_events_does_not_allocate() {
+        use crate::render::test_events::{link, midi_event, parameter_event_at};
+        use crate::render::AURenderEventType;
+
+        let plugin = boxed(AuProcessor::<TestPlugin, TestPresets>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+
+        // More parameter changes than the standard library's stable sort
+        // sorts in its stack buffer, in reverse order, a few ramps, notes
+        // and a program change that selects a factory preset.
+        let gain = u64::from(gain_id());
+        let mut events = Vec::new();
+        for i in 0..512 {
+            let time = (FRAMES - 1 - i % FRAMES) as i64;
+            events.push(parameter_event_at(AURenderEventType::Parameter as u8, time, gain, -6.0, 0));
+        }
+        for i in 0..4 {
+            let time = (i * 8) as i64;
+            events.push(parameter_event_at(AURenderEventType::ParameterRamp as u8, time, gain, -3.0, 16));
+        }
+        events.push(midi_event(4, [0x90, 60, 100]));
+        events.push(midi_event(2, [0xC0, 1, 0]));
+        events.push(midi_event(40, [0x80, 60, 0]));
+        let list = link(&mut events);
+
+        let render_with_events = |input: &mut StereoList, output: &mut StereoList| {
+            let timestamp = timestamp();
+            let mut action_flags = 0u32;
+            let status = block.process(
+                &mut action_flags,
+                &timestamp,
+                FRAMES as u32,
+                0,
+                output.as_list(),
+                list,
+                std::ptr::null(),
+                input.as_list().cast_const(),
+                None,
+                None,
+            );
+            assert_eq!(status, 0);
+        };
+
+        render_with_events(&mut input, &mut output);
+        let allocations = allocations::count(|| {
+            for _ in 0..8 {
+                render_with_events(&mut input, &mut output);
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn test_f64_render_converts_for_an_f32_processor_without_allocating() {
+        let plugin = boxed(AuProcessor::<DoublingPlugin>::new());
+        let bus_config = stereo_bus_config();
+        plugin
+            .lock()
+            .unwrap()
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .expect("prepare");
+        let parameters = plugin.lock().unwrap().shared_parameters();
+        let storage = ProcessBufferStorage::<f64>::allocate_from_config(&bus_config, FRAMES);
+        let block = create_render_block_f64(
+            Arc::clone(&plugin),
+            parameters,
+            Arc::new(SharedState::default()),
+            storage,
+            FRAMES as u32,
+            44100.0,
+        );
+
+        let mut input = StereoList64::filled(0.25);
+        input.samples[1][FRAMES - 1] = -0.5;
+        let mut output = StereoList64::filled(0.0);
+        let render = |input: &mut StereoList64, output: &mut StereoList64| {
+            let timestamp = timestamp();
+            let mut action_flags = 0u32;
+            let status = block.process(
+                &mut action_flags,
+                &timestamp,
+                FRAMES as u32,
+                0,
+                output.as_list(),
+                std::ptr::null(),
+                std::ptr::null(),
+                input.as_list().cast_const(),
+                None,
+                None,
+            );
+            assert_eq!(status, 0);
+        };
+
+        render(&mut input, &mut output);
+        assert_eq!(output.samples[0][0], 0.5);
+        assert_eq!(output.samples[1][FRAMES - 1], -1.0);
+
+        let allocations = allocations::count(|| {
+            for _ in 0..8 {
+                render(&mut input, &mut output);
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn test_f64_conversion_starts_from_silence_without_main_input() {
+        let mut plugin = AuProcessor::<DoublingPlugin>::new();
+        plugin
+            .allocate_render_resources(44100.0, FRAMES as u32, &stereo_bus_config(), ProcessMode::Realtime)
+            .expect("prepare");
+        let context = ProcessContext::with_empty_transport(44100.0, FRAMES);
+        let input = [0.25f64; FRAMES];
+        let mut left = [0.0f64; FRAMES];
+        let mut right = [0.0f64; FRAMES];
+
+        let mut buffer = Buffer::new([&input[..], &input[..]], [&mut left[..], &mut right[..]], FRAMES);
+        plugin
+            .process_block_f64(&mut buffer, &mut AuxiliaryBuffers::empty(), &context)
+            .expect("process");
+        assert_eq!(left, [0.5; FRAMES]);
+
+        // Without main input the render call silences the outputs first, and
+        // the processor gets no input channels and these silent outputs.
+        left.fill(0.0);
+        right.fill(0.0);
+        let mut buffer = Buffer::new(std::iter::empty(), [&mut left[..], &mut right[..]], FRAMES);
+        plugin
+            .process_block_f64(&mut buffer, &mut AuxiliaryBuffers::empty(), &context)
+            .expect("process");
+        assert_eq!(left, [0.0; FRAMES]);
+        assert_eq!(right, [0.0; FRAMES]);
+    }
+
+    /// A plugin with two sidechains whose processor plays the second one
+    /// when only that one is connected.
+    #[derive(Default)]
+    struct SecondSidechainPlugin {
+        parameters: Arc<TestParameters>,
+    }
+
+    struct SecondSidechainProcessor;
+
+    impl HasParameters for SecondSidechainPlugin {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Arc<Self::Parameters> {
+            &self.parameters
+        }
+    }
+
+    impl Descriptor for SecondSidechainPlugin {
+        type Setup = ();
+        type Processor = SecondSidechainProcessor;
+
+        fn prepare(&self, _: ()) -> Self::Processor {
+            SecondSidechainProcessor
+        }
+
+        fn input_bus_count(&self) -> usize {
+            3
+        }
+
+        fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+            match index {
+                0 => Some(BusInfo::mono("Input")),
+                1 => Some(BusInfo::aux("First", 1)),
+                2 => Some(BusInfo::aux("Second", 1)),
+                _ => None,
+            }
+        }
+    }
+
+    impl Processor for SecondSidechainProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut Buffer,
+            aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            let output = buffer.output(0);
+            match (aux.input(0), aux.input(1)) {
+                (None, Some(second)) => output.copy_from_slice(second.input(0)),
+                _ => output.fill(-1.0),
+            }
+        }
+    }
+
+    #[test]
+    fn test_f64_conversion_keeps_a_sidechain_after_an_unconnected_one() {
+        let mut plugin = AuProcessor::<SecondSidechainPlugin>::new();
+        let bus_config = CachedBusConfig::new(
+            vec![
+                CachedBusInfo::new(1, BusType::Main),
+                CachedBusInfo::new(1, BusType::Aux),
+                CachedBusInfo::new(1, BusType::Aux),
+            ],
+            vec![CachedBusInfo::new(1, BusType::Main)],
+        );
+        plugin
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .expect("prepare");
+
+        let main_input = [0.0f64; FRAMES];
+        let second = [0.75f64; FRAMES];
+        let mut main_output = [0.0f64; FRAMES];
+        let mut buffer = Buffer::new([&main_input[..]], [&mut main_output[..]], FRAMES);
+        // The host connected the second sidechain only.
+        let mut aux = AuxiliaryBuffers::new(
+            [Vec::new(), vec![&second[..]]],
+            std::iter::empty::<[&mut [f64]; 0]>(),
+            FRAMES,
+        );
+        let context = ProcessContext::with_empty_transport(44100.0, FRAMES);
+        plugin
+            .process_block_f64(&mut buffer, &mut aux, &context)
+            .expect("process");
+
+        assert_eq!(main_output, [0.75; FRAMES]);
     }
 
     #[test]

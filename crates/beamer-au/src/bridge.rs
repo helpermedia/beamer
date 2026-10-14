@@ -818,6 +818,9 @@ fn prepare_instance(
     c_bus_config: &BeamerAuBusConfig,
     rendering_offline: bool,
 ) -> i32 {
+    // What the render calls of the previous setup had to drop.
+    handle.shared.log_render_warnings();
+
     if sample_rate <= 0.0 || sample_rate > MAX_SAMPLE_RATE || !sample_rate.is_finite() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
@@ -998,6 +1001,9 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer
         // from beamer_au_create_instance that hasn't been destroyed.
         let handle = unsafe { &*instance };
+
+        // What the render calls of this setup had to drop.
+        handle.shared.log_render_warnings();
 
         // Use try_write() to avoid blocking if render is in progress.
         // This prevents a TOCTOU race condition where we could deallocate

@@ -18,6 +18,46 @@ pub(crate) struct SharedState {
     reset_requested: AtomicBool,
     /// A state was loaded: the smoothers have to jump to the new values.
     smoothing_reset_requested: AtomicBool,
+    /// What went wrong in render calls since a host thread last looked, as
+    /// bits of `RenderWarning`. The audio thread does not log: a host
+    /// thread logs them when the plugin is prepared again or released.
+    render_warnings: AtomicU32,
+}
+
+/// Something a render call had to drop, reported later on a host thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum RenderWarning {
+    /// More MIDI input in one buffer than the buffer holds.
+    MidiInputOverflow = 1,
+    /// More MIDI output in one buffer than the buffer holds.
+    MidiOutputOverflow = 2,
+    /// More parameter events in one buffer than the buffer holds.
+    ParameterEventOverflow = 4,
+    /// An event list that did not end, possibly a damaged one.
+    EventListTooLong = 8,
+}
+
+impl RenderWarning {
+    const ALL: [RenderWarning; 4] = [
+        RenderWarning::MidiInputOverflow,
+        RenderWarning::MidiOutputOverflow,
+        RenderWarning::ParameterEventOverflow,
+        RenderWarning::EventListTooLong,
+    ];
+
+    fn message(self) -> &'static str {
+        match self {
+            RenderWarning::MidiInputOverflow => "MIDI input events were dropped: more than one buffer holds",
+            RenderWarning::MidiOutputOverflow => "MIDI output events were dropped: more than one buffer holds",
+            RenderWarning::ParameterEventOverflow => {
+                "parameter events were dropped: more than one buffer holds"
+            }
+            RenderWarning::EventListTooLong => {
+                "an event list exceeded the maximum length and was cut, possibly a damaged one"
+            }
+        }
+    }
 }
 
 impl SharedState {
@@ -64,11 +104,49 @@ impl SharedState {
     pub(crate) fn clear_reset_request(&self) {
         self.reset_requested.store(false, Ordering::Release);
     }
+
+    /// Note a warning of a render call. For the audio thread: one atomic
+    /// operation, no allocation.
+    pub(crate) fn note_render_warning(&self, warning: RenderWarning) {
+        self.render_warnings.fetch_or(warning as u32, Ordering::Relaxed);
+    }
+
+    /// Take the warnings of the render calls since the last call.
+    pub(crate) fn take_render_warnings(&self) -> Vec<RenderWarning> {
+        let bits = self.render_warnings.swap(0, Ordering::Relaxed);
+        RenderWarning::ALL
+            .into_iter()
+            .filter(|warning| bits & (*warning as u32) != 0)
+            .collect()
+    }
+
+    /// Log the warnings of the render calls since the last call. For host
+    /// threads.
+    pub(crate) fn log_render_warnings(&self) {
+        for warning in self.take_render_warnings() {
+            log::warn!("{}", warning.message());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_render_warnings_are_taken_once() {
+        let shared = SharedState::default();
+        assert!(shared.take_render_warnings().is_empty());
+
+        shared.note_render_warning(RenderWarning::MidiOutputOverflow);
+        shared.note_render_warning(RenderWarning::EventListTooLong);
+        shared.note_render_warning(RenderWarning::MidiOutputOverflow);
+        assert_eq!(
+            shared.take_render_warnings(),
+            [RenderWarning::MidiOutputOverflow, RenderWarning::EventListTooLong]
+        );
+        assert!(shared.take_render_warnings().is_empty());
+    }
 
     #[test]
     fn test_requests_are_taken_once() {

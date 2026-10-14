@@ -38,7 +38,6 @@
 
 use crate::bus_config::CachedBusConfig;
 use crate::sample::Sample;
-use std::slice;
 
 /// Pre-allocated storage for audio processing channel pointers.
 ///
@@ -349,107 +348,6 @@ impl<S: Sample> ProcessBufferStorage<S> {
     #[inline]
     pub fn aux_output_capacity(&self, bus_index: usize) -> usize {
         self.aux_outputs.get(bus_index).map(|v| v.capacity()).unwrap_or(0)
-    }
-
-    /// Build input slices from collected pointers.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collection
-    #[inline]
-    pub unsafe fn input_slices(&self, num_samples: usize) -> Vec<&[S]> {
-        self.main_inputs
-            .iter()
-            .map(|&ptr| {
-                // SAFETY: Caller guarantees pointers are valid for `num_samples` elements
-                // and remain valid for the lifetime of the returned slices (within render call).
-                unsafe { slice::from_raw_parts(ptr, num_samples) }
-            })
-            .collect()
-    }
-
-    /// Build output slices from collected pointers.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collection
-    ///
-    /// # Clippy Allow: mut_from_ref
-    ///
-    /// Returns `&mut [S]` from `&self` because we're converting raw pointers stored in the struct,
-    /// not mutating `self`. This is a common and safe FFI pattern where:
-    /// - Raw pointers (`*mut S`) are stored during collection
-    /// - Those pointers are then converted back to safe references
-    /// - The mutable references are to the external buffer memory, not to `self`
-    /// - Host guarantees single-threaded render access, preventing aliasing
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn output_slices(&self, num_samples: usize) -> Vec<&mut [S]> {
-        self.main_outputs
-            .iter()
-            .map(|&ptr| {
-                // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
-                // remain valid for the returned slice lifetime and do not alias.
-                // Host guarantees single-threaded render access.
-                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-            })
-            .collect()
-    }
-
-    /// Build auxiliary input slices from collected pointers.
-    ///
-    /// Returns a Vec of buses, where each bus is a Vec of channel slices.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collection
-    #[inline]
-    pub unsafe fn aux_input_slices(&self, num_samples: usize) -> Vec<Vec<&[S]>> {
-        self.aux_inputs
-            .iter()
-            .map(|bus| {
-                bus.iter()
-                    .map(|&ptr| {
-                        // SAFETY: Caller guarantees pointers are valid for `num_samples` elements
-                        // and remain valid for the lifetime of the returned slices (within render call).
-                        unsafe { slice::from_raw_parts(ptr, num_samples) }
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// Build auxiliary output slices from collected pointers.
-    ///
-    /// Returns a Vec of buses, where each bus is a Vec of channel slices.
-    ///
-    /// # Safety
-    ///
-    /// - Pointers must still be valid (within same render call)
-    /// - num_samples must match what was used in collection
-    ///
-    /// # Clippy Allow: mut_from_ref
-    ///
-    /// Same justification as `output_slices` - converts raw pointers to mutable references.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn aux_output_slices(&self, num_samples: usize) -> Vec<Vec<&mut [S]>> {
-        self.aux_outputs
-            .iter()
-            .map(|bus| {
-                bus.iter()
-                    .map(|&ptr| {
-                        // SAFETY: Caller guarantees pointers are valid for `num_samples` elements,
-                        // remain valid for the returned slice lifetime and do not alias.
-                        // Host guarantees single-threaded render access.
-                        unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-                    })
-                    .collect()
-            })
-            .collect()
     }
 
     /// Get a mutable pointer to an internal output buffer channel.

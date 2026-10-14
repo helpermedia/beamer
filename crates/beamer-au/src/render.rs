@@ -34,13 +34,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
 use crate::buffers::{AudioBuffer, AudioBufferList};
-use crate::error::os_status;
+use crate::error::{os_status, PluginResult};
 use crate::instance::{AuPluginInstance, SharedParameters};
 use crate::objc_block;
-use crate::shared_state::SharedState;
+use crate::shared_state::{RenderWarning, SharedState};
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
-    MidiEvent, MidiEventKind, ProcessContext, Sample, MAX_BUSES, MAX_CHANNELS, MAX_SYSEX_SIZE,
+    AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, Sample, MAX_BUSES,
+    MAX_CHANNELS, MAX_SYSEX_SIZE,
 };
 
 // =============================================================================
@@ -113,14 +114,14 @@ impl MidiBuffer {
         self.events.iter()
     }
 
-    /// Sort events by sample offset (ascending).
+    /// Sort events by sample offset (ascending), keeping the order of
+    /// events at the same offset.
     ///
     /// AU render event lists are typically ordered by `event_sample_time`, but
-    /// the bridge does not rely on that invariant. Sorting here is allocation-free
-    /// and enables efficient sub-block processing for sample-accurate timing.
+    /// the bridge does not rely on that invariant.
     #[inline]
     pub fn sort_by_sample_offset(&mut self) {
-        self.events.sort_by_key(|e| e.sample_offset);
+        sort_by_offset(&mut self.events, |event| event.sample_offset);
     }
 
     /// Check if the buffer overflowed (reached capacity).
@@ -182,10 +183,36 @@ pub struct AuParameterRampEvent {
     pub duration_samples: u32,
 }
 
+/// Sort by a sample offset on the audio thread: stable and without
+/// allocating.
+///
+/// The standard library's stable sort allocates a scratch buffer, and an
+/// unstable sort would reorder events at the same offset, of which the last
+/// has to win. Event lists arrive sorted or nearly sorted, where an
+/// insertion sort takes one pass. A list in reverse order takes quadratic
+/// time, bounded by the capacity of the buffer it sorts.
+fn sort_by_offset<T>(items: &mut [T], offset: impl Fn(&T) -> u32) {
+    for i in 1..items.len() {
+        let mut j = i;
+        while j > 0 && offset(&items[j - 1]) > offset(&items[j]) {
+            items.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+}
+
+/// How many parameter events of each kind one render call keeps.
+const MAX_PARAMETER_EVENTS: usize = 1024;
+
 /// Buffer for parameter events (pre-allocated).
+///
+/// It never grows on the audio thread: events beyond its capacity are
+/// dropped and `overflowed` is set.
 pub struct ParameterEventBuffer {
     pub immediate: Vec<AuParameterEvent>,
     pub ramps: Vec<AuParameterRampEvent>,
+    /// Events were dropped since the last `clear()`.
+    pub overflowed: bool,
 }
 
 impl Default for ParameterEventBuffer {
@@ -197,14 +224,41 @@ impl Default for ParameterEventBuffer {
 impl ParameterEventBuffer {
     pub fn new() -> Self {
         Self {
-            immediate: Vec::with_capacity(256),
-            ramps: Vec::with_capacity(64),
+            immediate: Vec::with_capacity(MAX_PARAMETER_EVENTS),
+            ramps: Vec::with_capacity(MAX_PARAMETER_EVENTS),
+            overflowed: false,
         }
     }
 
     pub fn clear(&mut self) {
         self.immediate.clear();
         self.ramps.clear();
+        self.overflowed = false;
+    }
+
+    /// Keep an immediate change, or drop it when the buffer is full.
+    fn push_immediate(&mut self, event: AuParameterEvent) {
+        if self.immediate.len() < self.immediate.capacity() {
+            self.immediate.push(event);
+        } else {
+            self.overflowed = true;
+        }
+    }
+
+    /// Keep a ramp, or drop it when the buffer is full.
+    fn push_ramp(&mut self, event: AuParameterRampEvent) {
+        if self.ramps.len() < self.ramps.capacity() {
+            self.ramps.push(event);
+        } else {
+            self.overflowed = true;
+        }
+    }
+
+    /// Sort both lists by sample offset, keeping the order of events at
+    /// the same offset.
+    pub fn sort_by_sample_offset(&mut self) {
+        sort_by_offset(&mut self.immediate, |event| event.sample_offset);
+        sort_by_offset(&mut self.ramps, |event| event.sample_offset);
     }
 }
 
@@ -586,7 +640,7 @@ pub unsafe fn extract_midi_events(
     buffer: &mut MidiBuffer,
     buffer_start: i64,
     num_samples: usize,
-) {
+) -> bool {
     let mut event_ptr = event_list;
     let mut iterations = 0;
 
@@ -692,12 +746,8 @@ pub unsafe fn extract_midi_events(
         event_ptr = unsafe { event.head.next };
     }
 
-    if iterations >= MAX_EVENTS_PER_BUFFER {
-        log::warn!(
-            "MIDI event list exceeded maximum iterations ({}), possible corruption",
-            MAX_EVENTS_PER_BUFFER
-        );
-    }
+    // The list did not end within the bound, possibly a damaged one.
+    !event_ptr.is_null()
 }
 
 /// Update MidiCcState from incoming MIDI events.
@@ -913,7 +963,7 @@ pub unsafe fn extract_parameter_events(
     buffer: &mut ParameterEventBuffer,
     buffer_start: i64,
     num_samples: usize,
-) {
+) -> bool {
     buffer.clear();
 
     let mut event_ptr = event_list;
@@ -932,7 +982,7 @@ pub unsafe fn extract_parameter_events(
             1 => {
                 // SAFETY: event_type == 1 (Parameter), so parameter field is the active variant.
                 let param_event = unsafe { &event.parameter };
-                buffer.immediate.push(AuParameterEvent {
+                buffer.push_immediate(AuParameterEvent {
                     sample_offset: buffer_offset(
                         param_event.event_sample_time,
                         buffer_start,
@@ -946,7 +996,7 @@ pub unsafe fn extract_parameter_events(
             2 => {
                 // SAFETY: event_type == 2 (ParameterRamp), so parameter field is the active variant.
                 let ramp_event = unsafe { &event.parameter };
-                buffer.ramps.push(AuParameterRampEvent {
+                buffer.push_ramp(AuParameterRampEvent {
                     sample_offset: buffer_offset(
                         ramp_event.event_sample_time,
                         buffer_start,
@@ -966,12 +1016,8 @@ pub unsafe fn extract_parameter_events(
         event_ptr = unsafe { event.head.next };
     }
 
-    if iterations >= MAX_EVENTS_PER_BUFFER {
-        log::warn!(
-            "Parameter event list exceeded maximum iterations ({}), possible corruption",
-            MAX_EVENTS_PER_BUFFER
-        );
-    }
+    // The list did not end within the bound, possibly a damaged one.
+    !event_ptr.is_null()
 }
 
 // =============================================================================
@@ -1084,53 +1130,43 @@ unsafe impl<S: Sample> Sync for RenderBlock<S> {}
 // Sample Type Dispatch Macro
 // =============================================================================
 
-/// Dispatch to f32 or f64 plugin method based on sample type S.
+/// A sample type the render block hands to the plugin.
 ///
-/// This macro eliminates the repeated TypeId check + transmute pattern used when
-/// calling plugin methods. The pattern is necessary because:
-/// - RenderBlock is generic over S (f32 or f64)
-/// - Plugin trait has separate methods for each type (e.g., process_with_context vs process_with_context_f64)
-/// - We need runtime dispatch to call the correct method
-///
-/// # Usage
-///
-/// ```ignore
-/// dispatch_sample_type!(S,
-///     f32 => { plugin.process_with_context(inputs_f32, outputs_f32, context) },
-///     f64 => { plugin.process_with_context_f64(inputs_f64, outputs_f64, context) }
-/// )
-/// ```
-///
-/// # Safety
-///
-/// The macro relies on these invariants:
-/// - S is either f32 or f64 (enforced by Sample trait being sealed)
-/// - TypeId check guarantees type match before any transmute occurs in caller code
-/// - Returns error OSStatus if S is neither type (should never happen)
-///
-/// The caller is responsible for ensuring that any transmutes performed within
-/// the f32/f64 blocks are safe. The TypeId check performed by this macro
-/// guarantees that the type parameter S matches the branch being executed.
-macro_rules! dispatch_sample_type {
-    ($sample_type:ty, f32 => $f32_expr:expr, f64 => $f64_expr:expr) => {
-        if std::any::TypeId::of::<$sample_type>() == std::any::TypeId::of::<f32>() {
-            match $f32_expr {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
-            }
-        } else if std::any::TypeId::of::<$sample_type>() == std::any::TypeId::of::<f64>() {
-            match $f64_expr {
-                Ok(()) => os_status::NO_ERR,
-                Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
-            }
-        } else {
-            // Should never happen - Sample trait is sealed to f32/f64 only
-            os_status::K_AUDIO_UNIT_ERR_RENDER
-        }
-    };
+/// The plugin has one process method per sample type. This picks the one
+/// for `Self` at compile time.
+pub trait RenderSample: Sample {
+    /// Process one block through the plugin's method for this sample type.
+    fn process_block(
+        plugin: &mut dyn AuPluginInstance,
+        buffer: &mut Buffer<'_, Self>,
+        aux: &mut AuxiliaryBuffers<'_, Self>,
+        context: &ProcessContext,
+    ) -> PluginResult<()>;
 }
 
-impl<S: Sample> RenderBlock<S> {
+impl RenderSample for f32 {
+    fn process_block(
+        plugin: &mut dyn AuPluginInstance,
+        buffer: &mut Buffer<'_, f32>,
+        aux: &mut AuxiliaryBuffers<'_, f32>,
+        context: &ProcessContext,
+    ) -> PluginResult<()> {
+        plugin.process_block(buffer, aux, context)
+    }
+}
+
+impl RenderSample for f64 {
+    fn process_block(
+        plugin: &mut dyn AuPluginInstance,
+        buffer: &mut Buffer<'_, f64>,
+        aux: &mut AuxiliaryBuffers<'_, f64>,
+        context: &ProcessContext,
+    ) -> PluginResult<()> {
+        plugin.process_block_f64(buffer, aux, context)
+    }
+}
+
+impl<S: RenderSample> RenderBlock<S> {
     /// Create a new render block.
     ///
     /// # Arguments
@@ -1393,8 +1429,13 @@ impl<S: Sample> RenderBlock<S> {
 
         // Extract MIDI events from the AU render event linked list
         // SAFETY: event_list is valid for this render call (provided by AU host)
-        unsafe {
-            extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples);
+        let midi_list_too_long =
+            unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples) };
+        if midi_list_too_long {
+            self.shared.note_render_warning(RenderWarning::EventListTooLong);
+        }
+        if midi_buffer.has_overflowed() {
+            self.shared.note_render_warning(RenderWarning::MidiInputOverflow);
         }
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
@@ -1409,7 +1450,7 @@ impl<S: Sample> RenderBlock<S> {
 
         // Process MIDI events (input → output transformation)
         // This allows plugins to transform, generate, or pass through MIDI
-        plugin_guard.process_midi(midi_buffer.as_slice(), midi_output);
+        plugin_guard.process_midi(midi_buffer.as_mut_slice(), midi_output);
 
         // Hand the plugin's MIDI output to the host. Without a sink the host is
         // not listening and the events are discarded.
@@ -1417,10 +1458,7 @@ impl<S: Sample> RenderBlock<S> {
             send_midi_output(midi_output.as_slice(), sink);
         }
         if midi_output.has_overflowed() {
-            log::warn!(
-                "MIDI output buffer overflow: {} events reached capacity, some events were dropped",
-                midi_output.len()
-            );
+            self.shared.note_render_warning(RenderWarning::MidiOutputOverflow);
         }
 
         // Clear and extract parameter events from AU event list
@@ -1430,18 +1468,23 @@ impl<S: Sample> RenderBlock<S> {
 
         // Extract parameter events from the AU render event linked list
         // SAFETY: event_list is valid for this render call (provided by AU host)
-        unsafe {
+        let parameter_list_too_long = unsafe {
             extract_parameter_events(
                 event_list,
                 parameter_events,
                 buffer_start_sample,
                 num_samples,
-            );
+            )
+        };
+        if parameter_list_too_long {
+            self.shared.note_render_warning(RenderWarning::EventListTooLong);
+        }
+        if parameter_events.overflowed {
+            self.shared.note_render_warning(RenderWarning::ParameterEventOverflow);
         }
 
         // Sort by sample offset to enable sample-accurate application via sub-block processing.
-        parameter_events.immediate.sort_by_key(|e| e.sample_offset);
-        parameter_events.ramps.sort_by_key(|e| e.sample_offset);
+        parameter_events.sort_by_sample_offset();
 
         // Transport info from the AU host, with the render clock as fallback
         // for the position.
@@ -1619,55 +1662,6 @@ impl<S: Sample> RenderBlock<S> {
             }
         }
 
-        let _main_inputs = storage.input_channel_count();
-        let _main_outputs = storage.output_channel_count();
-        let _aux_buses = storage.aux_input_bus_count();
-        let _aux_input_channels: usize = storage.aux_inputs.iter().map(|bus| bus.len()).sum();
-
-        // Build slices from collected pointers.
-        // NOTE: these helper methods currently allocate Vecs, but only once per render call.
-        // We avoid per-sub-block allocations by converting to raw pointer lists once and
-        // rebuilding slice views for each sub-block.
-        // SAFETY: Pointers in storage are valid for this render call (collected from AU host buffers).
-        // num_samples matches the frame_count provided by the host.
-        let input_refs = unsafe { storage.input_slices(num_samples) };
-        // SAFETY: Same as above, outputs were collected from valid AU buffers.
-        let mut output_refs = unsafe { storage.output_slices(num_samples) };
-        // SAFETY: Same as above, aux inputs were collected from valid AU buffers.
-        let aux_input_refs = unsafe { storage.aux_input_slices(num_samples) };
-        // SAFETY: Same as above, aux outputs were collected from valid AU buffers.
-        let mut aux_output_refs = unsafe { storage.aux_output_slices(num_samples) };
-
-        let input_ptrs: Vec<*const S> = input_refs.iter().map(|s| s.as_ptr()).collect();
-        let output_ptrs: Vec<*mut S> = output_refs.iter_mut().map(|s| s.as_mut_ptr()).collect();
-        let aux_input_ptrs: Vec<Vec<*const S>> = aux_input_refs
-            .iter()
-            .map(|bus| bus.iter().map(|ch| ch.as_ptr()).collect())
-            .collect();
-        let aux_output_ptrs: Vec<Vec<*mut S>> = aux_output_refs
-            .iter_mut()
-            .map(|bus| bus.iter_mut().map(|ch| ch.as_mut_ptr()).collect())
-            .collect();
-
-        // Release the full-buffer slice views so we can safely create sub-slices
-        // for each sub-block from raw pointers.
-        drop(input_refs);
-        drop(output_refs);
-        drop(aux_input_refs);
-        drop(aux_output_refs);
-
-        // Pre-allocate per-sub-block slice containers (no per-boundary allocations).
-        let mut segment_inputs: Vec<&[S]> = Vec::with_capacity(input_ptrs.len());
-        let mut segment_outputs: Vec<&mut [S]> = Vec::with_capacity(output_ptrs.len());
-        let mut segment_aux_inputs: Vec<Vec<&[S]>> = aux_input_ptrs
-            .iter()
-            .map(|bus| Vec::with_capacity(bus.len()))
-            .collect();
-        let mut segment_aux_outputs: Vec<Vec<&mut [S]>> = aux_output_ptrs
-            .iter()
-            .map(|bus| Vec::with_capacity(bus.len()))
-            .collect();
-
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
         // MidiCcState uses atomics internally and we only read it.
         let cc_state_ptr: Option<*const beamer_core::MidiCcState> =
@@ -1679,11 +1673,9 @@ impl<S: Sample> RenderBlock<S> {
 
         let immediate = &parameter_events.immediate;
         let ramps = &parameter_events.ramps;
-        let midi_events_all = midi_buffer.as_mut_slice();
 
         let mut imm_idx: usize = 0;
         let mut ramp_idx: usize = 0;
-        let mut midi_idx: usize = 0;
 
         let mut block_start: usize = 0;
         while block_start < num_samples {
@@ -1726,68 +1718,6 @@ impl<S: Sample> RenderBlock<S> {
                 &ramps[ramp_apply_start..ramp_idx],
             );
 
-            // Build main bus slices for this sub-block.
-            segment_inputs.clear();
-            for &ptr in &input_ptrs {
-                // SAFETY: ptr is valid for the render call; block_start+block_len is within num_samples.
-                let ch = unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) };
-                segment_inputs.push(ch);
-            }
-
-            segment_outputs.clear();
-            for &ptr in &output_ptrs {
-                // SAFETY: ptr is valid for the render call; block_start+block_len is within num_samples.
-                let ch = unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) };
-                segment_outputs.push(ch);
-            }
-
-            // Build aux bus slices for this sub-block.
-            for (bus_idx, bus_ptrs) in aux_input_ptrs.iter().enumerate() {
-                let bus = &mut segment_aux_inputs[bus_idx];
-                bus.clear();
-                for &ptr in bus_ptrs {
-                    // SAFETY: ptr is valid for render call; block_start+block_len within num_samples.
-                    let ch = unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) };
-                    bus.push(ch);
-                }
-            }
-            for (bus_idx, bus_ptrs) in aux_output_ptrs.iter().enumerate() {
-                let bus = &mut segment_aux_outputs[bus_idx];
-                bus.clear();
-                for &ptr in bus_ptrs {
-                    // SAFETY: ptr is valid for render call; block_start+block_len within num_samples.
-                    let ch = unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) };
-                    bus.push(ch);
-                }
-            }
-
-            // Slice and rebase MIDI events for this sub-block.
-            // MIDI offsets passed to the plugin must be relative to the start of the current block.
-            // Events are sorted by sample_offset and each belongs to exactly one sub-block,
-            // so we rebase offsets in-place and restore after processing.
-            // This is safe because the plugin receives &[MidiEvent] (immutable). If the
-            // signature ever changes to &mut, the restore step would need revisiting.
-            while midi_idx < midi_events_all.len()
-                && (midi_events_all[midi_idx].sample_offset as usize) < block_start
-            {
-                midi_idx += 1;
-            }
-            let midi_end = {
-                let mut scan = midi_idx;
-                while scan < midi_events_all.len()
-                    && (midi_events_all[scan].sample_offset as usize) < (block_start + block_len)
-                {
-                    scan += 1;
-                }
-                scan
-            };
-
-            // Rebase offsets in-place to be relative to sub-block start.
-            let block_start_u32 = block_start as u32;
-            for ev in &mut midi_events_all[midi_idx..midi_end] {
-                ev.sample_offset = ev.sample_offset.saturating_sub(block_start_u32);
-            }
-
             // Adjust transport sample positions for this sub-block.
             let mut seg_transport = transport;
             if let Some(t) = seg_transport.project_time_samples {
@@ -1806,22 +1736,41 @@ impl<S: Sample> RenderBlock<S> {
                 ProcessContext::new(self.sample_rate, block_len, seg_transport)
             };
 
-            let block_status = self.call_plugin_process_with_midi(
-                &mut plugin_guard,
-                &segment_inputs,
-                &mut segment_outputs,
-                &segment_aux_inputs,
-                &mut segment_aux_outputs,
-                &midi_events_all[midi_idx..midi_end],
-                &context,
-            );
+            // The channels of this sub-block. The buffers keep the slices in
+            // arrays of a fixed size, so building them does not allocate.
+            // The pointers were collected from the host's buffers for this
+            // render call and are valid for num_samples samples;
+            // block_start + block_len is within num_samples. The host renders
+            // one call at a time per instance, so no other reference to the
+            // output memory exists while the plugin processes.
+            let main_inputs = storage.main_inputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) }
+            });
+            let main_outputs = storage.main_outputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) }
+            });
+            let aux_inputs = storage.aux_inputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) }
+                })
+            });
+            let aux_outputs = storage.aux_outputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) }
+                })
+            });
+            let mut buffer = Buffer::new(main_inputs, main_outputs, block_len);
+            let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, block_len);
 
-            // Restore original offsets after processing. This runs before the
-            // early-exit check below, so offsets are always restored even on error.
-            for ev in &mut midi_events_all[midi_idx..midi_end] {
-                ev.sample_offset += block_start_u32;
-            }
-            midi_idx = midi_end;
+            let block_status =
+                match S::process_block(&mut **plugin_guard, &mut buffer, &mut aux, &context) {
+                    Ok(()) => os_status::NO_ERR,
+                    Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
+                };
 
             if block_status != os_status::NO_ERR {
                 result = block_status;
@@ -1844,127 +1793,10 @@ impl<S: Sample> RenderBlock<S> {
 
         result
     }
-
-    /// Call the plugin's process method with auxiliary buses and MIDI.
-    ///
-    /// This method dispatches to either process_with_midi (f32) or
-    /// process_with_midi_f64 (f64) based on the sample type S.
-    ///
-    /// # Safety Pattern: TypeId Check + Transmute
-    ///
-    /// This function uses a TypeId-based dispatch pattern with transmute to handle
-    /// generic sample types. This pattern is necessary because:
-    ///
-    /// 1. **Why this pattern is needed:**
-    ///    - The RenderBlock is generic over sample type S (f32 or f64)
-    ///    - The plugin trait has separate methods for f32 and f64 (process_with_midi vs process_with_midi_f64)
-    ///    - We need to dispatch to the correct method based on the actual type at runtime
-    ///    - Generic dispatch alone can't choose between different method names
-    ///
-    /// 2. **Invariants that must hold:**
-    ///    - S must be either f32 or f64 (enforced by Sample trait bound)
-    ///    - The `RenderBlock<S>` is created with the same S used by the host's format
-    ///    - Audio Unit v3 only supports f32 and f64 (kAudioFormatFlagsNativeFloatPacked)
-    ///    - The TypeId check ensures we only transmute when types actually match
-    ///
-    /// 3. **What could go wrong:**
-    ///    - If S is neither f32 nor f64 -> we return error (last else branch)
-    ///    - If TypeId check fails but transmute happens anyway -> undefined behavior (crash likely)
-    ///    - If buffer layout doesn't match expected type -> memory corruption
-    ///    - If Sample trait is implemented for non-f32/f64 types -> potential transmute mismatch
-    ///
-    /// 4. **Why this is safe in practice:**
-    ///    - Sample trait is sealed and only implemented for f32 and f64
-    ///    - `RenderBlock<S>` is created based on AU format (kAudioFormatFlagIsFloat + bits per channel)
-    ///    - create_render_block_f32/f64 ensure S matches the actual host format
-    ///    - TypeId check is a runtime guarantee that S == f32 or S == f64
-    ///    - Buffer slices have the same memory layout regardless of Sample type
-    ///      (both are just `&[T]` where T is a 32-bit or 64-bit float)
-    ///
-    /// 5. **Alternative approaches:**
-    ///    - Use an enum for sample format and store non-generic buffers (requires Vec allocation)
-    ///    - Use trait objects with dynamic dispatch (requires heap allocation)
-    ///    - Duplicate the entire RenderBlock for f32 and f64 (code duplication)
-    ///    - Make AuPluginInstance generic (breaks trait object usage)
-    ///
-    /// 6. **Why transmute is sound here:**
-    ///    - &[&[f32]] and &[&[f64]] have identical memory layout (slice of slice pointers)
-    ///    - We only transmute when TypeId proves the types match
-    ///    - The underlying audio buffer data is already in the correct format (host-provided)
-    ///    - We never transmute the actual sample data, only the slice references
-    ///
-    /// **Auxiliary bus transmutes:**
-    /// - Transmutes `&[Vec<&[S]>]` to `&[Vec<&[f32]>]` or `&[Vec<&[f64]>]`
-    /// - Each aux bus is a Vec of channel slices
-    /// - `Vec<&[S]>` and `Vec<&[f32]>` have identical memory layout
-    /// - Vec stores pointer + length + capacity (no type-specific data)
-    /// - The slice references point to host-provided audio buffers in the correct format
-    ///
-    /// Clippy Allow: too_many_arguments - Needs all parameters from process_impl plus MIDI data.
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    fn call_plugin_process_with_midi(
-        &self,
-        plugin: &mut Box<dyn AuPluginInstance>,
-        inputs: &[&[S]],
-        outputs: &mut [&mut [S]],
-        aux_inputs: &[Vec<&[S]>],
-        aux_outputs: &mut [Vec<&mut [S]>],
-        midi_events: &[MidiEvent],
-        context: &ProcessContext,
-    ) -> i32 {
-        // dispatch_sample_type! performs a runtime TypeId check that guarantees S == f32
-        // or S == f64 in the respective branch. The transmutes are sound because slice
-        // and Vec layouts are identical regardless of the inner type.
-        dispatch_sample_type!(S,
-            f32 => {
-                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
-                // &[&[S]] and &[&[f32]] have identical layouts when S == f32.
-                let inputs_f32: &[&[f32]] = unsafe { std::mem::transmute(inputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
-                let outputs_f32: &mut [&mut [f32]] = unsafe { std::mem::transmute(outputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
-                // Vec<&[S]> and Vec<&[f32]> have identical layouts when S == f32.
-                let aux_inputs_f32: &[Vec<&[f32]>] = unsafe { std::mem::transmute(aux_inputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f32 in this branch.
-                let aux_outputs_f32: &mut [Vec<&mut [f32]>] =
-                    unsafe { std::mem::transmute(aux_outputs) };
-                plugin.process_with_midi(
-                    inputs_f32,
-                    outputs_f32,
-                    aux_inputs_f32,
-                    aux_outputs_f32,
-                    midi_events,
-                    context,
-                )
-            },
-            f64 => {
-                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
-                // &[&[S]] and &[&[f64]] have identical layouts when S == f64.
-                let inputs_f64: &[&[f64]] = unsafe { std::mem::transmute(inputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
-                let outputs_f64: &mut [&mut [f64]] = unsafe { std::mem::transmute(outputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
-                // Vec<&[S]> and Vec<&[f64]> have identical layouts when S == f64.
-                let aux_inputs_f64: &[Vec<&[f64]>] = unsafe { std::mem::transmute(aux_inputs) };
-                // SAFETY: Runtime TypeId check guarantees S == f64 in this branch.
-                let aux_outputs_f64: &mut [Vec<&mut [f64]>] =
-                    unsafe { std::mem::transmute(aux_outputs) };
-                plugin.process_with_midi_f64(
-                    inputs_f64,
-                    outputs_f64,
-                    aux_inputs_f64,
-                    aux_outputs_f64,
-                    midi_events,
-                    context,
-                )
-            }
-        )
-    }
 }
 
 /// Implement RenderBlockTrait for both f32 and f64.
-impl<S: Sample> RenderBlockTrait for RenderBlock<S> {
+impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
     fn process(
         &self,
         action_flags: *mut u32,
@@ -2067,16 +1899,19 @@ pub(crate) fn create_render_block_f64(
     ))
 }
 
+/// AU render events for tests, also of other modules.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_events {
     use super::*;
-    use std::mem::{offset_of, size_of};
 
-    /// Sample time of the buffer start used by the tests. It is larger than
-    /// `u32::MAX` so that a truncated time cannot pass.
-    const START: i64 = 5_000_000_000;
-
-    fn parameter_event(event_type: u8, time: i64, value: f32, ramp: u32) -> AURenderEvent {
+    /// A parameter change or ramp of the parameter at `address`.
+    pub(crate) fn parameter_event_at(
+        event_type: u8,
+        time: i64,
+        address: u64,
+        value: f32,
+        ramp: u32,
+    ) -> AURenderEvent {
         AURenderEvent {
             parameter: AUParameterEvent {
                 next: std::ptr::null(),
@@ -2084,13 +1919,18 @@ mod tests {
                 event_type,
                 reserved: [0; 3],
                 ramp_duration_sample_frames: ramp,
-                parameter_address: 7,
+                parameter_address: address,
                 value,
             },
         }
     }
 
-    fn midi_event(time: i64, data: [u8; 3]) -> AURenderEvent {
+    /// A parameter change or ramp of the parameter at address 7.
+    pub(crate) fn parameter_event(event_type: u8, time: i64, value: f32, ramp: u32) -> AURenderEvent {
+        parameter_event_at(event_type, time, 7, value, ramp)
+    }
+
+    pub(crate) fn midi_event(time: i64, data: [u8; 3]) -> AURenderEvent {
         AURenderEvent {
             midi: AUMIDIEvent {
                 next: std::ptr::null(),
@@ -2105,12 +1945,34 @@ mod tests {
     }
 
     /// Link the events into the list form the host passes to render.
-    fn link(events: &mut [AURenderEvent]) -> *const AURenderEvent {
+    pub(crate) fn link(events: &mut [AURenderEvent]) -> *const AURenderEvent {
         for i in 1..events.len() {
             let next: *const AURenderEvent = &events[i];
             events[i - 1].head.next = next;
         }
         events.as_ptr()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_events::*;
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// Sample time of the buffer start used by the tests. It is larger than
+    /// `u32::MAX` so that a truncated time cannot pass.
+    const START: i64 = 5_000_000_000;
+
+    #[test]
+    fn test_sort_by_offset_keeps_the_order_at_one_offset() {
+        // Pairs of (offset, arrival), out of order between offsets.
+        let mut items = [(8, 0), (0, 1), (8, 2), (4, 3), (0, 4), (8, 5), (4, 6)];
+        sort_by_offset(&mut items, |item| item.0);
+        assert_eq!(
+            items,
+            [(0, 1), (0, 4), (4, 3), (4, 6), (8, 0), (8, 2), (8, 5)]
+        );
     }
 
     #[test]
