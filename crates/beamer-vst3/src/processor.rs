@@ -21,7 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use log::warn;
@@ -93,6 +93,21 @@ fn check_reserved_ids(parameters: &dyn beamer_core::parameter_types::Parameters)
 
 // Program list ID for factory presets
 const FACTORY_PRESETS_LIST_ID: i32 = 0;
+
+/// The last value in a parameter queue, which is the value at the end of
+/// the block.
+fn last_value(queue: ComRef<'_, IParamValueQueue>) -> Option<f64> {
+    // SAFETY: queue is a valid ComRef.
+    let point_count = unsafe { queue.getPointCount() };
+    if point_count <= 0 {
+        return None;
+    }
+    let mut sample_offset = 0;
+    let mut value = 0.0;
+    // SAFETY: queue is valid, sample_offset and value are valid pointers.
+    let result = unsafe { queue.getPoint(point_count - 1, &mut sample_offset, &mut value) };
+    (result == kResultTrue).then_some(value)
+}
 
 // =============================================================================
 // Transport Extraction
@@ -327,9 +342,10 @@ where
     /// MIDI CC state (created from Plugin's midi_cc_config())
     /// Framework owns this - plugin authors don't touch it
     midi_cc_state: Option<MidiCcState>,
-    /// Current factory preset index (0-based, or -1 for no preset / custom state)
-    /// Used for the program change parameter exposed to the host
-    current_preset_index: UnsafeCell<i32>,
+    /// Current factory preset index (0-based).
+    /// Used for the program change parameter exposed to the host. Set by
+    /// host threads and by process(), read by host threads.
+    current_preset_index: AtomicI32,
     /// Component handler for notifying host of parameter changes
     /// Stored as raw pointer - host manages lifetime, we just AddRef/Release
     component_handler: UnsafeCell<*mut IComponentHandler>,
@@ -365,11 +381,10 @@ where
 // - The parameters are Sync, and process() reaches them through its own
 //   `Arc`, not through the descriptor
 // - The descriptor is Sync and behind an RwLock that only host threads take
-// - current_preset_index and component_handler are used by the controller
-//   thread alone
+// - component_handler is used by the controller thread alone
 // - What a host thread uses while process() runs is atomic: the parameter
-//   values (also for saving and loading the state), latency, tail and the
-//   request to reset the smoothers
+//   values (also for saving and loading the state), the current preset,
+//   latency, tail and the request to reset the smoothers
 unsafe impl<P: Descriptor, Presets> Sync for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
@@ -421,7 +436,8 @@ where
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
             midi_cc_state,
-            current_preset_index: UnsafeCell::new(0), // Default to first preset
+            // Default to first preset.
+            current_preset_index: AtomicI32::new(0),
             component_handler: UnsafeCell::new(std::ptr::null_mut()),
             webview_handler,
             webview_events,
@@ -429,6 +445,80 @@ where
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
             _marker: PhantomData,
+        }
+    }
+
+    /// The factory preset that a normalized value of the program change
+    /// parameter selects, or `None` when the plugin has no presets.
+    fn preset_index_for(value: f64) -> Option<usize> {
+        let preset_count = Presets::count();
+        if preset_count == 0 {
+            return None;
+        }
+        // stepCount = preset_count - 1, so index = round(value * stepCount).
+        let step_count = (preset_count - 1) as f64;
+        Some(((value * step_count).round() as usize).min(preset_count - 1))
+    }
+
+    /// Apply the parameter changes a host sends with a process call.
+    ///
+    /// A change of the program change parameter selects a factory preset.
+    /// It is applied first, before the changes of single parameters in the
+    /// same block. The values of the preset's parameters are then reported in
+    /// `output`, so that the host and the edit controller learn them. Each
+    /// parameter takes the last value of its queue.
+    fn apply_parameter_changes(&self, input: ComRef<'_, IParameterChanges>, output: *mut IParameterChanges) {
+        let parameters = self.parameters();
+        // SAFETY: input is a valid ComRef.
+        let parameter_count = unsafe { input.getParameterCount() };
+        let queues = || {
+            (0..parameter_count).filter_map(|i| {
+                // SAFETY: getParameterData may return null; ComRef::from_raw handles this.
+                unsafe { ComRef::from_raw(input.getParameterData(i)) }
+            })
+        };
+
+        let mut preset_index = None;
+        for queue in queues() {
+            // SAFETY: queue is a valid ComRef.
+            if unsafe { queue.getParameterId() } != PROGRAM_CHANGE_PARAM_ID {
+                continue;
+            }
+            if let Some(index) = last_value(queue).and_then(Self::preset_index_for) {
+                Presets::apply(index, parameters);
+                self.current_preset_index.store(index as i32, Ordering::Relaxed);
+                preset_index = Some(index);
+            }
+        }
+
+        for queue in queues() {
+            // SAFETY: queue is a valid ComRef.
+            let parameter_id = unsafe { queue.getParameterId() };
+            if parameter_id == PROGRAM_CHANGE_PARAM_ID {
+                continue;
+            }
+            if let Some(value) = last_value(queue) {
+                parameters.set_normalized(parameter_id, value);
+            }
+        }
+
+        // SAFETY: outputParameterChanges may be null; ComRef::from_raw handles this.
+        let (Some(index), Some(output)) = (preset_index, unsafe { ComRef::from_raw(output) }) else {
+            return;
+        };
+        for value in Presets::values(index) {
+            // A preset value whose id names no parameter was not applied.
+            if beamer_core::parameter_types::Parameters::by_id(parameters, value.id).is_none() {
+                continue;
+            }
+            let mut queue_index = 0;
+            // SAFETY: output is a valid ComRef, the pointers are valid for the call.
+            let queue = unsafe { ComRef::from_raw(output.addParameterData(&value.id, &mut queue_index)) };
+            if let Some(queue) = queue {
+                let mut point_index = 0;
+                // SAFETY: queue is a valid ComRef, the pointer is valid for the call.
+                unsafe { queue.addPoint(0, parameters.get_normalized(value.id), &mut point_index) };
+            }
         }
     }
 
@@ -1530,31 +1620,7 @@ where
         // parameters only, so it also works for a call without samples.
         // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
         if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
-            let parameters = self.parameters();
-            // SAFETY: parameter_changes is valid ComRef.
-            let parameter_count = unsafe { parameter_changes.getParameterCount() };
-
-            for i in 0..parameter_count {
-                // SAFETY: getParameterData may return null; ComRef::from_raw handles this.
-                if let Some(queue) = unsafe { ComRef::from_raw(parameter_changes.getParameterData(i)) } {
-                    // SAFETY: queue is valid ComRef.
-                    let parameter_id = unsafe { queue.getParameterId() };
-                    // SAFETY: queue is valid ComRef.
-                    let point_count = unsafe { queue.getPointCount() };
-
-                    if point_count > 0 {
-                        let mut sample_offset = 0;
-                        let mut value = 0.0;
-                        // Get the last value in the queue (simplest approach)
-                        // SAFETY: queue is valid, sample_offset and value are valid pointers.
-                        if unsafe { queue.getPoint(point_count - 1, &mut sample_offset, &mut value) }
-                            == kResultTrue
-                        {
-                            parameters.set_normalized(parameter_id, value);
-                        }
-                    }
-                }
-            }
+            self.apply_parameter_changes(parameter_changes, process_data.outputParameterChanges);
         }
 
         // Host threads do not touch the processor while audio runs. What they
@@ -2041,8 +2107,7 @@ where
         if id == PROGRAM_CHANGE_PARAM_ID {
             let preset_count = Presets::count();
             if preset_count > 1 {
-                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                let current_index = unsafe { *self.current_preset_index.get() };
+                let current_index = self.current_preset_index.load(Ordering::Relaxed);
                 let step_count = (preset_count - 1) as f64;
                 return (current_index as f64) / step_count;
             } else if preset_count == 1 {
@@ -2065,23 +2130,13 @@ where
 
         // Check if this is the program change parameter (preset selection)
         if id == PROGRAM_CHANGE_PARAM_ID {
-            let preset_count = Presets::count();
-            if preset_count > 0 {
-                // Convert normalized value to preset index
-                // stepCount = preset_count - 1, so index = round(value * stepCount)
-                let step_count = (preset_count - 1) as f64;
-                let preset_index = (value * step_count).round() as usize;
-                let preset_index = preset_index.min(preset_count - 1);
-
+            if let Some(preset_index) = Self::preset_index_for(value) {
                 // Always apply unconditionally - never skip with "if changed" guard.
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
                 // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
                 Presets::apply(preset_index, self.parameters());
-
-                // Store the current preset index
-                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                unsafe { *self.current_preset_index.get() = preset_index as i32 };
+                self.current_preset_index.store(preset_index as i32, Ordering::Relaxed);
 
                 // Notify host that parameter values changed so UI refreshes
                 // SAFETY: VST3 guarantees single-threaded access. No aliasing.
@@ -3328,6 +3383,7 @@ mod tests {
     // processor.
 
     use beamer_core::parameter_types::{FloatParameter, ParameterRef, Parameters};
+    use beamer_core::preset::{PresetInfo, PresetValue};
     use beamer_core::{ParameterGroups, ParameterInfo, ParameterStore};
     use std::cell::Cell;
     use std::sync::Mutex;
@@ -3669,7 +3725,10 @@ mod tests {
         wrapper
     }
 
-    fn prepare_state_wrapper(wrapper: &Vst3Processor<StatePlugin>) {
+    fn prepare_state_wrapper<Presets>(wrapper: &Vst3Processor<StatePlugin, Presets>)
+    where
+        Presets: FactoryPresets<Parameters = StateParameters>,
+    {
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -3682,16 +3741,20 @@ mod tests {
 
     /// Process one stereo block like a host.
     fn process_block(wrapper: &Vst3Processor<StatePlugin>) {
-        process_with(wrapper, 64, std::ptr::null_mut());
+        process_with(wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
     }
 
     /// Call process like a host, with `frames` of the 64 frames the buffers
-    /// hold and with the parameter changes of the block, if any.
-    fn process_with(
-        wrapper: &Vst3Processor<StatePlugin>,
+    /// hold, with the parameter changes of the block and a list for the
+    /// changes the plugin reports, if any.
+    fn process_with<Presets>(
+        wrapper: &Vst3Processor<StatePlugin, Presets>,
         frames: int32,
         changes: *mut IParameterChanges,
-    ) {
+        output_changes: *mut IParameterChanges,
+    ) where
+        Presets: FactoryPresets<Parameters = StateParameters>,
+    {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];
         let mut output = [[0.0f32; FRAMES]; 2];
@@ -3720,7 +3783,7 @@ mod tests {
             inputs: &mut input_bus,
             outputs: &mut output_bus,
             inputParameterChanges: changes,
-            outputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: output_changes,
             inputEvents: std::ptr::null_mut(),
             outputEvents: std::ptr::null_mut(),
             processContext: std::ptr::null_mut(),
@@ -3770,9 +3833,9 @@ mod tests {
         }
     }
 
-    /// The parameter changes a host sends with a process call: one here.
+    /// The parameter changes a host sends with a process call.
     struct Changes {
-        queue: vst3::ComPtr<IParamValueQueue>,
+        queues: Vec<vst3::ComPtr<IParamValueQueue>>,
     }
 
     impl Class for Changes {
@@ -3781,15 +3844,14 @@ mod tests {
 
     impl IParameterChangesTrait for Changes {
         unsafe fn getParameterCount(&self) -> int32 {
-            1
+            self.queues.len() as int32
         }
 
         unsafe fn getParameterData(&self, index: int32) -> *mut IParamValueQueue {
-            if index == 0 {
-                self.queue.as_ptr()
-            } else {
-                std::ptr::null_mut()
-            }
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| self.queues.get(index))
+                .map_or(std::ptr::null_mut(), |queue| queue.as_ptr())
         }
 
         unsafe fn addParameterData(&self, _id: *const ParamID, _index: *mut int32) -> *mut IParamValueQueue {
@@ -3799,13 +3861,172 @@ mod tests {
 
     /// Call process with one parameter change and `frames` frames.
     fn process_change(wrapper: &Vst3Processor<StatePlugin>, frames: int32, id: u32, value: f64) {
-        let queue = vst3::ComWrapper::new(OneChange { id, value })
-            .to_com_ptr::<IParamValueQueue>()
-            .expect("the queue is an IParamValueQueue");
-        let changes = vst3::ComWrapper::new(Changes { queue })
+        let changes = changes_of(&[(id, value)]);
+        process_with(wrapper, frames, changes.as_ptr(), std::ptr::null_mut());
+    }
+
+    /// The parameter changes of a block, one value per parameter.
+    fn changes_of(values: &[(u32, f64)]) -> vst3::ComPtr<IParameterChanges> {
+        let queues = values
+            .iter()
+            .map(|&(id, value)| {
+                vst3::ComWrapper::new(OneChange { id, value })
+                    .to_com_ptr::<IParamValueQueue>()
+                    .expect("the queue is an IParamValueQueue")
+            })
+            .collect();
+        vst3::ComWrapper::new(Changes { queues })
             .to_com_ptr::<IParameterChanges>()
-            .expect("the changes are IParameterChanges");
-        process_with(wrapper, frames, changes.as_ptr());
+            .expect("the changes are IParameterChanges")
+    }
+
+    /// A queue of the output parameter changes that records its points.
+    struct RecordingQueue {
+        id: u32,
+        points: Mutex<Vec<(int32, f64)>>,
+    }
+
+    impl Class for RecordingQueue {
+        type Interfaces = (IParamValueQueue,);
+    }
+
+    impl IParamValueQueueTrait for RecordingQueue {
+        unsafe fn getParameterId(&self) -> ParamID {
+            self.id
+        }
+
+        unsafe fn getPointCount(&self) -> int32 {
+            self.points.lock().unwrap().len() as int32
+        }
+
+        unsafe fn getPoint(&self, _index: int32, _offset: *mut int32, _value: *mut ParamValue) -> tresult {
+            kNotImplemented
+        }
+
+        unsafe fn addPoint(&self, sample_offset: int32, value: ParamValue, index: *mut int32) -> tresult {
+            let mut points = self.points.lock().unwrap();
+            // SAFETY: The caller provides a valid pointer.
+            unsafe { *index = points.len() as int32 };
+            points.push((sample_offset, value));
+            kResultOk
+        }
+    }
+
+    /// The output parameter changes of a process call, recorded.
+    #[derive(Default)]
+    struct OutputChanges {
+        queues: Mutex<Vec<vst3::ComWrapper<RecordingQueue>>>,
+    }
+
+    impl OutputChanges {
+        /// Each parameter the plugin reported, with its points.
+        fn reported(&self) -> Vec<(u32, Vec<(int32, f64)>)> {
+            let queues = self.queues.lock().unwrap();
+            queues
+                .iter()
+                .map(|queue| (queue.id, queue.points.lock().unwrap().clone()))
+                .collect()
+        }
+    }
+
+    impl Class for OutputChanges {
+        type Interfaces = (IParameterChanges,);
+    }
+
+    impl IParameterChangesTrait for OutputChanges {
+        unsafe fn getParameterCount(&self) -> int32 {
+            self.queues.lock().unwrap().len() as int32
+        }
+
+        unsafe fn getParameterData(&self, _index: int32) -> *mut IParamValueQueue {
+            std::ptr::null_mut()
+        }
+
+        unsafe fn addParameterData(&self, id: *const ParamID, index: *mut int32) -> *mut IParamValueQueue {
+            let mut queues = self.queues.lock().unwrap();
+            // SAFETY: The caller provides valid pointers.
+            let id = unsafe { *id };
+            // SAFETY: See above.
+            unsafe { *index = queues.len() as int32 };
+            let queue = vst3::ComWrapper::new(RecordingQueue { id, points: Mutex::new(Vec::new()) });
+            let pointer = queue
+                .as_com_ref::<IParamValueQueue>()
+                .expect("the queue is an IParamValueQueue")
+                .as_ptr();
+            queues.push(queue);
+            pointer
+        }
+    }
+
+    /// Two factory presets for the gain of the `StatePlugin`. The second
+    /// also has a value for an id that names no parameter, as a misspelled
+    /// preset key gives.
+    struct GainPresets;
+
+    const GAIN_PRESET_VALUES: [&[PresetValue]; 2] = [
+        &[PresetValue { id: GAIN_ID, plain_value: 0.2 }],
+        &[
+            PresetValue { id: GAIN_ID, plain_value: 0.9 },
+            PresetValue { id: 777, plain_value: 0.5 },
+        ],
+    ];
+
+    impl FactoryPresets for GainPresets {
+        type Parameters = StateParameters;
+
+        fn count() -> usize {
+            GAIN_PRESET_VALUES.len()
+        }
+
+        fn info(index: usize) -> Option<PresetInfo> {
+            (index < Self::count()).then_some(PresetInfo { name: "Gain" })
+        }
+
+        fn values(index: usize) -> &'static [PresetValue] {
+            GAIN_PRESET_VALUES.get(index).copied().unwrap_or(&[])
+        }
+    }
+
+    #[test]
+    fn test_program_change_in_process_applies_and_reports_the_preset() {
+        let wrapper = Vst3Processor::<StatePlugin, GainPresets>::new(&STATE_CONFIG);
+        prepare_state_wrapper(&wrapper);
+        let output = vst3::ComWrapper::new(OutputChanges::default());
+        let output_pointer = output
+            .as_com_ref::<IParameterChanges>()
+            .expect("the changes are IParameterChanges")
+            .as_ptr();
+
+        let changes = changes_of(&[(PROGRAM_CHANGE_PARAM_ID, 1.0)]);
+        process_with(&wrapper, 64, changes.as_ptr(), output_pointer);
+
+        // SAFETY: The wrapper is alive for the calls.
+        unsafe {
+            assert_eq!(wrapper.getParamNormalized(GAIN_ID), 0.9);
+            assert_eq!(wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID), 1.0);
+        }
+        // The value for an unknown id is neither applied nor reported.
+        assert_eq!(output.reported(), [(GAIN_ID, vec![(0, 0.9)])]);
+    }
+
+    #[test]
+    fn test_a_parameter_change_after_a_preset_in_the_same_block() {
+        let wrapper = Vst3Processor::<StatePlugin, GainPresets>::new(&STATE_CONFIG);
+        prepare_state_wrapper(&wrapper);
+        let output = vst3::ComWrapper::new(OutputChanges::default());
+        let output_pointer = output
+            .as_com_ref::<IParameterChanges>()
+            .expect("the changes are IParameterChanges")
+            .as_ptr();
+
+        // The host lists the gain before the program change.
+        let changes = changes_of(&[(GAIN_ID, 0.4), (PROGRAM_CHANGE_PARAM_ID, 0.0)]);
+        process_with(&wrapper, 64, changes.as_ptr(), output_pointer);
+
+        // SAFETY: The wrapper is alive for the call.
+        assert_eq!(unsafe { wrapper.getParamNormalized(GAIN_ID) }, 0.4);
+        // The host learns the value the gain has after the block.
+        assert_eq!(output.reported(), [(GAIN_ID, vec![(0, 0.4)])]);
     }
 
     /// A stream in memory, like the one a host hands to getState and setState.
@@ -4068,7 +4289,7 @@ mod tests {
         assert_eq!(load_state(&wrapper, &state), kResultOk);
         let before = smoothing_resets();
 
-        process_with(&wrapper, 0, std::ptr::null_mut());
+        process_with(&wrapper, 0, std::ptr::null_mut(), std::ptr::null_mut());
         assert_eq!(smoothing_resets(), before + 1);
         process_block(&wrapper);
         assert_eq!(smoothing_resets(), before + 1);

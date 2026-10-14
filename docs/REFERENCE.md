@@ -1073,7 +1073,7 @@ When a plugin has factory presets, MIDI Program Change (PC) events are automatic
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the values of the preset's parameters back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
 ### Buffer Types
 
