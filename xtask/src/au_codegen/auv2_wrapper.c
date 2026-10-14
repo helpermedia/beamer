@@ -1824,14 +1824,21 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         return kAudioUnitErr_TooManyFramesToProcess;
     }
 
-    // Call pre-render notifications
-    pthread_mutex_lock(&inst->renderNotifyMutex);
-    for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
-        AudioUnitRenderActionFlags preFlags = kAudioUnitRenderAction_PreRender;
-        inst->renderNotify[i].proc(inst->renderNotify[i].userData,
-            &preFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+    // The render notifications of this call. The render thread does not
+    // wait for the lock: when a host thread is changing the list right now,
+    // this call goes without notifications. Holding the lock until the
+    // post-render notifications keeps each pre-render one paired with its
+    // post-render one, and a removed notification is not called after
+    // AudioUnitRemoveRenderNotify returned. The lock is held across the
+    // input pull and the render, which take no lock of their own.
+    bool notifies = (pthread_mutex_trylock(&inst->renderNotifyMutex) == 0);
+    if (notifies) {
+        for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
+            AudioUnitRenderActionFlags preFlags = kAudioUnitRenderAction_PreRender;
+            inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+                &preFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+        }
     }
-    pthread_mutex_unlock(&inst->renderNotifyMutex);
 
     // Handle bypass
     if (inst->bypassed) {
@@ -1898,13 +1905,14 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
 
         // Call post-render notifications
-        pthread_mutex_lock(&inst->renderNotifyMutex);
-        for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
-            AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
-            inst->renderNotify[i].proc(inst->renderNotify[i].userData,
-                &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+        if (notifies) {
+            for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
+                AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
+                inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+                    &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+            }
+            pthread_mutex_unlock(&inst->renderNotifyMutex);
         }
-        pthread_mutex_unlock(&inst->renderNotifyMutex);
 
         return noErr;
     }
@@ -1996,14 +2004,19 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         atomic_store_explicit(&inst->midiReadHead, midiWrite, memory_order_release);
     }
 
-    // Call post-render notifications
-    pthread_mutex_lock(&inst->renderNotifyMutex);
-    for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
-        AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
-        inst->renderNotify[i].proc(inst->renderNotify[i].userData,
-            &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+    // Call post-render notifications. A failed render call says so in the
+    // flags.
+    if (notifies) {
+        for (UInt32 i = 0; i < inst->renderNotifyCount; i++) {
+            AudioUnitRenderActionFlags postFlags = kAudioUnitRenderAction_PostRender;
+            if (status != noErr) {
+                postFlags |= kAudioUnitRenderAction_PostRenderError;
+            }
+            inst->renderNotify[i].proc(inst->renderNotify[i].userData,
+                &postFlags, inTimeStamp, inOutputBusNumber, inNumberFrames, ioData);
+        }
+        pthread_mutex_unlock(&inst->renderNotifyMutex);
     }
-    pthread_mutex_unlock(&inst->renderNotifyMutex);
 
     return status;
 }
