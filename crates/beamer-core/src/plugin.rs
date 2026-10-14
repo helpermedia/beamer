@@ -835,9 +835,13 @@ pub trait Processor: Send + 'static {
 
     /// Process MIDI events.
     ///
-    /// Called during processing with any incoming MIDI events. Plugins can
-    /// transform events and add them to the output buffer, pass them through
-    /// unchanged, or consume them entirely.
+    /// Called right before every `process()` call, with the MIDI events of
+    /// that call. Their `sample_offset` counts from the first sample of that
+    /// call, and the events in `output` are timed the same way. A format
+    /// wrapper may split a host buffer into several `process()` calls, for
+    /// example at automation points, and then calls this before each of
+    /// them. Plugins can transform events and add them to the output buffer,
+    /// pass them through unchanged or consume them entirely.
     ///
     /// # Arguments
     /// * `input` - Slice of incoming MIDI events (sorted by sample_offset)

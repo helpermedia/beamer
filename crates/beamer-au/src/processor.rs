@@ -1510,6 +1510,121 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    thread_local! {
+        /// What the `RecordingProcessor` saw on this thread: per process()
+        /// call its length and the offsets of the MIDI events it got.
+        static RECORDED: std::cell::RefCell<Vec<(usize, Vec<u32>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A plugin that records the MIDI of each process() call and passes it on.
+    #[derive(Default)]
+    struct RecordingPlugin {
+        parameters: Arc<TestParameters>,
+    }
+
+    #[derive(Default)]
+    struct RecordingProcessor {
+        midi_offsets: Vec<u32>,
+    }
+
+    impl HasParameters for RecordingPlugin {
+        type Parameters = TestParameters;
+        fn parameters(&self) -> &Arc<Self::Parameters> {
+            &self.parameters
+        }
+    }
+
+    impl Descriptor for RecordingPlugin {
+        type Setup = ();
+        type Processor = RecordingProcessor;
+
+        fn prepare(&self, _: ()) -> Self::Processor {
+            RecordingProcessor::default()
+        }
+    }
+
+    impl Processor for RecordingProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut Buffer,
+            _aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            let offsets = std::mem::take(&mut self.midi_offsets);
+            RECORDED.with(|recorded| recorded.borrow_mut().push((buffer.num_samples(), offsets)));
+        }
+
+        fn process_midi(&mut self, input: &[MidiEvent], output: &mut beamer_core::MidiBuffer) {
+            for event in input {
+                self.midi_offsets.push(event.sample_offset);
+                output.push(event.clone());
+            }
+        }
+    }
+
+    unsafe extern "C" fn record_midi_output(
+        context: *mut std::ffi::c_void,
+        sample_offset: u32,
+        _bytes: *const u8,
+        _length: u32,
+    ) {
+        // SAFETY: The test passes a pointer to its vector, alive for the call.
+        let received = unsafe { &mut *context.cast::<Vec<u32>>() };
+        received.push(sample_offset);
+    }
+
+    #[test]
+    fn test_midi_reaches_each_sub_block_relative_to_it() {
+        use crate::render::test_events::{link, midi_event, parameter_event_at};
+        use crate::render::{AURenderEventType, MidiOutputSink};
+
+        let plugin = boxed(AuProcessor::<RecordingPlugin>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+
+        // A parameter change at sample 32 splits the buffer in two halves.
+        // One note falls in each.
+        let gain = u64::from(gain_id());
+        let mut events = vec![
+            midi_event(10, [0x90, 60, 100]),
+            parameter_event_at(AURenderEventType::Parameter as u8, 32, gain, -6.0, 0),
+            midi_event(40, [0x90, 64, 100]),
+        ];
+        let list = link(&mut events);
+
+        let mut sent: Vec<u32> = Vec::new();
+        let context: *mut Vec<u32> = &mut sent;
+        // SAFETY: The sink is only used during the render call below, while
+        // `sent` is alive.
+        let sink = unsafe { MidiOutputSink::new(record_midi_output, context.cast()) };
+
+        RECORDED.with(|recorded| recorded.borrow_mut().clear());
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let status = block.process(
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            list,
+            std::ptr::null(),
+            input.as_list().cast_const(),
+            None,
+            Some(sink),
+        );
+        assert_eq!(status, 0);
+
+        // Each process() call got the note of its half, relative to its start.
+        let recorded = RECORDED.with(|recorded| recorded.borrow().clone());
+        assert_eq!(recorded, [(32, vec![10]), (32, vec![8])]);
+
+        // The host gets the output at the offsets of the whole buffer.
+        assert_eq!(sent, [10, 40]);
+    }
+
     #[test]
     fn test_f64_render_converts_for_an_f32_processor_without_allocating() {
         let plugin = boxed(AuProcessor::<DoublingPlugin>::new());

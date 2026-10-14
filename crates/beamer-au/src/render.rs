@@ -1448,18 +1448,9 @@ impl<S: RenderSample> RenderBlock<S> {
             update_midi_cc_state(midi_buffer, cc_state);
         }
 
-        // Process MIDI events (input → output transformation)
-        // This allows plugins to transform, generate, or pass through MIDI
-        plugin_guard.process_midi(midi_buffer.as_mut_slice(), midi_output);
-
-        // Hand the plugin's MIDI output to the host. Without a sink the host is
-        // not listening and the events are discarded.
-        if let Some(sink) = midi_output_sink {
-            send_midi_output(midi_output.as_slice(), sink);
-        }
-        if midi_output.has_overflowed() {
-            self.shared.note_render_warning(RenderWarning::MidiOutputOverflow);
-        }
+        // The plugin gets its MIDI in process_midi() right before each
+        // process() call, with the events of that call (see the sub-block
+        // loop below).
 
         // Clear and extract parameter events from AU event list
         // SAFETY: Same reasoning as storage - single-threaded render calls
@@ -1658,6 +1649,9 @@ impl<S: RenderSample> RenderBlock<S> {
             // In this case, we can't process audio (instruments would need their own output buffers).
             if storage.output_channel_count() == 0 && storage.main_inputs.is_empty() {
                 // No inputs and no outputs collected: there is nothing to write to.
+                // The MIDI of the buffer is still processed.
+                plugin_guard.process_midi(midi_buffer.as_mut_slice(), midi_output);
+                self.send_midi_output(midi_output, midi_output_sink);
                 return os_status::NO_ERR;
             }
         }
@@ -1676,6 +1670,8 @@ impl<S: RenderSample> RenderBlock<S> {
 
         let mut imm_idx: usize = 0;
         let mut ramp_idx: usize = 0;
+        let midi_events = midi_buffer.as_mut_slice();
+        let mut midi_idx: usize = 0;
 
         let mut block_start: usize = 0;
         while block_start < num_samples {
@@ -1717,6 +1713,26 @@ impl<S: RenderSample> RenderBlock<S> {
                 &immediate[imm_apply_start..imm_idx],
                 &ramps[ramp_apply_start..ramp_idx],
             );
+
+            // The MIDI events of this sub-block, with offsets relative to its
+            // start, as the plugin expects them for the process() call that
+            // follows. Its MIDI output gets the offsets of the whole buffer.
+            let block_end = block_start + block_len;
+            let midi_end = midi_idx
+                + midi_events[midi_idx..]
+                    .iter()
+                    .take_while(|event| (event.sample_offset as usize) < block_end)
+                    .count();
+            let block_midi = &mut midi_events[midi_idx..midi_end];
+            for event in block_midi.iter_mut() {
+                event.sample_offset = event.sample_offset.saturating_sub(block_start as u32);
+            }
+            let output_start = midi_output.len();
+            plugin_guard.process_midi(block_midi, midi_output);
+            for event in &mut midi_output.as_mut_slice()[output_start..] {
+                event.sample_offset += block_start as u32;
+            }
+            midi_idx = midi_end;
 
             // Adjust transport sample positions for this sub-block.
             let mut seg_transport = transport;
@@ -1780,6 +1796,12 @@ impl<S: RenderSample> RenderBlock<S> {
             block_start = next_boundary;
         }
 
+        // A call without samples has no sub-block. Its MIDI is still processed.
+        if num_samples == 0 {
+            plugin_guard.process_midi(midi_events, midi_output);
+        }
+        self.send_midi_output(midi_output, midi_output_sink);
+
         // Record the sample time for this render cycle so that subsequent
         // aux bus calls (output_bus_number > 0) can detect they belong to
         // the same cycle and copy cached data instead of re-rendering.
@@ -1792,6 +1814,18 @@ impl<S: RenderSample> RenderBlock<S> {
         }
 
         result
+    }
+
+    /// Hand the plugin's MIDI output of a render call to the host, and note
+    /// when it overflowed. Without a sink the host is not listening and the
+    /// events are discarded.
+    fn send_midi_output(&self, midi_output: &MidiBuffer, sink: Option<MidiOutputSink>) {
+        if let Some(sink) = sink {
+            send_midi_output(midi_output.as_slice(), sink);
+        }
+        if midi_output.has_overflowed() {
+            self.shared.note_render_warning(RenderWarning::MidiOutputOverflow);
+        }
     }
 }
 

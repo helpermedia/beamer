@@ -243,7 +243,8 @@ pub trait AuPluginInstance: Send + 'static {
     /// The default implementation passes through all input events unchanged.
     ///
     /// # Arguments
-    /// * `input` - Input MIDI events for this buffer
+    /// * `input` - The MIDI events of one `process()` call, timed from its
+    ///   first sample
     /// * `output` - Output MIDI buffer to write events to
     ///
     /// # Examples

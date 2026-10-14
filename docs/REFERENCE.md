@@ -883,7 +883,8 @@ pub trait Processor: Send + 'static {
         context: &ProcessContext,
     );
 
-    /// Process MIDI events. Called before process() each block.
+    /// Process MIDI events. Called right before every process() call,
+    /// with the events of that call, timed from its first sample.
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         // Default: pass through
         for event in input {
