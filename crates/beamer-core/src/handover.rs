@@ -419,8 +419,9 @@ mod tests {
         use std::sync::atomic::AtomicBool;
 
         // Each value is a pair that only a read of a slot in the wrong
-        // hands could break.
-        let handover = Arc::new(Handover::new((0u64, 0u64)));
+        // hands could break, the first one too: the reader may read it
+        // before a setter ran.
+        let handover = Arc::new(Handover::new((0u64, !0u64)));
         let mut reader = handover.reader();
         let setters_done = Arc::new(AtomicBool::new(false));
 
