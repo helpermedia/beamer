@@ -183,17 +183,20 @@ static void beamer_au_ipc_handle_event(
 /// Send the parameter init dump to the WebView.
 ///
 /// Called when the WebView finishes loading. Serializes all parameter info
-/// via `beamer_au_param_info_json` and evals `window.__BEAMER__._onInit(...)`.
+/// via `beamer_au_param_info_json` and evals `window.__BEAMER__._onInit(...)`
+/// with the plugin format the editor runs in ("auv2" or "auv3").
 static void beamer_au_ipc_send_init_dump(
     BeamerAuInstanceHandle instance,
-    void* webviewHandle
+    void* webviewHandle,
+    const char* pluginFormat
 ) {
     if (!instance || !webviewHandle) return;
 
     char* json = beamer_au_param_info_json(instance);
     if (!json) return;
 
-    NSString* script = [NSString stringWithFormat:@"window.__BEAMER__._onInit(%s)", json];
+    NSString* script = [NSString stringWithFormat:@"window.__BEAMER__._onInit(%s,{\"pluginFormat\":\"%s\"})",
+        json, pluginFormat];
     const char* utf8 = [script UTF8String];
     beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
     beamer_au_free_string(json);

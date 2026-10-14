@@ -27,13 +27,15 @@ interface BeamerParams {
 
 interface Beamer {
   readonly ready: Promise<void>;
+  /** The plugin format the editor runs in, set before `ready` resolves. */
+  readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   readonly params: BeamerParams;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
 
   /** @internal Called by native code to initialize parameters. */
-  _onInit(params: BeamerParamInfo[]): void;
+  _onInit(params: BeamerParamInfo[], info?: { pluginFormat?: string }): void;
   /** @internal Called by native code to push parameter changes. */
   _onParams(changed: Record<string, [number, number, string]>): void;
   /** @internal Called by native code to resolve/reject invoke promises. */

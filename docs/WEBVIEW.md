@@ -101,6 +101,7 @@ interface BeamerParams {
 
 interface Beamer {
   readonly ready: Promise<void>;
+  readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   readonly params: BeamerParams;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
   on(event: string, callback: (data: unknown) => void): () => void;
@@ -170,6 +171,15 @@ __BEAMER__.on("sampleLoaded", (name) => {
 ```javascript
 await __BEAMER__.ready;
 // All params.get() calls now return real values.
+```
+
+### Plugin Format
+
+`__BEAMER__.pluginFormat` names the plugin format the editor runs in: `"vst3"`, `"auv2"` or `"auv3"`. The two Audio Unit formats share one plugin library, so only the format wrapper knows which one runs, and it sends the value with the initial parameter dump. It is `null` until `__BEAMER__.ready` resolves:
+
+```javascript
+await __BEAMER__.ready;
+statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
 ```
 
 ## Events from Rust
@@ -318,7 +328,7 @@ Parameter sync is fully automatic. No plugin code is required.
 
 ### Init Dump
 
-When the WebView finishes loading its initial page, the format wrapper calls `params_to_init_json()` and injects it via `evaluateJavaScript`:
+When the WebView finishes loading its initial page, the format wrapper calls `params_to_init_json()` and injects it via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)):
 
 ```javascript
 window.__BEAMER__._onInit([
@@ -328,7 +338,7 @@ window.__BEAMER__._onInit([
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
    "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
    "format":"pan","units":"","steps":0}
-])
+], {"pluginFormat":"vst3"})
 ```
 
 The example is shortened for readability: real numeric IDs are hashes of the string IDs, and values carry full precision.

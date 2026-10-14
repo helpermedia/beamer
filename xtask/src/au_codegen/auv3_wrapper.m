@@ -267,7 +267,7 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv3_on_loaded(void* context) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    beamer_au_ipc_send_init_dump(self->_rustInstance, self->_webviewHandle);
+    beamer_au_ipc_send_init_dump(self->_rustInstance, self->_webviewHandle, "auv3");
 }
 
 - (void)dealloc {

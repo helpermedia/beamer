@@ -186,7 +186,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 - (void)_sendInitDump {
     if (!_webviewHandle || !_wrapper) return;
     BeamerAuInstanceHandle instance = [_wrapper rustInstance];
-    beamer_au_ipc_send_init_dump(instance, _webviewHandle);
+    beamer_au_ipc_send_init_dump(instance, _webviewHandle, "auv3");
 }
 
 - (void)_startSyncTimer {

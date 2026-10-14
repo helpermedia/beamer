@@ -326,13 +326,15 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
         return;
     }
 
-    let params = &*ipc.params;
     // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
     let webview = unsafe { &*ipc.webview };
+    webview.evaluate_js(&init_script(&*ipc.params));
+}
 
+/// The script that hands the web UI its parameters and the plugin format.
+fn init_script(params: &dyn ParameterStore) -> String {
     let json_array = beamer_core::params_to_init_json(params);
-    let js = format!("window.__BEAMER__._onInit({json_array})");
-    webview.evaluate_js(&js);
+    format!("window.__BEAMER__._onInit({json_array},{{\"pluginFormat\":\"vst3\"}})")
 }
 
 /// NSTimer callback for 60 Hz parameter sync.
@@ -853,6 +855,14 @@ mod tests {
         ipc.close_events();
         events.emit("second", &4);
         assert!(second.take_event_script().is_some());
+    }
+
+    #[test]
+    fn test_init_script_names_the_plugin_format() {
+        assert_eq!(
+            init_script(&NoParameters),
+            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\"})"
+        );
     }
 
     #[test]

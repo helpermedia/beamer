@@ -53,6 +53,20 @@ function App() {
   }, []);
 
   const [sampleRate, setSampleRate] = useState<number | null>(null);
+  const [pluginFormat, setPluginFormat] = useState<string | null>(null);
+
+  // The format the editor runs in, known once the runtime is ready.
+  useEffect(() => {
+    let mounted = true;
+    __BEAMER__.ready.then(() => {
+      const names = { vst3: "VST3", auv2: "AUv2", auv3: "AUv3" };
+      const format = __BEAMER__.pluginFormat;
+      if (mounted) setPluginFormat(format ? names[format] : null);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Ask for the sample rate when the editor opens, then follow the event
   // the plugin sends whenever the host prepares it again.
@@ -120,7 +134,9 @@ function App() {
       </button>
 
       <p className="absolute bottom-3 text-xs text-gray-500 font-mono">
-        {sampleRate === null ? "Not prepared" : `${sampleRate} Hz`}
+        {[pluginFormat, sampleRate === null ? "Not prepared" : `${sampleRate} Hz`]
+          .filter(Boolean)
+          .join(" · ")}
       </p>
     </div>
   );

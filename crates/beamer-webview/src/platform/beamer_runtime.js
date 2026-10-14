@@ -34,6 +34,10 @@
   window.__BEAMER__ = {
     ready: readyPromise,
 
+    // The plugin format the editor runs in: "vst3", "auv2" or "auv3". Set
+    // before `ready` resolves.
+    pluginFormat: null,
+
     params: {
       get: function(stringId) {
         var p = paramMap[stringId];
@@ -113,7 +117,10 @@
       post({type:"event", name:name, data:data});
     },
 
-    _onInit: function(params) {
+    _onInit: function(params, info) {
+      if (info && info.pluginFormat) {
+        window.__BEAMER__.pluginFormat = info.pluginFormat;
+      }
       params.forEach(function(p) {
         var pending = pendingParamSubs[p.stringId] || [];
         delete pendingParamSubs[p.stringId];
