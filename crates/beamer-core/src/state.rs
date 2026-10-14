@@ -156,6 +156,10 @@ where
             self.reset();
         }
     }
+
+    fn generation(&self) -> u64 {
+        State::generation(self)
+    }
 }
 
 impl<T> Default for State<T>

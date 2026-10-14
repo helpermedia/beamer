@@ -668,6 +668,7 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
     let count_impl = generate_count(ir);
+    let state_generation_impl = generate_state_generation(ir);
 
     // Generate info() - iterate and return by index
     let info_impl = generate_info(ir);
@@ -716,6 +717,31 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
                 use ::beamer::core::parameter_types::Parameters;
                 self.by_id(id).map(|p| p.formatter_kind()).unwrap_or("float")
             }
+
+            #state_generation_impl
+        }
+    }
+}
+
+/// Generate `state_generation()`: the sum of the generations of the `State`
+/// fields of this struct and of its nested structs.
+fn generate_state_generation(ir: &ParametersIR) -> TokenStream {
+    let state_generations = ir.state_fields().map(|state| {
+        let field = &state.field_name;
+        quote! {
+            .wrapping_add(::beamer::core::state_format::SavedState::generation(&self.#field))
+        }
+    });
+    let nested_generations = ir.nested_fields().map(|nested| {
+        let field = &nested.field_name;
+        quote! {
+            .wrapping_add(::beamer::core::parameter_store::ParameterStore::state_generation(&self.#field))
+        }
+    });
+
+    quote! {
+        fn state_generation(&self) -> u64 {
+            0u64 #(#state_generations)* #(#nested_generations)*
         }
     }
 }

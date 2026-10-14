@@ -247,3 +247,24 @@ fn test_loading_a_state_counts_as_a_change_for_a_ui() {
     // A UI that polls the generation notices that it has to read again.
     assert!(parameters.name.generation() > before);
 }
+
+#[test]
+fn test_state_generation_changes_with_state_fields_only() {
+    use beamer::core::ParameterStore;
+
+    let parameters = SamplerParameters::default();
+    let start = parameters.state_generation();
+
+    // Parameters and fields that are not saved do not count.
+    parameters.gain.set_normalized(0.5);
+    parameters.decoded.set(vec![0.0; 4]);
+    assert_eq!(parameters.state_generation(), start);
+
+    parameters.name.set(String::from("a"));
+    let after_name = parameters.state_generation();
+    assert_ne!(after_name, start);
+
+    // A State field of a nested struct counts too.
+    parameters.layer.sample.set(kick());
+    assert_ne!(parameters.state_generation(), after_name);
+}

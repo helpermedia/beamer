@@ -127,6 +127,18 @@ pub trait ParameterStore: Send + Sync {
         "float"
     }
 
+    /// A number that changes whenever a `State` field of the plugin is set:
+    /// the sum of their generations, nested structs included.
+    ///
+    /// A format wrapper compares it with the value it saw last to tell the
+    /// host that the plugin state changed. Parameters are not part of it:
+    /// the host learns about their changes through the edits.
+    /// `#[derive(Parameters)]` generates it; the default is for structs
+    /// without `State` fields.
+    fn state_generation(&self) -> u64 {
+        0
+    }
+
     /// Find parameter info by ID.
     ///
     /// Default implementation searches linearly through all parameters.

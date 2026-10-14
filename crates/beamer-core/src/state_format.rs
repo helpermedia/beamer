@@ -94,6 +94,9 @@ pub trait SavedState {
 
     /// Set the value back to its default.
     fn reset_to_default(&self);
+
+    /// How often the value was set. It changes with every change.
+    fn generation(&self) -> u64;
 }
 
 /// Size of an entry without its path and its value: the kind and the two
