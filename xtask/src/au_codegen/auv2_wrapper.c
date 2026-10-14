@@ -1946,10 +1946,14 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     // Drain MIDI ring buffer and build AURenderEvent linked list.
     // The ring holds offsets into this buffer. Render events carry a sample
     // time on the timeline of the render timestamp, so add the buffer start.
+    // Only the render of the main bus processes MIDI: a call for another
+    // output bus leaves the events for it, so that none are lost.
     const AURenderEvent* midiEventList = NULL;
     AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
     UInt32 midiRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
-    UInt32 midiWrite = atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire);
+    UInt32 midiWrite = (inOutputBusNumber == 0)
+        ? atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire)
+        : midiRead;
     if (midiRead != midiWrite) {
         AURenderEvent* prev = NULL;
         UInt32 idx = midiRead;
