@@ -89,6 +89,8 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     BOOL _instanceValid;
     AUParameterTree* _parameterTree;
     BeamerAuSampleFormat _sampleFormat;
+    // Bytes of one sample of one input channel: 4 for Float32, 8 for Float64.
+    UInt32 _inputBytesPerFrame;
     double _sampleRate;
     AUAudioFrameCount _maxFrames;
     BOOL _resourcesAllocated;
@@ -561,6 +563,9 @@ static void beamer_auv3_on_loaded(void* context) {
 
     if (_inputBusArray.count > 0) {
         AVAudioFormat* inputFormat = _inputBusArray[0].format;
+        // The render block sizes the input it pulls with this, so that it
+        // also fits 64-bit samples. Read here, not on the render thread.
+        _inputBytesPerFrame = inputFormat.streamDescription->mBytesPerFrame;
         _inputPCMBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:inputFormat
                                                        frameCapacity:_maxFrames];
         if (_inputPCMBuffer != nil) {
@@ -669,12 +674,13 @@ static void beamer_auv3_on_loaded(void* context) {
         AVAudioPCMBuffer* inputPCMBuffer = blockSelf->_inputPCMBuffer;
         AudioBufferList* inputMutableABL = blockSelf->_inputMutableABL;
         AUAudioFrameCount maxFrames = blockSelf->_maxFrames;
+        UInt32 inputBytesPerFrame = blockSelf->_inputBytesPerFrame;
 
         AudioBufferList* inputData = NULL;
         if (inputPCMBuffer != nil && inputMutableABL != NULL && pullInputBlock != nil
             && frameCount <= maxFrames) {
             const AudioBufferList* originalABL = inputPCMBuffer.audioBufferList;
-            UInt32 byteSize = frameCount * sizeof(float);
+            UInt32 byteSize = frameCount * inputBytesPerFrame;
 
             inputMutableABL->mNumberBuffers = originalABL->mNumberBuffers;
             for (UInt32 i = 0; i < originalABL->mNumberBuffers; ++i) {
