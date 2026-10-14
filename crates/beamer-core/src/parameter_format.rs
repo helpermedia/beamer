@@ -117,6 +117,23 @@ pub enum Formatter {
     Boolean,
 }
 
+/// Strip a unit from the end of a text, in any case and with or without a
+/// space before it.
+fn strip_unit<'a>(s: &'a str, unit: &str) -> &'a str {
+    let split = s.len().saturating_sub(unit.len());
+    match (s.get(..split), s.get(split..)) {
+        (Some(number), Some(end)) if end.eq_ignore_ascii_case(unit) => number.trim_end(),
+        _ => s,
+    }
+}
+
+/// Whether a text names minus infinity, as a user types it for silence.
+fn is_minus_infinity(s: &str) -> bool {
+    ["-inf", "-infinity", "-∞"]
+        .iter()
+        .any(|text| s.eq_ignore_ascii_case(text))
+}
+
 impl Formatter {
     /// Convert a plain value to a display string (without unit).
     ///
@@ -222,21 +239,22 @@ impl Formatter {
     /// Returns `None` if the string cannot be parsed.
     /// Accepts various formats with or without units.
     pub fn parse(&self, s: &str) -> Option<f64> {
-        let s = s.trim();
+        // Text such as "nan" or "inf" reads as a float, but it is no value
+        // a user means. Only a ratio has an infinite value ("∞:1").
+        self.parse_number(s.trim()).filter(|value| {
+            value.is_finite() || (*value == f64::INFINITY && matches!(self, Formatter::Ratio { .. }))
+        })
+    }
 
+    /// The plain value of a text, before non-finite values are dropped.
+    fn parse_number(&self, s: &str) -> Option<f64> {
         match self {
             Formatter::Float { .. } => s.parse().ok(),
 
             Formatter::Decibel { .. } => {
-                let trimmed = s
-                    .trim_end_matches(" dB")
-                    .trim_end_matches("dB")
-                    .trim();
+                let trimmed = strip_unit(s, "db");
 
-                if trimmed.eq_ignore_ascii_case("-inf")
-                    || trimmed.eq_ignore_ascii_case("-∞")
-                    || trimmed == "-infinity"
-                {
+                if is_minus_infinity(trimmed) {
                     return Some(0.0);
                 }
 
@@ -246,15 +264,9 @@ impl Formatter {
 
             Formatter::DecibelDirect { min_db, .. } => {
                 // Parse dB value directly (no conversion)
-                let trimmed = s
-                    .trim_end_matches(" dB")
-                    .trim_end_matches("dB")
-                    .trim();
+                let trimmed = strip_unit(s, "db");
 
-                if trimmed.eq_ignore_ascii_case("-inf")
-                    || trimmed.eq_ignore_ascii_case("-∞")
-                    || trimmed == "-infinity"
-                {
+                if is_minus_infinity(trimmed) {
                     return Some(*min_db);
                 }
 
@@ -274,28 +286,11 @@ impl Formatter {
                 }
             }
 
-            Formatter::Milliseconds { .. } => {
-                let trimmed = s
-                    .strip_suffix(" ms")
-                    .or_else(|| s.strip_suffix("ms"))
-                    .unwrap_or(s)
-                    .trim();
-                trimmed.parse().ok()
-            }
+            Formatter::Milliseconds { .. } => strip_unit(s, "ms").parse().ok(),
 
-            Formatter::Seconds { .. } => {
-                let trimmed = s
-                    .strip_suffix(" s")
-                    .or_else(|| s.strip_suffix("s"))
-                    .unwrap_or(s)
-                    .trim();
-                trimmed.parse().ok()
-            }
+            Formatter::Seconds { .. } => strip_unit(s, "s").parse().ok(),
 
-            Formatter::Percent { .. } => {
-                let trimmed = s.trim_end_matches('%').trim();
-                trimmed.parse::<f64>().ok().map(|v| v / 100.0)
-            }
+            Formatter::Percent { .. } => strip_unit(s, "%").parse::<f64>().ok().map(|v| v / 100.0),
 
             Formatter::Pan => {
                 let s_upper = s.to_uppercase();
@@ -324,7 +319,7 @@ impl Formatter {
 
             Formatter::Ratio { .. } => {
                 // Handle infinity
-                if s == "∞:1" || s == "inf:1" || s.eq_ignore_ascii_case("infinity:1") {
+                if ["∞", "∞:1", "inf:1", "infinity:1"].iter().any(|text| s.eq_ignore_ascii_case(text)) {
                     return Some(f64::INFINITY);
                 }
 
@@ -333,15 +328,18 @@ impl Formatter {
                 trimmed.parse().ok()
             }
 
-            Formatter::Semitones => {
-                let trimmed = s.trim_end_matches(" st").trim_end_matches("st").trim();
-                trimmed.parse().ok()
-            }
+            Formatter::Semitones => strip_unit(s, "st").parse().ok(),
 
             Formatter::Boolean => match s.to_lowercase().as_str() {
-                "on" | "true" | "yes" | "1" | "enabled" => Some(1.0),
-                "off" | "false" | "no" | "0" | "disabled" => Some(0.0),
-                _ => None,
+                "on" | "true" | "yes" | "enabled" => Some(1.0),
+                "off" | "false" | "no" | "disabled" => Some(0.0),
+                // A number, as a host may type it ("1", "0.0"): on from 0.5,
+                // like the text of the value.
+                other => other
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+                    .map(|value| if value > 0.5 { 1.0 } else { 0.0 }),
             },
         }
     }
@@ -567,6 +565,84 @@ mod tests {
         for text in ["", "k", "Hz", "kHz", "abc", "1.5 kHz Hz", "4 kk"] {
             assert_eq!(formatter.parse(text), None, "\"{}\"", text);
         }
+    }
+
+    #[test]
+    fn test_units_parse_in_any_case() {
+        let db = Formatter::Decibel { precision: 1 };
+        assert_eq!(db.parse("0 dB"), Some(1.0));
+        assert_eq!(db.parse("0db"), Some(1.0));
+        assert_eq!(db.parse(" 0 DB "), Some(1.0));
+        assert_eq!(db.parse("-INF"), Some(0.0));
+        assert_eq!(db.parse("-Infinity dB"), Some(0.0));
+
+        let direct = Formatter::DecibelDirect { precision: 1, min_db: -60.0 };
+        assert_eq!(direct.parse("-6 db"), Some(-6.0));
+        assert_eq!(direct.parse("-inf DB"), Some(-60.0));
+
+        let ms = Formatter::Milliseconds { precision: 1 };
+        assert_eq!(ms.parse("10 MS"), Some(10.0));
+        assert_eq!(ms.parse("10Ms"), Some(10.0));
+
+        let seconds = Formatter::Seconds { precision: 2 };
+        assert_eq!(seconds.parse("2.5 S"), Some(2.5));
+
+        assert_eq!(Formatter::Semitones.parse("7 ST"), Some(7.0));
+        assert_eq!(Formatter::Semitones.parse("-12st"), Some(-12.0));
+        assert_eq!(Formatter::Percent { precision: 0 }.parse("50 %"), Some(0.5));
+
+        // A unit is no number.
+        assert_eq!(ms.parse("ms"), None);
+        assert_eq!(db.parse("dB"), None);
+    }
+
+    #[test]
+    fn test_values_that_are_no_number_do_not_parse() {
+        let formatters = [
+            Formatter::Float { precision: 2 },
+            Formatter::Decibel { precision: 1 },
+            Formatter::DecibelDirect { precision: 1, min_db: -60.0 },
+            Formatter::Frequency,
+            Formatter::Milliseconds { precision: 1 },
+            Formatter::Seconds { precision: 2 },
+            Formatter::Percent { precision: 0 },
+            Formatter::Pan,
+            Formatter::Ratio { precision: 1 },
+            Formatter::Semitones,
+            Formatter::Boolean,
+        ];
+        for formatter in &formatters {
+            for text in ["nan", "NaN", "-nan", "nan dB", "-inf ms"] {
+                assert_eq!(formatter.parse(text), None, "{:?} \"{}\"", formatter, text);
+            }
+            // Infinity is a value of a ratio only.
+            if !matches!(formatter, Formatter::Ratio { .. }) {
+                for text in ["inf", "infinity", "+inf"] {
+                    assert_eq!(formatter.parse(text), None, "{:?} \"{}\"", formatter, text);
+                }
+            }
+        }
+
+        // The one infinite value a formatter writes itself.
+        let ratio = Formatter::Ratio { precision: 1 };
+        assert_eq!(ratio.parse("∞:1"), Some(f64::INFINITY));
+        assert_eq!(ratio.parse("∞"), Some(f64::INFINITY));
+        assert_eq!(ratio.parse("INF:1"), Some(f64::INFINITY));
+        assert_eq!(ratio.parse("inf"), Some(f64::INFINITY));
+        assert_eq!(ratio.parse("-inf"), None);
+        assert_eq!(ratio.parse("4:1"), Some(4.0));
+    }
+
+    #[test]
+    fn test_boolean_parses_a_number() {
+        let boolean = Formatter::Boolean;
+        assert_eq!(boolean.parse("On"), Some(1.0));
+        assert_eq!(boolean.parse("off"), Some(0.0));
+        assert_eq!(boolean.parse("1"), Some(1.0));
+        assert_eq!(boolean.parse("1.0"), Some(1.0));
+        assert_eq!(boolean.parse(" 0.000 "), Some(0.0));
+        assert_eq!(boolean.parse("0.5"), Some(0.0));
+        assert_eq!(boolean.parse("maybe"), None);
     }
 
     #[test]

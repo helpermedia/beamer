@@ -2218,6 +2218,8 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
     }
 
     fn parse(&self, s: &str) -> Option<ParameterValue> {
+        let s = s.trim();
+
         // Try to match variant name (case-insensitive)
         let s_lower = s.to_lowercase();
         for (i, name) in E::names().iter().enumerate() {
@@ -2225,11 +2227,12 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
                 return Some(self.plain_to_normalized(i as f64));
             }
         }
-        // Also try parsing as index
-        s.parse::<usize>()
+        // Also try parsing as index, also written as a float ("1.0") as a
+        // host may type it.
+        s.parse::<f64>()
             .ok()
-            .filter(|&i| i < E::COUNT)
-            .map(|i| self.plain_to_normalized(i as f64))
+            .filter(|index| index.fract() == 0.0 && *index >= 0.0 && *index < E::COUNT as f64)
+            .map(|index| self.plain_to_normalized(index))
     }
 
     fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
@@ -2967,6 +2970,18 @@ mod tests {
         let param = EnumParameter::<TestEnum>::new("Mode");
         assert_eq!(param.info().unit, ParameterUnit::Indexed);
         assert_eq!(param.formatter_kind(), "enum");
+
+        // A name in any case, or an index, also with spaces around it and
+        // written as a float.
+        let b = param.plain_to_normalized(1.0);
+        assert_eq!(param.parse("b"), Some(b));
+        assert_eq!(param.parse(" B "), Some(b));
+        assert_eq!(param.parse("1"), Some(b));
+        assert_eq!(param.parse(" 1 "), Some(b));
+        assert_eq!(param.parse("1.0"), Some(b));
+        for text in ["1.5", "3", "-1", "nan", "inf", "D", ""] {
+            assert_eq!(param.parse(text), None, "\"{}\"", text);
+        }
     }
 
     #[test]
