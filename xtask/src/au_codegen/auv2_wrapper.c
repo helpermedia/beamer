@@ -48,6 +48,11 @@
 #define MAX_RENDER_NOTIFY 32
 #define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
 
+// Parameter changes the host schedules for the next render call. A power of
+// two, so that the ring index can wrap with a mask.
+#define PARAMETER_RING_SIZE 512
+#define PARAMETER_RING_MASK (PARAMETER_RING_SIZE - 1)
+
 // Size of the packet list that collects the MIDI output of one render call.
 // Enough for a full buffer of channel messages. When more is produced, the
 // list goes to the host in parts.
@@ -128,6 +133,12 @@ typedef struct BeamerAuv2Instance {
     _Atomic UInt32 midiWriteHead; // only written by producer (MIDIEvent)
     _Atomic UInt32 midiReadHead; // only written by consumer (Render)
 
+    // Parameter changes with a sample offset, as render events (lock-free
+    // SPSC: ScheduleParameters and SetParameter produce, Render consumes).
+    AURenderEvent parameterRingBuffer[PARAMETER_RING_SIZE];
+    _Atomic UInt32 parameterWriteHead;
+    _Atomic UInt32 parameterReadHead;
+
     // MIDI output. The list is only allocated for plugin types that can
     // produce MIDI, and the host sets the callback when it listens.
     bool isMidiEffect;
@@ -178,6 +189,7 @@ static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitEleme
 static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame);
+static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst);
 
 // =============================================================================
 // MARK: - Helper Functions
@@ -536,11 +548,13 @@ static OSStatus BeamerAuv2Initialize(void* self) {
     OSStatus status = BeamerAuv2AllocateRenderResources(inst);
 
     if (status == noErr) {
-        inst->initialized = true;
-
-        // Reset MIDI ring buffer
+        // Reset the MIDI and parameter ring buffers before parameter changes
+        // can be queued, so that none queued from now on is lost.
         atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
         atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->parameterReadHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->parameterWriteHead, 0, memory_order_relaxed);
+        inst->initialized = true;
 
         // Pre-allocate input buffer if we have input buses
         if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
@@ -555,12 +569,16 @@ static OSStatus BeamerAuv2Uninitialize(void* self) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
     if (inst->initialized) {
+        // Changes queued for a render call that will not come still apply.
+        BeamerAuv2ApplyPendingParameters(inst);
         beamer_au_deallocate_render_resources(inst->rustInstance);
         inst->initialized = false;
 
-        // Reset MIDI ring buffer
+        // Reset the MIDI and parameter ring buffers
         atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
         atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->parameterReadHead, 0, memory_order_relaxed);
+        atomic_store_explicit(&inst->parameterWriteHead, 0, memory_order_relaxed);
     }
 
     return noErr;
@@ -1661,17 +1679,67 @@ static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
     return noErr;
 }
 
+// Queue a parameter change for the next render call, at a sample offset into
+// its buffer. Returns false when the unit does not render or the queue is
+// full: the caller then sets the value right away.
+static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParameterID paramID,
+    AudioUnitParameterValue value, UInt32 bufferOffset, UInt32 rampFrames) {
+
+    if (!inst->initialized) {
+        return false;
+    }
+
+    UInt32 write = atomic_load_explicit(&inst->parameterWriteHead, memory_order_relaxed);
+    UInt32 read = atomic_load_explicit(&inst->parameterReadHead, memory_order_acquire);
+    UInt32 next = (write + 1) & PARAMETER_RING_MASK;
+    if (next == read) {
+        return false;
+    }
+
+    AURenderEvent* event = &inst->parameterRingBuffer[write];
+    memset(event, 0, sizeof(AURenderEvent));
+    event->parameter.eventType = (rampFrames > 0) ? AURenderEventParameterRamp : AURenderEventParameter;
+    // Offset into the next buffer. Render turns it into a sample time.
+    event->parameter.eventSampleTime = (AUEventSampleTime)bufferOffset;
+    event->parameter.rampDurationSampleFrames = rampFrames;
+    event->parameter.parameterAddress = paramID;
+    event->parameter.value = value;
+
+    atomic_store_explicit(&inst->parameterWriteHead, next, memory_order_release);
+    return true;
+}
+
+// Apply the queued parameter changes now and empty the queue. For a render
+// call that does not process (bypass), for a reset and when the unit
+// stops rendering.
+static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst) {
+    UInt32 read = atomic_load_explicit(&inst->parameterReadHead, memory_order_relaxed);
+    UInt32 write = atomic_load_explicit(&inst->parameterWriteHead, memory_order_acquire);
+    for (UInt32 idx = read; idx != write; idx = (idx + 1) & PARAMETER_RING_MASK) {
+        const AURenderEvent* event = &inst->parameterRingBuffer[idx];
+        beamer_au_set_parameter_value_au(inst->rustInstance,
+            (uint32_t)event->parameter.parameterAddress, event->parameter.value);
+    }
+    atomic_store_explicit(&inst->parameterReadHead, write, memory_order_release);
+}
+
 static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset) {
 
     (void)element;
-    (void)bufferOffset; // TODO: Support sample-accurate automation
 
     if (scope != kAudioUnitScope_Global) {
         return kAudioUnitErr_InvalidScope;
     }
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+
+    // A host passes an offset only right before a render call, for a change
+    // within its buffer. Without one, the value applies now.
+    if (bufferOffset > 0 && BeamerAuv2QueueParameter(inst, paramID, value, bufferOffset, 0)) {
+        return noErr;
+    }
+
     // Use AU-format setter which handles indexed parameter conversion internally
     beamer_au_set_parameter_value_au(inst->rustInstance, paramID, value);
     return noErr;
@@ -1682,12 +1750,33 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
 
     for (UInt32 i = 0; i < numEvents; i++) {
         const AudioUnitParameterEvent* event = &events[i];
-        if (event->eventType == kParameterEvent_Immediate) {
-            // Use AU-format setter which handles indexed parameter conversion internally
-            beamer_au_set_parameter_value_au(inst->rustInstance, event->parameter,
-                event->eventValues.immediate.value);
+        if (event->scope != kAudioUnitScope_Global) {
+            continue;
         }
-        // TODO: Handle ramped parameter changes
+
+        AudioUnitParameterValue value;
+        UInt32 offset;
+        UInt32 rampFrames;
+        if (event->eventType == kParameterEvent_Ramped) {
+            // The parameter's smoother interpolates: the ramp becomes a change
+            // to its end value at its start, as in the AUv3 render path.
+            value = event->eventValues.ramp.endValue;
+            offset = (UInt32)(event->eventValues.ramp.startBufferOffset > 0
+                ? event->eventValues.ramp.startBufferOffset : 0);
+            rampFrames = event->eventValues.ramp.durationInFrames;
+            if (rampFrames == 0) {
+                rampFrames = 1;
+            }
+        } else {
+            value = event->eventValues.immediate.value;
+            offset = event->eventValues.immediate.bufferOffset;
+            rampFrames = 0;
+        }
+
+        if (!BeamerAuv2QueueParameter(inst, event->parameter, value, offset, rampFrames)) {
+            // Use AU-format setter which handles indexed parameter conversion internally
+            beamer_au_set_parameter_value_au(inst->rustInstance, event->parameter, value);
+        }
     }
 
     return noErr;
@@ -1902,6 +1991,10 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 BeamerAuv2FlushMidiOutput(&thru);
             }
             atomic_store_explicit(&inst->midiReadHead, pendingWrite, memory_order_release);
+
+            // The plugin does not process now, so the queued parameter
+            // changes apply at once.
+            BeamerAuv2ApplyPendingParameters(inst);
         }
 
         // Call post-render notifications
@@ -1948,24 +2041,39 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     // time on the timeline of the render timestamp, so add the buffer start.
     // Only the render of the main bus processes MIDI: a call for another
     // output bus leaves the events for it, so that none are lost.
-    const AURenderEvent* midiEventList = NULL;
+    const AURenderEvent* eventList = NULL;
     AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
     UInt32 midiRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
     UInt32 midiWrite = (inOutputBusNumber == 0)
         ? atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire)
         : midiRead;
+    AURenderEvent* prev = NULL;
     if (midiRead != midiWrite) {
-        AURenderEvent* prev = NULL;
         UInt32 idx = midiRead;
         while (idx != midiWrite) {
             AURenderEvent* ev = &inst->midiRingBuffer[idx];
             ev->head.next = NULL;
             ev->head.eventSampleTime += bufferStart;
             if (prev) prev->head.next = ev;
-            else midiEventList = ev;
+            else eventList = ev;
             prev = ev;
             idx = (idx + 1) & MIDI_RING_MASK;
         }
+    }
+
+    // The parameter changes the host scheduled for this buffer go in the same
+    // list, after the MIDI events. Like MIDI they are for the main bus.
+    UInt32 parameterRead = atomic_load_explicit(&inst->parameterReadHead, memory_order_relaxed);
+    UInt32 parameterWrite = (inOutputBusNumber == 0)
+        ? atomic_load_explicit(&inst->parameterWriteHead, memory_order_acquire)
+        : parameterRead;
+    for (UInt32 idx = parameterRead; idx != parameterWrite; idx = (idx + 1) & PARAMETER_RING_MASK) {
+        AURenderEvent* ev = &inst->parameterRingBuffer[idx];
+        ev->head.next = NULL;
+        ev->head.eventSampleTime += bufferStart;
+        if (prev) prev->head.next = ev;
+        else eventList = ev;
+        prev = ev;
     }
 
     // Only the render of the main bus processes audio and needs the transport.
@@ -1990,7 +2098,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         inNumberFrames,
         inOutputBusNumber,
         ioData,
-        midiEventList,
+        eventList,
         NULL,  // pull_input_block (we pre-pulled via callback/connection)
         inputData,
         hasTransport ? &transport : NULL,
@@ -2006,6 +2114,9 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     // Release consumed MIDI events back to the ring buffer
     if (midiRead != midiWrite) {
         atomic_store_explicit(&inst->midiReadHead, midiWrite, memory_order_release);
+    }
+    if (parameterRead != parameterWrite) {
+        atomic_store_explicit(&inst->parameterReadHead, parameterWrite, memory_order_release);
     }
 
     // Call post-render notifications. A failed render call says so in the
@@ -2065,9 +2176,11 @@ static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitEleme
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
     beamer_au_reset(inst->rustInstance);
 
-    // Flush any pending MIDI events
+    // Flush any pending MIDI events. Pending parameter changes are applied,
+    // so that the values the host set stay set.
     atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
     atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+    BeamerAuv2ApplyPendingParameters(inst);
 
     return noErr;
 }
