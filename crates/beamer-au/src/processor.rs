@@ -1560,12 +1560,14 @@ mod tests {
         beamer_au_get_input_bus_count, beamer_au_get_latency_samples,
         beamer_au_get_output_bus_channel_count, beamer_au_get_output_bus_count,
         beamer_au_get_parameter_value, beamer_au_get_preset_count, beamer_au_get_preset_info,
+        beamer_au_is_prepared,
         beamer_au_copy_state, beamer_au_free_state, beamer_au_get_tail_samples,
         beamer_au_render, beamer_au_reset, beamer_au_set_parameter_value, beamer_au_set_state,
         BeamerAuBusConfig, BeamerAuBusInfo, BeamerAuBusType, BeamerAuGroupInfo,
         BeamerAuPresetInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
     };
-    use beamer_core::MAX_BUSES;
+    use crate::error::os_status;
+    use beamer_core::{MAX_BUSES, MAX_CHANNELS};
     use std::ffi::CStr;
 
     /// An instance pointer that a test hands to a second thread.
@@ -1613,6 +1615,59 @@ mod tests {
             &bus_config,
             rendering_offline,
         )
+    }
+
+    #[test]
+    fn test_failed_allocation_leaves_the_instance_unprepared() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        assert_eq!(allocate(instance, false), 0);
+        assert!(beamer_au_is_prepared(instance));
+        assert_eq!(handle.has_render_setup(), (true, true));
+
+        // A configuration the bus validation refuses.
+        let status = allocate_with(instance, MAX_CHANNELS as u32 + 1, FRAMES as u32, false);
+        assert_eq!(status, os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED);
+
+        // Neither the old processor nor the old bus layout are left over.
+        assert!(!beamer_au_is_prepared(instance));
+        assert_eq!(handle.has_render_setup(), (false, false));
+        assert_eq!(beamer_au_get_latency_samples(instance), 0);
+
+        // An invalid buffer size is refused the same way.
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(
+            allocate_with(instance, 2, 0, false),
+            os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE
+        );
+        assert!(!beamer_au_is_prepared(instance));
+
+        // The next valid allocation prepares it again.
+        assert_eq!(allocate(instance, false), 0);
+        assert!(beamer_au_is_prepared(instance));
+        assert_eq!(handle.has_render_setup(), (true, true));
+    }
+
+    #[test]
+    fn test_allocation_after_a_panic_in_the_plugin() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+
+        // A panic while the plugin mutex was held fails the next allocation
+        // and leaves the instance unprepared.
+        handle.poison_plugin_lock();
+        assert_eq!(
+            allocate(instance, false),
+            os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT
+        );
+        assert!(!beamer_au_is_prepared(instance));
+        assert_eq!(handle.has_render_setup(), (false, false));
+
+        // The allocation after that works again.
+        assert_eq!(allocate(instance, false), 0);
+        assert!(beamer_au_is_prepared(instance));
     }
 
     #[test]

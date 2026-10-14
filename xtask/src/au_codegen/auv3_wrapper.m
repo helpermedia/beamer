@@ -630,6 +630,17 @@ static void beamer_auv3_on_loaded(void* context) {
         );
         if (result != noErr) {
             os_log_error(OS_LOG_DEFAULT, "Preparing for the new offline state failed: %d", (int)result);
+            // A failed allocation leaves the plugin unprepared. Go back to
+            // the state it was prepared for, so that rendering goes on.
+            [super setRenderingOffline:!renderingOffline];
+            beamer_au_allocate_render_resources(
+                _rustInstance,
+                _sampleRate,
+                _maxFrames,
+                _sampleFormat,
+                &_busConfig,
+                !renderingOffline
+            );
         }
     }
 }

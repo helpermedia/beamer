@@ -472,6 +472,29 @@ impl BeamerInstanceHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Whether a render block and a negotiated bus configuration are set.
+    #[cfg(test)]
+    pub(crate) fn has_render_setup(&self) -> (bool, bool) {
+        let render_block = self
+            .render_block
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        (render_block, self.lock_bus_config().is_some())
+    }
+
+    /// Poison the plugin mutex, as a plugin that panics while it holds it.
+    #[cfg(test)]
+    pub(crate) fn poison_plugin_lock(&self) {
+        let plugin = Arc::clone(&self.plugin);
+        let _ = std::thread::spawn(move || {
+            let _guard = plugin.lock();
+            panic!("a plugin call panics");
+        })
+        .join();
+        assert!(self.plugin.is_poisoned());
+    }
+
     /// How often `lock_plugin` took the plugin mutex for this instance.
     #[cfg(test)]
     pub(crate) fn plugin_lock_count(&self) -> usize {
@@ -731,6 +754,10 @@ const MAX_FRAMES_PER_RENDER: u32 = 8192;
 /// configuration. `rendering_offline` tells the plugin that the host renders
 /// without realtime deadlines, as [`ProcessMode::Offline`].
 ///
+/// When it returns an error, the instance is unprepared, also if it was
+/// prepared before: render calls return `kAudioUnitErr_Uninitialized` until
+/// an allocation succeeds.
+///
 /// # Safety
 ///
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`
@@ -754,141 +781,184 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER;
     }
 
-    // Validate sample_rate before any unsafe operations
+    let status = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        // SAFETY: bus_config validated non-null above.
+        let c_bus_config = unsafe { &*bus_config };
+        prepare_instance(
+            handle,
+            sample_rate,
+            max_frames,
+            sample_format,
+            c_bus_config,
+            rendering_offline,
+        )
+    }))
+    .unwrap_or(os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT);
+
+    // A failed allocation leaves the instance unprepared, whatever it was
+    // before: no processor, no bus configuration and no render block. A
+    // host that sees the error does not render with the old setup either.
+    if status != os_status::NO_ERR {
+        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
+        let handle = unsafe { &*instance };
+        let _ = catch_unwind(AssertUnwindSafe(|| leave_unprepared(handle)));
+    }
+
+    status
+}
+
+/// Prepare the plugin for a configuration and install a new render block.
+fn prepare_instance(
+    handle: &BeamerInstanceHandle,
+    sample_rate: f64,
+    max_frames: u32,
+    sample_format: BeamerAuSampleFormat,
+    c_bus_config: &BeamerAuBusConfig,
+    rendering_offline: bool,
+) -> i32 {
     if sample_rate <= 0.0 || sample_rate > MAX_SAMPLE_RATE || !sample_rate.is_finite() {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
-    // Validate max_frames before any unsafe operations
     if max_frames == 0 || max_frames > MAX_FRAMES_PER_RENDER {
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
-    // Validate bus_config contents before dereferencing fields in loops
-    // SAFETY: bus_config was validated as non-null above
-    let (input_bus_count, output_bus_count) = unsafe {
-        let c_bus_config = &*bus_config;
-        (c_bus_config.input_bus_count, c_bus_config.output_bus_count)
-    };
-
-    if input_bus_count as usize > MAX_BUSES {
+    if c_bus_config.input_bus_count as usize > MAX_BUSES {
         log::error!(
             "Invalid input_bus_count: {} (must be <= {})",
-            input_bus_count,
+            c_bus_config.input_bus_count,
             MAX_BUSES
         );
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
-    if output_bus_count as usize > MAX_BUSES {
+    if c_bus_config.output_bus_count as usize > MAX_BUSES {
         log::error!(
             "Invalid output_bus_count: {} (must be <= {})",
-            output_bus_count,
+            c_bus_config.output_bus_count,
             MAX_BUSES
         );
         return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null at function start. Caller guarantees valid pointer.
-        let handle = unsafe { &*instance };
-        // SAFETY: bus_config validated non-null at function start.
-        let c_bus_config = unsafe { &*bus_config };
+    // Convert bus configuration (bus counts already validated above).
+    let rust_bus_config = bus_config_from_c(c_bus_config);
 
-        // Take the current render block out first. This waits for a render call
-        // that is in progress (it holds the read lock while it processes) and
-        // makes the following calls return an error until the new block is
-        // installed. A prepared instance can so be prepared again while the
-        // host keeps rendering.
-        match handle.render_block.write() {
-            Ok(mut guard) => *guard = None,
-            Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
-        }
+    // Validate bus configuration.
+    if let Err(_e) = rust_bus_config.validate() {
+        return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
+    }
 
-        // Convert bus configuration (bus counts already validated above)
-        let rust_bus_config = bus_config_from_c(c_bus_config);
+    // Take the current render block out. This waits for a render call that
+    // is in progress (it holds the read lock while it processes) and makes
+    // the following calls return an error until the new block is installed.
+    // A prepared instance can so be prepared again while the host keeps
+    // rendering.
+    match handle.render_block.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+    }
 
-        // Validate bus configuration
-        if let Err(_e) = rust_bus_config.validate() {
-            return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
-        }
-
-        // Allocate resources on the plugin (calls prepare()).
-        {
-            let mut plugin = match lock_plugin(handle) {
-                Ok(guard) => guard,
-                Err(status) => return status,
-            };
-
-            // AU has two modes: rendering in real time or offline.
-            let process_mode = if rendering_offline {
-                ProcessMode::Offline
-            } else {
-                ProcessMode::Realtime
-            };
-
-            let prepared = plugin.allocate_render_resources(
-                sample_rate,
-                max_frames,
-                &rust_bus_config,
-                process_mode,
-            );
-
-            if prepared.is_err() {
-                return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
-            }
-
-            // A new processor needs no reset any more, and the host may ask
-            // for its latency and tail before the first render call.
-            handle.shared.clear_reset_request();
-            handle
-                .shared
-                .publish_timing(plugin.latency_samples(), plugin.tail_samples());
-        }
-
-        // Create the render block based on sample format
-        let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
-            BeamerAuSampleFormat::Float32 => {
-                let storage = ProcessBufferStorage::<f32>::allocate_from_config(
-                    &rust_bus_config,
-                    max_frames as usize,
-                );
-                Arc::from(create_render_block_f32(
-                    Arc::clone(&handle.plugin),
-                    Arc::clone(&handle.parameters),
-                    Arc::clone(&handle.shared),
-                    storage,
-                    max_frames,
-                    sample_rate,
-                ))
-            }
-            BeamerAuSampleFormat::Float64 => {
-                let storage = ProcessBufferStorage::<f64>::allocate_from_config(
-                    &rust_bus_config,
-                    max_frames as usize,
-                );
-                Arc::from(create_render_block_f64(
-                    Arc::clone(&handle.plugin),
-                    Arc::clone(&handle.parameters),
-                    Arc::clone(&handle.shared),
-                    storage,
-                    max_frames,
-                    sample_rate,
-                ))
-            }
+    // Allocate resources on the plugin (calls prepare()).
+    {
+        let mut plugin = match lock_plugin(handle) {
+            Ok(guard) => guard,
+            Err(status) => return status,
         };
 
-        // Use write lock to set the render block (exclusive access)
-        match handle.render_block.write() {
-            Ok(mut guard) => *guard = Some(render_block),
-            Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+        // AU has two modes: rendering in real time or offline.
+        let process_mode = if rendering_offline {
+            ProcessMode::Offline
+        } else {
+            ProcessMode::Realtime
+        };
+
+        let prepared = plugin.allocate_render_resources(
+            sample_rate,
+            max_frames,
+            &rust_bus_config,
+            process_mode,
+        );
+
+        if prepared.is_err() {
+            return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
         }
-        *handle.lock_bus_config() = Some(rust_bus_config);
 
-        os_status::NO_ERR
-    }));
+        // A new processor needs no reset any more, and the host may ask
+        // for its latency and tail before the first render call.
+        handle.shared.clear_reset_request();
+        handle
+            .shared
+            .publish_timing(plugin.latency_samples(), plugin.tail_samples());
+    }
 
-    result.unwrap_or(os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
+    // Create the render block based on sample format.
+    let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
+        BeamerAuSampleFormat::Float32 => {
+            let storage = ProcessBufferStorage::<f32>::allocate_from_config(
+                &rust_bus_config,
+                max_frames as usize,
+            );
+            Arc::from(create_render_block_f32(
+                Arc::clone(&handle.plugin),
+                Arc::clone(&handle.parameters),
+                Arc::clone(&handle.shared),
+                storage,
+                max_frames,
+                sample_rate,
+            ))
+        }
+        BeamerAuSampleFormat::Float64 => {
+            let storage = ProcessBufferStorage::<f64>::allocate_from_config(
+                &rust_bus_config,
+                max_frames as usize,
+            );
+            Arc::from(create_render_block_f64(
+                Arc::clone(&handle.plugin),
+                Arc::clone(&handle.parameters),
+                Arc::clone(&handle.shared),
+                storage,
+                max_frames,
+                sample_rate,
+            ))
+        }
+    };
+
+    // Use write lock to set the render block (exclusive access).
+    match handle.render_block.write() {
+        Ok(mut guard) => *guard = Some(render_block),
+        Err(_) => return os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT,
+    }
+    *handle.lock_bus_config() = Some(rust_bus_config);
+
+    os_status::NO_ERR
+}
+
+/// Bring an instance into the unprepared state after a failed allocation.
+///
+/// Locks that a panic poisoned are taken over and cleared: what they guard
+/// is replaced as a whole here, so the next allocation can prepare the
+/// plugin again.
+fn leave_unprepared(handle: &BeamerInstanceHandle) {
+    *handle
+        .render_block
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    handle.render_block.clear_poison();
+
+    handle
+        .plugin
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .deallocate_render_resources();
+    handle.plugin.clear_poison();
+
+    // An unprepared plugin has no latency and no tail.
+    handle.shared.publish_timing(0, 0);
+    *handle.lock_bus_config() = None;
 }
 
 /// Deallocate render resources.
