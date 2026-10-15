@@ -254,6 +254,21 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         })
         .transpose()?;
 
+    // The subsystem is the base of the bundle ids that xtask writes.
+    let logging = config
+        .log_level
+        .as_ref()
+        .map(|level| {
+            let variant = format_ident!("{}", crate::config_file::log_level_variant(level)?);
+            Ok::<_, String>(quote! {
+                .with_logging(
+                    ::beamer::core::LogLevel::#variant,
+                    concat!("com.beamer.", env!("CARGO_PKG_NAME")),
+                )
+            })
+        })
+        .transpose()?;
+
     let subcategories = if let Some(subs) = &config.subcategories {
         let sub_tokens: Vec<TokenStream> = subs
             .iter()
@@ -286,6 +301,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #sysex_buffer_size
         #subcategories
         #gui_background_color
+        #logging
         ;
     })
 }

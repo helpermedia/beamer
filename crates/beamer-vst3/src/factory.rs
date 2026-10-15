@@ -25,8 +25,11 @@ pub struct Factory<C> {
 impl<C> Factory<C> {
     /// Create a new factory with the given configuration.
     ///
-    /// Computes the VST3 TUIDs from the unified Config.
+    /// Computes the VST3 TUIDs from the unified Config. The host asks for
+    /// the factory first, so the plugin's logger, if it has one, is
+    /// installed here.
     pub fn new(config: &'static Config) -> Self {
+        beamer_core::logging::init(config, "vst3");
         let parts = config.vst3_uid_parts();
         let component_uid = vst3::uid(parts[0], parts[1], parts[2], parts[3]);
         let controller_uid = config.vst3_controller_uid_parts().map(|p| {

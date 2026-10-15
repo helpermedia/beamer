@@ -40,6 +40,24 @@ pub struct ConfigFile {
     /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
     #[serde(default)]
     pub gui_background_color: Option<String>,
+    /// How much the plugin logs to the system log: "error", "warn", "info",
+    /// "debug" or "trace". Without it the plugin installs no logger.
+    #[serde(default)]
+    pub log_level: Option<String>,
+}
+
+/// The `LogLevel` variant for a `log_level` value.
+pub fn log_level_variant(level: &str) -> Result<&'static str, String> {
+    match level {
+        "error" => Ok("Error"),
+        "warn" => Ok("Warn"),
+        "info" => Ok("Info"),
+        "debug" => Ok("Debug"),
+        "trace" => Ok("Trace"),
+        _ => Err(format!(
+            "log_level must be \"error\", \"warn\", \"info\", \"debug\" or \"trace\", got {level:?}"
+        )),
+    }
 }
 
 /// Presets file from Presets.toml.
@@ -122,6 +140,9 @@ impl ConfigFile {
             ));
         }
         category_variant(&self.category)?;
+        if let Some(ref level) = self.log_level {
+            log_level_variant(level)?;
+        }
         if let Some(ref id) = self.vst3_id {
             validate_uuid(id, "vst3_id")?;
         }

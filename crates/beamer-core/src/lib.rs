@@ -35,6 +35,7 @@ pub mod conversion_buffers;
 pub mod config;
 pub mod gui;
 pub mod handover;
+pub mod logging;
 pub mod error;
 pub mod midi;
 pub mod midi_cc_config;
@@ -69,6 +70,7 @@ pub use conversion_buffers::ConversionBuffers;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use gui::{GuiConstraints, GuiDelegate, NoGui};
 pub use handover::{Handover, HandoverReader};
+pub use logging::LogLevel;
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types

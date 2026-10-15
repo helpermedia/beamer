@@ -365,6 +365,14 @@ pub struct Config {
     /// Maximum size of each SysEx message in bytes (AU and VST3).
     pub sysex_buffer_size: usize,
 
+    /// How much the plugin logs, or nothing for no logger (see
+    /// [`logging`](crate::logging)).
+    pub log_level: Option<crate::logging::LogLevel>,
+
+    /// The subsystem the messages are logged under, as in
+    /// `com.beamer.<package>`.
+    pub log_subsystem: &'static str,
+
     /// Embedded web assets for the GUI. Set by the proc macro from the
     /// webview directory contents.
     pub gui_assets: Option<&'static crate::EmbeddedAssets>,
@@ -525,6 +533,8 @@ impl Config {
             vst3_controller_id: None,
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
+            log_level: None,
+            log_subsystem: "",
             gui_assets: None,
             gui_url: None,
             gui_width: 0,
@@ -655,6 +665,22 @@ impl Config {
     #[doc(hidden)]
     pub const fn with_sysex_buffer_size(mut self, size: usize) -> Self {
         self.sysex_buffer_size = size;
+        self
+    }
+
+    /// Log the framework's and the plugin's messages up to `level` to the
+    /// system log, under `subsystem` (see [`logging`](crate::logging)).
+    ///
+    /// Without this the plugin installs no logger. `#[beamer::export]`
+    /// sets it from `log_level` in `Config.toml`, with the subsystem
+    /// `com.beamer.<package>`.
+    pub const fn with_logging(
+        mut self,
+        level: crate::logging::LogLevel,
+        subsystem: &'static str,
+    ) -> Self {
+        self.log_level = Some(level);
+        self.log_subsystem = subsystem;
         self
     }
 

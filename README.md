@@ -74,6 +74,7 @@ plugin_code = "gain"
 vendor = "My Company"
 url = "https://example.com"
 email = "support@example.com"
+log_level = "warn"
 ```
 
 ## Plugin Structure

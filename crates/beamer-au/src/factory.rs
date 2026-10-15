@@ -39,6 +39,9 @@ pub fn register_factory(
         .set(plugin_config)
         .expect("AU factory config already registered");
 
+    // The plugin's logger, if it has one, before anything else logs.
+    beamer_core::logging::init(plugin_config, "au");
+
     log::debug!(
         "AU factory registered: {} ({} {})",
         plugin_config.name,

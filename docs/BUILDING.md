@@ -253,7 +253,14 @@ is installed, it does not find the AUv2 with the same codes either: see
 
 ### In a DAW
 
-Install the plugin and rescan in your DAW after each new build.
+Install the plugin and rescan in your DAW after each new build. With
+`log_level` in `Config.toml`, the plugin's log messages show up in the
+macOS system log while the DAW runs it (see
+[Logging](REFERENCE.md#logging)):
+
+```bash
+cargo xtask log gain
+```
 
 ### AUv2 and AUv3 side by side
 

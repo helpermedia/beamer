@@ -200,8 +200,8 @@ impl WebViewEvents {
             "WebView event {name:?} was dropped: no plugin instance delivers this queue. \
              Does the Descriptor return it from `webview_events()`?"
         );
-        // A plugin has no logger unless its author installs one, so the
-        // message also goes to standard error.
+        // A plugin has no logger unless it sets `log_level` in its
+        // Config.toml, so the message also goes to standard error.
         log::warn!("{message}");
         eprintln!("{message}");
     }

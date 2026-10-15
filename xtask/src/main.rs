@@ -106,6 +106,10 @@ fn main() {
             uninstall_command(&args);
             return;
         }
+        "log" => {
+            log_command(&args);
+            return;
+        }
         "bundle" => {
             if args.len() < 3 || args[2].starts_with('-') {
                 print_error("bundle command requires a package name");
@@ -236,6 +240,48 @@ fn uninstall_command(args: &[String]) {
     }
 }
 
+fn log_command(args: &[String]) {
+    let package = match args.get(2) {
+        Some(package) if !package.starts_with('-') => package,
+        _ => {
+            print_error("log command requires a package name");
+            print_usage();
+            std::process::exit(1);
+        }
+    };
+    if let Some(arg) = args.get(3) {
+        print_error(&format!("unexpected argument '{}'", arg));
+        print_usage();
+        std::process::exit(1);
+    }
+    // The name goes into the predicate of the log command.
+    if !util::is_package_name(package) {
+        print_error(&format!("'{}' is not a package name", package));
+        std::process::exit(1);
+    }
+    if !cfg!(target_os = "macos") {
+        print_error("the log command reads the macOS system log and runs on macOS only");
+        std::process::exit(1);
+    }
+
+    // The subsystem a plugin with `log_level` in its Config.toml logs under.
+    let subsystem = format!("com.beamer.{}", package);
+    eprintln!("Showing the log messages of {} as they come (Ctrl+C to stop).", subsystem);
+    eprintln!("The plugin logs only with log_level set in its Config.toml.");
+    let status = std::process::Command::new("/usr/bin/log")
+        .args(["stream", "--level", "debug", "--style", "compact", "--predicate"])
+        .arg(format!("subsystem == \"{}\"", subsystem))
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(e) => {
+            print_error(&format!("could not run /usr/bin/log: {}", e));
+            std::process::exit(1);
+        }
+    }
+}
+
 fn print_usage() {
     eprintln!("Usage: cargo xtask <command> [options]");
     eprintln!();
@@ -243,6 +289,7 @@ fn print_usage() {
     eprintln!("  generate-uuid                 Generate a new UUID for plugin identification");
     eprintln!("  bundle <package> [options]    Build and bundle a plugin");
     eprintln!("  uninstall <package> [formats] Remove an installed plugin");
+    eprintln!("  log <package>                 Show the log messages of a plugin as they come (macOS)");
     eprintln!();
     eprintln!("Formats (bundle requires at least one):");
     eprintln!("  --auv2    Build AUv2 .component bundle (simple distribution, works with all DAWs)");
@@ -281,6 +328,7 @@ fn print_usage() {
     eprintln!("  cargo xtask bundle gain --auv2 --vst3 --arch universal    # AUv2 + VST3");
     eprintln!("  cargo xtask uninstall gain                                # Every format");
     eprintln!("  cargo xtask uninstall gain --auv3                         # AUv3 only");
+    eprintln!("  cargo xtask log gain                                      # Its log messages");
 }
 
 // =============================================================================

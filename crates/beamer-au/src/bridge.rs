@@ -689,7 +689,7 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
 
         // Two parameters with one id would be one parameter to the host.
         // The reason also goes to standard error: a plugin has no logger
-        // unless its author installs one.
+        // unless it sets `log_level` in its Config.toml.
         let parameters = plugin.shared_parameters();
         if let Err(error) = beamer_core::parameter_types::check_unique_ids(parameters.parameters()) {
             let name = factory::plugin_config().map_or("plugin", |config| config.name);

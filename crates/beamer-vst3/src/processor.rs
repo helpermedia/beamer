@@ -1118,7 +1118,7 @@ where
         // Two parameters with one id would be one parameter to the host,
         // and so would a parameter with an id of the wrapper's own. The
         // reason also goes to standard error: a plugin has no logger unless
-        // its author installs one.
+        // it sets `log_level` in its Config.toml.
         let parameters: &dyn beamer_core::parameter_types::Parameters = &*processor.parameters;
         let checked = beamer_core::parameter_types::check_unique_ids(parameters)
             .and_then(|()| check_reserved_ids(parameters));

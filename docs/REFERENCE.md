@@ -31,6 +31,7 @@ plugin_code = "mypg"
 vendor = "My Company"
 url = "https://example.com"
 email = "support@example.com"
+log_level = "warn"
 
 # Optional: Advanced SysEx configuration
 # sysex_slots = 64
@@ -58,6 +59,7 @@ email = "support@example.com"
 | `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
 | `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
+| `log_level` | String | Log the framework's and the plugin's messages up to this level: `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"` (see [Logging](#logging)). Without it the plugin installs no logger |
 
 **Advanced Optional Fields:**
 
@@ -80,6 +82,20 @@ email = "support@example.com"
 - The 4-character codes are used for both AU FourCC identifiers and VST3 UUID derivation
 - `category` determines the AU component type (`aufx`, `aumu`, `aumi`, `augn`)
 - By convention fields are ordered as in the example above: first identity (`name`, `category`, `subcategories`), then codes (`manufacturer_code`, `plugin_code`) and finally metadata (`vendor`, `url`, `email`)
+
+#### Logging
+
+The framework reports problems through the `log` crate: entries of a saved state it had to skip, MIDI or parameter events the audio thread had to drop, a WebView that could not load. A plugin sees these, and its own `log` messages, once it sets `log_level` in `Config.toml`. The wrappers then install a logger when the plugin is loaded.
+
+On macOS the messages go to the unified system log, under the subsystem `com.beamer.<package>` and a category per format (`vst3`, `au`). This works in every host, also in the sandboxed process of an AUv3. Read them as they come with:
+
+```bash
+cargo xtask log <package>
+```
+
+or later with `/usr/bin/log show --last 1h --predicate 'subsystem == "com.beamer.<package>"'` (the full path, because `log` is a different command in the zsh shell), or in Console.app. Warnings and errors stay in the system log, debug messages only show up while you watch. Other platforms do not log yet.
+
+Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread, and a plugin's `process()` should not log either.
 
 ### Three-Struct Pattern
 
