@@ -37,10 +37,11 @@ use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::error::{os_status, PluginResult};
 use crate::instance::{AuPluginInstance, SharedParameters};
 use crate::objc_block;
-use crate::shared_state::{RenderWarning, SharedState};
+use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, Sample, MAX_BUSES,
+    AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
+    MAX_BUSES,
     MAX_CHANNELS, MAX_SYSEX_SIZE,
 };
 
@@ -1432,10 +1433,10 @@ impl<S: RenderSample> RenderBlock<S> {
         let midi_list_too_long =
             unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples) };
         if midi_list_too_long {
-            self.shared.note_render_warning(RenderWarning::EventListTooLong);
+            self.shared.note_render_warning(ProcessWarning::EventListTooLong);
         }
         if midi_buffer.has_overflowed() {
-            self.shared.note_render_warning(RenderWarning::MidiInputOverflow);
+            self.shared.note_render_warning(ProcessWarning::MidiInputOverflow);
         }
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
@@ -1468,10 +1469,10 @@ impl<S: RenderSample> RenderBlock<S> {
             )
         };
         if parameter_list_too_long {
-            self.shared.note_render_warning(RenderWarning::EventListTooLong);
+            self.shared.note_render_warning(ProcessWarning::EventListTooLong);
         }
         if parameter_events.overflowed {
-            self.shared.note_render_warning(RenderWarning::ParameterEventOverflow);
+            self.shared.note_render_warning(ProcessWarning::ParameterEventOverflow);
         }
 
         // Sort by sample offset to enable sample-accurate application via sub-block processing.
@@ -1824,7 +1825,7 @@ impl<S: RenderSample> RenderBlock<S> {
             send_midi_output(midi_output.as_slice(), sink);
         }
         if midi_output.has_overflowed() {
-            self.shared.note_render_warning(RenderWarning::MidiOutputOverflow);
+            self.shared.note_render_warning(ProcessWarning::MidiOutputOverflow);
         }
     }
 }

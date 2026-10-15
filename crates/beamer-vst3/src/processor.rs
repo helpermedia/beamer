@@ -26,7 +26,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use log::warn;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
@@ -35,7 +34,8 @@ use beamer_core::{
     Descriptor, FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState,
     MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
-    ProcessBufferStorage, ProcessContext as CoreProcessContext, Processor, ScaleInfo, SysEx,
+    ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
+    ProcessWarnings, Processor, ScaleInfo, SysEx,
     SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
@@ -368,6 +368,10 @@ where
     /// A state was loaded: `process()` resets the parameter smoothers before
     /// its next block. They belong to the audio thread.
     smoothing_reset_requested: AtomicBool,
+    /// What `process()` had to drop since a host thread last looked. The
+    /// audio thread does not log: `setupProcessing()`, `setActive()` and
+    /// `terminate()` log them.
+    process_warnings: ProcessWarnings,
     /// The `state_generation()` of the parameters that the host knows
     /// about: at creation and after a load. Shared with the editor, which
     /// tells the host when it changed.
@@ -463,6 +467,7 @@ where
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
+            process_warnings: ProcessWarnings::default(),
             #[cfg(feature = "webview")]
             known_state_generation,
             _marker: PhantomData,
@@ -1161,6 +1166,7 @@ where
     }
 
     unsafe fn terminate(&self) -> tresult {
+        self.process_warnings.log();
         // The host is done with this instance: let go of its handler.
         // SAFETY: Null is allowed, and the host makes no other controller
         // call at the same time.
@@ -1300,6 +1306,7 @@ where
     }
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
+        self.process_warnings.log();
         // set_active is only meaningful when prepared (processor exists)
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
         if let Some(processor) = unsafe { &mut *self.processor.get() } {
@@ -1517,6 +1524,7 @@ where
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
+        self.process_warnings.log();
         if setup.is_null() {
             return kInvalidArgument;
         }
@@ -1737,10 +1745,7 @@ where
 
         // Check for MIDI input buffer overflow (once per block)
         if midi_input.has_overflowed() {
-            warn!(
-                "MIDI input buffer overflow: {} events max, some events were dropped",
-                beamer_core::midi::MAX_MIDI_EVENTS
-            );
+            self.process_warnings.note(ProcessWarning::MidiInputOverflow);
         }
 
         // Clear and prepare MIDI output buffer and SysEx pool
@@ -1777,10 +1782,7 @@ where
                     }
                 }
             }
-            // Log that we recovered from overflow
-            warn!(
-                "SysEx fallback: emitted delayed messages from previous block overflow"
-            );
+            self.process_warnings.note(ProcessWarning::SysExOutputDelayed);
         }
         // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
@@ -1802,18 +1804,12 @@ where
 
         // Check for MIDI buffer overflow (once per block)
         if midi_output.has_overflowed() {
-            warn!(
-                "MIDI output buffer overflow: {} events reached capacity, some events were dropped",
-                midi_output.len()
-            );
+            self.process_warnings.note(ProcessWarning::MidiOutputOverflow);
         }
 
         // Check for SysEx pool overflow (once per block)
         if sysex_pool.has_overflowed() {
-            warn!(
-                "SysEx output pool overflow: {} slots exhausted, some SysEx messages were dropped",
-                sysex_pool.capacity()
-            );
+            self.process_warnings.note(ProcessWarning::SysExOutputOverflow);
         }
 
         // 3. Extract transport info from VST3 ProcessContext
