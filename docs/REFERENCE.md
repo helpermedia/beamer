@@ -677,7 +677,9 @@ pub struct SamplerParameters {
 
 **Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps a setting in a `State`.
 
-**Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change. Audio Units have no such call.
+**Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change.
+
+Audio Units have no such call, so their wrappers do not tell the host. The nearest thing, a change notification for `kAudioUnitProperty_ClassInfo` in an AUv2 or for the `fullState` property in an AUv3, does not make Reaper mark the project as modified. In practice both hosts that were tried still ask: Logic asks to save on closing even when nothing changed, and Reaper marks the project as modified whenever a plugin window closes. The fields are always saved with the plugin state when the user saves the project. A plugin that needs every Audio Unit host to ask keeps such a value in a parameter instead.
 
 #### Low-Level Parameters Trait
 
