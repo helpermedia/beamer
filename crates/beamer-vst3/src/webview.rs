@@ -9,9 +9,11 @@ use std::sync::Arc;
 use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
-use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandler2, IComponentHandler2Trait};
+use vst3::Steinberg::Vst::{IComponentHandler2, IComponentHandler2Trait};
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef};
+
+use crate::component_handler::ComponentHandler;
 
 /// Shared context between WebViewPlugView and its IPC callbacks.
 ///
@@ -21,8 +23,8 @@ struct IpcContext {
     /// The parameters of the plugin (trait object for type-erased access).
     /// The view shares them with the plugin for as long as it lives.
     params: Arc<dyn ParameterStore>,
-    /// Component handler for host notification. Null until set.
-    handler: *mut IComponentHandler,
+    /// The component handler the host set last, shared with the controller.
+    handler: Arc<ComponentHandler>,
     /// Custom WebView message handler (invoke/event routing).
     webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The plugin's queue of events for the web UI, if it has one.
@@ -76,15 +78,16 @@ impl IpcContext {
     /// Parameters do not count here: the host learns about their changes
     /// through the edits.
     fn report_state_change(&self) {
+        // Without a handler the change stays unreported until there is one.
+        // SAFETY: handler is null or a valid COM pointer the slot holds a
+        // reference to.
+        let Some(handler) = (unsafe { ComRef::from_raw(self.handler.get()) }) else {
+            return;
+        };
         let generation = self.params.state_generation();
         if self.known_state_generation.swap(generation, Ordering::Relaxed) == generation {
             return;
         }
-        // SAFETY: handler is null or a valid COM pointer the view holds a
-        // reference to.
-        let Some(handler) = (unsafe { ComRef::from_raw(self.handler) }) else {
-            return;
-        };
         // A host without IComponentHandler2 cannot be told.
         if let Some(handler) = handler.cast::<IComponentHandler2>() {
             // SAFETY: handler is a valid COM pointer.
@@ -109,44 +112,16 @@ unsafe impl Send for WebViewPlugView {}
 // SAFETY: VST3 IPlugView methods are called from the UI thread only.
 unsafe impl Sync for WebViewPlugView {}
 
-/// AddRef a non-null IComponentHandler.
-///
-/// # Safety
-///
-/// `handler` must be a valid COM pointer or null.
-unsafe fn handler_addref(handler: *mut IComponentHandler) {
-    if !handler.is_null() {
-        let unknown = handler as *mut FUnknown;
-        // SAFETY: handler is non-null and caller guarantees valid COM pointer with valid vtbl.
-        unsafe { ((*(*unknown).vtbl).addRef)(unknown) };
-    }
-}
-
-/// Release a non-null IComponentHandler.
-///
-/// # Safety
-///
-/// `handler` must be a valid COM pointer or null.
-unsafe fn handler_release(handler: *mut IComponentHandler) {
-    if !handler.is_null() {
-        let unknown = handler as *mut FUnknown;
-        // SAFETY: handler is non-null and caller guarantees valid COM pointer with valid vtbl.
-        unsafe { ((*(*unknown).vtbl).release)(unknown) };
-    }
-}
-
 impl WebViewPlugView {
     /// Create a new WebView plug view with parameter sync support.
     ///
-    /// # Safety
-    ///
-    /// `component_handler` is the IComponentHandler pointer (may be null initially).
-    /// If non-null, this function AddRefs it; the view owns a reference until dropped.
-    pub unsafe fn new(
+    /// `component_handler` is the controller's slot for the host's handler,
+    /// so that the view always calls the handler the host set last.
+    pub fn new(
         config: WebViewConfig<'static>,
         delegate: Box<dyn GuiDelegate>,
         params: Arc<dyn ParameterStore>,
-        component_handler: *mut IComponentHandler,
+        component_handler: Arc<ComponentHandler>,
         webview_handler: Option<Arc<dyn WebViewHandler>>,
         events: Option<WebViewEvents>,
         known_state_generation: Arc<AtomicU64>,
@@ -157,10 +132,6 @@ impl WebViewPlugView {
         // NAN as sentinel: NAN != NAN guarantees the first sync tick sends all values.
         let param_count = params.count();
         let last_values = vec![f64::NAN; param_count];
-
-        // AddRef the handler so the view owns an independent reference.
-        // SAFETY: Caller guarantees component_handler is a valid COM pointer or null.
-        unsafe { handler_addref(component_handler) };
 
         Self {
             platform: UnsafeCell::new(None),
@@ -179,23 +150,6 @@ impl WebViewPlugView {
                 webview: std::ptr::null(),
                 sync_timer: std::ptr::null_mut(),
             })),
-        }
-    }
-
-    /// Update the component handler pointer (called when host sets a new handler).
-    ///
-    /// # Safety
-    ///
-    /// `handler` must be a valid COM pointer or null.
-    pub unsafe fn set_component_handler(&self, handler: *mut IComponentHandler) {
-        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-        let ipc = unsafe { &mut *self.ipc.get() };
-        let old = ipc.handler;
-        ipc.handler = handler;
-        // SAFETY: handler is a valid COM pointer or null per caller contract.
-        unsafe {
-            handler_addref(handler);
-            handler_release(old);
         }
     }
 }
@@ -239,10 +193,11 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
             let Some(value) = msg.get("value").and_then(|v| v.as_f64()) else { return };
             params.set_normalized(id, value);
-            if !ipc.handler.is_null() {
+            let handler = ipc.handler.get();
+            if !handler.is_null() {
                 // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
                 unsafe {
-                    ((*(*ipc.handler).vtbl).performEdit)(ipc.handler, id, value);
+                    ((*(*handler).vtbl).performEdit)(handler, id, value);
                 }
             }
             // Echo the authoritative values back to JS immediately so
@@ -271,19 +226,21 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
         }
         "param:begin" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
-            if !ipc.handler.is_null() {
+            let handler = ipc.handler.get();
+            if !handler.is_null() {
                 // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
                 unsafe {
-                    ((*(*ipc.handler).vtbl).beginEdit)(ipc.handler, id);
+                    ((*(*handler).vtbl).beginEdit)(handler, id);
                 }
             }
         }
         "param:end" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
-            if !ipc.handler.is_null() {
+            let handler = ipc.handler.get();
+            if !handler.is_null() {
                 // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
                 unsafe {
-                    ((*(*ipc.handler).vtbl).endEdit)(ipc.handler, id);
+                    ((*(*handler).vtbl).endEdit)(handler, id);
                 }
             }
         }
@@ -747,11 +704,6 @@ impl Drop for WebViewPlugView {
             self.delegate.get_mut().gui_closed();
         }
 
-        // Release our AddRef'd IComponentHandler reference.
-        // SAFETY: handler was AddRef'd in new() or set_component_handler().
-        unsafe { handler_release(ipc.handler) };
-        ipc.handler = std::ptr::null_mut();
-
         let frame = *self.frame.get_mut();
         if !frame.is_null() {
             // SAFETY: frame is a valid COM object. We hold a reference from setFrame.
@@ -837,6 +789,7 @@ fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
 #[cfg(test)]
 mod tests {
     use beamer_core::NoParameters;
+    use vst3::Steinberg::Vst::IComponentHandler;
 
     use super::*;
 
@@ -844,7 +797,7 @@ mod tests {
     fn context(events: Option<WebViewEvents>) -> IpcContext {
         IpcContext {
             params: Arc::new(NoParameters),
-            handler: std::ptr::null_mut(),
+            handler: Arc::new(ComponentHandler::new()),
             webview_handler: None,
             events,
             known_state_generation: Arc::new(AtomicU64::new(0)),
@@ -999,20 +952,24 @@ mod tests {
             .expect("the recorder is an IComponentHandler")
             .as_ptr();
         let known = Arc::new(AtomicU64::new(parameters.state_generation()));
+        let slot = Arc::new(ComponentHandler::new());
         let ipc = IpcContext {
             params: Arc::clone(&parameters) as Arc<dyn ParameterStore>,
-            handler,
+            handler: Arc::clone(&slot),
             known_state_generation: Arc::clone(&known),
             ..context(None)
         };
         let dirty = || host.dirty.load(Ordering::Relaxed);
 
-        // A tick after nothing changed.
+        // A State field is set while the host has not set its handler yet.
+        parameters.zoom.set(2);
         ipc.report_state_change();
         assert_eq!(dirty(), 0);
 
-        // A tick after a State field was set, then one after nothing changed.
-        parameters.zoom.set(2);
+        // The host sets its handler after the view was created: the view
+        // uses it, and the change is reported now.
+        // SAFETY: handler is a valid COM pointer, and the test is one thread.
+        unsafe { slot.set(handler) };
         ipc.report_state_change();
         assert_eq!(dirty(), 1);
         ipc.report_state_change();

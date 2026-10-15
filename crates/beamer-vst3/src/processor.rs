@@ -39,6 +39,7 @@ use beamer_core::{
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
+use crate::component_handler::ComponentHandler;
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -346,9 +347,8 @@ where
     /// Used for the program change parameter exposed to the host. Set by
     /// host threads and by process(), read by host threads.
     current_preset_index: AtomicI32,
-    /// Component handler for notifying host of parameter changes
-    /// Stored as raw pointer - host manages lifetime, we just AddRef/Release
-    component_handler: UnsafeCell<*mut IComponentHandler>,
+    /// The component handler the host set, shared with the editors.
+    component_handler: Arc<ComponentHandler>,
     /// Custom WebView message handler (invoke/event routing).
     webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The plugin's queue of events for the web UI, if it has one.
@@ -385,7 +385,8 @@ where
 // - The parameters are Sync, and process() reaches them through its own
 //   `Arc`, not through the descriptor
 // - The descriptor is Sync and behind an RwLock that only host threads take
-// - component_handler is used by the controller thread alone
+// - component_handler is used by controller calls, which the host never
+//   makes concurrently
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), the current preset,
 //   latency, tail and the request to reset the smoothers
@@ -443,7 +444,7 @@ where
             midi_cc_state,
             // Default to first preset.
             current_preset_index: AtomicI32::new(0),
-            component_handler: UnsafeCell::new(std::ptr::null_mut()),
+            component_handler: Arc::new(ComponentHandler::new()),
             webview_handler,
             webview_events,
             latency_samples: AtomicU32::new(0),
@@ -1146,6 +1147,10 @@ where
     }
 
     unsafe fn terminate(&self) -> tresult {
+        // The host is done with this instance: let go of its handler.
+        // SAFETY: Null is allowed, and the host makes no other controller
+        // call at the same time.
+        unsafe { self.component_handler.set(std::ptr::null_mut()) };
         kResultOk
     }
 }
@@ -2147,9 +2152,8 @@ where
                 Presets::apply(preset_index, self.parameters());
                 self.current_preset_index.store(preset_index as i32, Ordering::Relaxed);
 
-                // Notify host that parameter values changed so UI refreshes
-                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                let handler = unsafe { *self.component_handler.get() };
+                // Notify host that parameter values changed so UI refreshes.
+                let handler = self.component_handler.get();
                 if !handler.is_null() {
                     // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
                     unsafe {
@@ -2170,26 +2174,9 @@ where
     }
 
     unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
-        let handler_ptr = self.component_handler.get();
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        let old_handler = unsafe { *handler_ptr };
-
-        // Release old handler if present
-        if !old_handler.is_null() {
-            let unknown = old_handler as *mut FUnknown;
-            // SAFETY: old_handler is non-null and is valid COM pointer with valid vtbl.
-            unsafe { ((*(*unknown).vtbl).release)(unknown) };
-        }
-
-        // Store and AddRef new handler if present
-        if !handler.is_null() {
-            let unknown = handler as *mut FUnknown;
-            // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-            unsafe { ((*(*unknown).vtbl).addRef)(unknown) };
-        }
-
-        // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-        unsafe { *handler_ptr = handler };
+        // SAFETY: handler is a valid COM pointer or null, and the host makes
+        // no other controller call at the same time.
+        unsafe { self.component_handler.set(handler) };
         kResultOk
     }
 
@@ -2232,21 +2219,15 @@ where
             };
             let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
 
-            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-            let component_handler = unsafe { *self.component_handler.get() };
-
-            // SAFETY: component_handler is null or the handler the host set.
-            let view = unsafe {
-                crate::webview::WebViewPlugView::new(
-                    config,
-                    delegate,
-                    self.shared_parameter_store(),
-                    component_handler,
-                    self.webview_handler.clone(),
-                    self.webview_events.clone(),
-                    Arc::clone(&self.known_state_generation),
-                )
-            };
+            let view = crate::webview::WebViewPlugView::new(
+                config,
+                delegate,
+                self.shared_parameter_store(),
+                Arc::clone(&self.component_handler),
+                self.webview_handler.clone(),
+                self.webview_events.clone(),
+                Arc::clone(&self.known_state_generation),
+            );
             let wrapper = vst3::ComWrapper::new(view);
             match wrapper.to_com_ptr::<IPlugView>() {
                 Some(ptr) => ptr.into_raw(),

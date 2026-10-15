@@ -38,6 +38,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+pub mod component_handler;
 pub mod export;
 pub mod factory;
 pub mod processor;
