@@ -109,9 +109,17 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     BeamerAuWebViewEventsHandle _events;
     double* _lastParamValues;
     uint32_t _paramCount;
-    // The view controller of the current editor, as an identity only: it is
-    // neither retained nor messaged.
-    const void* _editorController;
+    // The view of the current editor, as an identity only: it is neither
+    // retained nor messaged.
+    const void* _editorView;
+    // A WebView whose view went away, destroyed on the next turn of the run
+    // loop or with the wrapper.
+    void* _retiredWebviewHandle;
+    // Whether the view of the editor is in a window that is shown.
+    BOOL _editorVisible;
+    // Counts the times the editor was hidden, so that a teardown that waits
+    // for the next turn of the run loop knows whether it is still due.
+    NSUInteger _editorHideCount;
     _Atomic BOOL _settingFromWebView;
 }
 
@@ -123,20 +131,50 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
 @interface {{WRAPPER_CLASS}} ()
 @property (nonatomic) AUAudioUnitBusArray* inputBusArray;
 @property (nonatomic) AUAudioUnitBusArray* outputBusArray;
-- (void)_editorWillAppearIn:(NSView*)view controller:(const void*)controller;
-- (void)_editorDidLayout:(NSView*)view controller:(const void*)controller;
-- (void)_editorDidDisappear:(const void*)controller;
-- (void)_editorGone:(const void*)controller;
+- (void)_editorShown:(NSView*)view;
+- (void)_editorHidden:(NSView*)view;
+- (void)_editorResized:(NSView*)view;
+- (void)_editorGone:(const void*)view;
 @end
 
 // =============================================================================
-// MARK: - Editor View Controller
+// MARK: - Editor View and View Controller
 // =============================================================================
 
-// The view controller of an editor the wrapper hands to a host. It tells the
-// wrapper when its view enters and leaves a window and when the host lets it
-// go, so that the WebView and its sync timer only run while the editor is
-// shown.
+// The view of an editor the wrapper hands to a host. The editor lives as
+// long as this view: some hosts keep only the view and let the view
+// controller go. It tells the wrapper when it enters or leaves a window,
+// when its size changes and when the host lets it go, so that the WebView
+// and its sync timer only run while the editor can be seen.
+@interface {{WRAPPER_CLASS}}EditorView : NSView
+@property (nonatomic, weak) {{WRAPPER_CLASS}}* wrapper;
+@end
+
+@implementation {{WRAPPER_CLASS}}EditorView
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window != nil) {
+        [self.wrapper _editorShown:self];
+    } else {
+        [self.wrapper _editorHidden:self];
+    }
+}
+
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
+    [self.wrapper _editorResized:self];
+}
+
+- (void)dealloc {
+    // The host let the view go, possibly without taking it out of a window.
+    [self.wrapper _editorGone:(__bridge const void*)self];
+}
+
+@end
+
+// The view controller of an editor. For hosts that keep it, it also reports
+// a window that is hidden and shown again with the view still in it.
 @interface {{WRAPPER_CLASS}}EditorController : NSViewController
 @property (nonatomic, weak) {{WRAPPER_CLASS}}* wrapper;
 @end
@@ -145,22 +183,12 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
 
 - (void)viewWillAppear {
     [super viewWillAppear];
-    [self.wrapper _editorWillAppearIn:self.view controller:(__bridge const void*)self];
-}
-
-- (void)viewDidLayout {
-    [super viewDidLayout];
-    [self.wrapper _editorDidLayout:self.view controller:(__bridge const void*)self];
+    [self.wrapper _editorShown:self.view];
 }
 
 - (void)viewDidDisappear {
     [super viewDidDisappear];
-    [self.wrapper _editorDidDisappear:(__bridge const void*)self];
-}
-
-- (void)dealloc {
-    // The host may let the editor go without its view leaving a window.
-    [self.wrapper _editorGone:(__bridge const void*)self];
+    [self.wrapper _editorHidden:self.view];
 }
 
 @end
@@ -329,6 +357,7 @@ static void beamer_auv3_on_loaded(void* context) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
     }
+    [self _destroyRetiredWebView];
 
     if (_rustInstance != NULL) {
         if (_resourcesAllocated) {
@@ -1212,17 +1241,19 @@ static void beamer_auv3_on_loaded(void* context) {
     // A new editor replaces the previous one if the host calls this method
     // again.
     [self _closeEditor];
-    _editorController = NULL;
+    _editorView = NULL;
+    _editorVisible = NO;
+    // A teardown of the previous editor that still waits is no longer due.
+    _editorHideCount++;
 
     uint32_t width = 0, height = 0;
     beamer_au_get_gui_size(_rustInstance, &width, &height);
 
-    {{WRAPPER_CLASS}}EditorController* vc = [[{{WRAPPER_CLASS}}EditorController alloc] init];
-    NSView* container = [[NSView alloc]
+    {{WRAPPER_CLASS}}EditorView* container = [[{{WRAPPER_CLASS}}EditorView alloc]
         initWithFrame:NSMakeRect(0, 0, width, height)];
+    {{WRAPPER_CLASS}}EditorController* vc = [[{{WRAPPER_CLASS}}EditorController alloc] init];
     vc.view = container;
     vc.preferredContentSize = NSMakeSize(width, height);
-    vc.wrapper = self;
 
     // Create the WebView right away, so that its content loads before the
     // host shows the view.
@@ -1230,7 +1261,9 @@ static void beamer_auv3_on_loaded(void* context) {
         completionHandler(nil);
         return;
     }
-    _editorController = (__bridge const void*)vc;
+    _editorView = (__bridge const void*)container;
+    container.wrapper = self;
+    vc.wrapper = self;
 
     completionHandler(vc);
 }
@@ -1311,18 +1344,46 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 }
 
-// The host shows the editor again after it hid it: build the WebView that
-// -_editorDidDisappear: removed.
-- (void)_editorWillAppearIn:(NSView*)view controller:(const void*)controller {
-    if (controller != _editorController || _webviewHandle != NULL) {
+// The view of the editor entered a window: build the WebView again if
+// -_editorHidden: removed it.
+- (void)_editorShown:(NSView*)view {
+    if ((__bridge const void*)view != _editorView) {
         return;
     }
-    [self _openEditorIn:view];
+    _editorVisible = YES;
+    if (_webviewHandle == NULL) {
+        [self _openEditorIn:view];
+    }
 }
 
-// The host laid out the view of the editor: the WebView follows its size.
-- (void)_editorDidLayout:(NSView*)view controller:(const void*)controller {
-    if (controller != _editorController) {
+// The view of the editor left its window or the window was hidden. Nothing
+// runs for it until it is shown again. The teardown waits for the next turn
+// of the run loop: a host that moves the view to another window takes it
+// out of one and puts it into the other right away, and the page keeps its
+// state then.
+- (void)_editorHidden:(NSView*)view {
+    if ((__bridge const void*)view != _editorView) {
+        return;
+    }
+    _editorVisible = NO;
+    NSUInteger hideCount = ++_editorHideCount;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf _closeHiddenEditor:hideCount];
+    });
+}
+
+// Close the editor if it was not shown again since it was hidden.
+- (void)_closeHiddenEditor:(NSUInteger)hideCount {
+    if (_editorVisible || hideCount != _editorHideCount) {
+        return;
+    }
+    [self _closeEditor];
+}
+
+// The size of the view of the editor changed: the WebView follows it.
+- (void)_editorResized:(NSView*)view {
+    if ((__bridge const void*)view != _editorView) {
         return;
     }
     [self _fitEditorTo:view];
@@ -1337,22 +1398,35 @@ static void beamer_auv3_on_loaded(void* context) {
     beamer_webview_set_frame(_webviewHandle, 0, 0, (int32_t)size.width, (int32_t)size.height);
 }
 
-// The view of the editor left its window. Nothing runs for it until it is
-// shown again, unless a newer editor replaced it.
-- (void)_editorDidDisappear:(const void*)controller {
-    if (controller != _editorController) {
+// The host let the view of the editor go. Called from the view's dealloc,
+// where the view must not be changed: removing the WebView from it could
+// keep the view alive past its dealloc. So the timer and the event queue
+// stop now and the WebView is destroyed on the next turn of the run loop.
+- (void)_editorGone:(const void*)view {
+    if (view != _editorView) {
         return;
     }
+    _editorView = NULL;
+    void* webviewHandle = _webviewHandle;
+    _webviewHandle = NULL;
     [self _closeEditor];
+    if (webviewHandle == NULL) {
+        return;
+    }
+    [self _destroyRetiredWebView];
+    _retiredWebviewHandle = webviewHandle;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf _destroyRetiredWebView];
+    });
 }
 
-// The host let the editor go.
-- (void)_editorGone:(const void*)controller {
-    if (controller != _editorController) {
-        return;
+// Destroy the WebView that -_editorGone: retired, if it is still there.
+- (void)_destroyRetiredWebView {
+    if (_retiredWebviewHandle != NULL) {
+        beamer_webview_destroy(_retiredWebviewHandle);
+        _retiredWebviewHandle = NULL;
     }
-    [self _closeEditor];
-    _editorController = NULL;
 }
 
 @end
