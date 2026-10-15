@@ -21,7 +21,9 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+#[cfg(feature = "webview")]
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use log::warn;
@@ -34,12 +36,14 @@ use beamer_core::{
     MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, Processor, ScaleInfo, SysEx,
-    SysExOutputPool, Transport, WebViewEvents, WebViewHandler, MAX_BUSES, MAX_CHANNELS,
+    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
 use crate::component_handler::ComponentHandler;
+#[cfg(feature = "webview")]
+use beamer_core::{WebViewEvents, WebViewHandler};
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -350,8 +354,10 @@ where
     /// The component handler the host set, shared with the editors.
     component_handler: Arc<ComponentHandler>,
     /// Custom WebView message handler (invoke/event routing).
+    #[cfg(feature = "webview")]
     webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The plugin's queue of events for the web UI, if it has one.
+    #[cfg(feature = "webview")]
     webview_events: Option<WebViewEvents>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
@@ -365,6 +371,7 @@ where
     /// The `state_generation()` of the parameters that the host knows
     /// about: at creation and after a load. Shared with the editor, which
     /// tells the host when it changed.
+    #[cfg(feature = "webview")]
     known_state_generation: Arc<AtomicU64>,
     /// Marker for the plugin type and preset collection
     _marker: PhantomData<(P, Presets)>,
@@ -411,16 +418,20 @@ where
         let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
 
         // The WebView handler (if any) of the plugin.
+        #[cfg(feature = "webview")]
         let webview_handler = plugin.webview_handler();
 
-        // The plugin's queue of events for the web UI. Taking it here
-        // marks it as delivered by this instance.
-        let webview_events = plugin.webview_events().cloned();
-        if let Some(events) = &webview_events {
+        // The plugin's queue of events for the web UI. Claiming it marks it
+        // as delivered by this instance; without an editor its events are
+        // dropped, as while no editor is open.
+        if let Some(events) = plugin.webview_events() {
             events.claim();
         }
+        #[cfg(feature = "webview")]
+        let webview_events = plugin.webview_events().cloned();
 
         let parameters = Arc::clone(plugin.parameters());
+        #[cfg(feature = "webview")]
         let known_state_generation = Arc::new(AtomicU64::new(parameters.state_generation()));
 
         Self {
@@ -445,11 +456,14 @@ where
             // Default to first preset.
             current_preset_index: AtomicI32::new(0),
             component_handler: Arc::new(ComponentHandler::new()),
+            #[cfg(feature = "webview")]
             webview_handler,
+            #[cfg(feature = "webview")]
             webview_events,
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
+            #[cfg(feature = "webview")]
             known_state_generation,
             _marker: PhantomData,
         }
@@ -1344,6 +1358,7 @@ where
                 // not ramp in.
                 self.smoothing_reset_requested.store(true, Ordering::Release);
                 // A loaded state is one the host knows.
+                #[cfg(feature = "webview")]
                 self.known_state_generation
                     .store(self.parameters().state_generation(), Ordering::Relaxed);
                 kResultOk
