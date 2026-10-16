@@ -391,6 +391,10 @@ pub fn build_native(
         return Err(format!("Built library not found: {}", dylib_path.display()));
     }
 
+    if target.ends_with("-apple-darwin") {
+        check_string_table_alignment(&dylib_path)?;
+    }
+
     crate::verbose!(verbose, "    Binary: {}", dylib_path.display());
     Ok(dylib_path)
 }
@@ -458,9 +462,119 @@ pub fn build_universal(
     crate::verbose!(verbose, "    Creating universal binary with lipo...");
     combine_or_rename_binaries(&[x86_64_path, arm64_path], &universal_path, false)?;
 
+    check_string_table_alignment(&universal_path)?;
+
     crate::verbose!(verbose, "    Binary: {}", universal_path.display());
 
     Ok(universal_path)
+}
+
+/// Stop when a Mach-O library has a string table that is not 8-byte aligned.
+///
+/// The strip step of Rust toolchains whose LLVM is older than version 23 can
+/// leave the string table 4 bytes off. Apple's linker refuses to link against
+/// such a library, which the AU bundles do, and according to the LLVM fix
+/// dyld of macOS 27 refuses to load it, whatever the format.
+fn check_string_table_alignment(library: &Path) -> Result<(), String> {
+    let data = fs::read(library).map_err(|e| format!("Failed to read {}: {}", library.display(), e))?;
+    let misaligned = misaligned_string_tables(&data).map_err(|e| format!("{}: {}", library.display(), e))?;
+    if misaligned.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "The string table of {} is not 8-byte aligned. Apple's linker refuses such a library and \
+         newer macOS versions do not load it. The strip step of a Rust toolchain whose LLVM is \
+         older than version 23 causes this (`rustc -vV` shows the version). Update Rust, or set \
+         `strip = false` in the profile.",
+        library.display()
+    ))
+}
+
+/// The error for a Mach-O file that ends in the middle of a structure.
+const MACH_O_CUT_SHORT: &str = "The Mach-O file is cut short";
+
+fn read_u32(data: &[u8], at: usize, big_endian: bool) -> Result<u32, String> {
+    let bytes: [u8; 4] = at
+        .checked_add(4)
+        .and_then(|end| data.get(at..end))
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(MACH_O_CUT_SHORT)?;
+    Ok(if big_endian { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) })
+}
+
+fn read_u64(data: &[u8], at: usize, big_endian: bool) -> Result<u64, String> {
+    let high_first = [read_u32(data, at, big_endian)?, read_u32(data, at + 4, big_endian)?];
+    let [high, low] = if big_endian { high_first } else { [high_first[1], high_first[0]] };
+    Ok((u64::from(high) << 32) | u64::from(low))
+}
+
+/// The string table offsets of a Mach-O file that are not 8-byte aligned.
+///
+/// A universal file is checked slice by slice, with the offsets relative to
+/// the slice.
+fn misaligned_string_tables(data: &[u8]) -> Result<Vec<u32>, String> {
+    const FAT_MAGIC: u32 = 0xcafe_babe;
+    const FAT_MAGIC_64: u32 = 0xcafe_babf;
+
+    let magic = read_u32(data, 0, true)?;
+    if magic != FAT_MAGIC && magic != FAT_MAGIC_64 {
+        return misaligned_string_tables_of_image(data);
+    }
+
+    // The header of a universal file is big-endian. Each entry names the
+    // offset and the size of one slice.
+    let wide = magic == FAT_MAGIC_64;
+    let count = read_u32(data, 4, true)? as usize;
+    let mut misaligned = Vec::new();
+    for index in 0..count {
+        let entry = 8 + index * if wide { 32 } else { 20 };
+        let (offset, size) = if wide {
+            (read_u64(data, entry + 8, true)?, read_u64(data, entry + 16, true)?)
+        } else {
+            (u64::from(read_u32(data, entry + 8, true)?), u64::from(read_u32(data, entry + 12, true)?))
+        };
+        let slice = usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(size).ok())
+            .and_then(|(offset, size)| data.get(offset..offset.checked_add(size)?))
+            .ok_or(MACH_O_CUT_SHORT)?;
+        misaligned.extend(misaligned_string_tables_of_image(slice)?);
+    }
+    Ok(misaligned)
+}
+
+/// The string table offset of one 64-bit Mach-O image, if it is not 8-byte
+/// aligned.
+fn misaligned_string_tables_of_image(data: &[u8]) -> Result<Vec<u32>, String> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const HEADER_SIZE: usize = 32;
+    const LC_SYMTAB: u32 = 0x2;
+
+    if read_u32(data, 0, false)? != MH_MAGIC_64 {
+        return Err("Not a 64-bit Mach-O file".to_string());
+    }
+
+    let command_count = read_u32(data, 16, false)?;
+    let mut at = HEADER_SIZE;
+    let mut misaligned = Vec::new();
+    for _ in 0..command_count {
+        let command = read_u32(data, at, false)?;
+        let size = read_u32(data, at + 4, false)? as usize;
+        if size == 0 {
+            return Err("The Mach-O file has an empty load command".to_string());
+        }
+        // The symbol table command holds the offset of the string table
+        // after its own header and the symbol offset and count.
+        if command == LC_SYMTAB {
+            let string_table = read_u32(data, at + 16, false)?;
+            if string_table % 8 != 0 {
+                misaligned.push(string_table);
+            }
+        }
+        at += size;
+    }
+    Ok(misaligned)
 }
 
 /// Target triples that are built for an architecture selection.
@@ -984,6 +1098,59 @@ mod tests {
         );
         assert!(args.chunks(2).all(|pair| pair[0] == "-C"));
         assert!(args.contains(&format!("link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_{}", names.wrapper_class)));
+    }
+
+    /// A 64-bit Mach-O image with one symbol table command.
+    fn image(string_table: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        for word in [0xfeed_facf_u32, 0x0100_000c, 0, 6, 1, 24, 0, 0] {
+            data.extend(word.to_le_bytes());
+        }
+        for word in [0x2_u32, 24, 4096, 10, string_table, 64] {
+            data.extend(word.to_le_bytes());
+        }
+        data
+    }
+
+    /// A universal file of the images, each padded to 64 bytes.
+    fn universal(images: &[Vec<u8>]) -> Vec<u8> {
+        let header_size = 8 + 20 * images.len();
+        let mut data = Vec::new();
+        data.extend(0xcafe_babe_u32.to_be_bytes());
+        data.extend((images.len() as u32).to_be_bytes());
+        for (index, image) in images.iter().enumerate() {
+            let offset = (header_size + 64 * index) as u32;
+            for word in [0x0100_000c_u32, 0, offset, image.len() as u32, 3] {
+                data.extend(word.to_be_bytes());
+            }
+        }
+        for image in images {
+            let mut padded = image.clone();
+            padded.resize(64, 0);
+            data.extend(padded);
+        }
+        data
+    }
+
+    #[test]
+    fn test_string_table_alignment_is_checked_per_slice() {
+        assert_eq!(misaligned_string_tables(&image(959_184)), Ok(vec![]));
+        assert_eq!(misaligned_string_tables(&image(959_180)), Ok(vec![959_180]));
+
+        let both = universal(&[image(1024), image(1028)]);
+        assert_eq!(misaligned_string_tables(&both), Ok(vec![1028]));
+    }
+
+    #[test]
+    fn test_broken_mach_o_files_are_errors() {
+        assert!(misaligned_string_tables(&[]).is_err());
+        assert!(misaligned_string_tables(b"not a library").is_err());
+        assert!(misaligned_string_tables(&image(1024)[..40]).is_err());
+
+        // A slice that reaches past the end of the file.
+        let mut cut = universal(&[image(1024)]);
+        cut.truncate(8 + 20 + image(1024).len() - 1);
+        assert!(misaligned_string_tables(&cut).is_err());
     }
 
     #[test]

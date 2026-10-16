@@ -34,6 +34,11 @@ AUv2 and AUv3 the minor and the patch version can be at most 255.
 - The Xcode Command Line Tools (`xcode-select --install`). Rust needs them
   to link, and xtask uses clang, ar, install_name_tool and codesign for the
   Audio Unit formats and lipo for universal binaries.
+- A Rust toolchain whose LLVM is version 23 or later (`rustc -vV` shows
+  it; Rust 1.99.1 has LLVM 23.1). The strip step of older toolchains can
+  misalign the string table of a release library, which Apple's linker
+  rejects. xtask checks every library it builds and stops with a message
+  then.
 - For universal binaries, or to build for the other architecture, both
   Apple targets:
 
@@ -309,3 +314,6 @@ cargo clippy
   build: run `killall -9 AudioComponentRegistrar` and rescan in the DAW.
 - `webview build did not produce dist/index.html`: the web project's build
   script must write its output to `webview/dist`.
+- `The string table of ... is not 8-byte aligned`: the Rust toolchain is
+  too old, see [Prerequisites](#macos). Update it with `rustup update`, or
+  set `strip = false` in the release profile.
