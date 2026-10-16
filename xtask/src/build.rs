@@ -143,30 +143,68 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|home| home.parent().is_some())
 }
 
-/// Flags that replace the local path prefixes rustc would embed.
+/// The local path prefixes a release build replaces, each with what it
+/// becomes.
 ///
 /// The workspace becomes `.`, the Cargo home (registry and git dependencies)
 /// `/cargo` and the standard library sources `/rustc/<commit>`, which is the
 /// path the prebuilt standard library already uses for itself. Other paths in
 /// the home directory, such as dependencies next to the workspace, become
 /// `~`.
-fn remap_path_flags_for(
+fn remap_rules_for(
     home: Option<&str>,
     workspace_root: &str,
     cargo_home: &str,
     rust_src: &str,
     commit_hash: &str,
-) -> Vec<String> {
-    // rustc applies the last rule that matches, so the home directory comes
-    // first and the rules for the directories inside it after it.
-    let mut flags: Vec<String> =
-        home.map(|home| format!("--remap-path-prefix={}=~", home)).into_iter().collect();
-    flags.extend([
-        format!("--remap-path-prefix={}=.", workspace_root),
-        format!("--remap-path-prefix={}=/cargo", cargo_home),
-        format!("--remap-path-prefix={}=/rustc/{}", rust_src, commit_hash),
+) -> Vec<(String, String)> {
+    // rustc and gcc apply the last rule that matches, so the home directory
+    // comes first and the rules for the directories inside it after it.
+    // clang applies the rule with the longest matching prefix.
+    let mut rules: Vec<(String, String)> =
+        home.map(|home| (home.to_string(), "~".to_string())).into_iter().collect();
+    rules.extend([
+        (workspace_root.to_string(), ".".to_string()),
+        (cargo_home.to_string(), "/cargo".to_string()),
+        (rust_src.to_string(), format!("/rustc/{}", commit_hash)),
     ]);
-    flags
+    rules
+}
+
+/// The remap rules as rustc flags.
+fn rustc_remap_flags(rules: &[(String, String)]) -> Vec<String> {
+    rules
+        .iter()
+        .map(|(from, to)| format!("--remap-path-prefix={}={}", from, to))
+        .collect()
+}
+
+/// The remap rules as C and C++ compiler flags, for the code that build
+/// scripts compile, and the paths that had to be left out.
+///
+/// The cc crate splits its flag variables at whitespace, so a rule for a path
+/// with whitespace in it cannot be passed and is left out. Quoting would only
+/// work when the user set `CC_SHELL_ESCAPED_FLAGS`, which few do.
+fn c_remap_flags(rules: &[(String, String)]) -> (Vec<String>, Vec<&str>) {
+    let mut flags = Vec::new();
+    let mut left_out = Vec::new();
+    for (from, to) in rules {
+        if from.chars().any(char::is_whitespace) {
+            left_out.push(from.as_str());
+        } else {
+            flags.push(format!("-ffile-prefix-map={}={}", from, to));
+        }
+    }
+    (flags, left_out)
+}
+
+/// Add the C remap flags to the value the user set for a flag variable.
+fn append_c_flags(user: Option<&str>, flags: &[String]) -> String {
+    user.into_iter()
+        .filter(|user| !user.trim().is_empty())
+        .chain(flags.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Flags that replace the local path prefixes in what xtask compiles with
@@ -187,11 +225,14 @@ pub fn clang_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
     Ok(flags)
 }
 
-/// Flags that keep the paths of the build machine out of a release binary.
+/// The remap rules that keep the paths of the build machine out of a release
+/// binary.
 ///
-/// rustc embeds source paths for panic messages. They are absolute, so they
-/// contain the home directory of whoever built the plugin.
-fn remap_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
+/// rustc embeds source paths for panic messages, and C code that build
+/// scripts compile embeds them through `__FILE__`, for example in `assert`.
+/// They are absolute, so they contain the home directory of whoever built
+/// the plugin.
+fn remap_rules(workspace_root: &Path) -> Result<Vec<(String, String)>, String> {
     // rustup sets CARGO_HOME for the tools it runs. Fall back to the default
     // location for a toolchain that was installed in another way.
     let home = home_dir();
@@ -230,7 +271,7 @@ fn remap_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
     let version = rustc(&["-vV"])?;
     let commit_hash = rustc_commit_hash(&version).ok_or("Could not find the rustc commit hash")?;
 
-    Ok(remap_path_flags_for(
+    Ok(remap_rules_for(
         home.as_deref().map(|home| home.to_str_safe()).transpose()?,
         workspace_root.to_str_safe()?,
         cargo_home.to_str_safe()?,
@@ -343,11 +384,15 @@ fn deployment_target_link_arg() -> String {
 /// the command is a plain `cargo build`.
 ///
 /// The flags for every crate are the user's own and, for release builds, the
-/// ones from `remap_path_flags`. They have to be the same for every format and
+/// ones from `remap_rules`. They have to be the same for every format and
 /// plugin: cargo leaves flags that contain `--remap-path-prefix` out of the
 /// artifact file names, so all flag values share one set of artifacts and a
 /// difference rebuilds every crate. The encoded form keeps paths with spaces
 /// intact.
+///
+/// Release builds also hand the remap rules to C and C++ code that build
+/// scripts compile, in the flag variables of the target that the cc crate
+/// reads.
 fn plugin_build_command(
     package: &str,
     target: &str,
@@ -378,10 +423,40 @@ fn plugin_build_command(
         std::env::var("CARGO_ENCODED_RUSTFLAGS").ok().as_deref(),
         std::env::var("RUSTFLAGS").ok().as_deref(),
     );
-    let remap = if release { remap_path_flags(workspace_root)? } else { Vec::new() };
+    let rules = if release { remap_rules(workspace_root)? } else { Vec::new() };
 
-    if let Some(encoded) = encode_rustflags(&user, &remap) {
+    if let Some(encoded) = encode_rustflags(&user, &rustc_remap_flags(&rules)) {
         cmd.env("CARGO_ENCODED_RUSTFLAGS", encoded);
+    }
+
+    // The MSVC compiler has no flag for remapping paths. The flag needs GCC 8
+    // or clang 10. Once one of its flag variables is set, the cc crate leaves
+    // out its default warning flags, so release builds compile C code with
+    // fewer warnings.
+    if release && !target.ends_with("-msvc") {
+        let (c_flags, left_out) = c_remap_flags(&rules);
+
+        // The command is created per format and per target, the warning is
+        // printed once.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            for path in &left_out {
+                eprintln!(
+                    "Warning: C code that build scripts compile keeps the path {} in the release build, because it contains whitespace.",
+                    path
+                );
+            }
+        });
+
+        // The variable names as the cc crate derives them from the target.
+        let target_suffix = target.replace(['-', '.'], "_");
+        if !c_flags.is_empty() {
+            for variable in ["CFLAGS", "CXXFLAGS"] {
+                let name = format!("{}_{}", variable, target_suffix);
+                let user = std::env::var(&name).ok();
+                cmd.env(&name, append_c_flags(user.as_deref(), &c_flags));
+            }
+        }
     }
 
     // Build the library for the same minimum macOS version as the parts of
@@ -1065,7 +1140,7 @@ mod tests {
     #[test]
     fn test_encode_rustflags() {
         let user = ["--cfg".to_string(), "a".to_string()];
-        let remap = remap_path_flags_for(
+        let rules = remap_rules_for(
             Some("/Users/me"),
             "/Users/me/My Projects/beamer",
             "/Users/me/.cargo",
@@ -1075,7 +1150,7 @@ mod tests {
 
         // User flags first, then the remap flags. A space inside a flag does
         // not end it.
-        let encoded = encode_rustflags(&user, &remap).unwrap();
+        let encoded = encode_rustflags(&user, &rustc_remap_flags(&rules)).unwrap();
         assert_eq!(
             encoded.split('\x1f').collect::<Vec<_>>(),
             [
@@ -1093,16 +1168,46 @@ mod tests {
     }
 
     #[test]
-    fn test_remap_path_flags_without_home() {
-        let remap = remap_path_flags_for(None, "/ws", "/cargo-home", "/sysroot/src", "abc123");
+    fn test_remap_rules_without_home() {
+        let rules = remap_rules_for(None, "/ws", "/cargo-home", "/sysroot/src", "abc123");
         assert_eq!(
-            remap,
+            rustc_remap_flags(&rules),
             [
                 "--remap-path-prefix=/ws=.",
                 "--remap-path-prefix=/cargo-home=/cargo",
                 "--remap-path-prefix=/sysroot/src=/rustc/abc123",
             ]
         );
+    }
+
+    #[test]
+    fn test_c_remap_flags() {
+        let rules = remap_rules_for(
+            Some("/Users/me"),
+            "/Users/me/My Projects/beamer",
+            "/Users/me/.cargo",
+            "/sysroot/src",
+            "abc123",
+        );
+
+        // The same rules in the same order, without the one for the path
+        // with a space.
+        let (flags, left_out) = c_remap_flags(&rules);
+        assert_eq!(
+            flags,
+            [
+                "-ffile-prefix-map=/Users/me=~",
+                "-ffile-prefix-map=/Users/me/.cargo=/cargo",
+                "-ffile-prefix-map=/sysroot/src=/rustc/abc123",
+            ]
+        );
+        assert_eq!(left_out, ["/Users/me/My Projects/beamer"]);
+
+        // The user's own value comes first.
+        let flags = ["-ffile-prefix-map=/a=.".to_string()];
+        assert_eq!(append_c_flags(Some("-O2 -Wall"), &flags), "-O2 -Wall -ffile-prefix-map=/a=.");
+        assert_eq!(append_c_flags(Some("  "), &flags), "-ffile-prefix-map=/a=.");
+        assert_eq!(append_c_flags(None, &flags), "-ffile-prefix-map=/a=.");
     }
 
     #[test]

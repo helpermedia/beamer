@@ -140,7 +140,17 @@ becomes `.`, the Cargo home `/cargo`, the standard library sources
 `/rustc/<commit>` and other paths in the home directory `~`. Debug builds
 keep the full paths. The code xtask compiles with clang for the AU formats
 gets the same rules for the workspace and the home directory, in every
-build. C code that build scripts compile keeps its paths.
+build.
+
+C and C++ code that build scripts compile (with the cc crate, or the cmake
+crate on top of it) gets the same rules in release builds, as
+`-ffile-prefix-map` flags in `CFLAGS_<target>` and `CXXFLAGS_<target>`,
+after any value you set for those two variables. The cc crate splits these
+variables at whitespace, so a path that contains whitespace keeps its
+prefix there, and xtask warns about it. The flag needs GCC 8 or clang 10.
+With these variables set, the cc crate leaves out its default warning
+flags, so release builds compile C code with fewer warnings than debug
+builds. MSVC targets get no such flags.
 
 The remap flags are the only flags xtask sets for every crate, and only for
 release builds. It keeps the flags from `CARGO_ENCODED_RUSTFLAGS`, or else
