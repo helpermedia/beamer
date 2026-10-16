@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::{clang_arches, get_version_info};
+use crate::build::{clang_arches, clang_path_flags, get_version_info};
 use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
@@ -35,6 +35,7 @@ pub fn bundle_auv2(
 
     // Get the version of the plugin package.
     let package_info = crate::util::find_package(package, workspace_root)?;
+    let path_flags = clang_path_flags(workspace_root)?;
     let (version_string, version_int) = get_version_info(&package_info.version)?;
 
     let bundle_name = to_auv2_component_name(package);
@@ -126,6 +127,7 @@ pub fn bundle_auv2(
 
         // Compile the AUv2 wrapper and link it with the Rust dylib as a bundle.
         let clang_status = Command::new("clang")
+            .args(&path_flags)
             .args([
                 "-arch", target_arch,
                 MACOS_MIN_VERSION_FLAG,

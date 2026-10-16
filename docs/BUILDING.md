@@ -136,9 +136,11 @@ step. For a dev server with live reload, see
 Release builds do not carry the source paths of the machine that built
 them. The compiler keeps source paths for panic messages, and xtask
 replaces their local prefixes with `--remap-path-prefix`: the workspace
-becomes `.`, the Cargo home `/cargo` and the standard library sources
-`/rustc/<commit>`. Debug builds keep the full paths. Dependencies that
-live outside the workspace and the Cargo home are not covered.
+becomes `.`, the Cargo home `/cargo`, the standard library sources
+`/rustc/<commit>` and other paths in the home directory `~`. Debug builds
+keep the full paths. The code xtask compiles with clang for the AU formats
+gets the same rules for the workspace and the home directory, in every
+build. C code that build scripts compile keeps its paths.
 
 The remap flags are the only flags xtask sets for every crate, and only for
 release builds. It keeps the flags from `CARGO_ENCODED_RUSTFLAGS`, or else

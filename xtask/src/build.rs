@@ -131,22 +131,60 @@ fn rustc_commit_hash(version_output: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+/// The home directory of the user who builds, if it is known.
+///
+/// The path is normalized, so that a trailing separator does not end up in
+/// the remap rules. The root directory does not count: as a path prefix it
+/// would match every path.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| Path::new(&home).components().collect::<PathBuf>())
+        .filter(|home| home.parent().is_some())
+}
+
 /// Flags that replace the local path prefixes rustc would embed.
 ///
 /// The workspace becomes `.`, the Cargo home (registry and git dependencies)
 /// `/cargo` and the standard library sources `/rustc/<commit>`, which is the
-/// path the prebuilt standard library already uses for itself.
+/// path the prebuilt standard library already uses for itself. Other paths in
+/// the home directory, such as dependencies next to the workspace, become
+/// `~`.
 fn remap_path_flags_for(
+    home: Option<&str>,
     workspace_root: &str,
     cargo_home: &str,
     rust_src: &str,
     commit_hash: &str,
 ) -> Vec<String> {
-    vec![
+    // rustc applies the last rule that matches, so the home directory comes
+    // first and the rules for the directories inside it after it.
+    let mut flags: Vec<String> =
+        home.map(|home| format!("--remap-path-prefix={}=~", home)).into_iter().collect();
+    flags.extend([
         format!("--remap-path-prefix={}=.", workspace_root),
         format!("--remap-path-prefix={}=/cargo", cargo_home),
         format!("--remap-path-prefix={}=/rustc/{}", rust_src, commit_hash),
-    ]
+    ]);
+    flags
+}
+
+/// Flags that replace the local path prefixes in what xtask compiles with
+/// clang: the workspace becomes `.` and other paths in the home directory
+/// `~`, as in a release build of the Rust code.
+///
+/// Without debug information, the only paths clang would embed are those of
+/// `__FILE__`, which the code does not use today. The flags are the same for
+/// every build, so that debug and release builds share the compiled AU code.
+pub fn clang_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
+    // clang applies the rule with the longest matching prefix, whatever the
+    // order.
+    let mut flags = Vec::new();
+    if let Some(home) = home_dir() {
+        flags.push(format!("-ffile-prefix-map={}=~", home.to_str_safe()?));
+    }
+    flags.push(format!("-ffile-prefix-map={}=.", workspace_root.to_str_safe()?));
+    Ok(flags)
 }
 
 /// Flags that keep the paths of the build machine out of a release binary.
@@ -156,11 +194,12 @@ fn remap_path_flags_for(
 fn remap_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
     // rustup sets CARGO_HOME for the tools it runs. Fall back to the default
     // location for a toolchain that was installed in another way.
+    let home = home_dir();
     let cargo_home = match std::env::var_os("CARGO_HOME") {
         Some(dir) => PathBuf::from(dir),
-        None => std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(|home| PathBuf::from(home).join(".cargo"))
+        None => home
+            .as_ref()
+            .map(|home| home.join(".cargo"))
             .ok_or("Could not find the Cargo home directory")?,
     };
 
@@ -192,6 +231,7 @@ fn remap_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
     let commit_hash = rustc_commit_hash(&version).ok_or("Could not find the rustc commit hash")?;
 
     Ok(remap_path_flags_for(
+        home.as_deref().map(|home| home.to_str_safe()).transpose()?,
         workspace_root.to_str_safe()?,
         cargo_home.to_str_safe()?,
         rust_src.to_str_safe()?,
@@ -759,7 +799,9 @@ fn compile_plugin_objc(
         .output()
         .map_err(|e| format!("Failed to run clang: {}", e))?
         .stdout;
-    let flags = OBJC_FLAGS.join(" ");
+    let path_flags = clang_path_flags(workspace_root)?;
+    let flags: Vec<&str> = OBJC_FLAGS.iter().copied().chain(path_flags.iter().map(String::as_str)).collect();
+    let flags = flags.join(" ");
 
     let headers = read_headers(&[&bridge_header_dir, &ipc_header_dir])?;
     let mut inputs: Vec<&[u8]> = vec![
@@ -811,6 +853,7 @@ fn compile_plugin_objc(
     let status = Command::new("clang")
         .args(["-c", "-arch", arch])
         .args(OBJC_FLAGS)
+        .args(&path_flags)
         .args([
             "-I", bridge_header_dir.to_str_safe()?,
             "-I", ipc_header_dir.to_str_safe()?,
@@ -841,6 +884,7 @@ fn compile_plugin_objc(
     let status = Command::new("clang")
         .args(["-c", "-arch", arch])
         .args(OBJC_FLAGS)
+        .args(&path_flags)
         .args([
             "-I", bridge_header_dir.to_str_safe()?,
             "-I", ipc_header_dir.to_str_safe()?,
@@ -1021,7 +1065,13 @@ mod tests {
     #[test]
     fn test_encode_rustflags() {
         let user = ["--cfg".to_string(), "a".to_string()];
-        let remap = remap_path_flags_for("/Users/me/My Projects/beamer", "/Users/me/.cargo", "/sysroot/src", "abc123");
+        let remap = remap_path_flags_for(
+            Some("/Users/me"),
+            "/Users/me/My Projects/beamer",
+            "/Users/me/.cargo",
+            "/sysroot/src",
+            "abc123",
+        );
 
         // User flags first, then the remap flags. A space inside a flag does
         // not end it.
@@ -1031,6 +1081,7 @@ mod tests {
             [
                 "--cfg",
                 "a",
+                "--remap-path-prefix=/Users/me=~",
                 "--remap-path-prefix=/Users/me/My Projects/beamer=.",
                 "--remap-path-prefix=/Users/me/.cargo=/cargo",
                 "--remap-path-prefix=/sysroot/src=/rustc/abc123",
@@ -1039,6 +1090,19 @@ mod tests {
 
         // Without flags the variable is not set at all.
         assert_eq!(encode_rustflags(&[], &[]), None);
+    }
+
+    #[test]
+    fn test_remap_path_flags_without_home() {
+        let remap = remap_path_flags_for(None, "/ws", "/cargo-home", "/sysroot/src", "abc123");
+        assert_eq!(
+            remap,
+            [
+                "--remap-path-prefix=/ws=.",
+                "--remap-path-prefix=/cargo-home=/cargo",
+                "--remap-path-prefix=/sysroot/src=/rustc/abc123",
+            ]
+        );
     }
 
     #[test]

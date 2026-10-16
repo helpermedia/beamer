@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::{clang_arches, get_version_info};
+use crate::build::{clang_arches, clang_path_flags, get_version_info};
 use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_au_bundle_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::AppexPlistConfig;
 
@@ -46,6 +46,7 @@ pub fn bundle_auv3(
 ) -> Result<(), String> {
     // Get the version of the plugin package.
     let package_info = crate::util::find_package(package, workspace_root)?;
+    let path_flags = clang_path_flags(workspace_root)?;
     let (version_string, version_int) = get_version_info(&package_info.version)?;
 
     let bundle_name = to_au_bundle_name(package);
@@ -202,6 +203,7 @@ pub fn bundle_auv3(
     for target_arch in &arches {
         let appex_arch_path = bundle_dir.join(format!("{}_{}", executable_name, target_arch));
         let clang_status = Command::new("clang")
+            .args(&path_flags)
             .args([
                 "-arch", target_arch,
                 MACOS_MIN_VERSION_FLAG,
@@ -289,6 +291,7 @@ pub fn bundle_auv3(
     for target_arch in &arches {
         let host_arch_path = bundle_dir.join(format!("{}_{}", executable_name, target_arch));
         let clang_status = Command::new("clang")
+            .args(&path_flags)
             .args([
                 "-arch", target_arch,
                 MACOS_MIN_VERSION_FLAG,
