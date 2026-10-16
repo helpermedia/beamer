@@ -759,7 +759,9 @@ pub trait Descriptor: HasParameters + Sync + Default {
 
     // Bus configuration (defaults provided). A plugin without audio input,
     // such as most instruments and generators, returns 0 from input_bus_count.
-    // The answers must stay the same for the life of an instance.
+    // An Audio Unit always has an output: one without any bus gets a stereo
+    // output in the AU formats. The answers must stay the same for the life
+    // of an instance.
     fn input_bus_count(&self) -> usize { 1 }
     fn output_bus_count(&self) -> usize { 1 }
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;

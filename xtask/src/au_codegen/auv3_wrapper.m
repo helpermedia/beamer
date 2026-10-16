@@ -426,10 +426,6 @@ static void beamer_auv3_on_loaded(void* context) {
     if (inputBusCount > BEAMER_AU_MAX_BUSES) inputBusCount = BEAMER_AU_MAX_BUSES;
     if (outputBusCount > BEAMER_AU_MAX_BUSES) outputBusCount = BEAMER_AU_MAX_BUSES;
 
-    if (inputBusCount == 0 && outputBusCount == 0) {
-        outputBusCount = 1;
-    }
-
     AVAudioFormat* stereoFormat = [[AVAudioFormat alloc]
         initStandardFormatWithSampleRate:kDefaultSampleRate
                                 channels:2];

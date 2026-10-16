@@ -346,16 +346,40 @@ impl DeclaredBuses {
     /// The infos are taken for every index, not only below the bus count: a
     /// plugin may describe a main bus it does not count (see `main_channels`).
     pub(crate) fn capture(plugin: &dyn AuPluginInstance) -> Self {
-        Self {
-            input_count: plugin.declared_input_bus_count(),
-            output_count: plugin.declared_output_bus_count(),
-            inputs: (0..MAX_BUSES)
+        Self::new(
+            plugin.declared_input_bus_count(),
+            plugin.declared_output_bus_count(),
+            (0..MAX_BUSES)
                 .map(|index| plugin.declared_input_bus_info(index))
                 .collect(),
-            outputs: (0..MAX_BUSES)
+            (0..MAX_BUSES)
                 .map(|index| plugin.declared_output_bus_info(index))
                 .collect(),
+        )
+    }
+
+    /// The buses an Audio Unit has for a declaration.
+    ///
+    /// An Audio Unit needs an output bus. A plugin that declares no bus at
+    /// all gets one, as wide as its main output bus info says or stereo
+    /// without one (or with 0 channels in it). Both wrappers build their
+    /// buses from these counts.
+    fn new(
+        input_count: usize,
+        output_count: usize,
+        inputs: Vec<Option<beamer_core::BusInfo>>,
+        mut outputs: Vec<Option<beamer_core::BusInfo>>,
+    ) -> Self {
+        let mut output_count = output_count;
+        if input_count == 0 && output_count == 0 {
+            output_count = 1;
+            if let Some(main) = outputs.first_mut() {
+                if main.as_ref().is_none_or(|info| info.channel_count == 0) {
+                    *main = Some(beamer_core::BusInfo::stereo("Output"));
+                }
+            }
         }
+        Self { input_count, output_count, inputs, outputs }
     }
 
     /// Number of buses in a direction.
@@ -2099,8 +2123,8 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
 ///
 /// A plugin that declares no bus in a direction has 0 channels there. That is
 /// how an instrument or generator without audio input looks. The exception is
-/// a plugin without any bus, see `main_channels`. Returns `None` when there is
-/// no plugin to ask.
+/// a plugin without any bus, see `DeclaredBuses::new`. Returns `None` when
+/// there is no plugin to ask.
 fn declared_main_channels(instance: BeamerAuInstanceHandle) -> Option<(u32, u32)> {
     if instance.is_null() {
         return None;
@@ -2120,13 +2144,6 @@ fn main_channels(
     output_buses: usize,
     main_output: Option<beamer_core::BusInfo>,
 ) -> (u32, u32) {
-    // An Audio Unit needs an output bus. The AUv3 wrapper creates one for a
-    // plugin that declares no bus at all, as wide as its main output bus info
-    // says or stereo without one, so the answer has to match it.
-    if input_buses == 0 && output_buses == 0 {
-        return (0, main_bus_channels(1, main_output));
-    }
-
     (
         main_bus_channels(input_buses, main_input),
         main_bus_channels(output_buses, main_output),
@@ -3004,11 +3021,39 @@ mod tests {
         // still describes one.
         assert_eq!(main_channels(0, stereo(), 1, stereo()), (0, 2));
 
-        // No output bus, and no bus at all, where the AUv3 wrapper adds an
-        // output bus.
+        // No output bus.
         assert_eq!(main_channels(1, stereo(), 0, None), (2, 0));
-        assert_eq!(main_channels(0, None, 0, None), (0, 2));
-        assert_eq!(main_channels(0, None, 0, Some(BusInfo::mono("Bus"))), (0, 1));
+    }
+
+    #[test]
+    fn test_a_plugin_without_buses_gets_an_output_bus() {
+        use beamer_core::BusInfo;
+
+        let declared =
+            |infos: Vec<Option<BusInfo>>| DeclaredBuses::new(0, 0, vec![None; MAX_BUSES], infos);
+
+        // Stereo, or as wide as the main output bus info says.
+        let buses = declared(vec![None; MAX_BUSES]);
+        assert_eq!(buses.count(BusDirection::Input), 0);
+        assert_eq!(buses.count(BusDirection::Output), 1);
+        let main_output = buses.info(BusDirection::Output, 0);
+        assert_eq!(main_output.map(|info| info.channel_count), Some(2));
+        assert_eq!(buses.main_channels(), (0, 2));
+
+        let mut mono = vec![None; MAX_BUSES];
+        mono[0] = Some(BusInfo::mono("Bus"));
+        assert_eq!(declared(mono).main_channels(), (0, 1));
+
+        // An info without channels is no width: stereo, as the wrappers
+        // make it.
+        let mut empty = vec![None; MAX_BUSES];
+        empty[0] = Some(BusInfo { channel_count: 0, ..BusInfo::stereo("Bus") });
+        assert_eq!(declared(empty).main_channels(), (0, 2));
+
+        // A plugin with an input only keeps its buses.
+        let effect = DeclaredBuses::new(1, 0, vec![Some(BusInfo::stereo("Input"))], vec![None]);
+        assert_eq!(effect.count(BusDirection::Output), 0);
+        assert_eq!(effect.main_channels(), (2, 0));
     }
 
     #[test]

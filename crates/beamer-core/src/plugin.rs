@@ -1025,7 +1025,9 @@ pub trait Descriptor: HasParameters + Sync + Default {
 
     /// Returns the number of audio output buses.
     ///
-    /// Default returns 1 (single stereo output).
+    /// Default returns 1 (single stereo output). An Audio Unit always has an
+    /// output bus: a plugin that declares no bus at all gets one in the AU
+    /// formats, as wide as `output_bus_info(0)` says or stereo.
     fn output_bus_count(&self) -> usize {
         1
     }
