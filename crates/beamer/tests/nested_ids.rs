@@ -372,3 +372,26 @@ fn test_two_parameters_with_one_host_id_are_reported() {
     assert!(error.contains("\"second\""), "{error}");
     assert!(error.contains("0x00000007"), "{error}");
 }
+
+/// A generic parameter struct with a flat group and a nested group.
+#[derive(Parameters)]
+struct GenericParameters<T: Send + Sync + 'static> {
+    #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
+    cutoff: FloatParameter,
+
+    #[nested(group = "Envelope")]
+    envelope: EnvelopeParameters,
+
+    /// What the type parameter stands for, not a parameter.
+    marker: std::marker::PhantomData<T>,
+}
+
+#[test]
+fn test_generic_struct_with_groups() {
+    let parameters = GenericParameters::<f32>::default();
+
+    assert_eq!(GenericParameters::<f32>::PARAM_GROUP_FILTER, 1);
+    assert_eq!(GenericParameters::<f32>::GROUP_ENVELOPE, 2);
+    assert_eq!(parameters.envelope.attack.info().string_id, "envelope/attack");
+    assert_eq!(ParameterStore::count(&parameters), 2);
+}

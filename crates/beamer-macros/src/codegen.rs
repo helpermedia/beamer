@@ -32,6 +32,7 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
 /// Generate group ID constants for each nested field and flat group.
 fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
     let struct_name = &ir.struct_name;
+    let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
     // Generate constants for flat groups first (they get IDs 1, 2, 3, ...)
     let flat_groups = ir.flat_group_names();
@@ -77,7 +78,7 @@ fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
         quote! {}
     } else {
         quote! {
-            impl #struct_name {
+            impl #impl_generics #struct_name #ty_generics #where_clause {
                 #(#flat_group_consts)*
                 #(#nested_consts)*
             }
