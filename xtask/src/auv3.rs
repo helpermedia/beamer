@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_au_bundle_name, to_pascal_case, uninstall_bundle, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_au_bundle_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::AppexPlistConfig;
 
 /// Where an installed app lives, relative to the home directory.
@@ -226,13 +226,15 @@ pub fn bundle_auv3(
     crate::verbose!(verbose, "    Appex executable built ({})", arch_str);
 
     // Auto-detect component type, manufacturer and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(&package_info.dir);
+    let codes = AuCodes::detect(package, &package_info.dir);
+    let names = AuNames::new(package, &codes);
+    let (_, _, _, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(&package_info.dir);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
-        component_type,
-        detected_manufacturer.as_deref().unwrap_or("Bmer"),
-        detected_subtype.as_deref().unwrap_or("auto")
+        codes.component_type,
+        codes.manufacturer,
+        codes.subtype
     );
     if let Some(ref name) = detected_plugin_name {
         crate::verbose!(verbose, "    Plugin name: {}", name);
@@ -245,9 +247,8 @@ pub fn bundle_auv3(
     let appex_info_plist = create_appex_info_plist(&AppexPlistConfig {
         package,
         executable_name,
-        component_type: &component_type,
-        manufacturer: detected_manufacturer.as_deref(),
-        subtype: detected_subtype.as_deref(),
+        codes: &codes,
+        extension_class: &names.extension_class,
         framework_bundle_id: &framework_bundle_id,
         version_string: &version_string,
         version_int,
@@ -386,18 +387,8 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
 
 /// Creates the Info.plist content for the appex with NSExtension.
 fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
-    let manufacturer = config.manufacturer.unwrap_or("Bmer");
-    let subtype = config
-        .subtype
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| generate_au_subtype(config.package));
-
     // Get appropriate tags based on component type
-    let tags = get_au_tags(config.component_type);
-
-    // Generate plugin-specific extension class name (implements AUAudioUnitFactory)
-    let pascal_name = to_pascal_case(config.package);
-    let extension_class = format!("Beamer{}AuExtension", pascal_name);
+    let tags = get_au_tags(&config.codes.component_type);
 
     // Use AudioUnit-UI extension point for plugins with a GUI
     let extension_point = if config.has_gui {
@@ -488,10 +479,10 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
         executable = config.executable_name,
         package = config.package,
         extension_point = extension_point,
-        extension_class = extension_class,
-        manufacturer = manufacturer,
-        component_type = config.component_type,
-        subtype = subtype,
+        extension_class = config.extension_class,
+        manufacturer = config.codes.manufacturer,
+        component_type = config.codes.component_type,
+        subtype = config.codes.subtype,
         tags = tags,
         framework_bundle_id = config.framework_bundle_id,
         version = config.version_string,

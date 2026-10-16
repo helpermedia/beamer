@@ -8,7 +8,7 @@
 //!
 //! - **Native wrappers**: `cargo xtask bundle` generates them for each plugin. The AUv2 wrapper
 //!   implements `AudioComponentPlugInInterface`, the AUv3 wrapper is an `AUAudioUnit` subclass
-//!   (`Beamer<Name>AuWrapper`)
+//!   (`Beamer<Name>AuWrapper_<codes>`)
 //! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 
 /// Generate Audio Unit export entry points.

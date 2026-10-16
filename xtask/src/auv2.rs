@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, generate_au_subtype, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_auv2_component_name, to_pascal_case, uninstall_bundle, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
 /// Where an installed component lives, relative to the home directory.
@@ -56,14 +56,15 @@ pub fn bundle_auv2(
     fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
     // Auto-detect component type, manufacturer and subtype from plugin source
-    let (component_type, detected_manufacturer, detected_subtype, detected_plugin_name, detected_vendor_name, _) =
-        detect_au_component_info(&package_info.dir);
+    let codes = AuCodes::detect(package, &package_info.dir);
+    let names = AuNames::new(package, &codes);
+    let (_, _, _, detected_plugin_name, detected_vendor_name, _) = detect_au_component_info(&package_info.dir);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
-        component_type,
-        detected_manufacturer.as_deref().unwrap_or("Bmer"),
-        detected_subtype.as_deref().unwrap_or("auto")
+        codes.component_type,
+        codes.manufacturer,
+        codes.subtype
     );
     if let Some(ref name) = detected_plugin_name {
         crate::verbose!(verbose, "    Plugin name: {}", name);
@@ -73,7 +74,7 @@ pub fn bundle_auv2(
     }
 
     // Generate ObjC wrapper with factory function
-    let wrapper_source = generate_auv2_wrapper_source(package, &component_type);
+    let wrapper_source = generate_auv2_wrapper_source(package, &codes, &names);
     let gen_dir = workspace_root.join("target/au-gen").join(package);
     fs::create_dir_all(&gen_dir).map_err(|e| format!("Failed to create gen dir: {}", e))?;
     let wrapper_path = gen_dir.join("auv2_wrapper.m");
@@ -160,9 +161,8 @@ pub fn bundle_auv2(
     let info_plist = create_component_info_plist(&ComponentPlistConfig {
         package,
         executable_name,
-        component_type: &component_type,
-        manufacturer: detected_manufacturer.as_deref(),
-        subtype: detected_subtype.as_deref(),
+        codes: &codes,
+        factory_name: &names.auv2_factory,
         version_string: &version_string,
         version_int,
         plugin_name: detected_plugin_name.as_deref(),
@@ -193,18 +193,8 @@ pub fn bundle_auv2(
 }
 
 fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
-    let manufacturer = config.manufacturer.unwrap_or("Bmer");
-    let subtype = config
-        .subtype
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| generate_au_subtype(config.package));
-
     // Get appropriate tags based on component type
-    let tags = get_au_tags(config.component_type);
-
-    // Generate factory function name
-    let pascal_name = to_pascal_case(config.package);
-    let factory_name = format!("Beamer{}Factory", pascal_name);
+    let tags = get_au_tags(&config.codes.component_type);
 
     // Create the plugin display name from vendor and plugin name
     let plugin_display_name = match (config.vendor_name, config.plugin_name) {
@@ -276,11 +266,11 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
         min_os = MACOS_DEPLOYMENT_TARGET,
         executable = config.executable_name,
         package = config.package,
-        manufacturer = manufacturer,
-        component_type = config.component_type,
-        subtype = subtype,
+        manufacturer = config.codes.manufacturer,
+        component_type = config.codes.component_type,
+        subtype = config.codes.subtype,
         tags = tags,
-        factory_name = factory_name,
+        factory_name = config.factory_name,
         version = config.version_string,
         version_int = config.version_int,
         plugin_display_name = plugin_display_name,

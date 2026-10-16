@@ -13,7 +13,7 @@ mod vst3;
 use std::path::PathBuf;
 use std::process::Command;
 
-use util::{print_error, Arch};
+use util::{print_error, Arch, AuCodes};
 
 // =============================================================================
 // Configuration Structs
@@ -23,9 +23,8 @@ use util::{print_error, Arch};
 pub struct AppexPlistConfig<'a> {
     pub package: &'a str,
     pub executable_name: &'a str,
-    pub component_type: &'a str,
-    pub manufacturer: Option<&'a str>,
-    pub subtype: Option<&'a str>,
+    pub codes: &'a AuCodes,
+    pub extension_class: &'a str,
     pub framework_bundle_id: &'a str,
     pub version_string: &'a str,
     pub version_int: u32,
@@ -38,9 +37,8 @@ pub struct AppexPlistConfig<'a> {
 pub struct ComponentPlistConfig<'a> {
     pub package: &'a str,
     pub executable_name: &'a str,
-    pub component_type: &'a str,
-    pub manufacturer: Option<&'a str>,
-    pub subtype: Option<&'a str>,
+    pub codes: &'a AuCodes,
+    pub factory_name: &'a str,
     pub version_string: &'a str,
     pub version_int: u32,
     pub plugin_name: Option<&'a str>,
@@ -362,29 +360,30 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     // Determine paths
     let target_dir = workspace_root.join("target").join(profile_str);
 
-    // Build and bundle AU (macOS only) - build once, bundle for each requested format
-    if (config.build_auv2 || config.build_auv3) && cfg!(target_os = "macos") {
-        let dylib_path = if config.arch == Arch::Universal {
-            build::build_universal(&config.package, config.release, &workspace_root, "au", config.verbose)?
+    // Each format gets a library of its own: the AUv2 and the AUv3 library
+    // differ in their Objective-C classes. A library is bundled before the
+    // next build replaces it.
+    let build_library = |format: build::Format| {
+        if config.arch == Arch::Universal {
+            build::build_universal(&config.package, config.release, &workspace_root, format, config.verbose)
         } else {
-            build::build_native(&config.package, config.release, &workspace_root, "au", config.arch, config.verbose)?
-        };
+            build::build_native(&config.package, config.release, &workspace_root, format, config.arch, config.verbose)
+        }
+    };
 
-        if config.build_auv2 {
-            auv2::bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
-        }
-        if config.build_auv3 {
-            auv3::bundle_auv3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
-        }
+    // Build and bundle AU (macOS only).
+    if config.build_auv2 && cfg!(target_os = "macos") {
+        let dylib_path = build_library(build::Format::Auv2)?;
+        auv2::bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
+    }
+    if config.build_auv3 && cfg!(target_os = "macos") {
+        let dylib_path = build_library(build::Format::Auv3)?;
+        auv3::bundle_auv3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
     }
 
     // Build and bundle VST3
     if config.build_vst3 {
-        let dylib_path = if config.arch == Arch::Universal {
-            build::build_universal(&config.package, config.release, &workspace_root, "vst3", config.verbose)?
-        } else {
-            build::build_native(&config.package, config.release, &workspace_root, "vst3", config.arch, config.verbose)?
-        };
+        let dylib_path = build_library(build::Format::Vst3)?;
         vst3::bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.verbose)?;
     }
 

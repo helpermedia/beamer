@@ -40,17 +40,3 @@
 void beamer_au_appex_force_link(void) {
     (void)[{{EXTENSION_CLASS}} class];
 }
-
-void* {{FACTORY_FUNC}}(const AudioComponentDescription* desc) {
-    if (!beamer_au_ensure_factory_registered()) {
-        return NULL;
-    }
-    NSError* error = nil;
-    {{WRAPPER_CLASS}}* wrapper = [[{{WRAPPER_CLASS}} alloc] initWithComponentDescription:*desc
-                                                                             options:0
-                                                                               error:&error];
-    if (error) {
-        return NULL;
-    }
-    return (__bridge_retained void*)wrapper;
-}

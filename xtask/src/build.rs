@@ -5,8 +5,40 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_pascal_case, to_vst3_bundle_name, to_vst3_executable_name, Arch, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_vst3_bundle_name, to_vst3_executable_name, Arch, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::BundleConfig;
+
+/// The format a plugin library is built for.
+///
+/// The two Audio Unit formats share the plugin's AU code but not their
+/// Objective-C classes. A library for one format holds only the classes of
+/// that format, so loading the AUv2 and the AUv3 of a plugin in one process
+/// gives no class twice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Format {
+    Auv2,
+    Auv3,
+    Vst3,
+}
+
+impl Format {
+    /// The cargo feature of the plugin crate that selects the format.
+    fn feature(self) -> &'static str {
+        match self {
+            Format::Auv2 | Format::Auv3 => "au",
+            Format::Vst3 => "vst3",
+        }
+    }
+
+    /// The name of the format in messages.
+    fn label(self) -> &'static str {
+        match self {
+            Format::Auv2 => "AUv2",
+            Format::Auv3 => "AUv3",
+            Format::Vst3 => "VST3",
+        }
+    }
+}
 
 /// The version of a bundle, from the version of its package.
 ///
@@ -54,23 +86,20 @@ pub fn get_version_info(version: &str) -> Result<(String, u32), String> {
     Ok((numbers, version_int))
 }
 
-/// Extra rustc arguments for the plugin crate of an AU build.
+/// Extra rustc arguments for the plugin crate of an AUv3 build.
 ///
-/// They link the AU static libraries into the plugin. The `objc_lib_dir`
+/// They link the AUv3 static libraries into the plugin. The `objc_lib_dir`
 /// parameter points to where plugin-specific ObjC static libraries were
 /// compiled (contains libplugin_au_objc.a and libplugin_au_extension.a).
-fn au_rustc_args(
+fn auv3_rustc_args(
     plugin_name: &str,
+    names: &AuNames,
     objc_lib_dir: &Path,
 ) -> Result<Vec<String>, String> {
     let objc_lib_dir_str = objc_lib_dir.to_str()
         .ok_or_else(|| "Invalid ObjC library directory path".to_string())?;
-
-    // Generate plugin-specific class and function names
-    let pascal_name = to_pascal_case(plugin_name);
-    let wrapper_class = format!("Beamer{}AuWrapper", pascal_name);
-    let extension_class = format!("Beamer{}AuExtension", pascal_name);
-    let factory_func = format!("Beamer{}AuExtensionFactory", pascal_name);
+    let wrapper_class = &names.wrapper_class;
+    let extension_class = &names.extension_class;
 
     // Library names based on plugin
     let lib_name = plugin_name.replace('-', "_");
@@ -84,7 +113,6 @@ fn au_rustc_args(
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_{}", extension_class)),
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_{}", wrapper_class)),
         ("-C", format!("link-arg=-Wl,-exported_symbol,_OBJC_METACLASS_$_{}", extension_class)),
-        ("-C", format!("link-arg=-Wl,-exported_symbol,_{}", factory_func)),
         ("-C", deployment_target_link_arg()),
     ];
 
@@ -235,6 +263,29 @@ fn vst3_rustc_args(package: &str, target: &str) -> Vec<String> {
     ]
 }
 
+/// Extra rustc arguments for the plugin crate of a build for `format`.
+///
+/// For an AUv3 this compiles the plugin's Objective-C code first. An AUv2
+/// gets its Objective-C code when it is bundled, so its library has none.
+fn plugin_rustc_args(
+    package: &str,
+    workspace_root: &Path,
+    format: Format,
+    target: &str,
+    verbose: bool,
+) -> Result<Vec<String>, String> {
+    match format {
+        Format::Auv2 => Ok(vec!["-C".to_string(), deployment_target_link_arg()]),
+        Format::Auv3 => {
+            crate::verbose!(verbose, "    Generating plugin-specific ObjC for {} ({})...", package, target);
+            let names = AuNames::detect(package, &crate::util::find_package(package, workspace_root)?.dir);
+            let objc_lib_dir = compile_plugin_objc(package, &names, workspace_root, target)?;
+            auv3_rustc_args(package, &names, &objc_lib_dir)
+        }
+        Format::Vst3 => Ok(vst3_rustc_args(package, target)),
+    }
+}
+
 /// The minimum macOS version as a linker argument for the plugin crate.
 ///
 /// The build also gets the version through `MACOSX_DEPLOYMENT_TARGET`, but
@@ -247,9 +298,9 @@ fn deployment_target_link_arg() -> String {
 /// Create the cargo command that builds the plugin crate for one target.
 ///
 /// `plugin_args` are extra rustc arguments for the plugin crate alone, from
-/// `au_rustc_args` or `vst3_rustc_args`. They go through `cargo rustc`, which
-/// passes them to that crate only. Without them the command is a plain
-/// `cargo build`.
+/// `plugin_rustc_args`. They go through `cargo rustc`, which passes them to
+/// that crate only. Without them (a VST3 for a target other than Apple's)
+/// the command is a plain `cargo build`.
 ///
 /// The flags for every crate are the user's own and, for release builds, the
 /// ones from `remap_path_flags`. They have to be the same for every format and
@@ -260,7 +311,7 @@ fn deployment_target_link_arg() -> String {
 fn plugin_build_command(
     package: &str,
     target: &str,
-    format: &str,
+    format: Format,
     release: bool,
     workspace_root: &Path,
     plugin_args: &[String],
@@ -272,7 +323,7 @@ fn plugin_build_command(
         .arg("--target")
         .arg(target)
         .arg("--features")
-        .arg(format)
+        .arg(format.feature())
         .current_dir(workspace_root);
 
     if release {
@@ -308,7 +359,7 @@ pub fn build_native(
     package: &str,
     release: bool,
     workspace_root: &Path,
-    format: &str,
+    format: Format,
     arch: Arch,
     verbose: bool,
 ) -> Result<PathBuf, String> {
@@ -318,26 +369,19 @@ pub fn build_native(
     };
 
     let arch_name = clang_arch(target)?;
-    crate::status!("  Building {} ({})...", format.to_uppercase(), arch_name);
+    crate::status!("  Building {} ({})...", format.label(), arch_name);
 
     let profile = if release { "release" } else { "debug" };
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    // AU requires additional setup (ObjC code).
-    let plugin_args = if format == "au" {
-        crate::verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
-        let objc_lib_dir = compile_plugin_objc(package, workspace_root, target)?;
-        au_rustc_args(package, &objc_lib_dir)?
-    } else {
-        vst3_rustc_args(package, target)
-    };
+    let plugin_args = plugin_rustc_args(package, workspace_root, format, target, verbose)?;
 
     let mut cmd = plugin_build_command(package, target, format, release, workspace_root, &plugin_args)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
     if !status.success() {
-        return Err(format!("{} build failed", format.to_uppercase()));
+        return Err(format!("{} build failed", format.label()));
     }
 
     // Output is always in target/<target>/<profile>/
@@ -356,31 +400,17 @@ pub fn build_universal(
     package: &str,
     release: bool,
     workspace_root: &Path,
-    format: &str,
+    format: Format,
     verbose: bool,
 ) -> Result<PathBuf, String> {
-    crate::status!("  Building {} (universal)...", format.to_uppercase());
+    crate::status!("  Building {} (universal)...", format.label());
 
     let profile = if release { "release" } else { "debug" };
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    // AU requires additional setup (ObjC code).
-    let (plugin_args_x86, plugin_args_arm) = if format == "au" {
-        crate::verbose!(verbose, "    Generating plugin-specific ObjC for {}...", package);
-        let objc_lib_dir_x86 = compile_plugin_objc(package, workspace_root, "x86_64-apple-darwin")?;
-        let objc_lib_dir_arm = compile_plugin_objc(package, workspace_root, "aarch64-apple-darwin")?;
-
-        (
-            au_rustc_args(package, &objc_lib_dir_x86)?,
-            au_rustc_args(package, &objc_lib_dir_arm)?,
-        )
-    } else {
-        (
-            vst3_rustc_args(package, "x86_64-apple-darwin"),
-            vst3_rustc_args(package, "aarch64-apple-darwin"),
-        )
-    };
+    let plugin_args_x86 = plugin_rustc_args(package, workspace_root, format, "x86_64-apple-darwin", verbose)?;
+    let plugin_args_arm = plugin_rustc_args(package, workspace_root, format, "aarch64-apple-darwin", verbose)?;
 
     // Build for x86_64
     crate::verbose!(verbose, "    Building for x86_64...");
@@ -581,28 +611,29 @@ fn read_headers(dirs: &[&Path]) -> Result<Vec<Vec<u8>>, String> {
         .collect()
 }
 
-/// Generate and compile plugin-specific ObjC code.
+/// Generate and compile the AUv3 ObjC code of a plugin.
 ///
-/// This creates uniquely named ObjC classes for each plugin to avoid symbol collisions
-/// when multiple AU plugins are loaded in the same process (e.g., in Reaper).
+/// The classes are named by `names`, so that the classes of several Audio
+/// Units can be loaded in one process (see `AuNames`).
 ///
 /// Returns the path to the directory containing the compiled static libraries.
 /// The directory is named after a hash of the generated sources, the headers
 /// they include, the compiler flags and the compiler version. It is part of
 /// the linker arguments of the plugin crate, so cargo relinks the plugin when
 /// one of them changes. Cargo does not track the libraries themselves.
-pub fn compile_plugin_objc(
+fn compile_plugin_objc(
     plugin_name: &str,
+    names: &AuNames,
     workspace_root: &Path,
     target: &str,
 ) -> Result<PathBuf, String> {
     let lib_name = plugin_name.replace('-', "_");
 
     // Generate plugin-specific ObjC source files.
-    let wrapper_source = generate_au_wrapper_source(plugin_name);
+    let wrapper_source = generate_au_wrapper_source(plugin_name, names);
     let package_dir = crate::util::find_package(plugin_name, workspace_root)?.dir;
     let has_gui = crate::util::detect_has_gui(&package_dir);
-    let extension_source = generate_au_extension_source(plugin_name, has_gui);
+    let extension_source = generate_au_extension_source(plugin_name, names, has_gui);
 
     // Header search paths for clang.
     let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
@@ -899,7 +930,7 @@ mod tests {
     #[test]
     fn test_deployment_target_is_set_for_apple_targets() {
         let target_of = |target: &str| {
-            let cmd = plugin_build_command("gain", target, "vst3", false, Path::new("."), &[])
+            let cmd = plugin_build_command("gain", target, Format::Vst3, false, Path::new("."), &[])
                 .expect("command");
             cmd.get_envs()
                 .find(|(key, _)| *key == "MACOSX_DEPLOYMENT_TARGET")
@@ -928,9 +959,21 @@ mod tests {
         assert!(vst3_rustc_args("midi-transform", "x86_64-pc-windows-msvc").is_empty());
     }
 
+    fn names(component_type: &str, subtype: &str, manufacturer: &str) -> AuNames {
+        AuNames::new(
+            "midi-transform",
+            &crate::util::AuCodes {
+                component_type: component_type.to_string(),
+                subtype: subtype.to_string(),
+                manufacturer: manufacturer.to_string(),
+            },
+        )
+    }
+
     #[test]
-    fn test_au_rustc_args_are_separate_arguments() {
-        let args = au_rustc_args("midi-transform", Path::new("/tmp/My Projects/au-gen")).unwrap();
+    fn test_auv3_rustc_args_are_separate_arguments() {
+        let names = names("aumi", "midi", "Bmer");
+        let args = auv3_rustc_args("midi-transform", &names, Path::new("/tmp/My Projects/au-gen")).unwrap();
 
         // Every flag is followed by its value, and a space in the path does
         // not split an argument.
@@ -940,6 +983,16 @@ mod tests {
             ["-C", "link-arg=-Wl,-force_load,/tmp/My Projects/au-gen/libmidi_transform_au_objc.a"]
         );
         assert!(args.chunks(2).all(|pair| pair[0] == "-C"));
-        assert!(args.contains(&"link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_BeamerMidiTransformAuWrapper".to_string()));
+        assert!(args.contains(&format!("link-arg=-Wl,-exported_symbol,_OBJC_CLASS_$_{}", names.wrapper_class)));
+    }
+
+    #[test]
+    fn test_auv2_library_gets_no_objc() {
+        // The AUv2 compiles its classes into the component binary. Linking
+        // the AUv3 classes into its library as well would define them twice
+        // in a process that loads both formats.
+        let args = plugin_rustc_args("midi-transform", Path::new("."), Format::Auv2, "aarch64-apple-darwin", false)
+            .unwrap();
+        assert_eq!(args, ["-C".to_string(), deployment_target_link_arg()]);
     }
 }

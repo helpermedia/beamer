@@ -5,7 +5,7 @@
  *
  * This header defines the interface for the hybrid AU implementation where:
  * - Native wrappers, generated per plugin, implement the AUv2 plug-in interface
- *   and the AUv3 AUAudioUnit subclass (Beamer<Name>AuWrapper)
+ *   and the AUv3 AUAudioUnit subclass (Beamer<Name>AuWrapper_<codes>)
  * - Rust provides all DSP, parameter handling and state management
  *
  * The bridge is designed for:

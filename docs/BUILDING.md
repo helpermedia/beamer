@@ -107,6 +107,13 @@ plugin code and manufacturer code from `Config.toml`. VST3 bundles need no
 wrapper and xtask does not sign them (on Apple Silicon the linker already
 signs the binary ad hoc).
 
+The generated Objective-C classes are named after the package and these
+three codes, so the Audio Units of several plugins can be loaded in one
+host process. The AUv2 and the AUv3 each get a library of their own with
+only their own classes, so both formats of one plugin can be loaded side
+by side too. The plugin crate is therefore compiled once per format that
+a bundle command builds.
+
 Ad hoc signatures are enough for local development. Distributing plugins
 outside the Mac App Store needs a Developer ID signature and notarization,
 which xtask does not do.

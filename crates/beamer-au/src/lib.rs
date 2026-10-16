@@ -28,7 +28,7 @@
 //! Uses a **hybrid Objective-C/Rust architecture**:
 //! - **Native wrappers**: `cargo xtask bundle` generates them for each plugin from the templates
 //!   in `xtask/src/au_codegen`. The AUv2 wrapper implements `AudioComponentPlugInInterface`, the
-//!   AUv3 wrapper is an `AUAudioUnit` subclass (`Beamer<Name>AuWrapper`)
+//!   AUv3 wrapper is an `AUAudioUnit` subclass (`Beamer<Name>AuWrapper_<codes>`)
 //! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 //!
 //! ```text

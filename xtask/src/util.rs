@@ -190,6 +190,78 @@ pub fn generate_au_subtype(package: &str) -> String {
     }
 }
 
+/// The manufacturer code of a plugin that does not name one.
+pub const DEFAULT_AU_MANUFACTURER: &str = "Bmer";
+
+/// The codes that identify an Audio Unit on a system.
+pub struct AuCodes {
+    pub component_type: String,
+    pub subtype: String,
+    pub manufacturer: String,
+}
+
+impl AuCodes {
+    /// The codes of a package, as its bundles register them.
+    #[must_use]
+    pub fn detect(package: &str, package_dir: &Path) -> Self {
+        let (component_type, manufacturer, subtype, ..) = detect_au_component_info(package_dir);
+        Self {
+            component_type,
+            subtype: subtype.unwrap_or_else(|| generate_au_subtype(package)),
+            manufacturer: manufacturer.unwrap_or_else(|| DEFAULT_AU_MANUFACTURER.to_string()),
+        }
+    }
+}
+
+/// The names of the Objective-C classes and the factory function generated
+/// for one Audio Unit.
+///
+/// A process has one namespace for Objective-C classes. When two loaded
+/// binaries define a class of the same name, the runtime uses one of them
+/// for both, and a host looks classes up by name. The names therefore carry
+/// the codes of the Audio Unit, which no other Audio Unit on the system has,
+/// besides the package name for readability. The codes are written in hex,
+/// since they may hold any ASCII character. Each code has four characters,
+/// so the hex of the three cannot be read in two ways.
+pub struct AuNames {
+    /// The `AUAudioUnit` subclass of the AUv3.
+    pub wrapper_class: String,
+    /// The principal class of the AUv3 extension.
+    pub extension_class: String,
+    /// The factory function of the AUv2 component.
+    pub auv2_factory: String,
+    /// The class that gives an AUv2 host the editor view.
+    pub cocoa_view_factory_class: String,
+    /// The view of the AUv2 editor.
+    pub cocoa_gui_view_class: String,
+}
+
+impl AuNames {
+    /// The names for a package with these codes.
+    #[must_use]
+    pub fn new(package: &str, codes: &AuCodes) -> Self {
+        let codes_hex: String = [&codes.component_type, &codes.subtype, &codes.manufacturer]
+            .iter()
+            .flat_map(|code| code.bytes())
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let name = |kind: &str| format!("Beamer{}{}_{}", to_pascal_case(package), kind, codes_hex);
+        Self {
+            wrapper_class: name("AuWrapper"),
+            extension_class: name("AuExtension"),
+            auv2_factory: name("Factory"),
+            cocoa_view_factory_class: name("CocoaViewFactory"),
+            cocoa_gui_view_class: name("GuiView"),
+        }
+    }
+
+    /// The names for a package, with the codes its bundles register.
+    #[must_use]
+    pub fn detect(package: &str, package_dir: &Path) -> Self {
+        Self::new(package, &AuCodes::detect(package, package_dir))
+    }
+}
+
 /// Maps a `Config.toml` category to its AU component type code.
 ///
 /// Has to match `Category::to_au_component_type` in beamer-core, which is the
@@ -804,6 +876,40 @@ mod tests {
                 "category \"{}\"",
                 name
             );
+        }
+    }
+
+    fn codes(component_type: &str, subtype: &str, manufacturer: &str) -> AuCodes {
+        AuCodes {
+            component_type: component_type.to_string(),
+            subtype: subtype.to_string(),
+            manufacturer: manufacturer.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_au_names_carry_the_codes_in_hex() {
+        let names = AuNames::new("midi-transform", &codes("aumi", "midi", "Bmer"));
+        assert_eq!(names.wrapper_class, "BeamerMidiTransformAuWrapper_61756d696d696469426d6572");
+        assert_eq!(names.auv2_factory, "BeamerMidiTransformFactory_61756d696d696469426d6572");
+
+        // A code may hold characters that a class name cannot.
+        let names = AuNames::new("gain", &codes("aufx", "g n!", "Bmer"));
+        assert!(names.extension_class.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    }
+
+    #[test]
+    fn test_au_names_differ_per_audio_unit() {
+        // Two plugins with one package name have different codes.
+        let first = AuNames::new("gain", &codes("aufx", "gain", "Acme"));
+        let second = AuNames::new("gain", &codes("aufx", "gain", "Bmer"));
+        let third = AuNames::new("gain", &codes("aumu", "gain", "Acme"));
+        for (a, b) in [(&first, &second), (&first, &third), (&second, &third)] {
+            assert_ne!(a.wrapper_class, b.wrapper_class);
+            assert_ne!(a.extension_class, b.extension_class);
+            assert_ne!(a.auv2_factory, b.auv2_factory);
+            assert_ne!(a.cocoa_view_factory_class, b.cocoa_view_factory_class);
+            assert_ne!(a.cocoa_gui_view_class, b.cocoa_gui_view_class);
         }
     }
 }
