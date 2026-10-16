@@ -2,11 +2,12 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use beamer_core::{GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler};
+use beamer_core::{
+    EditorSync, GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler,
+};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
 use vst3::Steinberg::Vst::{IComponentHandler2, IComponentHandler2Trait};
@@ -32,11 +33,9 @@ struct IpcContext {
     /// The `state_generation()` of the parameters that the host knows
     /// about, shared with the processor.
     known_state_generation: Arc<AtomicU64>,
-    /// Whether this view told the queue that an editor is open.
-    events_open: bool,
-    /// Cached parameter values from the last sync tick.
-    /// Index corresponds to ParameterStore::info(index).
-    last_values: Vec<f64>,
+    /// What keeps the web UI in step while the view shows an editor: set
+    /// in attached(), dropped in removed() and with the view.
+    sync: Option<EditorSync>,
     /// Pointer to the platform WebView (for evaluate_js calls from callbacks).
     /// Set in attached(), cleared in removed() and when the view is dropped.
     webview: *const PlatformWebView,
@@ -45,32 +44,9 @@ struct IpcContext {
 }
 
 impl IpcContext {
-    /// Tell the event queue that this view shows an editor.
-    fn open_events(&mut self) {
-        if let Some(events) = &self.events {
-            if !self.events_open {
-                events.editor_opened();
-                self.events_open = true;
-            }
-        }
-    }
-
-    /// Tell the event queue that this view's editor is gone.
-    ///
-    /// Does nothing when the view did not open it, so that `removed()`
-    /// followed by the drop of the view closes once.
-    fn close_events(&mut self) {
-        if let Some(events) = &self.events {
-            if self.events_open {
-                events.editor_closed();
-                self.events_open = false;
-            }
-        }
-    }
-
-    /// The script that delivers the events that wait for the editor.
-    fn take_event_script(&self) -> Option<String> {
-        self.events.as_ref()?.take_script()
+    /// Start keeping the web UI in step: the view shows an editor now.
+    fn open_sync(&mut self) {
+        self.sync = Some(EditorSync::open(Arc::clone(&self.params), self.events.clone()));
     }
 
     /// Tell the host that the plugin state changed when a `State` field was
@@ -128,11 +104,6 @@ impl WebViewPlugView {
     ) -> Self {
         let size = delegate.gui_size();
 
-        // Pre-allocate last_values cache.
-        // NAN as sentinel: NAN != NAN guarantees the first sync tick sends all values.
-        let param_count = params.count();
-        let last_values = vec![f64::NAN; param_count];
-
         Self {
             platform: UnsafeCell::new(None),
             config: UnsafeCell::new(config),
@@ -145,8 +116,7 @@ impl WebViewPlugView {
                 webview_handler,
                 events,
                 known_state_generation,
-                events_open: false,
-                last_values,
+                sync: None,
                 webview: std::ptr::null(),
                 sync_timer: std::ptr::null_mut(),
             })),
@@ -200,28 +170,12 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                     ((*(*handler).vtbl).performEdit)(handler, id, value);
                 }
             }
-            // Echo the authoritative values back to JS immediately so
-            // displayText updates without waiting for the next poll tick.
-            if !ipc.webview.is_null() {
-                let norm = params.get_normalized(id);
-                let plain = params.normalized_to_plain(id, norm);
-                let text = params.normalized_to_string(id, norm);
-                let text_json = serde_json::to_string(&text).unwrap_or_default();
+            // Answer with the value in effect at once, so that the display
+            // text follows without waiting for the next frame.
+            if let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) {
                 // SAFETY: webview is valid for the view lifetime.
                 let webview = unsafe { &*ipc.webview };
-                webview.evaluate_js(&format!(
-                    "window.__BEAMER__._onParams({{{}:[{},{},{}]}})",
-                    id, norm, plain, text_json
-                ));
-                // Update last_values so the poll doesn't redundantly re-send.
-                for i in 0..params.count() {
-                    if let Some(info) = params.info(i) {
-                        if info.id == id && i < ipc.last_values.len() {
-                            ipc.last_values[i] = norm;
-                            break;
-                        }
-                    }
-                }
+                webview.evaluate_js(&sync.parameter_script(id));
             }
         }
         "param:begin" => {
@@ -306,19 +260,13 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
     let ipc = unsafe { &*(context as *const IpcContext) };
-    if ipc.webview.is_null() {
+    let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_ref()) else {
         return;
-    }
+    };
 
     // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
     let webview = unsafe { &*ipc.webview };
-    webview.evaluate_js(&init_script(&*ipc.params));
-}
-
-/// The script that hands the web UI its parameters and the plugin format.
-fn init_script(params: &dyn ParameterStore) -> String {
-    let json_array = beamer_core::params_to_init_json(params);
-    format!("window.__BEAMER__._onInit({json_array},{{\"pluginFormat\":\"vst3\"}})")
+    webview.evaluate_js(&sync.init_script("vst3"));
 }
 
 /// NSTimer callback for 60 Hz parameter sync.
@@ -346,40 +294,12 @@ unsafe extern "C-unwind" fn sync_timer_fired(
         return;
     }
 
-    let params = &*ipc.params;
     // SAFETY: webview is non-null (checked above) and valid for the view lifetime.
     let webview = unsafe { &*ipc.webview };
 
-    // Poll and push changed parameters.
-    let mut script = String::new();
-    let mut any_changed = false;
-
-    let count = params.count();
-    for i in 0..count {
-        let Some(info) = params.info(i) else { continue };
-        let val = params.get_normalized(info.id);
-        if i < ipc.last_values.len() && val != ipc.last_values[i] {
-            ipc.last_values[i] = val;
-            if !any_changed {
-                script.push_str("window.__BEAMER__._onParams({");
-                any_changed = true;
-            } else {
-                script.push(',');
-            }
-            let plain = params.normalized_to_plain(info.id, val);
-            let text = params.normalized_to_string(info.id, val);
-            let text_json = serde_json::to_string(&text).unwrap_or_default();
-            let _ = write!(script, "{}:[{},{},{}]", info.id, val, plain, text_json);
-        }
-    }
-
-    if any_changed {
-        script.push_str("})");
-        webview.evaluate_js(&script);
-    }
-
-    // Deliver the events the plugin emitted since the last tick.
-    if let Some(script) = ipc.take_event_script() {
+    // The parameters that changed since the last frame and the events the
+    // plugin emitted.
+    if let Some(script) = ipc.sync.as_mut().and_then(EditorSync::frame_script) {
         webview.evaluate_js(&script);
     }
 
@@ -440,13 +360,9 @@ impl IPlugViewTrait for WebViewPlugView {
                 // Point the IPC context to the webview for evaluate_js calls.
                 ipc.webview = platform.as_ref().unwrap() as *const PlatformWebView;
 
-                // Reset cached values so the first sync tick sends everything.
-                for v in &mut ipc.last_values {
-                    *v = f64::NAN;
-                }
-
-                // Events the plugin emits from now on reach this editor.
-                ipc.open_events();
+                // The first frame sends every parameter, and events the
+                // plugin emits from now on reach this editor.
+                ipc.open_sync();
 
                 // Start 60 Hz sync timer.
                 #[cfg(target_os = "macos")]
@@ -547,7 +463,7 @@ impl IPlugViewTrait for WebViewPlugView {
         ipc.webview = std::ptr::null();
 
         // Without an editor, events are dropped.
-        ipc.close_events();
+        ipc.sync = None;
 
         // Dropping the platform WebView detaches it from the parent.
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
@@ -696,7 +612,7 @@ impl Drop for WebViewPlugView {
         ipc.webview = std::ptr::null();
 
         // Close the event queue if removed() did not.
-        ipc.close_events();
+        ipc.sync = None;
 
         // Detach the WebView while the IPC context it calls into is still alive,
         // and tell the delegate, which removed() would have done.
@@ -801,11 +717,15 @@ mod tests {
             webview_handler: None,
             events,
             known_state_generation: Arc::new(AtomicU64::new(0)),
-            events_open: false,
-            last_values: Vec::new(),
+            sync: None,
             webview: std::ptr::null(),
             sync_timer: std::ptr::null_mut(),
         }
+    }
+
+    /// The script of the next frame of a view.
+    fn frame(ipc: &mut IpcContext) -> Option<String> {
+        ipc.sync.as_mut().and_then(EditorSync::frame_script)
     }
 
     #[test]
@@ -815,37 +735,29 @@ mod tests {
         let mut ipc = context(Some(events.clone()));
 
         events.emit("before", &1);
-        assert_eq!(ipc.take_event_script(), None);
+        assert_eq!(frame(&mut ipc), None);
 
         // attached(), then a timer tick.
-        ipc.open_events();
-        ipc.open_events();
+        ipc.open_sync();
         events.emit("open", &2);
         assert_eq!(
-            ipc.take_event_script().as_deref(),
+            frame(&mut ipc).as_deref(),
             Some("window.__BEAMER__._onEvent(\"open\",2);")
         );
 
         // removed(), then the drop of the view.
-        ipc.close_events();
-        ipc.close_events();
+        ipc.sync = None;
+        ipc.sync = None;
         events.emit("closed", &3);
-        assert_eq!(ipc.take_event_script(), None);
+        assert_eq!(frame(&mut ipc), None);
 
         // A second view of the same plugin was not closed by the first.
         let mut second = context(Some(events.clone()));
-        second.open_events();
-        ipc.close_events();
+        second.open_sync();
+        ipc.open_sync();
+        ipc.sync = None;
         events.emit("second", &4);
-        assert!(second.take_event_script().is_some());
-    }
-
-    #[test]
-    fn test_init_script_names_the_plugin_format() {
-        assert_eq!(
-            init_script(&NoParameters),
-            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\"})"
-        );
+        assert!(frame(&mut second).is_some());
     }
 
     /// A component handler of a host that counts the calls of setDirty.
@@ -985,8 +897,8 @@ mod tests {
     #[test]
     fn test_view_of_a_plugin_without_events() {
         let mut ipc = context(None);
-        ipc.open_events();
-        assert_eq!(ipc.take_event_script(), None);
-        ipc.close_events();
+        ipc.open_sync();
+        assert_eq!(frame(&mut ipc), None);
+        ipc.sync = None;
     }
 }

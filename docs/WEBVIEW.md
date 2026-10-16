@@ -36,7 +36,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `WebViewHandler` trait, `WebViewEvents` queue, `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `WebViewHandler` trait, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
