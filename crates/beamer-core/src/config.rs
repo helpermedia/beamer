@@ -228,7 +228,9 @@ impl Subcategory {
     /// Get the AU tag string.
     ///
     /// AU tags are simpler and don't have all VST3 distinctions.
-    /// Returns `None` for subcategories that don't map to AU tags.
+    /// Returns `None` for subcategories that don't map to AU tags. An Audio
+    /// Unit has its tags in the Info.plist of its bundle, where xtask writes
+    /// them after the tag of the component type.
     pub const fn to_au_tag(&self) -> Option<&'static str> {
         match self {
             Subcategory::Analyzer => Some("Analyzer"),
@@ -725,16 +727,5 @@ impl Config {
             result.push_str(sub.to_vst3());
         }
         result
-    }
-
-    /// Get AU tags derived from subcategories.
-    ///
-    /// Returns tags for subcategories that have AU equivalents.
-    /// Subcategories without AU mappings are skipped.
-    pub fn au_tags(&self) -> Vec<&'static str> {
-        self.subcategories
-            .iter()
-            .filter_map(|sub| sub.to_au_tag())
-            .collect()
     }
 }

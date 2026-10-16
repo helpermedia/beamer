@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_au_bundle_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_au_bundle_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::AppexPlistConfig;
 
 /// Where an installed app lives, relative to the home directory.
@@ -248,6 +248,7 @@ pub fn bundle_auv3(
         package,
         executable_name,
         codes: &codes,
+        subcategories: &detect_subcategories(&package_info.dir),
         extension_class: &names.extension_class,
         framework_bundle_id: &framework_bundle_id,
         version_string: &version_string,
@@ -388,7 +389,7 @@ fn create_app_info_plist(package: &str, executable_name: &str, version: &str) ->
 /// Creates the Info.plist content for the appex with NSExtension.
 fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     // Get appropriate tags based on component type
-    let tags = get_au_tags(&config.codes.component_type);
+    let tags = plist_strings(&au_tags(&config.codes.component_type, config.subcategories), "                        ");
 
     // Use AudioUnit-UI extension point for plugins with a GUI
     let extension_point = if config.has_gui {
@@ -460,7 +461,7 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
                     <true/>
                     <key>tags</key>
                     <array>
-                        <string>{tags}</string>
+                        {tags}
                     </array>
                     <key>version</key>
                     <integer>{version_int}</integer>

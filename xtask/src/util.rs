@@ -29,6 +29,7 @@ struct ConfigFile {
     plugin_code: String,
     vendor: Option<String>,
     has_gui: Option<bool>,
+    subcategories: Option<Vec<String>>,
 }
 
 /// Extension trait for converting paths to strings with proper error handling.
@@ -276,23 +277,77 @@ pub fn au_component_type(category: &str) -> &'static str {
     }
 }
 
-/// Maps AU component type code to appropriate tags for Info.plist.
+/// The tags of an Audio Unit in its Info.plist: one for the component type,
+/// then one for each subcategory that has an AU tag.
 ///
 /// DAWs use these tags for plugin categorization.
 #[must_use]
-pub fn get_au_tags(component_type: &str) -> &'static str {
-    match component_type {
-        // Audio effect.
-        "aufx" => "Effects",
+pub fn au_tags(component_type: &str, subcategories: &[String]) -> Vec<&'static str> {
+    let type_tag = match component_type {
         // Music device (instrument).
         "aumu" => "Synthesizer",
         // MIDI processor.
         "aumi" => "MIDI",
         // Generator.
         "augn" => "Generator",
-        // Default fallback.
+        // Audio effect, and the fallback.
         _ => "Effects",
+    };
+
+    let mut tags = vec![type_tag];
+    for tag in subcategories.iter().filter_map(|name| au_subcategory_tag(name)) {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
     }
+    tags
+}
+
+/// Maps a `Config.toml` subcategory to its AU tag, if it has one.
+///
+/// Has to match `Subcategory::to_au_tag` in beamer-core.
+#[must_use]
+fn au_subcategory_tag(subcategory: &str) -> Option<&'static str> {
+    match subcategory {
+        "analyzer" => Some("Analyzer"),
+        "delay" => Some("Delay"),
+        "distortion" => Some("Distortion"),
+        "dynamics" => Some("Dynamics"),
+        "eq" => Some("EQ"),
+        "filter" => Some("Filter"),
+        "mastering" => Some("Mastering"),
+        "modulation" => Some("Modulation"),
+        "pitch_shift" => Some("Pitch Shift"),
+        "restoration" => Some("Restoration"),
+        "reverb" => Some("Reverb"),
+        "drum" => Some("Drums"),
+        "sampler" => Some("Sampler"),
+        "synth" => Some("Synth"),
+        "piano" => Some("Piano"),
+        "generator" => Some("Generator"),
+        _ => None,
+    }
+}
+
+/// The subcategories in the `Config.toml` of a package, none without one.
+#[must_use]
+pub fn detect_subcategories(package_dir: &Path) -> Vec<String> {
+    fs::read_to_string(package_dir.join("Config.toml"))
+        .ok()
+        .and_then(|toml_str| toml::from_str::<ConfigFile>(&toml_str).ok())
+        .and_then(|config| config.subcategories)
+        .unwrap_or_default()
+}
+
+/// Values as `<string>` elements of a plist array, one per line with the
+/// given indentation before all but the first.
+#[must_use]
+pub fn plist_strings(values: &[&str], indent: &str) -> String {
+    values
+        .iter()
+        .map(|value| format!("<string>{value}</string>"))
+        .collect::<Vec<_>>()
+        .join(&format!("\n{indent}"))
 }
 
 /// Combines multiple architecture-specific binaries into a universal binary using lipo,
@@ -877,6 +932,71 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_au_subcategory_tags_match_core() {
+        use beamer_core::config::Subcategory;
+
+        // Every subcategory name of Config.toml, with its type in
+        // beamer-core.
+        let subcategories = [
+            ("analyzer", Subcategory::Analyzer),
+            ("bass", Subcategory::Bass),
+            ("channel_strip", Subcategory::ChannelStrip),
+            ("delay", Subcategory::Delay),
+            ("distortion", Subcategory::Distortion),
+            ("drums", Subcategory::Drums),
+            ("dynamics", Subcategory::Dynamics),
+            ("eq", Subcategory::Eq),
+            ("filter", Subcategory::Filter),
+            ("generator", Subcategory::Generator),
+            ("guitar", Subcategory::Guitar),
+            ("mastering", Subcategory::Mastering),
+            ("microphone", Subcategory::Microphone),
+            ("modulation", Subcategory::Modulation),
+            ("network", Subcategory::Network),
+            ("pitch_shift", Subcategory::PitchShift),
+            ("restoration", Subcategory::Restoration),
+            ("reverb", Subcategory::Reverb),
+            ("spatial", Subcategory::Spatial),
+            ("surround", Subcategory::Surround),
+            ("tools", Subcategory::Tools),
+            ("vocals", Subcategory::Vocals),
+            ("drum", Subcategory::Drum),
+            ("external", Subcategory::External),
+            ("piano", Subcategory::Piano),
+            ("sampler", Subcategory::Sampler),
+            ("synth", Subcategory::Synth),
+            ("mono", Subcategory::Mono),
+            ("stereo", Subcategory::Stereo),
+            ("ambisonics", Subcategory::Ambisonics),
+            ("up_down_mix", Subcategory::UpDownMix),
+            ("only_realtime", Subcategory::OnlyRealTime),
+            ("only_offline", Subcategory::OnlyOfflineProcess),
+            ("no_offline", Subcategory::NoOfflineProcess),
+        ];
+        for (name, subcategory) in subcategories {
+            assert_eq!(au_subcategory_tag(name), subcategory.to_au_tag(), "subcategory \"{}\"", name);
+        }
+    }
+
+    #[test]
+    fn test_au_tags_start_with_the_type() {
+        let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(au_tags("aufx", &[]), ["Effects"]);
+        assert_eq!(au_tags("aufx", &names(&["eq", "mono"])), ["Effects", "EQ"]);
+        assert_eq!(au_tags("aumu", &names(&["drum", "sampler"])), ["Synthesizer", "Drums", "Sampler"]);
+
+        // A tag appears once.
+        assert_eq!(au_tags("augn", &names(&["generator"])), ["Generator"]);
+    }
+
+    #[test]
+    fn test_plist_strings() {
+        assert_eq!(plist_strings(&["Effects"], "  "), "<string>Effects</string>");
+        assert_eq!(plist_strings(&["Effects", "EQ"], "  "), "<string>Effects</string>\n  <string>EQ</string>");
     }
 
     fn codes(component_type: &str, subtype: &str, manufacturer: &str) -> AuCodes {

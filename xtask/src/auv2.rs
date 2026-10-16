@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, get_version_info};
-use crate::util::{codesign_bundle, combine_or_rename_binaries, detect_au_component_info, get_au_tags, install_bundle, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
 /// Where an installed component lives, relative to the home directory.
@@ -162,6 +162,7 @@ pub fn bundle_auv2(
         package,
         executable_name,
         codes: &codes,
+        subcategories: &detect_subcategories(&package_info.dir),
         factory_name: &names.auv2_factory,
         version_string: &version_string,
         version_int,
@@ -194,7 +195,7 @@ pub fn bundle_auv2(
 
 fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     // Get appropriate tags based on component type
-    let tags = get_au_tags(&config.codes.component_type);
+    let tags = plist_strings(&au_tags(&config.codes.component_type, config.subcategories), "                ");
 
     // Create the plugin display name from vendor and plugin name
     let plugin_display_name = match (config.vendor_name, config.plugin_name) {
@@ -254,7 +255,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
             <true/>
             <key>tags</key>
             <array>
-                <string>{tags}</string>
+                {tags}
             </array>
             <key>version</key>
             <integer>{version_int}</integer>
