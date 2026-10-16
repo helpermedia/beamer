@@ -40,6 +40,7 @@
 - (void)_sendInitDump;
 - (void)_startSyncTimer;
 - (void)_sendFrame;
+- (void)_connectWrapper:({{WRAPPER_CLASS}}*)wrapper;
 @end
 
 // =============================================================================
@@ -103,8 +104,8 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     ext->_webviewLoaded = YES;
 
     // If the wrapper is already available, send the parameter init dump
-    // and start the sync timer. Otherwise createAudioUnitWithComponentDescription:
-    // will handle it when the wrapper arrives.
+    // and start the sync timer. Otherwise -_connectWrapper: does it when
+    // the audio unit arrives.
     if (ext->_wrapper) {
         [ext _sendInitDump];
         [ext _startSyncTimer];
@@ -266,6 +267,24 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     {{WRAPPER_CLASS}}* wrapper = [[{{WRAPPER_CLASS}} alloc] initWithComponentDescription:desc options:0 error:error];
     if (!wrapper) return nil;
 
+    // The system may call this factory method on any thread, while the
+    // rest of the editor runs on the main thread. So the editor takes the
+    // audio unit over there.
+    __weak typeof(self) weakSelf = self;
+    void (^connect)(void) = ^{
+        [weakSelf _connectWrapper:wrapper];
+    };
+    if ([NSThread isMainThread]) {
+        connect();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), connect);
+    }
+
+    return wrapper;
+}
+
+// Follow a new audio unit. On the main thread.
+- (void)_connectWrapper:({{WRAPPER_CLASS}}*)wrapper {
     _wrapper = wrapper;
 
     // If the WebView already finished loading, send the init dump and
@@ -275,8 +294,6 @@ static void beamer_auv3_ext_on_loaded(void* context) {
         [self _sendInitDump];
         [self _startSyncTimer];
     }
-
-    return wrapper;
 }
 
 @end
