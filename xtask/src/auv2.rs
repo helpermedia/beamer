@@ -73,7 +73,7 @@ pub fn bundle_auv2(
         crate::verbose!(verbose, "    Vendor: {}", vendor);
     }
 
-    // Generate ObjC wrapper with factory function
+    // Generate the AUv2 wrapper with its factory function.
     let wrapper_source = generate_auv2_wrapper_source(package, &codes, &names);
     let gen_dir = workspace_root.join("target/au-gen").join(package);
     fs::create_dir_all(&gen_dir).map_err(|e| format!("Failed to create gen dir: {}", e))?;
@@ -124,7 +124,7 @@ pub fn bundle_auv2(
     for target_arch in &arches {
         let arch_output = gen_dir.join(format!("{}_{}", executable_name, target_arch));
 
-        // Compile ObjC wrapper and link with Rust dylib as a bundle
+        // Compile the AUv2 wrapper and link it with the Rust dylib as a bundle.
         let clang_status = Command::new("clang")
             .args([
                 "-arch", target_arch,

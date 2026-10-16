@@ -413,7 +413,7 @@ impl DeclaredBuses {
 /// Opaque handle to a beamer AU plugin instance.
 ///
 /// This struct wraps the Rust plugin instance and render resources,
-/// providing a stable C-ABI handle that the Objective-C wrapper can use.
+/// providing a stable C-ABI handle that the AUv2 and AUv3 wrappers can use.
 ///
 /// # Thread Safety
 ///

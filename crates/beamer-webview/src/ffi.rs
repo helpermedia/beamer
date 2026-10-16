@@ -1,9 +1,9 @@
-//! C-ABI exports for the AU ObjC wrapper.
+//! C-ABI exports for the generated AU wrappers.
 //!
-//! These functions wrap `MacosWebView` so the Au Objective-C template can
+//! These functions wrap `MacosWebView` so the AUv2 and AUv3 wrappers can
 //! create and manage a WKWebView without reimplementing the setup logic.
-//! The same Rust platform code is shared by both Vst3 (via direct Rust calls)
-//! and Au (via these C-ABI functions).
+//! The same Rust platform code serves VST3 (through direct Rust calls) and
+//! the Audio Units (through these C-ABI functions).
 
 #[cfg(target_os = "macos")]
 mod macos_ffi {

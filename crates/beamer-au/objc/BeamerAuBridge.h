@@ -77,7 +77,7 @@ NS_ASSUME_NONNULL_BEGIN
  * Opaque handle to a Rust plugin instance.
  *
  * This handle wraps a `Box<dyn AuPluginInstance>` on the Rust side.
- * The Objective-C wrapper stores this handle and passes it to all bridge functions.
+ * The AUv2 and AUv3 wrappers store this handle and pass it to all bridge functions.
  *
  * Lifetime:
  * - Created by `beamer_au_create_instance()`
@@ -1046,8 +1046,8 @@ void beamer_au_free_string(char* _Nullable ptr);
 /**
  * Set a parameter value from the WebView UI (normalized).
  *
- * The ObjC wrapper is responsible for notifying the host via
- * AUParameterTree (AUv3) or AudioUnitSetParameter (AUv2).
+ * The wrapper notifies the host: through the AUParameterTree in the AUv3,
+ * through AudioUnitSetParameter in the AUv2.
  *
  * Thread Safety: Can be called from any thread (uses atomics internally).
  *

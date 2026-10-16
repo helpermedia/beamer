@@ -4,8 +4,8 @@
 //! - Default/fallback constants
 //! - Error code mapping
 //!
-//! In the hybrid ObjC/Rust architecture, NSError creation is handled by the
-//! Objective-C wrapper. This module provides Rust-side error code conversion.
+//! In the hybrid ObjC/Rust architecture, the AUv3 wrapper creates the
+//! NSError objects. This module provides Rust-side error code conversion.
 
 use crate::error::{os_status, PluginError};
 
