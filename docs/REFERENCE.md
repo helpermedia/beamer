@@ -67,7 +67,7 @@ log_level = "warn"
 |-------|------|-------------|
 | `vst3_controller_id` | String | VST3 controller UUID for split component/controller architecture (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 | `sysex_slots` | Integer | Number of pre-allocated SysEx output slots for VST3 (default: 16) |
-| `sysex_buffer_size` | Integer | Maximum SysEx output message size in bytes for VST3 (default: 512) |
+| `sysex_buffer_size` | Integer | Maximum payload of a SysEx output message in bytes for VST3, without F0 and F7 (default: 512) |
 
 **SysEx Configuration:**
 - Advanced settings for plugins that send SysEx messages
@@ -1601,6 +1601,11 @@ impl Descriptor for MyDescriptor {
 
 ### SysEx Handling
 
+A `SysEx` holds the payload of a message, without the F0 and F7 that frame
+it on the wire. The wrappers add them to outgoing messages in AU and VST3,
+and the VST3 wrapper takes them off incoming ones. The AU formats do not pass
+SysEx input to the plugin yet.
+
 **Buffer Size (Cargo features):**
 
 | Feature | Size |
@@ -1621,7 +1626,7 @@ sysex_buffer_size = 4096
 
 Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
 - Your plugin sends many SysEx messages per buffer (increase slots)
-- Your plugin sends large SysEx messages like sample dumps (increase buffer size)
+- Your plugin sends large SysEx messages like sample dumps (increase buffer size, together with the buffer size feature above: a message holds at most that many bytes)
 
 These settings apply to VST3, which needs a pool to keep the data alive after
 processing. The AU formats hand each message to the host during the render

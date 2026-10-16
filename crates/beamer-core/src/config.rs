@@ -364,7 +364,8 @@ pub struct Config {
     /// Number of SysEx output slots per process block (AU and VST3).
     pub sysex_slots: usize,
 
-    /// Maximum size of each SysEx message in bytes (AU and VST3).
+    /// Maximum size of the payload of each SysEx message in bytes, without
+    /// its F0 and F7 (AU and VST3).
     pub sysex_buffer_size: usize,
 
     /// How much the plugin logs, or nothing for no logger (see
@@ -661,7 +662,8 @@ impl Config {
         self
     }
 
-    /// Set the maximum size of each SysEx message in bytes (AU and VST3).
+    /// Set the maximum size of the payload of each SysEx message in bytes,
+    /// without its F0 and F7 (AU and VST3).
     ///
     /// Messages larger than this will be truncated. Default is 512 bytes.
     #[doc(hidden)]

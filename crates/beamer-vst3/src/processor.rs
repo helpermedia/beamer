@@ -454,9 +454,10 @@ where
             midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_input_carried: UnsafeCell::new(false),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
+            // Each slot holds a message with its F0 and F7.
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
                 config.sysex_slots,
-                config.sysex_buffer_size,
+                config.sysex_buffer_size + 2,
             )),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
@@ -3038,14 +3039,15 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             // A Box recycling pool could eliminate this, but the complexity is not
             // justified given the low frequency.
             if data_event.r#type == DATA_TYPE_MIDI_SYSEX {
-                let mut sysex = SysEx::new();
-                let copy_len = (data_event.size as usize).min(MAX_SYSEX_SIZE);
-                if copy_len > 0 && !data_event.bytes.is_null() {
+                // Hosts send the message framed by F0 and F7; the event holds
+                // the payload.
+                let sysex = if data_event.size > 0 && !data_event.bytes.is_null() {
                     // SAFETY: bytes is non-null and host guarantees validity for size bytes.
-                    let src = unsafe { std::slice::from_raw_parts(data_event.bytes, copy_len) };
-                    sysex.data[..copy_len].copy_from_slice(src);
-                    sysex.len = copy_len as u16;
-                }
+                    let message = unsafe { std::slice::from_raw_parts(data_event.bytes, data_event.size as usize) };
+                    SysEx::from_message(message)
+                } else {
+                    SysEx::new()
+                };
                 Some(MidiEvent {
                     sample_offset,
                     event: MidiEventKind::SysEx(Box::new(sysex)),
@@ -3270,8 +3272,12 @@ fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> O
             event.__field0.noteExpressionIntValue.value = expr.value;
         }
         MidiEventKind::SysEx(sysex) => {
-            // Allocate a slot in the pool for stable pointer storage
-            if let Some((ptr, len)) = sysex_pool.allocate(sysex.as_slice()) {
+            // Hosts expect the message framed by F0 and F7. It goes into a
+            // slot of the pool for stable pointer storage, so it is framed to
+            // fit one.
+            let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
+            let slot = sysex_pool.buffer_size().min(buffer.len());
+            if let Some((ptr, len)) = sysex_pool.allocate(sysex.write_framed(&mut buffer[..slot])) {
                 event.r#type = K_DATA_EVENT;
                 event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
                 event.__field0.data.size = len as u32;
@@ -3783,6 +3789,39 @@ mod tests {
         };
         let last = (calls - 1) as f32 / calls as f32;
         assert!((cc.value - last).abs() < 1e-6, "{} is not the last value {}", cc.value, last);
+    }
+
+    #[test]
+    fn test_sysex_is_framed_for_the_host_and_not_for_the_plugin() {
+        let message = [0xF0u8, 0x7E, 0x00, 0x06, 0x01, 0xF7];
+
+        // From the host: the event holds the payload.
+        // SAFETY: zeroed Event is valid for VST3 Event union type.
+        let mut event: Event = unsafe { std::mem::zeroed() };
+        event.r#type = K_DATA_EVENT;
+        event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+        event.__field0.data.size = message.len() as u32;
+        event.__field0.data.bytes = message.as_ptr();
+        // SAFETY: The event and its bytes are valid for the call.
+        let received = unsafe { convert_vst3_to_midi(&event) }.expect("a SysEx event");
+        let MidiEventKind::SysEx(sysex) = &received.event else {
+            panic!("a SysEx event");
+        };
+        assert_eq!(sysex.as_slice(), &message[1..5]);
+
+        // To the host: framed, also at the largest payload, which is cut to
+        // the slot size before its F7.
+        let slot_payload = beamer_core::config::DEFAULT_SYSEX_BUFFER_SIZE;
+        let mut pool = SysExOutputPool::with_capacity(2, slot_payload + 2);
+        let largest = MidiEvent::sysex(0, &[0x01; MAX_SYSEX_SIZE]);
+        let largest_len = MAX_SYSEX_SIZE.min(slot_payload) + 2;
+        for (event, expected_len) in [(received, message.len()), (largest, largest_len)] {
+            let sent = convert_midi_to_vst3(&event, &mut pool).expect("a data event");
+            // SAFETY: The event is a data event with bytes in the pool.
+            let bytes = unsafe { std::slice::from_raw_parts(sent.__field0.data.bytes, sent.__field0.data.size as usize) };
+            assert_eq!(bytes.len(), expected_len);
+            assert_eq!((bytes[0], bytes[bytes.len() - 1]), (0xF0, 0xF7));
+        }
     }
 
     #[test]

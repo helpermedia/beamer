@@ -369,6 +369,38 @@ impl SysEx {
     pub fn as_slice(&self) -> &[u8] {
         &self.data[..self.len as usize]
     }
+
+    /// The SysEx of a message as it comes from a host. The data holds the
+    /// payload only, so a leading F0 and a trailing F7 are taken off. Data
+    /// beyond [`MAX_SYSEX_SIZE`] bytes is cut off.
+    pub fn from_message(message: &[u8]) -> Self {
+        let payload = message.strip_prefix(&[0xF0]).unwrap_or(message);
+        let payload = payload.strip_suffix(&[0xF7]).unwrap_or(payload);
+        let mut sysex = Self::new();
+        let len = payload.len().min(MAX_SYSEX_SIZE);
+        sysex.data[..len].copy_from_slice(&payload[..len]);
+        sysex.len = len as u16;
+        sysex
+    }
+
+    /// Write the message as it goes to a host: the payload framed by F0 and
+    /// F7. Data that has the framing already is framed once. A payload that
+    /// does not fit the buffer is cut off before the F7, so the message stays
+    /// complete. Returns the message, which is empty for a buffer of fewer
+    /// than 2 bytes.
+    pub fn write_framed<'a>(&self, buffer: &'a mut [u8]) -> &'a [u8] {
+        if buffer.len() < 2 {
+            return &buffer[..0];
+        }
+        let data = self.as_slice();
+        let payload = data.strip_prefix(&[0xF0]).unwrap_or(data);
+        let payload = payload.strip_suffix(&[0xF7]).unwrap_or(payload);
+        let payload = &payload[..payload.len().min(buffer.len() - 2)];
+        buffer[0] = 0xF0;
+        buffer[1..=payload.len()].copy_from_slice(payload);
+        buffer[payload.len() + 1] = 0xF7;
+        &buffer[..payload.len() + 2]
+    }
 }
 
 impl Default for SysEx {
@@ -1612,7 +1644,8 @@ impl MidiEvent {
     // Advanced VST3 event constructors
     // =========================================================================
 
-    /// Create a SysEx event.
+    /// Create a SysEx event from its payload, without the F0 and F7 that frame
+    /// it on the wire (see [`SysEx`]).
     ///
     /// Note: This allocates the SysEx data on the heap. SysEx messages are
     /// relatively rare, so the allocation is acceptable.
@@ -2401,6 +2434,39 @@ impl MpeInputDeviceSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sysex_from_a_message_holds_the_payload() {
+        let payload = [0x7E, 0x00, 0x06, 0x01];
+        assert_eq!(SysEx::from_message(&[0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7]).as_slice(), payload);
+        assert_eq!(SysEx::from_message(&payload).as_slice(), payload);
+        assert_eq!(SysEx::from_message(&[0xF0, 0xF7]).as_slice(), [] as [u8; 0]);
+
+        // A framed message of the maximum payload size keeps all of it.
+        let mut message = vec![0xF0];
+        message.extend([0x01; MAX_SYSEX_SIZE]);
+        message.push(0xF7);
+        assert_eq!(SysEx::from_message(&message).as_slice(), [0x01; MAX_SYSEX_SIZE]);
+    }
+
+    #[test]
+    fn test_sysex_is_framed_once() {
+        let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
+        let message = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7];
+        assert_eq!(SysEx::from_message(&message).write_framed(&mut buffer), message);
+
+        let mut framed = SysEx::new();
+        framed.data[..message.len()].copy_from_slice(&message);
+        framed.len = message.len() as u16;
+        assert_eq!(framed.write_framed(&mut buffer), message);
+
+        let largest = SysEx::from_message(&[0x01; MAX_SYSEX_SIZE]);
+        assert_eq!(largest.write_framed(&mut buffer).len(), MAX_SYSEX_SIZE + 2);
+
+        // A smaller buffer cuts the payload, not the F7.
+        assert_eq!(largest.write_framed(&mut buffer[..4]), [0xF0, 0x01, 0x01, 0xF7]);
+        assert_eq!(largest.write_framed(&mut buffer[..1]), [] as [u8; 0]);
+    }
 
     #[test]
     fn midi_buffer_new_boxed_is_empty() {

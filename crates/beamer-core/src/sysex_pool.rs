@@ -131,6 +131,12 @@ impl SysExOutputPool {
         self.overflowed
     }
 
+    /// Size of each slot in bytes.
+    #[inline]
+    pub fn buffer_size(&self) -> usize {
+        self.max_buffer_size
+    }
+
     /// Get the pool's slot capacity.
     #[inline]
     pub fn capacity(&self) -> usize {

@@ -921,21 +921,9 @@ fn send_midi_output(events: &[MidiEvent], sink: MidiOutputSink) {
         match &event.event {
             MidiEventKind::SysEx(sysex) => {
                 // The event holds the payload. On the wire the message is framed
-                // by F0 and F7, which are added unless the payload has them.
-                let data = sysex.as_slice();
-                let mut message = [0u8; MAX_SYSEX_SIZE + 2];
-                let mut len = 0;
-                if data.first() != Some(&0xF0) {
-                    message[len] = 0xF0;
-                    len += 1;
-                }
-                message[len..len + data.len()].copy_from_slice(data);
-                len += data.len();
-                if data.last() != Some(&0xF7) {
-                    message[len] = 0xF7;
-                    len += 1;
-                }
-                sink.send(event.sample_offset, &message[..len]);
+                // by F0 and F7.
+                let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
+                sink.send(event.sample_offset, sysex.write_framed(&mut buffer[..]));
             }
             other => {
                 if let Some((bytes, len)) = encode_midi_event(other) {

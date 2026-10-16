@@ -34,7 +34,8 @@ pub struct ConfigFile {
     /// Number of SysEx output slots per process block (default: 16).
     #[serde(default)]
     pub sysex_slots: Option<usize>,
-    /// Maximum size of each SysEx message in bytes (default: 512).
+    /// Maximum size of the payload of each SysEx message in bytes, without
+    /// its F0 and F7 (default: 512).
     #[serde(default)]
     pub sysex_buffer_size: Option<usize>,
     /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
