@@ -1674,7 +1674,13 @@ impl<S: RenderSample> RenderBlock<S> {
                 ramp_idx += 1;
             }
 
-            // Determine next boundary.
+            // The next boundary: the next parameter event or the end of the
+            // buffer. The loops above stop at the first event after
+            // block_start, so the boundary lies after it. Keeping it at least
+            // one sample past block_start makes sure of that: the loop always
+            // advances and the events collected above are always applied.
+            // block_start is below num_samples, so the sub-block stays within
+            // the buffer.
             let mut next_boundary = num_samples;
             if imm_idx < immediate.len() {
                 next_boundary = next_boundary.min(immediate[imm_idx].sample_offset as usize);
@@ -1682,17 +1688,8 @@ impl<S: RenderSample> RenderBlock<S> {
             if ramp_idx < ramps.len() {
                 next_boundary = next_boundary.min(ramps[ramp_idx].sample_offset as usize);
             }
-            if next_boundary < block_start {
-                next_boundary = block_start;
-            }
-
-            let block_len = next_boundary.saturating_sub(block_start);
-            if block_len == 0 {
-                // Guard against malformed event lists with duplicate/unsorted offsets.
-                // Advance by 1 sample to prevent an infinite loop.
-                block_start += 1;
-                continue;
-            }
+            let next_boundary = next_boundary.max(block_start + 1);
+            let block_len = next_boundary - block_start;
 
             // Apply parameter changes scheduled at this boundary.
             // If application fails, continue processing (parameters may already be correct).
