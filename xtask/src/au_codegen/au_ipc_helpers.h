@@ -1,59 +1,38 @@
 // Shared IPC helpers for AU codegen templates.
 //
 // Included by auv2_wrapper.c, auv3_wrapper.m and auv3_extension_gui.m.
-// These static functions handle invoke, event and init-dump dispatch
-// that is identical across all AU format variants.
+// These static functions keep the web UI in step (through the editor
+// sync of the bridge) and dispatch invokes and events the same way in all
+// AU format variants.
 
 #pragma once
 
 #include "BeamerAuBridge.h"
 
 // ---------------------------------------------------------------------------
-// Parameter set echo
+// Editor sync
 // ---------------------------------------------------------------------------
 
-/// Echo authoritative parameter values back to JS after a param:set.
-///
-/// Called immediately after updating the Rust store so displayText
-/// updates without waiting for the next poll tick. Also updates the
-/// poll cache to prevent redundant re-sends.
-static void beamer_au_ipc_echo_param(
-    BeamerAuInstanceHandle instance,
-    void* webviewHandle,
-    uint32_t paramId,
-    double* lastParamValues,
-    uint32_t paramCount
-) {
-    if (!instance || !webviewHandle) return;
-
-    double norm = beamer_au_param_get_normalized(instance, paramId);
-    double plain = beamer_au_param_get_plain(instance, paramId);
-    char text[128];
-    beamer_au_param_get_display_text(instance, paramId, text, sizeof(text));
-
-    // Escape the text for embedding in a JS string literal.
-    NSString* textStr = [NSString stringWithUTF8String:text];
-    textStr = [textStr stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
-    textStr = [textStr stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-    textStr = [textStr stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
-    textStr = [textStr stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
-
-    NSString* script = [NSString stringWithFormat:
-        @"window.__BEAMER__._onParams({%u:[%.17g,%.17g,\"%@\"]})",
-        paramId, norm, plain, textStr];
-    const char* utf8 = [script UTF8String];
-    beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
-
-    // Update poll cache so the next tick doesn't redundantly re-send.
-    if (lastParamValues) {
-        BeamerAuParameterInfo info;
-        for (uint32_t i = 0; i < paramCount; i++) {
-            if (beamer_au_get_parameter_info(instance, i, &info) && info.id == paramId) {
-                lastParamValues[i] = norm;
-                break;
-            }
-        }
+/// Evaluate a script that Rust built in the WebView, then free it.
+static void beamer_au_ipc_eval_script(void* webviewHandle, char* script) {
+    if (script && webviewHandle) {
+        beamer_webview_eval_js(webviewHandle, (const uint8_t*)script, strlen(script));
     }
+    beamer_au_free_string(script);
+}
+
+/// Answer a param:set with the value in effect.
+///
+/// Called after the Rust store was set and the host was told, so that the
+/// display text follows at once and the next frame does not send the value
+/// again.
+static void beamer_au_ipc_answer_param(
+    BeamerAuEditorSyncHandle sync,
+    void* webviewHandle,
+    uint32_t paramId
+) {
+    if (!sync || !webviewHandle) return;
+    beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_parameter_script(sync, paramId));
 }
 
 // ---------------------------------------------------------------------------
@@ -177,57 +156,35 @@ static void beamer_au_ipc_handle_event(
 }
 
 // ---------------------------------------------------------------------------
-// Init dump
+// Init dump and frames
 // ---------------------------------------------------------------------------
 
 /// Send the parameter init dump to the WebView.
 ///
-/// Called when the WebView finishes loading. Serializes all parameter info
-/// via `beamer_au_param_info_json` and evals `window.__BEAMER__._onInit(...)`
-/// with the plugin format the editor runs in ("auv2" or "auv3").
+/// Called when the WebView finishes loading, with the plugin format the
+/// editor runs in ("auv2" or "auv3").
 static void beamer_au_ipc_send_init_dump(
-    BeamerAuInstanceHandle instance,
+    BeamerAuEditorSyncHandle sync,
     void* webviewHandle,
     const char* pluginFormat
 ) {
-    if (!instance || !webviewHandle) return;
-
-    char* json = beamer_au_param_info_json(instance);
-    if (!json) return;
-
-    NSString* script = [NSString stringWithFormat:@"window.__BEAMER__._onInit(%s,{\"pluginFormat\":\"%s\"})",
-        json, pluginFormat];
-    const char* utf8 = [script UTF8String];
-    beamer_webview_eval_js(webviewHandle, (const uint8_t*)utf8, strlen(utf8));
-    beamer_au_free_string(json);
+    if (!sync || !webviewHandle) return;
+    beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_init_script(sync, pluginFormat));
 }
 
-// ---------------------------------------------------------------------------
-// Events from Rust
-// ---------------------------------------------------------------------------
-
-/// Send the events the plugin emitted since the last tick to the WebView.
+/// Send one frame to the WebView: the parameters that changed and the
+/// events the plugin emitted since the last frame.
 ///
-/// Called from the sync timer of an editor. `events` is what
-/// `beamer_au_webview_events_open` returned when the editor opened, NULL for
-/// a plugin that sends no events.
-static void beamer_au_ipc_send_events(
-    BeamerAuWebViewEventsHandle events,
-    void* webviewHandle
-) {
-    if (!events || !webviewHandle) return;
-
-    char* script = beamer_au_webview_events_take(events);
-    if (!script) return;
-
-    beamer_webview_eval_js(webviewHandle, (const uint8_t*)script, strlen(script));
-    beamer_au_free_string(script);
+/// Called from the sync timer of an editor.
+static void beamer_au_ipc_send_frame(BeamerAuEditorSyncHandle sync, void* webviewHandle) {
+    if (!sync || !webviewHandle) return;
+    beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_frame_script(sync));
 }
 
-/// Close the events of an editor that goes away and clear its handle.
-static void beamer_au_ipc_close_events(BeamerAuWebViewEventsHandle* events) {
-    if (*events == NULL) return;
+/// Stop keeping an editor that goes away in step and clear its handle.
+static void beamer_au_ipc_close_sync(BeamerAuEditorSyncHandle* sync) {
+    if (*sync == NULL) return;
 
-    beamer_au_webview_events_close(*events);
-    *events = NULL;
+    beamer_au_editor_sync_close(*sync);
+    *sync = NULL;
 }

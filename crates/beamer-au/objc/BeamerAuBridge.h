@@ -1016,52 +1016,6 @@ void beamer_au_get_gui_background_color(uint8_t* _Nonnull out);
 // =============================================================================
 
 /**
- * Get a parameter's current normalized value (for WebView sync).
- *
- * Thread Safety: Can be called from any thread (uses atomics internally).
- *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID.
- * @return Normalized value (0.0 to 1.0), f64 precision for JS runtime.
- */
-double beamer_au_param_get_normalized(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
-
-/**
- * Get a parameter's current plain (actual) value (for WebView display).
- *
- * Reads the normalized value and converts to plain using f64 precision,
- * avoiding f32 round-trip artifacts from the AU host API.
- *
- * Thread Safety: Can be called from any thread (uses atomics internally).
- *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID.
- * @return Plain value in the parameter's native range, f64 precision.
- */
-double beamer_au_param_get_plain(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
-
-/**
- * Get a parameter's formatted display text for the WebView.
- *
- * Returns the Rust-formatted display string (e.g. "L50", "0.0", "440")
- * into a caller-provided buffer.
- *
- * Thread Safety: Can be called from any thread.
- *
- * @param instance   Handle to the plugin instance.
- * @param param_id   Parameter ID.
- * @param out_buffer Buffer to write the display string (UTF-8, null-terminated).
- * @param buffer_len Size of out_buffer in bytes (including null terminator).
- * @return Number of bytes written (excluding null terminator), or 0 on error.
- */
-uint32_t beamer_au_param_get_display_text(
-    BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
-    char* _Nonnull out_buffer,
-    uint32_t buffer_len
-);
-
-/**
  * Parse a display string for a parameter and return a normalized value.
  *
  * Returns NAN if the string cannot be parsed.
@@ -1082,21 +1036,8 @@ double beamer_au_param_string_to_normalized(
 );
 
 /**
- * Get all parameter info as a JSON string for the WebView init dump.
- *
- * Returns a heap-allocated null-terminated C string that the caller must
- * free with `beamer_au_free_string`. Returns NULL on failure.
- *
- * Thread Safety: Can be called from any thread.
- *
- * @param instance Handle to the plugin instance.
- * @return JSON string, or NULL on failure. Caller must free with beamer_au_free_string.
- */
-char* _Nullable beamer_au_param_info_json(BeamerAuInstanceHandle _Nullable instance);
-
-/**
- * Free a string returned by a beamer_au function (e.g., beamer_au_param_info_json,
- * beamer_au_on_invoke).
+ * Free a string returned by a beamer_au function (e.g., beamer_au_on_invoke,
+ * beamer_au_editor_sync_frame_script).
  *
  * @param ptr Pointer returned by a beamer_au string-producing function, or NULL (no-op).
  */
@@ -1158,47 +1099,76 @@ void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
                         size_t data_json_len);
 
 /**
- * The events of a plugin for one open editor.
+ * What one open editor uses to keep its web UI in step with the plugin.
  *
  * An editor holds this from the moment it opens until it closes. It stays
  * valid when the host destroys the plugin instance before the editor.
  */
-typedef struct BeamerAuWebViewEvents* BeamerAuWebViewEventsHandle;
+typedef struct BeamerAuEditorSync* BeamerAuEditorSyncHandle;
 
 /**
- * An editor was opened: get the events of the plugin for it.
+ * An editor was opened: start keeping its web UI in step.
  *
  * Events the plugin emits from now on are kept for this editor.
  *
- * Thread Safety: Can be called from the main thread.
+ * Thread Safety: Main thread.
  *
  * @param instance Handle to the plugin instance.
- * @return The events, or NULL when the plugin sends none. Must be closed
- *         with beamer_au_webview_events_close.
+ * @return The handle, or NULL for a NULL instance. Must be closed with
+ *         beamer_au_editor_sync_close.
  */
-BeamerAuWebViewEventsHandle _Nullable beamer_au_webview_events_open(BeamerAuInstanceHandle _Nullable instance);
+BeamerAuEditorSyncHandle _Nullable beamer_au_editor_sync_open(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Take the events the plugin emitted since the last call, as one script
- * for the WebView.
+ * The script that hands a freshly loaded page its parameters and the
+ * plugin format.
  *
- * Thread Safety: Can be called from the main thread.
+ * Thread Safety: Main thread.
  *
- * @param events Handle from beamer_au_webview_events_open, or NULL.
- * @return JavaScript to evaluate, or NULL when nothing waits. Caller must
+ * @param sync          Handle from beamer_au_editor_sync_open, or NULL.
+ * @param plugin_format "auv2" or "auv3".
+ * @return JavaScript to evaluate, or NULL on failure. Caller must free with
+ *         beamer_au_free_string.
+ */
+char* _Nullable beamer_au_editor_sync_init_script(BeamerAuEditorSyncHandle _Nullable sync,
+                                                  const char* _Nonnull plugin_format);
+
+/**
+ * The script of one frame: the parameters that changed since the last
+ * frame, then the events the plugin emitted.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync Handle from beamer_au_editor_sync_open, or NULL.
+ * @return JavaScript to evaluate, or NULL when nothing changed. Caller must
  *         free with beamer_au_free_string.
  */
-char* _Nullable beamer_au_webview_events_take(BeamerAuWebViewEventsHandle _Nullable events);
+char* _Nullable beamer_au_editor_sync_frame_script(BeamerAuEditorSyncHandle _Nullable sync);
+
+/**
+ * The script that tells the web UI the value of a parameter it set, as it
+ * is in effect now. Call it after beamer_au_param_set_from_ui and after the
+ * host was told, which can round the value.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
+ * @param param_id Parameter ID.
+ * @return JavaScript to evaluate, or NULL on failure. Caller must free with
+ *         beamer_au_free_string.
+ */
+char* _Nullable beamer_au_editor_sync_parameter_script(BeamerAuEditorSyncHandle _Nullable sync,
+                                                       uint32_t param_id);
 
 /**
  * The editor was closed: stop keeping events for it and free the handle.
  *
- * Thread Safety: Can be called from the main thread.
+ * Thread Safety: Main thread.
  *
- * @param events Handle from beamer_au_webview_events_open, or NULL. Invalid
- *               after this call.
+ * @param sync Handle from beamer_au_editor_sync_open, or NULL. Invalid
+ *             after this call.
  */
-void beamer_au_webview_events_close(BeamerAuWebViewEventsHandle _Nullable events);
+void beamer_au_editor_sync_close(BeamerAuEditorSyncHandle _Nullable sync);
 
 // =============================================================================
 // MARK: - WebView C-ABI (beamer-webview)

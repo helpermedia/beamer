@@ -378,9 +378,9 @@ The delta format is a plain object mapping numeric parameter IDs to those three 
 window.__BEAMER__._onParams({0: [0.72, -8.16, "-8.2"], 1: [0.35, -0.3, "L 30"]})
 ```
 
-The runtime updates its internal map and fires all registered `params.on()` callbacks for the affected parameters.
+The runtime updates its internal map and fires all registered `params.on()` callbacks for the affected parameters. A value that is not a finite number arrives as `null`.
 
-The cache is initialized to `NaN` so the first tick after `attached()` sends all values, covering any changes that occurred between the init dump and the timer start.
+Nothing counts as sent when an editor opens, so its first tick sends all values, covering any changes between the init dump and the first tick.
 
 ### JS-to-Rust Flow
 

@@ -41,6 +41,10 @@ pub trait SharedParameters: Send + Sync {
 
     /// The parameters as `Any`, to get back at their concrete type.
     fn as_any(&self) -> &dyn Any;
+
+    /// The same parameters as a store of their own, for what has to keep
+    /// them, like the editor of a web UI.
+    fn into_store(self: Arc<Self>) -> Arc<dyn ParameterStore>;
 }
 
 impl<T: ParameterStore + Parameters + 'static> SharedParameters for T {
@@ -53,6 +57,10 @@ impl<T: ParameterStore + Parameters + 'static> SharedParameters for T {
     }
 
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn into_store(self: Arc<Self>) -> Arc<dyn ParameterStore> {
         self
     }
 }

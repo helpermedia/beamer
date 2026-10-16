@@ -106,9 +106,7 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
     NSTimer* _syncTimer;
-    BeamerAuWebViewEventsHandle _events;
-    double* _lastParamValues;
-    uint32_t _paramCount;
+    BeamerAuEditorSyncHandle _sync;
     // The view of the current editor, as an identity only: it is neither
     // retained nor messaged.
     const void* _editorView;
@@ -314,9 +312,8 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
             param.value = min + (float)value * (max - min);
             self->_settingFromWebView = NO;
         }
-        // Echo authoritative values back to JS immediately.
-        beamer_au_ipc_echo_param(self->_rustInstance, self->_webviewHandle,
-                                 paramId, self->_lastParamValues, self->_paramCount);
+        // Answer with the value in effect.
+        beamer_au_ipc_answer_param(self->_sync, self->_webviewHandle, paramId);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
@@ -340,15 +337,13 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv3_on_loaded(void* context) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    beamer_au_ipc_send_init_dump(self->_rustInstance, self->_webviewHandle, "auv3");
+    beamer_au_ipc_send_init_dump(self->_sync, self->_webviewHandle, "auv3");
 }
 
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_au_ipc_close_events(&_events);
-    free(_lastParamValues);
-    _lastParamValues = NULL;
+    beamer_au_ipc_close_sync(&_sync);
 
     [_instanceLock lock];
     _instanceValid = NO;
@@ -371,36 +366,8 @@ static void beamer_auv3_on_loaded(void* context) {
     [_instanceLock unlock];
 }
 
-- (void)_sendEvents {
-    beamer_au_ipc_send_events(_events, _webviewHandle);
-}
-
-- (void)_pollParams {
-    if (!_webviewHandle || !_rustInstance) return;
-    if (_paramCount == 0) return;
-
-    NSMutableString* script = [NSMutableString stringWithString:@"window.__BEAMER__._onParams({"];
-    BOOL any = NO;
-
-    BeamerAuParameterInfo info;
-    for (uint32_t i = 0; i < _paramCount; i++) {
-        if (!beamer_au_get_parameter_info(_rustInstance, i, &info)) continue;
-        double val = beamer_au_param_get_normalized(_rustInstance, info.id);
-        if (val == _lastParamValues[i]) continue;
-        _lastParamValues[i] = val;
-        double plain = beamer_au_param_get_plain(_rustInstance, info.id);
-        char text[128];
-        beamer_au_param_get_display_text(_rustInstance, info.id, text, sizeof(text));
-        if (any) [script appendString:@","];
-        [script appendFormat:@"%u:[%.17g,%.17g,\"%s\"]", info.id, val, plain, text];
-        any = YES;
-    }
-
-    if (any) {
-        [script appendString:@"})"];
-        const char* utf8 = [script UTF8String];
-        beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
-    }
+- (void)_sendFrame {
+    beamer_au_ipc_send_frame(_sync, _webviewHandle);
 }
 
 - (AUAudioUnitBus*)createBusAtIndex:(uint32_t)index
@@ -1303,25 +1270,16 @@ static void beamer_auv3_on_loaded(void* context) {
     // of its superview before the WebView is built again.
     [self _fitEditorTo:container];
 
-    // NAN sentinel: NAN != NAN (IEEE 754) ensures the first sync tick sends all values.
-    _paramCount = beamer_au_get_parameter_count(_rustInstance);
-    if (_paramCount > 0) {
-        _lastParamValues = (double*)malloc(_paramCount * sizeof(double));
-        for (uint32_t i = 0; i < _paramCount; i++) {
-            _lastParamValues[i] = NAN;
-        }
-    }
-
-    // Events the plugin emits from now on are kept for this editor.
-    _events = beamer_au_webview_events_open(_rustInstance);
+    // The first frame sends every parameter, and events the plugin emits
+    // from now on are kept for this editor.
+    _sync = beamer_au_editor_sync_open(_rustInstance);
 
     // Start 60 Hz parameter sync timer.
     // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
     __weak typeof(self) weakSelf = self;
     _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
         (void)t;
-        [weakSelf _pollParams];
-        [weakSelf _sendEvents];
+        [weakSelf _sendFrame];
     }];
     // Schedule in the common modes, so that the UI keeps following the host
     // while it runs a tracking loop (a drag, a resize or an open menu).
@@ -1330,14 +1288,11 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 // Stop following the plugin and remove the WebView of the editor: the sync
-// timer and its value cache first, then the WebView.
+// timer and the editor sync first, then the WebView.
 - (void)_closeEditor {
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_au_ipc_close_events(&_events);
-    free(_lastParamValues);
-    _lastParamValues = NULL;
-    _paramCount = 0;
+    beamer_au_ipc_close_sync(&_sync);
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
@@ -1400,7 +1355,7 @@ static void beamer_auv3_on_loaded(void* context) {
 
 // The host let the view of the editor go. Called from the view's dealloc,
 // where the view must not be changed: removing the WebView from it could
-// keep the view alive past its dealloc. So the timer and the event queue
+// keep the view alive past its dealloc. So the timer and the editor sync
 // stop now and the WebView is destroyed on the next turn of the run loop.
 - (void)_editorGone:(const void*)view {
     if (view != _editorView) {

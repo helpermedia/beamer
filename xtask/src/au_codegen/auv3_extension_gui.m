@@ -27,10 +27,11 @@
     uint32_t _guiHeight;
     {{WRAPPER_CLASS}}* _wrapper;
     NSTimer* _syncTimer;
-    BeamerAuWebViewEventsHandle _events;
+    BeamerAuEditorSyncHandle _sync;
+    // The wrapper whose instance the editor sync follows, as an identity
+    // only: it is neither retained nor messaged.
+    const void* _syncWrapper;
     BOOL _webviewLoaded;
-    double* _lastParamValues;
-    uint32_t _paramCount;
 }
 @end
 
@@ -38,8 +39,7 @@
 - (void)_ensureWebView;
 - (void)_sendInitDump;
 - (void)_startSyncTimer;
-- (void)_pollParams;
-- (void)_sendEvents;
+- (void)_sendFrame;
 @end
 
 // =============================================================================
@@ -73,9 +73,8 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
             param.value = min + (float)value * (max - min);
             [ext->_wrapper setSettingFromWebView:NO];
         }
-        // Echo authoritative values back to JS immediately.
-        beamer_au_ipc_echo_param(instance, ext->_webviewHandle,
-                                 paramId, ext->_lastParamValues, ext->_paramCount);
+        // Answer with the value in effect.
+        beamer_au_ipc_answer_param(ext->_sync, ext->_webviewHandle, paramId);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
@@ -185,74 +184,35 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
 - (void)_sendInitDump {
     if (!_webviewHandle || !_wrapper) return;
-    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
-    beamer_au_ipc_send_init_dump(instance, _webviewHandle, "auv3");
+
+    // The editor sync opens with the first init dump of a WebView or of a
+    // new audio unit, so that the values the page receives and the ones the
+    // sync counts as sent match. The first frame sends every parameter, and
+    // events the plugin emits from now on are kept for this editor.
+    if (!_sync || _syncWrapper != (__bridge const void*)_wrapper) {
+        beamer_au_ipc_close_sync(&_sync);
+        _sync = beamer_au_editor_sync_open([_wrapper rustInstance]);
+        _syncWrapper = (__bridge const void*)_wrapper;
+    }
+    beamer_au_ipc_send_init_dump(_sync, _webviewHandle, "auv3");
 }
 
 - (void)_startSyncTimer {
     if (_syncTimer) return;
 
-    // NAN sentinel: NAN != NAN (IEEE 754) ensures the first sync tick sends all values.
-    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
-    if (instance) {
-        _paramCount = beamer_au_get_parameter_count(instance);
-        if (_paramCount > 0) {
-            free(_lastParamValues);
-            _lastParamValues = (double*)malloc(_paramCount * sizeof(double));
-            for (uint32_t i = 0; i < _paramCount; i++) {
-                _lastParamValues[i] = NAN;
-            }
-        }
-
-        // Events the plugin emits from now on are kept for this editor.
-        beamer_au_ipc_close_events(&_events);
-        _events = beamer_au_webview_events_open(instance);
-    }
-
     // Use __weak to avoid a retain cycle (self -> _syncTimer -> block -> self).
     __weak typeof(self) weakSelf = self;
     _syncTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer* t) {
         (void)t;
-        [weakSelf _pollParams];
-        [weakSelf _sendEvents];
+        [weakSelf _sendFrame];
     }];
     // Schedule in the common modes, so that the UI keeps following the host
     // while it runs a tracking loop (a drag, a resize or an open menu).
     [[NSRunLoop currentRunLoop] addTimer:_syncTimer forMode:NSRunLoopCommonModes];
 }
 
-- (void)_sendEvents {
-    beamer_au_ipc_send_events(_events, _webviewHandle);
-}
-
-- (void)_pollParams {
-    if (!_webviewHandle || !_wrapper) return;
-    BeamerAuInstanceHandle instance = [_wrapper rustInstance];
-    if (!instance) return;
-    if (_paramCount == 0) return;
-
-    NSMutableString* script = [NSMutableString stringWithString:@"window.__BEAMER__._onParams({"];
-    BOOL any = NO;
-
-    BeamerAuParameterInfo info;
-    for (uint32_t i = 0; i < _paramCount; i++) {
-        if (!beamer_au_get_parameter_info(instance, i, &info)) continue;
-        double val = beamer_au_param_get_normalized(instance, info.id);
-        if (val == _lastParamValues[i]) continue;
-        _lastParamValues[i] = val;
-        double plain = beamer_au_param_get_plain(instance, info.id);
-        char text[128];
-        beamer_au_param_get_display_text(instance, info.id, text, sizeof(text));
-        if (any) [script appendString:@","];
-        [script appendFormat:@"%u:[%.17g,%.17g,\"%s\"]", info.id, val, plain, text];
-        any = YES;
-    }
-
-    if (any) {
-        [script appendString:@"})"];
-        const char* utf8 = [script UTF8String];
-        beamer_webview_eval_js(_webviewHandle, (const uint8_t*)utf8, strlen(utf8));
-    }
+- (void)_sendFrame {
+    beamer_au_ipc_send_frame(_sync, _webviewHandle);
 }
 
 - (void)viewDidLayout {
@@ -269,11 +229,8 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_au_ipc_close_events(&_events);
+    beamer_au_ipc_close_sync(&_sync);
     _webviewLoaded = NO;
-    free(_lastParamValues);
-    _lastParamValues = NULL;
-    _paramCount = 0;
 
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
@@ -285,9 +242,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     // Safety net in case -viewDidDisappear was not called
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_au_ipc_close_events(&_events);
-    free(_lastParamValues);
-    _lastParamValues = NULL;
+    beamer_au_ipc_close_sync(&_sync);
 
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);

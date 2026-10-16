@@ -96,12 +96,13 @@ fn test_vst3_delivers_the_queue_of_its_instance() {
 #[cfg(target_os = "macos")]
 #[test]
 fn test_au_delivers_the_queue_of_its_instance() {
-    use std::ffi::CStr;
+    use std::ffi::{c_char, CStr};
 
     use beamer_au::bridge::{
-        beamer_au_create_instance, beamer_au_destroy_instance, beamer_au_free_string,
-        beamer_au_webview_events_close, beamer_au_webview_events_open,
-        beamer_au_webview_events_take,
+        beamer_au_create_instance, beamer_au_destroy_instance, beamer_au_editor_sync_close,
+        beamer_au_editor_sync_frame_script, beamer_au_editor_sync_init_script,
+        beamer_au_editor_sync_open, beamer_au_editor_sync_parameter_script, beamer_au_free_string,
+        beamer_au_param_set_from_ui,
     };
     use beamer_au::factory::register_factory;
     use beamer_au::{AuPluginInstance, AuProcessor};
@@ -110,9 +111,8 @@ fn test_au_delivers_the_queue_of_its_instance() {
         Box::new(AuProcessor::<EventsDescriptor>::new())
     }
 
-    /// What the editor's timer gets from one call.
-    fn take(editor: *mut beamer_au::bridge::BeamerAuWebViewEvents) -> Option<String> {
-        let script = beamer_au_webview_events_take(editor);
+    /// The text of a script the bridge returned, which is then freed.
+    fn text(script: *mut c_char) -> Option<String> {
         if script.is_null() {
             return None;
         }
@@ -128,39 +128,60 @@ fn test_au_delivers_the_queue_of_its_instance() {
     let instance = beamer_au_create_instance();
     assert!(!instance.is_null());
     let events = last_events();
+    let gain = EventsParameters::default().gain.id();
 
     // Before an editor is open, events are dropped.
     events.emit("early", &1);
 
-    let editor = beamer_au_webview_events_open(instance);
+    let editor = beamer_au_editor_sync_open(instance);
     assert!(!editor.is_null());
-    assert_eq!(take(editor), None);
+    let init = text(beamer_au_editor_sync_init_script(editor, c"auv2".as_ptr())).expect("init");
+    assert!(init.starts_with("window.__BEAMER__._onInit([{"));
+    assert!(init.ends_with("],{\"pluginFormat\":\"auv2\"})"));
+
+    // The first frame sends every parameter, then nothing changed.
+    assert_eq!(
+        text(beamer_au_editor_sync_frame_script(editor)),
+        Some(format!("window.__BEAMER__._onParams({{{gain}:[0.0,0.0,\"0.00\"]}});"))
+    );
+    assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
+
+    // A value the web UI set is answered and not sent again.
+    beamer_au_param_set_from_ui(instance, gain, 0.5);
+    assert_eq!(
+        text(beamer_au_editor_sync_parameter_script(editor, gain)),
+        Some(format!("window.__BEAMER__._onParams({{{gain}:[0.5,0.5,\"0.50\"]}});"))
+    );
+    assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
     events.emit("ready", &"now");
     events.emit("count", &2);
     assert_eq!(
-        take(editor).as_deref(),
+        text(beamer_au_editor_sync_frame_script(editor)).as_deref(),
         Some(
             "window.__BEAMER__._onEvent(\"ready\",\"now\");\
              window.__BEAMER__._onEvent(\"count\",2);"
         )
     );
-    assert_eq!(take(editor), None);
+    assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
-    // A closed editor gets nothing, and the next one starts empty.
-    beamer_au_webview_events_close(editor);
+    // A closed editor gets nothing, and the next one starts with the
+    // parameters.
+    beamer_au_editor_sync_close(editor);
     events.emit("between", &3);
-    let editor = beamer_au_webview_events_open(instance);
-    assert_eq!(take(editor), None);
+    let editor = beamer_au_editor_sync_open(instance);
+    let first = text(beamer_au_editor_sync_frame_script(editor)).expect("a first frame");
+    assert!(!first.contains("between"));
 
     // A host may destroy the instance before the editor is gone.
     beamer_au_destroy_instance(instance);
     events.emit("after", &4);
-    assert!(take(editor).is_some());
-    beamer_au_webview_events_close(editor);
+    assert!(text(beamer_au_editor_sync_frame_script(editor)).is_some());
+    beamer_au_editor_sync_close(editor);
 
-    // No instance and no editor: nothing to open, take or close.
-    assert!(beamer_au_webview_events_open(std::ptr::null_mut()).is_null());
-    assert_eq!(take(std::ptr::null_mut()), None);
-    beamer_au_webview_events_close(std::ptr::null_mut());
+    // No instance and no editor: nothing to open, build or close.
+    assert!(beamer_au_editor_sync_open(std::ptr::null_mut()).is_null());
+    assert_eq!(text(beamer_au_editor_sync_frame_script(std::ptr::null_mut())), None);
+    assert_eq!(text(beamer_au_editor_sync_parameter_script(std::ptr::null_mut(), gain)), None);
+    beamer_au_editor_sync_close(std::ptr::null_mut());
 }
