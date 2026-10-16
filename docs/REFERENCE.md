@@ -699,7 +699,7 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Parameters Trait
 
-For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), and `ParameterStore::state_generation()` to return the sum of their `generation()`s:
+For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `ParameterStore::state_generation()` to return the sum of their `generation()`s and `ParameterStore::for_each_state()` to visit each with its path. A web UI reaches them through that method:
 
 ```rust
 pub trait Parameters: Send + Sync {

@@ -669,6 +669,7 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
 
     let count_impl = generate_count(ir);
     let state_generation_impl = generate_state_generation(ir);
+    let for_each_state_impl = generate_for_each_state(ir);
 
     // Generate info() - iterate and return by index
     let info_impl = generate_info(ir);
@@ -719,6 +720,8 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
             }
 
             #state_generation_impl
+
+            #for_each_state_impl
         }
     }
 }
@@ -742,6 +745,52 @@ fn generate_state_generation(ir: &ParametersIR) -> TokenStream {
     quote! {
         fn state_generation(&self) -> u64 {
             0u64 #(#state_generations)* #(#nested_generations)*
+        }
+    }
+}
+
+/// Generate `for_each_state()`: the `State` fields of this struct with
+/// their ids, then those of the nested structs under the names of their
+/// fields, the same paths as in a saved state.
+fn generate_for_each_state(ir: &ParametersIR) -> TokenStream {
+    let states: Vec<TokenStream> = ir
+        .state_fields()
+        .map(|state| {
+            let field = &state.field_name;
+            let id_str = &state.string_id;
+            quote! {
+                visit(#id_str, &self.#field);
+            }
+        })
+        .collect();
+    let nested: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
+            quote! {
+                ::beamer::core::parameter_store::ParameterStore::for_each_state(
+                    &self.#field,
+                    &mut |path: &str, state: &dyn ::beamer::core::state_format::SavedState| {
+                        visit(&::beamer::core::state_format::join_path(#segment, path), state)
+                    },
+                );
+            }
+        })
+        .collect();
+
+    // Nothing to visit: use the default, which visits nothing.
+    if states.is_empty() && nested.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        fn for_each_state(
+            &self,
+            visit: &mut dyn FnMut(&str, &dyn ::beamer::core::state_format::SavedState),
+        ) {
+            #(#states)*
+            #(#nested)*
         }
     }
 }

@@ -268,3 +268,88 @@ fn test_state_generation_changes_with_state_fields_only() {
     parameters.layer.sample.set(kick());
     assert_ne!(parameters.state_generation(), after_name);
 }
+
+/// The paths and JSON values that `for_each_state` visits.
+fn visited(store: &dyn beamer::core::ParameterStore) -> Vec<(String, String)> {
+    let mut seen = Vec::new();
+    store.for_each_state(&mut |path, state| {
+        let json = state.save_json().expect("state saves");
+        seen.push((path.to_string(), String::from_utf8(json).expect("JSON is UTF-8")));
+    });
+    seen
+}
+
+#[test]
+fn test_state_fields_are_visited_by_their_paths() {
+    let parameters = SamplerParameters::default();
+    parameters.name.set(String::from("My Kit"));
+    parameters.layer.sample.set(kick());
+
+    // The paths of the saved state: the id, behind the field of a nested
+    // struct. The fields that are not saved are not visited.
+    assert_eq!(
+        visited(&parameters),
+        vec![
+            (String::from("name"), String::from("\"My Kit\"")),
+            (
+                String::from("layer/sample"),
+                String::from("{\"path\":\"kick.wav\",\"root_note\":36}")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_nested_struct_in_two_fields_is_visited_twice() {
+    let parameters = TwoLayerParameters::default();
+    let paths: Vec<String> = visited(&parameters).into_iter().map(|(path, _)| path).collect();
+    assert_eq!(paths, ["first/sample", "second/sample"]);
+}
+
+/// A keyword as the name of a nested field, three levels deep.
+#[derive(Parameters)]
+struct KitParameters {
+    #[nested(group = "Type")]
+    r#type: SamplerParameters,
+}
+
+#[test]
+fn test_deeply_nested_state_fields_have_the_paths_of_the_saved_state() {
+    let parameters = KitParameters::default();
+    let paths: Vec<String> = visited(&parameters).into_iter().map(|(path, _)| path).collect();
+    assert_eq!(paths, ["type/name", "type/layer/sample"]);
+
+    // Each path is the path of an entry of the saved state.
+    let saved = parameters.save_state();
+    for path in &paths {
+        let mut needle = (path.len() as u16).to_le_bytes().to_vec();
+        needle.extend_from_slice(path.as_bytes());
+        assert!(
+            saved.windows(needle.len()).any(|window| window == needle),
+            "{path} is not in the saved state"
+        );
+    }
+}
+
+#[test]
+fn test_a_visited_state_field_can_be_set() {
+    use beamer::core::ParameterStore;
+
+    let parameters = EditorParameters::default();
+    parameters.for_each_state(&mut |path, state| {
+        assert_eq!(path, "zoom");
+        state.load_json(b"150").expect("JSON fits");
+    });
+    assert_eq!(*parameters.zoom.get(), 150);
+}
+
+#[test]
+fn test_struct_without_state_fields_visits_nothing() {
+    #[derive(Parameters)]
+    struct GainParameters {
+        #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
+        gain: FloatParameter,
+    }
+
+    assert!(visited(&GainParameters::default()).is_empty());
+}

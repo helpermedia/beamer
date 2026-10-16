@@ -32,6 +32,7 @@
 
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_info::ParameterInfo;
+use crate::state_format::SavedState;
 use crate::types::{ParameterId, ParameterValue};
 
 /// Low-level trait for plugin parameter collections (host interface).
@@ -138,6 +139,17 @@ pub trait ParameterStore: Send + Sync {
     fn state_generation(&self) -> u64 {
         0
     }
+
+    /// Call `visit` for every `State` field with its path: the `id` of its
+    /// attribute, under the field names of the nested structs it sits in,
+    /// as in a saved state (`"zoom"`, `"layer/sample"`).
+    ///
+    /// A web UI reaches the `State` fields through it. Not for the audio
+    /// thread: the path of a field in a nested struct is built as a
+    /// `String`.
+    /// `#[derive(Parameters)]` generates it; the default is for structs
+    /// without `State` fields.
+    fn for_each_state(&self, _visit: &mut dyn FnMut(&str, &dyn SavedState)) {}
 
     /// Find parameter info by ID.
     ///
