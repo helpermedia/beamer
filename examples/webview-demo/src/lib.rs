@@ -5,8 +5,8 @@
 //! compile time. The plugin is a simple gain effect with an interactive GUI.
 //!
 //! It also shows state beyond parameters: the pan law is a `State` field.
-//! The web UI sets it through the WebView handler, the processor reads it
-//! on the audio thread and the host saves it with the project.
+//! The web UI reads and sets it through `__BEAMER__.state`, the processor
+//! reads it on the audio thread and the host saves it with the project.
 //!
 //! And it shows an event from Rust to the web UI: the plugin tells the
 //! editor the sample rate whenever the host prepares it.
@@ -89,8 +89,8 @@ impl Descriptor for WebViewDemoDescriptor {
     }
 
     fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        // The handler shares the parameters, so that the web UI can read
-        // and set the state field.
+        // The handler shares the parameters, so that it can answer with the
+        // sample rate. The state field needs no handler.
         Some(Arc::new(DemoHandler {
             parameters: Arc::clone(&self.parameters),
         }))
@@ -104,7 +104,7 @@ impl Descriptor for WebViewDemoDescriptor {
 }
 
 // =============================================================================
-// WebView Handler (invoke/event demo)
+// WebView Handler (invoke demo)
 // =============================================================================
 
 /// Handles `__BEAMER__.invoke()` calls from JavaScript.
@@ -116,7 +116,7 @@ impl WebViewHandler for DemoHandler {
     fn on_invoke(
         &self,
         method: &str,
-        args: &[serde_json::Value],
+        _args: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
         match method {
             "getInfo" => Ok(serde_json::json!({
@@ -127,15 +127,6 @@ impl WebViewHandler for DemoHandler {
             // The sample rate of the host, 0 before it prepared the plugin.
             // An open editor then follows it through the "sampleRate" event.
             "getSampleRate" => Ok(serde_json::json!(*self.parameters.sample_rate.get())),
-            // The pan law as "constant_power" or "linear".
-            "getPanLaw" => serde_json::to_value(*self.parameters.pan_law.get())
-                .map_err(|error| error.to_string()),
-            "setPanLaw" => {
-                let law = args.first().cloned().ok_or("setPanLaw needs a pan law")?;
-                let law: PanLaw = serde_json::from_value(law).map_err(|error| error.to_string())?;
-                self.parameters.pan_law.set(law);
-                Ok(serde_json::Value::Null)
-            }
             _ => Err(format!("unknown method: {method}")),
         }
     }

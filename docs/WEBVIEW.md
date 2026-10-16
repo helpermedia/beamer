@@ -267,7 +267,7 @@ show(await __BEAMER__.invoke("getSampleRate"));
 
 ## WebViewHandler Trait
 
-Implement `WebViewHandler` to handle `invoke()` calls and custom events from JavaScript. Parameter synchronization is automatic and does not require this trait.
+Implement `WebViewHandler` to handle `invoke()` calls and custom events from JavaScript. Parameter and `State` synchronization are automatic and do not need this trait.
 
 ```rust
 pub trait WebViewHandler: Send + Sync {
@@ -287,7 +287,7 @@ Both methods are called on the main thread.
 
 ### Example (from `webview-demo`)
 
-The handler of the demo holds the parameters of the plugin. They live in an `Arc` for the life of the instance, and the Processor uses the same ones, so what the web UI sets through the handler is what the audio thread reads. Here the handler reads and sets a `State` field, a setting that is saved with the plugin state without being a parameter (see [State Beyond Parameters](REFERENCE.md#state-beyond-parameters)):
+The handler of the demo holds the parameters of the plugin. They live in an `Arc` for the life of the instance, and the Processor uses the same ones. Here the handler answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
 
 ```rust
 use beamer::prelude::*;
@@ -300,7 +300,7 @@ impl WebViewHandler for DemoHandler {
     fn on_invoke(
         &self,
         method: &str,
-        args: &[serde_json::Value],
+        _args: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
         match method {
             "getInfo" => Ok(serde_json::json!({
@@ -308,14 +308,8 @@ impl WebViewHandler for DemoHandler {
                 "version": env!("CARGO_PKG_VERSION"),
                 "framework": "Beamer",
             })),
-            "getPanLaw" => serde_json::to_value(*self.parameters.pan_law.get())
-                .map_err(|error| error.to_string()),
-            "setPanLaw" => {
-                let law = args.first().cloned().ok_or("setPanLaw needs a pan law")?;
-                let law: PanLaw = serde_json::from_value(law).map_err(|error| error.to_string())?;
-                self.parameters.pan_law.set(law);
-                Ok(serde_json::Value::Null)
-            }
+            // 0 before the host prepared the plugin.
+            "getSampleRate" => Ok(serde_json::json!(*self.parameters.sample_rate.get())),
             _ => Err(format!("unknown method: {method}")),
         }
     }
@@ -335,13 +329,14 @@ impl Descriptor for WebViewDemoDescriptor {
 }
 ```
 
-On the JavaScript side the UI asks for the value when it opens and sets it on a click:
+On the JavaScript side the UI asks for the value when it opens:
 
 ```javascript
 await __BEAMER__.ready;
-const law = await __BEAMER__.invoke("getPanLaw"); // "constant_power" or "linear"
-await __BEAMER__.invoke("setPanLaw", "linear");
+const rate = await __BEAMER__.invoke("getSampleRate");
 ```
+
+The demo then follows the sample rate through an event (see [Events from Rust](#events-from-rust)).
 
 A `State` field does not need a handler at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
 
@@ -422,7 +417,7 @@ When JavaScript calls `state.set(path, value)`, the runtime updates its value an
 
 ## React Integration
 
-The `webview-demo` example demonstrates React integration patterns using two hooks.
+The `webview-demo` example demonstrates React integration patterns using three hooks.
 
 ### `useBeamerParam`
 
@@ -440,6 +435,31 @@ export function useBeamerParam(name: string): number {
 ```
 
 This is a one-liner because the `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function, and `get()` returns the current value.
+
+### `useBeamerState`
+
+The same for a `State` field, with the type named by the caller:
+
+```typescript
+import { useSyncExternalStore } from "react";
+
+export function useBeamerState<T>(path: string): T | undefined {
+  return useSyncExternalStore(
+    (cb) => __BEAMER__.state.on(path, cb),
+    () => __BEAMER__.state.get<T>(path),
+  );
+}
+```
+
+`state.get()` returns the same object until the value changes, which `useSyncExternalStore` requires. The demo shows its pan law with it and sets it on a click:
+
+```tsx
+type PanLaw = "constant_power" | "linear";
+
+const panLaw = useBeamerState<PanLaw>("pan_law");
+const toggle = () =>
+  __BEAMER__.state.set("pan_law", panLaw === "linear" ? "constant_power" : "linear");
+```
 
 ### `useBeamerControl`
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Slider from "./components/Slider";
+import { useBeamerState } from "./hooks/useBeamerState";
 
 interface PluginInfo {
   name: string;
@@ -7,12 +8,9 @@ interface PluginInfo {
   framework: string;
 }
 
-// State beyond parameters: the plugin keeps the pan law in a State field.
+// State beyond parameters: the plugin keeps the pan law in a State field,
+// which serde writes as one of these strings.
 type PanLaw = "constant_power" | "linear";
-
-function isPanLaw(value: unknown): value is PanLaw {
-  return value === "constant_power" || value === "linear";
-}
 
 function App() {
   const [showAbout, setShowAbout] = useState(false);
@@ -30,27 +28,9 @@ function App() {
 
   const closeAbout = () => setShowAbout(false);
 
-  const [panLaw, setPanLaw] = useState<PanLaw | null>(null);
-
-  // Read the pan law when the editor opens and keep following it: a host
-  // can change it behind the UI by loading a preset or a project.
-  useEffect(() => {
-    let mounted = true;
-    const read = () => {
-      __BEAMER__
-        .invoke("getPanLaw")
-        .then((law) => {
-          if (mounted && isPanLaw(law)) setPanLaw(law);
-        })
-        .catch((error) => console.error("getPanLaw failed:", error));
-    };
-    __BEAMER__.ready.then(read);
-    const timer = setInterval(read, 500);
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
-  }, []);
+  // The pan law follows the plugin, also when a host changes it behind
+  // the UI by loading a project.
+  const panLaw = useBeamerState<PanLaw>("pan_law");
 
   const [sampleRate, setSampleRate] = useState<number | null>(null);
   const [pluginFormat, setPluginFormat] = useState<string | null>(null);
@@ -88,10 +68,7 @@ function App() {
 
   const togglePanLaw = () => {
     const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
-    __BEAMER__
-      .invoke("setPanLaw", next)
-      .then(() => setPanLaw(next))
-      .catch((error) => console.error("setPanLaw failed:", error));
+    __BEAMER__.state.set("pan_law", next);
   };
 
   return (
@@ -127,7 +104,7 @@ function App() {
 
       <button
         onClick={togglePanLaw}
-        disabled={panLaw === null}
+        disabled={panLaw === undefined}
         className="mt-6 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer disabled:cursor-default"
       >
         Pan law: {panLaw === "linear" ? "Linear" : "Constant power"}

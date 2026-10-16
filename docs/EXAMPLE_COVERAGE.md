@@ -66,7 +66,8 @@
 | | has_gui / gui_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml GUI config |
 | | gui_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme |
-| | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.invoke() and polling |
+| | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
+| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
 | | DAW undo grouping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | beginEdit/endEdit |
 
 **Legend:**

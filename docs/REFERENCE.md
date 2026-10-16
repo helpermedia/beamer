@@ -654,11 +654,13 @@ let path = self.sample_path.current();
 |--------|--------|-------------|
 | `state.set(value)` | Host, UI | Replace the value |
 | `state.get()` | Host, UI | The current value as an `Arc<T>` |
-| `state.generation()` | Any | How often the value was set (a UI can poll this) |
+| `state.generation()` | Any | How often the value was set |
 | `state.reader()` | Host (in `prepare()`) | Create the audio thread's reader |
 | `reader.changed()` | Audio | A value that was set since the last call, once |
 | `reader.latest()` | Audio | Take over a new value if there is one and return the current |
 | `reader.current()` | Audio | The value the reader took over last |
+
+A web UI reaches every `State` field by its path without any code in the plugin: `__BEAMER__.state` reads and sets it and tells the UI when it changes, also behind its back (see [State Methods](WEBVIEW.md#state-methods)).
 
 **What `T` can be:** any type that derives serde's `Serialize` and `Deserialize`. The value is saved as JSON. A plugin without a serde dependency of its own derives through the re-export:
 
@@ -691,7 +693,7 @@ pub struct SamplerParameters {
 }
 ```
 
-**Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps a setting in a `State`.
+**Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps its pan law in a `State` and shows it in its web UI.
 
 **Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change.
 

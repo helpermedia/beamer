@@ -299,9 +299,9 @@ Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
 - `WebViewHandler` for bidirectional IPC between Rust and JavaScript
 - `WebViewEvents` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
-- A `State` field: set through the handler, read on the audio thread with a `HandoverReader`, saved with the plugin state
+- A `State` field: read and set from the web UI through `__BEAMER__.state`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
-- React parameter binding via `useSyncExternalStore`
+- React binding of parameters and `State` fields via `useSyncExternalStore`
 - Circular knob with angular and linear drag modes
 - Bipolar arc rendering for pan knob
 - DAW undo grouping with `beginEdit`/`endEdit`
