@@ -7,6 +7,7 @@
 #import <Foundation/Foundation.h>
 #include <os/lock.h>
 #include <os/log.h>
+#include <stdatomic.h>
 
 #include "BeamerAuBridge.h"
 #include "au_ipc_helpers.h"
@@ -79,6 +80,61 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     output->block(output->bufferStart + sampleOffset, 0, (NSInteger)length, bytes);
 }
 
+// Apply the parameter changes of a render's events at once, for a bypassed
+// render, so that the plugin has the host's values when the bypass ends. A
+// ramp goes to its end value.
+static void BeamerAuv3ApplyParameterEvents(BeamerAuInstanceHandle instance, const AURenderEvent* event) {
+    for (; event != NULL; event = event->head.next) {
+        if (event->head.eventType == AURenderEventParameter
+            || event->head.eventType == AURenderEventParameterRamp) {
+            beamer_au_set_parameter_value_au(instance, (uint32_t)event->parameter.parameterAddress,
+                                             event->parameter.value);
+        }
+    }
+}
+
+// Fill the output of a bypassed render: a copy of the input, or silence
+// without one. An output buffer the host gives without memory gets the
+// input's memory, or `silence`, which holds at least `byteSize` zero bytes.
+static void BeamerAuv3FillBypassedOutput(AudioBufferList* output, const AudioBufferList* input,
+                                         UInt32 byteSize, void* silence) {
+    for (UInt32 i = 0; i < output->mNumberBuffers; i++) {
+        AudioBuffer* out = &output->mBuffers[i];
+        const AudioBuffer* in = (input != NULL && i < input->mNumberBuffers) ? &input->mBuffers[i] : NULL;
+        if (in != NULL && in->mData != NULL) {
+            if (out->mData == NULL) {
+                out->mData = in->mData;
+                out->mDataByteSize = in->mDataByteSize;
+            } else if (out->mData != in->mData) {
+                UInt32 bytes = (in->mDataByteSize < out->mDataByteSize) ? in->mDataByteSize : out->mDataByteSize;
+                memcpy(out->mData, in->mData, bytes);
+            }
+        } else if (out->mData == NULL) {
+            out->mData = silence;
+            out->mDataByteSize = byteSize;
+        } else {
+            memset(out->mData, 0, (out->mDataByteSize < byteSize) ? out->mDataByteSize : byteSize);
+        }
+    }
+}
+
+// Pass the channel messages of a render's MIDI input on to the host, for a
+// bypassed MIDI effect. MIDI 1.0 events only: the unit does not ask for
+// MIDI 2.0, so hosts send no event lists.
+static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBlock __unsafe_unretained block) {
+    for (; event != NULL; event = event->head.next) {
+        if (event->head.eventType != AURenderEventMIDI) {
+            continue;
+        }
+        const AUMIDIEvent* midi = &event->MIDI;
+        uint8_t status = midi->data[0];
+        if (status < 0x80 || status >= 0xF0) {
+            continue;
+        }
+        block(midi->eventSampleTime, midi->cable, midi->length, midi->data);
+    }
+}
+
 // =============================================================================
 // MARK: - {{WRAPPER_CLASS}} Interface
 // =============================================================================
@@ -119,6 +175,16 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     // for the next turn of the run loop knows whether it is still due.
     NSUInteger _editorHideCount;
     _Atomic BOOL _settingFromWebView;
+    // Whether the host bypasses the unit (shouldBypassEffect). The render
+    // thread reads it.
+    _Atomic BOOL _bypassed;
+    // Whether the unit is a MIDI effect, which passes MIDI on when bypassed.
+    BOOL _isMidiEffect;
+    // Bytes of one output sample: 4 for Float32, 8 for Float64.
+    UInt32 _outputSampleBytes;
+    // Zero bytes for the output buffers of a bypassed render without input
+    // that the host gives without memory, room for `_maxFrames` samples.
+    void* _bypassSilence;
 }
 
 + (NSUInteger)nextInstanceId;
@@ -254,6 +320,10 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     _resourcesAllocated = NO;
     _webviewHandle = NULL;
     memset(&_busConfig, 0, sizeof(_busConfig));
+    atomic_store_explicit(&_bypassed, NO, memory_order_relaxed);
+    _isMidiEffect = (componentDescription.componentType == kAudioUnitType_MIDIProcessor);
+    _outputSampleBytes = sizeof(float);
+    _bypassSilence = NULL;
 
     AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
     defaultPreset.number = 0;
@@ -366,6 +436,9 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     [_instanceLock unlock];
+
+    free(_bypassSilence);
+    _bypassSilence = NULL;
 }
 
 - (void)_sendFrame {
@@ -598,6 +671,10 @@ static void beamer_auv3_on_loaded(void* context) {
         _maxFrames = kDefaultMaxFrames;
     }
 
+    _outputSampleBytes = (_sampleFormat == BeamerAuSampleFormatFloat64) ? sizeof(double) : sizeof(float);
+    free(_bypassSilence);
+    _bypassSilence = calloc(_maxFrames, sizeof(double));
+
     if (_inputBusArray.count > 0) {
         AVAudioFormat* inputFormat = _inputBusArray[0].format;
         // The render block sizes the input it pulls with this, so that it
@@ -642,6 +719,8 @@ static void beamer_auv3_on_loaded(void* context) {
 - (void)deallocateRenderResources {
     _inputMutableABL = NULL;
     _inputPCMBuffer = nil;
+    free(_bypassSilence);
+    _bypassSilence = NULL;
     _hostMusicalContext = nil;
     _hostTransportState = nil;
     _hostMidiOutput = nil;
@@ -685,6 +764,15 @@ static void beamer_auv3_on_loaded(void* context) {
             );
         }
     }
+}
+
+// The render block reads the bypass from an ivar, not through the property.
+- (BOOL)shouldBypassEffect {
+    return atomic_load_explicit(&_bypassed, memory_order_relaxed);
+}
+
+- (void)setShouldBypassEffect:(BOOL)shouldBypassEffect {
+    atomic_store_explicit(&_bypassed, shouldBypassEffect, memory_order_relaxed);
 }
 
 - (AUInternalRenderBlock)internalRenderBlock {
@@ -731,6 +819,27 @@ static void beamer_auv3_on_loaded(void* context) {
             if (pullStatus == noErr) {
                 inputData = inputMutableABL;
             }
+        }
+
+        // A bypassed unit leaves the plugin out: its main output is a copy of
+        // the main input, or silence without one, and its MIDI input is
+        // dropped. A MIDI effect passes the channel messages on unchanged.
+        // Parameter changes apply at once.
+        if (atomic_load_explicit(&blockSelf->_bypassed, memory_order_relaxed)) {
+            void* silence = blockSelf->_bypassSilence;
+            if (silence == NULL || frameCount > maxFrames) {
+                return kAudioUnitErr_TooManyFramesToProcess;
+            }
+            BeamerAuv3FillBypassedOutput(outputData, (outputBusNumber == 0) ? inputData : NULL,
+                                         frameCount * blockSelf->_outputSampleBytes, silence);
+            if (outputBusNumber == 0) {
+                BeamerAuv3ApplyParameterEvents(rustInstance, realtimeEventListHead);
+                AUMIDIOutputEventBlock __unsafe_unretained midiOutputBlock = blockSelf->_hostMidiOutput;
+                if (blockSelf->_isMidiEffect && midiOutputBlock != nil) {
+                    BeamerAuv3PassMidiOn(realtimeEventListHead, midiOutputBlock);
+                }
+            }
+            return noErr;
         }
 
         // Only the render of the main bus processes audio and needs the transport.
