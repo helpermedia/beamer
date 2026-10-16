@@ -428,11 +428,12 @@ where
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        if let Some(events) = plugin.webview_events() {
+        let events = beamer_core::Parameters::webview_events(&**plugin.parameters());
+        if let Some(events) = events {
             events.claim();
         }
         #[cfg(feature = "webview")]
-        let webview_events = plugin.webview_events().cloned();
+        let webview_events = events.cloned();
 
         let parameters = Arc::clone(plugin.parameters());
         #[cfg(feature = "webview")]

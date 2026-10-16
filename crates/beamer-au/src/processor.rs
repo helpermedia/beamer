@@ -80,7 +80,7 @@ where
         let handler = descriptor.webview_handler();
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = descriptor.webview_events().cloned();
+        let events = beamer_core::Parameters::webview_events(&**descriptor.parameters()).cloned();
         if let Some(events) = &events {
             events.claim();
         }

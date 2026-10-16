@@ -280,9 +280,12 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
     let nested_discovery_impl = generate_nested_discovery(ir);
     let set_sample_rate_impl = generate_set_sample_rate(ir);
     let reset_smoothing_impl = generate_reset_smoothing(ir);
+    let webview_events_impl = generate_webview_events(ir);
 
     quote! {
         impl #impl_generics ::beamer::core::parameter_types::Parameters for #struct_name #ty_generics #where_clause {
+            #webview_events_impl
+
             fn count(&self) -> usize {
                 #count_impl
             }
@@ -750,6 +753,42 @@ fn generate_state_generation(ir: &ParametersIR) -> TokenStream {
     }
 }
 
+/// Generate `webview_events()`: the queue of this struct, or else the first
+/// one a nested struct has.
+fn generate_webview_events(ir: &ParametersIR) -> TokenStream {
+    if let Some(field) = ir.events_fields().next() {
+        return quote! {
+            fn webview_events(&self) -> Option<&::beamer::core::WebViewEvents> {
+                Some(&self.#field)
+            }
+        };
+    }
+
+    let nested: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            quote! {
+                if let Some(events) = ::beamer::core::parameter_types::Parameters::webview_events(&self.#field) {
+                    return Some(events);
+                }
+            }
+        })
+        .collect();
+
+    // No queue here and no nested struct to look in: the default.
+    if nested.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        fn webview_events(&self) -> Option<&::beamer::core::WebViewEvents> {
+            #(#nested)*
+            None
+        }
+    }
+}
+
 /// Generate `for_each_state()`: the `State` fields of this struct with
 /// their ids, then those of the nested structs under the names of their
 /// fields, the same paths as in a saved state.
@@ -958,7 +997,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
                 quote! { #field: Default::default() }
             }
             // A field without an attribute, such as a `Handover`.
-            FieldIR::Other(field) => quote! { #field: Default::default() },
+            FieldIR::Other(field) | FieldIR::Events(field) => quote! { #field: Default::default() },
         })
         .collect();
 

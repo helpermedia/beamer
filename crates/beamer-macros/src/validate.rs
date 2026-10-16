@@ -9,6 +9,7 @@ use crate::ir::{FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, Para
 /// Validate the IR for semantic correctness.
 pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
     check_unique_string_ids(ir)?;
+    check_one_event_queue(ir)?;
     check_no_hash_collisions(ir)?;
     validate_parameter_attributes(ir)?;
     Ok(())
@@ -35,7 +36,7 @@ fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
                 state.span,
                 "state",
             ),
-            FieldIR::Nested(_) | FieldIR::Other(_) => continue,
+            FieldIR::Nested(_) | FieldIR::Other(_) | FieldIR::Events(_) => continue,
         };
         if let Some(first_field) = seen.get(id) {
             return Err(syn::Error::new(
@@ -49,6 +50,23 @@ fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
         seen.insert(id, field_name);
     }
 
+    Ok(())
+}
+
+/// Check that the struct has at most one queue of events for the web UI:
+/// the editor gets the events of one.
+fn check_one_event_queue(ir: &ParametersIR) -> syn::Result<()> {
+    let mut queues = ir.events_fields();
+    let first = queues.next();
+    if let (Some(first), Some(second)) = (first, queues.next()) {
+        return Err(syn::Error::new_spanned(
+            second,
+            format!(
+                "a parameter struct has one `WebViewEvents` queue for the web UI; \
+                 `{first}` is it already"
+            ),
+        ));
+    }
     Ok(())
 }
 

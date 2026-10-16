@@ -55,7 +55,10 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
     }
 
     // Fields without an attribute do not make a parameter struct.
-    if parsed_fields.iter().all(|field| matches!(field, FieldIR::Other(_))) {
+    if parsed_fields
+        .iter()
+        .all(|field| matches!(field, FieldIR::Other(_) | FieldIR::Events(_)))
+    {
         return Err(syn::Error::new_spanned(
             &input,
             "#[derive(Parameters)] requires at least one #[parameter], #[nested] or #[state] field",
@@ -132,6 +135,13 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
         .ident
         .clone()
         .ok_or_else(|| syn::Error::new_spanned(field, "expected named field"))?;
+    // The queue of events for the web UI, recognized by the name of its
+    // type. A type alias, a renamed import or a wrapper such as `Option`
+    // hides it; the queue then reports its first event that nothing
+    // delivers.
+    if extract_type_name(&field.ty).as_deref() == Some("WebViewEvents") {
+        return Ok(FieldIR::Events(field_name));
+    }
     Ok(FieldIR::Other(field_name))
 }
 

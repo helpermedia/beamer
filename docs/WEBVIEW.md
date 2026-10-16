@@ -207,7 +207,7 @@ statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
 
 ## Events from Rust
 
-A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the parameter struct, without an attribute, and return it from `Descriptor::webview_events()`. The framework asks for it once, when the plugin instance is created:
+A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the parameter struct, without an attribute. `#[derive(Parameters)]` finds it by its type, also in a nested struct, and the framework takes it when the plugin instance is created:
 
 ```rust
 #[derive(Parameters)]
@@ -216,13 +216,6 @@ pub struct WebViewDemoParameters {
     pub gain: FloatParameter,
 
     pub events: WebViewEvents,
-}
-
-impl Descriptor for WebViewDemoDescriptor {
-    // ...
-    fn webview_events(&self) -> Option<&WebViewEvents> {
-        Some(&self.parameters.events)
-    }
 }
 ```
 
@@ -242,7 +235,7 @@ What to know about events:
 - **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **The method is needed.** A queue that the Descriptor does not return is not known to the framework. The first event emitted into it is reported on standard error and through the `log` crate.
+- **One queue per plugin.** Two `WebViewEvents` fields in one struct are a compile error. With a queue in the struct and one in a nested struct, or in two nested structs, the first in field order is the plugin's and the others are not delivered. The derive knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written `Parameters` implementation returns its queue from `Parameters::webview_events()`.
 
 ### Example (from `webview-demo`)
 

@@ -95,12 +95,6 @@ impl Descriptor for WebViewDemoDescriptor {
             parameters: Arc::clone(&self.parameters),
         }))
     }
-
-    fn webview_events(&self) -> Option<&WebViewEvents> {
-        // Without this the framework does not know the queue and the
-        // events never leave it.
-        Some(&self.parameters.events)
-    }
 }
 
 // =============================================================================

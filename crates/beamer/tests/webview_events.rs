@@ -53,10 +53,6 @@ impl Descriptor for EventsDescriptor {
     fn prepare(&self, _: ()) -> Silence {
         Silence
     }
-
-    fn webview_events(&self) -> Option<&WebViewEvents> {
-        Some(&self.parameters.events)
-    }
 }
 
 struct Silence;
@@ -197,4 +193,35 @@ fn test_au_delivers_the_queue_of_its_instance() {
     assert_eq!(text(beamer_au_editor_sync_frame_script(std::ptr::null_mut())), None);
     assert_eq!(text(beamer_au_editor_sync_parameter_script(std::ptr::null_mut(), gain)), None);
     beamer_au_editor_sync_close(std::ptr::null_mut());
+}
+
+/// A struct whose queue sits in a nested struct.
+#[derive(Parameters)]
+struct OuterParameters {
+    #[parameter(id = "mix", name = "Mix", default = 1.0, range = 0.0..=1.0)]
+    mix: FloatParameter,
+
+    #[nested(group = "Inner")]
+    inner: EventsParameters,
+}
+
+/// A struct without a queue.
+#[derive(Parameters)]
+struct QuietParameters {
+    #[parameter(id = "mix", name = "Mix", default = 1.0, range = 0.0..=1.0)]
+    mix: FloatParameter,
+}
+
+#[test]
+fn test_derive_finds_the_queue_by_its_type() {
+    let parameters = EventsParameters::default();
+    let found = Parameters::webview_events(&parameters).expect("the queue is found");
+    assert!(std::ptr::eq(found, &parameters.events));
+
+    // Also in a nested struct.
+    let outer = OuterParameters::default();
+    let found = Parameters::webview_events(&outer).expect("the nested queue is found");
+    assert!(std::ptr::eq(found, &outer.inner.events));
+
+    assert!(Parameters::webview_events(&QuietParameters::default()).is_none());
 }

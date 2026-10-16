@@ -5,8 +5,9 @@
 //! JavaScript receives them with `__BEAMER__.on("name", callback)`.
 //!
 //! The queue lives in the parameter struct, which every thread of a plugin
-//! instance shares, as a field without an attribute. The descriptor hands
-//! it to the framework:
+//! instance shares, as a field without an attribute. `#[derive(Parameters)]`
+//! finds it by its type, also in a nested struct, and the format wrappers
+//! take it from there:
 //!
 //! ```ignore
 //! #[derive(Parameters)]
@@ -15,14 +16,6 @@
 //!     gain: FloatParameter,
 //!
 //!     events: WebViewEvents,
-//! }
-//!
-//! impl Descriptor for SamplerDescriptor {
-//!     // ...
-//!
-//!     fn webview_events(&self) -> Option<&WebViewEvents> {
-//!         Some(&self.parameters.events)
-//!     }
 //! }
 //!
 //! // On a host or UI thread, or on a thread the plugin started:
@@ -198,7 +191,7 @@ impl WebViewEvents {
 
         let message = format!(
             "WebView event {name:?} was dropped: no plugin instance delivers this queue. \
-             Does the Descriptor return it from `webview_events()`?"
+             Is it the only `WebViewEvents` field of the parameter struct and its nested structs?"
         );
         // A plugin has no logger unless it sets `log_level` in its
         // Config.toml, so the message also goes to standard error.

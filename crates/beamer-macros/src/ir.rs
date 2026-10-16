@@ -185,6 +185,10 @@ pub enum FieldIR {
     /// the saved state. The generated `Default` initializes it with its
     /// own default.
     Other(syn::Ident),
+    /// A `WebViewEvents` field: the plugin's queue of events for the web
+    /// UI, which the format wrappers find through
+    /// `Parameters::webview_events`. Initialized like `Other`.
+    Events(syn::Ident),
 }
 
 /// A field with `#[state(id = "...")]`.
@@ -261,6 +265,14 @@ impl ParametersIR {
     pub fn nested_fields(&self) -> impl Iterator<Item = &NestedFieldIR> {
         self.fields.iter().filter_map(|f| match f {
             FieldIR::Nested(n) => Some(n.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// Iterate over the `WebViewEvents` fields.
+    pub fn events_fields(&self) -> impl Iterator<Item = &syn::Ident> {
+        self.fields.iter().filter_map(|f| match f {
+            FieldIR::Events(field) => Some(field),
             _ => None,
         })
     }

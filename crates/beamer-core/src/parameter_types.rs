@@ -260,6 +260,19 @@ pub trait Parameters: Send + Sync + ParameterGroups {
         // Default: no-op (macro generates override for parameter-containing structs)
     }
 
+    /// The plugin's queue of events for the web UI: a [`WebViewEvents`]
+    /// field of this struct, or else the first one of a nested struct in
+    /// field order.
+    ///
+    /// The format wrappers deliver what is emitted into it while an editor
+    /// is open. `#[derive(Parameters)]` finds the field by its type; the
+    /// default is for structs without one.
+    ///
+    /// [`WebViewEvents`]: crate::WebViewEvents
+    fn webview_events(&self) -> Option<&crate::WebViewEvents> {
+        None
+    }
+
     // =========================================================================
     // Nested Group Discovery (for recursive group ID assignment)
     // =========================================================================
