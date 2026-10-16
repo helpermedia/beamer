@@ -88,7 +88,12 @@ impl WebViewEvents {
     ///
     /// The event is dropped while no editor is open. Not for the audio
     /// thread: this allocates and takes a lock.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn emit(&self, name: &str, data: &impl Serialize) {
+        crate::audio_thread::assert_not_in_process(
+            "WebViewEvents::emit()",
+            "Data from the audio thread needs a lock-free channel to the editor.",
+        );
         if !self.shared.claimed.load(Ordering::Acquire) {
             self.report_unclaimed(name);
             return;

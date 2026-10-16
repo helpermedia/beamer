@@ -89,7 +89,12 @@ where
     ///
     /// For host and UI threads. The audio thread reads through a
     /// [`reader()`](Self::reader).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn get(&self) -> Arc<T> {
+        crate::audio_thread::assert_not_in_process(
+            "State::get()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         self.value.get()
     }
 
@@ -97,14 +102,24 @@ where
     ///
     /// For host and UI threads, such as a WebView handler. Every reader
     /// gets the new value with its next call.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn set(&self, value: impl Into<Arc<T>>) {
+        crate::audio_thread::assert_not_in_process(
+            "State::set()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         self.value.set(value);
     }
 
     /// Create a reader for the audio thread.
     ///
     /// Call this in `prepare()` and keep the reader in the processor.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn reader(&self) -> HandoverReader<T> {
+        crate::audio_thread::assert_not_in_process(
+            "State::reader()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         self.value.reader()
     }
 
@@ -118,19 +133,34 @@ where
     }
 
     /// Set the value back to the one this state was created with.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn reset(&self) {
+        crate::audio_thread::assert_not_in_process(
+            "State::reset()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         self.set(Arc::clone(&self.initial));
     }
 
     /// The current value as it is saved: JSON.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn save(&self) -> Result<Vec<u8>, String> {
+        crate::audio_thread::assert_not_in_process(
+            "State::save()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         serde_json::to_vec(&*self.get()).map_err(|error| error.to_string())
     }
 
     /// Set the value from saved JSON.
     ///
     /// Leaves the value as it is when the bytes cannot be read as a `T`.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn load(&self, bytes: &[u8]) -> Result<(), String> {
+        crate::audio_thread::assert_not_in_process(
+            "State::load()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         let value: T = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         self.set(value);
         Ok(())

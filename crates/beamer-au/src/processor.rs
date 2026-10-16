@@ -1409,6 +1409,12 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// Whether the last `DoublingProcessor::process` call on this
+        /// thread ran inside a process scope.
+        static SAW_PROCESS_SCOPE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
     impl Processor for DoublingProcessor {
         fn process(
             &mut self,
@@ -1416,6 +1422,7 @@ mod tests {
             _aux: &mut AuxiliaryBuffers,
             _context: &ProcessContext,
         ) {
+            SAW_PROCESS_SCOPE.with(|saw| saw.set(Some(beamer_core::audio_thread::in_process())));
             for (input, output) in buffer.zip_channels() {
                 for (from, to) in input.iter().zip(output) {
                     *to = from * 2.0;
@@ -1669,6 +1676,8 @@ mod tests {
         render(&mut input, &mut output);
         assert_eq!(output.samples[0][0], 0.5);
         assert_eq!(output.samples[1][FRAMES - 1], -1.0);
+        // The render call marks the time the plugin processes.
+        assert_eq!(SAW_PROCESS_SCOPE.with(|saw| saw.get()), Some(cfg!(debug_assertions)));
 
         let allocations = allocations::count(|| {
             for _ in 0..8 {

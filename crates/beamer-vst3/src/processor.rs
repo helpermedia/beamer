@@ -1641,6 +1641,8 @@ where
         if data.is_null() {
             return kInvalidArgument;
         }
+        // In debug builds, calls for host threads panic from here on.
+        let _process = beamer_core::ProcessScope::enter();
 
         // SAFETY: data is non-null and host guarantees it points to valid ProcessData.
         let process_data = unsafe { &*data };
@@ -3527,6 +3529,8 @@ mod tests {
             _aux: &mut beamer_core::AuxiliaryBuffers,
             _context: &CoreProcessContext,
         ) {
+            // The wrapper marks the time a plugin processes.
+            assert_eq!(beamer_core::audio_thread::in_process(), cfg!(debug_assertions));
         }
 
         fn latency_samples(&self) -> u32 {

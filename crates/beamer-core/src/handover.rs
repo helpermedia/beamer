@@ -125,7 +125,12 @@ impl<T: Send + Sync> Handover<T> {
     ///
     /// For host and UI threads: this takes a lock that other host threads
     /// may hold. The audio thread reads through a [`HandoverReader`].
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn get(&self) -> Arc<T> {
+        crate::audio_thread::assert_not_in_process(
+            "Handover::get()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         Arc::clone(&self.lock().latest)
     }
 
@@ -136,7 +141,12 @@ impl<T: Send + Sync> Handover<T> {
     /// used. Every reader gets the new value with its next
     /// [`changed()`](HandoverReader::changed) or
     /// [`latest()`](HandoverReader::latest).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn set(&self, value: impl Into<Arc<T>>) {
+        crate::audio_thread::assert_not_in_process(
+            "Handover::set()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         let value: Arc<T> = value.into();
         // What the readers and this hand-over no longer use, and the links
         // this call holds on to. Both are dropped after the lock is
@@ -179,7 +189,12 @@ impl<T: Send + Sync> Handover<T> {
     ///
     /// Call this in `prepare()` and keep the reader in the processor. It
     /// starts with the current value.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn reader(&self) -> HandoverReader<T> {
+        crate::audio_thread::assert_not_in_process(
+            "Handover::reader()",
+            crate::audio_thread::READ_THROUGH_A_READER,
+        );
         let mut host = self.lock();
         // Forget the readers that are gone, so that preparing again and
         // again without a `set` in between does not pile them up.

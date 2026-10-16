@@ -1343,6 +1343,8 @@ impl<S: RenderSample> RenderBlock<S> {
         host_transport: Option<&BeamerAuTransport>,
         midi_output_sink: Option<MidiOutputSink>,
     ) -> i32 {
+        // In debug builds, calls for host threads panic from here on.
+        let _process = beamer_core::ProcessScope::enter();
         let num_samples = frame_count as usize;
 
         // AU multi-output bus handling: the host calls render once per output bus.

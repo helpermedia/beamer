@@ -27,6 +27,7 @@
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod assets;
+pub mod audio_thread;
 pub mod buffer;
 pub mod buffer_storage;
 pub mod bus_config;
@@ -62,6 +63,7 @@ pub mod webview_events;
 pub mod webview_handler;
 
 // Re-exports for convenience
+pub use audio_thread::ProcessScope;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
