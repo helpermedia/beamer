@@ -109,10 +109,18 @@ pub fn bundle_auv3(
     fs::copy(dylib_path, &framework_binary)
         .map_err(|e| format!("Failed to copy dylib to framework: {}", e))?;
 
-    // Fix dylib install name to use @rpath with versioned path
+    // Give the binary an install name relative to the appex executable, the
+    // only binary that links it. The linker records that name in the appex,
+    // which then loads the framework of its own bundle. As with the AUv2
+    // library, the name has to be @loader_path based: dyld can satisfy an
+    // @rpath name with a framework of the same name that another bundle
+    // loaded earlier.
+    let install_name = format!(
+        "@loader_path/../../../../Frameworks/{0}.framework/Versions/A/{0}",
+        framework_name
+    );
     let install_name_status = Command::new("install_name_tool")
-        .args(["-id", &format!("@rpath/{}.framework/Versions/A/{}", framework_name, framework_name),
-               &framework_binary.to_string_lossy()])
+        .args(["-id", &install_name, &framework_binary.to_string_lossy()])
         .status()
         .map_err(|e| format!("Failed to run install_name_tool: {}", e))?;
 
@@ -207,7 +215,6 @@ pub fn bundle_auv3(
                 "-framework", "WebKit",
                 "-F", frameworks_dir.to_str_safe()?,
                 "-framework", &framework_name,
-                "-Wl,-rpath,@loader_path/../../../../Frameworks",
                 "-Wl,-e,_NSExtensionMain",  // Use Apple's standard extension entry point
                 "-o", appex_arch_path.to_str_safe()?,
                 appex_stub_path.to_str_safe()?,
