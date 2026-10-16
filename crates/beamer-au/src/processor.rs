@@ -1632,6 +1632,71 @@ mod tests {
         assert_eq!(sent, [10, 40]);
     }
 
+    /// Render a buffer of `frames` samples without input, with a gain change
+    /// and a note at sample 0. Checks that nothing was rendered and the gain
+    /// changed, and returns the offsets of the MIDI the host got back.
+    fn render_events_without_audio(output: &mut StereoList, frames: u32) -> Vec<u32> {
+        use crate::render::test_events::{link, midi_event, parameter_event_at};
+        use crate::render::{AURenderEventType, MidiOutputSink};
+
+        let plugin = boxed(AuProcessor::<RecordingPlugin>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let store = plugin.lock().unwrap().shared_parameters();
+        let gain_before = store.store().get_normalized(gain_id());
+
+        let gain = u64::from(gain_id());
+        let mut events = vec![
+            parameter_event_at(AURenderEventType::Parameter as u8, 0, gain, -6.0, 0),
+            midi_event(0, [0x90, 60, 100]),
+        ];
+        let list = link(&mut events);
+
+        let mut sent: Vec<u32> = Vec::new();
+        let context: *mut Vec<u32> = &mut sent;
+        // SAFETY: The sink is only used during the render call below, while
+        // `sent` is alive.
+        let sink = unsafe { MidiOutputSink::new(record_midi_output, context.cast()) };
+
+        RECORDED.with(|recorded| recorded.borrow_mut().clear());
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let status = block.process(
+            &mut action_flags,
+            &timestamp,
+            frames,
+            0,
+            output.as_list(),
+            list,
+            std::ptr::null(),
+            std::ptr::null(),
+            None,
+            Some(sink),
+        );
+        assert_eq!(status, 0);
+
+        // Nothing was rendered.
+        assert!(RECORDED.with(|recorded| recorded.borrow().is_empty()));
+
+        assert_ne!(store.store().get_normalized(gain_id()), gain_before);
+        sent
+    }
+
+    #[test]
+    fn test_call_without_samples_applies_its_events() {
+        let mut output = StereoList::filled(0.0);
+        assert_eq!(render_events_without_audio(&mut output, 0), [0]);
+    }
+
+    #[test]
+    fn test_call_without_channels_applies_its_events() {
+        // Null output buffers and no input: an effect has no channels to
+        // write to.
+        let mut output = StereoList::filled(0.0);
+        output.buffers[0].data = std::ptr::null_mut();
+        output.buffers[1].data = std::ptr::null_mut();
+        assert_eq!(render_events_without_audio(&mut output, FRAMES as u32), [0]);
+    }
+
     #[test]
     fn test_f64_render_converts_for_an_f32_processor_without_allocating() {
         let plugin = boxed(AuProcessor::<DoublingPlugin>::new());

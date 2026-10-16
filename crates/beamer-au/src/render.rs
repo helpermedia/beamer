@@ -1634,18 +1634,14 @@ impl<S: RenderSample> RenderBlock<S> {
                     storage.collect_aux_inputs(&buffer_list_ptrs[..aux_input_count], num_samples);
                 }
             }
-
-            // Fallback for instruments (no inputs): if we still have no output channels collected,
-            // the host provided null output buffers but there were no input buffers to use.
-            // In this case, we can't process audio (instruments would need their own output buffers).
-            if storage.output_channel_count() == 0 && storage.main_inputs.is_empty() {
-                // No inputs and no outputs collected: there is nothing to write to.
-                // The MIDI of the buffer is still processed.
-                plugin_guard.process_midi(midi_buffer.as_mut_slice(), midi_output);
-                self.send_midi_output(midi_output, midi_output_sink);
-                return os_status::NO_ERR;
-            }
         }
+
+        // Without input and output channels (the host gave null output
+        // buffers and no input to use in their place) there is nothing to
+        // write to, and a call without samples has nothing to write. Neither
+        // runs the sub-blocks below; their events are handled after them.
+        let has_channels = storage.output_channel_count() > 0 || !storage.main_inputs.is_empty();
+        let render_samples = if has_channels { num_samples } else { 0 };
 
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
         // MidiCcState uses atomics internally and we only read it.
@@ -1665,7 +1661,7 @@ impl<S: RenderSample> RenderBlock<S> {
         let mut midi_idx: usize = 0;
 
         let mut block_start: usize = 0;
-        while block_start < num_samples {
+        while block_start < render_samples {
             // Collect all parameter events scheduled at or before this boundary.
             let imm_apply_start = imm_idx;
             while imm_idx < immediate.len()
@@ -1787,9 +1783,14 @@ impl<S: RenderSample> RenderBlock<S> {
             block_start = next_boundary;
         }
 
-        // A call without samples has no sub-block. Its MIDI is still processed.
-        if num_samples == 0 {
-            plugin_guard.process_midi(midi_events, midi_output);
+        // The events no sub-block reached: all of them when nothing was
+        // rendered, or those after a sub-block that failed. The parameter
+        // changes are applied and the MIDI is processed, so that none of them
+        // is lost. No process() call follows, so the MIDI keeps the offsets of
+        // the whole buffer.
+        let _ = plugin_guard.apply_parameter_events(&immediate[imm_idx..], &ramps[ramp_idx..]);
+        if render_samples == 0 || midi_idx < midi_events.len() {
+            plugin_guard.process_midi(&mut midi_events[midi_idx..], midi_output);
         }
         self.send_midi_output(midi_output, midi_output_sink);
 
