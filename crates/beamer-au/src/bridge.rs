@@ -2825,8 +2825,9 @@ pub extern "C" fn beamer_au_editor_sync_init_script(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: sync validated non-null above. Caller guarantees valid pointer.
-        let sync = unsafe { &*sync };
+        // SAFETY: sync validated non-null above. The caller guarantees a valid
+        // pointer that only its main thread uses.
+        let sync = unsafe { &mut *sync };
         // SAFETY: plugin_format validated non-null above. Caller guarantees a
         // null-terminated string.
         let format = unsafe { CStr::from_ptr(plugin_format) }.to_str().ok()?;
@@ -2890,6 +2891,51 @@ pub extern "C" fn beamer_au_editor_sync_parameter_script(
         // pointer that only its main thread uses.
         let sync = unsafe { &mut *sync };
         script_into_raw(sync.0.parameter_script(param_id))
+    }));
+
+    result.ok().flatten().unwrap_or(ptr::null_mut())
+}
+
+/// Handle a message of the web UI that needs no host: `state:set`, which
+/// sets a `State` field.
+///
+/// Takes the message as the web UI sent it (UTF-8 JSON), so that its value
+/// reaches the field unchanged. Returns the script that answers with the
+/// value in effect, as a heap-allocated null-terminated C string that the
+/// caller must free with `beamer_au_free_string`, or null for any other
+/// message and on failure.
+///
+/// # Safety
+///
+/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
+///   was not closed yet, or null (in which case this function returns null)
+/// - `json` must point to `json_len` readable bytes
+/// - Only the main thread of the editor calls it
+#[no_mangle]
+pub extern "C" fn beamer_au_editor_sync_message(
+    sync: *mut BeamerAuEditorSync,
+    json: *const u8,
+    json_len: usize,
+) -> *mut c_char {
+    if sync.is_null() || json.is_null() {
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: sync validated non-null above. The caller guarantees a valid
+        // pointer that only its main thread uses.
+        let sync = unsafe { &mut *sync };
+        // SAFETY: json validated non-null above. Caller guarantees json_len
+        // readable bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(json, json_len) };
+
+        let message: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        if message.get("type")?.as_str()? != "state:set" {
+            return None;
+        }
+        let path = message.get("id")?.as_str()?;
+        let value = message.get("value").unwrap_or(&serde_json::Value::Null);
+        script_into_raw(sync.0.state_script(path, value)?)
     }));
 
     result.ok().flatten().unwrap_or(ptr::null_mut())

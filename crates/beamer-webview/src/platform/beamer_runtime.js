@@ -2,6 +2,10 @@
   var paramMap = {};
   var paramById = {};
   var pendingParamSubs = {};
+  // State fields by path: {value, json, listeners}. `json` is the value as
+  // canonical text, to tell a change from a value the UI has already.
+  var stateMap = {};
+  var pendingStateSubs = {};
   var eventListeners = {};
   var invokeCallbacks = {};
   var nextCallId = 0;
@@ -29,6 +33,60 @@
     } catch (e) {
       console.error(e);
     }
+  }
+
+  // Subscribe to an entry of `entries`, or queue the listener in `pending`
+  // until init brings the entry. Returns the function that unsubscribes.
+  function subscribe(entries, pending, key, cb) {
+    var entry = entries[key];
+    if (!entry) {
+      if (!pending[key]) pending[key] = [];
+      pending[key].push(cb);
+      return function() {
+        var arr = pending[key];
+        if (arr) {
+          pending[key] = arr.filter(function(f){return f!==cb;});
+          return;
+        }
+        var e = entries[key];
+        if (e) e.listeners = e.listeners.filter(function(f){return f!==cb;});
+      };
+    }
+    entry.listeners.push(cb);
+    return function() {
+      entry.listeners = entry.listeners.filter(function(f){return f!==cb;});
+    };
+  }
+
+  // JSON text with the keys of every object sorted, so that two equal
+  // values give the same text whatever order their keys came in (a Rust
+  // map is written in another order each time).
+  function canonical(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) {
+      return "[" + value.map(function(v) {
+        var text = canonical(v);
+        return text === undefined ? "null" : text;
+      }).join(",") + "]";
+    }
+    var parts = [];
+    Object.keys(value).sort().forEach(function(key) {
+      var text = canonical(value[key]);
+      if (text !== undefined) parts.push(JSON.stringify(key) + ":" + text);
+    });
+    return "{" + parts.join(",") + "}";
+  }
+
+  // Give a State field a new value and tell its listeners, unless the UI
+  // has that value already.
+  function applyState(path, value) {
+    var entry = stateMap[path];
+    if (!entry) return;
+    var json = canonical(value);
+    if (json === entry.json) return;
+    entry.value = value;
+    entry.json = json;
+    entry.listeners.forEach(function(cb) { notify(cb, value); });
   }
 
   window.__BEAMER__ = {
@@ -67,24 +125,7 @@
         if (p) post({type:"param:end", id:p.id});
       },
       on: function(stringId, cb) {
-        var p = paramMap[stringId];
-        if (!p) {
-          if (!pendingParamSubs[stringId]) pendingParamSubs[stringId] = [];
-          pendingParamSubs[stringId].push(cb);
-          return function() {
-            var arr = pendingParamSubs[stringId];
-            if (arr) {
-              pendingParamSubs[stringId] = arr.filter(function(f){return f!==cb;});
-              return;
-            }
-            var q = paramMap[stringId];
-            if (q) q.listeners = q.listeners.filter(function(f){return f!==cb;});
-          };
-        }
-        p.listeners.push(cb);
-        return function() {
-          p.listeners = p.listeners.filter(function(f){return f!==cb;});
-        };
+        return subscribe(paramMap, pendingParamSubs, stringId, cb);
       },
       all: function() {
         return Object.values(paramMap).map(function(p) { return p.info; });
@@ -92,6 +133,34 @@
       info: function(stringId) {
         var p = paramMap[stringId];
         return p ? p.info : undefined;
+      }
+    },
+
+    // The State fields of the plugin, by path ("pan_law", "layer/sample").
+    // A value is what JSON makes of the Rust value.
+    state: {
+      // The value the UI knows: the same object until it changes.
+      // Undefined before `ready` and for a path the plugin does not have.
+      get: function(path) {
+        var entry = stateMap[path];
+        return entry ? entry.value : undefined;
+      },
+      // Set a value. Listeners hear of it at once; the plugin answers with
+      // the value in effect, which corrects one that does not fit.
+      set: function(path, value) {
+        if (!stateMap[path]) return;
+        // Keep the value as the plugin will see it: `undefined` becomes
+        // null and so does NaN.
+        var plain = JSON.parse(JSON.stringify(value === undefined ? null : value));
+        applyState(path, plain);
+        post({type:"state:set", id:path, value:plain});
+      },
+      on: function(path, cb) {
+        return subscribe(stateMap, pendingStateSubs, path, cb);
+      },
+      // The paths of all State fields. Empty before `ready`.
+      ids: function() {
+        return Object.keys(stateMap);
       }
     },
 
@@ -130,8 +199,23 @@
         };
         paramMap[p.stringId] = entry;
         paramById[p.id] = entry;
+        // A listener that subscribed before the value existed hears it now.
+        pending.forEach(function(cb) { notify(cb, p.value); });
+      });
+      var state = (info && info.state) || {};
+      Object.keys(state).forEach(function(path) {
+        var pending = pendingStateSubs[path] || [];
+        delete pendingStateSubs[path];
+        stateMap[path] = {
+          value: state[path], json: canonical(state[path]), listeners: pending
+        };
+        pending.forEach(function(cb) { notify(cb, state[path]); });
       });
       readyResolve();
+    },
+
+    _onState: function(changed) {
+      for (var path in changed) applyState(path, changed[path]);
     },
 
     _onParams: function(changed) {

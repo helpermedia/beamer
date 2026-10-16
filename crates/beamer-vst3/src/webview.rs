@@ -178,6 +178,19 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                 webview.evaluate_js(&sync.parameter_script(id));
             }
         }
+        "state:set" => {
+            let Some(path) = msg.get("id").and_then(|v| v.as_str()) else { return };
+            let value = msg.get("value").unwrap_or(&serde_json::Value::Null);
+            // Answer with the value in effect, which corrects a value that
+            // does not fit the field.
+            if let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) {
+                if let Some(script) = sync.state_script(path, value) {
+                    // SAFETY: webview is valid for the view lifetime.
+                    let webview = unsafe { &*ipc.webview };
+                    webview.evaluate_js(&script);
+                }
+            }
+        }
         "param:begin" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
             let handler = ipc.handler.get();
@@ -259,8 +272,8 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
     }
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
-    let ipc = unsafe { &*(context as *const IpcContext) };
-    let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_ref()) else {
+    let ipc = unsafe { &mut *(context as *mut IpcContext) };
+    let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) else {
         return;
     };
 

@@ -314,6 +314,8 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
         }
         // Answer with the value in effect.
         beamer_au_ipc_answer_param(self->_sync, self->_webviewHandle, paramId);
+    } else if ([type isEqualToString:@"state:set"]) {
+        beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];

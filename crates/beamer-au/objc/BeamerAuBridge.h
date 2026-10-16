@@ -1161,6 +1161,23 @@ char* _Nullable beamer_au_editor_sync_parameter_script(BeamerAuEditorSyncHandle 
                                                        uint32_t param_id);
 
 /**
+ * Handle a message of the web UI that needs no host: "state:set", which
+ * sets a State field.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
+ * @param json     The message as the web UI sent it (UTF-8 JSON).
+ * @param json_len Length of the message in bytes.
+ * @return JavaScript that answers with the value in effect, or NULL for any
+ *         other message and on failure. Caller must free with
+ *         beamer_au_free_string.
+ */
+char* _Nullable beamer_au_editor_sync_message(BeamerAuEditorSyncHandle _Nullable sync,
+                                              const uint8_t* _Nonnull json,
+                                              size_t json_len);
+
+/**
  * The editor was closed: stop keeping events for it and free the handle.
  *
  * Thread Safety: Main thread.

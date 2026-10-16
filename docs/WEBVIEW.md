@@ -99,10 +99,18 @@ interface BeamerParams {
   info(stringId: string): BeamerParamInfo | undefined;
 }
 
+interface BeamerState {
+  get<T = unknown>(path: string): T | undefined;
+  set(path: string, value: unknown): void;
+  on<T = unknown>(path: string, callback: (value: T) => void): () => void;
+  ids(): string[];
+}
+
 interface Beamer {
   readonly ready: Promise<void>;
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   readonly params: BeamerParams;
+  readonly state: BeamerState;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
@@ -127,7 +135,22 @@ All parameter methods use string identifiers: the `id` from the `#[parameter(id 
 | `params.info(stringId)` | Get the full `BeamerParamInfo` object for a parameter |
 | `params.all()` | Get an array of all `BeamerParamInfo` objects |
 
-Subscriptions registered before `ready` resolves are queued and attached once the init dump arrives. The unsubscribe function returned by `params.on()` works in both cases.
+Subscriptions registered before `ready` resolves are queued, attached once the init dump arrives and called with the value it brings. The unsubscribe function returned by `params.on()` works in both cases.
+
+### State Methods
+
+The `State` fields of the parameter struct (see [State Beyond Parameters](REFERENCE.md#state-beyond-parameters)) are known by their path, like parameters: the `id` from the `#[state(id = "...")]` attribute, behind the names of the nested fields it sits in (`"pan_law"`, `"layer/sample"`). A value is what JSON makes of the Rust value: a string for a unit enum variant with serde's naming, an object for a struct.
+
+| Method | Description |
+|--------|-------------|
+| `state.get(path)` | Get the value the UI knows. The same object until the value changes, so it works with React's `useSyncExternalStore`. `undefined` before `ready` and for a path the plugin does not have |
+| `state.set(path, value)` | Set the value. Listeners hear of it at once, and the plugin answers with the value in effect: a value that does not fit the Rust type leaves the field as it is, and the answer sets the UI back. A path the plugin does not have is ignored |
+| `state.on(path, callback)` | Subscribe to changes, also those behind the UI's back (a loaded project, a handler that sets the field). Returns an unsubscribe function |
+| `state.ids()` | Get the paths of all `State` fields. Empty before `ready` |
+
+The type parameter of `get` and `on` is the caller's claim, not a check: `state.get<PanLaw>("pan_law")`. Listeners are called only when the value differs from the one the UI has, compared as JSON with the keys of objects in order. Subscriptions before `ready` are queued as with parameters.
+
+Every `State` field is visible to the web UI and can be set by it. Keep data that the UI must not see or change in a `Handover` field instead. A large value (a wavetable, a sample) is turned into JSON and sent with every change; above 1 MB the plugin logs a warning, once per open editor.
 
 ### Invoke
 
@@ -320,15 +343,15 @@ const law = await __BEAMER__.invoke("getPanLaw"); // "constant_power" or "linear
 await __BEAMER__.invoke("setPanLaw", "linear");
 ```
 
-A state that changes behind the UI, for example when the host loads a preset while the editor is open, is not pushed to JavaScript. A UI that has to follow it asks again on a timer, as the demo does. For a value that is expensive to send, the handler can expose `State::generation()`, which counts how often the value was set, and the UI asks for the value only when that number changed.
+A `State` field does not need a handler at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
 
 ## Parameter Synchronization
 
-Parameter sync is fully automatic. No plugin code is required.
+Parameter sync is fully automatic. No plugin code is required. The same holds for `State` fields.
 
 ### Init Dump
 
-When the WebView finishes loading its initial page, the format wrapper calls `params_to_init_json()` and injects it via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)):
+When the WebView finishes loading its initial page, the format wrapper injects the parameters (`params_to_init_json()`) via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)) and carries the values of the `State` fields by path:
 
 ```javascript
 window.__BEAMER__._onInit([
@@ -338,7 +361,7 @@ window.__BEAMER__._onInit([
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
    "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
    "format":"pan","units":"","steps":0}
-], {"pluginFormat":"vst3"})
+], {"pluginFormat":"vst3","state":{"pan_law":"constant_power"}})
 ```
 
 The example is shortened for readability: real numeric IDs are hashes of the string IDs, and values carry full precision.
@@ -360,7 +383,7 @@ Each entry corresponds to a `ParamInitEntry`:
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
 
-The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `params.get()`.
+The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `params.get()` and `state.get()`.
 
 ### 60 Hz Polling
 
@@ -370,7 +393,8 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 2. Compares each normalized value against a cached snapshot
 3. For any parameter whose value changed, appends its normalized value, plain value and display text to a delta object
 4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
-5. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
+5. If a `State` field was set since the last tick, calls `window.__BEAMER__._onState({path: value, ...})` with the fields that changed. The sum of their generations tells whether any did, so a tick without a change reads no field
+6. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
 
 The delta format is a plain object mapping numeric parameter IDs to those three values:
 
@@ -393,6 +417,8 @@ When JavaScript calls `params.set(stringId, value)`:
 5. The native side sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
 
 `beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs.
+
+When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The native side decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
 ## React Integration
 

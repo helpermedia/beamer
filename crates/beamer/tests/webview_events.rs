@@ -26,6 +26,9 @@ struct EventsParameters {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
     gain: FloatParameter,
 
+    #[state(id = "zoom")]
+    zoom: State<u32>,
+
     events: WebViewEvents,
 }
 
@@ -101,8 +104,8 @@ fn test_au_delivers_the_queue_of_its_instance() {
     use beamer_au::bridge::{
         beamer_au_create_instance, beamer_au_destroy_instance, beamer_au_editor_sync_close,
         beamer_au_editor_sync_frame_script, beamer_au_editor_sync_init_script,
-        beamer_au_editor_sync_open, beamer_au_editor_sync_parameter_script, beamer_au_free_string,
-        beamer_au_param_set_from_ui,
+        beamer_au_editor_sync_message, beamer_au_editor_sync_open,
+        beamer_au_editor_sync_parameter_script, beamer_au_free_string, beamer_au_param_set_from_ui,
     };
     use beamer_au::factory::register_factory;
     use beamer_au::{AuPluginInstance, AuProcessor};
@@ -137,7 +140,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     assert!(!editor.is_null());
     let init = text(beamer_au_editor_sync_init_script(editor, c"auv2".as_ptr())).expect("init");
     assert!(init.starts_with("window.__BEAMER__._onInit([{"));
-    assert!(init.ends_with("],{\"pluginFormat\":\"auv2\"})"));
+    assert!(init.ends_with("],{\"pluginFormat\":\"auv2\",\"state\":{\"zoom\":0}})"));
 
     // The first frame sends every parameter, then nothing changed.
     assert_eq!(
@@ -153,6 +156,16 @@ fn test_au_delivers_the_queue_of_its_instance() {
         Some(format!("window.__BEAMER__._onParams({{{gain}:[0.5,0.5,\"0.50\"]}});"))
     );
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
+
+    // A State field the web UI sets, from the message as it sent it.
+    let message = br#"{"type":"state:set","id":"zoom","value":150}"#;
+    assert_eq!(
+        text(beamer_au_editor_sync_message(editor, message.as_ptr(), message.len())).as_deref(),
+        Some("window.__BEAMER__._onState({\"zoom\":150});")
+    );
+    assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
+    let other = br#"{"type":"param:begin","id":1}"#;
+    assert_eq!(text(beamer_au_editor_sync_message(editor, other.as_ptr(), other.len())), None);
 
     events.emit("ready", &"now");
     events.emit("count", &2);

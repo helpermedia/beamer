@@ -2251,6 +2251,8 @@ static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t le
             kAudioUnitScope_Global, 0, auValue, 0);
         // Answer with the value in effect, which the host rounded.
         beamer_au_ipc_answer_param(self->_sync, self->_webviewHandle, paramId);
+    } else if ([type isEqualToString:@"state:set"]) {
+        beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AudioUnitEvent event;

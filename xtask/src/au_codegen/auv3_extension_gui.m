@@ -75,6 +75,8 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
         }
         // Answer with the value in effect.
         beamer_au_ipc_answer_param(ext->_sync, ext->_webviewHandle, paramId);
+    } else if ([type isEqualToString:@"state:set"]) {
+        beamer_au_ipc_handle_state_set(ext->_sync, ext->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
         AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];

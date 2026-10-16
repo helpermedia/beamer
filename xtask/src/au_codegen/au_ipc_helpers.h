@@ -35,6 +35,18 @@ static void beamer_au_ipc_answer_param(
     beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_parameter_script(sync, paramId));
 }
 
+/// Handle a "state:set" message: set the State field in Rust and answer
+/// with the value in effect. Takes the message as the web UI sent it.
+static void beamer_au_ipc_handle_state_set(
+    BeamerAuEditorSyncHandle sync,
+    void* webviewHandle,
+    const uint8_t* json,
+    size_t len
+) {
+    if (!sync) return;
+    beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_message(sync, json, len));
+}
+
 // ---------------------------------------------------------------------------
 // Built-in invoke dispatch
 // ---------------------------------------------------------------------------
