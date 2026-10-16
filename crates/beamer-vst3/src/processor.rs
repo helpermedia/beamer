@@ -334,6 +334,9 @@ where
     process_mode: UnsafeCell<int32>,
     /// MIDI input buffer (reused each process call to avoid stack overflow)
     midi_input: UnsafeCell<MidiBuffer>,
+    /// Whether the MIDI input buffer holds the events of calls without
+    /// samples, which wait for the next call with samples.
+    midi_input_carried: UnsafeCell<bool>,
     /// MIDI output buffer (reused each process call)
     midi_output: UnsafeCell<MidiBuffer>,
     /// SysEx output buffer pool (for VST3 DataEvent pointer stability)
@@ -449,6 +452,7 @@ where
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
             process_mode: UnsafeCell::new(ProcessModes_::kRealtime as int32),
             midi_input: UnsafeCell::new(MidiBuffer::new()),
+            midi_input_carried: UnsafeCell::new(false),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
                 config.sysex_slots,
@@ -1665,18 +1669,15 @@ where
             self.publish_timing(processor);
         }
 
-        // A host sends a block without samples to flush parameter changes
-        // while it does not process audio. The parameter values are applied
-        // above. Controller changes that arrive as parameter changes become
-        // MIDI events only in a block with samples.
-        if num_samples == 0 {
-            return kResultOk;
-        }
-
         // 2. Handle MIDI events (reuse pre-allocated buffer to avoid stack overflow)
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let midi_input = unsafe { &mut *self.midi_input.get() };
-        midi_input.clear();
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let carried = unsafe { &mut *self.midi_input_carried.get() };
+        // Events of calls without samples wait in the buffer (see below).
+        if !std::mem::take(carried) {
+            midi_input.clear();
+        }
 
         // SAFETY: inputEvents may be null; ComRef::from_raw handles this.
         if let Some(event_list) = unsafe { ComRef::from_raw(process_data.inputEvents) } {
@@ -1690,7 +1691,7 @@ where
                 if unsafe { event_list.getEvent(i, &mut event) } == kResultOk {
                     // SAFETY: event is valid Event populated by getEvent.
                     if let Some(midi_event) = unsafe { convert_vst3_to_midi(&event) } {
-                        midi_input.push(midi_event);
+                        push_midi_input(midi_input, midi_event, num_samples == 0);
                     }
                 }
             }
@@ -1730,7 +1731,7 @@ where
                                             value as f32,
                                             sample_offset as u32,
                                         );
-                                        midi_input.push(midi_event);
+                                        push_midi_input(midi_input, midi_event, num_samples == 0);
                                     }
                                 }
                             }
@@ -1743,6 +1744,17 @@ where
         // Check for MIDI input buffer overflow (once per block)
         if midi_input.has_overflowed() {
             self.process_warnings.note(ProcessWarning::MidiInputOverflow);
+        }
+
+        // A host sends a block without samples to flush parameter changes
+        // while it does not process audio. The parameter values are applied
+        // above. Its MIDI events, including the controller changes that came
+        // as parameter changes, stay in the buffer at the start of the next
+        // block with samples: `process_midi` runs right before a `process()`
+        // call, with the events of that call.
+        if num_samples == 0 {
+            *carried = true;
+            return kResultOk;
         }
 
         // Clear and prepare MIDI output buffer and SysEx pool
@@ -2917,6 +2929,45 @@ fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_of
     }
 }
 
+/// Add an event to the MIDI input of a process call.
+///
+/// The events of a call without samples wait for the next call with
+/// samples, at offset 0. A host may send many such calls in a row, for
+/// example while a controller moves on a suspended track. A controller event
+/// then replaces the waiting one of the same controller and moves to the
+/// end, so that only the latest value waits and the buffer does not fill up.
+fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent, waiting: bool) {
+    if waiting {
+        event.sample_offset = 0;
+        if let Some(key) = controller_key(&event) {
+            let events = input.as_mut_slice();
+            if let Some(index) = events.iter().position(|old| controller_key(old) == Some(key)) {
+                events[index..].rotate_left(1);
+                if let Some(last) = events.last_mut() {
+                    *last = event;
+                }
+                return;
+            }
+        }
+    }
+    input.push(event);
+}
+
+/// The controller an event sets the value of, if it is a controller event:
+/// its kind, channel and controller number or note.
+///
+/// Of two events with one key, the later one makes the earlier one obsolete.
+fn controller_key(event: &MidiEvent) -> Option<(u8, u8, u8)> {
+    match &event.event {
+        MidiEventKind::ControlChange(cc) => Some((0, cc.channel, cc.controller)),
+        MidiEventKind::PitchBend(bend) => Some((1, bend.channel, 0)),
+        MidiEventKind::ChannelPressure(pressure) => Some((2, pressure.channel, 0)),
+        MidiEventKind::PolyPressure(pressure) => Some((3, pressure.channel, pressure.pitch)),
+        MidiEventKind::ProgramChange(program) => Some((4, program.channel, 0)),
+        _ => None,
+    }
+}
+
 /// Convert a VST3 Event to a MIDI event.
 ///
 /// Returns None for unsupported event types.
@@ -3610,6 +3661,151 @@ mod tests {
 
     static MIDI_CONFIG: Config = Config::new("Midi Test", Category::Instrument, "Test", "midi");
 
+    thread_local! {
+        /// The input of each `process_midi` call of a `CcProcessor` on this
+        /// thread.
+        static CC_PROCESSOR_MIDI: std::cell::RefCell<Vec<Vec<beamer_core::MidiEvent>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A plugin that gets the mod wheel as a parameter change.
+    #[derive(Default)]
+    struct CcPlugin {
+        parameters: Arc<NoParameters>,
+    }
+
+    struct CcProcessor;
+
+    impl HasParameters for CcPlugin {
+        type Parameters = NoParameters;
+        fn parameters(&self) -> &Arc<Self::Parameters> {
+            &self.parameters
+        }
+    }
+
+    impl Descriptor for CcPlugin {
+        type Setup = ();
+        type Processor = CcProcessor;
+
+        fn prepare(&self, _setup: ()) -> CcProcessor {
+            CcProcessor
+        }
+
+        fn wants_midi(&self) -> bool {
+            true
+        }
+
+        fn midi_cc_config(&self) -> Option<beamer_core::MidiCcConfig> {
+            Some(beamer_core::MidiCcConfig::new().with_mod_wheel())
+        }
+    }
+
+    impl Processor for CcProcessor {
+        fn process(
+            &mut self,
+            _buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+        }
+
+        fn process_midi(&mut self, input: &[beamer_core::MidiEvent], _output: &mut beamer_core::MidiBuffer) {
+            CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().push(input.to_vec()));
+        }
+    }
+
+    static CC_CONFIG: Config = Config::new("Cc Test", Category::Instrument, "Test", "ccts");
+
+    #[test]
+    fn test_midi_of_a_process_call_without_samples_reaches_the_next_block() {
+        let wrapper = Vst3Processor::<CcPlugin>::new(&CC_CONFIG);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
+        let calls = || CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+
+        // A host flushes the mod wheel while it does not process audio. No
+        // process() call follows, so the plugin gets nothing yet.
+        let mod_wheel = changes_of(&[(MidiCcState::parameter_id(1), 0.5)]);
+        process_with(&wrapper, 0, mod_wheel.as_ptr(), std::ptr::null_mut());
+        assert!(calls().is_empty());
+
+        // The next block with samples starts with it.
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        let received = calls();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].len(), 1);
+        assert_eq!(received[0][0].sample_offset, 0);
+        assert!(matches!(
+            &received[0][0].event,
+            beamer_core::MidiEventKind::ControlChange(cc) if cc.controller == 1
+        ));
+
+        // And the block after that has no events left.
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        assert_eq!(calls().get(1).map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn test_only_the_latest_controller_value_waits_for_a_block() {
+        let wrapper = Vst3Processor::<CcPlugin>::new(&CC_CONFIG);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
+
+        // More calls without samples than the buffer holds events, while
+        // the mod wheel moves.
+        let calls = 2 * beamer_core::midi::MAX_MIDI_EVENTS;
+        for index in 0..calls {
+            let value = index as f64 / calls as f64;
+            let mod_wheel = changes_of(&[(MidiCcState::parameter_id(1), value)]);
+            process_with(&wrapper, 0, mod_wheel.as_ptr(), std::ptr::null_mut());
+        }
+
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].len(), 1);
+        let beamer_core::MidiEventKind::ControlChange(cc) = &received[0][0].event else {
+            panic!("a controller change");
+        };
+        let last = (calls - 1) as f32 / calls as f32;
+        assert!((cc.value - last).abs() < 1e-6, "{} is not the last value {}", cc.value, last);
+    }
+
+    #[test]
+    fn test_a_waiting_controller_event_moves_behind_later_events() {
+        let mut input = MidiBuffer::new();
+        push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 1.0), true);
+        push_midi_input(&mut input, MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0), true);
+        push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 0.0), true);
+        // Another controller and a block with samples are left alone.
+        push_midi_input(&mut input, MidiEvent::control_change(0, 0, 1, 0.5), true);
+        push_midi_input(&mut input, MidiEvent::control_change(5, 0, 1, 0.7), false);
+
+        let kinds: Vec<_> = input
+            .as_slice()
+            .iter()
+            .map(|event| match &event.event {
+                MidiEventKind::ControlChange(cc) => (event.sample_offset, cc.controller, cc.value),
+                _ => (event.sample_offset, 0, -1.0),
+            })
+            .collect();
+        assert_eq!(kinds, [(0, 0, -1.0), (0, 64, 0.0), (0, 1, 0.5), (5, 1, 0.7)]);
+    }
+
     /// The bus counts a host sees: audio in, audio out, event in, event out.
     fn bus_counts(wrapper: &Vst3Processor<MidiPlugin>) -> [i32; 4] {
         let audio = MediaTypes_::kAudio as MediaType;
@@ -3748,13 +3944,14 @@ mod tests {
     /// Call process like a host, with `frames` of the 64 frames the buffers
     /// hold, with the parameter changes of the block and a list for the
     /// changes the plugin reports, if any.
-    fn process_with<Presets>(
-        wrapper: &Vst3Processor<StatePlugin, Presets>,
+    fn process_with<P, Presets>(
+        wrapper: &Vst3Processor<P, Presets>,
         frames: int32,
         changes: *mut IParameterChanges,
         output_changes: *mut IParameterChanges,
     ) where
-        Presets: FactoryPresets<Parameters = StateParameters>,
+        P: Descriptor + 'static,
+        Presets: FactoryPresets<Parameters = P::Parameters>,
     {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];

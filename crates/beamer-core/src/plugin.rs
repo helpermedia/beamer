@@ -839,8 +839,10 @@ pub trait Processor: Send + 'static {
     /// call, and the events in `output` are timed the same way. A format
     /// wrapper may split a host buffer into several `process()` calls, for
     /// example at automation points, and then calls this before each of
-    /// them. Plugins can transform events and add them to the output buffer,
-    /// pass them through unchanged or consume them entirely.
+    /// them. Events of a host call without samples (a VST3 host flushes
+    /// parameter changes that way) come with the next call, at offset 0.
+    /// Plugins can transform events and add them to the output buffer, pass
+    /// them through unchanged or consume them entirely.
     ///
     /// # Arguments
     /// * `input` - Slice of incoming MIDI events (sorted by sample_offset)

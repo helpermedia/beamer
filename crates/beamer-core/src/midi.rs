@@ -1884,6 +1884,12 @@ impl MidiBuffer {
         &self.events[..self.len]
     }
 
+    /// Get the events as a mutable slice, to change or reorder them.
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent] {
+        &mut self.events[..self.len]
+    }
+
     /// Move all events out of the buffer, leaving it empty.
     ///
     /// Returns an iterator that yields owned `MidiEvent` values by moving them
