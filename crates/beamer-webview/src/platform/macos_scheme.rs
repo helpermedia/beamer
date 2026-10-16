@@ -32,7 +32,7 @@ const ASSETS_IVAR: &std::ffi::CStr = c"_beamerAssets";
 ///
 /// Must be called from the main thread (class registration is not thread-safe).
 fn scheme_handler_class() -> &'static AnyClass {
-    let c_name = class_name("BeamerSchemeHandler", start_url_scheme_task as usize);
+    let c_name = class_name("BeamerSchemeHandler", start_url_scheme_task as *const () as usize);
 
     // Fast path: class was already registered (same plugin reopened, or
     // another instance of the same plugin type).

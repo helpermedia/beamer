@@ -29,7 +29,7 @@ const NAV_CONTEXT_IVAR: &CStr = c"_beamerNavContext";
 
 /// Get or register the BeamerMessageHandler ObjC class of this binary.
 fn message_handler_class() -> &'static AnyClass {
-    let c_name = class_name("BeamerMessageHandler", did_receive_script_message as usize);
+    let c_name = class_name("BeamerMessageHandler", did_receive_script_message as *const () as usize);
     let c_name = c_name.as_c_str();
 
     if let Some(existing) = AnyClass::get(c_name) {
@@ -155,7 +155,7 @@ pub unsafe fn new_message_handler(
 
 /// Get or register the BeamerNavigationDelegate ObjC class of this binary.
 fn navigation_delegate_class() -> &'static AnyClass {
-    let c_name = class_name("BeamerNavigationDelegate", did_finish_navigation as usize);
+    let c_name = class_name("BeamerNavigationDelegate", did_finish_navigation as *const () as usize);
     let c_name = c_name.as_c_str();
 
     if let Some(existing) = AnyClass::get(c_name) {

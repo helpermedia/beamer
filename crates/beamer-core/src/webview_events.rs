@@ -152,7 +152,7 @@ impl WebViewEvents {
         let mut pending = self.pending();
         let editors = &self.shared.editors;
         let open = editors
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| Some(open.saturating_sub(1)))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |open| Some(open.saturating_sub(1)))
             .unwrap_or(0);
         if open <= 1 {
             pending.clear();

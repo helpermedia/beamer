@@ -37,12 +37,12 @@ mod tests {
         // Two binaries have their implementations at different addresses, like
         // two functions of one binary.
         assert_ne!(
-            class_name("BeamerExample", first as usize),
-            class_name("BeamerExample", second as usize)
+            class_name("BeamerExample", first as *const () as usize),
+            class_name("BeamerExample", second as *const () as usize)
         );
         assert_eq!(
-            class_name("BeamerExample", first as usize),
-            class_name("BeamerExample", first as usize)
+            class_name("BeamerExample", first as *const () as usize),
+            class_name("BeamerExample", first as *const () as usize)
         );
     }
 }

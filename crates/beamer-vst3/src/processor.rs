@@ -1211,14 +1211,8 @@ where
                 BusDirections_::kOutput => self.output_bus_count() as i32,
                 _ => 0,
             },
-            MediaTypes_::kEvent => {
-                // Return 1 event bus in each direction if plugin wants MIDI
-                if self.wants_midi() {
-                    1
-                } else {
-                    0
-                }
-            }
+            // One event bus in each direction if the plugin wants MIDI.
+            MediaTypes_::kEvent if self.wants_midi() => 1,
             _ => 0,
         }
     }

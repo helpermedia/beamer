@@ -436,10 +436,8 @@ mod tests {
 
     #[test]
     fn preset_info_is_clone() {
-        let info = PresetInfo { name: "Test" };
-        // Use Clone::clone explicitly to test Clone trait, not Copy
-        let info2 = Clone::clone(&info);
-        assert_eq!(info.name, info2.name);
+        fn is_clone<T: Clone>() {}
+        is_clone::<PresetInfo>();
     }
 
     // =========================================================================
