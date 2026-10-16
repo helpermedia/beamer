@@ -228,6 +228,21 @@ auval -v aufx gain Bmer
 The type is `aufx` for effects, `aumu` for instruments, `aumi` for MIDI
 effects and `augn` for generators.
 
+The app extension of an AUv3 names a framework with its code
+(`AudioComponentBundle` in its `Info.plist`), so `auval` loads the AUv3
+into the `auval` process, as it does an AUv2. `-strict` turns warnings
+into failures and `-stress 20` adds a multi-threaded stress test over 20
+seconds of simulated audio. For an AUv3 instrument loaded this way, the
+stress test never finishes: macOS hands the render block an event list in
+which a MIDI event points to itself. AUv3 instruments of other vendors
+hang the same way, so this is not a bug in the plugin. Effects pass. Run
+the stress test of an AUv3 instrument out of process with `-oop`, here
+for the drums example:
+
+```bash
+auval -strict -stress 20 -v aumu drum Bmer -oop
+```
+
 [pluginval](https://github.com/Tracktion/pluginval) validates VST3 plugins
 and AUv2 components. Its command-line binary is inside the app bundle (the
 example assumes the app is in `/Applications`):
