@@ -799,7 +799,11 @@ static void beamer_auv3_on_loaded(void* context) {
         NSString* name = [NSString stringWithUTF8String:info.name];
         AudioUnitParameterUnit auUnit = (AudioUnitParameterUnit)info.unit_type;
 
-        AudioUnitParameterOptions flags = kAudioUnitParameterFlag_IsReadable;
+        // The plugin formats and parses every value, so a host that uses the
+        // v2 API asks it for the text of a value instead of formatting the
+        // number itself.
+        AudioUnitParameterOptions flags = kAudioUnitParameterFlag_IsReadable |
+                                          kAudioUnitParameterFlag_ValuesHaveStrings;
         if (!(info.flags & BeamerAuParameterFlagReadOnly)) {
             flags |= kAudioUnitParameterFlag_IsWritable;
         }

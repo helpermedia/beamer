@@ -922,9 +922,15 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
 
                     // Copy name (CFString)
                     auInfo->cfNameString = CFStringCreateWithCString(NULL, bInfo.name, kCFStringEncodingUTF8);
+                    // The plugin formats and parses every value, so a host
+                    // asks it for the text of a value and for the value of
+                    // a text instead of formatting the number itself.
                     auInfo->flags = kAudioUnitParameterFlag_HasCFNameString |
                                     kAudioUnitParameterFlag_IsReadable |
-                                    kAudioUnitParameterFlag_IsWritable;
+                                    kAudioUnitParameterFlag_ValuesHaveStrings;
+                    if (!(bInfo.flags & BeamerAuParameterFlagReadOnly)) {
+                        auInfo->flags |= kAudioUnitParameterFlag_IsWritable;
+                    }
 
                     if (bInfo.flags & BeamerAuParameterFlagAutomatable) {
                         auInfo->flags |= kAudioUnitParameterFlag_IsHighResolution;
@@ -938,11 +944,6 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                     auInfo->minValue = bInfo.min_value;
                     auInfo->maxValue = bInfo.max_value;
                     auInfo->defaultValue = bInfo.default_value;
-
-                    // Indexed parameters have a string for every value.
-                    if (bInfo.unit_type == kAudioUnitParameterUnit_Indexed && bInfo.step_count > 0) {
-                        auInfo->flags |= kAudioUnitParameterFlag_ValuesHaveStrings;
-                    }
 
                     // Copy unit label if present
                     if (bInfo.units[0] != '\0') {
