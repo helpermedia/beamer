@@ -29,9 +29,8 @@ Simple stereo gain effect with minimal complexity.
 | **Gain** | Volume adjustment from -60 dB (silent) to +12 dB (boost). 0 dB = no change. |
 
 **Demonstrates:**
-- `Descriptor` → `Processor` lifecycle via `prepare()`
-- `#[derive(Parameters)]` with declarative attributes
-- `#[derive(HasParameters)]` for parameters access boilerplate
+- `Model` → `Processor` lifecycle via `prepare()`
+- `#[beamer::model]` with declarative attributes
 - `()` setup for plugins without sample-rate-dependent state
 - `FloatParameter` with dB scaling
 - Generic f32/f64 processing via `Sample` trait
@@ -148,7 +147,7 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 
 | Group | Parameter | Description |
 |-------|-----------|-------------|
-| **Oscillator** | Waveform | Oscillator shape: Sine, Saw, Square, or Triangle |
+| **Oscillator** | Waveform | Oscillator shape: Sine, Saw, Square or Triangle |
 | **Envelope** | Attack | Envelope attack time (1-2000ms) |
 | | Decay | Envelope decay time (1-2000ms) |
 | | Sustain | Envelope sustain level (0-100%) |
@@ -270,7 +269,7 @@ MIDI instrument that transforms notes and CC messages.
 
 **Demonstrates:**
 - `SampleRate` setup for parameter smoothing
-- Nested parameter groups with `#[nested(group = "...")]`
+- Nested groups with `#[beamer::group]` and `#[nested(group = "...")]`
 - `EnumParameter` for discrete choices
 - `IntParameter` for note/CC selection
 - `BoolParameter` for enable toggles
@@ -296,7 +295,7 @@ Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
 | **Pan law** | Constant power or linear, set in the web UI and saved with the project |
 
 **Demonstrates:**
-- `on_invoke()` and `on_event()` on the descriptor for bidirectional IPC between Rust and JavaScript
+- `on_invoke()` and `on_event()` on the model for bidirectional IPC between Rust and JavaScript
 - `WebViewEvents` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI through `__BEAMER__.state`, read on the audio thread with a `HandoverReader`, saved with the plugin state

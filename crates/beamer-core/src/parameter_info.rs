@@ -128,7 +128,7 @@ pub struct ParameterInfo {
     /// Unique parameter identifier.
     pub id: ParameterId,
     /// The id of the parameter as text: the `id` of `#[parameter(id = "...")]`,
-    /// behind the field names of the nested structs the parameter sits in
+    /// behind the field names of the nested groups the parameter sits in
     /// (`"gain"`, `"osc1/attack"`). Empty for parameters defined without a
     /// string id.
     pub string_id: Cow<'static, str>,
@@ -234,12 +234,12 @@ impl ParameterInfo {
     /// ```ignore
     /// const PARAM_BYPASS: u32 = 0;
     ///
-    /// struct MyParameters {
+    /// struct MyModel {
     ///     bypass: AtomicU64,
     ///     bypass_info: ParameterInfo,
     /// }
     ///
-    /// impl MyParameters {
+    /// impl MyModel {
     ///     fn new() -> Self {
     ///         Self {
     ///             bypass: AtomicU64::new(0.0f64.to_bits()),

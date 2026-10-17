@@ -534,7 +534,7 @@ mod tests {
         );
     }
 
-    /// Two `State` fields, one of them in a nested struct, and no
+    /// Two `State` fields, one of them in a nested group, and no
     /// parameters.
     #[derive(Default)]
     struct TwoStates {

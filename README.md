@@ -11,7 +11,7 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 
 **Built on Rust's guarantees.** Where most plugin frameworks use C++, Beamer uses Rust. Memory and threading bugs become compile-time errors, not runtime crashes.
 
-**Derive macros do the heavy lifting.** `#[derive(Parameters)]` generates host integration, state persistence, DAW automation and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
+**Macros do the heavy lifting.** `#[beamer::model]` generates host integration, state persistence, DAW automation and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
 
 **Clean separation of concerns.** DSP code stays in safe Rust while the WebView architecture enables modern interfaces with HTML, CSS and JavaScript. Plugin configuration lives in TOML files. Beamer bridges them together and handles plugin format complexity.
 
@@ -20,41 +20,35 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 ```rust
 use beamer::prelude::*;
 
-// 1. Parameters - pure data with derive macros
-#[derive(Parameters)]
-struct GainParameters {
+// 1. Model - what every thread shares. It holds the parameters,
+//    describes the plugin to the host and lives as long as the plugin
+//    instance.
+#[beamer::export]
+#[beamer::model]
+struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParameter,
 }
 
-// 2. Descriptor - holds the parameters and describes the plugin to the host.
-//    It lives as long as the plugin instance.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-struct GainDescriptor {
-    #[parameters]
-    parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
 
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: Arc::clone(&self.parameters) }
+    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+        GainProcessor { model: self }
     }
 }
 
-// 3. Processor - what the audio thread owns. It shares the parameters
-//    with the host and the UI.
+// 2. Processor - what the audio thread owns. It shares the model with the
+//    host and the UI.
 struct GainProcessor {
-    parameters: Arc<GainParameters>,
+    model: Arc<GainModel>,
 }
 
 impl Processor for GainProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
+        let gain = self.model.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -79,7 +73,7 @@ log_level = "warn"
 
 ## Plugin Structure
 
-Beamer plugins use three structs: **Parameters** (data, shared by all threads), **Descriptor** (the plugin as the host sees it) and **Processor** (audio and MIDI). The Descriptor lives as long as the plugin instance. When the sample rate becomes available, the framework calls `prepare(setup)` on it to create the Processor, ensuring audio buffers are properly allocated before `process()` runs.
+A Beamer plugin is two structs: the **Model**, which every thread shares, and the **Processor**, which the audio thread owns. The model holds the parameters, the `State` fields that are saved with them and everything else the host, the UI and the audio thread use. The framework keeps it in one `Arc` for the life of the plugin instance. When the audio setup is known, the framework calls `prepare(setup)` on the model to create the Processor, ensuring audio buffers are properly allocated before `process()` runs. When the setup changes, it drops the Processor and prepares a new one. Nested groups of parameters are structs marked with `#[beamer::group]`.
 
 See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
@@ -113,7 +107,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 ## Features
 
 - **Multi-format** - AU (macOS) and VST3 (macOS; Windows in progress)
-- **Declarative parameters** - `#[derive(Parameters)]` with attributes for units, smoothing and more
+- **Declarative parameters** - `#[beamer::model]` with attributes for units, smoothing and more
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
@@ -146,7 +140,7 @@ Contributions for testing and fixes on Windows are welcome.
 |-------|-------------|
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
-| `beamer-macros` | Derive macros for parameters, `#[beamer::export]` for config and presets |
+| `beamer-macros` | `#[beamer::model]` and `#[beamer::group]` for the model, `#[derive(EnumParameter)]` for enum parameters, `#[beamer::export]` for config and presets |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-vst3` | VST3 wrapper implementation |

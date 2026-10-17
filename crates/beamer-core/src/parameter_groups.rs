@@ -72,7 +72,7 @@ impl GroupInfo {
 /// Provides information about parameter groups for DAW display.
 ///
 /// Group IDs are assigned dynamically at runtime to support deeply nested groups
-/// where the same nested struct type can appear in multiple contexts with
+/// where the same nested group type can appear in multiple contexts with
 /// different parent groups.
 ///
 /// A host may ask for the groups from one of its own threads while audio

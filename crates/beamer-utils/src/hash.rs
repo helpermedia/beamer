@@ -39,8 +39,8 @@
 ///
 /// # Collision Handling
 ///
-/// Two different strings can have the same hash. The derive macro
-/// (`#[beamer::model]`) reports that at compile time for the
+/// Two different strings can have the same hash. `#[beamer::model]`
+/// and `#[beamer::group]` report that at compile time for the
 /// parameter ids of one struct, and the format wrappers check the ids of
 /// the whole model when a plugin instance is created.
 ///

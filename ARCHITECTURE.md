@@ -110,7 +110,7 @@ Both formats share the same core traits and processing logic:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       beamer-core                               │
-│  • Descriptor trait (the plugin as the host sees it)            │
+│  • Model trait (what every thread shares)                       │
 │  • Processor trait (created for an audio configuration)         │
 │  • Buffer, AuxiliaryBuffers, MidiBuffer                         │
 │  • Parameters trait, ParameterStore                             │
@@ -139,7 +139,7 @@ Both formats share the same core traits and processing logic:
 
 A host saves and loads the state, asks for latency and tail and resets a plugin from its own threads while the audio thread processes. While audio runs, the processor belongs to the audio thread, so the wrappers never hand it to another thread:
 
-- The state is the parameter struct. Parameter values are atomic and `State` fields are replaced as a whole, so the wrappers save and load it through a shared reference.
+- The state is the model's. Parameter values are atomic and `State` fields are replaced as a whole, so the wrappers save and load it through a shared reference.
 - The audio thread publishes latency and tail for every block. Host threads read the published values.
 - A request that belongs to the audio thread (a processor reset, the smoother reset after a state load) is a flag the audio thread acts on at the start of its next block.
 
@@ -152,7 +152,7 @@ beamer/
 ├── crates/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
-│   ├── beamer-macros/       # Proc macros (#[beamer::export], #[derive(Parameters)], #[derive(EnumParameter)], #[derive(HasParameters)])
+│   ├── beamer-macros/       # Proc macros (#[beamer::export], #[beamer::model], #[beamer::group], #[derive(EnumParameter)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
 │   ├── beamer-vst3/         # VST3 wrapper implementation
@@ -174,8 +174,8 @@ beamer/
 | Crate | Purpose |
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
-| `beamer-core` | Platform-agnostic traits (`Descriptor`, `Processor`, `HasParameters`), buffer types, MIDI types, `Config` |
-| `beamer-macros` | Derive macros: `#[derive(Parameters)]`, `#[derive(EnumParameter)]`, `#[derive(HasParameters)]`. Attribute macro: `#[beamer::export]` (reads Config.toml/Presets.toml) |
+| `beamer-core` | Platform-agnostic traits (`Model`, `Processor`, `ModelFields`), buffer types, MIDI types, `Config` |
+| `beamer-macros` | Attribute macros: `#[beamer::model]`, `#[beamer::group]` and `#[beamer::export]` (reads Config.toml/Presets.toml). Derive macro: `#[derive(EnumParameter)]` |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
@@ -189,29 +189,30 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│          Descriptor (lives as long as the plugin instance)      │
-│  • Created via Default::default()                               │
-│  • Holds the parameters (in an Arc) and bus configuration       │
-│  • No sample rate or audio state                                │
+│          Model (lives as long as the plugin instance)           │
+│  • Created via Default::default(), kept in one Arc              │
+│  • Holds the parameters, State fields and the web UI events     │
+│  • Answers the host about buses and MIDI                        │
+│  • No audio state                                               │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
-                                  │ descriptor.prepare(setup)
-                                  │ [setupProcessing]
+                                  │ model.prepare(setup), with a
+                                  │ clone of the Arc [setupProcessing]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Processor (Prepared)                          │
 │  • Created with real sample rate and buffer size                │
-│  • Shares the parameters with the Descriptor                    │
+│  • Shares the model through its own Arc                         │
 │  • Allocates DSP state (delay buffers, filter coefficients)     │
 │  • Ready for process() calls                                    │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                                   │ dropped
-                                  │ [sample rate change, resources released]
+                                  │ [audio setup change, resources released]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│          Descriptor (still the same one)                        │
-│  • Parameters untouched                                         │
+│          Model (still the same one)                             │
+│  • Parameters and State fields untouched                        │
 │  • DSP state gone with the Processor                            │
 │  • Ready for prepare() with new setup                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -237,21 +238,20 @@ impl Processor for DelayProcessor {
 }
 ```
 
-### Three-Struct Pattern
+### Two-Struct Pattern
 
-Beamer plugins use three structs for clear separation of concerns:
+A Beamer plugin is two structs: the **Model**, which every thread shares, and the **Processor**, which the audio thread owns.
 
-1. **`*Parameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-2. **`*Descriptor`** - Plugin descriptor that holds the parameters in an `Arc` and implements `Descriptor`
-3. **`*Processor`** - Runtime processor created by `prepare()`, implements `Processor` and shares the parameters
+1. **`*Model`** - Marked with `#[beamer::model]` and implementing `Model`: the parameters, `State` fields and everything else the threads share, how the host sees the plugin (buses, MIDI) and how it creates the processor
+2. **`*Processor`** - Created by `prepare()`, implements `Processor` and shares the model
 
-See [Three-Struct Pattern](docs/REFERENCE.md#three-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#parameters) for the parameter attributes.
+Nested groups of parameters are structs marked with `#[beamer::group]`. See [Two-Struct Pattern](docs/REFERENCE.md#two-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#parameters) for the parameter attributes.
 
 **Plugins with DSP state** add fields to the Processor:
 
 ```rust
 struct DelayProcessor {
-    parameters: Arc<DelayParameters>,
+    model: Arc<DelayModel>,
     sample_rate: f64,    // Always valid
     buffer: Vec<f64>,    // Always allocated
 }
@@ -259,51 +259,44 @@ struct DelayProcessor {
 
 ### Setup Types
 
-`prepare()` receives only what the plugin asks for through its `Setup` type: `()` for stateless plugins, `SampleRate` for most others or a tuple such as `(SampleRate, MaxBufferSize)`. See [Descriptor Trait](docs/REFERENCE.md#descriptor-trait) for all setup types.
+`prepare()` receives only what the plugin asks for through its `Setup` type: `()` for stateless plugins, `SampleRate` for most others or a tuple such as `(SampleRate, MaxBufferSize)`. See [Model Trait](docs/REFERENCE.md#model-trait) for all setup types.
 
 ### Trait Responsibilities
 
 | Trait | Lives | Responsibilities |
 |-------|-------|------------------|
-| `HasParameters` | With the Descriptor | Parameter access (`parameters()` returns the `Arc`) - use `#[derive(HasParameters)]` |
-| `Descriptor` | As long as the plugin instance | Bus configuration, MIDI mapping, creating a Processor with `prepare()` |
+| `Model` | As long as the plugin instance | Bus configuration, MIDI mapping, answers to the web UI, creating a Processor with `prepare()` |
+| `ModelFields`, `Parameters`, `ParameterStore`, `ParameterGroups`, `Default` | With the model | Generated by `#[beamer::model]`: parameter access, groups, `State` fields, saving and loading plus `Default` (unless `no_default`) |
 | `Processor` | While audio resources are allocated | DSP processing, MIDI processing |
 
-### Shared Parameters
+### The Shared Model
 
-The parameters are one struct in an `Arc`. The Descriptor holds it for the life of the plugin instance and hands a clone of the `Arc` to every Processor it creates:
+The model is one struct in an `Arc`. The framework holds it for the life of the plugin instance and hands a clone of the `Arc` to every Processor that `prepare()` creates:
 
 ```
-Descriptor                       Processor
+Framework                        Processor
 ┌─────────────────────┐        ┌─────────────────────┐
-│ Arc<Parameters> ────┼───┬────┼─ Arc<Parameters>    │
+│ Arc<Model> ─────────┼───┬────┼─ Arc<Model>         │
 └─────────────────────┘   │    └─────────────────────┘
                           ▼
                  ┌─────────────────┐
-                 │   Parameters    │  also used by the host
-                 │   (atomics)     │  and the UI
+                 │      Model      │  also used by the host
+                 │   (atomics,     │  and the UI
+                 │  State fields)  │
                  └─────────────────┘
 ```
 
 **Why shared?**
 
-A host reads and sets parameters, saves and loads state and opens the editor from its own threads while the audio thread processes. The parameters are therefore used by several threads at the same time whatever the plugin does, and the type says so:
+A host reads and sets parameters, saves and loads state and opens the editor from its own threads while the audio thread processes. The model is therefore used by several threads at the same time whatever the plugin does, and the type says so:
 
-1. **One place**: The parameters never move. What the host sets is what the audio thread reads, before and after `prepare()`.
-2. **No locks on the audio thread**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.parameters.gain.get()`.
-3. **A lasting Descriptor**: Because `prepare(&self)` does not consume it, the Descriptor keeps answering the host (buses, MIDI mapping) while audio runs. Host threads may read it at the same time, so a Descriptor is `Sync`.
-4. **Clear roles**: What other threads need to see lives in the parameter struct. Everything else in the Processor belongs to the audio thread alone.
-5. **Room for more than numbers**: Data that is not a parameter (a sample path, a table, a setting) is a `State` or `Handover` field of the same struct. Host and UI threads replace such a value as a whole, and the audio thread reads it through a reader without waiting.
+1. **One place**: The model never moves. What the host sets is what the audio thread reads, before and after `prepare()`.
+2. **No locks on the audio thread**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.model.gain.get()`.
+3. **A lasting model**: `prepare()` gets a clone of the `Arc`, so the model keeps answering the host (buses, MIDI mapping) while audio runs. Host threads may use it at the same time, so every method of `Model` other than `prepare()` takes `&self` and a model is `Sync`.
+4. **Clear roles**: What other threads need to see lives in the model. Everything else in the Processor belongs to the audio thread alone.
+5. **Room for more than numbers**: Data that is not a parameter (a sample path, a table, a setting) is a `State` or `Handover` field of the model. Host and UI threads replace such a value as a whole, and the audio thread reads it through a reader without waiting.
 
 Smoothing methods take `&self` like the value accessors. They are meant for the audio thread: a second thread advancing a smoother at the same time is memory-safe but disturbs the ramp.
-
-**The `HasParameters` trait:**
-
-The Descriptor implements `HasParameters`, through which the framework reaches the parameters before and after `prepare()`:
-- Before `prepare()`: Host queries parameter info, user adjusts values
-- After `prepare()`: Host automates parameters during playback
-
-Use `#[derive(HasParameters)]` with a `#[parameters]` field annotation on the Descriptor. The field must be an `Arc` of the parameter struct. The Processor needs no derive: it keeps the `Arc` it got in `prepare()` as a plain field.
 
 ---
 
@@ -325,8 +318,7 @@ Plugin Crate Root
 ├── Presets.toml             # Optional: factory presets
 └── src/
     └── lib.rs
-        ├── Parameters struct
-        ├── Descriptor struct with #[beamer::export]
+        ├── Model struct with #[beamer::export] and #[beamer::model]
         └── Processor struct
 ```
 
@@ -344,7 +336,7 @@ The `#[beamer::export]` macro generates:
 
 1. **CONFIG static**: `pub static CONFIG: Config = Config::new(...).with_vendor(...).with_version(...)`
 2. **Presets implementation** (if Presets.toml exists): Implements `FactoryPresets` trait
-3. **Plugin exports**: Calls `export_plugin!(CONFIG, DescriptorStruct)` or `export_plugin!(CONFIG, DescriptorStruct, PresetsStruct)`
+3. **Plugin exports**: Calls `export_plugin!(CONFIG, ModelStruct)` or `export_plugin!(CONFIG, ModelStruct, PresetsStruct)`
 
 The macro uses `include_str!()` to track file dependencies, so Cargo automatically rebuilds when Config.toml or Presets.toml changes.
 
@@ -397,7 +389,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
-- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - Descriptor and Processor of an instance, prepare
+- [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - Model and Processor of an instance, prepare
 - [transport.rs](crates/beamer-au/src/transport.rs) - Host transport conversion
 
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
@@ -416,7 +408,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
 
 **State**: NSDictionary with NSData
-- The state is the parameter struct with its parameters and `State` fields (`ModelFields::save_state`/`load_state`), prepared or not
+- The state is the model with its parameters and `State` fields (`ModelFields::save_state`/`load_state`), prepared or not
 - Saved and loaded without the plugin mutex, also while audio renders
 - Compatible with VST3 format
 
@@ -447,7 +439,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - `setParamNormalized()` - Host sets parameter value
 - `getParamNormalized()` - Host reads parameter value
 
-**State**: Binary blob via `IBStream`, the same bytes as in the AU: the parameter struct with its parameters and `State` fields
+**State**: Binary blob via `IBStream`, the same bytes as in the AU: the model with its parameters and `State` fields
 
 ### Comparison Table
 
@@ -564,11 +556,11 @@ sysex_buffer_size = 4096 # Default: 512 bytes
 The buffer allocation flow ensures all memory is reserved before audio processing begins:
 
 ```
-Plugin Load (creates the Descriptor)
+Plugin Load (creates the Model)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ validate_bus_limits(descriptor)                             │
+│ validate_bus_limits(model)                                  │
 │   • Check declared buses ≤ MAX_BUSES                        │
 │   • Check declared channels per bus ≤ MAX_CHANNELS          │
 │   • Return error if exceeded (plugin fails to load)         │
@@ -585,8 +577,8 @@ Plugin Load (creates the Descriptor)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
-│   • descriptor.prepare(setup) → Processor                   │
-│     - Descriptor stays, Processor created                   │
+│   • model.prepare(setup) → Processor                        │
+│     - Model stays, Processor created                        │
 │     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate()                        │
 │     - input_ptrs.reserve(main_channels)                     │
@@ -607,13 +599,13 @@ Plugin Load (creates the Descriptor)
 │   • Call Processor::process()                               │
 └─────────────────────────────────────────────────────────────┘
     │
-    ▼ (on sample rate change)
+    ▼ (on audio setup change)
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing() with new setup                            │
 │   • The Processor is dropped                                │
 │     - Parameters untouched, DSP state discarded             │
-│   • descriptor.prepare(new_setup) → Processor               │
-│     - DSP state reallocated for new sample rate             │
+│   • model.prepare(new_setup) → Processor                    │
+│     - DSP state reallocated for the new setup               │
 └─────────────────────────────────────────────────────────────┘
 ```
 

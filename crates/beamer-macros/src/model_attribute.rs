@@ -1,6 +1,6 @@
 //! The `#[beamer::model]` and `#[beamer::group]` attributes.
 //!
-//! Both generate the same code as the derive: `Parameters`, `ModelFields`,
+//! Both generate the same code: `Parameters`, `ModelFields`,
 //! `ParameterStore`, `ParameterGroups` and `Default`. They differ in what
 //! they say about the struct: `model` marks the model of a plugin, `group`
 //! a nested part of it that the host shows as a group.

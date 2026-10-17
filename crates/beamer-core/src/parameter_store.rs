@@ -47,12 +47,12 @@ use crate::types::{ParameterId, ParameterValue};
 /// use std::sync::atomic::{AtomicU64, Ordering};
 /// use beamer_core::{ParameterStore, ParameterInfo, ParameterId, ParameterValue};
 ///
-/// pub struct MyParameters {
+/// pub struct MyModel {
 ///     gain: AtomicU64,
 ///     gain_info: ParameterInfo,
 /// }
 ///
-/// impl ParameterStore for MyParameters {
+/// impl ParameterStore for MyModel {
 ///     fn count(&self) -> usize { 1 }
 ///
 ///     fn info(&self, index: usize) -> Option<&ParameterInfo> {

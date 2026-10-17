@@ -21,12 +21,12 @@ use crate::webview_events::WebViewEvents;
 /// it.
 ///
 /// `#[beamer::model]` and `#[beamer::group]` generate this for a model and each of its
-/// nested structs. A hand-written [`Parameters`] implementation adds an
-/// empty `impl ModelFields for MyParameters {}`: the defaults save and load
+/// nested groups. A hand-written model or group adds an empty
+/// `impl ModelFields for MyModel {}`: the defaults save and load
 /// its parameters and report no `State` fields and no event queue.
 pub trait ModelFields: Parameters {
     /// The plugin's queue of events for the web UI: a [`WebViewEvents`]
-    /// field of this struct, or else the first one of a nested struct in
+    /// field of this struct, or else the first one of a nested group in
     /// field order.
     ///
     /// The format wrappers deliver what is emitted into it while an editor
@@ -37,7 +37,7 @@ pub trait ModelFields: Parameters {
     }
 
     /// A number that changes whenever a `State` field of the plugin is set:
-    /// the sum of their generations, nested structs included.
+    /// the sum of their generations, nested groups included.
     ///
     /// A format wrapper compares it with the value it saw last to tell the
     /// host that the plugin state changed. Parameters are not part of it:
@@ -49,11 +49,11 @@ pub trait ModelFields: Parameters {
     }
 
     /// Call `visit` for every `State` field with its path: the `id` of its
-    /// attribute, under the field names of the nested structs it sits in,
+    /// attribute, under the field names of the nested groups it sits in,
     /// as in a saved state (`"zoom"`, `"layer/sample"`).
     ///
     /// A web UI reaches the `State` fields through it. Not for the audio
-    /// thread: the path of a field in a nested struct is built as a
+    /// thread: the path of a field in a nested group is built as a
     /// `String`. `#[beamer::model]` and `#[beamer::group]` generate it; the default is for
     /// structs without `State` fields.
     fn for_each_state(&self, _visit: &mut dyn FnMut(&str, &dyn SavedState)) {}
@@ -65,7 +65,7 @@ pub trait ModelFields: Parameters {
     /// Add the entries of this struct to a state that is being saved.
     ///
     /// `#[beamer::model]` and `#[beamer::group]` generate this: every field under its id,
-    /// with the entries of a nested struct under the name of its field.
+    /// with the entries of a nested group under the name of its field.
     /// `prefix` is the path of this struct, empty for the root.
     ///
     /// A host may save the state from one of its own threads while audio

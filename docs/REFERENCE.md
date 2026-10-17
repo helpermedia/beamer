@@ -43,7 +43,7 @@ log_level = "warn"
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | String | Plugin name displayed in DAW |
-| `category` | String | Plugin type: `"effect"`, `"instrument"`, `"midi_effect"`, or `"generator"` |
+| `category` | String | Plugin type: `"effect"`, `"instrument"`, `"midi_effect"` or `"generator"` |
 | `manufacturer_code` | String | 4-character manufacturer code (e.g., `"Myco"`) |
 | `plugin_code` | String | 4-character plugin code (e.g., `"mypg"`) |
 
@@ -97,28 +97,29 @@ or later with `/usr/bin/log show --last 1h --predicate 'subsystem == "com.beamer
 
 Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread, and a plugin's `process()` should not log either.
 
-### Three-Struct Pattern
+### Two-Struct Pattern
 
-Beamer plugins use three structs for clear separation of concerns:
+A Beamer plugin is two structs: the **Model**, which every thread shares, and the **Processor**, which the audio thread owns.
 
-| Struct | Derive | Purpose |
-|--------|--------|---------|
-| `*Parameters` | `#[derive(Parameters)]` | Pure parameter definitions with declarative attributes |
-| `*Descriptor` | `#[derive(Default, HasParameters)]` | Holds the parameters in an `Arc` and describes the plugin to the host, for as long as the plugin instance lives |
-| `*Processor` | none | DSP logic and state, created by `prepare()`, shares the parameters |
+| Struct | Marked with | Purpose |
+|--------|-------------|---------|
+| `*Model` | `#[beamer::model]`, `impl Model` | The parameters, `State` fields and everything else the threads share. Describes the plugin to the host and creates the processor, for as long as the plugin instance lives |
+| `*Processor` | `impl Processor` | DSP logic and state, created by `prepare()`, shares the model |
+
+A nested group of parameters is a struct marked with `#[beamer::group]` (see [Nested Parameter Groups](#nested-parameter-groups)).
 
 **Lifecycle:**
 
 ```
-Parameters (data, in an Arc) ◀──holds─── Descriptor (lives as long as the instance)
-        ▲                                   │
-        │                                   ▼ prepare(setup)
-        │                                   │
-        └──────────────shares────────── Processor (ready for audio)
-                                            │
-                                            ▼ dropped when the host releases the audio
-                                              resources or changes the setup
-                                        (the Descriptor creates the next one)
+Model (in one Arc, lives as long as the instance)
+   ▲                 │
+   │                 ▼ prepare(self: Arc<Self>, setup)
+   │                 │
+   └─────shares── Processor (ready for audio)
+                     │
+                     ▼ dropped when the host releases the audio
+                       resources or changes the setup
+                 (the model creates the next one)
 ```
 
 **Minimal Example:**
@@ -126,38 +127,31 @@ Parameters (data, in an Arc) ◀──holds─── Descriptor (lives as long a
 ```rust
 use beamer::prelude::*;
 
-// 1. Parameters - pure data with derive macros
-#[derive(Parameters)]
-pub struct GainParameters {
+// 1. Model - what every thread shares, describes the plugin to the host
+#[beamer::export]
+#[beamer::model]
+pub struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-// 2. Descriptor - holds the parameters, describes the plugin to the host
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: Arc::clone(&self.parameters) }
+    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+        GainProcessor { model: self }
     }
 }
 
-// 3. Processor - owned by the audio thread, shares the parameters
+// 2. Processor - owned by the audio thread, shares the model
 pub struct GainProcessor {
-    parameters: Arc<GainParameters>,
+    model: Arc<GainModel>,
 }
 
 impl Processor for GainProcessor {
     fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
+        let gain = self.model.gain.as_linear() as f32;
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -169,33 +163,35 @@ impl Processor for GainProcessor {
 
 **Plugin Export:**
 
-The `#[beamer::export]` macro on the descriptor struct reads `Config.toml` from the crate root at compile time and generates:
+The `#[beamer::export]` macro on the model struct reads `Config.toml` from the crate root at compile time and generates:
 - `pub static CONFIG: Config` from the TOML configuration
 - Optional factory presets from `Presets.toml` (if present)
 - Format-specific plugin entry points for AU and VST3
 
+`#[beamer::export]` and `#[beamer::model]` can be written in either order.
+
 See [Plugin Configuration](#plugin-configuration) for the Config.toml format and [Factory Presets](#factory-presets) for Presets.toml.
 
-The following sections cover [Parameters](#parameters), the [Descriptor trait](#descriptor-trait) and the [Processor trait](#processor-trait).
+The following sections cover [Parameters](#parameters), the [Model trait](#model-trait) and the [Processor trait](#processor-trait).
 
 ### Parameters
 
-Use `#[derive(Parameters)]` to define plugin parameters with declarative attributes. The macro generates all required trait implementations automatically.
+Declare the parameters as fields of the model with declarative attributes. `#[beamer::model]` generates all required trait implementations automatically.
 
 **Features:**
 - Declarative parameter definitions with compile-time validation
 - Automatic state serialization/deserialization
 - Parameter smoothing to avoid zipper noise during automation
 
-#### Derive Macro
+#### The Model Attribute
 
-**Declarative Style**: Macro generates everything including `Default`:
+The attribute generates everything, including `Default`:
 
 ```rust
 use beamer::prelude::*;
 
-#[derive(Parameters)]
-pub struct GainParameters {
+#[beamer::model]
+pub struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
@@ -203,33 +199,69 @@ pub struct GainParameters {
     pub bypass: BoolParameter,
 }
 
-// No manual new() or Default impl needed - macro generates everything!
+// No manual new() or Default impl needed - the attribute generates everything!
 ```
 
-The `#[derive(Parameters)]` macro generates:
+`#[beamer::model]` (and `#[beamer::group]` for a nested group) generates:
 - `Parameters` trait implementation (count, iter, by_id, groups, smoothing)
 - `ModelFields` trait implementation (`State` fields, the event queue, saving and loading)
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
-- `Default` implementation (when all required attributes are present; `State` fields and fields without an attribute get their own default)
+- `Default` implementation (`State` fields and fields without an attribute get their own default)
 - The ids of every parameter: its path as text and the FNV-1a hash of the path as the number hosts see (see [Parameter Ids](#parameter-ids))
 - Compile-time detection of duplicate ids in a struct
 
-Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework access to the parameters. Its `#[parameters]` field is an `Arc` of the parameter struct.
+The generated `Default` takes every parameter from its attribute, so each one needs what its type needs:
+
+- `FloatParameter`: `name`, `default` and `range`. `kind = "percent"` and `kind = "pan"` bring their own range.
+- `IntParameter`: `name`, `default` and `range`.
+- `BoolParameter`: `name` and `default`, or only `bypass`.
+- `EnumParameter`: `name`. Its default is the variant marked `#[default]`, or else the first.
+
+A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is applied to the fields, so put the whole struct behind the `#[cfg]` instead.
+
+**Writing `Default` yourself:** a model with a plain field whose type has no `Default`, or with a parameter that is set up by hand, uses `#[beamer::model(no_default)]` (or `#[beamer::group(no_default)]`). Your `Default` then has to do what the generated one does after building the value: call `assign_ids("")` to give the parameters their ids and `set_group_ids()` to give them their groups.
+
+```rust
+#[beamer::model(no_default)]
+pub struct SamplerModel {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
+    pub gain: FloatParameter,
+
+    #[nested(group = "Layer")]
+    pub layer: LayerGroup,
+
+    // A handle without a `Default` of its own.
+    pub library: Mutex<SampleLibrary>,
+}
+
+impl Default for SamplerModel {
+    fn default() -> Self {
+        let mut model = Self {
+            gain: FloatParameter::new("Gain", 0.0, 0.0..=1.0),
+            layer: LayerGroup::default(),
+            library: Mutex::new(SampleLibrary::open_default()),
+        };
+        model.assign_ids("");
+        model.set_group_ids();
+        model
+    }
+}
+```
 
 #### Declarative Attributes
 
 | Attribute | Description | Required |
 |-----------|-------------|----------|
 | `id = "..."` | String ID (its path is hashed to u32, see [Parameter Ids](#parameter-ids)) | Yes |
-| `name = "..."` | Display name in DAW | For Default |
-| `default = <value>` | Default value (float, int, or bool) | For Default |
-| `range = start..=end` | Value range | For FloatParameter/IntParameter |
+| `name = "..."` | Display name in DAW | For Default (see above) |
+| `default = <value>` | Default value (float, int or bool) | For Default (see above) |
+| `range = start..=end` | Value range | For Default (see above) |
 | `kind = "..."` | Unit type (see below) | Optional |
-| `group = "..."` | Visual grouping without nested struct | Optional |
+| `group = "..."` | Visual grouping without a nested group | Optional |
 | `short_name = "..."` | Short name for constrained UIs | Optional |
 | `step = <value>` | Discrete step size (FloatParameter only) | Optional |
-| `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`) | Optional |
+| `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`, FloatParameter only) | Optional |
 | `bypass` | Mark as bypass parameter (BoolParameter only) | Optional |
 
 **Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
@@ -237,7 +269,7 @@ Use `#[derive(HasParameters)]` on the Descriptor struct to give the framework ac
 - `db_log` - Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
 - `db_log_offset` - True logarithmic mapping for dB ranges (geometric mean at midpoint)
 
-Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `EnumParameter<E>` with `#[parameter]`, another parameter struct with `#[nested]` and `State<T>` with `#[state]` (see [State Beyond Parameters](#state-beyond-parameters)). A field without an attribute is not a parameter and is not saved.
+Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `EnumParameter<E>` with `#[parameter]`, a `#[beamer::group]` struct with `#[nested]` and `State<T>` with `#[state]` (see [State Beyond Parameters](#state-beyond-parameters)). A field without an attribute is not a parameter and is not saved.
 
 #### Parameter Types
 
@@ -284,14 +316,14 @@ pub enum FilterType {
     Notch, // Uses "Notch" as display name
 }
 
-#[derive(Parameters)]
-pub struct FilterParameters {
+#[beamer::model]
+pub struct FilterModel {
     #[parameter(id = "filter_type", name = "Filter Type")]
     pub filter_type: EnumParameter<FilterType>,
 }
 
 // In DSP code:
-match self.parameters.filter_type.get() {
+match self.model.filter_type.get() {
     FilterType::LowPass => { /* ... */ }
     FilterType::HighPass => { /* ... */ }
     FilterType::BandPass => { /* ... */ }
@@ -393,15 +425,15 @@ The framework sets the host's sample rate on the smoothers before it calls `prep
 If your plugin uses oversampling, set the rate it actually processes at in `prepare()`:
 
 ```rust
-impl Descriptor for MyDescriptor {
+impl Model for MyModel {
     type Setup = SampleRate;
     type Processor = MyProcessor;
 
-    fn prepare(&self, setup: SampleRate) -> MyProcessor {
-        self.parameters.set_sample_rate(setup.hz() * OVERSAMPLING_FACTOR as f64);
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> MyProcessor {
+        self.set_sample_rate(setup.hz() * OVERSAMPLING_FACTOR as f64);
         MyProcessor {
-            parameters: Arc::clone(&self.parameters),
             sample_rate: setup.hz(),
+            model: self,
         }
     }
 }
@@ -413,7 +445,7 @@ impl Descriptor for MyDescriptor {
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
-            let gain = self.gain.tick_smoothed();  // Advances smoother
+            let gain = self.model.gain.tick_smoothed();  // Advances smoother
             *o = *i * gain as f32;
         }
     }
@@ -424,8 +456,8 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    let gain = self.gain.smoothed();  // Current value, no advance
-    self.gain.skip_smoothing(buffer.len());
+    let gain = self.model.gain.smoothed();  // Current value, no advance
+    self.model.gain.skip_smoothing(buffer.len());
 
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
@@ -440,7 +472,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 ```rust
 let mut gain_buffer = [0.0f32; 512];
 let len = buffer.len().min(512);
-self.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
+self.model.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 // Use gain_buffer[i] per sample
 ```
 
@@ -467,11 +499,11 @@ When a host loads a state, the framework calls `reset_smoothing()` on the audio 
 
 #### Flat Parameter Grouping
 
-Use `group = "..."` to organize parameters into logical groups without nested structs:
+Use `group = "..."` to organize parameters into logical groups without nested group structs:
 
 ```rust
-#[derive(Parameters)]
-pub struct SynthesizerParameters {
+#[beamer::model]
+pub struct SynthesizerModel {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
     pub cutoff: FloatParameter,
 
@@ -482,7 +514,7 @@ pub struct SynthesizerParameters {
     pub gain: FloatParameter,
 }
 
-// Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
+// Access is flat: model.cutoff, model.resonance, model.gain
 // Groups appear in DAW automation lanes and parameter lists
 // Note: Most DAWs don't display groups in the main plugin UI
 ```
@@ -492,31 +524,31 @@ pub struct SynthesizerParameters {
 | Feature | Flat (`group = "..."`) | Nested (`#[nested(...)]`) |
 |---------|------------------------|---------------------------|
 | Struct layout | Single struct | Separate struct per group |
-| Access pattern | `parameters.cutoff` | `parameters.filter.cutoff` |
+| Access pattern | `model.cutoff` | `model.filter.cutoff` |
 | Reusability | N/A | Same struct reusable |
 | Complexity | Simple | More structure |
 
-Choose flat grouping for simple organization; nested for reusable parameter collections.
+Choose flat grouping for simple organization; nested groups for reusable parameter collections.
 
 #### Nested Parameter Groups
 
-Use `#[nested]` to organize parameters into separate structs with VST3 units:
+Use `#[nested]` to organize parameters into separate `#[beamer::group]` structs, which hosts show as groups (VST3 units):
 
 ```rust
-#[derive(Parameters)]
-pub struct SynthesizerParameters {
+#[beamer::model]
+pub struct SynthesizerModel {
     #[parameter(id = "master", name = "Master", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub master: FloatParameter,
 
     #[nested(group = "Filter")]
-    pub filter: FilterParameters,
+    pub filter: FilterGroup,
 
     #[nested(group = "Amp Envelope")]
-    pub amp_env: EnvelopeParameters,
+    pub amp_env: EnvelopeGroup,
 }
 
-#[derive(Parameters)]
-pub struct FilterParameters {
+#[beamer::group]
+pub struct FilterGroup {
     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz")]
     pub cutoff: FloatParameter,
 
@@ -524,8 +556,8 @@ pub struct FilterParameters {
     pub resonance: FloatParameter,
 }
 
-#[derive(Parameters)]
-pub struct EnvelopeParameters {
+#[beamer::group]
+pub struct EnvelopeGroup {
     #[parameter(id = "attack", name = "Attack", default = 10.0, range = 0.1..=1000.0, kind = "ms")]
     pub attack: FloatParameter,
 
@@ -550,33 +582,33 @@ The path is used in every place that names a parameter:
 
 | Where | What is used |
 |-------|--------------|
-| Host (automation, parameter list) | The FNV-1a hash of the path, a `u32`. Read it with `parameters.filter.cutoff.id()`. |
+| Host (automation, parameter list) | The FNV-1a hash of the path, a `u32`. Read it with `model.filter.cutoff.id()`. |
 | Saved state | The path |
 | `Presets.toml` | The path as key |
 | WebView | The path as `stringId` |
 
-The same nested struct can therefore be used in several fields. Each use has its own paths and its own host ids:
+The same nested group can therefore be used in several fields. Each use has its own paths and its own host ids:
 
 ```rust
 #[nested(group = "Osc 1")]
-pub osc1: OscParameters,
+pub osc1: OscGroup,
 
 // The same struct with other paths: "osc1/attack" and "osc2/attack".
 #[nested(group = "Osc 2")]
-pub osc2: OscParameters,
+pub osc2: OscGroup,
 ```
 
 Paths use the name of the field, not the display name of its group, so renaming a group changes nothing for hosts and saved states. Renaming a field or a parameter id does: a host no longer finds its automation and a saved state no longer finds its value.
 
-The generated `Default` gives all parameters their ids with `assign_ids("")`. A hand-written `Default` of a derived struct calls `assign_ids("")` and `set_group_ids()` itself.
+The generated `Default` gives all parameters their ids with `assign_ids("")`. A hand-written `Default` (with `no_default`) calls `assign_ids("")` and `set_group_ids()` itself.
 
-Two different paths can have the same hash, although it is unlikely. The derive reports it at compile time for two ids in one struct. Across nested structs it shows when a plugin instance is created: the plugin does not load. The error names both paths. It is written to standard error and passed to the `log` crate, which a host does not always show, so the dependable way to see it is a test of the plugin that calls the same check:
+Two different paths can have the same hash, although it is unlikely. `#[beamer::model]` reports it at compile time for two ids in one struct. Across nested groups it shows when a plugin instance is created: the plugin does not load. The error names both paths. It is written to standard error and passed to the `log` crate, which a host does not always show, so the dependable way to see it is a test of the plugin that calls the same check:
 
 ```rust
 #[test]
 fn test_parameter_ids_are_unique() {
-    let parameters = SynthesizerParameters::default();
-    beamer::core::parameter_types::check_unique_ids(&parameters).unwrap();
+    let model = SynthesizerModel::default();
+    beamer::core::parameter_types::check_unique_ids(&model).unwrap();
 }
 ```
 
@@ -586,7 +618,7 @@ The VST3 wrapper also refuses a parameter whose host id is one it uses for its o
 
 #### State Serialization Format
 
-The state of a plugin is the state of its parameter struct. It is saved as a list of entries, one per field, each under a path. All numbers are little-endian:
+The state of a plugin is the state of its model. It is saved as a list of entries, one per field, each under a path. All numbers are little-endian:
 
 ```
 Header:  42 4D 52 53 | version: u32 = 1 | payload length: u32
@@ -613,11 +645,11 @@ The format is defined in one place, `beamer::core::state_format`.
 
 #### State Beyond Parameters
 
-Not everything a plugin has to remember is a number a host can automate: the path of a loaded sample, a table the user drew, a setting of the editor. Such values go into `State` fields of the parameter struct:
+Not everything a plugin has to remember is a number a host can automate: the path of a loaded sample, a table the user drew, a setting of the editor. Such values go into `State` fields of the model:
 
 ```rust
-#[derive(Parameters)]
-pub struct SamplerParameters {
+#[beamer::model]
+pub struct SamplerModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
@@ -632,14 +664,15 @@ The value is set as a whole by host and UI threads and read by the audio thread 
 
 ```rust
 // On a host or UI thread, for example in on_invoke().
-parameters.sample_path.set(String::from("kick.wav"));
-let current: Arc<String> = parameters.sample_path.get();
+model.sample_path.set(String::from("kick.wav"));
+let current: Arc<String> = model.sample_path.get();
 
-// In prepare(): the audio thread's end.
-fn prepare(&self, _: SampleRate) -> SamplerProcessor {
+// In prepare(): the audio thread's end, taken before `self` moves into the
+// processor.
+fn prepare(self: Arc<Self>, _: SampleRate) -> SamplerProcessor {
     SamplerProcessor {
-        parameters: Arc::clone(&self.parameters),
-        sample_path: self.parameters.sample_path.reader(),
+        sample_path: self.sample_path.reader(),
+        model: self,
         // ...
     }
 }
@@ -678,13 +711,13 @@ pub struct Sample {
 
 JSON cannot hold floats that are not finite (NaN, infinity): a value that contains one does not come back from a saved state. A `HashMap` is saved in a different order each time, so use a `BTreeMap` where the saved bytes should be stable.
 
-**Defaults:** `#[derive(Parameters)]` creates a state with `T::default()`. That is also the value it goes back to when a saved state has no entry for it. A struct whose `Default` is written by hand (because a parameter has no declarative attributes) creates its states itself, with `State::new(value)`: that value is then the default. It also initializes its fields without an attribute.
+**Defaults:** the generated `Default` creates a state with `T::default()`. That is also the value it goes back to when a saved state has no entry for it. A model whose `Default` is written by hand (with `no_default`) creates its states itself, with `State::new(value)`: that value is then the default. It also initializes its fields without an attribute.
 
 **Data that is not saved:** A `Handover<T>` is the same hand-over without the saving, for data the plugin derives from its state, such as the decoded audio of a sample. A field without an attribute is not part of the parameters or the saved state, so a `Handover` can sit next to the parameters:
 
 ```rust
-#[derive(Parameters)]
-pub struct SamplerParameters {
+#[beamer::model]
+pub struct SamplerModel {
     // ...
     #[state(id = "sample_path")]
     pub sample_path: State<String>,
@@ -702,7 +735,9 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterStore` (the parameters as the host sees them) and `ModelFields` directly. An empty `impl ModelFields` saves the parameters under their numeric ids. If the struct has `State` fields, override in `ModelFields`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method:
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterGroups` (the group tree; an empty impl is enough without groups), `ParameterStore` (the parameters as the host sees them), `ModelFields` and `Default` directly. An empty `impl ModelFields` saves the parameters under their numeric ids. If the struct has `State` fields, override in `ModelFields`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. A struct with a `WebViewEvents` queue returns it from `webview_events()`.
+
+`ParameterStore` and the metadata it returns:
 
 ```rust
 pub trait ParameterStore: Send + Sync {
@@ -741,12 +776,12 @@ impl ParameterInfo {
 }
 ```
 
-### Descriptor Trait
+### Model Trait
 
-The `Descriptor` trait represents the plugin as the host sees it: parameters, buses and MIDI behavior. A Descriptor is created with the plugin instance and lives as long as the instance does. When the host provides audio setup information, the framework calls `prepare()` on it to create a `Processor`.
+The `Model` trait is implemented by the model struct: what every thread shares, and the plugin as the host sees it (buses and MIDI behavior). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
 
 ```rust
-pub trait Descriptor: HasParameters + Sync + Default {
+pub trait Model: ModelFields + ParameterStore + Default + 'static {
     /// Setup type for prepare() - determines what info is needed
     type Setup: PluginSetup;
 
@@ -756,7 +791,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// Create a processor for the audio setup. Runs on a host thread and may
     /// allocate. The smoothers already have the host's sample rate. Called
     /// again when the setup changes: the previous processor is dropped first.
-    fn prepare(&self, setup: Self::Setup) -> Self::Processor;
+    fn prepare(self: Arc<Self>, setup: Self::Setup) -> Self::Processor;
 
     // Bus configuration (defaults provided). A plugin without audio input,
     // such as most instruments and generators, returns 0 from input_bus_count.
@@ -773,65 +808,27 @@ pub trait Descriptor: HasParameters + Sync + Default {
 
     /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
-}
 
-// HasParameters supertrait provides parameter access
-pub trait HasParameters: Send + 'static {
-    type Parameters: ParameterStore + ParameterGroups + Parameters + Default + 'static;
-    fn parameters(&self) -> &Arc<Self::Parameters>;
+    // MIDI mapping and learn, note expression, keyswitch and MPE methods,
+    // all with defaults (see MIDI Reference).
+
+    /// Answers from the web UI (see WEBVIEW.md).
+    fn on_invoke(&self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+        Err(format!("unknown method: {method}"))
+    }
+    fn on_event(&self, name: &str, data: &serde_json::Value) {}
 }
 ```
 
-`prepare()` takes `&self`, so the Descriptor stays and keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may read it at the same time: a Descriptor is `Sync`. Every method takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the parameters, an atomic or a `Mutex`.
+`#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example).
 
-**HasParameters via Derive Macro:** Use `#[derive(HasParameters)]` on the Descriptor struct with a `#[parameters]` field annotation. The field is an `Arc` of the parameter struct, and `prepare()` gives the Processor a clone of it:
-
-```rust
-// 1. Parameters - pure data with derive macros
-#[derive(Parameters)]
-pub struct GainParameters {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    pub gain: FloatParameter,
-}
-
-// 2. Descriptor - holds the parameters, describes the plugin to the host
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
-    type Setup = ();
-    type Processor = GainProcessor;
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: Arc::clone(&self.parameters) }
-    }
-}
-
-// 3. Processor - owned by the audio thread, shares the parameters
-pub struct GainProcessor {
-    parameters: Arc<GainParameters>,
-}
-
-impl Processor for GainProcessor {
-    fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
-        let gain = self.parameters.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
-            }
-        }
-    }
-}
-```
+`prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
 
 **Plugins with DSP state** add fields to the Processor:
 
 ```rust
 pub struct DelayProcessor {
-    parameters: Arc<DelayParameters>,
+    model: Arc<DelayModel>,
     sample_rate: f64, // Always valid
     buffer: Vec<f64>, // Always allocated
     write_pos: usize,
@@ -859,36 +856,36 @@ Compose up to five types using a tuple:
 
 ```rust
 // Simple plugin - no setup needed
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: Arc::clone(&self.parameters) }
+    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+        GainProcessor { model: self }
     }
 }
 
 // Plugin needing sample rate (delays, filters, envelopes)
-impl Descriptor for DelayDescriptor {
+impl Model for DelayModel {
     type Setup = SampleRate;
     type Processor = DelayProcessor;
-    fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
+    fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> DelayProcessor {
         DelayProcessor {
-            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
             /* DSP state... */
+            model: self,
         }
     }
 }
 
 // Plugin needing multiple setup values
-impl Descriptor for FftDescriptor {
+impl Model for FftModel {
     type Setup = (SampleRate, MaxBufferSize);
     type Processor = FftProcessor;
-    fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+    fn prepare(self: Arc<Self>, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
         FftProcessor {
-            parameters: Arc::clone(&self.parameters),
             sample_rate: sr.hz(),
             fft_buffer: vec![0.0; mbs.0],
+            model: self,
         }
     }
 }
@@ -896,7 +893,7 @@ impl Descriptor for FftDescriptor {
 
 ### Processor Trait
 
-The `Processor` trait is what the audio thread owns: ready for real-time audio processing. It is created by `Descriptor::prepare()` and dropped when the host releases the audio resources or changes the setup. What has to outlive a Processor, or be seen by other threads, belongs in the parameters.
+The `Processor` trait is what the audio thread owns: ready for real-time audio processing. It is created by `Model::prepare()` and dropped when the host releases the audio resources or changes the setup. What has to outlive a Processor, or be seen by other threads, belongs in the model.
 
 ```rust
 pub trait Processor: Send + 'static {
@@ -951,27 +948,27 @@ pub trait Processor: Send + 'static {
 }
 ```
 
-**State:** The state a host saves and restores is the state of the parameter struct: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[derive(Parameters)]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods.
+**State:** The state a host saves and restores is the state of the model: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[beamer::model]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods.
 
 **When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
 
 **What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail and requests a reset from its own threads at the same time, and none of that touches the processor:
 
-- The state is read from and written to the parameter values, which are atomic.
+- The state is read from and written to the model, whose parameter values are atomic and whose `State` fields are shared.
 - `latency_samples()`, `tail_samples()` and `bypass_ramp_samples()` are called on the audio thread for every block. The host gets the values of the most recent block, so they must be realtime-safe.
 - An Audio Unit host's reset runs as `set_active(false)` then `set_active(true)` on the audio thread, at the start of the next block. `set_active()` must therefore be realtime-safe: no allocation, no locks.
 
 #### Plugin Lifecycle
 
-The Descriptor lives as long as the plugin instance. A Processor exists while the host has audio set up:
+The model lives as long as the plugin instance. A Processor exists while the host has audio set up:
 
 ```
     ┌───────────────────────────────────────────────┐
-    │  Descriptor (created with the instance)       │
-    │  holds Arc<Parameters>                        │
+    │  Model (created with the instance)            │
+    │  held by the framework in one Arc             │
     └───────┬───────────────────────────────▲───────┘
             │ audio setup arrives           │
-            │ prepare(&self, setup)         │ still there
+            │ prepare(clone of the Arc)     │ still there
             ▼                               │
     ┌─────────────────┐                     │
     │  Processor      │◄── process()        │
@@ -1015,7 +1012,7 @@ gain = 6.0
 - `name` field specifies the display name in the DAW
 - Other fields are parameter IDs with their plain values (e.g., `-6.0` for dB)
 - Parameter IDs match the `id` attribute from `#[parameter(id = "gain", ...)]`
-- A parameter in a nested struct is named by its path, as a quoted key: `"filter/cutoff" = 800.0` (see [Parameter Ids](#parameter-ids))
+- A parameter in a nested group is named by its path, as a quoted key: `"filter/cutoff" = 800.0` (see [Parameter Ids](#parameter-ids))
 
 #### Sparse Presets
 
@@ -1061,7 +1058,7 @@ The `#[beamer::export]` macro generates an implementation of the `FactoryPresets
 
 ```rust
 pub trait FactoryPresets: Send + Sync + 'static {
-    /// The parameter struct this preset collection applies to.
+    /// The type whose parameters the presets set: the plugin's model.
     type Parameters: Parameters;
 
     /// Number of available presets.
@@ -1282,32 +1279,25 @@ pub trait Sample:
 **Pattern: Write generic DSP code once**
 
 ```rust
-// Parameters
-#[derive(Parameters)]
-pub struct GainParameters {
+// Model
+#[beamer::model]
+pub struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-// Descriptor
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
     type Setup = ();
     type Processor = GainProcessor;
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor { parameters: Arc::clone(&self.parameters) }
+    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+        GainProcessor { model: self }
     }
 }
 
 // Processor with generic processing method
 pub struct GainProcessor {
-    parameters: Arc<GainParameters>,
+    model: Arc<GainModel>,
 }
 
 impl GainProcessor {
@@ -1318,7 +1308,7 @@ impl GainProcessor {
         _aux: &mut AuxiliaryBuffers<S>,
         _context: &ProcessContext,
     ) {
-        let gain = S::from_f32(self.parameters.gain.as_linear() as f32);
+        let gain = S::from_f64(self.model.gain.as_linear());
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 *o = *i * gain;
@@ -1344,7 +1334,7 @@ impl Processor for GainProcessor {
 ```
 
 **When to use f64:**
-- Reverbs, delays, or effects with long feedback paths (reduces error accumulation)
+- Reverbs, delays or effects with long feedback paths (reduces error accumulation)
 - Precision EQs or filters
 - Scientific/mastering tools
 - Any plugin where rounding errors matter over long processing chains
@@ -1397,16 +1387,16 @@ impl BypassHandler {
 **Usage:**
 
 ```rust
-// Processor struct holds parameters + DSP state
+// Processor struct holds the model + DSP state
 struct ReverbProcessor {
-    parameters: Arc<ReverbParameters>,
+    model: Arc<ReverbModel>,
     bypass_handler: BypassHandler,
     // ... other reverb state
 }
 
 impl Processor for ReverbProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let is_bypassed = self.parameters.bypass.get();
+        let is_bypassed = self.model.bypass.get();
 
         match self.bypass_handler.begin(is_bypassed) {
             BypassAction::Passthrough => {
@@ -1591,10 +1581,10 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 }
 ```
 
-The plugin says that it processes MIDI on its Descriptor:
+The plugin says that it processes MIDI on its model:
 
 ```rust
-impl Descriptor for MyDescriptor {
+impl Model for MyModel {
     // ...
     fn wants_midi(&self) -> bool { true }
 }
@@ -1659,7 +1649,9 @@ pub struct NoteExpressionValue {
 **INoteExpressionController**: Advertise supported expressions:
 
 ```rust
-impl Descriptor for MyMPESynthesizer{
+impl Model for MyMpeSynthesizerModel {
+    // ...
+
     fn note_expression_count(&self, _bus: i32, _channel: i16) -> usize { 3 }
 
     fn note_expression_info(&self, _bus: i32, _channel: i16, index: usize)
@@ -1701,33 +1693,26 @@ MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
 
 ### MIDI CC Emulation (MidiCcConfig)
 
-VST3 doesn't send MIDI CC, pitch bend, or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
+VST3 doesn't send MIDI CC, pitch bend or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
 
 ```rust
 use beamer::prelude::*;
 
-// 1. Parameters
-#[derive(Parameters)]
-struct SynthesizerParameters {
+// 1. Model
+#[beamer::model]
+struct SynthesizerModel {
     #[parameter(id = "volume", name = "Volume", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub volume: FloatParameter,
 }
 
-// 2. Descriptor
-#[derive(Default, HasParameters)]
-struct SynthesizerDescriptor {
-    #[parameters]
-    parameters: Arc<SynthesizerParameters>,
-}
-
-impl Descriptor for SynthesizerDescriptor {
+impl Model for SynthesizerModel {
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
 
-    fn prepare(&self, sample_rate: SampleRate) -> SynthesizerProcessor {
+    fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
-            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
+            model: self,
         }
     }
 
@@ -1744,9 +1729,9 @@ impl Descriptor for SynthesizerDescriptor {
     }
 }
 
-// 3. Processor
+// 2. Processor
 struct SynthesizerProcessor {
-    parameters: Arc<SynthesizerParameters>,
+    model: Arc<SynthesizerModel>,
     sample_rate: f64,
 }
 
@@ -1823,7 +1808,7 @@ fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> 
 **IMidiLearn:**
 
 ```rust
-// Host threads share the descriptor, so what MIDI learn changes sits
+// Host threads share the model, so what MIDI learn changes sits
 // behind a Mutex (or in a `State` field, which is also saved).
 fn on_midi_learn(&self, _bus: i32, _channel: i16, cc: u8) -> bool {
     let mut learn = self.learn.lock().unwrap();
@@ -1869,7 +1854,7 @@ pub mod rpn {
 **RpnTracker**: Real-time safe decoder:
 
 ```rust
-struct MyPlugin {
+struct MyProcessor {
     rpn_tracker: RpnTracker,
 }
 
@@ -1968,7 +1953,7 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 ## Format Notes
 
-Both formats share the same core traits (`Descriptor`, `Processor`, `Parameters`), so one codebase targets both. The `#[beamer::export]` macro generates the entry points for every format enabled through Cargo features (`au`, `vst3`). Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md), and the design of both wrappers in [ARCHITECTURE.md](../ARCHITECTURE.md#format-specific-implementation-details).
+Both formats share the same core traits (`Model`, `Processor`, `Parameters`), so one codebase targets both. The `#[beamer::export]` macro generates the entry points for every format enabled through Cargo features (`au`, `vst3`). Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md), and the design of both wrappers in [ARCHITECTURE.md](../ARCHITECTURE.md#format-specific-implementation-details).
 
 ### Audio Unit
 

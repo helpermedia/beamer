@@ -210,11 +210,11 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
 /// ```ignore
 /// use beamer_core::parameter_types::{FloatParameter, Parameters, ParameterRef};
 ///
-/// struct MyParameters {
+/// struct MyModel {
 ///     gain: FloatParameter,
 /// }
 ///
-/// impl Parameters for MyParameters {
+/// impl Parameters for MyModel {
 ///     fn count(&self) -> usize { 1 }
 ///
 ///     fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
@@ -245,10 +245,10 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// behind `prefix`, which is the path of this struct in the struct that
     /// holds it (empty for the root). A parameter `attack` in the nested
     /// field `osc1` gets `osc1/attack`. The id that hosts see is the hash
-    /// of that path, so the same nested struct can sit in several fields.
+    /// of that path, so the same nested group can sit in several fields.
     ///
     /// `#[beamer::model]` and `#[beamer::group]` generate this and call it in the `Default`
-    /// it generates. A hand-written `Default` of a derived struct calls
+    /// it generates. A hand-written `Default` (with `no_default`) calls
     /// `assign_ids("")` itself.
     ///
     /// The default does nothing, for hand-written implementations that set

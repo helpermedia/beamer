@@ -45,7 +45,7 @@ struct EditorModel {
     zoom: State<u32>,
 }
 
-/// The same nested struct in two fields.
+/// The same nested group in two fields.
 #[beamer::model]
 struct TwoLayerModel {
     #[nested(group = "Layer A")]
@@ -95,7 +95,7 @@ fn test_state_fields_are_saved_after_the_parameters() {
         b"name",
         &[3, 0, 0, 0],
         b"\"a\"",
-        // The nested struct, under the name of its field.
+        // The nested group, under the name of its field.
         &[1],
         &[11, 0],
         b"layer/level",
@@ -262,7 +262,7 @@ fn test_state_generation_changes_with_state_fields_only() {
     let after_name = model.state_generation();
     assert_ne!(after_name, start);
 
-    // A State field of a nested struct counts too.
+    // A State field of a nested group counts too.
     model.layer.sample.set(kick());
     assert_ne!(model.state_generation(), after_name);
 }

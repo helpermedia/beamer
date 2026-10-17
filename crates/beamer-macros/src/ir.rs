@@ -1,4 +1,4 @@
-//! Intermediate representation for the derive macro.
+//! Intermediate representation for the model and group attributes.
 //!
 //! This module defines the data structures that represent a parsed model
 //! or nested group, after AST parsing but before code generation.
@@ -26,7 +26,7 @@ pub struct ParameterAttributes {
     pub smoothing: Option<SmoothingSpec>,
     /// Whether this is a bypass parameter
     pub bypass: bool,
-    /// Visual grouping for DAW display (without nested struct).
+    /// Visual grouping for DAW display (without a nested group).
     /// Parameters with the same group name will appear together in the DAW.
     pub group: Option<String>,
     /// Step size for discrete float parameters.
@@ -164,7 +164,7 @@ impl SmoothingStyle {
 /// This captures all the information needed to generate the trait implementations.
 #[allow(dead_code)]
 pub struct ModelIR {
-    /// The struct name (e.g., `GainParameters`)
+    /// The struct name (e.g., `GainModel`)
     pub struct_name: syn::Ident,
     /// Generic parameters, if any
     pub generics: syn::Generics,
@@ -235,7 +235,7 @@ impl ParameterFieldIR {
 pub struct NestedFieldIR {
     /// Field name (e.g., `output`)
     pub field_name: syn::Ident,
-    /// Field type (e.g., `OutputParameters`)
+    /// Field type (e.g., `OutputGroup`)
     pub field_type: syn::Type,
     /// Group name from `#[nested(group = "...")]`
     pub group_name: String,

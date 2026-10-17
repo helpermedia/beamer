@@ -74,7 +74,7 @@ fn test_state_has_the_documented_bytes() {
         b"enabled",
         &[8, 0, 0, 0],
         &[0, 0, 0, 0, 0, 0, 0xF0, 0x3F],
-        // A nested struct is saved under the name of its field, not under
+        // A nested group is saved under the name of its field, not under
         // the display name of its group.
         &[1],
         &[13, 0],

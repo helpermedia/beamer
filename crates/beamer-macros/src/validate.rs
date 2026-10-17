@@ -1,4 +1,4 @@
-//! Semantic validation for the derive macro.
+//! Semantic validation for the model and group attributes.
 //!
 //! This module validates the parsed IR for semantic correctness.
 

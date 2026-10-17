@@ -29,7 +29,7 @@
 //!
 //! # Flat Visual Grouping
 //!
-//! Use `group = "..."` for visual grouping in the DAW without nested structs:
+//! Use `group = "..."` for visual grouping in the DAW without nested groups:
 //!
 //! ```ignore
 //! #[beamer::model]
@@ -93,7 +93,7 @@ mod validate;
 /// - `short_name = "..."`: short name for constrained UIs
 /// - `smoothing = "exp:5.0"`: parameter smoothing (exp or linear)
 /// - `bypass`: mark as the bypass parameter (BoolParameter only)
-/// - `group = "..."`: visual grouping in the DAW without a nested struct
+/// - `group = "..."`: visual grouping in the DAW without a nested group
 ///
 /// The generated `Default` takes each parameter from these: every parameter
 /// needs a name, a default and a range (or a kind with one), unless the

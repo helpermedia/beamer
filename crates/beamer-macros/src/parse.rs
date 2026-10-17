@@ -1,4 +1,4 @@
-//! AST parsing for the derive macro.
+//! AST parsing for the model and group attributes.
 //!
 //! This module transforms `syn::DeriveInput` into our intermediate representation.
 
@@ -87,7 +87,7 @@ pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
 /// Parse a single field. A field without one of the attributes is kept as
 /// `FieldIR::Other`.
 fn parse_field(field: &Field) -> syn::Result<FieldIR> {
-    // A field is one thing: a parameter, a nested struct or a state.
+    // A field is one thing: a parameter, a nested group or a state.
     let kinds = field
         .attrs
         .iter()

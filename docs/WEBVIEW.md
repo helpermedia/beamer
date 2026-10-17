@@ -12,18 +12,18 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 ┌─────────────────────────────────────────────────────────────────┐
 │  Plugin crate (your code)                                       │
 │  ┌───────────────────────┐  ┌──────────────────────────────┐    │
-│  │  Rust: Descriptor     │  │  JS: React/Svelte/vanilla    │    │
+│  │  Rust: Model          │  │  JS: React/Svelte/vanilla    │    │
 │  │  on_invoke / on_event │  │  window.__BEAMER__ runtime   │    │
 │  └───────────┬───────────┘  └───────────────┬──────────────┘    │
 │              │                              │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
 │  beamer-core │ WebViewDispatch (internal)   │ beamer_runtime.js │
-│              │ ParameterStore               │                   │
+│              │ EditorSync                   │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
 │  - 60 Hz parameter sync timer                                   │
-│  - Dispatches IPC messages to the Descriptor                    │
+│  - Dispatches IPC messages to the Model                         │
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview (platform layer)                                │
 │  - WKWebView on macOS, WebView2 stub on Windows                 │
@@ -36,7 +36,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `Descriptor::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
@@ -121,7 +121,7 @@ declare const __BEAMER__: Beamer;
 
 ### Parameter Methods
 
-All parameter methods use string identifiers: the `id` from the `#[parameter(id = "...")]` attribute, e.g. `"gain"`. A parameter in a nested struct has the names of the fields before it, e.g. `"filter/cutoff"`.
+All parameter methods use string identifiers: the `id` from the `#[parameter(id = "...")]` attribute, e.g. `"gain"`. A parameter in a nested group has the names of the fields before it, e.g. `"filter/cutoff"`.
 
 | Method | Description |
 |--------|-------------|
@@ -139,7 +139,7 @@ Subscriptions registered before `ready` resolves are queued, attached once the i
 
 ### State Methods
 
-The `State` fields of the parameter struct (see [State Beyond Parameters](REFERENCE.md#state-beyond-parameters)) are known by their path, like parameters: the `id` from the `#[state(id = "...")]` attribute, behind the names of the nested fields it sits in (`"pan_law"`, `"layer/sample"`). A value is what JSON makes of the Rust value: a string for a unit enum variant with serde's naming, an object for a struct.
+The `State` fields of the model (see [State Beyond Parameters](REFERENCE.md#state-beyond-parameters)) are known by their path, like parameters: the `id` from the `#[state(id = "...")]` attribute, behind the names of the nested fields it sits in (`"pan_law"`, `"layer/sample"`). A value is what JSON makes of the Rust value: a string for a unit enum variant with serde's naming, an object for a struct.
 
 | Method | Description |
 |--------|-------------|
@@ -154,7 +154,7 @@ Every `State` field is visible to the web UI and can be set by it. Keep data tha
 
 ### Invoke
 
-`invoke()` sends a request to the plugin's `Descriptor::on_invoke()` and returns a Promise:
+`invoke()` sends a request to the plugin's `Model::on_invoke()` and returns a Promise:
 
 ```javascript
 const info = await __BEAMER__.invoke("getInfo");
@@ -164,7 +164,7 @@ console.log(info.version); // "0.1.0"
 
 If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")`, and an override ends its `match` the same way. Catch the rejection where a method may be missing.
 
-One method is built in and never reaches the descriptor: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
+One method is built in and never reaches the model: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
 
 ```javascript
 const info = __BEAMER__.params.info("gain");
@@ -176,7 +176,7 @@ const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info
 Events provide fire-and-forget communication in both directions:
 
 ```javascript
-// JS -> Rust, handled by Descriptor::on_event
+// JS -> Rust, handled by Model::on_event
 __BEAMER__.emit("myEvent", { some: "data" });
 
 // Rust -> JS, sent with WebViewEvents::emit
@@ -207,11 +207,11 @@ statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
 
 ## Events from Rust
 
-A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the parameter struct, without an attribute. `#[derive(Parameters)]` finds it by its type, also in a nested struct, and the framework takes it when the plugin instance is created:
+A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group, and the framework takes it when the plugin instance is created:
 
 ```rust
-#[derive(Parameters)]
-pub struct WebViewDemoParameters {
+#[beamer::model]
+pub struct WebViewDemoModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
@@ -219,10 +219,11 @@ pub struct WebViewDemoParameters {
 }
 ```
 
-Everything that holds the parameters can then send an event. The data can be anything that serializes to JSON:
+The model's methods can then send an event, and so can every other thread that holds the model's `Arc`, except the audio thread. The data can be anything that serializes to JSON:
 
 ```rust
-self.parameters.events.emit("sampleRate", &48000.0);
+// In a method of the model, such as prepare() or on_invoke().
+self.events.emit("sampleRate", &48000.0);
 ```
 
 ```javascript
@@ -235,17 +236,17 @@ What to know about events:
 - **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **One queue per plugin.** Two `WebViewEvents` fields in one struct are a compile error. With a queue in the struct and one in a nested struct, or in two nested structs, the first in field order is the plugin's and the others are not delivered. The derive knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written `Parameters` implementation returns its queue from `ModelFields::webview_events()`.
+- **One queue per plugin.** Two `WebViewEvents` fields in one struct are a compile error. With a queue in the model and one in a nested group, or in two nested groups, the first in field order is the plugin's and the others are not delivered. The attribute knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `ModelFields::webview_events()`.
 
 ### Example (from `webview-demo`)
 
 The demo shows the sample rate the host runs at. `prepare()` is called on a host thread whenever the host sets up audio. It keeps the rate for an editor that opens later and tells the one that is open:
 
 ```rust
-fn prepare(&self, setup: SampleRate) -> WebViewDemoProcessor {
+fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
     let sample_rate = setup.hz();
-    self.parameters.sample_rate.set(sample_rate);
-    self.parameters.events.emit("sampleRate", &sample_rate);
+    self.sample_rate.set(sample_rate);
+    self.events.emit("sampleRate", &sample_rate);
     // ...
 }
 ```
@@ -260,10 +261,10 @@ show(await __BEAMER__.invoke("getSampleRate"));
 
 ## Answering the Web UI
 
-The `Descriptor` answers `invoke()` calls and custom events from JavaScript with two methods. Parameter and `State` synchronization are automatic and do not go through them.
+The `Model` answers `invoke()` calls and custom events from JavaScript with two methods. Parameter and `State` synchronization are automatic and do not go through them.
 
 ```rust
-pub trait Descriptor {
+pub trait Model {
     // ...
     fn on_invoke(
         &self,
@@ -277,14 +278,14 @@ pub trait Descriptor {
 }
 ```
 
-Both methods are called on the main thread. The descriptor lives as long as the plugin instance and holds the parameters, so its methods can answer with anything the plugin knows.
+Both methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows.
 
 ### Example (from `webview-demo`)
 
-Here the descriptor answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
+Here the model answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
 
 ```rust
-impl Descriptor for WebViewDemoDescriptor {
+impl Model for WebViewDemoModel {
     // ...
     fn on_invoke(
         &self,
@@ -298,7 +299,7 @@ impl Descriptor for WebViewDemoDescriptor {
                 "framework": "Beamer",
             })),
             // 0 before the host prepared the plugin.
-            "getSampleRate" => Ok(serde_json::json!(*self.parameters.sample_rate.get())),
+            "getSampleRate" => Ok(serde_json::json!(*self.sample_rate.get())),
             _ => Err(format!("unknown method: {method}")),
         }
     }
@@ -558,7 +559,7 @@ Lock-free data transfer from the audio thread to the WebView for spectrum analyz
 **Planned approach:**
 
 - A lock-free ring buffer in `beamer-core` for fixed-size visualization payloads
-- An `emit_rt()` method that writes into the ring buffer without allocating, on an audio end of the event queue that the Descriptor creates in `prepare()`
+- An `emit_rt()` method that writes into the ring buffer without allocating, on an audio end of the event queue that the model creates in `prepare()`
 - The 60 Hz sync timer drains the ring buffer on the main thread, next to the events it already delivers
 
 This is a core-level feature (not webview-specific) because the ring buffer and thread-safety guarantees belong in `beamer-core`.

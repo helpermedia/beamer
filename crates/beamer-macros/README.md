@@ -1,12 +1,12 @@
 # beamer-macros
 
-Derive macros and attribute macros for building audio plugins with Beamer.
+Attribute macros and a derive macro for building audio plugins with Beamer.
 
 This crate provides procedural macros that generate boilerplate code for plugins:
 
 - **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration, factory presets (from `Presets.toml`) and format-specific entry points
-- **`#[derive(Parameters)]`**: Generates parameter traits, host integration, state persistence and `Default` implementation
-- **`#[derive(HasParameters)]`**: Generates the `parameters()` accessor for a Descriptor, which holds its parameters in an `Arc`
+- **`#[beamer::model]`**: Marks the model of a plugin, the struct every thread shares, and generates its parameter traits, host integration, state persistence and `Default` implementation
+- **`#[beamer::group]`**: Marks a nested group of a model, with the same code generation
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
 - **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`
 - **Compile-time validation**: Duplicate parameter ids in a struct are compile errors
@@ -28,20 +28,14 @@ vendor = "My Company"
 ```rust
 use beamer::prelude::*;
 
-#[derive(Parameters)]
-struct GainParameters {
+#[beamer::export]
+#[beamer::model]
+struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParameter,
 }
 
-#[beamer::export]
-#[derive(Default, HasParameters)]
-struct GainDescriptor {
-    #[parameters]
-    parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     // implementation...
 }
 ```

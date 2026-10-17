@@ -1,4 +1,4 @@
-//! Code generation for the derive macro.
+//! Code generation for the model and group attributes.
 //!
 //! This module generates the Rust code for the `Parameters`, `ModelFields` and
 //! `ParameterStore` trait implementations from the validated IR.
@@ -10,7 +10,7 @@ use crate::ir::{
     FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ModelIR, SmoothingStyle,
 };
 
-/// Generate all code for the derive macro.
+/// Generate all code for the model and group attributes.
 pub fn generate(ir: &ModelIR) -> TokenStream {
     let unit_consts = generate_group_consts(ir);
     let units_impl = generate_groups_impl(ir);
@@ -254,8 +254,8 @@ fn generate_set_group_ids(ir: &ModelIR) -> TokenStream {
             /// # Example
             ///
             /// ```ignore
-            /// let mut parameters = SynthParameters::default();
-            /// parameters.set_group_ids();
+            /// let mut model = SynthModel::default();
+            /// model.set_group_ids();
             /// ```
             pub fn set_group_ids(&mut self) {
                 // Set group IDs for flat groups
@@ -457,7 +457,7 @@ fn generate_iter(ir: &ModelIR) -> TokenStream {
 
 /// Generate the by_id() method body.
 ///
-/// The ids are compared at run time: a parameter of a nested struct has an
+/// The ids are compared at run time: a parameter of a nested group has an
 /// id that depends on where the struct sits.
 fn generate_by_id(ir: &ModelIR) -> TokenStream {
     let parameter_lookups: Vec<TokenStream> = ir
@@ -497,7 +497,7 @@ fn generate_by_id(ir: &ModelIR) -> TokenStream {
 /// the hash of the path as the id that hosts see.
 ///
 /// The path segments are the same as in `save_entries()`: the `id` of a
-/// parameter and the field name of a nested struct.
+/// parameter and the field name of a nested group.
 fn generate_assign_ids(ir: &ModelIR) -> TokenStream {
     let parameter_assignments: Vec<TokenStream> = ir
         .parameter_fields()
@@ -542,7 +542,7 @@ fn generate_assign_ids(ir: &ModelIR) -> TokenStream {
 /// Generate `save_entries()`: what this struct adds to a saved state.
 ///
 /// Parameters come first, in declaration order, then the `State` fields,
-/// then the nested structs. The bytes are laid out by
+/// then the nested groups. The bytes are laid out by
 /// `beamer_core::state_format`.
 fn generate_save_state(ir: &ModelIR) -> TokenStream {
     let parameter_saves: Vec<TokenStream> = ir
@@ -573,7 +573,7 @@ fn generate_save_state(ir: &ModelIR) -> TokenStream {
         })
         .collect();
 
-    // A nested struct is saved under the name of its field, which stays
+    // A nested group is saved under the name of its field, which stays
     // the same when the group gets another display name.
     let nested_saves: Vec<TokenStream> = ir
         .nested_fields()
@@ -747,7 +747,7 @@ fn generate_model_fields_impl(ir: &ModelIR) -> TokenStream {
 }
 
 /// Generate `state_generation()`: the sum of the generations of the `State`
-/// fields of this struct and of its nested structs.
+/// fields of this struct and of its nested groups.
 fn generate_state_generation(ir: &ModelIR) -> TokenStream {
     let state_generations = ir.state_fields().map(|state| {
         let field = &state.field_name;
@@ -770,7 +770,7 @@ fn generate_state_generation(ir: &ModelIR) -> TokenStream {
 }
 
 /// Generate `webview_events()`: the queue of this struct, or else the first
-/// one a nested struct has.
+/// one a nested group has.
 fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     if let Some(field) = ir.events_fields().next() {
         return quote! {
@@ -792,7 +792,7 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
         })
         .collect();
 
-    // No queue here and no nested struct to look in: the default.
+    // No queue here and no nested group to look in: the default.
     if nested.is_empty() {
         return quote! {};
     }
@@ -806,7 +806,7 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
 }
 
 /// Generate `for_each_state()`: the `State` fields of this struct with
-/// their ids, then those of the nested structs under the names of their
+/// their ids, then those of the nested groups under the names of their
 /// fields, the same paths as in a saved state.
 fn generate_for_each_state(ir: &ModelIR) -> TokenStream {
     let states: Vec<TokenStream> = ir

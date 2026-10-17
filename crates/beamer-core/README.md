@@ -4,7 +4,7 @@ Format-agnostic core abstractions for building audio plugins with Beamer.
 
 This crate provides the shared traits and types used by all plugin formats (AU, VST3):
 
-- **Plugin traits**: `Descriptor`, `Processor`, `HasParameters`, `Parameters`
+- **Plugin traits**: `Model`, `Processor`, `ModelFields`, `Parameters`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
 - **Parameter types**: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter` with smoothing
@@ -20,7 +20,7 @@ Use `beamer-core` directly only if you're:
 
 ## Advanced: Manual Parameters Implementation
 
-Most plugins should use `#[derive(Parameters)]`. However, the `Parameters` trait can be implemented manually for advanced scenarios like dynamic parameter counts, custom storage strategies, or shared parameter pools across plugin instances.
+Most plugins should use `#[beamer::model]`. However, the `Parameters` trait can be implemented manually for advanced scenarios like dynamic parameter counts, custom storage strategies or shared parameter pools across plugin instances.
 
 ## Documentation
 

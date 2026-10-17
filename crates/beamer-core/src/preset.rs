@@ -146,8 +146,8 @@ unsafe impl<P> Sync for NoPresets<P> {}
 
 /// Compute the FNV-1a hash of a string at compile time.
 ///
-/// This is the same hash algorithm used by the Parameters derive macro
-/// for parameter IDs. Use this to compute preset parameter IDs from the
+/// This is the same hash algorithm that `#[beamer::model]` and
+/// `#[beamer::group]` use for parameter IDs. Use this to compute preset parameter IDs from the
 /// path of a parameter.
 pub const fn fnv1a_hash(s: &str) -> u32 {
     const FNV_OFFSET_BASIS: u32 = 2166136261;

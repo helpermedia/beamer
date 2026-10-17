@@ -902,8 +902,9 @@ pub trait Processor: Send + 'static {
 ///
 /// A host asks the model about buses and MIDI from its own threads, also
 /// while audio is processed and from more than one thread at the same time.
-/// A model is therefore `Sync`, and every method takes `&self` and must be
-/// callable from several threads at once. A method that changes something,
+/// A model is therefore `Sync`, and every method other than
+/// [`prepare()`](Model::prepare) takes `&self` and must be callable from
+/// several threads at once. A method that changes something,
 /// such as [`on_midi_learn()`](Model::on_midi_learn), keeps what it changes
 /// in a value that is safe to share: a `State` field (which is also saved
 /// with the project), an atomic or a `Mutex`. No method of this trait is
