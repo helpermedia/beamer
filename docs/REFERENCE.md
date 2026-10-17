@@ -127,7 +127,7 @@ Model (in one Arc, lives as long as the instance)
 ```rust
 use beamer::prelude::*;
 
-// 1. Model - what every thread shares, describes the plugin to the host
+// 1. Model - what every thread shares, describes the plugin to the host.
 #[beamer::export]
 #[beamer::model]
 pub struct GainModel {
@@ -136,7 +136,8 @@ pub struct GainModel {
 }
 
 impl Model for GainModel {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
+    // A plain gain needs no setup. Use SampleRate for delays and
+    // MaxBufferSize for FFT.
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
@@ -144,7 +145,7 @@ impl Model for GainModel {
     }
 }
 
-// 2. Processor - owned by the audio thread, shares the model
+// 2. Processor - owned by the audio thread, shares the model.
 pub struct GainProcessor {
     model: Arc<GainModel>,
 }
@@ -276,15 +277,17 @@ Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `En
 **FloatParameter**: Continuous floating-point parameter:
 
 ```rust
-// Linear range
+// Linear range.
 let freq = FloatParameter::new("Frequency", 1000.0, 20.0..=20000.0);
 
-// Decibel range (stores dB, use as_linear() for DSP)
+// Decibel range (stores dB, use as_linear() for DSP).
 let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
 
 // In DSP code:
-let amplitude = gain.as_linear(); // 0 dB → 1.0, -6 dB → ~0.5
-let db_value = gain.get(); // Returns dB for display
+// 0 dB → 1.0, -6 dB → ~0.5.
+let amplitude = gain.as_linear();
+// Returns dB for display.
+let db_value = gain.get();
 ```
 
 **IntParameter**: Integer parameter:
@@ -313,7 +316,8 @@ pub enum FilterType {
     HighPass,
     #[name = "Band Pass"]
     BandPass,
-    Notch, // Uses "Notch" as display name
+    // Uses "Notch" as display name.
+    Notch,
 }
 
 #[beamer::model]
@@ -378,19 +382,22 @@ All parameter types support builder methods for customization. Chain these after
 **Precision and Formatter Customization:**
 
 ```rust
-// High-precision gain for mastering plugins
+// High-precision gain for mastering plugins.
 let gain = FloatParameter::db("Output", 0.0, -12.0..=12.0)
-    .with_precision(2); // Shows "-0.50 dB" instead of "-0.5 dB"
+    // Shows "-0.50 dB" instead of "-0.5 dB".
+    .with_precision(2);
 
-// Milliseconds with integer display
+// Milliseconds with integer display.
 let attack = FloatParameter::ms("Attack", 10.0, 0.1..=100.0)
-    .with_precision(0); // Shows "10" instead of "10.0"
+    // Shows "10" instead of "10.0".
+    .with_precision(0);
 
-// Completely custom formatter
+// Completely custom formatter.
 let ratio = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
-    .with_formatter(Formatter::Ratio { precision: 1 }); // Shows "4.0:1"
+    // Shows "4.0:1".
+    .with_formatter(Formatter::Ratio { precision: 1 });
 
-// Chain multiple builder methods
+// Chain multiple builder methods.
 let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
     .with_step_size(0.5)
     .with_precision(2)
@@ -404,9 +411,10 @@ let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
 Avoid zipper noise during automation by adding smoothing to parameters:
 
 ```rust
-// Add smoother during parameter creation
+// Add smoother during parameter creation.
 let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
-    .with_smoother(SmoothingStyle::Exponential(5.0));  // 5ms time constant
+    // 5ms time constant.
+    .with_smoother(SmoothingStyle::Exponential(5.0));
 ```
 
 **Smoothing Styles:**
@@ -445,7 +453,8 @@ impl Model for MyModel {
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     for (input, output) in buffer.zip_channels() {
         for (i, o) in input.iter().zip(output.iter_mut()) {
-            let gain = self.model.gain.tick_smoothed();  // Advances smoother
+            // Advances smoother.
+            let gain = self.model.gain.tick_smoothed();
             *o = *i * gain as f32;
         }
     }
@@ -456,7 +465,8 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    let gain = self.model.gain.smoothed();  // Current value, no advance
+    // Current value, no advance.
+    let gain = self.model.gain.smoothed();
     self.model.gain.skip_smoothing(buffer.len());
 
     for (input, output) in buffer.zip_channels() {
@@ -473,7 +483,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 let mut gain_buffer = [0.0f32; 512];
 let len = buffer.len().min(512);
 self.model.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
-// Use gain_buffer[i] per sample
+// Use gain_buffer[i] per sample.
 ```
 
 **Smoothing API:**
@@ -514,9 +524,9 @@ pub struct SynthesizerModel {
     pub gain: FloatParameter,
 }
 
-// Access is flat: model.cutoff, model.resonance, model.gain
-// Groups appear in DAW automation lanes and parameter lists
-// Note: Most DAWs don't display groups in the main plugin UI
+// Access is flat: model.cutoff, model.resonance, model.gain.
+// Groups appear in DAW automation lanes and parameter lists.
+// Note: Most DAWs don't display groups in the main plugin UI.
 ```
 
 **Flat vs Nested Grouping:**
@@ -570,7 +580,7 @@ With declarative attributes, `set_group_ids()` is called automatically in the ge
 
 #### Parameter Ids
 
-A parameter is known by its path: the `id` of its attribute, behind the names of the nested fields it sits in.
+A parameter is known by its path: the `id` of its attribute, behind the names of the nested fields it sits in. The `/` separates the segments of the path, so an `id` cannot contain one (a compile error). The same holds for the `id` of a `State` field, which also cannot be empty.
 
 ```
 "master"              - parameter of the root struct
@@ -749,25 +759,37 @@ pub trait ParameterStore: Send + Sync {
     fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue>;
     fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue;
     fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue;
+
+    // Defaults provided.
+    fn formatter_kind(&self, id: ParameterId) -> &'static str;
+    fn info_by_id(&self, id: ParameterId) -> Option<&ParameterInfo>;
 }
 
 pub struct ParameterInfo {
     pub id: ParameterId,
+    // The path of the parameter (see Parameter Ids).
+    pub string_id: Cow<'static, str>,
     pub name: &'static str,
     pub short_name: &'static str,
     pub units: &'static str,
-    pub default_normalized: f64,
+    // Unit type hint for AU hosts (checkbox, dropdown and so on).
+    pub unit: ParameterUnit,
+    pub default_normalized: ParameterValue,
     pub step_count: i32,
     pub flags: ParameterFlags,
-    pub group_id: GroupId, // Parameter group (0 = root)
+    // Parameter group (0 = root).
+    pub group_id: GroupId,
 }
 
 pub struct ParameterFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
-    pub is_bypass: bool, // Maps to VST3 kIsBypass (see Soft Bypass)
-    pub is_list: bool, // Display as dropdown list (for enums)
-    pub is_hidden: bool, // Hide from DAW parameter list (used by MIDI CC emulation)
+    // Maps to VST3 kIsBypass (see Soft Bypass).
+    pub is_bypass: bool,
+    // Display as dropdown list (for enums).
+    pub is_list: bool,
+    // Hide from DAW parameter list (used by MIDI CC emulation).
+    pub is_hidden: bool,
 }
 
 impl ParameterInfo {
@@ -829,8 +851,10 @@ pub trait Model: ModelFields + ParameterStore + Default + 'static {
 ```rust
 pub struct DelayProcessor {
     model: Arc<DelayModel>,
-    sample_rate: f64, // Always valid
-    buffer: Vec<f64>, // Always allocated
+    // Always valid.
+    sample_rate: f64,
+    // Always allocated.
+    buffer: Vec<f64>,
     write_pos: usize,
 }
 ```
@@ -855,7 +879,7 @@ For IDE autocomplete, use `beamer::setup::*` to import all available types.
 Compose up to five types using a tuple:
 
 ```rust
-// Simple plugin - no setup needed
+// Simple plugin - no setup needed.
 impl Model for GainModel {
     type Setup = ();
     type Processor = GainProcessor;
@@ -864,7 +888,7 @@ impl Model for GainModel {
     }
 }
 
-// Plugin needing sample rate (delays, filters, envelopes)
+// Plugin needing sample rate (delays, filters, envelopes).
 impl Model for DelayModel {
     type Setup = SampleRate;
     type Processor = DelayProcessor;
@@ -877,7 +901,7 @@ impl Model for DelayModel {
     }
 }
 
-// Plugin needing multiple setup values
+// Plugin needing multiple setup values.
 impl Model for FftModel {
     type Setup = (SampleRate, MaxBufferSize);
     type Processor = FftProcessor;
@@ -908,7 +932,7 @@ pub trait Processor: Send + 'static {
     /// Process MIDI events. Called right before every process() call,
     /// with the events of that call, timed from its first sample.
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
-        // Default: pass through
+        // Default: pass through.
         for event in input {
             output.push(event.clone());
         }
@@ -1010,7 +1034,7 @@ gain = 6.0
 **Format:**
 - Each preset is defined with `[[preset]]` (TOML array of tables)
 - `name` field specifies the display name in the DAW
-- Other fields are parameter IDs with their plain values (e.g., `-6.0` for dB)
+- Other fields are parameter IDs with their plain values as numbers (e.g., `-6.0` for dB). A bool is `0` or `1`, an enum the index of its variant. Other values, such as `true` or a string, are ignored
 - Parameter IDs match the `id` attribute from `#[parameter(id = "gain", ...)]`
 - A parameter in a nested group is named by its path, as a quoted key: `"filter/cutoff" = 800.0` (see [Parameter Ids](#parameter-ids))
 
@@ -1024,7 +1048,7 @@ Presets can specify only a subset of parameters. Unspecified parameters retain t
 name = "Initialize"
 gain = 0.0
 mix = 1.0
-bypass = false
+bypass = 0
 
 # Sparse preset: only changes gain, mix and bypass unchanged
 [[preset]]
@@ -1032,29 +1056,9 @@ name = "Quiet"
 gain = -12.0
 ```
 
-#### Integration with Export Macro
-
-The `#[beamer::export]` macro automatically detects and loads `Presets.toml` from the crate root:
-
-**Presets.toml:**
-
-```toml
-[[preset]]
-name = "Init"
-gain = 0.0
-tone = 0.5
-
-[[preset]]
-name = "Warm"
-gain = 3.0
-tone = 0.7
-```
-
-The macro generates the preset implementation automatically. No manual preset struct or trait implementation needed.
-
 #### FactoryPresets Trait
 
-The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`:
+The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`, so a plugin writes no preset code:
 
 ```rust
 pub trait FactoryPresets: Send + Sync + 'static {
@@ -1070,8 +1074,9 @@ pub trait FactoryPresets: Send + Sync + 'static {
     /// Get parameter values for a preset.
     fn values(index: usize) -> &'static [PresetValue];
 
-    /// Apply a preset to parameters. Returns true if successful.
-    fn apply(index: usize, parameters: &Self::Parameters) -> bool;
+    /// Apply a preset to parameters. Returns true if successful. The default
+    /// sets the parameters from values().
+    fn apply(index: usize, parameters: &Self::Parameters) -> bool { ... }
 }
 ```
 
@@ -1079,7 +1084,7 @@ pub trait FactoryPresets: Send + Sync + 'static {
 
 #### MIDI Program Change Mapping
 
-When a plugin has factory presets, MIDI Program Change (PC) events are automatically mapped to presets at the framework level:
+When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) events to presets:
 
 | PC Number | Action |
 |-----------|--------|
@@ -1095,7 +1100,7 @@ When a plugin has factory presets, MIDI Program Change (PC) events are automatic
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the values of the preset's parameters back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the values of the preset's parameters back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
 ### Buffer Types
 
@@ -1115,8 +1120,8 @@ Beamer provides safe, ergonomic access to audio buffers using a two-buffer archi
 pub struct Buffer<'a, S: Sample = f32> {
     inputs: [Option<&'a [S]>; MAX_CHANNELS],
     outputs: [Option<&'a mut [S]>; MAX_CHANNELS],
-    num_inputs: usize,
-    num_outputs: usize,
+    num_input_channels: usize,
+    num_output_channels: usize,
     num_samples: usize,
 }
 
@@ -1124,10 +1129,16 @@ impl<'a, S: Sample> Buffer<'a, S> {
     pub fn num_samples(&self) -> usize;
     pub fn num_input_channels(&self) -> usize;
     pub fn num_output_channels(&self) -> usize;
+    pub fn is_stereo(&self) -> bool;
+    pub fn is_mono(&self) -> bool;
     pub fn input(&self, channel: usize) -> &[S];
     pub fn output(&mut self, channel: usize) -> &mut [S];
-    pub fn copy_to_output(&mut self);
+    pub fn output_checked(&mut self, channel: usize) -> Option<&mut [S]>;
+    pub fn inputs(&self) -> impl Iterator<Item = &[S]>;
+    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut [S]>;
     pub fn zip_channels(&mut self) -> impl Iterator<Item = (&[S], &mut [S])>;
+    pub fn copy_to_output(&mut self);
+    pub fn clear_outputs(&mut self);
     pub fn apply_output_gain(&mut self, gain: S);
 }
 ```
@@ -1147,26 +1158,37 @@ impl<'a, S: Sample> AuxiliaryBuffers<'a, S> {
 
     /// Get auxiliary output by index.
     pub fn output(&mut self, bus: usize) -> Option<AuxOutput<'_, 'a, S>>;
+
+    pub fn num_input_buses(&self) -> usize;
+    pub fn num_output_buses(&self) -> usize;
+    pub fn iter_inputs(&self) -> impl Iterator<Item = AuxInput<'_, S>>;
+    pub fn iter_outputs(&mut self) -> impl Iterator<Item = AuxOutput<'_, 'a, S>>;
 }
 
 /// Immutable view of an auxiliary input bus.
-pub struct AuxInput<'a, S: Sample> { /* ... */ }
+pub struct AuxInput<'a, S: Sample = f32> { /* ... */ }
 
 impl<'a, S: Sample> AuxInput<'a, S> {
     pub fn num_channels(&self) -> usize;
-    pub fn channel(&self, index: usize) -> &[S];
+    pub fn input(&self, index: usize) -> &[S];
+    pub fn iter_inputs(&self) -> impl Iterator<Item = &[S]>;
+    pub fn sample(&self, channel: usize, index: usize) -> S;
     pub fn rms(&self, channel: usize) -> S;
+    pub fn peak(&self, channel: usize) -> S;
+    pub fn average(&self, channel: usize) -> S;
 }
 
 /// Mutable view of an auxiliary output bus.
 /// Two lifetimes resolve variance issues with nested mutable references.
-pub struct AuxOutput<'borrow, 'data, S: Sample> { /* ... */ }
+pub struct AuxOutput<'borrow, 'data, S: Sample = f32> { /* ... */ }
 
 impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
     pub fn num_channels(&self) -> usize;
-    pub fn channel(&mut self, index: usize) -> &mut [S];
-    pub fn iter_channels(&mut self) -> impl Iterator<Item = &mut [S]>;
+    pub fn output(&mut self, index: usize) -> &mut [S];
+    pub fn output_checked(&mut self, index: usize) -> Option<&mut [S]>;
+    pub fn iter_outputs(&mut self) -> impl Iterator<Item = &mut [S]>;
     pub fn clear(&mut self);
+    pub fn fill(&mut self, value: S);
 }
 ```
 
@@ -1186,45 +1208,48 @@ The `ProcessContext` provides essential timing and transport information for eac
 - Handle SMPTE for post-production
 
 ```rust
-#[derive(Copy, Clone, Debug)]
-pub struct ProcessContext {
+#[derive(Clone, Debug)]
+pub struct ProcessContext<'a> {
     pub sample_rate: f64,
     pub num_samples: usize,
     pub transport: Transport,
+    // The MIDI CC state, when the plugin asks for it (see MIDI CC Emulation).
+    midi_cc_state: Option<&'a MidiCcState>,
 }
 
-impl ProcessContext {
+impl<'a> ProcessContext<'a> {
+    pub fn midi_cc(&self) -> Option<&MidiCcState>;
     pub fn samples_per_beat(&self) -> Option<f64>;
     pub fn buffer_duration(&self) -> f64;
 }
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Transport {
-    // Tempo and time signature
+    // Tempo and time signature.
     pub tempo: Option<f64>,
     pub time_sig_numerator: Option<i32>,
     pub time_sig_denominator: Option<i32>,
 
-    // Position
+    // Position.
     pub project_time_samples: Option<i64>,
     pub project_time_beats: Option<f64>,
     pub bar_position_beats: Option<f64>,
 
-    // Loop/Cycle
+    // Loop/Cycle.
     pub cycle_start_beats: Option<f64>,
     pub cycle_end_beats: Option<f64>,
 
-    // Transport state (always valid)
+    // Transport state (always valid).
     pub is_playing: bool,
     pub is_recording: bool,
     pub is_cycle_active: bool,
 
-    // Advanced timing
+    // Advanced timing.
     pub system_time_ns: Option<i64>,
     pub continuous_time_samples: Option<i64>,
     pub samples_to_next_clock: Option<i32>,
 
-    // SMPTE/Timecode
+    // SMPTE/Timecode.
     pub smpte_offset_subframes: Option<i32>,
     pub frame_rate: Option<FrameRate>,
 }
@@ -1279,7 +1304,7 @@ pub trait Sample:
 **Pattern: Write generic DSP code once**
 
 ```rust
-// Model
+// Model.
 #[beamer::model]
 pub struct GainModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
@@ -1287,7 +1312,8 @@ pub struct GainModel {
 }
 
 impl Model for GainModel {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
+    // A plain gain needs no setup. Use SampleRate for delays and
+    // MaxBufferSize for FFT.
     type Setup = ();
     type Processor = GainProcessor;
     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
@@ -1295,13 +1321,13 @@ impl Model for GainModel {
     }
 }
 
-// Processor with generic processing method
+// Processor with generic processing method.
 pub struct GainProcessor {
     model: Arc<GainModel>,
 }
 
 impl GainProcessor {
-    // Generic processing - works for both f32 and f64
+    // Generic processing - works for both f32 and f64.
     fn process_generic<S: Sample>(
         &mut self,
         buffer: &mut Buffer<S>,
@@ -1356,15 +1382,21 @@ pub enum BypassState {
 
 /// What action the plugin should take for this buffer.
 pub enum BypassAction {
-    Passthrough, // Fully bypassed - copy input to output
-    Process, // Fully active - run DSP normally
-    ProcessAndCrossfade, // Transitioning - run DSP, then call finish()
+    /// Fully bypassed: copy input to output.
+    Passthrough,
+    /// Fully active: run DSP normally.
+    Process,
+    /// Transitioning: run DSP, then call finish().
+    ProcessAndCrossfade,
 }
 
 pub enum CrossfadeCurve {
-    Linear, // Slight loudness dip at center
-    EqualPower, // Constant loudness (recommended)
-    SCurve, // Faster start/end, smoother middle
+    /// Slight loudness dip at center.
+    Linear,
+    /// Constant loudness (recommended).
+    EqualPower,
+    /// Faster start and end, smoother middle.
+    SCurve,
 }
 
 pub struct BypassHandler { /* ... */ }
@@ -1387,7 +1419,15 @@ impl BypassHandler {
 **Usage:**
 
 ```rust
-// Processor struct holds the model + DSP state
+#[beamer::model]
+pub struct ReverbModel {
+    // The bypass flag tells hosts this is the plugin's bypass parameter.
+    #[parameter(id = "bypass", bypass)]
+    pub bypass: BoolParameter,
+    // ... other parameters
+}
+
+// The processor holds the model and the DSP state.
 struct ReverbProcessor {
     model: Arc<ReverbModel>,
     bypass_handler: BypassHandler,
@@ -1411,6 +1451,11 @@ impl Processor for ReverbProcessor {
             }
         }
     }
+
+    // Tells the host how long the crossfade takes.
+    fn bypass_ramp_samples(&self) -> u32 {
+        self.bypass_handler.ramp_samples()
+    }
 }
 ```
 
@@ -1423,6 +1468,8 @@ impl Processor for ReverbProcessor {
 ---
 
 ## MIDI Reference
+
+The event types, `MidiBuffer` and `MidiCcConfig` are in the prelude. The helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, the `cc` and `note_expression` modules and the 14-bit functions) are not: import them from `beamer::core`.
 
 ### Event Types
 
@@ -1437,18 +1484,18 @@ pub struct MidiEvent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiEventKind {
-    // Note events
+    // Note events.
     NoteOn(NoteOn),
     NoteOff(NoteOff),
     PolyPressure(PolyPressure),
 
-    // Channel events
+    // Channel events.
     ControlChange(ControlChange),
     PitchBend(PitchBend),
     ChannelPressure(ChannelPressure),
     ProgramChange(ProgramChange),
 
-    // Advanced VST3 events
+    // Advanced VST3 events.
     SysEx(Box<SysEx>),
     NoteExpressionValue(NoteExpressionValue),
     NoteExpressionInt(NoteExpressionInt),
@@ -1462,12 +1509,18 @@ pub enum MidiEventKind {
 
 ```rust
 pub struct NoteOn {
-    pub channel: MidiChannel, // 0-15
-    pub pitch: MidiNote, // 0-127
-    pub velocity: f32, // 0.0-1.0
-    pub note_id: NoteId, // For tracking
-    pub tuning: f32, // Cents (±120.0) for MPE/microtonal
-    pub length: i32, // Samples (0 = unknown)
+    // 0-15.
+    pub channel: MidiChannel,
+    // 0-127.
+    pub pitch: MidiNote,
+    // 0.0-1.0.
+    pub velocity: f32,
+    // For tracking.
+    pub note_id: NoteId,
+    // Cents (±120.0) for MPE/microtonal.
+    pub tuning: f32,
+    // Samples (0 = unknown).
+    pub length: i32,
 }
 
 pub struct NoteOff {
@@ -1491,13 +1544,16 @@ pub struct PolyPressure {
 ```rust
 pub struct ControlChange {
     pub channel: MidiChannel,
-    pub controller: u8, // 0-127
-    pub value: f32, // 0.0-1.0
+    // 0-127.
+    pub controller: u8,
+    // 0.0-1.0.
+    pub value: f32,
 }
 
 pub struct PitchBend {
     pub channel: MidiChannel,
-    pub value: f32, // -1.0 to 1.0
+    // -1.0 to 1.0.
+    pub value: f32,
 }
 
 pub struct ChannelPressure {
@@ -1514,7 +1570,7 @@ pub struct ProgramChange {
 #### Constructors
 
 ```rust
-// Semantic constructors (used by VST3)
+// Semantic constructors (used by VST3).
 MidiEvent::note_on(offset, channel, pitch, velocity, note_id, tuning, length)
 MidiEvent::note_off(offset, channel, pitch, velocity, note_id, tuning)
 MidiEvent::poly_pressure(offset, channel, pitch, pressure, note_id)
@@ -1527,7 +1583,7 @@ MidiEvent::note_expression_value(offset, note_id, type_id, value)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
 
-// Raw MIDI 1.0 byte parsing (used by AU)
+// Raw MIDI 1.0 byte parsing (used by AU).
 MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<MidiEvent>
 ```
 
@@ -1597,7 +1653,7 @@ it on the wire. The wrappers add them to outgoing messages in AU and VST3,
 and the VST3 wrapper takes them off incoming ones. The AU formats do not pass
 SysEx input to the plugin yet.
 
-**Buffer Size (Cargo features):**
+**Buffer Size (Cargo features of `beamer-core`, which a plugin adds as a dependency to enable one):**
 
 | Feature | Size |
 |---------|------|
@@ -1632,7 +1688,8 @@ Overflow messages stored in heap, emitted next block. Breaks real-time guarantee
 pub mod note_expression {
     pub const VOLUME: u32 = 0;
     pub const PAN: u32 = 1;
-    pub const TUNING: u32 = 2;      // MPE pitch
+    // MPE pitch.
+    pub const TUNING: u32 = 2;
     pub const VIBRATO: u32 = 3;
     pub const EXPRESSION: u32 = 4;
     pub const BRIGHTNESS: u32 = 5;
@@ -1673,10 +1730,11 @@ impl Model for MyMpeSynthesizerModel {
 
 ```rust
 fn physical_ui_mappings(&self, _bus: i32, _channel: i16) -> &[PhysicalUIMap] {
-    &[
+    const MAPPINGS: &[PhysicalUIMap] = &[
         PhysicalUIMap::y_axis(note_expression::BRIGHTNESS),
         PhysicalUIMap::pressure(note_expression::EXPRESSION),
-    ]
+    ];
+    MAPPINGS
 }
 ```
 
@@ -1686,19 +1744,21 @@ fn physical_ui_mappings(&self, _bus: i32, _channel: i16) -> &[PhysicalUIMap] {
 fn enable_mpe_input_processing(&self, enabled: bool) -> bool { true }
 fn set_mpe_input_device_settings(&self, settings: MpeInputDeviceSettings) -> bool { true }
 
-// Presets
-MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
-MpeInputDeviceSettings::upper_zone()  // Master=15, Members=14-1
+// Presets.
+// Master channel 0, member channels 1 to 14.
+MpeInputDeviceSettings::lower_zone()
+// Master channel 15, member channels 14 to 1.
+MpeInputDeviceSettings::upper_zone()
 ```
 
 ### MIDI CC Emulation (MidiCcConfig)
 
-VST3 doesn't send MIDI CC, pitch bend or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically:
+VST3 doesn't send MIDI CC, pitch bend or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically. The AU wrappers fill the same state from incoming MIDI, so `context.midi_cc()` works in every format:
 
 ```rust
 use beamer::prelude::*;
 
-// 1. Model
+// 1. Model.
 #[beamer::model]
 struct SynthesizerModel {
     #[parameter(id = "volume", name = "Volume", default = 0.0, range = -60.0..=12.0, kind = "db")]
@@ -1716,12 +1776,12 @@ impl Model for SynthesizerModel {
         }
     }
 
-    // Return configuration - framework handles state
+    // Return configuration - framework handles state.
     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
-        // Use a preset for common configurations
+        // Use a preset for common configurations.
         Some(MidiCcConfig::SYNTH_BASIC)
 
-        // Or build a custom configuration
+        // Or build a custom configuration:
         // Some(MidiCcConfig::new()
         //     .with_pitch_bend()
         //     .with_mod_wheel()
@@ -1729,7 +1789,7 @@ impl Model for SynthesizerModel {
     }
 }
 
-// 2. Processor
+// 2. Processor.
 struct SynthesizerProcessor {
     model: Arc<SynthesizerModel>,
     sample_rate: f64,
@@ -1737,11 +1797,14 @@ struct SynthesizerProcessor {
 
 impl Processor for SynthesizerProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
-        // Access CC values directly via ProcessContext
+        // Access CC values directly via ProcessContext.
         if let Some(cc) = context.midi_cc() {
-            let pitch_bend = cc.pitch_bend();  // -1.0 to 1.0
-            let mod_wheel = cc.mod_wheel();    // 0.0 to 1.0
-            let volume = cc.cc(7);             // 0.0 to 1.0
+            // -1.0 to 1.0.
+            let pitch_bend = cc.pitch_bend();
+            // 0.0 to 1.0.
+            let mod_wheel = cc.mod_wheel();
+            // 0.0 to 1.0.
+            let volume = cc.cc(7);
         }
     }
     // ...
@@ -1782,9 +1845,12 @@ impl Processor for SynthesizerProcessor {
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
     if let Some(cc) = context.midi_cc() {
-        let pitch = cc.pitch_bend();   // -1.0 to 1.0
-        let mod_whl = cc.mod_wheel();  // 0.0 to 1.0
-        let volume = cc.cc(7);         // 0.0 to 1.0
+        // -1.0 to 1.0.
+        let pitch = cc.pitch_bend();
+        // 0.0 to 1.0.
+        let mod_whl = cc.mod_wheel();
+        // 0.0 to 1.0.
+        let volume = cc.cc(7);
     }
 }
 ```
@@ -1798,8 +1864,8 @@ For custom CC-to-parameter mapping (instead of receiving as MIDI events):
 ```rust
 fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
     match cc {
-        cc::MOD_WHEEL => Some(PARAM_VIBRATO),
-        cc::EXPRESSION => Some(PARAM_VOLUME),
+        cc::MOD_WHEEL => Some(self.vibrato.id()),
+        cc::EXPRESSION => Some(self.volume.id()),
         _ => None,
     }
 }
@@ -1821,12 +1887,12 @@ fn on_midi_learn(&self, _bus: i32, _channel: i16, cc: u8) -> bool {
 }
 ```
 
-**MIDI 2.0:** `midi1_assignments()`, `midi2_assignments()`, `on_midi2_learn()`
+**MIDI 2.0:** `midi1_assignments()`, `midi2_assignments()`, `on_midi1_learn()` and `on_midi2_learn()`
 
 ### Keyswitch Controller
 
 ```rust
-fn keyswitch_count(&self, _bus: i32, _channel: i16) -> usize { 4 }
+fn keyswitch_count(&self, _bus: i32, _channel: i16) -> usize { 2 }
 
 fn keyswitch_info(&self, _bus: i32, _channel: i16, index: usize) -> Option<KeyswitchInfo> {
     match index {
@@ -1877,7 +1943,8 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 ```rust
 pub struct ParameterNumberMessage {
     pub channel: MidiChannel,
-    pub kind: ParameterNumberKind, // Rpn or Nrpn
+    // Rpn or Nrpn.
+    pub kind: ParameterNumberKind,
     pub parameter: u16,
     pub value: f32,
     pub is_increment: bool,
@@ -1897,7 +1964,7 @@ pub mod cc {
     pub const PAN: u8 = 10;
     pub const EXPRESSION: u8 = 11;
     pub const BANK_SELECT_LSB: u8 = 32;
-    pub const SUSTAIN: u8 = 64;
+    pub const SUSTAIN_PEDAL: u8 = 64;
     pub const DATA_ENTRY_MSB: u8 = 6;
     pub const DATA_ENTRY_LSB: u8 = 38;
     pub const NRPN_LSB: u8 = 98;
@@ -1924,10 +1991,12 @@ impl ControlChange {
 **14-bit CC Helpers:**
 
 ```rust
-let combined = combine_14bit_cc(msb_value, lsb_value);  // → 0.0-1.0
+// 0.0 to 1.0.
+let combined = combine_14bit_cc(msb_value, lsb_value);
 let (msb, lsb) = split_14bit_cc(combined);
 
-let combined = combine_14bit_raw(msb, lsb);  // → 0-16383
+// 0 to 16383.
+let combined = combine_14bit_raw(msb, lsb);
 let (msb, lsb) = split_14bit_raw(combined);
 ```
 

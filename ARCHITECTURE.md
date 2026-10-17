@@ -21,7 +21,7 @@ A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-b
 - **WebView for UI**: Leverage modern web technologies (React, Svelte, Vue, etc.)
 - **Multi-format**: Audio Unit and VST3 support from a single codebase
 - **Lightweight**: Use OS-native WebViews, no bundled browser engine
-- **Cross-platform**: macOS today (Apple Silicon and Intel, tested on Apple Silicon); Windows in progress (the architecture is platform-agnostic, but the WebView backend is macOS-only so far)
+- **Cross-platform**: macOS today (Apple Silicon and Intel, tested on Apple Silicon); Windows planned (the architecture is platform-agnostic, but the WebView backend is macOS-only so far)
 
 ### Goals
 
@@ -231,9 +231,9 @@ The `Processor` type is always fully initialized, so `process()` code is clean:
 ```rust
 impl Processor for DelayProcessor {
     fn process(&mut self, buffer: &mut Buffer, ...) {
-        // self.sample_rate is guaranteed valid
-        // self.buffer is guaranteed allocated
-        // No Option<T>, no .expect(), no placeholder checks
+        // self.sample_rate is guaranteed valid.
+        // self.buffer is guaranteed allocated.
+        // No Option<T>, no .expect(), no placeholder checks.
     }
 }
 ```
@@ -252,8 +252,10 @@ Nested groups of parameters are structs marked with `#[beamer::group]`. See [Two
 ```rust
 struct DelayProcessor {
     model: Arc<DelayModel>,
-    sample_rate: f64,    // Always valid
-    buffer: Vec<f64>,    // Always allocated
+    // Always valid.
+    sample_rate: f64,
+    // Always allocated.
+    buffer: Vec<f64>,
 }
 ```
 
@@ -420,7 +422,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 ### VST3 Implementation
 
 **Architecture**: COM-based (Component Object Model)
-- Single `Vst3Processor<P>` class implements 15+ COM interfaces
+- Single `Vst3Processor<P>` class implements over a dozen COM interfaces
 - Uses combined component pattern (processor + controller in one class)
 - Direct function pointer vtables for interface calls
 
@@ -428,6 +430,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [processor.rs](crates/beamer-vst3/src/processor.rs) - Main wrapper
 - [factory.rs](crates/beamer-vst3/src/factory.rs) - COM factory registration
 - [export.rs](crates/beamer-vst3/src/export.rs) - Platform entry points
+- [webview.rs](crates/beamer-vst3/src/webview.rs) - WebView editor (`IPlugView`)
+- [component_handler.rs](crates/beamer-vst3/src/component_handler.rs) - The host's component handler, shared by the controller and its editors
 
 **MIDI**: VST3 `Event` union → `beamer-core::MidiEvent`
 - 16+ event types (NoteOn, NoteOff, MIDI CC, PolyPressure, etc.)
@@ -445,10 +449,9 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 
 | Feature | Audio Unit | VST3 |
 |---------|------------|------|
-| **Platform** | macOS only | macOS; Windows in progress (UI backend macOS-only so far) |
+| **Platform** | macOS only | macOS; Windows planned (UI backend macOS-only so far) |
 | **API Style** | Hybrid ObjC/Rust via C-ABI | COM (C++ style) |
 | **Language** | ObjC + Rust | Rust + vst3 crate |
-| **Code Size** | Multiple files (ObjC + Rust) | Single file |
 | **MIDI Format** | UMP MIDI 1.0/2.0 | VST3 Event union |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
@@ -490,6 +493,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 - `setupProcessing()` pre-allocates all buffers based on plugin configuration
 - `process()` uses only stack storage and pre-allocated pools
 - Bounds checking via `.take(max)` prevents allocation even if host misbehaves
+- Calls meant for host threads panic inside `process()` in debug builds: `get()`, `set()` and `reader()` of a `Handover` or `State`, `reset()`, `save()` and `load()` of a `State` and `WebViewEvents::emit()`. They lock, allocate or free memory. The audio thread reads through a `HandoverReader`, which does none of that. The wrappers mark the process call with a `ProcessScope`, and in release builds the check compiles to nothing
 
 ### Deterministic Bus Limits
 
@@ -502,9 +506,8 @@ This section documents the invariants that Beamer enforces. These are API contra
 | `MAX_AUX_BUSES` | 15 | Auxiliary buses (total minus main) |
 
 **Enforcement**:
-- `validate_bus_limits()` checks plugin config against constants at initialization
+- `CachedBusConfig::validate()` checks the model's bus configuration against these constants before the Processor is created: VST3 `setupProcessing()` returns `kResultFalse` and logs an error, AU `allocateRenderResources` returns `kAudioUnitErr_FormatNotSupported`
 - `validate_speaker_arrangement()` rejects invalid host arrangements in `setBusArrangements()`
-- `setupProcessing()` returns `kResultFalse` and logs error if limits exceeded
 
 ### MIDI Data Fidelity
 
@@ -560,14 +563,6 @@ Plugin Load (creates the Model)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ validate_bus_limits(model)                                  │
-│   • Check declared buses ≤ MAX_BUSES                        │
-│   • Check declared channels per bus ≤ MAX_CHANNELS          │
-│   • Return error if exceeded (plugin fails to load)         │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
 │ setBusArrangements(inputs, outputs)  [VST3 host call]       │
 │   • validate_speaker_arrangement() for each bus             │
 │   • Reject if any arrangement exceeds MAX_CHANNELS          │
@@ -577,16 +572,16 @@ Plugin Load (creates the Model)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
+│   • CachedBusConfig::validate()                             │
+│     - Buses ≤ MAX_BUSES, channels per bus ≤ MAX_CHANNELS    │
+│     - Return kResultFalse + log if exceeded                 │
 │   • model.prepare(setup) → Processor                        │
 │     - Model stays, Processor created                        │
 │     - DSP state allocated with real sample rate             │
-│   • ProcessBufferStorage::allocate()                        │
-│     - input_ptrs.reserve(main_channels)                     │
-│     - output_ptrs.reserve(main_channels)                    │
-│     - aux_input_ptrs[i].reserve(aux_channels[i])            │
-│     - aux_output_ptrs[i].reserve(aux_channels[i])           │
+│   • ProcessBufferStorage::allocate_from_config()            │
+│     - main_inputs / main_outputs.reserve(main_channels)     │
+│     - aux_inputs/aux_outputs[i].reserve(aux_channels[i])    │
 │   • All Vecs now have capacity, length = 0                  │
-│   • Return kResultFalse + log if allocation fails           │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼

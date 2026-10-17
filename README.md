@@ -31,7 +31,8 @@ struct GainModel {
 }
 
 impl Model for GainModel {
-    // No setup needed for simple effects; use SampleRate for delays, MaxBufferSize for FFT
+    // A plain gain needs no setup. Use SampleRate for delays and
+    // MaxBufferSize for FFT.
     type Setup = ();
     type Processor = GainProcessor;
 

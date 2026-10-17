@@ -1029,8 +1029,8 @@ pub trait Model: ModelFields + ParameterStore + Default + 'static {
     /// ```ignore
     /// fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> {
     ///     match cc {
-    ///         cc::MOD_WHEEL => Some(PARAM_VIBRATO_DEPTH),
-    ///         cc::EXPRESSION => Some(PARAM_VOLUME),
+    ///         cc::MOD_WHEEL => Some(self.vibrato_depth.id()),
+    ///         cc::EXPRESSION => Some(self.volume.id()),
     ///         _ => None,
     ///     }
     /// }
@@ -1255,10 +1255,11 @@ pub trait Model: ModelFields + ParameterStore + Default + 'static {
     /// # Example
     /// ```ignore
     /// fn physical_ui_mappings(&self, _bus: i32, _channel: i16) -> &[PhysicalUIMap] {
-    ///     &[
+    ///     const MAPPINGS: &[PhysicalUIMap] = &[
     ///         PhysicalUIMap::y_axis(note_expression::BRIGHTNESS),
     ///         PhysicalUIMap::pressure(note_expression::EXPRESSION),
-    ///     ]
+    ///     ];
+    ///     MAPPINGS
     /// }
     /// ```
     ///
