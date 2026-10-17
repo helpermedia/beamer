@@ -533,7 +533,7 @@ When this variable is set:
 
 This enables hot-reload workflows during development. The Beamer runtime (`beamer_runtime.js`) is still injected as a user script, so all `__BEAMER__` APIs work the same way regardless of asset source.
 
-Developer tools (Web Inspector on macOS) are enabled in debug builds automatically via `WebViewConfig::dev_tools`.
+Developer tools (Web Inspector on macOS) are enabled automatically in debug builds of every format: Beamer sets `WebViewConfig::dev_tools` from `debug_assertions`.
 
 ## Background Color
 

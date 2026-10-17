@@ -1198,7 +1198,6 @@ void beamer_au_editor_sync_close(BeamerAuEditorSyncHandle _Nullable sync);
  *
  * @param parent           A valid NSView* pointer to attach the WebView to.
  * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
- * @param dev_tools        Whether to enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
@@ -1206,7 +1205,6 @@ void beamer_au_editor_sync_close(BeamerAuEditorSyncHandle _Nullable sync);
  */
 void* _Nullable beamer_webview_create(void* _Nonnull parent,
                                       const void* _Nonnull assets,
-                                      bool dev_tools,
                                       const uint8_t* _Nullable background_color);
 
 /**
@@ -1216,7 +1214,6 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
  *
  * @param parent           A valid NSView* pointer to attach the WebView to.
  * @param url              Null-terminated UTF-8 URL to navigate to.
- * @param dev_tools        Whether to enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
@@ -1224,7 +1221,6 @@ void* _Nullable beamer_webview_create(void* _Nonnull parent,
  */
 void* _Nullable beamer_webview_create_url(void* _Nonnull parent,
                                           const char* _Nonnull url,
-                                          bool dev_tools,
                                           const uint8_t* _Nullable background_color);
 
 /**
@@ -1262,7 +1258,6 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
  *
  * @param parent           NSView* to attach the WebView to.
  * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
- * @param dev_tools        Enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
  * @param loaded_callback  Called when the WebView finishes initial load.
@@ -1272,7 +1267,6 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
 void* _Nullable beamer_webview_create_with_ipc(
     void* _Nonnull parent,
     const void* _Nonnull assets,
-    bool dev_tools,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
     void (* _Nonnull loaded_callback)(void* context),
@@ -1284,7 +1278,6 @@ void* _Nullable beamer_webview_create_with_ipc(
  *
  * @param parent           NSView* to attach the WebView to.
  * @param url              Null-terminated UTF-8 URL.
- * @param dev_tools        Enable Web Inspector.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
  * @param loaded_callback  Called when the WebView finishes initial load.
@@ -1294,7 +1287,6 @@ void* _Nullable beamer_webview_create_with_ipc(
 void* _Nullable beamer_webview_create_url_with_ipc(
     void* _Nonnull parent,
     const char* _Nonnull url,
-    bool dev_tools,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
     void (* _Nonnull loaded_callback)(void* context),

@@ -2376,13 +2376,6 @@ static void beamer_auv2_on_loaded(void* context) {
     beamer_au_get_gui_size(rustInstance, &width, &height);
     NSSize viewSize = NSMakeSize(width, height);
 
-    // Create WebView via beamer-webview C-ABI (shared platform layer)
-#ifdef DEBUG
-    bool devTools = true;
-#else
-    bool devTools = false;
-#endif
-
     // Create a temporary container to attach the WebView to
     NSView* container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)];
     if (container == nil) {
@@ -2404,15 +2397,16 @@ static void beamer_auv2_on_loaded(void* context) {
          rustInstance:rustInstance
             audioUnit:audioUnit];
 
+    // Create WebView via beamer-webview C-ABI (shared platform layer).
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url_with_ipc(
-            (__bridge void*)container, devUrl, devTools, bgColor,
+            (__bridge void*)container, devUrl, bgColor,
             beamer_auv2_on_message, beamer_auv2_on_loaded,
             (__bridge void*)guiView);
     } else {
         const void* assets = beamer_au_get_gui_assets();
         webviewHandle = beamer_webview_create_with_ipc(
-            (__bridge void*)container, assets, devTools, bgColor,
+            (__bridge void*)container, assets, bgColor,
             beamer_auv2_on_message, beamer_auv2_on_loaded,
             (__bridge void*)guiView);
     }

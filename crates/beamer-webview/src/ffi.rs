@@ -3,7 +3,8 @@
 //! These functions wrap `MacosWebView` so the AUv2 and AUv3 wrappers can
 //! create and manage a WKWebView without reimplementing the setup logic.
 //! The same Rust platform code serves VST3 (through direct Rust calls) and
-//! the Audio Units (through these C-ABI functions).
+//! the Audio Units (through these C-ABI functions). In both, the Web
+//! Inspector is enabled in debug builds of the plugin.
 
 #[cfg(target_os = "macos")]
 mod macos_ffi {
@@ -38,7 +39,6 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create(
         parent: *mut c_void,
         assets: *const c_void,
-        dev_tools: bool,
         background_color: *const u8,
     ) -> *mut c_void {
         if parent.is_null() || assets.is_null() {
@@ -57,7 +57,8 @@ mod macos_ffi {
             let config = WebViewConfig {
                 assets: Some(assets_ref),
                 url: None,
-                dev_tools,
+                // The Web Inspector follows the build profile, as in VST3.
+                dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback: None,
                 loaded_callback: None,
@@ -88,7 +89,6 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create_url(
         parent: *mut c_void,
         url: *const c_char,
-        dev_tools: bool,
         background_color: *const u8,
     ) -> *mut c_void {
         if parent.is_null() || url.is_null() {
@@ -105,7 +105,8 @@ mod macos_ffi {
             let config = WebViewConfig {
                 assets: None,
                 url: Some(url_str),
-                dev_tools,
+                // The Web Inspector follows the build profile, as in VST3.
+                dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback: None,
                 loaded_callback: None,
@@ -208,7 +209,6 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create_with_ipc(
         parent: *mut c_void,
         assets: *const c_void,
-        dev_tools: bool,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
@@ -230,7 +230,8 @@ mod macos_ffi {
             let config = WebViewConfig {
                 assets: Some(assets_ref),
                 url: None,
-                dev_tools,
+                // The Web Inspector follows the build profile, as in VST3.
+                dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback,
                 loaded_callback,
@@ -256,7 +257,6 @@ mod macos_ffi {
     pub extern "C" fn beamer_webview_create_url_with_ipc(
         parent: *mut c_void,
         url: *const c_char,
-        dev_tools: bool,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
@@ -276,7 +276,8 @@ mod macos_ffi {
             let config = WebViewConfig {
                 assets: None,
                 url: Some(url_str),
-                dev_tools,
+                // The Web Inspector follows the build profile, as in VST3.
+                dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback,
                 loaded_callback,
