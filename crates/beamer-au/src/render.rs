@@ -35,13 +35,13 @@ use std::sync::{Arc, Mutex};
 use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
 use crate::buffers::{AudioBuffer, AudioBufferList};
 use crate::error::{os_status, PluginResult};
-use crate::instance::{AuPluginInstance, SharedParameters};
+use crate::instance::AuPluginInstance;
 use crate::objc_block;
 use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
-    MAX_BUSES,
+    SharedModel, MAX_BUSES,
     MAX_CHANNELS, MAX_SYSEX_SIZE,
 };
 
@@ -1069,8 +1069,9 @@ pub struct RenderBlock<S: Sample> {
     shared: Arc<SharedState>,
     /// Reference to the plugin for audio processing
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
-    /// The parameters of the plugin, for resetting their smoothers.
-    parameters: Arc<dyn SharedParameters>,
+    /// The model of the plugin, for resetting the smoothers of its
+    /// parameters.
+    model: Arc<dyn SharedModel>,
     /// Maximum frames per render call. The buffers of this block are sized
     /// for it.
     max_frames: u32,
@@ -1161,14 +1162,14 @@ impl<S: RenderSample> RenderBlock<S> {
     /// # Arguments
     ///
     /// * `plugin` - Arc-wrapped plugin instance for audio processing
-    /// * `parameters` - The parameters of the plugin
+    /// * `model` - The model of the plugin
     /// * `shared` - State shared with the host threads of the instance
     /// * `storage` - Pre-allocated buffer storage (created from bus config)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
     pub(crate) fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
-        parameters: Arc<dyn SharedParameters>,
+        model: Arc<dyn SharedModel>,
         shared: Arc<SharedState>,
         storage: ProcessBufferStorage<S>,
         max_frames: u32,
@@ -1205,7 +1206,7 @@ impl<S: RenderSample> RenderBlock<S> {
         Self {
             shared,
             plugin,
-            parameters,
+            model,
             max_frames,
             storage: UnsafeCell::new(storage),
             midi_buffer: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1388,7 +1389,7 @@ impl<S: RenderSample> RenderBlock<S> {
             plugin_guard.reset();
         }
         if self.shared.take_smoothing_reset_request() {
-            self.parameters.parameters().reset_smoothing();
+            self.model.parameters().reset_smoothing();
         }
         self.shared
             .publish_timing(plugin_guard.latency_samples(), plugin_guard.tail_samples());
@@ -1869,14 +1870,14 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
 /// # Arguments
 ///
 /// * `plugin` - Arc-wrapped plugin instance
-/// * `parameters` - The parameters of the plugin
+/// * `model` - The model of the plugin
 /// * `shared` - State shared with the host threads of the instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 pub(crate) fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
-    parameters: Arc<dyn SharedParameters>,
+    model: Arc<dyn SharedModel>,
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f32>,
     max_frames: u32,
@@ -1884,7 +1885,7 @@ pub(crate) fn create_render_block_f32(
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
-        parameters,
+        model,
         shared,
         storage,
         max_frames,
@@ -1899,14 +1900,14 @@ pub(crate) fn create_render_block_f32(
 /// # Arguments
 ///
 /// * `plugin` - Arc-wrapped plugin instance
-/// * `parameters` - The parameters of the plugin
+/// * `model` - The model of the plugin
 /// * `shared` - State shared with the host threads of the instance
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 pub(crate) fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
-    parameters: Arc<dyn SharedParameters>,
+    model: Arc<dyn SharedModel>,
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f64>,
     max_frames: u32,
@@ -1914,7 +1915,7 @@ pub(crate) fn create_render_block_f64(
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
-        parameters,
+        model,
         shared,
         storage,
         max_frames,

@@ -39,10 +39,10 @@ use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
     BusType, CachedBusConfig, CachedBusInfo, EditorSync, ParameterInfo, ParameterUnit,
-    ProcessMode, WebViewDispatch, WebViewEvents, MAX_BUSES,
+    ProcessMode, SharedModel, WebViewDispatch, WebViewEvents, MAX_BUSES,
 };
 use crate::factory;
-use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
+use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
     BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait,
@@ -447,10 +447,10 @@ pub struct BeamerInstanceHandle {
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEvents>,
-    /// The parameters of the plugin. They stay in this one place for the life
-    /// of the instance, so the functions that only need them (values, state,
+    /// The model of the plugin. It stays in this one place for the life of
+    /// the instance, so the functions that only need it (values, state,
     /// groups, presets) never take the plugin mutex.
-    parameters: Arc<dyn SharedParameters>,
+    model: Arc<dyn SharedModel>,
     /// The factory presets, captured at instance creation.
     presets: FactoryPresetAccess,
     /// The declared buses, captured at instance creation.
@@ -469,7 +469,7 @@ impl BeamerInstanceHandle {
         // Mutex, so that those calls never need to lock it.
         let webview_dispatch = plugin.webview_dispatch();
         let webview_events = plugin.webview_events();
-        let parameters = plugin.shared_parameters();
+        let model = plugin.shared_model();
         let presets = plugin.factory_presets();
         let declared_buses = DeclaredBuses::capture(plugin.as_ref());
 
@@ -479,7 +479,7 @@ impl BeamerInstanceHandle {
             bus_config: Mutex::new(None),
             webview_dispatch,
             webview_events,
-            parameters,
+            model,
             presets,
             declared_buses,
             shared: Arc::new(SharedState::default()),
@@ -570,23 +570,23 @@ fn lock_plugin(
         .map_err(|_| os_status::K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT)
 }
 
-/// Access the plugin's parameters as host threads share them.
+/// Access the plugin's model as host threads share it.
 ///
-/// The parameters are in one place for the life of the instance and work
+/// The model is in one place for the life of the instance and works
 /// through a shared reference, so this takes no lock and never waits.
-fn with_parameters<R>(
+fn with_model<R>(
     handle: &BeamerInstanceHandle,
-    f: impl FnOnce(&dyn SharedParameters) -> R,
+    f: impl FnOnce(&dyn SharedModel) -> R,
 ) -> R {
-    f(&*handle.parameters)
+    f(&*handle.model)
 }
 
-/// Access the plugin's ParameterStore (see `with_parameters`).
+/// Access the plugin's ParameterStore (see `with_model`).
 fn with_param_store<R>(
     handle: &BeamerInstanceHandle,
     f: impl FnOnce(&dyn ParameterStore) -> R,
 ) -> R {
-    f(handle.parameters.store())
+    f(handle.model.parameter_store())
 }
 
 /// Copy a Rust string into a fixed-size C char array.
@@ -715,8 +715,8 @@ pub extern "C" fn beamer_au_create_instance() -> BeamerAuInstanceHandle {
         // Two parameters with one id would be one parameter to the host.
         // The reason also goes to standard error: a plugin has no logger
         // unless it sets `log_level` in its Config.toml.
-        let parameters = plugin.shared_parameters();
-        if let Err(error) = beamer_core::parameter_types::check_unique_ids(parameters.parameters()) {
+        let model = plugin.shared_model();
+        if let Err(error) = beamer_core::parameter_types::check_unique_ids(model.parameters()) {
             let name = factory::plugin_config().map_or("plugin", |config| config.name);
             log::error!("{}: {}", name, error);
             eprintln!("{}: {}", name, error);
@@ -932,7 +932,7 @@ fn prepare_instance(
             );
             Arc::from(create_render_block_f32(
                 Arc::clone(&handle.plugin),
-                Arc::clone(&handle.parameters),
+                Arc::clone(&handle.model),
                 Arc::clone(&handle.shared),
                 storage,
                 max_frames,
@@ -946,7 +946,7 @@ fn prepare_instance(
             );
             Arc::from(create_render_block_f64(
                 Arc::clone(&handle.plugin),
-                Arc::clone(&handle.parameters),
+                Arc::clone(&handle.model),
                 Arc::clone(&handle.shared),
                 storage,
                 max_frames,
@@ -1705,9 +1705,7 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
 #[no_mangle]
 pub extern "C" fn beamer_au_get_group_count(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
-        with_parameters(handle, |parameters| {
-            parameters.parameters().group_count() as u32
-        })
+        with_model(handle, |model| model.parameters().group_count() as u32)
     })
 }
 
@@ -1735,8 +1733,8 @@ pub extern "C" fn beamer_au_get_group_info(
     }
 
     with_instance!(instance, false, |handle| {
-        let group_info = match with_parameters(handle, |parameters| {
-            parameters.parameters().group_info(index as usize)
+        let group_info = match with_model(handle, |model| {
+            model.parameters().group_info(index as usize)
         }) {
             Some(info) => info,
             None => return false,
@@ -1785,7 +1783,7 @@ pub extern "C" fn beamer_au_copy_state(
     unsafe { *out_size = 0 };
 
     with_instance!(instance, ptr::null_mut(), |handle| {
-        let state = with_parameters(handle, |parameters| parameters.parameters().save_state());
+        let state = with_model(handle, |model| model.save_state());
         let size = match u32::try_from(state.len()) {
             Ok(size) if size > 0 => size,
             Ok(_) => return ptr::null_mut(),
@@ -1852,9 +1850,7 @@ pub extern "C" fn beamer_au_set_state(
             &[]
         };
 
-        let loaded = with_parameters(handle, |parameters| {
-            parameters.parameters().load_state(state_slice)
-        });
+        let loaded = with_model(handle, |model| model.load_state(state_slice));
 
         match loaded {
             Ok(()) => {
@@ -2576,9 +2572,7 @@ pub extern "C" fn beamer_au_apply_preset(
     preset_index: u32,
 ) -> bool {
     with_instance!(instance, false, |handle| {
-        with_parameters(handle, |parameters| {
-            (handle.presets.apply)(parameters, preset_index as usize)
-        })
+        with_model(handle, |model| (handle.presets.apply)(model, preset_index as usize))
     })
 }
 
@@ -2806,8 +2800,7 @@ pub extern "C" fn beamer_au_editor_sync_open(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
 
-        let parameters = Arc::clone(&handle.parameters).into_store();
-        let sync = EditorSync::open(parameters, handle.webview_events.clone());
+        let sync = EditorSync::open(Arc::clone(&handle.model), handle.webview_events.clone());
         Box::into_raw(Box::new(BeamerAuEditorSync(sync)))
     }));
 

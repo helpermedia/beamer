@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
+use crate::model::SharedModel;
 use crate::parameter_store::{params_to_init_json, ParameterStore};
 use crate::state_format::SavedState;
 use crate::types::ParameterId;
@@ -29,12 +30,12 @@ use crate::webview_events::WebViewEvents;
 
 /// The link between one open editor and the plugin it shows.
 ///
-/// For the main thread of the editor. Holds the parameters and the event
-/// queue itself, so that it keeps working when the editor outlives the
-/// plugin instance.
+/// For the main thread of the editor. Holds the model and the event queue
+/// itself, so that it keeps working when the editor outlives the plugin
+/// instance.
 pub struct EditorSync {
-    /// The parameters of the plugin.
-    parameters: Arc<dyn ParameterStore>,
+    /// The model of the plugin: its parameters and `State` fields.
+    model: Arc<dyn SharedModel>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEvents>,
     /// The bits of the normalized value of each parameter the web UI
@@ -44,7 +45,7 @@ pub struct EditorSync {
     /// The generation of the value of each `State` field the web UI got
     /// last, by path.
     state_generations: HashMap<String, u64>,
-    /// The `state_generation()` of the parameters at the last look at the
+    /// The `state_generation()` of the model at the last look at the
     /// `State` fields. `None` before the first.
     state_sum: Option<u64>,
     /// Whether a large `State` value was reported already.
@@ -58,14 +59,14 @@ const LARGE_STATE: usize = 1 << 20;
 impl EditorSync {
     /// Start keeping an editor in step. Events the plugin emits from now
     /// on reach it.
-    pub fn open(parameters: Arc<dyn ParameterStore>, events: Option<WebViewEvents>) -> Self {
+    pub fn open(model: Arc<dyn SharedModel>, events: Option<WebViewEvents>) -> Self {
         if let Some(events) = &events {
             events.editor_opened();
         }
         // Nothing was sent yet, so the first frame sends every parameter.
-        let last_values = vec![None; parameters.count()];
+        let last_values = vec![None; model.parameter_store().count()];
         Self {
-            parameters,
+            model,
             events,
             last_values,
             state_generations: HashMap::new(),
@@ -74,20 +75,20 @@ impl EditorSync {
         }
     }
 
-    /// The parameters of the plugin.
-    pub fn parameters(&self) -> &dyn ParameterStore {
-        &*self.parameters
+    /// The parameters of the plugin, as the host sees them.
+    pub fn parameter_store(&self) -> &dyn ParameterStore {
+        self.model.parameter_store()
     }
 
     /// The script that hands a freshly loaded page its parameters, the
     /// values of the `State` fields and the name of the plugin format
     /// (`"vst3"`, `"auv2"`, `"auv3"`).
     pub fn init_script(&mut self, plugin_format: &str) -> String {
-        let parameters = params_to_init_json(&*self.parameters);
+        let parameters = params_to_init_json(self.model.parameter_store());
         let format = json_string(plugin_format);
 
         // Every field, whether or not it changed: the page knows nothing.
-        self.state_sum = Some(self.parameters.state_generation());
+        self.state_sum = Some(self.model.state_generation());
         let mut states = String::new();
         self.for_each_new_state(true, &mut |path, json| {
             if !states.is_empty() {
@@ -106,7 +107,7 @@ impl EditorSync {
     /// frame, then the events that wait. `None` when nothing changed.
     pub fn frame_script(&mut self) -> Option<String> {
         let mut script = String::new();
-        let parameters = &*self.parameters;
+        let parameters = self.model.parameter_store();
 
         let mut any = false;
         for (index, last) in self.last_values.iter_mut().enumerate() {
@@ -129,7 +130,7 @@ impl EditorSync {
 
         // The sum of the generations changes with every set of a field, so
         // a frame without a change looks at no field.
-        let sum = self.parameters.state_generation();
+        let sum = self.model.state_generation();
         if self.state_sum != Some(sum) {
             self.state_sum = Some(sum);
             let mut states = String::new();
@@ -159,7 +160,7 @@ impl EditorSync {
     /// bits). The value counts as sent, so the next frame does not send
     /// it again.
     pub fn parameter_script(&mut self, id: ParameterId) -> String {
-        let parameters = &*self.parameters;
+        let parameters = self.model.parameter_store();
         let value = parameters.get_normalized(id);
         let index = (0..parameters.count())
             .find(|&index| parameters.info(index).is_some_and(|info| info.id == id));
@@ -184,9 +185,8 @@ impl EditorSync {
     pub fn state_script(&mut self, path: &str, value: &serde_json::Value) -> Option<String> {
         let json = serde_json::to_vec(value).ok()?;
         let mut answer = None;
-        let parameters = &*self.parameters;
         let generations = &mut self.state_generations;
-        parameters.for_each_state(&mut |field, state| {
+        self.model.for_each_state(&mut |field, state| {
             if field != path {
                 return;
             }
@@ -215,10 +215,9 @@ impl EditorSync {
     /// the web UI does not have yet, or of every field with `all`, and note
     /// them as sent.
     fn for_each_new_state(&mut self, all: bool, send: &mut dyn FnMut(&str, &[u8])) {
-        let parameters = &*self.parameters;
         let generations = &mut self.state_generations;
         let reported_large = &mut self.reported_large;
-        parameters.for_each_state(&mut |path, state| {
+        self.model.for_each_state(&mut |path, state| {
             if !all && generations.get(path) == Some(&state.generation()) {
                 return;
             }
@@ -299,9 +298,14 @@ fn json_string(text: &str) -> String {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use std::any::Any;
+
     use super::*;
     use crate::parameter_info::ParameterInfo;
     use crate::parameter_store::NoParameters;
+    use crate::model::ModelFields;
+    use crate::parameter_groups::ParameterGroups;
+    use crate::parameter_types::{ParameterRef, Parameters};
     use crate::state::State;
     use crate::types::ParameterValue;
 
@@ -375,9 +379,39 @@ mod tests {
         }
     }
 
+    // Values without parameter objects: a `Parameters` impl would have to
+    // claim none, so this store is a `SharedModel` of its own.
+    impl SharedModel for TwoParameters {
+        fn parameter_store(&self) -> &dyn ParameterStore {
+            self
+        }
+
+        fn parameters(&self) -> &dyn Parameters {
+            &NoParameters
+        }
+
+        fn state_generation(&self) -> u64 {
+            0
+        }
+
+        fn for_each_state(&self, _visit: &mut dyn FnMut(&str, &dyn SavedState)) {}
+
+        fn save_state(&self) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn load_state(&self, _data: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
     fn sync() -> (Arc<TwoParameters>, EditorSync) {
         let parameters = Arc::new(TwoParameters::new());
-        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn ParameterStore>, None);
+        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, None);
         (parameters, sync)
     }
 
@@ -434,7 +468,7 @@ mod tests {
     fn test_first_frame_sends_a_value_that_is_not_a_number() {
         let parameters = Arc::new(TwoParameters::new());
         parameters.set_normalized(10, f64::NAN);
-        let mut sync = EditorSync::open(parameters as Arc<dyn ParameterStore>, None);
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, None);
 
         let script = sync.frame_script().expect("a first frame");
         assert!(script.contains("10:[null,null,"));
@@ -454,7 +488,7 @@ mod tests {
         let events = WebViewEvents::new();
         events.claim();
         let parameters = Arc::new(TwoParameters::new());
-        let mut sync = EditorSync::open(parameters as Arc<dyn ParameterStore>, Some(events.clone()));
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, Some(events.clone()));
 
         events.emit("tick", &1);
         let script = sync.frame_script().expect("a first frame");
@@ -538,7 +572,25 @@ mod tests {
         fn plain_to_normalized(&self, _id: ParameterId, plain: ParameterValue) -> ParameterValue {
             plain
         }
+    }
 
+    impl ParameterGroups for TwoStates {}
+
+    impl Parameters for TwoStates {
+        fn count(&self) -> usize {
+            0
+        }
+
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(std::iter::empty())
+        }
+
+        fn by_id(&self, _id: ParameterId) -> Option<&dyn ParameterRef> {
+            None
+        }
+    }
+
+    impl ModelFields for TwoStates {
         fn state_generation(&self) -> u64 {
             self.zoom.generation().wrapping_add(self.name.generation())
         }
@@ -551,7 +603,7 @@ mod tests {
 
     fn state_sync() -> (Arc<TwoStates>, EditorSync) {
         let states = Arc::new(TwoStates::default());
-        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn ParameterStore>, None);
+        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, None);
         (states, sync)
     }
 

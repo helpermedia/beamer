@@ -14,55 +14,14 @@
 //! operations we need, then use `Box<dyn AuPluginInstance>` to store any
 //! plugin implementation.
 
-use std::any::Any;
 use std::sync::Arc;
 
 use crate::error::PluginResult;
-use beamer_core::parameter_types::Parameters;
 use beamer_core::preset::PresetInfo;
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ParameterStore, ProcessContext,
-    ProcessMode, WebViewDispatch, WebViewEvents,
+    AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
+    SharedModel, WebViewDispatch, WebViewEvents,
 };
-
-/// The parameters of a plugin as the bridge uses them from host threads.
-///
-/// Everything behind this trait works through a shared reference: the
-/// parameter values are atomic and the rest is immutable. That is what lets
-/// the bridge answer the host without the plugin mutex while the audio thread
-/// renders.
-pub trait SharedParameters: Send + Sync {
-    /// The values and metadata of the parameters.
-    fn store(&self) -> &dyn ParameterStore;
-
-    /// The parameter collection: its state and its groups.
-    fn parameters(&self) -> &dyn Parameters;
-
-    /// The parameters as `Any`, to get back at their concrete type.
-    fn as_any(&self) -> &dyn Any;
-
-    /// The same parameters as a store of their own, for what has to keep
-    /// them, like the editor of a web UI.
-    fn into_store(self: Arc<Self>) -> Arc<dyn ParameterStore>;
-}
-
-impl<T: ParameterStore + Parameters + 'static> SharedParameters for T {
-    fn store(&self) -> &dyn ParameterStore {
-        self
-    }
-
-    fn parameters(&self) -> &dyn Parameters {
-        self
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn into_store(self: Arc<Self>) -> Arc<dyn ParameterStore> {
-        self
-    }
-}
 
 /// The factory presets of a plugin type.
 ///
@@ -75,7 +34,7 @@ pub struct FactoryPresetAccess {
     /// Returns the info of the preset at an index.
     pub info: fn(usize) -> Option<PresetInfo>,
     /// Applies the preset at an index to the parameters of the plugin.
-    pub apply: fn(&dyn SharedParameters, usize) -> bool,
+    pub apply: fn(&dyn SharedModel, usize) -> bool,
 }
 
 impl FactoryPresetAccess {
@@ -137,14 +96,14 @@ pub trait AuPluginInstance: Send + 'static {
     /// Get the maximum frame count (only valid when prepared).
     fn max_frames(&self) -> Option<u32>;
 
-    /// Get the parameters as the bridge shares them with host threads.
+    /// Get the model as the bridge shares it with host threads.
     ///
     /// The bridge keeps this `Arc` for the life of the instance, so that
     /// parameter values, state, groups and presets need no plugin mutex
-    /// (see `SharedParameters`). It must be the `Arc` that the processors
-    /// of this instance use: what the host sets through it is what the
-    /// audio thread reads.
-    fn shared_parameters(&self) -> Arc<dyn SharedParameters>;
+    /// (see `SharedModel`). It must be the `Arc` that the processors of
+    /// this instance use: what the host sets through it is what the audio
+    /// thread reads.
+    fn shared_model(&self) -> Arc<dyn SharedModel>;
 
     /// Reset DSP state (clear delay lines, reset filters, etc.).
     ///

@@ -215,13 +215,13 @@ struct QuietParameters {
 #[test]
 fn test_derive_finds_the_queue_by_its_type() {
     let parameters = EventsParameters::default();
-    let found = Parameters::webview_events(&parameters).expect("the queue is found");
+    let found = ModelFields::webview_events(&parameters).expect("the queue is found");
     assert!(std::ptr::eq(found, &parameters.events));
 
     // Also in a nested struct.
     let outer = OuterParameters::default();
-    let found = Parameters::webview_events(&outer).expect("the nested queue is found");
+    let found = ModelFields::webview_events(&outer).expect("the nested queue is found");
     assert!(std::ptr::eq(found, &outer.inner.events));
 
-    assert!(Parameters::webview_events(&QuietParameters::default()).is_none());
+    assert!(ModelFields::webview_events(&QuietParameters::default()).is_none());
 }

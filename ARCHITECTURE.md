@@ -416,7 +416,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
 
 **State**: NSDictionary with NSData
-- The state is the parameter struct with its parameters and `State` fields (`Parameters::save_state`/`load_state`), prepared or not
+- The state is the parameter struct with its parameters and `State` fields (`ModelFields::save_state`/`load_state`), prepared or not
 - Saved and loaded without the plugin mutex, also while audio renders
 - Compatible with VST3 format
 

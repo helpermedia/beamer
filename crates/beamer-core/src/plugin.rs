@@ -59,6 +59,7 @@ pub trait HasParameters: Send + 'static {
     type Parameters: ParameterStore
         + ParameterGroups
         + crate::parameter_types::Parameters
+        + crate::model::ModelFields
         + Default
         + 'static;
 

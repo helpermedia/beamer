@@ -33,11 +33,11 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
-use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
+use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, WebViewDispatch,
+    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEvents, MAX_AUX_BUSES,
 };
 
@@ -75,7 +75,7 @@ where
         let descriptor = P::default();
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = beamer_core::Parameters::webview_events(&**descriptor.parameters()).cloned();
+        let events = beamer_core::ModelFields::webview_events(&**descriptor.parameters()).cloned();
         if let Some(events) = &events {
             events.claim();
         }
@@ -131,10 +131,10 @@ where
         self.state.max_frames()
     }
 
-    fn shared_parameters(&self) -> Arc<dyn SharedParameters> {
+    fn shared_model(&self) -> Arc<dyn SharedModel> {
         // Clone the concrete `Arc`, then let it coerce to the trait object.
-        let parameters: Arc<P::Parameters> = Arc::clone(self.state.descriptor.parameters());
-        parameters
+        let model: Arc<P::Parameters> = Arc::clone(self.state.descriptor.parameters());
+        model
     }
 
     fn reset(&mut self) {
@@ -477,12 +477,12 @@ where
     }
 }
 
-/// Apply a factory preset to the shared parameters of a plugin.
+/// Apply a factory preset to the shared model of a plugin.
 ///
 /// Always applies, also when the preset is the current one: hosts send the
 /// same preset again and expect its values back.
-fn apply_preset<Presets: FactoryPresets>(parameters: &dyn SharedParameters, index: usize) -> bool {
-    match parameters.as_any().downcast_ref::<Presets::Parameters>() {
+fn apply_preset<Presets: FactoryPresets>(model: &dyn SharedModel, index: usize) -> bool {
+    match model.as_any().downcast_ref::<Presets::Parameters>() {
         Some(parameters) => Presets::apply(index, parameters),
         None => false,
     }
@@ -692,6 +692,15 @@ mod tests {
                 None
             }
         }
+        fn set_sample_rate(&self, sample_rate: f64) {
+            SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));
+        }
+        fn reset_smoothing(&self) {
+            SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
+        }
+    }
+
+    impl beamer_core::ModelFields for TestParameters {
         fn save_state(&self) -> Vec<u8> {
             SAVE_STATE_HOOK.with(|hook| {
                 if let Some(hook) = hook.borrow().as_ref() {
@@ -709,12 +718,6 @@ mod tests {
         fn load_entries(&self, entries: &beamer_core::state_format::StateEntries<'_>, _prefix: &str) {
             entries.load_parameter("gain", &self.gain);
             entries.load_state("blob", &self.blob);
-        }
-        fn set_sample_rate(&self, sample_rate: f64) {
-            SMOOTHING_SAMPLE_RATE.with(|rate| rate.set(sample_rate));
-        }
-        fn reset_smoothing(&self) {
-            SMOOTHING_RESETS.with(|resets| resets.set(resets.get() + 1));
         }
     }
 
@@ -933,18 +936,18 @@ mod tests {
 
     /// Get the gain parameter's normalized value.
     fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
-        let params = processor.shared_parameters();
-        let params = params.store();
-        let gain_id = params.info(0).unwrap().id;
-        params.get_normalized(gain_id)
+        let model = processor.shared_model();
+        let parameters = model.parameter_store();
+        let gain_id = parameters.info(0).unwrap().id;
+        parameters.get_normalized(gain_id)
     }
 
     /// Set the gain parameter's normalized value.
     fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
-        let params = processor.shared_parameters();
-        let params = params.store();
-        let gain_id = params.info(0).unwrap().id;
-        params.set_normalized(gain_id, value);
+        let model = processor.shared_model();
+        let parameters = model.parameter_store();
+        let gain_id = parameters.info(0).unwrap().id;
+        parameters.set_normalized(gain_id, value);
     }
 
     // =========================================================================
@@ -1240,12 +1243,12 @@ mod tests {
             .unwrap()
             .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, process_mode)
             .expect("prepare");
-        let parameters = plugin.lock().unwrap().shared_parameters();
+        let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
         let shared = Arc::new(SharedState::default());
         create_render_block_f32(
             Arc::clone(plugin),
-            parameters,
+            model,
             shared,
             storage,
             FRAMES as u32,
@@ -1635,8 +1638,8 @@ mod tests {
 
         let plugin = boxed(AuProcessor::<RecordingPlugin>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
-        let store = plugin.lock().unwrap().shared_parameters();
-        let gain_before = store.store().get_normalized(gain_id());
+        let model = plugin.lock().unwrap().shared_model();
+        let gain_before = model.parameter_store().get_normalized(gain_id());
 
         let gain = u64::from(gain_id());
         let mut events = vec![
@@ -1671,7 +1674,7 @@ mod tests {
         // Nothing was rendered.
         assert!(RECORDED.with(|recorded| recorded.borrow().is_empty()));
 
-        assert_ne!(store.store().get_normalized(gain_id()), gain_before);
+        assert_ne!(model.parameter_store().get_normalized(gain_id()), gain_before);
         sent
     }
 
@@ -1700,11 +1703,11 @@ mod tests {
             .unwrap()
             .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
             .expect("prepare");
-        let parameters = plugin.lock().unwrap().shared_parameters();
+        let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f64>::allocate_from_config(&bus_config, FRAMES);
         let block = create_render_block_f64(
             Arc::clone(&plugin),
-            parameters,
+            model,
             Arc::new(SharedState::default()),
             storage,
             FRAMES as u32,
@@ -2250,13 +2253,13 @@ mod tests {
     fn test_state_of_any_size_is_saved_and_loaded_whole() {
         // An instance whose state holds some hundred kilobytes.
         let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
-        let shared = plugin.shared_parameters();
-        let parameters = shared
+        let shared = plugin.shared_model();
+        let model = shared
             .as_any()
             .downcast_ref::<TestParameters>()
-            .expect("the parameters of the test plugin");
+            .expect("the model of the test plugin");
         let blob: Vec<u8> = (0..300_000u32).map(|index| (index % 251) as u8).collect();
-        parameters.blob.set(blob.clone());
+        model.blob.set(blob.clone());
         let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;
         beamer_au_set_parameter_value(instance, gain_id(), 0.25);
@@ -2264,7 +2267,7 @@ mod tests {
         // The bridge hands out exactly what the parameters save.
         let state = saved_state(instance);
         assert!(state.len() > blob.len());
-        assert_eq!(state, parameters.save_state());
+        assert_eq!(state, beamer_core::ModelFields::save_state(model));
 
         // Another instance takes all of it.
         let mut other = test_handle();
@@ -2474,17 +2477,17 @@ mod tests {
     #[test]
     fn test_dropping_the_instance_frees_the_parameters() {
         let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
-        let parameters = Arc::downgrade(&plugin.shared_parameters());
+        let model = Arc::downgrade(&plugin.shared_model());
         let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;
 
-        // The handle, the processor and the render block each hold them.
+        // The handle, the processor and the render block each hold it.
         assert_eq!(allocate(instance, false), 0);
         assert_eq!(render_instance(instance), 0);
-        assert!(parameters.upgrade().is_some());
+        assert!(model.upgrade().is_some());
 
         drop(handle);
-        assert!(parameters.upgrade().is_none());
+        assert!(model.upgrade().is_none());
     }
 
     #[test]

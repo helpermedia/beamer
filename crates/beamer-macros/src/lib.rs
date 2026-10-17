@@ -23,8 +23,9 @@
 //! // No manual Default impl needed - macro generates everything!
 //! ```
 //!
-//! The macro generates implementations for both `Parameters` (high-level) and
-//! `ParameterStore` (host integration) traits, plus `Default` when all required
+//! The macro generates implementations of `Parameters` (the parameters),
+//! `ModelFields` (`State` fields, the event queue, saving and loading) and
+//! `ParameterStore` (host integration), plus `Default` when all required
 //! attributes are present.
 //!
 //! # Flat Visual Grouping
@@ -65,7 +66,9 @@ mod validate;
 /// Derive macro for implementing parameter traits.
 ///
 /// This macro generates:
-/// - `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
+/// - `Parameters` trait implementation (count, iter, by_id, groups, smoothing)
+/// - `ModelFields` trait implementation (`State` fields, the event queue,
+///   saving and loading)
 /// - `ParameterStore` trait implementation (host integration)
 /// - `Default` implementation (when declarative attributes are complete)
 /// - The ids of every parameter (`assign_ids`), and a compile error for

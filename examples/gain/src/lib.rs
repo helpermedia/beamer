@@ -23,7 +23,8 @@ use beamer::prelude::*;
 /// Gain plugin parameters.
 ///
 /// The `#[derive(Parameters)]` macro generates:
-/// - `Parameters` trait (count, iter, by_id and the entries of the saved state)
+/// - `Parameters` trait (count, iter, by_id, groups, smoothing)
+/// - `ModelFields` trait (`State` fields, the event queue, saving and loading)
 /// - `ParameterStore` trait (host integration)
 /// - `Default` trait (from attribute values)
 #[derive(Parameters)]

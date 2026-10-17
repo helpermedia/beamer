@@ -187,7 +187,7 @@ pub enum FieldIR {
     Other(syn::Ident),
     /// A `WebViewEvents` field: the plugin's queue of events for the web
     /// UI, which the format wrappers find through
-    /// `Parameters::webview_events`. Initialized like `Other`.
+    /// `ModelFields::webview_events`. Initialized like `Other`.
     Events(syn::Ident),
 }
 

@@ -43,7 +43,7 @@ use beamer_core::{
 
 use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
-use beamer_core::{WebViewDispatch, WebViewEvents};
+use beamer_core::{SharedModel, WebViewDispatch, WebViewEvents};
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -371,7 +371,7 @@ where
     /// audio thread does not log: `setupProcessing()`, `setActive()` and
     /// `terminate()` log them.
     process_warnings: ProcessWarnings,
-    /// The `state_generation()` of the parameters that the host knows
+    /// The `state_generation()` of the model that the host knows
     /// about: at creation and after a load. Shared with the editor, which
     /// tells the host when it changed.
     #[cfg(feature = "webview")]
@@ -423,7 +423,7 @@ where
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        let events = beamer_core::Parameters::webview_events(&**plugin.parameters());
+        let events = beamer_core::ModelFields::webview_events(&**plugin.parameters());
         if let Some(events) = events {
             events.claim();
         }
@@ -432,7 +432,8 @@ where
 
         let parameters = Arc::clone(plugin.parameters());
         #[cfg(feature = "webview")]
-        let known_state_generation = Arc::new(AtomicU64::new(parameters.state_generation()));
+        let known_state_generation =
+            Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*parameters)));
 
         Self {
             descriptor: Arc::new(plugin),
@@ -631,13 +632,12 @@ where
         &self.parameters
     }
 
-    /// Get a handle to the parameters for an editor view. The view may
-    /// live longer than a processor and uses the parameters from its own
-    /// thread.
+    /// Get a handle to the model for an editor view. The view may live
+    /// longer than a processor and uses the model from its own thread.
     #[cfg_attr(not(feature = "webview"), allow(dead_code))]
-    fn shared_parameter_store(&self) -> Arc<dyn ParameterStore> {
-        let parameters: Arc<P::Parameters> = Arc::clone(&self.parameters);
-        parameters
+    fn shared_model(&self) -> Arc<dyn SharedModel> {
+        let model: Arc<P::Parameters> = Arc::clone(&self.parameters);
+        model
     }
 
     // =========================================================================
@@ -1332,8 +1332,7 @@ where
         // The state is the parameters. Their values are atomic, so they are
         // loaded through a shared reference: in both states, and also while
         // process() runs, which is when a host loads a preset during playback.
-        use beamer_core::Parameters;
-        match self.parameters().load_state(&buffer) {
+        match beamer_core::ModelFields::load_state(self.parameters(), &buffer) {
             Ok(()) => {
                 // The smoothers belong to the audio thread: the next process()
                 // call makes them jump to the loaded values, so that those do
@@ -1342,7 +1341,7 @@ where
                 // A loaded state is one the host knows.
                 #[cfg(feature = "webview")]
                 self.known_state_generation
-                    .store(self.parameters().state_generation(), Ordering::Relaxed);
+                    .store(beamer_core::ModelFields::state_generation(self.parameters()), Ordering::Relaxed);
                 kResultOk
             }
             Err(_) => kResultFalse,
@@ -1357,8 +1356,7 @@ where
         // The state is the parameters. Their values are atomic, so they are
         // saved through a shared reference: in both states, and also while
         // process() runs, which is when a host saves during playback.
-        use beamer_core::Parameters;
-        let data: Vec<u8> = self.parameters().save_state();
+        let data: Vec<u8> = beamer_core::ModelFields::save_state(self.parameters());
 
         if data.is_empty() {
             return kResultOk;
@@ -2217,7 +2215,7 @@ where
             let view = crate::webview::WebViewPlugView::new(
                 config,
                 delegate,
-                self.shared_parameter_store(),
+                self.shared_model(),
                 Arc::clone(&self.component_handler),
                 // The web UI's invoke calls and events go to the descriptor.
                 Arc::clone(&self.descriptor) as Arc<dyn WebViewDispatch>,
@@ -3469,6 +3467,8 @@ mod tests {
         }
     }
 
+    impl beamer_core::ModelFields for StateParameters {}
+
     impl ParameterStore for StateParameters {
         fn count(&self) -> usize {
             1
@@ -4484,16 +4484,16 @@ mod tests {
     }
 
     #[test]
-    fn test_editor_shares_the_parameters_in_both_states() {
+    fn test_editor_shares_the_model_in_both_states() {
         let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
 
         // An editor that is opened before audio is set up.
-        let editor = wrapper.shared_parameter_store();
-        editor.set_normalized(GAIN_ID, 0.25);
+        let editor = wrapper.shared_model();
+        editor.parameter_store().set_normalized(GAIN_ID, 0.25);
         assert_eq!(gain(&wrapper), 0.25);
 
         // Setting up and changing the setup creates processors. The editor
-        // keeps reaching the parameters they use.
+        // keeps reaching the model they use.
         prepare_state_wrapper(&wrapper);
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
@@ -4503,22 +4503,22 @@ mod tests {
         };
         // SAFETY: The setup is valid for the call.
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
-        editor.set_normalized(GAIN_ID, 0.5);
+        editor.parameter_store().set_normalized(GAIN_ID, 0.5);
         process_block(&wrapper);
         // SAFETY: The wrapper is alive.
         assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.5));
-        assert_eq!(editor.get_normalized(GAIN_ID), 0.5);
+        assert_eq!(editor.parameter_store().get_normalized(GAIN_ID), 0.5);
 
-        // An editor that is opened now gets the same parameters.
-        let later = wrapper.shared_parameter_store();
+        // An editor that is opened now gets the same model.
+        let later = wrapper.shared_model();
         assert!(std::ptr::addr_eq(Arc::as_ptr(&editor), Arc::as_ptr(&later)));
 
-        // An editor that outlives the plugin still has its parameters.
+        // An editor that outlives the plugin still has its model.
         drop(later);
         drop(wrapper);
-        assert_eq!(editor.get_normalized(GAIN_ID), 0.5);
-        editor.set_normalized(GAIN_ID, 0.75);
-        assert_eq!(editor.get_normalized(GAIN_ID), 0.75);
+        assert_eq!(editor.parameter_store().get_normalized(GAIN_ID), 0.5);
+        editor.parameter_store().set_normalized(GAIN_ID, 0.75);
+        assert_eq!(editor.parameter_store().get_normalized(GAIN_ID), 0.75);
     }
 
     #[test]

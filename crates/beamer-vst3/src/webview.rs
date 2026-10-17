@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use beamer_core::{
-    EditorSync, GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewDispatch, WebViewEvents,
+    EditorSync, GuiConstraints, GuiDelegate, SharedModel, Size, WebViewDispatch,
+    WebViewEvents,
 };
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
@@ -21,16 +22,16 @@ use crate::component_handler::ComponentHandler;
 /// This struct is heap-allocated and pinned. Raw pointers to it are passed
 /// as the callback context for the WebView's message and loaded callbacks.
 struct IpcContext {
-    /// The parameters of the plugin (trait object for type-erased access).
-    /// The view shares them with the plugin for as long as it lives.
-    params: Arc<dyn ParameterStore>,
+    /// The model of the plugin (trait object for type-erased access). The
+    /// view shares it with the plugin for as long as it lives.
+    model: Arc<dyn SharedModel>,
     /// The component handler the host set last, shared with the controller.
     handler: Arc<ComponentHandler>,
     /// Where the web UI's invoke calls and events go: the descriptor.
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEvents>,
-    /// The `state_generation()` of the parameters that the host knows
+    /// The `state_generation()` of the model that the host knows
     /// about, shared with the processor.
     known_state_generation: Arc<AtomicU64>,
     /// What keeps the web UI in step while the view shows an editor: set
@@ -46,7 +47,7 @@ struct IpcContext {
 impl IpcContext {
     /// Start keeping the web UI in step: the view shows an editor now.
     fn open_sync(&mut self) {
-        self.sync = Some(EditorSync::open(Arc::clone(&self.params), self.events.clone()));
+        self.sync = Some(EditorSync::open(Arc::clone(&self.model), self.events.clone()));
     }
 
     /// Tell the host that the plugin state changed when a `State` field was
@@ -60,7 +61,7 @@ impl IpcContext {
         let Some(handler) = (unsafe { ComRef::from_raw(self.handler.get()) }) else {
             return;
         };
-        let generation = self.params.state_generation();
+        let generation = self.model.state_generation();
         if self.known_state_generation.swap(generation, Ordering::Relaxed) == generation {
             return;
         }
@@ -96,7 +97,7 @@ impl WebViewPlugView {
     pub fn new(
         config: WebViewConfig<'static>,
         delegate: Box<dyn GuiDelegate>,
-        params: Arc<dyn ParameterStore>,
+        model: Arc<dyn SharedModel>,
         component_handler: Arc<ComponentHandler>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEvents>,
@@ -111,7 +112,7 @@ impl WebViewPlugView {
             size: UnsafeCell::new(size),
             frame: UnsafeCell::new(std::ptr::null_mut()),
             ipc: UnsafeCell::new(Box::new(IpcContext {
-                params,
+                model,
                 handler: component_handler,
                 dispatch,
                 events,
@@ -156,13 +157,13 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
         return;
     };
 
-    let params = &*ipc.params;
+    let parameters = ipc.model.parameter_store();
 
     match msg_type {
         "param:set" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
             let Some(value) = msg.get("value").and_then(|v| v.as_f64()) else { return };
-            params.set_normalized(id, value);
+            parameters.set_normalized(id, value);
             let handler = ipc.handler.get();
             if !handler.is_null() {
                 // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
@@ -221,7 +222,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                 let param_id = args.first().and_then(|v| v.as_u64()).map(|v| v as u32);
                 let text = args.get(1).and_then(|v| v.as_str());
                 match (param_id, text) {
-                    (Some(id), Some(s)) => match params.string_to_normalized(id, s) {
+                    (Some(id), Some(s)) => match parameters.string_to_normalized(id, s) {
                         Some(norm) => Ok(serde_json::Value::from(norm)),
                         None => Ok(serde_json::Value::Null),
                     },
@@ -712,7 +713,7 @@ fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
 
 #[cfg(test)]
 mod tests {
-    use beamer_core::NoParameters;
+    use beamer_core::{NoParameters, ParameterStore};
     use vst3::Steinberg::Vst::IComponentHandler;
 
     use super::*;
@@ -735,7 +736,7 @@ mod tests {
     /// The context of a view of a plugin with this event queue.
     fn context(events: Option<WebViewEvents>) -> IpcContext {
         IpcContext {
-            params: Arc::new(NoParameters),
+            model: Arc::new(NoParameters),
             handler: Arc::new(ComponentHandler::new()),
             dispatch: Arc::new(NoDispatch),
             events,
@@ -836,10 +837,32 @@ mod tests {
         }
     }
 
-    /// The parameters of a plugin with one `State` field and no parameters.
+    /// The model of a plugin with one `State` field and no parameters.
     #[derive(Default)]
     struct OneState {
         zoom: beamer_core::State<u32>,
+    }
+
+    impl beamer_core::ParameterGroups for OneState {}
+
+    impl beamer_core::Parameters for OneState {
+        fn count(&self) -> usize {
+            0
+        }
+
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn beamer_core::ParameterRef> + '_> {
+            Box::new(std::iter::empty())
+        }
+
+        fn by_id(&self, _id: u32) -> Option<&dyn beamer_core::ParameterRef> {
+            None
+        }
+    }
+
+    impl beamer_core::ModelFields for OneState {
+        fn state_generation(&self) -> u64 {
+            self.zoom.generation()
+        }
     }
 
     impl ParameterStore for OneState {
@@ -872,24 +895,20 @@ mod tests {
         fn plain_to_normalized(&self, _id: u32, plain: f64) -> f64 {
             plain
         }
-
-        fn state_generation(&self) -> u64 {
-            self.zoom.generation()
-        }
     }
 
     #[test]
     fn test_view_tells_the_host_when_the_state_changed() {
-        let parameters = Arc::new(OneState::default());
+        let model = Arc::new(OneState::default());
         let host = vst3::ComWrapper::new(DirtyRecorder::default());
         let handler = host
             .as_com_ref::<IComponentHandler>()
             .expect("the recorder is an IComponentHandler")
             .as_ptr();
-        let known = Arc::new(AtomicU64::new(parameters.state_generation()));
+        let known = Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*model)));
         let slot = Arc::new(ComponentHandler::new());
         let ipc = IpcContext {
-            params: Arc::clone(&parameters) as Arc<dyn ParameterStore>,
+            model: Arc::clone(&model) as Arc<dyn SharedModel>,
             handler: Arc::clone(&slot),
             known_state_generation: Arc::clone(&known),
             ..context(None)
@@ -897,7 +916,7 @@ mod tests {
         let dirty = || host.dirty.load(Ordering::Relaxed);
 
         // A State field is set while the host has not set its handler yet.
-        parameters.zoom.set(2);
+        model.zoom.set(2);
         ipc.report_state_change();
         assert_eq!(dirty(), 0);
 
@@ -911,8 +930,8 @@ mod tests {
         assert_eq!(dirty(), 1);
 
         // A state the host loaded is one it knows.
-        parameters.zoom.set(3);
-        known.store(parameters.state_generation(), Ordering::Relaxed);
+        model.zoom.set(3);
+        known.store(beamer_core::ModelFields::state_generation(&*model), Ordering::Relaxed);
         ipc.report_state_change();
         assert_eq!(dirty(), 1);
     }

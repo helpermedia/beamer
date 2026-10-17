@@ -250,8 +250,6 @@ fn test_loading_a_state_counts_as_a_change_for_a_ui() {
 
 #[test]
 fn test_state_generation_changes_with_state_fields_only() {
-    use beamer::core::ParameterStore;
-
     let parameters = SamplerParameters::default();
     let start = parameters.state_generation();
 
@@ -269,10 +267,11 @@ fn test_state_generation_changes_with_state_fields_only() {
     assert_ne!(parameters.state_generation(), after_name);
 }
 
-/// The paths and JSON values that `for_each_state` visits.
-fn visited(store: &dyn beamer::core::ParameterStore) -> Vec<(String, String)> {
+/// The paths and JSON values that `for_each_state` visits, through the
+/// model as the wrappers see it.
+fn visited(model: &dyn beamer::core::SharedModel) -> Vec<(String, String)> {
     let mut seen = Vec::new();
-    store.for_each_state(&mut |path, state| {
+    model.for_each_state(&mut |path, state| {
         let json = state.save_json().expect("state saves");
         seen.push((path.to_string(), String::from_utf8(json).expect("JSON is UTF-8")));
     });
@@ -333,8 +332,6 @@ fn test_deeply_nested_state_fields_have_the_paths_of_the_saved_state() {
 
 #[test]
 fn test_a_visited_state_field_can_be_set() {
-    use beamer::core::ParameterStore;
-
     let parameters = EditorParameters::default();
     parameters.for_each_state(&mut |path, state| {
         assert_eq!(path, "zoom");

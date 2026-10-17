@@ -3,9 +3,9 @@
 //! The state of a plugin is the state of its parameter struct: the values
 //! of the parameters and the [`State`](crate::State) fields. This module
 //! is the one place that knows how those are laid out in bytes. A parameter
-//! struct only says which entries it has ([`Parameters::save_entries`]) and
+//! struct only says which entries it has ([`ModelFields::save_entries`]) and
 //! takes its values back from a set of entries
-//! ([`Parameters::load_entries`]).
+//! ([`ModelFields::load_entries`]).
 //!
 //! # Format, version 1
 //!
@@ -50,8 +50,8 @@
 //! A load is always a whole state: it cannot be used to change some fields
 //! and leave the others.
 //!
-//! [`Parameters::save_entries`]: crate::Parameters::save_entries
-//! [`Parameters::load_entries`]: crate::Parameters::load_entries
+//! [`ModelFields::save_entries`]: crate::ModelFields::save_entries
+//! [`ModelFields::load_entries`]: crate::ModelFields::load_entries
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -309,7 +309,7 @@ impl<'a> StateEntries<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FloatParameter, State};
+    use crate::{FloatParameter, ModelFields, Parameters, State};
 
     fn parameter(default: f64) -> FloatParameter {
         FloatParameter::new("Test", default, 0.0..=1.0)
@@ -594,7 +594,9 @@ mod tests {
         fn by_id(&self, id: crate::ParameterId) -> Option<&dyn ParameterRef> {
             (id == 7).then_some(&self.gain as &dyn ParameterRef)
         }
+    }
 
+    impl crate::ModelFields for Manual {
         fn save_entries(&self, writer: &mut StateWriter, prefix: &str) {
             if self.named {
                 writer.parameter(&join_path(prefix, "gain"), &self.gain);
@@ -620,8 +622,6 @@ mod tests {
 
     #[test]
     fn test_parameters_and_state_round_trip_through_a_parameter_struct() {
-        use crate::Parameters;
-
         let saved = Manual::new(true);
         saved.gain.set_normalized(0.25);
         saved.name.set(String::from("kick"));
@@ -641,8 +641,6 @@ mod tests {
 
     #[test]
     fn test_struct_without_names_is_saved_under_numeric_ids() {
-        use crate::Parameters;
-
         let saved = Manual::new(false);
         saved.gain.set_normalized(0.25);
         let data = saved.save_state();

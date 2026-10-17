@@ -305,6 +305,8 @@ struct ClashingParameters {
 
 impl ParameterGroups for ClashingParameters {}
 
+impl ModelFields for ClashingParameters {}
+
 impl Parameters for ClashingParameters {
     fn count(&self) -> usize {
         2

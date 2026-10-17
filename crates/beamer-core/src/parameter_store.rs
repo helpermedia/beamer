@@ -3,22 +3,23 @@
 //! This module provides the [`ParameterStore`] trait for direct host communication.
 //! It exposes the raw normalized value interface that hosts expect.
 //!
-//! # Choosing Between `Parameters` and `ParameterStore`
+//! # How the Traits Work Together
 //!
-//! Beamer provides two parameter traits that work together:
+//! A parameter struct implements three traits:
 //!
-//! - **[`Parameters`](crate::parameter_types::Parameters)** (recommended): High-level trait with
-//!   type-erased iteration, automatic state serialization and support for parameter
-//!   types like `FloatParameter`, `IntParameter` and `BoolParameter`. Use `#[derive(Parameters)]`
-//!   for automatic implementation.
+//! - **[`Parameters`](crate::parameter_types::Parameters)**: the parameters themselves,
+//!   with type-erased iteration, ids, groups and smoothing, for parameter types like
+//!   `FloatParameter`, `IntParameter` and `BoolParameter`.
 //!
-//! - **[`ParameterStore`]**: Low-level trait for direct host communication. Provides
-//!   raw access to normalized values and parameter metadata. Useful when you need
-//!   fine-grained control over parameter handling or are building custom parameter
-//!   systems.
+//! - **[`ModelFields`](crate::model::ModelFields)**: what the struct holds beyond its
+//!   parameters (`State` fields, the event queue of the web UI) and saving and loading
+//!   all of it.
 //!
-//! For most plugins, use `#[derive(Parameters)]` which automatically implements both traits.
-//! The `Parameters` trait builds on top of `ParameterStore` to provide a more ergonomic API.
+//! - **[`ParameterStore`]**: the parameters as the host sees them, with raw access to
+//!   normalized values and parameter metadata. Useful when you need fine-grained
+//!   control over parameter handling or are building custom parameter systems.
+//!
+//! For most plugins, use `#[derive(Parameters)]`, which implements all three.
 //!
 //! # Thread Safety
 //!
@@ -32,7 +33,6 @@
 
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_info::ParameterInfo;
-use crate::state_format::SavedState;
 use crate::types::{ParameterId, ParameterValue};
 
 /// Low-level trait for plugin parameter collections (host interface).
@@ -128,28 +128,6 @@ pub trait ParameterStore: Send + Sync {
         "float"
     }
 
-    /// A number that changes whenever a `State` field of the plugin is set:
-    /// the sum of their generations, nested structs included.
-    ///
-    /// A format wrapper compares it with the value it saw last to tell the
-    /// host that the plugin state changed. Parameters are not part of it:
-    /// the host learns about their changes through the edits.
-    /// `#[derive(Parameters)]` generates it; the default is for structs
-    /// without `State` fields.
-    fn state_generation(&self) -> u64 {
-        0
-    }
-
-    /// Call `visit` for every `State` field with its path: the `id` of its
-    /// attribute, under the field names of the nested structs it sits in,
-    /// as in a saved state (`"zoom"`, `"layer/sample"`).
-    ///
-    /// A web UI reaches the `State` fields through it. Not for the audio
-    /// thread: the path of a field in a nested struct is built as a
-    /// `String`.
-    /// `#[derive(Parameters)]` generates it; the default is for structs
-    /// without `State` fields.
-    fn for_each_state(&self, _visit: &mut dyn FnMut(&str, &dyn SavedState)) {}
 
     /// Find parameter info by ID.
     ///
@@ -217,6 +195,8 @@ impl crate::parameter_types::Parameters for NoParameters {
         None
     }
 }
+
+impl crate::model::ModelFields for NoParameters {}
 
 /// Build a JSON array of parameter info for WebView init dumps.
 ///

@@ -207,7 +207,8 @@ pub struct GainParameters {
 ```
 
 The `#[derive(Parameters)]` macro generates:
-- `Parameters` trait implementation (count, iter, by_id and the entries of the saved state)
+- `Parameters` trait implementation (count, iter, by_id, groups, smoothing)
+- `ModelFields` trait implementation (`State` fields, the event queue, saving and loading)
 - `ParameterStore` trait implementation (host integration)
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (when all required attributes are present; `State` fields and fields without an attribute get their own default)
@@ -699,12 +700,12 @@ pub struct SamplerParameters {
 
 Audio Units have no such call, so their wrappers do not tell the host. The nearest thing, a change notification for `kAudioUnitProperty_ClassInfo` in an AUv2 or for the `fullState` property in an AUv3, does not make Reaper mark the project as modified. In practice both hosts that were tried still ask: Logic asks to save on closing even when nothing changed, and Reaper marks the project as modified whenever a plugin window closes. The fields are always saved with the plugin state when the user saves the project. A plugin that needs every Audio Unit host to ask keeps such a value in a parameter instead.
 
-#### Low-Level Parameters Trait
+#### Low-Level Traits
 
-For manual control, implement `Parameters` directly. A manual implementation is saved with its parameters under their numeric ids. If the struct has `State` fields, override `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `ParameterStore::state_generation()` to return the sum of their `generation()`s and `ParameterStore::for_each_state()` to visit each with its path. A web UI reaches them through that method:
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterStore` (the parameters as the host sees them) and `ModelFields` directly. An empty `impl ModelFields` saves the parameters under their numeric ids. If the struct has `State` fields, override in `ModelFields`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method:
 
 ```rust
-pub trait Parameters: Send + Sync {
+pub trait ParameterStore: Send + Sync {
     fn count(&self) -> usize;
     fn info(&self, index: usize) -> Option<&ParameterInfo>;
     fn get_normalized(&self, id: ParameterId) -> ParameterValue;

@@ -22,9 +22,11 @@
 //! }
 //! ```
 //!
-//! The derive macro generates implementations for both `Parameters` and
-//! [`ParameterStore`](crate::parameter_store::ParameterStore) traits. See [`crate::parameter_store`]
-//! for details on the relationship between these traits.
+//! The derive macro generates implementations of `Parameters`,
+//! [`ModelFields`](crate::model::ModelFields) and
+//! [`ParameterStore`](crate::parameter_store::ParameterStore). See
+//! [`crate::parameter_store`] for details on the relationship between
+//! these traits.
 //!
 //! # Parameter Types
 //!
@@ -42,7 +44,7 @@ use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID
 use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 use crate::smoothing::{AtomicSmoother, SmoothingStyle};
-use crate::state_format::{join_path, StateEntries, StateWriter};
+use crate::state_format::join_path;
 use crate::types::{ParameterId, ParameterValue};
 
 // =============================================================================
@@ -197,9 +199,11 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
 
 /// Trait for parameter collections.
 ///
-/// Implement this trait to declare your plugin's parameters. This trait
-/// provides both type-erased iteration (for VST3 integration) and
-/// automatic state serialization.
+/// Implement this trait to declare your plugin's parameters. It covers the
+/// parameters alone: type-erased iteration, ids, groups and smoothing.
+/// Saving and loading, `State` fields and the event queue are in
+/// [`ModelFields`](crate::model::ModelFields), which a hand-written
+/// implementation adds as an empty `impl`.
 ///
 /// # Example
 ///
@@ -258,19 +262,6 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// The default implementation does nothing (for flat parameter structs).
     fn set_all_group_ids(&mut self, _group_id: GroupId) {
         // Default: no-op (macro generates override for parameter-containing structs)
-    }
-
-    /// The plugin's queue of events for the web UI: a [`WebViewEvents`]
-    /// field of this struct, or else the first one of a nested struct in
-    /// field order.
-    ///
-    /// The format wrappers deliver what is emitted into it while an editor
-    /// is open. `#[derive(Parameters)]` finds the field by its type; the
-    /// default is for structs without one.
-    ///
-    /// [`WebViewEvents`]: crate::WebViewEvents
-    fn webview_events(&self) -> Option<&crate::WebViewEvents> {
-        None
     }
 
     // =========================================================================
@@ -377,72 +368,6 @@ pub trait Parameters: Send + Sync + ParameterGroups {
         }
 
         next_id
-    }
-
-    // =========================================================================
-    // State (see `state_format` for the bytes)
-    // =========================================================================
-
-    /// Add the entries of this parameter struct to a state that is being
-    /// saved.
-    ///
-    /// `#[derive(Parameters)]` generates this: every field under its id,
-    /// with the entries of a nested struct under the name of its field.
-    /// `prefix` is the path of this struct, empty for the root.
-    ///
-    /// A host may save the state from one of its own threads while audio
-    /// runs, so this may only read parameter values (they are atomic),
-    /// `State` fields and immutable data.
-    ///
-    /// The default is for hand-written flat implementations: every
-    /// parameter under its numeric id.
-    fn save_entries(&self, writer: &mut StateWriter, prefix: &str) {
-        for parameter in self.iter() {
-            let path = join_path(prefix, &parameter.id().to_string());
-            writer.parameter(&path, parameter);
-        }
-    }
-
-    /// Take the values of this parameter struct from the entries of a saved
-    /// state.
-    ///
-    /// The counterpart of [`save_entries`](Self::save_entries), generated
-    /// by `#[derive(Parameters)]` as well. Every field asks for its entry
-    /// and goes back to its default when there is none it can use.
-    ///
-    /// Takes `&self`: a host may load a state from one of its own threads
-    /// while audio runs. This may only write parameter values (they are
-    /// atomic) and `State` fields. The framework resets the smoothers on
-    /// the audio thread afterwards.
-    fn load_entries(&self, entries: &StateEntries<'_>, prefix: &str) {
-        for parameter in self.iter() {
-            let path = join_path(prefix, &parameter.id().to_string());
-            entries.load_parameter(&path, parameter);
-        }
-    }
-
-    /// Save the state of the plugin: all parameters and `State` fields.
-    ///
-    /// See [`state_format`](crate::state_format) for the bytes.
-    fn save_state(&self) -> Vec<u8> {
-        let mut writer = StateWriter::new();
-        self.save_entries(&mut writer, "");
-        writer.finish()
-    }
-
-    /// Load a state that [`save_state`](Self::save_state) produced.
-    ///
-    /// Empty data changes nothing. Data that is not a state of this format
-    /// is refused and changes nothing. Otherwise every field gets the value
-    /// of its entry or its default: a load is always a whole state and
-    /// cannot be used to change some fields only.
-    fn load_state(&self, data: &[u8]) -> Result<(), String> {
-        let Some(entries) = StateEntries::parse(data)? else {
-            return Ok(());
-        };
-        self.load_entries(&entries, "");
-        entries.log_unused();
-        Ok(())
     }
 
     // =========================================================================
