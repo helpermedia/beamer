@@ -28,7 +28,6 @@ use crate::midi_cc_config::MidiCcConfig;
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_store::ParameterStore;
 use crate::process_context::ProcessContext;
-use crate::webview_handler::WebViewHandler;
 
 // =============================================================================
 // HasParameters Trait (Parameter Access)
@@ -1353,18 +1352,34 @@ pub trait Descriptor: HasParameters + Sync + Default {
     }
 
     // =========================================================================
-    // WebView Handler (custom JS invoke/event handling)
+    // WebView (custom JS invoke/event handling)
     // =========================================================================
 
-    /// Returns a shared handler for custom WebView messages.
+    /// Answer an invoke call from JavaScript.
     ///
-    /// Override to handle `invoke()` calls and custom events from JavaScript.
-    /// The returned handler is shared across the plugin lifetime via `Arc`.
-    /// Parameter synchronization is automatic and does not require this.
+    /// Called on the main thread when the web UI calls
+    /// `__BEAMER__.invoke("method", args...)`. Return `Ok(value)` to
+    /// resolve the JavaScript promise with `value`, `Err(message)` to reject
+    /// it. Parameter synchronization is automatic and does not go through
+    /// here.
     ///
-    /// Default returns `None` (no custom message handling).
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        None
+    /// The default rejects every call as an unknown method. An override
+    /// ends its `match` the same way for the methods it does not know.
+    fn on_invoke(
+        &self,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        let _ = args;
+        Err(format!("unknown method: {method}"))
+    }
+
+    /// Handle a custom event from JavaScript.
+    ///
+    /// Called on the main thread when the web UI calls
+    /// `__BEAMER__.emit("name", data)`. The default does nothing.
+    fn on_event(&self, name: &str, data: &serde_json::Value) {
+        let _ = (name, data);
     }
 }
 

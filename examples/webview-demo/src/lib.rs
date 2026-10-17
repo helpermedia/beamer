@@ -88,25 +88,7 @@ impl Descriptor for WebViewDemoDescriptor {
         }
     }
 
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        // The handler shares the parameters, so that it can answer with the
-        // sample rate. The state field needs no handler.
-        Some(Arc::new(DemoHandler {
-            parameters: Arc::clone(&self.parameters),
-        }))
-    }
-}
-
-// =============================================================================
-// WebView Handler (invoke demo)
-// =============================================================================
-
-/// Handles `__BEAMER__.invoke()` calls from JavaScript.
-struct DemoHandler {
-    parameters: Arc<WebViewDemoParameters>,
-}
-
-impl WebViewHandler for DemoHandler {
+    /// Answers `__BEAMER__.invoke()` calls from JavaScript.
     fn on_invoke(
         &self,
         method: &str,

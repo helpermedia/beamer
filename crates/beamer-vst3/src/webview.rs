@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use beamer_core::{
-    EditorSync, GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewEvents, WebViewHandler,
+    EditorSync, GuiConstraints, GuiDelegate, ParameterStore, Size, WebViewDispatch, WebViewEvents,
 };
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
@@ -26,8 +26,8 @@ struct IpcContext {
     params: Arc<dyn ParameterStore>,
     /// The component handler the host set last, shared with the controller.
     handler: Arc<ComponentHandler>,
-    /// Custom WebView message handler (invoke/event routing).
-    webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// Where the web UI's invoke calls and events go: the descriptor.
+    dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEvents>,
     /// The `state_generation()` of the parameters that the host knows
@@ -98,7 +98,7 @@ impl WebViewPlugView {
         delegate: Box<dyn GuiDelegate>,
         params: Arc<dyn ParameterStore>,
         component_handler: Arc<ComponentHandler>,
-        webview_handler: Option<Arc<dyn WebViewHandler>>,
+        dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEvents>,
         known_state_generation: Arc<AtomicU64>,
     ) -> Self {
@@ -113,7 +113,7 @@ impl WebViewPlugView {
             ipc: UnsafeCell::new(Box::new(IpcContext {
                 params,
                 handler: component_handler,
-                webview_handler,
+                dispatch,
                 events,
                 known_state_generation,
                 sync: None,
@@ -216,7 +216,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
             let args = msg.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let call_id = msg.get("callId").and_then(|v| v.as_u64()).unwrap_or(0);
 
-            // Handle built-in invokes before dispatching to the plugin handler.
+            // Handle built-in invokes before dispatching to the descriptor.
             let result = if method == "_beamer/paramTextToNormalized" {
                 let param_id = args.first().and_then(|v| v.as_u64()).map(|v| v as u32);
                 let text = args.get(1).and_then(|v| v.as_str());
@@ -228,10 +228,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                     _ => Ok(serde_json::Value::Null),
                 }
             } else {
-                match &ipc.webview_handler {
-                    Some(handler) => handler.on_invoke(method, &args),
-                    None => Ok(serde_json::Value::Null),
-                }
+                ipc.dispatch.dispatch_invoke(method, &args)
             };
 
             // Send result back to JS so the Promise resolves/rejects.
@@ -255,9 +252,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
             let Some(name) = msg.get("name").and_then(|v| v.as_str()) else { return };
             let data = msg.get("data").cloned().unwrap_or(serde_json::Value::Null);
 
-            if let Some(handler) = &ipc.webview_handler {
-                handler.on_event(name, &data);
-            }
+            ipc.dispatch.dispatch_event(name, &data);
         }
         _ => {
             log::debug!("Unknown IPC message type: {msg_type}");
@@ -722,12 +717,27 @@ mod tests {
 
     use super::*;
 
+    /// A plugin that knows no invoke methods and ignores events.
+    struct NoDispatch;
+
+    impl WebViewDispatch for NoDispatch {
+        fn dispatch_invoke(
+            &self,
+            method: &str,
+            _args: &[serde_json::Value],
+        ) -> Result<serde_json::Value, String> {
+            Err(format!("unknown method: {method}"))
+        }
+
+        fn dispatch_event(&self, _name: &str, _data: &serde_json::Value) {}
+    }
+
     /// The context of a view of a plugin with this event queue.
     fn context(events: Option<WebViewEvents>) -> IpcContext {
         IpcContext {
             params: Arc::new(NoParameters),
             handler: Arc::new(ComponentHandler::new()),
-            webview_handler: None,
+            dispatch: Arc::new(NoDispatch),
             events,
             known_state_generation: Arc::new(AtomicU64::new(0)),
             sync: None,

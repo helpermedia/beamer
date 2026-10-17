@@ -22,8 +22,7 @@ use beamer_core::parameter_types::Parameters;
 use beamer_core::preset::PresetInfo;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ParameterStore, ProcessContext,
-    ProcessMode, WebViewEvents,
-    WebViewHandler,
+    ProcessMode, WebViewDispatch, WebViewEvents,
 };
 
 /// The parameters of a plugin as the bridge uses them from host threads.
@@ -267,16 +266,13 @@ pub trait AuPluginInstance: Send + 'static {
     }
 
     // =========================================================================
-    // WebView Handler
+    // WebView
     // =========================================================================
 
-    /// Returns the WebView handler for custom invoke/event messages.
-    ///
-    /// Returns `None` if the plugin does not provide a custom handler.
-    /// Parameter synchronization is automatic and does not require this.
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        None
-    }
+    /// Returns where the web UI's invoke calls and events go: the
+    /// descriptor. Parameter synchronization is automatic and does not go
+    /// through here.
+    fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch>;
 
     /// Returns the plugin's queue of events for the web UI.
     ///

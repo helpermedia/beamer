@@ -60,7 +60,7 @@ pub mod state_format;
 pub mod sysex_pool;
 pub mod types;
 pub mod webview_events;
-pub mod webview_handler;
+pub mod webview_dispatch;
 
 // Re-exports for convenience
 pub use audio_thread::ProcessScope;
@@ -124,9 +124,10 @@ pub use sample::Sample;
 pub use sysex_pool::SysExOutputPool;
 pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
 pub use webview_events::WebViewEvents;
-pub use webview_handler::WebViewHandler;
+#[doc(hidden)]
+pub use webview_dispatch::WebViewDispatch;
 
-// Re-export serde_json so plugins can use WebViewHandler without adding
+// Re-export serde_json so plugins can answer the web UI without adding
 // serde_json to their own Cargo.toml.
 pub use serde_json;
 

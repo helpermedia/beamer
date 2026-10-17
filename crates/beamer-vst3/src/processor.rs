@@ -43,7 +43,7 @@ use beamer_core::{
 
 use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
-use beamer_core::{WebViewEvents, WebViewHandler};
+use beamer_core::{WebViewDispatch, WebViewEvents};
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -355,9 +355,6 @@ where
     current_preset_index: AtomicI32,
     /// The component handler the host set, shared with the editors.
     component_handler: Arc<ComponentHandler>,
-    /// Custom WebView message handler (invoke/event routing).
-    #[cfg(feature = "webview")]
-    webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The plugin's queue of events for the web UI, if it has one.
     #[cfg(feature = "webview")]
     webview_events: Option<WebViewEvents>,
@@ -423,10 +420,6 @@ where
         // Create MidiCcState from plugin's config (framework-managed)
         let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
 
-        // The WebView handler (if any) of the plugin.
-        #[cfg(feature = "webview")]
-        let webview_handler = plugin.webview_handler();
-
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
@@ -465,8 +458,6 @@ where
             // Default to first preset.
             current_preset_index: AtomicI32::new(0),
             component_handler: Arc::new(ComponentHandler::new()),
-            #[cfg(feature = "webview")]
-            webview_handler,
             #[cfg(feature = "webview")]
             webview_events,
             latency_samples: AtomicU32::new(0),
@@ -2228,7 +2219,8 @@ where
                 delegate,
                 self.shared_parameter_store(),
                 Arc::clone(&self.component_handler),
-                self.webview_handler.clone(),
+                // The web UI's invoke calls and events go to the descriptor.
+                Arc::clone(&self.descriptor) as Arc<dyn WebViewDispatch>,
                 self.webview_events.clone(),
                 Arc::clone(&self.known_state_generation),
             );

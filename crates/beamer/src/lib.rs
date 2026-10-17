@@ -244,7 +244,7 @@ pub mod prelude {
         // FourCharCode
         FourCharCode,
         // WebView support
-        WebViewEvents, WebViewHandler, serde_json,
+        WebViewEvents, serde_json,
         // For the types kept in a `State`
         serde,
     };

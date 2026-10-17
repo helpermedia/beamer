@@ -37,8 +37,8 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
-    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, WebViewEvents,
-    WebViewHandler, MAX_AUX_BUSES,
+    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, WebViewDispatch,
+    WebViewEvents, MAX_AUX_BUSES,
 };
 
 /// Generic AU processor wrapper.
@@ -56,8 +56,6 @@ where
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     state: AuState<P>,
-    /// WebView handler of the Descriptor, asked for once at construction.
-    webview_handler: Option<Arc<dyn WebViewHandler>>,
     /// The Descriptor's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEvents>,
     _presets: PhantomData<Presets>,
@@ -74,10 +72,7 @@ where
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
     pub fn new() -> Self {
-        // The handler comes from the descriptor that stays the live plugin,
-        // so it can hold that plugin's parameters.
         let descriptor = P::default();
-        let handler = descriptor.webview_handler();
 
         // Taking the queue here marks it as delivered by this instance.
         let events = beamer_core::Parameters::webview_events(&**descriptor.parameters()).cloned();
@@ -87,7 +82,6 @@ where
 
         Self {
             state: AuState::with_descriptor(descriptor),
-            webview_handler: handler,
             webview_events: events,
             _presets: PhantomData,
         }
@@ -466,8 +460,8 @@ where
         }
     }
 
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        self.webview_handler.clone()
+    fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch> {
+        Arc::clone(&self.state.descriptor) as Arc<dyn WebViewDispatch>
     }
 
     fn webview_events(&self) -> Option<WebViewEvents> {

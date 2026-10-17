@@ -1060,7 +1060,7 @@ void beamer_au_param_set_from_ui(BeamerAuInstanceHandle _Nullable instance, uint
 /**
  * Handle an invoke call from JavaScript.
  *
- * Dispatches to the plugin's WebViewHandler::on_invoke if registered.
+ * Dispatches to the descriptor's on_invoke.
  * Returns a JSON string with {"ok":...} or {"err":"..."}.
  * The caller must free the returned string with beamer_au_free_string.
  *
@@ -1082,7 +1082,7 @@ char* _Nullable beamer_au_on_invoke(BeamerAuInstanceHandle _Nullable instance,
 /**
  * Handle a custom event from JavaScript.
  *
- * Dispatches to the plugin's WebViewHandler::on_event if registered.
+ * Dispatches to the descriptor's on_event.
  *
  * Thread Safety: Can be called from the main thread.
  *

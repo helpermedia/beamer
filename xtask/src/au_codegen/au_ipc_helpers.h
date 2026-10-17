@@ -54,7 +54,7 @@ static void beamer_au_ipc_handle_state_set(
 /// Handle built-in Beamer invokes (prefixed with "_beamer/").
 ///
 /// Returns YES if the method was handled, NO if the caller should
-/// fall through to the plugin handler.
+/// fall through to the descriptor.
 static BOOL beamer_au_ipc_handle_builtin_invoke(
     BeamerAuInstanceHandle instance,
     void* webviewHandle,

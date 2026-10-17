@@ -630,7 +630,7 @@ A `State<T>` is saved and loaded with the parameters, under its id. Ids of state
 The value is set as a whole by host and UI threads and read by the audio thread through a reader:
 
 ```rust
-// On a host or UI thread, for example in a WebView handler.
+// On a host or UI thread, for example in on_invoke().
 parameters.sample_path.set(String::from("kick.wav"));
 let current: Arc<String> = parameters.sample_path.get();
 

@@ -39,7 +39,7 @@ use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
     BusType, CachedBusConfig, CachedBusInfo, EditorSync, ParameterInfo, ParameterUnit,
-    ProcessMode, WebViewEvents, WebViewHandler, MAX_BUSES,
+    ProcessMode, WebViewDispatch, WebViewEvents, MAX_BUSES,
 };
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess, SharedParameters};
@@ -441,9 +441,10 @@ pub struct BeamerInstanceHandle {
     /// The bus configuration of the last successful allocation, cleared when
     /// the resources are deallocated. Only host threads take this lock.
     bus_config: Mutex<Option<CachedBusConfig>>,
-    /// Cached WebView handler, captured at instance creation to avoid
-    /// locking the plugin mutex on every invoke/event call.
-    webview_handler: Option<Arc<dyn WebViewHandler>>,
+    /// Where the web UI's invoke calls and events go (the descriptor),
+    /// captured at instance creation to avoid locking the plugin mutex on
+    /// every invoke/event call.
+    webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEvents>,
     /// The parameters of the plugin. They stay in this one place for the life
@@ -466,7 +467,7 @@ impl BeamerInstanceHandle {
     pub(crate) fn new(plugin: Box<dyn AuPluginInstance>) -> Self {
         // Capture what host threads ask for before wrapping the plugin in the
         // Mutex, so that those calls never need to lock it.
-        let webview_handler = plugin.webview_handler();
+        let webview_dispatch = plugin.webview_dispatch();
         let webview_events = plugin.webview_events();
         let parameters = plugin.shared_parameters();
         let presets = plugin.factory_presets();
@@ -476,7 +477,7 @@ impl BeamerInstanceHandle {
             plugin: Arc::new(Mutex::new(plugin)),
             render_block: std::sync::RwLock::new(None),
             bus_config: Mutex::new(None),
-            webview_handler,
+            webview_dispatch,
             webview_events,
             parameters,
             presets,
@@ -2679,7 +2680,7 @@ pub extern "C" fn beamer_au_param_set_from_ui(
 /// Handle an invoke call from JavaScript.
 ///
 /// Called when the WebView sends an `invoke` message. Dispatches to the
-/// plugin's `WebViewHandler::on_invoke` if one is registered. Returns a
+/// descriptor's `on_invoke`. Returns a
 /// heap-allocated JSON string with `{"ok":...}` or `{"err":"..."}` that the
 /// caller must free with `beamer_au_free_string`. Returns null on failure.
 ///
@@ -2712,21 +2713,15 @@ pub unsafe extern "C" fn beamer_au_on_invoke(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
 
-        let json = match &handle.webview_handler {
-            Some(h) => {
-                let args: Vec<serde_json::Value> =
-                    serde_json::from_str(args_str).unwrap_or_default();
-                match h.on_invoke(method_str, &args) {
-                    Ok(val) => {
-                        format!(r#"{{"ok":{}}}"#, serde_json::to_string(&val).unwrap_or_default())
-                    }
-                    Err(msg) => {
-                        let escaped = serde_json::to_string(&msg).unwrap_or_default();
-                        format!(r#"{{"err":{}}}"#, escaped)
-                    }
-                }
+        let args: Vec<serde_json::Value> = serde_json::from_str(args_str).unwrap_or_default();
+        let json = match handle.webview_dispatch.dispatch_invoke(method_str, &args) {
+            Ok(val) => {
+                format!(r#"{{"ok":{}}}"#, serde_json::to_string(&val).unwrap_or_default())
             }
-            None => r#"{"ok":null}"#.to_string(),
+            Err(msg) => {
+                let escaped = serde_json::to_string(&msg).unwrap_or_default();
+                format!(r#"{{"err":{}}}"#, escaped)
+            }
         };
 
         CString::new(json).ok()
@@ -2741,7 +2736,7 @@ pub unsafe extern "C" fn beamer_au_on_invoke(
 /// Handle a custom event from JavaScript.
 ///
 /// Called when the WebView sends an `event` message. Dispatches to the
-/// plugin's `WebViewHandler::on_event` if one is registered.
+/// descriptor's `on_event`.
 ///
 /// # Safety
 ///
@@ -2772,11 +2767,9 @@ pub unsafe extern "C" fn beamer_au_on_event(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
 
-        if let Some(h) = &handle.webview_handler {
-            let data: serde_json::Value =
-                serde_json::from_str(data_str).unwrap_or(serde_json::Value::Null);
-            h.on_event(name_str, &data);
-        }
+        let data: serde_json::Value =
+            serde_json::from_str(data_str).unwrap_or(serde_json::Value::Null);
+        handle.webview_dispatch.dispatch_event(name_str, &data);
 
         Some(())
     }));

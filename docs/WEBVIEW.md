@@ -12,18 +12,18 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 ┌─────────────────────────────────────────────────────────────────┐
 │  Plugin crate (your code)                                       │
 │  ┌───────────────────────┐  ┌──────────────────────────────┐    │
-│  │  Rust: WebViewHandler │  │  JS: React/Svelte/vanilla    │    │
+│  │  Rust: Descriptor     │  │  JS: React/Svelte/vanilla    │    │
 │  │  on_invoke / on_event │  │  window.__BEAMER__ runtime   │    │
-│  └───────────┬───────────┘  └──────────────┬───────────────┘    │
+│  └───────────┬───────────┘  └───────────────┬──────────────┘    │
 │              │                              │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
-│  beamer-core │ WebViewHandler trait         │ beamer_runtime.js │
+│  beamer-core │ WebViewDispatch (internal)   │ beamer_runtime.js │
 │              │ ParameterStore               │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
 │  - 60 Hz parameter sync timer                                   │
-│  - Dispatches IPC messages to WebViewHandler                    │
+│  - Dispatches IPC messages to the Descriptor                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview (platform layer)                                │
 │  - WKWebView on macOS, WebView2 stub on Windows                 │
@@ -36,7 +36,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `WebViewHandler` trait, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `Descriptor::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
@@ -154,7 +154,7 @@ Every `State` field is visible to the web UI and can be set by it. Keep data tha
 
 ### Invoke
 
-`invoke()` sends a request to the Rust `WebViewHandler` and returns a Promise:
+`invoke()` sends a request to the plugin's `Descriptor::on_invoke()` and returns a Promise:
 
 ```javascript
 const info = await __BEAMER__.invoke("getInfo");
@@ -162,9 +162,9 @@ console.log(info.name);   // "Beamer WebView Demo"
 console.log(info.version); // "0.1.0"
 ```
 
-If the handler returns `Err(message)`, the Promise rejects with that message string.
+If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")`, and an override ends its `match` the same way. Catch the rejection where a method may be missing.
 
-One method is built in and never reaches the handler: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
+One method is built in and never reaches the descriptor: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
 
 ```javascript
 const info = __BEAMER__.params.info("gain");
@@ -176,7 +176,7 @@ const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info
 Events provide fire-and-forget communication in both directions:
 
 ```javascript
-// JS -> Rust, handled by WebViewHandler::on_event
+// JS -> Rust, handled by Descriptor::on_event
 __BEAMER__.emit("myEvent", { some: "data" });
 
 // Rust -> JS, sent with WebViewEvents::emit
@@ -258,38 +258,34 @@ await __BEAMER__.ready;
 show(await __BEAMER__.invoke("getSampleRate"));
 ```
 
-## WebViewHandler Trait
+## Answering the Web UI
 
-Implement `WebViewHandler` to handle `invoke()` calls and custom events from JavaScript. Parameter and `State` synchronization are automatic and do not need this trait.
+The `Descriptor` answers `invoke()` calls and custom events from JavaScript with two methods. Parameter and `State` synchronization are automatic and do not go through them.
 
 ```rust
-pub trait WebViewHandler: Send + Sync {
+pub trait Descriptor {
+    // ...
     fn on_invoke(
         &self,
-        _method: &str,
-        _args: &[serde_json::Value],
+        method: &str,
+        args: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
-        Ok(serde_json::Value::Null)
+        Err(format!("unknown method: {method}"))
     }
 
-    fn on_event(&self, _name: &str, _data: &serde_json::Value) {}
+    fn on_event(&self, name: &str, data: &serde_json::Value) {}
 }
 ```
 
-Both methods are called on the main thread.
+Both methods are called on the main thread. The descriptor lives as long as the plugin instance and holds the parameters, so its methods can answer with anything the plugin knows.
 
 ### Example (from `webview-demo`)
 
-The handler of the demo holds the parameters of the plugin. They live in an `Arc` for the life of the instance, and the Processor uses the same ones. Here the handler answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
+Here the descriptor answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
 
 ```rust
-use beamer::prelude::*;
-
-struct DemoHandler {
-    parameters: Arc<WebViewDemoParameters>,
-}
-
-impl WebViewHandler for DemoHandler {
+impl Descriptor for WebViewDemoDescriptor {
+    // ...
     fn on_invoke(
         &self,
         method: &str,
@@ -309,19 +305,6 @@ impl WebViewHandler for DemoHandler {
 }
 ```
 
-The handler is provided by implementing `Descriptor::webview_handler()`. The framework asks for it once, when the plugin instance is created:
-
-```rust
-impl Descriptor for WebViewDemoDescriptor {
-    // ...
-    fn webview_handler(&self) -> Option<Arc<dyn WebViewHandler>> {
-        Some(Arc::new(DemoHandler {
-            parameters: Arc::clone(&self.parameters),
-        }))
-    }
-}
-```
-
 On the JavaScript side the UI asks for the value when it opens:
 
 ```javascript
@@ -331,7 +314,7 @@ const rate = await __BEAMER__.invoke("getSampleRate");
 
 The demo then follows the sample rate through an event (see [Events from Rust](#events-from-rust)).
 
-A `State` field does not need a handler at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
+A `State` field does not need `on_invoke()` at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
 
 ## Parameter Synchronization
 
