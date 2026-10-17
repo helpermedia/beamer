@@ -59,6 +59,7 @@ mod enum_parameter;
 mod has_parameters;
 mod init;
 mod ir;
+mod model_attribute;
 mod parse;
 mod range_eval;
 mod validate;
@@ -129,9 +130,71 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 }
 
 fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let ir = parse::parse(input)?;
+    let ir = parse::parse(input, "#[derive(Parameters)]")?;
     validate::validate(&ir)?;
     Ok(codegen::generate(&ir))
+}
+
+/// Mark a struct as the model of a plugin: what every thread of a plugin
+/// instance shares.
+///
+/// The fields take the same attributes as with `#[derive(Parameters)]`:
+/// `#[parameter(...)]`, `#[state(id = "...")]` and `#[nested(group = "...")]`.
+/// A `WebViewEvents` field is the event queue of the web UI, and a field
+/// without an attribute (a `Handover`, a cache) is kept as it is. The
+/// attribute generates `Parameters`, `ModelFields`, `ParameterStore`,
+/// `ParameterGroups` and `Default`.
+///
+/// # Options
+///
+/// - `#[beamer::model(no_default)]`: generate no `Default`, for a model
+///   with a plain field that has none or a parameter set up by hand. Write
+///   `Default` yourself and call `assign_ids("")` on the value before
+///   returning it, and `set_group_ids()` when it has nested or flat groups.
+///
+/// Without `no_default`, every parameter needs what the generated `Default`
+/// takes from its attribute (name, default and a range or a kind with one).
+///
+/// A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is
+/// applied to the fields. Put the whole struct behind the `#[cfg]`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[beamer::export]
+/// #[beamer::model]
+/// pub struct GainModel {
+///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+///     pub gain: FloatParameter,
+/// }
+/// ```
+///
+/// `#[beamer::export]` and `#[beamer::model]` can be written in either
+/// order.
+#[proc_macro_attribute]
+pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    model_attribute::expand(model_attribute::Kind::Model, attr.into(), item.into()).into()
+}
+
+/// Mark a struct as a nested group of a model: a part of it that the host
+/// shows as a group.
+///
+/// The model holds it in a field with `#[nested(group = "...")]`. It takes
+/// the same field attributes and options as [`macro@model`] and generates
+/// the same code.
+///
+/// # Example
+///
+/// ```ignore
+/// #[beamer::group]
+/// pub struct FilterGroup {
+///     #[parameter(id = "cutoff", name = "Cutoff", default = 1000.0, range = 20.0..=20000.0, kind = "hz")]
+///     pub cutoff: FloatParameter,
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn group(attr: TokenStream, item: TokenStream) -> TokenStream {
+    model_attribute::expand(model_attribute::Kind::Group, attr.into(), item.into()).into()
 }
 
 /// Derive macro for implementing `EnumParameterValue` trait on enums.

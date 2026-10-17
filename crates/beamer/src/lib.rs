@@ -137,6 +137,8 @@ pub use beamer_macros::EnumParameter;
 pub use beamer_macros::HasParameters;
 #[cfg(feature = "derive")]
 pub use beamer_macros::export;
+#[cfg(feature = "derive")]
+pub use beamer_macros::{group, model};
 
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///

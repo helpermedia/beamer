@@ -172,6 +172,9 @@ pub struct ModelIR {
     pub fields: Vec<FieldIR>,
     /// Span for error reporting
     pub span: Span,
+    /// Whether to generate `Default` when the attributes allow it. False
+    /// with `no_default`, for a struct that writes its own.
+    pub generate_default: bool,
 }
 
 /// A single field of a model or of a nested group.
@@ -298,9 +301,10 @@ impl ModelIR {
 
     /// Check if all parameter fields have complete declarative attributes.
     ///
-    /// When true, the macro can generate a `Default` implementation.
+    /// When true, and unless the struct asked for no `Default`, the macro
+    /// generates a `Default` implementation.
     pub fn can_generate_default(&self) -> bool {
-        self.parameter_fields().all(|p| p.has_declarative_attributes())
+        self.generate_default && self.parameter_fields().all(|p| p.has_declarative_attributes())
     }
 
     /// Check if any parameters have flat group attributes.

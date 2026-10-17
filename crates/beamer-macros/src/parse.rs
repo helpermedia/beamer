@@ -13,21 +13,28 @@ use crate::ir::{
 };
 use crate::range_eval;
 
+/// The field attributes the macros read: a field is a parameter, a nested
+/// group or a `State` field.
+pub const FIELD_ATTRIBUTES: [&str; 3] = ["parameter", "nested", "state"];
+
 /// Parse a `DeriveInput` into our intermediate representation.
-pub fn parse(input: DeriveInput) -> syn::Result<ModelIR> {
+///
+/// `macro_name` is how the macro is written in its error messages, such as
+/// `#[beamer::model]`.
+pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
     // Ensure it's a struct with named fields
     let data_struct = match &input.data {
         Data::Struct(s) => s,
         Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Parameters)] only supports structs, not enums",
+                format!("{macro_name} only supports structs, not enums"),
             ))
         }
         Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Parameters)] only supports structs, not unions",
+                format!("{macro_name} only supports structs, not unions"),
             ))
         }
     };
@@ -37,13 +44,13 @@ pub fn parse(input: DeriveInput) -> syn::Result<ModelIR> {
         Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Parameters)] only supports structs with named fields",
+                format!("{macro_name} only supports structs with named fields"),
             ))
         }
         Fields::Unit => {
             return Err(syn::Error::new_spanned(
                 &input,
-                "#[derive(Parameters)] requires at least one field",
+                format!("{macro_name} requires at least one field"),
             ))
         }
     };
@@ -61,7 +68,7 @@ pub fn parse(input: DeriveInput) -> syn::Result<ModelIR> {
     {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[derive(Parameters)] requires at least one #[parameter], #[nested] or #[state] field",
+            format!("{macro_name} requires at least one #[parameter], #[nested] or #[state] field"),
         ));
     }
 
@@ -73,6 +80,7 @@ pub fn parse(input: DeriveInput) -> syn::Result<ModelIR> {
         generics: input.generics.clone(),
         fields: parsed_fields,
         span: Span::call_site(),
+        generate_default: true,
     })
 }
 
@@ -83,11 +91,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
     let kinds = field
         .attrs
         .iter()
-        .filter(|attr| {
-            ["parameter", "nested", "state"]
-                .iter()
-                .any(|kind| attr.path().is_ident(kind))
-        })
+        .filter(|attr| FIELD_ATTRIBUTES.iter().any(|kind| attr.path().is_ident(kind)))
         .count();
     if kinds > 1 {
         return Err(syn::Error::new_spanned(
