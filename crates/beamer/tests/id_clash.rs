@@ -11,28 +11,29 @@ use beamer_vst3::Vst3Processor;
 
 static CONFIG: Config = Config::new("Clash", Category::Effect, "Bmer", "clsh");
 
-#[derive(Parameters)]
-struct InnerParameters {
+#[beamer::group]
+struct InnerGroup {
     #[parameter(id = "ya", name = "Inner", default = 0.0, range = 0.0..=1.0)]
     value: FloatParameter,
 }
 
 /// Two parameters whose paths, `nbki` and `ot/ya`, have the same hash.
-#[derive(Parameters)]
-struct ClashParameters {
+#[beamer::model]
+struct ClashModel {
     #[parameter(id = "nbki", name = "Outer", default = 0.0, range = 0.0..=1.0)]
     value: FloatParameter,
 
     #[nested(group = "Inner")]
-    ot: InnerParameters,
+    ot: InnerGroup,
 }
 
 /// The same struct one level down, where the paths are `p/nbki` and
-/// `p/ot/ya`. Their hashes differ.
-#[derive(Parameters)]
-struct NestedClashParameters {
+/// `p/ot/ya`. Their hashes differ. A model generates the same code as a
+/// group, so it can sit in another model as a nested group.
+#[beamer::model]
+struct NestedClashModel {
     #[nested(group = "P")]
-    p: ClashParameters,
+    p: ClashModel,
 }
 
 struct Silence;
@@ -41,32 +42,20 @@ impl Processor for Silence {
     fn process(&mut self, _buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {}
 }
 
-#[derive(Default, HasParameters)]
-struct ClashDescriptor {
-    #[parameters]
-    parameters: Arc<ClashParameters>,
-}
-
-impl Descriptor for ClashDescriptor {
+impl Model for ClashModel {
     type Setup = ();
     type Processor = Silence;
 
-    fn prepare(&self, _: ()) -> Silence {
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
 }
 
-#[derive(Default, HasParameters)]
-struct NestedClashDescriptor {
-    #[parameters]
-    parameters: Arc<NestedClashParameters>,
-}
-
-impl Descriptor for NestedClashDescriptor {
+impl Model for NestedClashModel {
     type Setup = ();
     type Processor = Silence;
 
-    fn prepare(&self, _: ()) -> Silence {
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
 }
@@ -79,25 +68,25 @@ fn test_the_two_paths_have_one_hash() {
 
 #[test]
 fn test_clash_is_reported_with_both_paths() {
-    // Creating the parameters does not fail: only the root of a plugin
-    // knows the ids that are in use.
-    let parameters = ClashParameters::default();
+    // Creating the model does not fail: only the root of a plugin knows the
+    // ids that are in use.
+    let model = ClashModel::default();
 
-    let error = check_unique_ids(&parameters).expect_err("the ids clash");
+    let error = check_unique_ids(&model).expect_err("the ids clash");
     assert!(error.contains("\"nbki\""), "{error}");
     assert!(error.contains("\"ot/ya\""), "{error}");
 }
 
 #[test]
 fn test_no_clash_where_the_paths_differ() {
-    let parameters = NestedClashParameters::default();
-    assert!(check_unique_ids(&parameters).is_ok());
+    let model = NestedClashModel::default();
+    assert!(check_unique_ids(&model).is_ok());
 }
 
 #[test]
 fn test_vst3_refuses_an_instance_with_a_clash() {
-    type Clash = Vst3Processor<ClashDescriptor, NoPresets<ClashParameters>>;
-    type Fine = Vst3Processor<NestedClashDescriptor, NoPresets<NestedClashParameters>>;
+    type Clash = Vst3Processor<ClashModel, NoPresets<ClashModel>>;
+    type Fine = Vst3Processor<NestedClashModel, NoPresets<NestedClashModel>>;
 
     assert!(<Clash as ComponentFactory>::create(&CONFIG).is_none());
     assert!(<Fine as ComponentFactory>::create(&CONFIG).is_some());
@@ -105,61 +94,49 @@ fn test_vst3_refuses_an_instance_with_a_clash() {
 
 /// A parameter whose id, the hash of `hvcbaeyv`, is the one the VST3
 /// wrapper uses for the parameter of MIDI CC 7.
-#[derive(Parameters)]
-struct MidiCcIdParameters {
+#[beamer::model]
+struct MidiCcIdModel {
     #[parameter(id = "hvcbaeyv", name = "Volume", default = 0.0, range = 0.0..=1.0)]
     value: FloatParameter,
 }
 
 /// A parameter whose id, the hash of `ukaqaxdz`, is the one the VST3
 /// wrapper uses for its program change parameter.
-#[derive(Parameters)]
-struct ProgramIdParameters {
+#[beamer::model]
+struct ProgramIdModel {
     #[parameter(id = "ukaqaxdz", name = "Program", default = 0.0, range = 0.0..=1.0)]
     value: FloatParameter,
 }
 
-#[derive(Default, HasParameters)]
-struct MidiCcIdDescriptor {
-    #[parameters]
-    parameters: Arc<MidiCcIdParameters>,
-}
-
-impl Descriptor for MidiCcIdDescriptor {
+impl Model for MidiCcIdModel {
     type Setup = ();
     type Processor = Silence;
 
-    fn prepare(&self, _: ()) -> Silence {
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
 }
 
-#[derive(Default, HasParameters)]
-struct ProgramIdDescriptor {
-    #[parameters]
-    parameters: Arc<ProgramIdParameters>,
-}
-
-impl Descriptor for ProgramIdDescriptor {
+impl Model for ProgramIdModel {
     type Setup = ();
     type Processor = Silence;
 
-    fn prepare(&self, _: ()) -> Silence {
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
 }
 
 #[test]
 fn test_vst3_refuses_an_id_it_uses_itself() {
-    type MidiCcId = Vst3Processor<MidiCcIdDescriptor, NoPresets<MidiCcIdParameters>>;
-    type ProgramId = Vst3Processor<ProgramIdDescriptor, NoPresets<ProgramIdParameters>>;
+    type MidiCcId = Vst3Processor<MidiCcIdModel, NoPresets<MidiCcIdModel>>;
+    type ProgramId = Vst3Processor<ProgramIdModel, NoPresets<ProgramIdModel>>;
 
     assert_eq!(fnv1a_hash("hvcbaeyv"), 0x1000_0007);
     assert_eq!(fnv1a_hash("ukaqaxdz"), 0x2000_0000);
 
     // The ids are unique within each plugin.
-    assert!(check_unique_ids(&MidiCcIdParameters::default()).is_ok());
-    assert!(check_unique_ids(&ProgramIdParameters::default()).is_ok());
+    assert!(check_unique_ids(&MidiCcIdModel::default()).is_ok());
+    assert!(check_unique_ids(&ProgramIdModel::default()).is_ok());
 
     assert!(<MidiCcId as ComponentFactory>::create(&CONFIG).is_none());
     assert!(<ProgramId as ComponentFactory>::create(&CONFIG).is_none());
@@ -173,7 +150,7 @@ fn test_au_refuses_an_instance_with_a_clash() {
     use beamer_au::{AuPluginInstance, AuProcessor};
 
     fn create() -> Box<dyn AuPluginInstance> {
-        Box::new(AuProcessor::<ClashDescriptor, NoPresets<ClashParameters>>::new())
+        Box::new(AuProcessor::<ClashModel, NoPresets<ClashModel>>::new())
     }
 
     // One plugin per process: this test is the only one that registers.

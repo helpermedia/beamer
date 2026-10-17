@@ -16,7 +16,7 @@
 //! used by most audio plugin frameworks.
 //!
 //! ```text
-//! User Plugin (implements beamer_core::Descriptor)
+//! User Plugin (implements beamer_core::Model)
 //!        ↓
 //! Vst3Processor<P> (generic VST3 wrapper)
 //!        ↓
@@ -53,7 +53,7 @@ pub use processor::Vst3Processor;
 
 // Re-export shared types from beamer-core
 pub use beamer_core::Config;
-pub use beamer_core::{FactoryPresets, HasParameters, NoPresets};
+pub use beamer_core::{FactoryPresets, NoPresets};
 
 // Re-export vst3 crate for use in macros and UIDs
 pub use vst3;

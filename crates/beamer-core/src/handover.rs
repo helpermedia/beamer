@@ -17,8 +17,8 @@
 //! reader inside `process()`.
 //!
 //! ```ignore
-//! #[derive(Parameters)]
-//! struct SamplerParameters {
+//! #[beamer::model]
+//! struct SamplerModel {
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     gain: FloatParameter,
 //!     // Not a parameter and not saved: the decoded sample.
@@ -26,10 +26,10 @@
 //! }
 //!
 //! // On a host or UI thread, when the user picked a file:
-//! parameters.sample.set(decode(&path));
+//! model.sample.set(decode(&path));
 //!
-//! // In prepare():
-//! SamplerProcessor { sample: self.parameters.sample.reader(), /* ... */ }
+//! // In prepare(), before `self` moves into the processor:
+//! SamplerProcessor { sample: self.sample.reader(), model: self, /* ... */ }
 //!
 //! // In process(), once per block:
 //! let sample = self.sample.latest();

@@ -19,7 +19,8 @@
 //!   normalized values and parameter metadata. Useful when you need fine-grained
 //!   control over parameter handling or are building custom parameter systems.
 //!
-//! For most plugins, use `#[derive(Parameters)]`, which implements all three.
+//! For most plugins, use `#[beamer::model]` (and `#[beamer::group]` for
+//! nested groups), which implements all three.
 //!
 //! # Thread Safety
 //!

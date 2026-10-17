@@ -1,54 +1,53 @@
-//! Derive macros for the Beamer audio plugin framework.
+//! Macros for the Beamer audio plugin framework.
 //!
-//! This crate provides the `#[derive(Parameters)]` macro for generating parameter
-//! trait implementations automatically.
+//! - `#[beamer::model]` marks the model of a plugin: the struct every thread
+//!   shares, with its parameters, `State` fields and event queue.
+//! - `#[beamer::group]` marks a nested group of a model.
+//! - `#[beamer::export]` exports the model as a plugin, with its
+//!   `Config.toml` and `Presets.toml`.
+//! - `#[derive(EnumParameter)]` makes an enum the value of an
+//!   `EnumParameter`.
 //!
-//! # Declarative Parameter Descriptor
+//! # Declarative Parameters
 //!
-//! Parameters can be defined entirely through attributes - the macro generates
-//! the `Default` impl automatically:
+//! Parameters are defined entirely through attributes; the macro generates
+//! the `Default` impl:
 //!
 //! ```ignore
 //! use beamer::prelude::*;
 //!
-//! #[derive(Parameters)]
-//! pub struct GainParameters {
+//! #[beamer::export]
+//! #[beamer::model]
+//! pub struct GainModel {
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     pub gain: FloatParameter,
 //!
-//!     #[parameter(id = "bypass", bypass = true)]
+//!     #[parameter(id = "bypass", bypass)]
 //!     pub bypass: BoolParameter,
 //! }
-//!
-//! // No manual Default impl needed - macro generates everything!
 //! ```
-//!
-//! The macro generates implementations of `Parameters` (the parameters),
-//! `ModelFields` (`State` fields, the event queue, saving and loading) and
-//! `ParameterStore` (host integration), plus `Default` when all required
-//! attributes are present.
 //!
 //! # Flat Visual Grouping
 //!
 //! Use `group = "..."` for visual grouping in the DAW without nested structs:
 //!
 //! ```ignore
-//! #[derive(Parameters)]
-//! pub struct SynthParameters {
-//!     // Filter parameters - grouped visually in DAW
+//! #[beamer::model]
+//! pub struct SynthModel {
+//!     // Filter parameters, grouped visually in the DAW.
 //!     #[parameter(id = "cutoff", name = "Cutoff", group = "Filter", ...)]
 //!     pub cutoff: FloatParameter,
 //!
 //!     #[parameter(id = "reso", name = "Resonance", group = "Filter", ...)]
 //!     pub resonance: FloatParameter,
 //!
-//!     // Output parameters - different visual group
+//!     // Output parameters, a different visual group.
 //!     #[parameter(id = "gain", name = "Gain", group = "Output", ...)]
 //!     pub gain: FloatParameter,
 //! }
 //!
-//! // Access is flat: parameters.cutoff, parameters.resonance, parameters.gain
-//! // But DAW shows them in collapsible "Filter" and "Output" groups
+//! // Access is flat: model.cutoff, model.resonance, model.gain.
+//! // The DAW shows them in collapsible "Filter" and "Output" groups.
 //! ```
 
 use proc_macro::TokenStream;
@@ -56,7 +55,6 @@ use proc_macro::TokenStream;
 mod codegen;
 mod config_file;
 mod enum_parameter;
-mod has_parameters;
 mod init;
 mod ir;
 mod model_attribute;
@@ -64,86 +62,58 @@ mod parse;
 mod range_eval;
 mod validate;
 
-/// Derive macro for implementing parameter traits.
-///
-/// This macro generates:
-/// - `Parameters` trait implementation (count, iter, by_id, groups, smoothing)
-/// - `ModelFields` trait implementation (`State` fields, the event queue,
-///   saving and loading)
-/// - `ParameterStore` trait implementation (host integration)
-/// - `Default` implementation (when declarative attributes are complete)
-/// - The ids of every parameter (`assign_ids`), and a compile error for
-///   two ids in a struct that are equal or hash to the same value
-///
-/// # Attributes
-///
-/// ## Required
-/// - `id = "..."` - String ID. A parameter is known by its path: this id
-///   behind the names of the nested fields it sits in (`osc1/attack`). The
-///   hash of the path is the u32 that hosts see.
-///
-/// ## Declarative (enables auto-generated Default)
-/// - `name = "..."` - Display name
-/// - `default = <value>` - Default value (float, int, or bool)
-/// - `range = start..=end` - Value range (for FloatParameter/IntParameter)
-/// - `kind = "..."` - Unit type: db, db_log, db_log_offset, hz, ms, seconds, percent, pan, ratio, linear, semitones
-/// - `short_name = "..."` - Short name for constrained UIs
-/// - `smoothing = "exp:5.0"` - Parameter smoothing (exp or linear)
-/// - `bypass` - Mark as bypass parameter (BoolParameter only)
-/// - `group = "..."` - Visual grouping in DAW without nested struct
-///
-/// ## Nested Groups
-/// - `#[nested(group = "...")]` - For fields containing nested groups
-///
-/// ## State Beyond Parameters
-/// - `#[state(id = "...")]` - For `State<T>` fields: values that are saved
-///   with the plugin state under this id. Ids share one namespace with
-///   parameter ids.
-///
-/// A field without an attribute is not part of the parameters or the saved
-/// state. The generated `Default` initializes it with its own default,
-/// which is how a struct can hold a `Handover`.
-///
-/// # Example
-///
-/// ```ignore
-/// #[derive(Parameters)]
-/// pub struct PluginParameters {
-///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-///     pub gain: FloatParameter,
-///
-///     #[parameter(id = "freq", name = "Frequency", default = 1000.0, range = 20.0..=20000.0, kind = "hz", group = "Filter")]
-///     pub frequency: FloatParameter,
-///
-///     #[nested(group = "Output")]
-///     pub output: OutputParameters,
-/// }
-/// ```
-#[proc_macro_derive(Parameters, attributes(parameter, nested, state))]
-pub fn derive_parameters(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
-
-    match derive_parameters_impl(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
-fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let ir = parse::parse(input, "#[derive(Parameters)]")?;
-    validate::validate(&ir)?;
-    Ok(codegen::generate(&ir))
-}
-
 /// Mark a struct as the model of a plugin: what every thread of a plugin
 /// instance shares.
 ///
-/// The fields take the same attributes as with `#[derive(Parameters)]`:
-/// `#[parameter(...)]`, `#[state(id = "...")]` and `#[nested(group = "...")]`.
-/// A `WebViewEvents` field is the event queue of the web UI, and a field
-/// without an attribute (a `Handover`, a cache) is kept as it is. The
-/// attribute generates `Parameters`, `ModelFields`, `ParameterStore`,
-/// `ParameterGroups` and `Default`.
+/// The attribute generates:
+/// - the `Parameters` trait implementation (count, iter, by_id, groups,
+///   smoothing)
+/// - the `ModelFields` trait implementation (`State` fields, the event
+///   queue, saving and loading)
+/// - the `ParameterStore` trait implementation (host integration)
+/// - the `ParameterGroups` trait implementation
+/// - `Default`
+/// - the ids of every parameter (`assign_ids`), and a compile error for two
+///   ids in a struct that are equal or hash to the same value
+///
+/// The plugin then implements `Model` for the struct: how it creates its
+/// processor, its buses and MIDI behavior and its answers to the web UI.
+///
+/// # Field Attributes
+///
+/// ## `#[parameter(...)]`
+/// - `id = "..."` (required): string ID. A parameter is known by its path:
+///   this id behind the names of the nested fields it sits in
+///   (`osc1/attack`). The hash of the path is the u32 that hosts see.
+/// - `name = "..."`: display name
+/// - `default = <value>`: default value (float, int or bool)
+/// - `range = start..=end`: value range (for FloatParameter/IntParameter)
+/// - `kind = "..."`: unit type: db, db_log, db_log_offset, hz, ms, seconds,
+///   percent, pan, ratio, linear, semitones
+/// - `short_name = "..."`: short name for constrained UIs
+/// - `smoothing = "exp:5.0"`: parameter smoothing (exp or linear)
+/// - `bypass`: mark as the bypass parameter (BoolParameter only)
+/// - `group = "..."`: visual grouping in the DAW without a nested struct
+///
+/// The generated `Default` takes each parameter from these: every parameter
+/// needs a name, a default and a range (or a kind with one), unless the
+/// struct uses `no_default`.
+///
+/// ## `#[nested(group = "...")]`
+/// A field that holds a `#[beamer::group]` struct, shown to the host as a
+/// group with this name.
+///
+/// ## `#[state(id = "...")]`
+/// A `State<T>` field: a value that is saved with the plugin state under
+/// this id. Ids share one namespace with parameter ids.
+///
+/// ## Other fields
+/// A `WebViewEvents` field is the event queue of the web UI. A field without
+/// an attribute (a `Handover`, a cache) is not part of the parameters or the
+/// saved state; the generated `Default` initializes it with its own default.
+///
+/// A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is
+/// applied to the fields. Put the whole struct behind the `#[cfg]`.
 ///
 /// # Options
 ///
@@ -151,12 +121,6 @@ fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::T
 ///   with a plain field that has none or a parameter set up by hand. Write
 ///   `Default` yourself and call `assign_ids("")` on the value before
 ///   returning it, and `set_group_ids()` when it has nested or flat groups.
-///
-/// Without `no_default`, every parameter needs what the generated `Default`
-/// takes from its attribute (name, default and a range or a kind with one).
-///
-/// A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is
-/// applied to the fields. Put the whole struct behind the `#[cfg]`.
 ///
 /// # Example
 ///
@@ -166,6 +130,18 @@ fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::T
 /// pub struct GainModel {
 ///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 ///     pub gain: FloatParameter,
+///
+///     #[nested(group = "Output")]
+///     pub output: OutputGroup,
+/// }
+///
+/// impl Model for GainModel {
+///     type Setup = ();
+///     type Processor = GainProcessor;
+///
+///     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+///         GainProcessor { model: self }
+///     }
 /// }
 /// ```
 ///
@@ -233,9 +209,9 @@ pub fn group(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 ///
 /// // Now FilterType can be used with EnumParameter:
-/// #[derive(Parameters)]
-/// pub struct FilterParameters {
-///     #[parameter(id = "filter_type")]
+/// #[beamer::group]
+/// pub struct FilterGroup {
+///     #[parameter(id = "filter_type", name = "Filter Type")]
 ///     pub filter_type: EnumParameter<FilterType>,
 /// }
 /// ```
@@ -249,56 +225,9 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derive macro for implementing the `HasParameters` trait.
-///
-/// This macro generates the `HasParameters` implementation for the
-/// Descriptor of a plugin, which holds the parameters in an `Arc`.
-///
-/// # Usage
-///
-/// Mark the field containing your parameters with `#[parameters]`:
-///
-/// ```ignore
-/// use beamer::prelude::*;
-///
-/// #[derive(Default, HasParameters)]
-/// pub struct GainPlugin {
-///     #[parameters]
-///     parameters: Arc<GainParameters>,
-/// }
-/// ```
-///
-/// # Requirements
-///
-/// - The struct must have named fields
-/// - Exactly one field must be marked with `#[parameters]`
-/// - The marked field must be an `Arc` of a type that implements
-///   `ParameterStore`, `ParameterGroups` and `Parameters`
-///
-/// # What It Generates
-///
-/// ```ignore
-/// impl HasParameters for GainPlugin {
-///     type Parameters = GainParameters;
-///
-///     fn parameters(&self) -> &Arc<Self::Parameters> {
-///         &self.parameters
-///     }
-/// }
-/// ```
-#[proc_macro_derive(HasParameters, attributes(parameters))]
-pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
-
-    match has_parameters::derive_has_parameters_impl(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
 /// Attribute macro that generates plugin configuration and entry points.
 ///
-/// Place `#[beamer::export]` on your Descriptor struct to automatically generate:
+/// Place `#[beamer::export]` on your model struct to automatically generate:
 /// - `pub static CONFIG: Config` from `Config.toml` in the crate root
 /// - Factory presets from `Presets.toml` (if present)
 /// - `export_plugin!` call with the correct arguments
@@ -306,8 +235,7 @@ pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
 /// # Requirements
 ///
 /// - A `Config.toml` file must exist in the crate root (next to `Cargo.toml`)
-/// - The struct must derive `HasParameters` (with a `#[parameters]` field)
-/// - The struct must implement `Descriptor`
+/// - The struct must be marked with `#[beamer::model]` and implement `Model`
 ///
 /// # Example
 ///
@@ -315,13 +243,13 @@ pub fn derive_has_parameters(input: TokenStream) -> TokenStream {
 /// use beamer::prelude::*;
 ///
 /// #[beamer::export]
-/// #[derive(Default, HasParameters)]
-/// pub struct GainDescriptor {
-///     #[parameters]
-///     pub parameters: Arc<GainParameters>,
+/// #[beamer::model]
+/// pub struct GainModel {
+///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+///     pub gain: FloatParameter,
 /// }
 ///
-/// impl Descriptor for GainDescriptor { /* ... */ }
+/// impl Model for GainModel { /* ... */ }
 /// // No CONFIG static or export_plugin! needed!
 /// ```
 #[proc_macro_attribute]

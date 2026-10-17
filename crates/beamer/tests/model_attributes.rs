@@ -1,6 +1,6 @@
-//! The `#[beamer::model]` and `#[beamer::group]` attributes generate the
-//! same code as the derive: parameters, `State` fields, the event queue and
-//! nested groups, saved and loaded together.
+//! The `#[beamer::model]` and `#[beamer::group]` attributes: parameters,
+//! `State` fields, the event queue and nested groups, saved and loaded
+//! together.
 
 #![cfg(feature = "derive")]
 

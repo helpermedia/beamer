@@ -27,7 +27,7 @@ struct IpcContext {
     model: Arc<dyn SharedModel>,
     /// The component handler the host set last, shared with the controller.
     handler: Arc<ComponentHandler>,
-    /// Where the web UI's invoke calls and events go: the descriptor.
+    /// Where the web UI's invoke calls and events go: the model.
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEvents>,
@@ -217,7 +217,7 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
             let args = msg.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let call_id = msg.get("callId").and_then(|v| v.as_u64()).unwrap_or(0);
 
-            // Handle built-in invokes before dispatching to the descriptor.
+            // Handle built-in invokes before dispatching to the model.
             let result = if method == "_beamer/paramTextToNormalized" {
                 let param_id = args.first().and_then(|v| v.as_u64()).map(|v| v as u32);
                 let text = args.get(1).and_then(|v| v.as_str());

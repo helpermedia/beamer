@@ -1,7 +1,7 @@
 //! Generic VST3 processor wrapper.
 //!
 //! This module provides [`Vst3Processor`], a generic wrapper that bridges any
-//! [`beamer_core::Descriptor`] implementation to VST3 COM interfaces.
+//! [`beamer_core::Model`] implementation to VST3 COM interfaces.
 //!
 //! # Architecture
 //!
@@ -10,7 +10,7 @@
 //! audio plugin frameworks.
 //!
 //! ```text
-//! User Plugin (implements Plugin trait)
+//! User Plugin (implements beamer_core::Model)
 //!        ↓
 //! Vst3Processor<P> (this wrapper)
 //!        ↓
@@ -31,19 +31,19 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
-    Descriptor, FactoryPresets, FrameRate as CoreFrameRate, HasParameters, MidiBuffer, MidiCcState,
+    FactoryPresets, FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
     ProcessWarnings, Processor, ScaleInfo, SysEx,
-    SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
+    SharedModel, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
 use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
-use beamer_core::{SharedModel, WebViewDispatch, WebViewEvents};
+use beamer_core::{WebViewDispatch, WebViewEvents};
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -254,7 +254,7 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 // Vst3Processor Wrapper
 // =============================================================================
 
-/// Generic VST3 processor wrapping any [`Descriptor`] implementation.
+/// Generic VST3 processor wrapping any [`Model`] implementation.
 ///
 /// This struct implements the VST3 combined component pattern, providing
 /// `IComponent`, `IAudioProcessor` and `IEditController` interfaces that
@@ -262,17 +262,17 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 ///
 /// # Lifecycle
 ///
-/// The wrapper keeps the plugin's descriptor and its model for its whole
-/// life, and a processor while the plugin is prepared:
+/// The wrapper keeps the plugin's model for its whole life, and a
+/// processor while the plugin is prepared:
 ///
 /// ```text
 /// Vst3Processor::new()
-///     ↓ creates Descriptor::default()
-/// descriptor, no processor
-///     ↓ setupProcessing() calls descriptor.prepare(setup)
-/// descriptor and processor
+///     ↓ creates Model::default() in an Arc
+/// model, no processor
+///     ↓ setupProcessing() calls model.prepare(setup) with a clone of the Arc
+/// model and processor
 ///     ↓ setupProcessing() with a new setup: drops the processor, then prepare()
-/// descriptor and a new processor
+/// model and a new processor
 /// ```
 ///
 /// # Usage
@@ -281,15 +281,15 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 /// use beamer_vst3::{export_vst3, Vst3Processor, Config};
 /// use beamer_core::config::Category;
 ///
-/// #[derive(Default)]
-/// struct MyPlugin { parameters: Arc<MyParameters> }
-/// impl Descriptor for MyPlugin { /* ... */ }
+/// #[beamer::model]
+/// struct MyModel { /* parameters and State fields */ }
+/// impl Model for MyModel { /* ... */ }
 ///
-/// struct MyProcessor { parameters: Arc<MyParameters>, sample_rate: f64 }
+/// struct MyProcessor { model: Arc<MyModel>, sample_rate: f64 }
 /// impl Processor for MyProcessor { /* ... */ }
 ///
 /// static CONFIG: Config = Config::new("MyPlugin", Category::Effect, "Mfgr", "plgn");
-/// export_vst3!(CONFIG, MyPlugin);
+/// export_vst3!(CONFIG, MyModel);
 /// ```
 ///
 /// # Thread Safety
@@ -300,23 +300,19 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 ///
 /// A host calls the other interfaces from its own threads while `process()`
 /// runs. What those calls use is kept apart from what `process()` uses.
-/// Only host threads use the descriptor. The model is shared in an `Arc`
-/// and works through a shared reference. Latency, tail and the smoother
-/// reset are exchanged through atomics.
-pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
+/// The model is shared in an `Arc` and works through a shared reference.
+/// Latency, tail and the smoother reset are exchanged through atomics.
+pub struct Vst3Processor<P, Presets = NoPresets<P>>
 where
-    P: Descriptor,
-    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+    P: Model,
+    Presets: FactoryPresets<Parameters = P>,
 {
-    /// The plugin as the host sees it. It lives as long as the wrapper and
-    /// is only used by host threads, never by `process()`. Every method of
-    /// it takes `&self`, so host threads use it at the same time, also
-    /// while `setupProcessing()` lets it create a processor.
-    descriptor: Arc<P>,
-    /// The model of the plugin, shared with the descriptor and with every
-    /// processor it creates. `process()` and the host threads use it
-    /// through this handle at the same time.
-    model: Arc<P::Parameters>,
+    /// The model of the plugin, shared with every processor it creates and
+    /// with the editor. Every method of it takes `&self`: `process()` reads
+    /// its parameters through the processor's own `Arc`, and host threads
+    /// use it at the same time, also while `setupProcessing()` lets it
+    /// create a processor.
+    model: Arc<P>,
     /// The processor, once `setupProcessing()` has created one. It belongs
     /// to `process()`. Host calls only touch it when the host guarantees
     /// that `process()` does not run (`setupProcessing()`, `setActive()`).
@@ -346,7 +342,7 @@ where
     buffer_storage_f32: UnsafeCell<ProcessBufferStorage<f32>>,
     /// Pre-allocated channel pointer storage for f64 processing
     buffer_storage_f64: UnsafeCell<ProcessBufferStorage<f64>>,
-    /// MIDI CC state (created from Plugin's midi_cc_config())
+    /// MIDI CC state (created from the model's midi_cc_config())
     /// Framework owns this - plugin authors don't touch it
     midi_cc_state: Option<MidiCcState>,
     /// Current factory preset index (0-based).
@@ -381,62 +377,58 @@ where
 }
 
 // Safety: Vst3Processor is Send because:
-// - Descriptor: Send is required by the Descriptor trait
+// - The model is Send + Sync, required by the Model trait
 // - Processor: Send is required by the Processor trait
-// - The model is Send + Sync
-unsafe impl<P: Descriptor, Presets> Send for Vst3Processor<P, Presets>
+unsafe impl<P: Model, Presets> Send for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
 }
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
-// - The model is Sync, and process() reaches it through its own `Arc`,
-//   not through the descriptor
-// - The descriptor is Sync and only host threads use it
+// - The model is Sync, and process() reaches it through the processor's
+//   own `Arc`
 // - component_handler is used by controller calls, which the host never
 //   makes concurrently
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), the current preset,
 //   latency, tail and the request to reset the smoothers
-unsafe impl<P: Descriptor, Presets> Sync for Vst3Processor<P, Presets>
+unsafe impl<P: Model, Presets> Sync for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
 }
 
-impl<P: Descriptor + 'static, Presets> Vst3Processor<P, Presets>
+impl<P: Model, Presets> Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     /// Create a new VST3 processor wrapping the given plugin configuration.
     ///
     /// The wrapper starts unprepared, with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static Config) -> Self {
-        let plugin = P::default();
+        let model = Arc::new(P::default());
 
-        // Create MidiCcState from plugin's config (framework-managed)
-        let midi_cc_state = plugin.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
+        // Create MidiCcState from the model's config (framework-managed)
+        let midi_cc_state = model.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
 
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        let events = beamer_core::ModelFields::webview_events(&**plugin.parameters());
+        let events = beamer_core::ModelFields::webview_events(&*model);
         if let Some(events) = events {
             events.claim();
         }
         #[cfg(feature = "webview")]
         let webview_events = events.cloned();
 
-        let model = Arc::clone(plugin.parameters());
         #[cfg(feature = "webview")]
         let known_state_generation =
             Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*model)));
 
         Self {
-            descriptor: Arc::new(plugin),
             model,
             processor: UnsafeCell::new(None),
             config,
@@ -581,45 +573,40 @@ where
         }
     }
 
-    /// The descriptor, for a call of the host. Not for `process()`.
-    fn descriptor(&self) -> &P {
-        &self.descriptor
-    }
-
     // =========================================================================
-    // Descriptor Access (works in both states, not for process())
+    // Bus and MIDI Answers (works in both states, not for process())
     // =========================================================================
 
     /// Get input bus count.
     #[inline]
     fn input_bus_count(&self) -> usize {
-        self.descriptor().input_bus_count()
+        self.model().input_bus_count()
     }
 
     /// Get output bus count.
     #[inline]
     fn output_bus_count(&self) -> usize {
-        self.descriptor().output_bus_count()
+        self.model().output_bus_count()
     }
 
     /// Get input bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        self.descriptor().input_bus_info(index)
+        self.model().input_bus_info(index)
     }
 
     /// Get output bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        self.descriptor().output_bus_info(index)
+        self.model().output_bus_info(index)
     }
 
     /// Check if plugin wants MIDI.
     #[inline]
     fn wants_midi(&self) -> bool {
-        self.descriptor().wants_midi()
+        self.model().wants_midi()
     }
 
     // =========================================================================
@@ -628,7 +615,7 @@ where
 
     /// Get the model (works in both states, from every thread).
     #[inline]
-    fn model(&self) -> &P::Parameters {
+    fn model(&self) -> &P {
         &self.model
     }
 
@@ -636,7 +623,7 @@ where
     /// longer than a processor and uses the model from its own thread.
     #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     fn shared_model(&self) -> Arc<dyn SharedModel> {
-        let model: Arc<P::Parameters> = Arc::clone(&self.model);
+        let model: Arc<P> = Arc::clone(&self.model);
         model
     }
 
@@ -1089,9 +1076,9 @@ where
     }
 }
 
-impl<P: Descriptor + 'static, Presets> ComponentFactory for Vst3Processor<P, Presets>
+impl<P: Model, Presets> ComponentFactory for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
@@ -1113,9 +1100,9 @@ where
     }
 }
 
-impl<P: Descriptor + 'static, Presets> Class for Vst3Processor<P, Presets>
+impl<P: Model, Presets> Class for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     type Interfaces = (
         IComponent,
@@ -1138,9 +1125,9 @@ where
 // IPluginBase implementation
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
         kResultOk
@@ -1160,9 +1147,9 @@ where
 // IComponent implementation
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IComponentTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IComponentTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         if class_id.is_null() {
@@ -1392,9 +1379,9 @@ where
 // IAudioProcessor implementation
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn setBusArrangements(
         &self,
@@ -1516,30 +1503,30 @@ where
                 || *self.process_mode.get() != setup.processMode
         };
 
-        // Host threads keep using the descriptor while it creates the
-        // processor below.
-        let plugin = self.descriptor();
+        // Host threads keep using the model while it creates the processor
+        // below.
+        let model = self.model();
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
         let slot = unsafe { &mut *self.processor.get() };
 
         // A host may repeat a setup. Preparing again would then only throw
         // away what the processor holds. With a new sample rate, block size,
-        // sample size or process mode the plugin is prepared again: it
+        // sample size or process mode the model is prepared again: it
         // learns those when a processor is created.
         if slot.is_none() || setup_changed {
-            let input_bus_count = plugin.input_bus_count();
-            let output_bus_count = plugin.output_bus_count();
+            let input_bus_count = model.input_bus_count();
+            let output_bus_count = model.output_bus_count();
             let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
-                .filter_map(|i| plugin.input_bus_info(i))
+                .filter_map(|i| model.input_bus_info(i))
                 .collect();
             let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
-                .filter_map(|i| plugin.output_bus_info(i))
+                .filter_map(|i| model.output_bus_info(i))
                 .collect();
 
-            let bus_layout = BusLayout::from_plugin(plugin);
+            let bus_layout = BusLayout::from_model(model);
 
-            // Validate plugin's bus configuration against compile-time limits
-            if let Err(msg) = CachedBusConfig::from_plugin(plugin).validate() {
+            // Validate model's bus configuration against compile-time limits
+            if let Err(msg) = CachedBusConfig::from_model(model).validate() {
                 log::error!("Plugin bus configuration exceeds limits: {}", msg);
                 return kResultFalse;
             }
@@ -1555,20 +1542,20 @@ where
                 *self.process_mode.get() = setup.processMode;
             }
 
-            // Build the plugin setup
+            // Build the model setup
             let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
 
             // A processor of an earlier setup goes first, so that its
             // buffers are free before the new ones are allocated.
             *slot = None;
 
-            // The smoothers ramp at the host's rate unless the plugin
+            // The smoothers ramp at the host's rate unless the model
             // sets another one in prepare.
             beamer_core::Parameters::set_sample_rate(self.model(), setup.sampleRate);
 
-            // Create the processor. A state that was loaded before is in
-            // the model it shares with the descriptor.
-            let processor = plugin.prepare(plugin_setup);
+            // Create the processor, with its own handle to the model. A state
+            // that was loaded before is in the model already.
+            let processor = Arc::clone(&self.model).prepare(plugin_setup);
 
             // Pre-allocate buffer storage based on bus config
             let bus_config = CachedBusConfig::new(
@@ -1625,7 +1612,6 @@ where
         // loaded values before anything else happens to the parameters. They
         // belong to this thread.
         if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
-            use beamer_core::Parameters;
             self.model().reset_smoothing();
         }
 
@@ -1839,9 +1825,9 @@ where
     }
 }
 
-impl<P: Descriptor + 'static, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         // Request all available transport information from host.
@@ -1875,9 +1861,9 @@ where
 // IEditController implementation
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
         // For combined component, state is handled by IComponent::setState
@@ -1893,7 +1879,7 @@ where
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        let user_parameters = self.model().count();
+        let user_parameters = ParameterStore::count(self.model());
         // MIDI CC state is framework-owned, always available
         let cc_parameters = self
             .midi_cc_state
@@ -1911,7 +1897,7 @@ where
         }
 
         let model = self.model();
-        let user_parameter_count = model.count();
+        let user_parameter_count = ParameterStore::count(model);
 
         // User-defined parameters first
         if (parameter_index as usize) < user_parameter_count {
@@ -2219,8 +2205,8 @@ where
                 delegate,
                 self.shared_model(),
                 Arc::clone(&self.component_handler),
-                // The web UI's invoke calls and events go to the descriptor.
-                Arc::clone(&self.descriptor) as Arc<dyn WebViewDispatch>,
+                // The web UI's invoke calls and events go to the model.
+                Arc::clone(&self.model) as Arc<dyn WebViewDispatch>,
                 self.webview_events.clone(),
                 Arc::clone(&self.known_state_generation),
             );
@@ -2242,12 +2228,11 @@ where
 // IUnitInfo implementation (VST3 Unit/Group hierarchy)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getUnitCount(&self) -> i32 {
-        use beamer_core::parameter_groups::ParameterGroups;
         self.model().group_count() as i32
     }
 
@@ -2256,7 +2241,6 @@ where
             return kInvalidArgument;
         }
 
-        use beamer_core::parameter_groups::ParameterGroups;
         let model = self.model();
 
         if let Some(group_info) = model.group_info(unit_index as usize) {
@@ -2384,9 +2368,9 @@ where
 // IMidiMapping implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getMidiControllerAssignment(
         &self,
@@ -2403,8 +2387,8 @@ where
 
         // 1. First check plugin's custom mappings.
         {
-            let plugin = self.descriptor();
-            if let Some(parameter_id) = plugin.midi_cc_to_parameter(bus_index, channel, controller) {
+            let model = self.model();
+            if let Some(parameter_id) = model.midi_cc_to_parameter(bus_index, channel, controller) {
                 // SAFETY: id is non-null (checked above) and host guarantees validity.
                 unsafe { *id = parameter_id };
                 return kResultOk;
@@ -2428,9 +2412,9 @@ where
 // IMidiLearn implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn onLiveMIDIControllerInput(
         &self,
@@ -2438,7 +2422,7 @@ where
         channel: i16,
         midi_cc: i16,
     ) -> tresult {
-        if self.descriptor().on_midi_learn(bus_index, channel, midi_cc as u8) {
+        if self.model().on_midi_learn(bus_index, channel, midi_cc as u8) {
             kResultOk
         } else {
             kResultFalse
@@ -2450,16 +2434,16 @@ where
 // IMidiMapping2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getNumMidi1ControllerAssignments(&self, direction: BusDirections) -> u32 {
         // Only support input direction
         if direction != BusDirections_::kInput {
             return 0;
         }
-        self.descriptor().midi1_assignments().len() as u32
+        self.model().midi1_assignments().len() as u32
     }
 
     unsafe fn getMidi1ControllerAssignments(
@@ -2471,8 +2455,8 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
-        let assignments = plugin.midi1_assignments();
+        let model = self.model();
+        let assignments = model.midi1_assignments();
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &*list };
 
@@ -2503,7 +2487,7 @@ where
         if direction != BusDirections_::kInput {
             return 0;
         }
-        self.descriptor().midi2_assignments().len() as u32
+        self.model().midi2_assignments().len() as u32
     }
 
     unsafe fn getMidi2ControllerAssignments(
@@ -2515,8 +2499,8 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
-        let assignments = plugin.midi2_assignments();
+        let model = self.model();
+        let assignments = model.midi2_assignments();
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &*list };
 
@@ -2552,9 +2536,9 @@ where
 // IMidiLearn2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn onLiveMidi1ControllerInput(
         &self,
@@ -2562,7 +2546,7 @@ where
         channel: u8,
         midi_cc: i16,
     ) -> tresult {
-        if self.descriptor().on_midi1_learn(bus_index, channel, midi_cc as u8) {
+        if self.model().on_midi1_learn(bus_index, channel, midi_cc as u8) {
             kResultOk
         } else {
             kResultFalse
@@ -2580,7 +2564,7 @@ where
             registered: midi_cc.registered != 0,
             index: midi_cc.index,
         };
-        if self.descriptor().on_midi2_learn(bus_index, channel, controller) {
+        if self.model().on_midi2_learn(bus_index, channel, controller) {
             kResultOk
         } else {
             kResultFalse
@@ -2592,12 +2576,12 @@ where
 // INoteExpressionController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
-        self.descriptor().note_expression_count(bus_index, channel) as i32
+        self.model().note_expression_count(bus_index, channel) as i32
     }
 
     unsafe fn getNoteExpressionInfo(
@@ -2611,9 +2595,9 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
+        let model = self.model();
         if let Some(expr_info) =
-            plugin.note_expression_info(bus_index, channel, note_expression_index as usize)
+            model.note_expression_info(bus_index, channel, note_expression_index as usize)
         {
             // SAFETY: info is non-null (checked above) and host guarantees validity.
             let vst_info = unsafe { &mut *info };
@@ -2646,8 +2630,8 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
-        let display = plugin.note_expression_value_to_string(bus_index, channel, id, value_normalized);
+        let model = self.model();
+        let display = model.note_expression_value_to_string(bus_index, channel, id, value_normalized);
         // SAFETY: string is non-null (checked above) and host guarantees validity.
         copy_wstring(&display, unsafe { &mut *string });
         kResultOk
@@ -2670,8 +2654,8 @@ where
         // SAFETY: string is valid for len elements.
         if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string, len) }) {
             {
-                let plugin = self.descriptor();
-                if let Some(value) = plugin.note_expression_string_to_value(bus_index, channel, id, &s) {
+                let model = self.model();
+                if let Some(value) = model.note_expression_string_to_value(bus_index, channel, id, &s) {
                     // SAFETY: value_normalized is non-null (checked above).
                     unsafe { *value_normalized = value };
                     return kResultOk;
@@ -2686,12 +2670,12 @@ where
 // IKeyswitchController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
-        self.descriptor().keyswitch_count(bus_index, channel) as i32
+        self.model().keyswitch_count(bus_index, channel) as i32
     }
 
     unsafe fn getKeyswitchInfo(
@@ -2705,9 +2689,9 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
+        let model = self.model();
         if let Some(ks_info) =
-            plugin.keyswitch_info(bus_index, channel, keyswitch_index as usize)
+            model.keyswitch_info(bus_index, channel, keyswitch_index as usize)
         {
             // SAFETY: info is non-null (checked above) and host guarantees validity.
             let vst_info = unsafe { &mut *info };
@@ -2730,9 +2714,9 @@ where
 // INoteExpressionPhysicalUIMapping implementation (VST3 SDK 3.6.11)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn getPhysicalUIMapping(
         &self,
@@ -2744,8 +2728,8 @@ where
             return kInvalidArgument;
         }
 
-        let plugin = self.descriptor();
-        let mappings = plugin.physical_ui_mappings(bus_index, channel);
+        let model = self.model();
+        let mappings = model.physical_ui_mappings(bus_index, channel);
         // SAFETY: list is non-null (checked above) and host guarantees validity.
         let list_ref = unsafe { &mut *list };
 
@@ -2768,12 +2752,12 @@ where
 // IVst3WrapperMPESupport implementation (VST3 SDK 3.6.12)
 // =============================================================================
 
-impl<P: Descriptor + 'static, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
+impl<P: Model, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
 where
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    Presets: FactoryPresets<Parameters = P>,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
-        if self.descriptor().enable_mpe_input_processing(state != 0) {
+        if self.model().enable_mpe_input_processing(state != 0) {
             kResultOk
         } else {
             kResultFalse
@@ -2791,7 +2775,7 @@ where
             member_begin_channel,
             member_end_channel,
         };
-        if self.descriptor().set_mpe_input_device_settings(settings) {
+        if self.model().set_mpe_input_device_settings(settings) {
             kResultOk
         } else {
             kResultFalse
@@ -3296,26 +3280,21 @@ mod tests {
     type RecordedSetup = (beamer_core::SampleRate, beamer_core::MaxBufferSize, ProcessMode);
 
     #[derive(Default)]
-    struct SetupPlugin {
-        parameters: Arc<NoParameters>,
+    struct SetupModel {
+        parameters: NoParameters,
     }
 
     struct SetupProcessor {
         setup: RecordedSetup,
     }
 
-    impl HasParameters for SetupPlugin {
-        type Parameters = NoParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(SetupModel, parameters);
 
-    impl Descriptor for SetupPlugin {
+    impl Model for SetupModel {
         type Setup = RecordedSetup;
         type Processor = SetupProcessor;
 
-        fn prepare(&self, setup: RecordedSetup) -> SetupProcessor {
+        fn prepare(self: Arc<Self>, setup: RecordedSetup) -> SetupProcessor {
             PREPARE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             SetupProcessor { setup }
         }
@@ -3331,14 +3310,14 @@ mod tests {
         }
     }
 
-    /// Number of `prepare` calls on `SetupPlugin`. Only one test uses the plugin.
+    /// Number of `prepare` calls on `SetupModel`. Only one test uses the plugin.
     static PREPARE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     static TEST_CONFIG: Config = Config::new("Setup Test", Category::Effect, "Test", "stup");
 
     /// Call setupProcessing like a host and return the setup the plugin holds.
     fn setup_processing(
-        wrapper: &Vst3Processor<SetupPlugin>,
+        wrapper: &Vst3Processor<SetupModel>,
         sample_rate: f64,
         max_block: int32,
         mode: int32,
@@ -3364,7 +3343,7 @@ mod tests {
 
     #[test]
     fn test_setup_processing_prepares_again_for_a_new_setup() {
-        let wrapper = Vst3Processor::<SetupPlugin>::new(&TEST_CONFIG);
+        let wrapper = Vst3Processor::<SetupModel>::new(&TEST_CONFIG);
         let realtime = ProcessModes_::kRealtime as int32;
         let offline = ProcessModes_::kOffline as int32;
 
@@ -3418,12 +3397,12 @@ mod tests {
         static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
         /// The sample rate the smoothers were last given on this thread.
         static SMOOTHING_SAMPLE_RATE: Cell<f64> = const { Cell::new(0.0) };
-        /// What `SMOOTHING_SAMPLE_RATE` was when a `StatePlugin` was last
+        /// What `SMOOTHING_SAMPLE_RATE` was when a `StateModel` was last
         /// prepared on this thread.
         static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
         /// How many `StateProcessor`s exist on this thread.
         static LIVE_PROCESSORS: Cell<usize> = const { Cell::new(0) };
-        /// What `LIVE_PROCESSORS` was when a `StatePlugin` was last prepared
+        /// What `LIVE_PROCESSORS` was when a `StateModel` was last prepared
         /// on this thread.
         static LIVE_PROCESSORS_AT_PREPARE: Cell<usize> = const { Cell::new(0) };
     }
@@ -3503,12 +3482,12 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StatePlugin {
-        parameters: Arc<StateParameters>,
+    struct StateModel {
+        parameters: StateParameters,
     }
 
     struct StateProcessor {
-        parameters: Arc<StateParameters>,
+        model: Arc<StateModel>,
     }
 
     impl Drop for StateProcessor {
@@ -3518,25 +3497,18 @@ mod tests {
         }
     }
 
-    impl HasParameters for StatePlugin {
-        type Parameters = StateParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(StateModel, parameters);
 
-    impl Descriptor for StatePlugin {
+    impl Model for StateModel {
         type Setup = ();
         type Processor = StateProcessor;
 
-        fn prepare(&self, _setup: ()) -> StateProcessor {
+        fn prepare(self: Arc<Self>, _setup: ()) -> StateProcessor {
             SMOOTHING_SAMPLE_RATE_AT_PREPARE
                 .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
             LIVE_PROCESSORS_AT_PREPARE.with(|live| live.set(LIVE_PROCESSORS.with(Cell::get)));
             LIVE_PROCESSORS.with(|live| live.set(live.get() + 1));
-            StateProcessor {
-                parameters: Arc::clone(&self.parameters),
-            }
+            StateProcessor { model: self }
         }
     }
 
@@ -3552,7 +3524,7 @@ mod tests {
         }
 
         fn latency_samples(&self) -> u32 {
-            latency_for(self.parameters.gain.get_normalized())
+            latency_for(self.model.parameters.gain.get_normalized())
         }
 
         fn tail_samples(&self) -> u32 {
@@ -3566,28 +3538,23 @@ mod tests {
 
     static STATE_CONFIG: Config = Config::new("State Test", Category::Effect, "Test", "stat");
 
-    /// A plugin that wants MIDI. Only its descriptor can say so.
+    /// A plugin that wants MIDI. Only its model can say so.
     #[derive(Default)]
-    struct MidiPlugin {
-        parameters: Arc<NoParameters>,
+    struct MidiModel {
+        parameters: NoParameters,
         /// The controller of the last MIDI learn call.
         learned: Mutex<Option<u8>>,
     }
 
     struct MidiProcessor;
 
-    impl HasParameters for MidiPlugin {
-        type Parameters = NoParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(MidiModel, parameters);
 
-    impl Descriptor for MidiPlugin {
+    impl Model for MidiModel {
         type Setup = ();
         type Processor = MidiProcessor;
 
-        fn prepare(&self, _setup: ()) -> MidiProcessor {
+        fn prepare(self: Arc<Self>, _setup: ()) -> MidiProcessor {
             MidiProcessor
         }
 
@@ -3618,7 +3585,7 @@ mod tests {
         }
     }
 
-    impl MidiPlugin {
+    impl MidiModel {
         /// The controller of the last MIDI learn call.
         fn learned(&self) -> Option<u8> {
             *self.learned.lock().expect("no test panics while holding it")
@@ -3650,24 +3617,19 @@ mod tests {
 
     /// A plugin that gets the mod wheel as a parameter change.
     #[derive(Default)]
-    struct CcPlugin {
-        parameters: Arc<NoParameters>,
+    struct CcModel {
+        parameters: NoParameters,
     }
 
     struct CcProcessor;
 
-    impl HasParameters for CcPlugin {
-        type Parameters = NoParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(CcModel, parameters);
 
-    impl Descriptor for CcPlugin {
+    impl Model for CcModel {
         type Setup = ();
         type Processor = CcProcessor;
 
-        fn prepare(&self, _setup: ()) -> CcProcessor {
+        fn prepare(self: Arc<Self>, _setup: ()) -> CcProcessor {
             CcProcessor
         }
 
@@ -3698,7 +3660,7 @@ mod tests {
 
     #[test]
     fn test_midi_of_a_process_call_without_samples_reaches_the_next_block() {
-        let wrapper = Vst3Processor::<CcPlugin>::new(&CC_CONFIG);
+        let wrapper = Vst3Processor::<CcModel>::new(&CC_CONFIG);
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -3734,7 +3696,7 @@ mod tests {
 
     #[test]
     fn test_only_the_latest_controller_value_waits_for_a_block() {
-        let wrapper = Vst3Processor::<CcPlugin>::new(&CC_CONFIG);
+        let wrapper = Vst3Processor::<CcModel>::new(&CC_CONFIG);
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -3820,7 +3782,7 @@ mod tests {
     }
 
     /// The bus counts a host sees: audio in, audio out, event in, event out.
-    fn bus_counts(wrapper: &Vst3Processor<MidiPlugin>) -> [i32; 4] {
+    fn bus_counts(wrapper: &Vst3Processor<MidiModel>) -> [i32; 4] {
         let audio = MediaTypes_::kAudio as MediaType;
         let event = MediaTypes_::kEvent as MediaType;
         let input = BusDirections_::kInput as BusDirection;
@@ -3837,7 +3799,7 @@ mod tests {
     }
 
     /// The channel count of an audio input bus as a host sees it.
-    fn input_channels(wrapper: &Vst3Processor<MidiPlugin>, index: i32) -> Option<i32> {
+    fn input_channels(wrapper: &Vst3Processor<MidiModel>, index: i32) -> Option<i32> {
         // SAFETY: A zeroed BusInfo is valid, and it is alive for the call.
         let mut info: BusInfo = unsafe { std::mem::zeroed() };
         // SAFETY: The wrapper and the info are alive for the call.
@@ -3854,8 +3816,8 @@ mod tests {
 
     #[test]
     fn test_buses_are_reported_prepared_or_not() {
-        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
-        let event_buses = |wrapper: &Vst3Processor<MidiPlugin>| {
+        let wrapper = Vst3Processor::<MidiModel>::new(&MIDI_CONFIG);
+        let event_buses = |wrapper: &Vst3Processor<MidiModel>| {
             let [.., event_in, event_out] = bus_counts(wrapper);
             [event_in, event_out]
         };
@@ -3878,12 +3840,11 @@ mod tests {
     }
 
     #[test]
-    fn test_descriptor_answers_after_a_panic_in_one_of_its_calls() {
-        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
+    fn test_model_answers_after_a_panic_in_one_of_its_calls() {
+        let wrapper = Vst3Processor::<MidiModel>::new(&MIDI_CONFIG);
 
-        // Nothing of the wrapper stands between a host call and the
-        // descriptor, so a panic in one call leaves nothing behind for the
-        // next. The plugin panics in a call of the host.
+        // Nothing of the wrapper stands between a host call and the model,
+        // so a panic in one call leaves nothing behind for the next. The plugin panics in a call of the host.
         let learn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // SAFETY: The wrapper is alive for the call.
             unsafe { wrapper.onLiveMIDIControllerInput(0, 0, PANICKING_CC as i16) }
@@ -3894,13 +3855,13 @@ mod tests {
         assert_eq!(bus_counts(&wrapper), [2, 1, 1, 1]);
         // SAFETY: The wrapper is alive for the call.
         assert_eq!(unsafe { wrapper.onLiveMIDIControllerInput(0, 0, 1) }, kResultOk);
-        assert_eq!(wrapper.descriptor().learned(), Some(1));
+        assert_eq!(wrapper.model().learned(), Some(1));
     }
 
     #[test]
-    fn test_descriptor_answers_midi_mapping_prepared_or_not() {
-        let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
-        let mapped = |wrapper: &Vst3Processor<MidiPlugin>| {
+    fn test_model_answers_midi_mapping_prepared_or_not() {
+        let wrapper = Vst3Processor::<MidiModel>::new(&MIDI_CONFIG);
+        let mapped = |wrapper: &Vst3Processor<MidiModel>| {
             let mut id = 0u32;
             // SAFETY: The wrapper and the id are alive for the call.
             let result = unsafe {
@@ -3908,10 +3869,10 @@ mod tests {
             };
             (result, id)
         };
-        let learn = |wrapper: &Vst3Processor<MidiPlugin>, cc: u8| {
+        let learn = |wrapper: &Vst3Processor<MidiModel>, cc: u8| {
             // SAFETY: The wrapper is alive for the call.
             let result = unsafe { wrapper.onLiveMIDIControllerInput(0, 0, cc as i16) };
-            (result, wrapper.descriptor().learned())
+            (result, wrapper.model().learned())
         };
         assert_eq!(mapped(&wrapper), (kResultOk, MAPPED_PARAMETER));
         assert_eq!(learn(&wrapper, 1), (kResultOk, Some(1)));
@@ -3925,20 +3886,20 @@ mod tests {
         // SAFETY: The setup is valid for the call.
         assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
 
-        // A prepared plugin still has its descriptor to answer.
+        // A prepared plugin still has its model to answer.
         assert_eq!(mapped(&wrapper), (kResultOk, MAPPED_PARAMETER));
         assert_eq!(learn(&wrapper, 7), (kResultOk, Some(7)));
     }
 
-    fn prepared_state_wrapper() -> Vst3Processor<StatePlugin> {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+    fn prepared_state_wrapper() -> Vst3Processor<StateModel> {
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
         wrapper
     }
 
-    fn prepare_state_wrapper<Presets>(wrapper: &Vst3Processor<StatePlugin, Presets>)
+    fn prepare_state_wrapper<Presets>(wrapper: &Vst3Processor<StateModel, Presets>)
     where
-        Presets: FactoryPresets<Parameters = StateParameters>,
+        Presets: FactoryPresets<Parameters = StateModel>,
     {
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
@@ -3951,7 +3912,7 @@ mod tests {
     }
 
     /// Process one stereo block like a host.
-    fn process_block(wrapper: &Vst3Processor<StatePlugin>) {
+    fn process_block(wrapper: &Vst3Processor<StateModel>) {
         process_with(wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
     }
 
@@ -3964,8 +3925,8 @@ mod tests {
         changes: *mut IParameterChanges,
         output_changes: *mut IParameterChanges,
     ) where
-        P: Descriptor + 'static,
-        Presets: FactoryPresets<Parameters = P::Parameters>,
+        P: Model,
+        Presets: FactoryPresets<Parameters = P>,
     {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];
@@ -4072,7 +4033,7 @@ mod tests {
     }
 
     /// Call process with one parameter change and `frames` frames.
-    fn process_change(wrapper: &Vst3Processor<StatePlugin>, frames: int32, id: u32, value: f64) {
+    fn process_change(wrapper: &Vst3Processor<StateModel>, frames: int32, id: u32, value: f64) {
         let changes = changes_of(&[(id, value)]);
         process_with(wrapper, frames, changes.as_ptr(), std::ptr::null_mut());
     }
@@ -4170,7 +4131,7 @@ mod tests {
         }
     }
 
-    /// Two factory presets for the gain of the `StatePlugin`. The second
+    /// Two factory presets for the gain of the `StateModel`. The second
     /// also has a value for an id that names no parameter, as a misspelled
     /// preset key gives.
     struct GainPresets;
@@ -4184,7 +4145,7 @@ mod tests {
     ];
 
     impl FactoryPresets for GainPresets {
-        type Parameters = StateParameters;
+        type Parameters = StateModel;
 
         fn count() -> usize {
             GAIN_PRESET_VALUES.len()
@@ -4201,7 +4162,7 @@ mod tests {
 
     #[test]
     fn test_program_change_in_process_applies_and_reports_the_preset() {
-        let wrapper = Vst3Processor::<StatePlugin, GainPresets>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
         let output = vst3::ComWrapper::new(OutputChanges::default());
         let output_pointer = output
@@ -4223,7 +4184,7 @@ mod tests {
 
     #[test]
     fn test_a_parameter_change_after_a_preset_in_the_same_block() {
-        let wrapper = Vst3Processor::<StatePlugin, GainPresets>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
         let output = vst3::ComWrapper::new(OutputChanges::default());
         let output_pointer = output
@@ -4300,7 +4261,7 @@ mod tests {
     }
 
     /// Save the state of a wrapper like a host and return the bytes.
-    fn saved_state(wrapper: &Vst3Processor<StatePlugin>) -> Vec<u8> {
+    fn saved_state(wrapper: &Vst3Processor<StateModel>) -> Vec<u8> {
         let stream = vst3::ComWrapper::new(MemoryStream::default());
         let pointer = stream.to_com_ptr::<IBStream>().expect("the stream is an IBStream");
         // SAFETY: The stream is alive for the call.
@@ -4310,7 +4271,7 @@ mod tests {
     }
 
     /// Load a state into a wrapper like a host.
-    fn load_state(wrapper: &Vst3Processor<StatePlugin>, bytes: &[u8]) -> tresult {
+    fn load_state(wrapper: &Vst3Processor<StateModel>, bytes: &[u8]) -> tresult {
         let stream = vst3::ComWrapper::new(MemoryStream {
             content: Mutex::new((bytes.to_vec(), 0)),
         });
@@ -4319,19 +4280,19 @@ mod tests {
         unsafe { IComponentTrait::setState(wrapper, pointer.as_ptr()) }
     }
 
-    fn gain(wrapper: &Vst3Processor<StatePlugin>) -> f64 {
+    fn gain(wrapper: &Vst3Processor<StateModel>) -> f64 {
         // SAFETY: The wrapper is alive.
         unsafe { wrapper.getParamNormalized(GAIN_ID) }
     }
 
-    fn set_gain(wrapper: &Vst3Processor<StatePlugin>, value: f64) {
+    fn set_gain(wrapper: &Vst3Processor<StateModel>, value: f64) {
         // SAFETY: The wrapper is alive.
         assert_eq!(unsafe { wrapper.setParamNormalized(GAIN_ID, value) }, kResultOk);
     }
 
     #[test]
     fn test_state_is_the_same_prepared_or_not() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
 
         // Before preparing: the state is saved and a loaded one applies.
         set_gain(&wrapper, 0.25);
@@ -4373,7 +4334,7 @@ mod tests {
 
     #[test]
     fn test_state_loaded_before_preparing_resets_the_smoothers_in_the_first_block() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
         let state = saved_state(&wrapper);
         assert_eq!(load_state(&wrapper, &state), kResultOk);
         let before = smoothing_resets();
@@ -4385,7 +4346,7 @@ mod tests {
 
     #[test]
     fn test_setup_processing_gives_the_smoothers_the_host_sample_rate() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
 
         // The rate is there when the plugin creates its processor.
         prepare_state_wrapper(&wrapper);
@@ -4405,7 +4366,7 @@ mod tests {
 
     #[test]
     fn test_new_setup_replaces_the_processor_and_keeps_the_parameters() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
         set_gain(&wrapper, 0.25);
 
         prepare_state_wrapper(&wrapper);
@@ -4453,7 +4414,7 @@ mod tests {
 
     #[test]
     fn test_process_call_without_samples_on_an_unprepared_plugin() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
         set_gain(&wrapper, 0.25);
 
         // There is no processor yet. The values are applied all the same.
@@ -4487,7 +4448,7 @@ mod tests {
 
     #[test]
     fn test_editor_shares_the_model_in_both_states() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
 
         // An editor that is opened before audio is set up.
         let editor = wrapper.shared_model();
@@ -4525,7 +4486,7 @@ mod tests {
 
     #[test]
     fn test_latency_and_tail_are_published_for_the_host() {
-        let wrapper = Vst3Processor::<StatePlugin>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
         let tail = STATE_TAIL_SAMPLES + STATE_BYPASS_RAMP_SAMPLES;
 
         // SAFETY: The wrapper is alive for all calls below.

@@ -1,16 +1,18 @@
 //! Beamer MIDI Transform - Example MIDI effect demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`MidiTransformParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`MidiTransformDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`MidiTransformProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`MidiTransformModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, state and
+//!    events, how the host sees it and how it creates the processor.
+//! 2. **`MidiTransformProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
-//! - Nested parameter groups with `#[nested(group = "...")]`
+//! - Nested groups with `#[nested(group = "...")]`
 //! - `EnumParameter` for discrete choices (transform modes)
 //! - `IntParameter` for note/CC number selection
 //! - `BoolParameter` for enable toggles
@@ -84,19 +86,19 @@ pub enum CcTransformMode {
 }
 
 // =============================================================================
-// Nested Parameter Groups
+// Nested Groups
 // =============================================================================
 
-/// Note transformation parameters.
+/// Note transformation settings.
 ///
-/// This is a nested parameter group that appears as "Note Transform" in the DAW.
+/// This is a nested group that appears as "Note Transform" in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
 ///
 /// Its parameters are known by their path: the field this struct sits in and
 /// the `id` below, such as `note/enabled`. That is why "enabled" can be used
 /// again in the CC group.
-#[derive(Parameters)]
-pub struct NoteTransformParameters {
+#[beamer::group]
+pub struct NoteTransformGroup {
     /// Enable note transformation
     #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
@@ -122,12 +124,12 @@ pub struct NoteTransformParameters {
     pub velocity_scale: FloatParameter,
 }
 
-/// CC transformation parameters.
+/// CC transformation settings.
 ///
-/// This is a nested parameter group that appears as "CC Transform" in the DAW.
+/// This is a nested group that appears as "CC Transform" in the DAW.
 /// Uses **declarative parameter definition** - no manual Default impl needed!
-#[derive(Parameters)]
-pub struct CcTransformParameters {
+#[beamer::group]
+pub struct CcTransformGroup {
     /// Enable CC transformation
     #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
@@ -150,57 +152,38 @@ pub struct CcTransformParameters {
 }
 
 // =============================================================================
-// Plugin Parameters
+// Model
 // =============================================================================
 
-/// MIDI Transform plugin parameters.
+/// MIDI Transform model: everything the plugin knows, shared by the host
+/// and the audio thread for the life of the instance.
 ///
 /// Demonstrates the `#[nested(group = "...")]` attribute for creating
 /// hierarchical parameter organization in the DAW.
-/// The `#[derive(Parameters)]` macro also generates `HasParameters`.
-#[derive(Parameters)]
-pub struct MidiTransformParameters {
+#[beamer::export]
+#[beamer::model]
+pub struct MidiTransformModel {
     /// Global bypass - uses the special `bypass` attribute
     #[parameter(id = "bypass", bypass)]
     pub bypass: BoolParameter,
 
-    /// Note transformation parameters (nested group)
+    /// Note transformation settings (nested group)
     #[nested(group = "Note Transform")]
-    pub note: NoteTransformParameters,
+    pub note: NoteTransformGroup,
 
-    /// CC transformation parameters (nested group)
+    /// CC transformation settings (nested group)
     #[nested(group = "CC Transform")]
-    pub cc: CcTransformParameters,
+    pub cc: CcTransformGroup,
 }
 
-// =============================================================================
-// Plugin Descriptor
-// =============================================================================
-
-/// MIDI Transform plugin descriptor.
-///
-/// This struct implements the `Descriptor` trait and holds the plugin's
-/// parameters. It is the entry point for the plugin - the host creates
-/// this struct and calls `prepare()` to get a `MidiTransformProcessor`.
-/// The processor shares the parameters with it.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct MidiTransformDescriptor {
-    /// Plugin parameters
-    #[parameters]
-    pub parameters: Arc<MidiTransformParameters>,
-}
-
-impl Descriptor for MidiTransformDescriptor {
+impl Model for MidiTransformModel {
     // A MIDI transformer needs nothing from the host's audio setup.
     // See `beamer::setup` for all available types.
     type Setup = ();
     type Processor = MidiTransformProcessor;
 
-    fn prepare(&self, _: ()) -> MidiTransformProcessor {
-        MidiTransformProcessor {
-            parameters: Arc::clone(&self.parameters),
-        }
+    fn prepare(self: Arc<Self>, _: ()) -> MidiTransformProcessor {
+        MidiTransformProcessor { model: self }
     }
 
     fn wants_midi(&self) -> bool {
@@ -209,15 +192,15 @@ impl Descriptor for MidiTransformDescriptor {
 }
 
 // =============================================================================
-// Audio Processor
+// Processor
 // =============================================================================
 
 /// MIDI transformer processor, ready for audio/MIDI processing.
 ///
 /// Transforms MIDI notes and CC messages based on parameter settings.
-/// Created by `MidiTransformDescriptor::prepare()`.
+/// Created by `MidiTransformModel::prepare()`.
 pub struct MidiTransformProcessor {
-    parameters: Arc<MidiTransformParameters>,
+    model: Arc<MidiTransformModel>,
 }
 
 impl MidiTransformProcessor {
@@ -241,15 +224,15 @@ impl MidiTransformProcessor {
     /// * `Some(pitch)` - Transformed pitch within valid MIDI range
     /// * `None` - Pitch out of range (note should be filtered)
     fn transform_pitch(&self, pitch: u8) -> Option<u8> {
-        if !self.parameters.note.enabled.get() {
+        if !self.model.note.enabled.get() {
             return Some(pitch);
         }
 
-        let new_pitch = match self.parameters.note.mode.get() {
+        let new_pitch = match self.model.note.mode.get() {
             NoteTransformMode::Through => pitch as i16,
 
             NoteTransformMode::Transpose => {
-                pitch as i16 + self.parameters.note.transpose.get() as i16
+                pitch as i16 + self.model.note.transpose.get() as i16
             }
 
             NoteTransformMode::OctaveUp => pitch as i16 + 12,
@@ -257,8 +240,8 @@ impl MidiTransformProcessor {
             NoteTransformMode::OctaveDown => pitch as i16 - 12,
 
             NoteTransformMode::Remap => {
-                if pitch == self.parameters.note.input_note.get() as u8 {
-                    self.parameters.note.output_note.get() as i16
+                if pitch == self.model.note.input_note.get() as u8 {
+                    self.model.note.output_note.get() as i16
                 } else {
                     pitch as i16
                 }
@@ -289,11 +272,11 @@ impl MidiTransformProcessor {
     /// # Returns
     /// Scaled velocity, clamped to 0.0-1.0
     fn transform_velocity(&self, velocity: f32) -> f32 {
-        if !self.parameters.note.enabled.get() {
+        if !self.model.note.enabled.get() {
             return velocity;
         }
 
-        let scale = self.parameters.note.velocity_scale.get() as f32;
+        let scale = self.model.note.velocity_scale.get() as f32;
         (velocity * scale).clamp(0.0, 1.0)
     }
 
@@ -309,17 +292,17 @@ impl MidiTransformProcessor {
     /// * `Some(cc)` - Output CC number (possibly remapped)
     /// * `None` - CC should be filtered (not currently used)
     fn transform_cc_number(&self, cc: u8) -> Option<u8> {
-        if !self.parameters.cc.enabled.get() {
+        if !self.model.cc.enabled.get() {
             return Some(cc);
         }
 
-        match self.parameters.cc.mode.get() {
+        match self.model.cc.mode.get() {
             CcTransformMode::Through | CcTransformMode::Scale | CcTransformMode::Invert => {
                 Some(cc)
             }
             CcTransformMode::Remap | CcTransformMode::RemapAndScale => {
-                if cc == self.parameters.cc.input_cc.get() as u8 {
-                    Some(self.parameters.cc.output_cc.get() as u8)
+                if cc == self.model.cc.input_cc.get() as u8 {
+                    Some(self.model.cc.output_cc.get() as u8)
                 } else {
                     Some(cc)
                 }
@@ -346,18 +329,18 @@ impl MidiTransformProcessor {
     /// # Returns
     /// Transformed CC value, clamped to 0.0-1.0
     fn transform_cc_value(&self, cc: u8, value: f32) -> f32 {
-        if !self.parameters.cc.enabled.get() {
+        if !self.model.cc.enabled.get() {
             return value;
         }
 
         // Only transform if this is the targeted CC (for remap modes)
         // or if we're in a mode that affects all CCs
-        let should_transform = match self.parameters.cc.mode.get() {
+        let should_transform = match self.model.cc.mode.get() {
             CcTransformMode::Through => false,
             CcTransformMode::Scale | CcTransformMode::Invert => true,
             CcTransformMode::Remap => false, // Remap only changes number, not value
             CcTransformMode::RemapAndScale => {
-                cc == self.parameters.cc.input_cc.get() as u8
+                cc == self.model.cc.input_cc.get() as u8
             }
         };
 
@@ -365,9 +348,9 @@ impl MidiTransformProcessor {
             return value;
         }
 
-        match self.parameters.cc.mode.get() {
+        match self.model.cc.mode.get() {
             CcTransformMode::Scale | CcTransformMode::RemapAndScale => {
-                let scale = self.parameters.cc.value_scale.get() as f32;
+                let scale = self.model.cc.value_scale.get() as f32;
                 (value * scale).clamp(0.0, 1.0)
             }
             CcTransformMode::Invert => {
@@ -391,7 +374,7 @@ impl Processor for MidiTransformProcessor {
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         // If bypassed, pass everything through unchanged
-        if self.parameters.bypass.get() {
+        if self.model.bypass.get() {
             for event in input {
                 output.push(event.clone());
             }

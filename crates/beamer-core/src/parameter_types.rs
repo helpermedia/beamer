@@ -6,14 +6,14 @@
 //!
 //! # The `Parameters` Trait (Recommended)
 //!
-//! The [`Parameters`] trait is the preferred way to define parameters. Use `#[derive(Parameters)]`
+//! The [`Parameters`] trait is the preferred way to define parameters. Use `#[beamer::model]`
 //! for automatic implementation:
 //!
 //! ```ignore
 //! use beamer::prelude::*;
 //!
-//! #[derive(Parameters)]
-//! pub struct MyParameters {
+//! #[beamer::model]
+//! pub struct MyModel {
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     pub gain: FloatParameter,
 //!
@@ -22,7 +22,7 @@
 //! }
 //! ```
 //!
-//! The derive macro generates implementations of `Parameters`,
+//! The attribute generates implementations of `Parameters`,
 //! [`ModelFields`](crate::model::ModelFields) and
 //! [`ParameterStore`](crate::parameter_store::ParameterStore). See
 //! [`crate::parameter_store`] for details on the relationship between
@@ -126,7 +126,7 @@ pub trait ParameterRef: Send + Sync {
 
     /// Get the full ParameterInfo for this parameter.
     ///
-    /// This is used by the `#[derive(Parameters)]` macro to generate the
+    /// This is used by `#[beamer::model]` and `#[beamer::group]` to generate the
     /// `ParameterStore::info()` implementation.
     fn info(&self) -> &ParameterInfo;
 }
@@ -137,7 +137,7 @@ pub trait ParameterRef: Send + Sync {
 
 /// The path of a parameter: its `id` behind the path of its struct.
 ///
-/// Used by the code that `#[derive(Parameters)]` generates. The path of a
+/// Used by the code that `#[beamer::model]` and `#[beamer::group]` generate. The path of a
 /// parameter in the root struct is its `id`, which needs no allocation.
 pub fn parameter_path(prefix: &str, id: &'static str) -> Cow<'static, str> {
     if prefix.is_empty() {
@@ -247,7 +247,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// field `osc1` gets `osc1/attack`. The id that hosts see is the hash
     /// of that path, so the same nested struct can sit in several fields.
     ///
-    /// `#[derive(Parameters)]` generates this and calls it in the `Default`
+    /// `#[beamer::model]` and `#[beamer::group]` generate this and call it in the `Default`
     /// it generates. A hand-written `Default` of a derived struct calls
     /// `assign_ids("")` itself.
     ///
@@ -270,7 +270,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Number of direct nested parameter groups in this struct.
     ///
-    /// Default is 0 (no nested groups). The `#[derive(Parameters)]` macro
+    /// Default is 0 (no nested groups). `#[beamer::model]` and `#[beamer::group]`
     /// generates an override for structs with `#[nested]` fields.
     fn nested_count(&self) -> usize {
         0
@@ -377,7 +377,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// Set sample rate for all smoothers in this parameter collection.
     ///
     /// The framework calls this with the host's sample rate before
-    /// `Descriptor::prepare()`, so a plugin that processes at the host's
+    /// `Model::prepare()`, so a plugin that processes at the host's
     /// rate has nothing to do.
     ///
     /// **Oversampling:** If your plugin uses oversampling, call this in
@@ -387,7 +387,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// Call this while no audio is processed (`prepare()` is such a
     /// moment): the smoothers belong to the audio thread.
     fn set_sample_rate(&self, _sample_rate: f64) {
-        // Default no-op. The #[derive(Parameters)] macro generates an override
+        // Default no-op. #[beamer::model] and #[beamer::group] generate an override
         // that calls set_sample_rate on each float parameter and nested field.
     }
 
@@ -398,7 +398,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// It belongs to the audio thread, like every method that advances a
     /// smoother.
     fn reset_smoothing(&self) {
-        // Default no-op. The #[derive(Parameters)] macro generates an override
+        // Default no-op. #[beamer::model] and #[beamer::group] generate an override
         // that calls reset_smoothing on each float parameter and nested field.
     }
 }
@@ -423,7 +423,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 /// # Example
 ///
 /// ```ignore
-/// // Create parameter - ID is set separately via with_id() or #[derive(Parameters)]
+/// // Create parameter - ID is set separately via with_id() or #[beamer::model]
 /// let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_id(0);
 /// let freq = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0).with_id(1);
 ///
@@ -455,7 +455,7 @@ impl FloatParameter {
     /// Create a generic float parameter with linear mapping.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -498,7 +498,7 @@ impl FloatParameter {
     /// - [`normalized_to_plain`](ParameterRef::normalized_to_plain) returns dB (matches `units`)
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -554,7 +554,7 @@ impl FloatParameter {
     /// precision near 0 dB is important.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -602,7 +602,7 @@ impl FloatParameter {
     /// offsetting to positive space. Provides geometric mean at midpoint.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -654,7 +654,7 @@ impl FloatParameter {
     /// across the frequency range.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -697,7 +697,7 @@ impl FloatParameter {
     /// Create a milliseconds parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -716,7 +716,7 @@ impl FloatParameter {
     /// Create a seconds parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -737,7 +737,7 @@ impl FloatParameter {
     /// The value is stored as 0.0-1.0 internally but displayed as 0%-100%.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -758,7 +758,7 @@ impl FloatParameter {
     /// Display: "L50", "C", "R50"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -776,7 +776,7 @@ impl FloatParameter {
     /// Display: "4.0:1", "∞:1"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -795,7 +795,7 @@ impl FloatParameter {
     /// Set the parameter ID.
     ///
     /// For parameters that are set up by hand: any u32 that is unique in
-    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// the plugin. `#[beamer::model]` and `#[beamer::group]` set the id themselves, through
     /// [`set_path`](Self::set_path).
     ///
     /// # Example
@@ -816,7 +816,7 @@ impl FloatParameter {
 
     /// Set both ids from the path of the parameter in its model.
     ///
-    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    /// See [`ParameterInfo::set_path`]. Called by `#[beamer::model]` and `#[beamer::group]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
         self.info.set_path(path);
     }
@@ -829,7 +829,7 @@ impl FloatParameter {
 
     /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    /// Used by `#[beamer::model]` and `#[beamer::group]` to assign parameters to groups.
     pub fn with_group(mut self, group_id: GroupId) -> Self {
         self.info.group_id = group_id;
         self
@@ -1077,7 +1077,7 @@ impl FloatParameter {
     /// Set sample rate for smoothing.
     ///
     /// The framework calls this with the host's sample rate before
-    /// `Descriptor::prepare()`. If using oversampling, call it in
+    /// `Model::prepare()`. If using oversampling, call it in
     /// `prepare()` with `sample_rate * oversampling_factor`.
     pub fn set_sample_rate(&self, sample_rate: f64) {
         if let Some(smoother) = &self.smoother {
@@ -1304,7 +1304,7 @@ impl IntParameter {
     /// Create a generic integer parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -1355,7 +1355,7 @@ impl IntParameter {
     /// Format: "+12", "-7", "0" (unit "st" via `units()`)
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -1376,7 +1376,7 @@ impl IntParameter {
     /// Set the parameter ID.
     ///
     /// For parameters that are set up by hand: any u32 that is unique in
-    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// the plugin. `#[beamer::model]` and `#[beamer::group]` set the id themselves, through
     /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
@@ -1391,7 +1391,7 @@ impl IntParameter {
 
     /// Set both ids from the path of the parameter in its model.
     ///
-    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    /// See [`ParameterInfo::set_path`]. Called by `#[beamer::model]` and `#[beamer::group]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
         self.info.set_path(path);
     }
@@ -1404,7 +1404,7 @@ impl IntParameter {
 
     /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    /// Used by `#[beamer::model]` and `#[beamer::group]` to assign parameters to groups.
     pub fn with_group(mut self, group_id: GroupId) -> Self {
         self.info.group_id = group_id;
         self
@@ -1619,7 +1619,7 @@ impl BoolParameter {
     /// Create a generic boolean parameter.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -1653,7 +1653,7 @@ impl BoolParameter {
     /// - Marked with `is_bypass = true` flag for VST3
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     pub fn bypass() -> Self {
         Self {
             info: ParameterInfo {
@@ -1684,7 +1684,7 @@ impl BoolParameter {
     /// Set the parameter ID.
     ///
     /// For parameters that are set up by hand: any u32 that is unique in
-    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// the plugin. `#[beamer::model]` and `#[beamer::group]` set the id themselves, through
     /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
@@ -1699,7 +1699,7 @@ impl BoolParameter {
 
     /// Set both ids from the path of the parameter in its model.
     ///
-    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    /// See [`ParameterInfo::set_path`]. Called by `#[beamer::model]` and `#[beamer::group]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
         self.info.set_path(path);
     }
@@ -1712,7 +1712,7 @@ impl BoolParameter {
 
     /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    /// Used by `#[beamer::model]` and `#[beamer::group]` to assign parameters to groups.
     pub fn with_group(mut self, group_id: GroupId) -> Self {
         self.info.group_id = group_id;
         self
@@ -1914,8 +1914,8 @@ pub trait EnumParameterValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 ///     HighPass,
 /// }
 ///
-/// #[derive(Parameters)]
-/// pub struct FilterParameters {
+/// #[beamer::model]
+/// pub struct FilterModel {
 ///     // Uses HighPass as default (from the #[default] attribute).
 ///     #[parameter(id = "filter_type", name = "Filter Type")]
 ///     pub filter_type: EnumParameter<FilterType>,
@@ -1923,7 +1923,7 @@ pub trait EnumParameterValue: Copy + Clone + PartialEq + Send + Sync + 'static {
 ///
 /// // In DSP code:
 /// fn process(&self) {
-///     match self.parameters.filter_type.get() {
+///     match self.model.filter_type.get() {
 ///         FilterType::LowPass => { /* ... */ }
 ///         FilterType::HighPass => { /* ... */ }
 ///     }
@@ -1945,7 +1945,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     /// or the first variant if no default is specified.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
-    /// or the `#[derive(Parameters)]` macro.
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
     ///
     /// # Arguments
     ///
@@ -2007,7 +2007,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
     /// Set the parameter ID.
     ///
     /// For parameters that are set up by hand: any u32 that is unique in
-    /// the plugin. `#[derive(Parameters)]` sets the id itself, through
+    /// the plugin. `#[beamer::model]` and `#[beamer::group]` set the id themselves, through
     /// [`set_path`](Self::set_path).
     pub fn with_id(mut self, id: ParameterId) -> Self {
         self.info.id = id;
@@ -2022,7 +2022,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
 
     /// Set both ids from the path of the parameter in its model.
     ///
-    /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
+    /// See [`ParameterInfo::set_path`]. Called by `#[beamer::model]` and `#[beamer::group]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
         self.info.set_path(path);
     }
@@ -2035,7 +2035,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
 
     /// Set the group ID (parameter group) for this parameter.
     ///
-    /// Used by the `#[derive(Parameters)]` macro to assign parameters to groups.
+    /// Used by `#[beamer::model]` and `#[beamer::group]` to assign parameters to groups.
     pub fn with_group(mut self, group_id: GroupId) -> Self {
         self.info.group_id = group_id;
         self

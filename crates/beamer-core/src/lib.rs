@@ -8,7 +8,7 @@
 //!
 //! ## Main Traits
 //!
-//! - [`Descriptor`] - The plugin as the host sees it (holds the model, lives as long as the instance)
+//! - [`Model`] - What every thread shares, and the plugin as the host sees it (lives as long as the instance)
 //! - [`Processor`] - Core DSP processing trait (created for an audio configuration)
 //! - [`Parameters`] - Parameter collection trait
 //! - [`GuiDelegate`] - GUI configuration and callbacks
@@ -116,9 +116,9 @@ pub use state::State;
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType, Descriptor, HasParameters,
+    AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType,
     HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
-    Midi2Assignment, MidiControllerAssignment, PluginSetup, ProcessMode, Processor, SampleRate,
+    Midi2Assignment, MidiControllerAssignment, Model, PluginSetup, ProcessMode, Processor, SampleRate,
 };
 pub use preset::{fnv1a_hash, FactoryPresets, NoPresets, PresetInfo, PresetValue};
 pub use process_context::{FrameRate, ProcessContext, Transport};

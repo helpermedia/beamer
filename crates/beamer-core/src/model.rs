@@ -20,7 +20,7 @@ use crate::webview_events::WebViewEvents;
 /// What a model holds beyond its parameters, and saving and loading all of
 /// it.
 ///
-/// `#[derive(Parameters)]` generates this for a struct and each of its
+/// `#[beamer::model]` and `#[beamer::group]` generate this for a model and each of its
 /// nested structs. A hand-written [`Parameters`] implementation adds an
 /// empty `impl ModelFields for MyParameters {}`: the defaults save and load
 /// its parameters and report no `State` fields and no event queue.
@@ -30,7 +30,7 @@ pub trait ModelFields: Parameters {
     /// field order.
     ///
     /// The format wrappers deliver what is emitted into it while an editor
-    /// is open. `#[derive(Parameters)]` finds the field by its type; the
+    /// is open. `#[beamer::model]` and `#[beamer::group]` find the field by its type; the
     /// default is for structs without one.
     fn webview_events(&self) -> Option<&WebViewEvents> {
         None
@@ -42,7 +42,7 @@ pub trait ModelFields: Parameters {
     /// A format wrapper compares it with the value it saw last to tell the
     /// host that the plugin state changed. Parameters are not part of it:
     /// the host learns about their changes through the edits.
-    /// `#[derive(Parameters)]` generates it; the default is for structs
+    /// `#[beamer::model]` and `#[beamer::group]` generate it; the default is for structs
     /// without `State` fields.
     fn state_generation(&self) -> u64 {
         0
@@ -54,7 +54,7 @@ pub trait ModelFields: Parameters {
     ///
     /// A web UI reaches the `State` fields through it. Not for the audio
     /// thread: the path of a field in a nested struct is built as a
-    /// `String`. `#[derive(Parameters)]` generates it; the default is for
+    /// `String`. `#[beamer::model]` and `#[beamer::group]` generate it; the default is for
     /// structs without `State` fields.
     fn for_each_state(&self, _visit: &mut dyn FnMut(&str, &dyn SavedState)) {}
 
@@ -64,7 +64,7 @@ pub trait ModelFields: Parameters {
 
     /// Add the entries of this struct to a state that is being saved.
     ///
-    /// `#[derive(Parameters)]` generates this: every field under its id,
+    /// `#[beamer::model]` and `#[beamer::group]` generate this: every field under its id,
     /// with the entries of a nested struct under the name of its field.
     /// `prefix` is the path of this struct, empty for the root.
     ///
@@ -84,7 +84,7 @@ pub trait ModelFields: Parameters {
     /// Take the values of this struct from the entries of a saved state.
     ///
     /// The counterpart of [`save_entries`](Self::save_entries), generated
-    /// by `#[derive(Parameters)]` as well. Every field asks for its entry
+    /// by `#[beamer::model]` and `#[beamer::group]` as well. Every field asks for its entry
     /// and goes back to its default when there is none it can use.
     ///
     /// Takes `&self`: a host may load a state from one of its own threads
@@ -183,4 +183,184 @@ impl<T: ModelFields + ParameterStore + 'static> SharedModel for T {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// Make a struct a model by forwarding the model traits to one of its
+/// fields, for test models in the format wrappers, which cannot use
+/// `#[beamer::model]`.
+///
+/// `__forward_model!(MidiModel, parameters)` implements `ParameterGroups`,
+/// `Parameters`, `ModelFields` and `ParameterStore` for `MidiModel` through
+/// its field `parameters`. The rest of the struct (a `Mutex`, a counter) is
+/// what the test looks at.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __forward_model {
+    ($model:ty, $field:ident) => {
+        impl $crate::parameter_groups::ParameterGroups for $model {
+            fn group_count(&self) -> usize {
+                $crate::parameter_groups::ParameterGroups::group_count(&self.$field)
+            }
+
+            fn group_info(&self, index: usize) -> Option<$crate::parameter_groups::GroupInfo> {
+                $crate::parameter_groups::ParameterGroups::group_info(&self.$field, index)
+            }
+
+            fn find_group_by_name(&self, name: &str) -> Option<$crate::parameter_groups::GroupId> {
+                $crate::parameter_groups::ParameterGroups::find_group_by_name(&self.$field, name)
+            }
+        }
+
+        impl $crate::parameter_types::Parameters for $model {
+            fn count(&self) -> usize {
+                $crate::parameter_types::Parameters::count(&self.$field)
+            }
+
+            fn iter(&self) -> Box<dyn Iterator<Item = &dyn $crate::parameter_types::ParameterRef> + '_> {
+                $crate::parameter_types::Parameters::iter(&self.$field)
+            }
+
+            fn by_id(&self, id: $crate::types::ParameterId) -> Option<&dyn $crate::parameter_types::ParameterRef> {
+                $crate::parameter_types::Parameters::by_id(&self.$field, id)
+            }
+
+            fn assign_ids(&mut self, prefix: &str) {
+                $crate::parameter_types::Parameters::assign_ids(&mut self.$field, prefix);
+            }
+
+            fn set_all_group_ids(&mut self, group_id: $crate::parameter_groups::GroupId) {
+                $crate::parameter_types::Parameters::set_all_group_ids(&mut self.$field, group_id);
+            }
+
+            fn nested_count(&self) -> usize {
+                $crate::parameter_types::Parameters::nested_count(&self.$field)
+            }
+
+            fn nested_group(
+                &self,
+                index: usize,
+            ) -> Option<(&'static str, &dyn $crate::parameter_types::Parameters)> {
+                $crate::parameter_types::Parameters::nested_group(&self.$field, index)
+            }
+
+            fn nested_group_mut(
+                &mut self,
+                index: usize,
+            ) -> Option<(&'static str, &mut dyn $crate::parameter_types::Parameters)> {
+                $crate::parameter_types::Parameters::nested_group_mut(&mut self.$field, index)
+            }
+
+            fn assign_group_ids(&mut self, start_id: i32, parent_id: i32) -> i32 {
+                $crate::parameter_types::Parameters::assign_group_ids(&mut self.$field, start_id, parent_id)
+            }
+
+            fn collect_groups(
+                &self,
+                groups: &mut Vec<$crate::parameter_groups::GroupInfo>,
+                start_id: i32,
+                parent_id: i32,
+            ) -> i32 {
+                $crate::parameter_types::Parameters::collect_groups(&self.$field, groups, start_id, parent_id)
+            }
+
+            fn set_sample_rate(&self, sample_rate: f64) {
+                $crate::parameter_types::Parameters::set_sample_rate(&self.$field, sample_rate);
+            }
+
+            fn reset_smoothing(&self) {
+                $crate::parameter_types::Parameters::reset_smoothing(&self.$field);
+            }
+        }
+
+        impl $crate::model::ModelFields for $model {
+            fn webview_events(&self) -> Option<&$crate::webview_events::WebViewEvents> {
+                $crate::model::ModelFields::webview_events(&self.$field)
+            }
+
+            fn state_generation(&self) -> u64 {
+                $crate::model::ModelFields::state_generation(&self.$field)
+            }
+
+            fn for_each_state(
+                &self,
+                visit: &mut dyn FnMut(&str, &dyn $crate::state_format::SavedState),
+            ) {
+                $crate::model::ModelFields::for_each_state(&self.$field, visit);
+            }
+
+            fn save_entries(&self, writer: &mut $crate::state_format::StateWriter, prefix: &str) {
+                $crate::model::ModelFields::save_entries(&self.$field, writer, prefix);
+            }
+
+            fn load_entries(&self, entries: &$crate::state_format::StateEntries<'_>, prefix: &str) {
+                $crate::model::ModelFields::load_entries(&self.$field, entries, prefix);
+            }
+
+            fn save_state(&self) -> Vec<u8> {
+                $crate::model::ModelFields::save_state(&self.$field)
+            }
+
+            fn load_state(&self, data: &[u8]) -> Result<(), String> {
+                $crate::model::ModelFields::load_state(&self.$field, data)
+            }
+        }
+
+        impl $crate::parameter_store::ParameterStore for $model {
+            fn count(&self) -> usize {
+                $crate::parameter_store::ParameterStore::count(&self.$field)
+            }
+
+            fn info(&self, index: usize) -> Option<&$crate::parameter_info::ParameterInfo> {
+                $crate::parameter_store::ParameterStore::info(&self.$field, index)
+            }
+
+            fn get_normalized(&self, id: $crate::types::ParameterId) -> $crate::types::ParameterValue {
+                $crate::parameter_store::ParameterStore::get_normalized(&self.$field, id)
+            }
+
+            fn set_normalized(&self, id: $crate::types::ParameterId, value: $crate::types::ParameterValue) {
+                $crate::parameter_store::ParameterStore::set_normalized(&self.$field, id, value);
+            }
+
+            fn normalized_to_string(
+                &self,
+                id: $crate::types::ParameterId,
+                normalized: $crate::types::ParameterValue,
+            ) -> String {
+                $crate::parameter_store::ParameterStore::normalized_to_string(&self.$field, id, normalized)
+            }
+
+            fn string_to_normalized(
+                &self,
+                id: $crate::types::ParameterId,
+                string: &str,
+            ) -> Option<$crate::types::ParameterValue> {
+                $crate::parameter_store::ParameterStore::string_to_normalized(&self.$field, id, string)
+            }
+
+            fn normalized_to_plain(
+                &self,
+                id: $crate::types::ParameterId,
+                normalized: $crate::types::ParameterValue,
+            ) -> $crate::types::ParameterValue {
+                $crate::parameter_store::ParameterStore::normalized_to_plain(&self.$field, id, normalized)
+            }
+
+            fn plain_to_normalized(
+                &self,
+                id: $crate::types::ParameterId,
+                plain: $crate::types::ParameterValue,
+            ) -> $crate::types::ParameterValue {
+                $crate::parameter_store::ParameterStore::plain_to_normalized(&self.$field, id, plain)
+            }
+
+            fn formatter_kind(&self, id: $crate::types::ParameterId) -> &'static str {
+                $crate::parameter_store::ParameterStore::formatter_kind(&self.$field, id)
+            }
+
+            fn info_by_id(&self, id: $crate::types::ParameterId) -> Option<&$crate::parameter_info::ParameterInfo> {
+                $crate::parameter_store::ParameterStore::info_by_id(&self.$field, id)
+            }
+        }
+    };
 }

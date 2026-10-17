@@ -1,17 +1,15 @@
 //! Core plugin trait definitions.
 //!
-//! A plugin consists of three parts:
+//! A plugin is two structs:
 //!
-//! - **[`Descriptor`]**: The plugin as the host sees it. It holds the model
-//!   and describes buses and MIDI behavior. It is created with the plugin
-//!   instance and lives as long as the instance does.
+//! - **The model** ([`Model`]): what every thread shares. It holds the
+//!   parameters, the `State` fields and everything else the host, the UI and
+//!   the audio thread use. It describes buses and MIDI behavior to the host
+//!   and answers the web UI. The framework keeps it in one [`Arc`] for the
+//!   life of the plugin instance.
 //!
-//! - **The model**: One struct in an [`Arc`], shared by the host, the UI and
-//!   the audio thread for the life of the instance. It holds the parameters,
-//!   the `State` fields and everything else the threads share.
-//!
-//! - **[`Processor`]**: What the audio thread owns. It is created by
-//!   [`Descriptor::prepare()`] with the real sample rate and buffer
+//! - **The processor** ([`Processor`]): what the audio thread owns. It is
+//!   created by [`Model::prepare()`] with the real sample rate and buffer
 //!   configuration, and dropped when the host releases the audio resources or
 //!   changes the configuration.
 //!
@@ -26,65 +24,9 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::midi_cc_config::MidiCcConfig;
-use crate::parameter_groups::ParameterGroups;
+use crate::model::ModelFields;
 use crate::parameter_store::ParameterStore;
 use crate::process_context::ProcessContext;
-
-// =============================================================================
-// HasParameters Trait (Parameter Access)
-// =============================================================================
-
-/// Trait for the type that holds the parameters of a plugin: its
-/// [`Descriptor`].
-///
-/// The parameters live in one [`Arc`] for the life of the plugin instance.
-/// The host, the UI and the audio thread all use that one struct, which is
-/// why every parameter value is an atomic. The [`Processor`] gets its own
-/// handle in [`Descriptor::prepare()`]:
-/// `Arc::clone(&self.parameters)`.
-///
-/// # Derive Macro
-///
-/// Use `#[derive(HasParameters)]` to automatically implement this trait for structs
-/// with a `#[parameters]` field annotation:
-///
-/// ```ignore
-/// #[derive(Default, HasParameters)]
-/// pub struct GainPlugin {
-///     #[parameters]
-///     parameters: Arc<GainParameters>,
-/// }
-/// ```
-pub trait HasParameters: Send + 'static {
-    /// The parameter collection type.
-    type Parameters: ParameterStore
-        + ParameterGroups
-        + crate::parameter_types::Parameters
-        + crate::model::ModelFields
-        + Default
-        + 'static;
-
-    /// Returns the shared parameters.
-    fn parameters(&self) -> &Arc<Self::Parameters>;
-}
-
-/// The type of a `#[parameters]` field, for `#[derive(HasParameters)]`.
-///
-/// The derive reads the parameter struct from the field's type through this
-/// trait. It is implemented for [`Arc`] only.
-#[diagnostic::on_unimplemented(
-    message = "a `#[parameters]` field must be an `Arc` of the parameter struct",
-    label = "this is `{Self}`, not an `Arc`",
-    note = "write `parameters: Arc<MyParameters>`: the parameters are shared with the host and the UI for as long as the plugin instance lives"
-)]
-pub trait ParametersField {
-    /// The parameter struct inside the `Arc`.
-    type Parameters;
-}
-
-impl<T> ParametersField for Arc<T> {
-    type Parameters = T;
-}
 
 // =============================================================================
 // Plugin Setup Types - Composable Host Information
@@ -120,7 +62,7 @@ impl HostSetup {
 
 /// Trait for plugin setup requirements.
 ///
-/// Plugins declare what host information they need via [`Descriptor::Setup`].
+/// Plugins declare what host information they need via [`Model::Setup`].
 /// The framework extracts only the requested data from the host.
 ///
 /// # Composable Setup Types
@@ -160,10 +102,10 @@ pub trait PluginSetup: Clone + Send + 'static {
 /// # Example
 ///
 /// ```ignore
-/// impl Descriptor for GainPlugin {
+/// impl Model for GainModel {
 ///     type Setup = ();
-///     fn prepare(&self, _: ()) -> GainProcessor {
-///         GainProcessor { parameters: Arc::clone(&self.parameters) }
+///     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+///         GainProcessor { model: self }
 ///     }
 /// }
 /// ```
@@ -183,9 +125,9 @@ impl PluginSetup for () {
 /// # Example
 ///
 /// ```ignore
-/// impl Descriptor for DelayPlugin {
+/// impl Model for DelayModel {
 ///     type Setup = SampleRate;
-///     fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
+///     fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * sample_rate.0) as usize;
 ///         DelayProcessor {
 ///             sample_rate: sample_rate.0,
@@ -219,9 +161,9 @@ impl PluginSetup for SampleRate {
 /// # Example
 ///
 /// ```ignore
-/// impl Descriptor for FftPlugin {
+/// impl Model for FftModel {
 ///     type Setup = (SampleRate, MaxBufferSize);
-///     fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+///     fn prepare(self: Arc<Self>, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 ///         FftProcessor {
 ///             sample_rate: sr.0,
 ///             fft_buffer: vec![0.0; mbs.0],
@@ -259,9 +201,9 @@ impl PluginSetup for MainInputChannels {
 /// # Example
 ///
 /// ```ignore
-/// impl Descriptor for SurroundPlugin {
+/// impl Model for SurroundModel {
 ///     type Setup = (SampleRate, MainOutputChannels);
-///     fn prepare(&self, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
+///     fn prepare(self: Arc<Self>, (sr, channels): (SampleRate, MainOutputChannels)) -> SurroundProcessor {
 ///         SurroundProcessor {
 ///             sample_rate: sr.0,
 ///             per_channel_state: vec![State::new(); channels.0 as usize],
@@ -315,9 +257,9 @@ impl PluginSetup for AuxOutputCount {
 /// # Example
 ///
 /// ```ignore
-/// impl Descriptor for OversamplingPlugin {
+/// impl Model for OversamplingModel {
 ///     type Setup = (SampleRate, ProcessMode);
-///     fn prepare(&self, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
+///     fn prepare(self: Arc<Self>, (sr, mode): (SampleRate, ProcessMode)) -> OversamplingProcessor {
 ///         let oversampling = match mode {
 ///             ProcessMode::Realtime | ProcessMode::Prefetch => 2,
 ///             ProcessMode::Offline => 8,
@@ -425,19 +367,19 @@ impl BusLayout {
         }
     }
 
-    /// Create a layout from a plugin's bus configuration.
-    pub fn from_plugin<P: Descriptor>(plugin: &P) -> Self {
+    /// Create a layout from the bus configuration a model declares.
+    pub fn from_model<P: Model>(model: &P) -> Self {
         Self {
-            main_input_channels: plugin
+            main_input_channels: model
                 .input_bus_info(0)
                 .map(|b| b.channel_count)
                 .unwrap_or(2),
-            main_output_channels: plugin
+            main_output_channels: model
                 .output_bus_info(0)
                 .map(|b| b.channel_count)
                 .unwrap_or(2),
-            aux_input_count: plugin.input_bus_count().saturating_sub(1),
-            aux_output_count: plugin.output_bus_count().saturating_sub(1),
+            aux_input_count: model.input_bus_count().saturating_sub(1),
+            aux_output_count: model.output_bus_count().saturating_sub(1),
         }
     }
 }
@@ -523,7 +465,7 @@ impl BusInfo {
 /// meaning the same implementation can be wrapped for AU, VST3 or other
 /// plugin formats.
 ///
-/// A `Processor` is created by calling [`Descriptor::prepare()`] with the
+/// A `Processor` is created by calling [`Model::prepare()`] with the
 /// audio configuration, so it holds valid configuration from the start - no
 /// placeholder values. It belongs to the audio thread. Everything that other
 /// threads need to see or change lives in the shared model, of which the
@@ -532,9 +474,9 @@ impl BusInfo {
 /// # Lifecycle
 ///
 /// ```text
-/// Descriptor::default() -> Descriptor (lives as long as the plugin instance)
+/// Model::default() -> Model (in an Arc, lives as long as the plugin instance)
 ///                      |
-///                      v  Descriptor::prepare(&self, setup)
+///                      v  Model::prepare(self: Arc<Self>, setup)
 ///                      |
 ///                      v
 ///                Processor (ready for audio)
@@ -578,7 +520,7 @@ pub trait Processor: Send + 'static {
     ///
     /// ```ignore
     /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    ///     let gain = self.parameters.gain();
+    ///     let gain = self.model.gain();
     ///     for (input, output) in buffer.zip_channels() {
     ///         for (i, o) in input.iter().zip(output.iter_mut()) {
     ///             *o = *i * gain;
@@ -767,7 +709,7 @@ pub trait Processor: Send + 'static {
     ///     aux: &mut AuxiliaryBuffers<f64>,
     ///     context: &ProcessContext,
     /// ) {
-    ///     let gain = self.parameters.gain_linear() as f64;
+    ///     let gain = self.model.gain_linear() as f64;
     ///     for (input, output) in buffer.zip_channels() {
     ///         for (i, o) in input.iter().zip(output.iter_mut()) {
     ///             *o = *i * gain;
@@ -870,24 +812,29 @@ pub trait Processor: Send + 'static {
 }
 
 // =============================================================================
-// Descriptor Trait
+// Model Trait
 // =============================================================================
 
-/// The plugin as the host sees it: its model, buses and MIDI behavior.
+/// The model of a plugin: what every thread shares, and the plugin as the
+/// host sees it.
 ///
-/// This is the primary trait that plugin authors implement to create a complete
-/// audio plugin. A `Descriptor` is created with the plugin instance and lives
-/// as long as the instance does. It holds the model and everything else
-/// that does not depend on the audio configuration, and it creates a
-/// [`Processor`] via [`Descriptor::prepare()`] when the configuration is
-/// known.
+/// This is the primary trait that plugin authors implement. The struct is
+/// marked with `#[beamer::model]`, which reads its parameters, `State`
+/// fields and event queue, and the `impl Model` adds how the plugin behaves:
+/// it creates a [`Processor`] via [`Model::prepare()`] when the audio
+/// configuration is known, describes buses and MIDI behavior and answers the
+/// web UI.
+///
+/// The framework creates the model with the plugin instance and keeps it in
+/// one [`Arc`] for as long as the instance lives. The host, the UI and the
+/// processors share that one value.
 ///
 /// # Lifecycle
 ///
 /// ```text
-/// Descriptor::default() -> Descriptor (lives as long as the plugin instance)
+/// Model::default() -> Model (in an Arc, lives as long as the plugin instance)
 ///                      |
-///                      v  Descriptor::prepare(&self, setup)
+///                      v  Model::prepare(self: Arc<Self>, setup)
 ///                      |
 ///                      v
 ///                Processor (ready for audio)
@@ -901,28 +848,29 @@ pub trait Processor: Send + 'static {
 /// # Example: Simple Gain (no setup)
 ///
 /// ```ignore
-/// #[derive(Default, HasParameters)]
-/// pub struct GainPlugin {
-///     #[parameters]
-///     parameters: Arc<GainParameters>,
+/// #[beamer::export]
+/// #[beamer::model]
+/// pub struct GainModel {
+///     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+///     pub gain: FloatParameter,
 /// }
 ///
-/// impl Descriptor for GainPlugin {
+/// impl Model for GainModel {
 ///     type Setup = ();
 ///     type Processor = GainProcessor;
 ///
-///     fn prepare(&self, _: ()) -> GainProcessor {
-///         GainProcessor { parameters: Arc::clone(&self.parameters) }
+///     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+///         GainProcessor { model: self }
 ///     }
 /// }
 ///
 /// pub struct GainProcessor {
-///     parameters: Arc<GainParameters>,
+///     model: Arc<GainModel>,
 /// }
 ///
 /// impl Processor for GainProcessor {
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-///         let gain = self.parameters.gain_linear();
+///         let gain = self.model.gain.as_linear() as f32;
 ///         for (input, output) in buffer.zip_channels() {
 ///             for (i, o) in input.iter().zip(output.iter_mut()) {
 ///                 *o = *i * gain;
@@ -935,20 +883,14 @@ pub trait Processor: Send + 'static {
 /// # Example: Delay (SampleRate)
 ///
 /// ```ignore
-/// #[derive(Default, HasParameters)]
-/// pub struct DelayPlugin {
-///     #[parameters]
-///     parameters: Arc<DelayParameters>,
-/// }
-///
-/// impl Descriptor for DelayPlugin {
+/// impl Model for DelayModel {
 ///     type Setup = SampleRate;
 ///     type Processor = DelayProcessor;
 ///
-///     fn prepare(&self, setup: SampleRate) -> DelayProcessor {
+///     fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor {
 ///         let buffer_size = (MAX_DELAY_SECONDS * setup.hz()) as usize;
 ///         DelayProcessor {
-///             parameters: Arc::clone(&self.parameters),
+///             model: self,
 ///             sample_rate: setup.hz(),  // Real value from start!
 ///             buffer: vec![0.0; buffer_size],   // Correct allocation!
 ///         }
@@ -958,21 +900,15 @@ pub trait Processor: Send + 'static {
 ///
 /// # Thread Safety
 ///
-/// A host asks the descriptor about buses and MIDI from its own threads,
-/// also while audio is processed and from more than one thread at the same
-/// time. A descriptor is therefore `Sync`, and every method takes `&self`
-/// and must be callable from several threads at once. A method that
-/// changes something, such as [`on_midi_learn()`](Descriptor::on_midi_learn),
-/// keeps what it changes in a value that is safe to share: a `State` field
-/// of the model (which is also saved with the project), an atomic or a
-/// `Mutex`. No method of the descriptor is called on the audio thread.
-///
-/// # Note on HasParameters
-///
-/// The `Descriptor` trait requires [`HasParameters`] as a supertrait, which provides the
-/// `parameters()` method. Use `#[derive(HasParameters)]` with a
-/// `#[parameters]` field annotation to implement this automatically.
-pub trait Descriptor: HasParameters + Sync + Default {
+/// A host asks the model about buses and MIDI from its own threads, also
+/// while audio is processed and from more than one thread at the same time.
+/// A model is therefore `Sync`, and every method takes `&self` and must be
+/// callable from several threads at once. A method that changes something,
+/// such as [`on_midi_learn()`](Model::on_midi_learn), keeps what it changes
+/// in a value that is safe to share: a `State` field (which is also saved
+/// with the project), an atomic or a `Mutex`. No method of this trait is
+/// called on the audio thread.
+pub trait Model: ModelFields + ParameterStore + Default + 'static {
     /// The setup information this plugin needs to prepare.
     ///
     /// Request exactly what you need:
@@ -984,7 +920,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// See [`PluginSetup`] for all available types.
     type Setup: PluginSetup;
 
-    /// The prepared processor type created by [`Descriptor::prepare()`].
+    /// The prepared processor type created by [`Model::prepare()`].
     type Processor: Processor;
 
     /// Create a processor for an audio configuration.
@@ -993,9 +929,11 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// during `setupProcessing()`), and again when it changes: the previous
     /// processor is dropped and a new one is created with the new setup.
     ///
-    /// Give the processor its own handle to the model with
-    /// `Arc::clone(&self.parameters)`. The framework has set the host's
-    /// sample rate on the parameter smoothers before this call.
+    /// The processor keeps `self`, the model's `Arc`, or only the readers and
+    /// values it needs. Take readers before `self` moves into the processor:
+    /// `Processor { pan_law: self.pan_law.reader(), model: self }`, in that
+    /// order. The framework has set the host's sample rate on the parameter
+    /// smoothers before this call.
     ///
     /// This runs on a host thread, never on the audio thread, so it may
     /// allocate.
@@ -1007,7 +945,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// # Returns
     ///
     /// A prepared processor ready for audio processing.
-    fn prepare(&self, setup: Self::Setup) -> Self::Processor;
+    fn prepare(self: Arc<Self>, setup: Self::Setup) -> Self::Processor;
 
     // =========================================================================
     // Bus Configuration (static, known before prepare)
@@ -1121,7 +1059,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// # Example
     ///
     /// ```ignore
-    /// impl Descriptor for MySynth {
+    /// impl Model for MySynth {
     ///     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
     ///         Some(MidiCcConfig::new()
     ///             .with_pitch_bend()

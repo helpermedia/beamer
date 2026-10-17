@@ -307,7 +307,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
 }
 
 /// Generate the FactoryPresets implementation from a parsed PresetsFile.
-fn generate_presets(presets: &PresetsFile, descriptor: &syn::Ident) -> Result<TokenStream, String> {
+fn generate_presets(presets: &PresetsFile, model: &syn::Ident) -> Result<TokenStream, String> {
     let count = presets.preset.len();
 
     // Generate info match arms
@@ -368,7 +368,7 @@ fn generate_presets(presets: &PresetsFile, descriptor: &syn::Ident) -> Result<To
         pub struct __BeamerPresets;
 
         impl ::beamer::core::preset::FactoryPresets for __BeamerPresets {
-            type Parameters = <#descriptor as ::beamer::prelude::HasParameters>::Parameters;
+            type Parameters = #model;
 
             fn count() -> usize {
                 #count
@@ -394,8 +394,8 @@ fn generate_presets(presets: &PresetsFile, descriptor: &syn::Ident) -> Result<To
 /// Main entry point for the `#[beamer::export]` attribute macro.
 ///
 /// Generates the CONFIG static, optional presets and format entry points
-/// for the given descriptor struct.
-pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
+/// for the given model struct.
+pub fn export_impl(model: syn::Ident) -> Result<TokenStream, String> {
     // Read Config.toml from the crate's root directory
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
@@ -423,7 +423,7 @@ pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
         let presets: PresetsFile =
             toml::from_str(&presets_str).map_err(|e| format!("invalid Presets.toml: {}", e))?;
 
-        Some(generate_presets(&presets, &descriptor)?)
+        Some(generate_presets(&presets, &model)?)
     } else {
         None
     };
@@ -431,11 +431,11 @@ pub fn export_impl(descriptor: syn::Ident) -> Result<TokenStream, String> {
     // Generate export call
     let export_tokens = if has_presets {
         quote! {
-            ::beamer::export_plugin!(CONFIG, #descriptor, __BeamerPresets);
+            ::beamer::export_plugin!(CONFIG, #model, __BeamerPresets);
         }
     } else {
         quote! {
-            ::beamer::export_plugin!(CONFIG, #descriptor);
+            ::beamer::export_plugin!(CONFIG, #model);
         }
     };
 

@@ -1,12 +1,14 @@
 //! Beamer Delay - Example tempo-synced delay plugin demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`DelayParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`DelayDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`DelayProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`DelayModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, how the
+//!    host sees it and how it creates the processor.
+//! 2. **`DelayProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -59,16 +61,17 @@ pub enum StereoMode {
 }
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
-/// Delay plugin parameters.
+/// Delay plugin model.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
-/// attributes, and the `#[derive(Parameters)]` macro generates everything
+/// attributes, and the `#[beamer::model]` attribute generates everything
 /// including the `Default` implementation.
-#[derive(Parameters)]
-pub struct DelayParameters {
+#[beamer::export]
+#[beamer::model]
+pub struct DelayModel {
     /// Sync mode selection (Free, 1/4, 1/8, 1/16, 1/32)
     #[parameter(id = "sync_mode", name = "Sync Mode")]
     pub sync_mode: EnumParameter<SyncMode>,
@@ -88,6 +91,22 @@ pub struct DelayParameters {
     /// Wet/dry mix (0% = dry, 100% = wet) - smoothed to avoid zipper noise
     #[parameter(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
     pub mix: FloatParameter,
+}
+
+impl Model for DelayModel {
+    // Delay needs sample rate for buffer allocation.
+    // See `beamer::setup` for all available types.
+    type Setup = SampleRate;
+    type Processor = DelayProcessor;
+
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor {
+        DelayProcessor {
+            delay_l: DelayLine::new(setup.hz()),
+            delay_r: DelayLine::new(setup.hz()),
+            sample_rate: setup.hz(),
+            model: self,
+        }
+    }
 }
 
 // =============================================================================
@@ -167,48 +186,16 @@ impl DelayLine {
 }
 
 // =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Delay plugin descriptor.
-///
-/// Holds the parameters and describes the plugin to the host, for as long as
-/// the plugin instance lives. Creates the `DelayProcessor` via `prepare()`
-/// once the audio configuration is known.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct DelayDescriptor {
-    #[parameters]
-    pub parameters: Arc<DelayParameters>,
-}
-
-impl Descriptor for DelayDescriptor {
-    // Delay needs sample rate for buffer allocation.
-    // See `beamer::setup` for all available types.
-    type Setup = SampleRate;
-    type Processor = DelayProcessor;
-
-    fn prepare(&self, setup: SampleRate) -> DelayProcessor {
-        DelayProcessor {
-            parameters: Arc::clone(&self.parameters),
-            delay_l: DelayLine::new(setup.hz()),
-            delay_r: DelayLine::new(setup.hz()),
-            sample_rate: setup.hz(),
-        }
-    }
-}
-
-// =============================================================================
 // Processor
 // =============================================================================
 
 /// Delay plugin processor.
 ///
-/// Ready for audio processing. Created by `DelayDescriptor::prepare()`
+/// Ready for audio processing. Created by `DelayModel::prepare()`
 /// with valid sample rate configuration. All fields have real values from the start.
 pub struct DelayProcessor {
-    /// Plugin parameters
-    parameters: Arc<DelayParameters>,
+    /// The plugin's model, shared with the host and the UI.
+    model: Arc<DelayModel>,
     /// Left channel delay line (allocated for current sample rate)
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
@@ -246,10 +233,10 @@ impl DelayProcessor {
         // Default fallback: 22050 samples = 500ms at 44.1kHz (120 BPM quarter note)
         let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
 
-        let delay_samples = match self.parameters.sync_mode.get() {
+        let delay_samples = match self.model.sync_mode.get() {
             SyncMode::Free => {
                 // Convert milliseconds to samples
-                self.parameters.time_ms.get() / 1000.0 * self.sample_rate
+                self.model.time_ms.get() / 1000.0 * self.sample_rate
             }
             SyncMode::Quarter => samples_per_beat,           // 1 beat
             SyncMode::Eighth => samples_per_beat * 0.5,      // 1/2 beat
@@ -286,7 +273,7 @@ impl DelayProcessor {
         context: &ProcessContext,
     ) {
         let delay_samples = self.calculate_delay_samples(context);
-        let stereo_mode = self.parameters.stereo_mode.get();
+        let stereo_mode = self.model.stereo_mode.get();
 
         let num_samples = buffer.num_samples();
         let num_channels = buffer.num_output_channels().min(2);
@@ -298,8 +285,8 @@ impl DelayProcessor {
         for sample_idx in 0..num_samples {
             // Get smoothed parameter values (advances smoother each sample)
             // This prevents "zipper noise" when automating parameters
-            let feedback = self.parameters.feedback.tick_smoothed();
-            let mix = self.parameters.mix.tick_smoothed();
+            let feedback = self.model.feedback.tick_smoothed();
+            let mix = self.model.mix.tick_smoothed();
 
             // Read input samples
             let in_l = buffer.input(0)[sample_idx].to_f64();

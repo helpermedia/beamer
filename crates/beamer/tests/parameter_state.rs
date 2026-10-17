@@ -1,18 +1,18 @@
-//! The state of a plugin is the state of its parameters: the bytes they are
+//! The state of a plugin with parameters only: the bytes its model is
 //! saved to and loaded from.
 
 #![cfg(feature = "derive")]
 
 use beamer::prelude::*;
 
-#[derive(Parameters)]
-struct FilterParameters {
+#[beamer::group]
+struct FilterGroup {
     #[parameter(id = "cutoff", name = "Cutoff", default = 0.0, range = 0.0..=1.0)]
     cutoff: FloatParameter,
 }
 
-#[derive(Parameters)]
-struct TestParameters {
+#[beamer::model]
+struct TestModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
     gain: FloatParameter,
 
@@ -20,7 +20,7 @@ struct TestParameters {
     enabled: BoolParameter,
 
     #[nested(group = "Filter")]
-    filter: FilterParameters,
+    filter: FilterGroup,
 }
 
 /// One parameter entry: kind, path and the normalized value.
@@ -42,20 +42,20 @@ fn state(entries: &[Vec<u8>]) -> Vec<u8> {
     bytes
 }
 
-fn values(parameters: &TestParameters) -> [f64; 3] {
+fn values(model: &TestModel) -> [f64; 3] {
     [
-        parameters.gain.get_normalized(),
-        parameters.enabled.get_normalized(),
-        parameters.filter.cutoff.get_normalized(),
+        model.gain.get_normalized(),
+        model.enabled.get_normalized(),
+        model.filter.cutoff.get_normalized(),
     ]
 }
 
 #[test]
 fn test_state_has_the_documented_bytes() {
-    let parameters = TestParameters::default();
-    parameters.gain.set_normalized(0.25);
-    parameters.enabled.set_normalized(1.0);
-    parameters.filter.cutoff.set_normalized(0.5);
+    let model = TestModel::default();
+    model.gain.set_normalized(0.25);
+    model.enabled.set_normalized(1.0);
+    model.filter.cutoff.set_normalized(0.5);
 
     // Written out in full, so that a change of the format fails here.
     let expected: Vec<u8> = [
@@ -84,17 +84,17 @@ fn test_state_has_the_documented_bytes() {
     ]
     .concat();
 
-    assert_eq!(parameters.save_state(), expected);
+    assert_eq!(model.save_state(), expected);
 }
 
 #[test]
 fn test_state_round_trip_restores_every_value() {
-    let saved = TestParameters::default();
+    let saved = TestModel::default();
     saved.gain.set_normalized(0.25);
     saved.enabled.set_normalized(1.0);
     saved.filter.cutoff.set_normalized(0.5);
 
-    let loaded = TestParameters::default();
+    let loaded = TestModel::default();
     loaded.load_state(&saved.save_state()).expect("state loads");
 
     assert_eq!(values(&loaded), [0.25, 1.0, 0.5]);
@@ -110,10 +110,10 @@ fn test_load_skips_unknown_paths_and_keeps_the_rest() {
         entry("filter/cutoff", 0.5),
     ]);
 
-    let parameters = TestParameters::default();
-    parameters.load_state(&state).expect("state loads");
+    let model = TestModel::default();
+    model.load_state(&state).expect("state loads");
 
-    assert_eq!(values(&parameters), [0.25, 0.0, 0.5]);
+    assert_eq!(values(&model), [0.25, 0.0, 0.5]);
 }
 
 #[test]
@@ -121,48 +121,48 @@ fn test_load_depends_on_the_state_alone() {
     // Only one of the three parameters is in the state.
     let state = state(&[entry("filter/cutoff", 0.5)]);
 
-    let parameters = TestParameters::default();
-    parameters.gain.set_normalized(0.9);
-    parameters.enabled.set_normalized(1.0);
-    parameters.load_state(&state).expect("state loads");
+    let model = TestModel::default();
+    model.gain.set_normalized(0.9);
+    model.enabled.set_normalized(1.0);
+    model.load_state(&state).expect("state loads");
 
     // The others are back at their defaults, whatever they were before.
-    assert_eq!(values(&parameters), [0.0, 0.0, 0.5]);
+    assert_eq!(values(&model), [0.0, 0.0, 0.5]);
 }
 
 #[test]
 fn test_load_clamps_values() {
     let state = state(&[entry("gain", 1.5), entry("filter/cutoff", -1.0)]);
 
-    let parameters = TestParameters::default();
-    parameters.load_state(&state).expect("state loads");
+    let model = TestModel::default();
+    model.load_state(&state).expect("state loads");
 
-    assert_eq!(values(&parameters), [1.0, 0.0, 0.0]);
+    assert_eq!(values(&model), [1.0, 0.0, 0.0]);
 }
 
 #[test]
 fn test_empty_data_changes_nothing() {
-    let parameters = TestParameters::default();
-    parameters.gain.set_normalized(0.9);
+    let model = TestModel::default();
+    model.gain.set_normalized(0.9);
 
-    parameters.load_state(&[]).expect("no state is not an error");
-    assert_eq!(values(&parameters), [0.9, 0.0, 0.0]);
+    model.load_state(&[]).expect("no state is not an error");
+    assert_eq!(values(&model), [0.9, 0.0, 0.0]);
 }
 
 #[test]
 fn test_data_that_is_not_a_state_is_refused_and_changes_nothing() {
-    let parameters = TestParameters::default();
-    parameters.gain.set_normalized(0.9);
+    let model = TestModel::default();
+    model.gain.set_normalized(0.9);
     let valid = state(&[entry("gain", 0.25), entry("filter/cutoff", 0.5)]);
 
     // Cut off in the middle of the second entry.
-    assert!(parameters.load_state(&valid[..valid.len() - 4]).is_err());
+    assert!(model.load_state(&valid[..valid.len() - 4]).is_err());
     // Another version.
     let mut newer = valid.clone();
     newer[4] = 2;
-    assert!(parameters.load_state(&newer).is_err());
+    assert!(model.load_state(&newer).is_err());
     // Something else entirely.
-    assert!(parameters.load_state(b"not a state at all").is_err());
+    assert!(model.load_state(b"not a state at all").is_err());
 
-    assert_eq!(values(&parameters), [0.9, 0.0, 0.0]);
+    assert_eq!(values(&model), [0.9, 0.0, 0.0]);
 }

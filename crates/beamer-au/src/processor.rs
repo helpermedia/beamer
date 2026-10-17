@@ -1,7 +1,7 @@
 //! Generic AU processor wrapper for type erasure.
 //!
 //! This module provides `AuProcessor<P>`, a generic wrapper that bridges any
-//! `beamer_core::Descriptor` implementation to the AU API through the `AuPluginInstance`
+//! `beamer_core::Model` implementation to the AU API through the `AuPluginInstance`
 //! trait. This enables a single Objective-C class to work with any plugin type
 //! via dynamic dispatch.
 //!
@@ -14,7 +14,7 @@
 //!
 //! # Lifecycle Management
 //!
-//! The processor keeps the plugin's `Descriptor` for the whole life of the
+//! The processor keeps the plugin's model for the whole life of the
 //! instance and manages two lifecycle states via `AuState<P>`:
 //! - **Unprepared**: The model is available, no audio resources
 //! - **Prepared**: A `Processor` and its resources exist, ready for `process()` calls
@@ -36,24 +36,24 @@ use crate::error::{PluginError, PluginResult};
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, CachedBusConfig, Descriptor, FactoryPresets, HasParameters,
+    AuxiliaryBuffers, Buffer, CachedBusConfig, FactoryPresets, Model,
     MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEvents, MAX_AUX_BUSES,
 };
 
 /// Generic AU processor wrapper.
 ///
-/// Mirrors `Vst3Processor<P>` - wraps any `Descriptor` implementation
+/// Mirrors `Vst3Processor<P>` - wraps any `Model` implementation
 /// and implements `AuPluginInstance` for type erasure.
 ///
 /// # Type Parameters
 ///
-/// * `P` - The plugin type implementing `beamer_core::Descriptor`
+/// * `P` - The model type implementing `beamer_core::Model`
 /// * `Presets` - Optional factory presets collection (default: `NoPresets`)
-pub struct AuProcessor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
+pub struct AuProcessor<P, Presets = NoPresets<P>>
 where
-    P: Descriptor,
-    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+    P: Model,
+    Presets: FactoryPresets<Parameters = P>,
 {
     state: AuState<P>,
     /// The plugin's queue of events for the web UI, if its model has one.
@@ -63,8 +63,8 @@ where
 
 impl<P, Presets> AuProcessor<P, Presets>
 where
-    P: Descriptor,
-    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+    P: Model,
+    Presets: FactoryPresets<Parameters = P>,
 {
     /// Create a new AU processor.
     ///
@@ -72,16 +72,16 @@ where
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
     pub fn new() -> Self {
-        let descriptor = P::default();
+        let model = Arc::new(P::default());
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = beamer_core::ModelFields::webview_events(&**descriptor.parameters()).cloned();
+        let events = beamer_core::ModelFields::webview_events(&*model).cloned();
         if let Some(events) = &events {
             events.claim();
         }
 
         Self {
-            state: AuState::with_descriptor(descriptor),
+            state: AuState::with_model(model),
             webview_events: events,
             _presets: PhantomData,
         }
@@ -90,8 +90,8 @@ where
 
 impl<P, Presets> Default for AuProcessor<P, Presets>
 where
-    P: Descriptor,
-    Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
+    P: Model,
+    Presets: FactoryPresets<Parameters = P>,
 {
     fn default() -> Self {
         Self::new()
@@ -100,8 +100,8 @@ where
 
 impl<P, Presets> AuPluginInstance for AuProcessor<P, Presets>
 where
-    P: Descriptor + 'static,
-    Presets: FactoryPresets<Parameters = P::Parameters>,
+    P: Model,
+    Presets: FactoryPresets<Parameters = P>,
 {
     fn allocate_render_resources(
         &mut self,
@@ -133,7 +133,7 @@ where
 
     fn shared_model(&self) -> Arc<dyn SharedModel> {
         // Clone the concrete `Arc`, then let it coerce to the trait object.
-        let model: Arc<P::Parameters> = Arc::clone(self.state.descriptor.parameters());
+        let model: Arc<P> = Arc::clone(&self.state.model);
         model
     }
 
@@ -168,19 +168,19 @@ where
     }
 
     fn declared_input_bus_count(&self) -> usize {
-        self.state.descriptor.input_bus_count()
+        self.state.model.input_bus_count()
     }
 
     fn declared_output_bus_count(&self) -> usize {
-        self.state.descriptor.output_bus_count()
+        self.state.model.output_bus_count()
     }
 
     fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        self.state.descriptor.input_bus_info(index)
+        self.state.model.input_bus_info(index)
     }
 
     fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        self.state.descriptor.output_bus_info(index)
+        self.state.model.output_bus_info(index)
     }
 
     fn process_block(
@@ -352,7 +352,7 @@ where
         // its end value: the parameter's own smoother interpolates, with the time
         // constant configured at parameter construction, which is also what the
         // other format wrappers do.
-        let model: &P::Parameters = self.state.descriptor.parameters();
+        let model: &P = &self.state.model;
 
         // The values are in AU format (plain value, or index for an indexed
         // parameter), like the ones the host sets on the parameter directly.
@@ -399,7 +399,7 @@ where
             return;
         };
         let core_output = midi_output_buffer.as_mut();
-        let model: &P::Parameters = self.state.descriptor.parameters();
+        let model: &P = &self.state.model;
 
         // Clear for reuse.
         core_output.clear();
@@ -461,7 +461,7 @@ where
     }
 
     fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch> {
-        Arc::clone(&self.state.descriptor) as Arc<dyn WebViewDispatch>
+        Arc::clone(&self.state.model) as Arc<dyn WebViewDispatch>
     }
 
     fn webview_events(&self) -> Option<WebViewEvents> {
@@ -498,7 +498,7 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// This is used by the export_au! macro.
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
-    P: Descriptor + 'static,
+    P: Model,
 {
     Box::new(AuProcessor::<P>::new())
 }
@@ -528,7 +528,7 @@ mod tests {
     // Kept per thread, so that tests running in parallel do not see each other.
 
     thread_local! {
-        /// Runs inside `TestParameters::save_state` on the thread that set it.
+        /// Runs inside `TestFields::save_state` on the thread that set it.
         static SAVE_STATE_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
         /// How often the smoothers were reset on this thread.
         static SMOOTHING_RESETS: Cell<usize> = const { Cell::new(0) };
@@ -536,12 +536,12 @@ mod tests {
         static ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
         /// The sample rate the smoothers were last given on this thread.
         static SMOOTHING_SAMPLE_RATE: Cell<f64> = const { Cell::new(0.0) };
-        /// What `SMOOTHING_SAMPLE_RATE` was when a `TestPlugin` was last
+        /// What `SMOOTHING_SAMPLE_RATE` was when a `TestModel` was last
         /// prepared on this thread.
         static SMOOTHING_SAMPLE_RATE_AT_PREPARE: Cell<f64> = const { Cell::new(0.0) };
         /// How many `TestProcessor`s exist on this thread.
         static LIVE_PROCESSORS: Cell<usize> = const { Cell::new(0) };
-        /// What `LIVE_PROCESSORS` was when a `TestPlugin` was last prepared
+        /// What `LIVE_PROCESSORS` was when a `TestModel` was last prepared
         /// on this thread.
         static LIVE_PROCESSORS_AT_PREPARE: Cell<usize> = const { Cell::new(0) };
     }
@@ -647,16 +647,16 @@ mod tests {
     }
 
     // =========================================================================
-    // Mock Parameters Collection
+    // The Fields of the Test Models
     // =========================================================================
 
-    struct TestParameters {
+    struct TestFields {
         gain: MockParameter,
         /// State beyond parameters, of any size.
         blob: beamer_core::State<Vec<u8>>,
     }
 
-    impl TestParameters {
+    impl TestFields {
         fn new() -> Self {
             Self {
                 gain: MockParameter::new(fnv1a_hash("gain"), "Gain", 0.5),
@@ -665,7 +665,7 @@ mod tests {
         }
     }
 
-    impl ParameterGroups for TestParameters {
+    impl ParameterGroups for TestFields {
         fn group_count(&self) -> usize {
             2
         }
@@ -678,7 +678,7 @@ mod tests {
         }
     }
 
-    impl Parameters for TestParameters {
+    impl Parameters for TestFields {
         fn count(&self) -> usize {
             1
         }
@@ -700,7 +700,7 @@ mod tests {
         }
     }
 
-    impl beamer_core::ModelFields for TestParameters {
+    impl beamer_core::ModelFields for TestFields {
         fn save_state(&self) -> Vec<u8> {
             SAVE_STATE_HOOK.with(|hook| {
                 if let Some(hook) = hook.borrow().as_ref() {
@@ -721,7 +721,7 @@ mod tests {
         }
     }
 
-    impl ParameterStore for TestParameters {
+    impl ParameterStore for TestFields {
         fn count(&self) -> usize {
             1
         }
@@ -779,35 +779,28 @@ mod tests {
     // =========================================================================
 
     #[derive(Default)]
-    struct TestPlugin {
-        parameters: Arc<TestParameters>,
+    struct TestModel {
+        fields: TestFields,
     }
 
-    impl Default for TestParameters {
+    impl Default for TestFields {
         fn default() -> Self {
             Self::new()
         }
     }
 
-    impl HasParameters for TestPlugin {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(TestModel, fields);
 
-    impl Descriptor for TestPlugin {
+    impl Model for TestModel {
         type Setup = ();
         type Processor = TestProcessor;
 
-        fn prepare(&self, _setup: ()) -> Self::Processor {
+        fn prepare(self: Arc<Self>, _setup: ()) -> Self::Processor {
             SMOOTHING_SAMPLE_RATE_AT_PREPARE
                 .with(|rate| rate.set(SMOOTHING_SAMPLE_RATE.with(Cell::get)));
             LIVE_PROCESSORS_AT_PREPARE.with(|live| live.set(LIVE_PROCESSORS.with(Cell::get)));
             LIVE_PROCESSORS.with(|live| live.set(live.get() + 1));
-            TestProcessor {
-                parameters: Arc::clone(&self.parameters),
-            }
+            TestProcessor { model: self }
         }
 
         fn input_bus_count(&self) -> usize {
@@ -827,7 +820,7 @@ mod tests {
     // =========================================================================
 
     struct TestProcessor {
-        parameters: Arc<TestParameters>,
+        model: Arc<TestModel>,
     }
 
     impl Drop for TestProcessor {
@@ -854,7 +847,7 @@ mod tests {
         }
 
         fn latency_samples(&self) -> u32 {
-            latency_for(self.parameters.gain.get_normalized())
+            latency_for(self.model.fields.gain.get_normalized())
         }
 
         fn tail_samples(&self) -> u32 {
@@ -889,7 +882,7 @@ mod tests {
     }];
 
     impl FactoryPresets for TestPresets {
-        type Parameters = TestParameters;
+        type Parameters = TestModel;
 
         fn count() -> usize {
             3
@@ -919,8 +912,8 @@ mod tests {
     // =========================================================================
 
     /// Create a prepared AuProcessor for testing MIDI functionality.
-    fn create_prepared_processor() -> AuProcessor<TestPlugin, TestPresets> {
-        let mut processor = AuProcessor::<TestPlugin, TestPresets>::new();
+    fn create_prepared_processor() -> AuProcessor<TestModel, TestPresets> {
+        let mut processor = AuProcessor::<TestModel, TestPresets>::new();
 
         let bus_config = CachedBusConfig::new(
             vec![CachedBusInfo::new(2, BusType::Main)],
@@ -935,7 +928,7 @@ mod tests {
     }
 
     /// Get the gain parameter's normalized value.
-    fn get_gain_normalized(processor: &AuProcessor<TestPlugin, TestPresets>) -> f64 {
+    fn get_gain_normalized(processor: &AuProcessor<TestModel, TestPresets>) -> f64 {
         let model = processor.shared_model();
         let parameters = model.parameter_store();
         let gain_id = parameters.info(0).unwrap().id;
@@ -943,7 +936,7 @@ mod tests {
     }
 
     /// Set the gain parameter's normalized value.
-    fn set_gain_normalized(processor: &mut AuProcessor<TestPlugin, TestPresets>, value: f64) {
+    fn set_gain_normalized(processor: &mut AuProcessor<TestModel, TestPresets>, value: f64) {
         let model = processor.shared_model();
         let parameters = model.parameter_store();
         let gain_id = parameters.info(0).unwrap().id;
@@ -958,7 +951,7 @@ mod tests {
     fn test_main_channels_of_declared_buses() {
         // The test plugin declares one stereo input and keeps the default
         // stereo output.
-        let processor = AuProcessor::<TestPlugin, TestPresets>::new();
+        let processor = AuProcessor::<TestModel, TestPresets>::new();
         let declared = crate::bridge::DeclaredBuses::capture(&processor);
         assert_eq!(declared.main_channels(), (2, 2));
     }
@@ -1143,8 +1136,8 @@ mod tests {
     /// A plugin whose processor fills its output with a value that tells in
     /// which process mode it was prepared.
     #[derive(Default)]
-    struct ModePlugin {
-        parameters: Arc<TestParameters>,
+    struct ModeModel {
+        fields: TestFields,
     }
 
     struct ModeProcessor {
@@ -1154,18 +1147,13 @@ mod tests {
     const REALTIME_VALUE: f32 = 1.0;
     const OFFLINE_VALUE: f32 = 2.0;
 
-    impl HasParameters for ModePlugin {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(ModeModel, fields);
 
-    impl Descriptor for ModePlugin {
+    impl Model for ModeModel {
         type Setup = ProcessMode;
         type Processor = ModeProcessor;
 
-        fn prepare(&self, mode: ProcessMode) -> Self::Processor {
+        fn prepare(self: Arc<Self>, mode: ProcessMode) -> Self::Processor {
             ModeProcessor {
                 value: match mode {
                     ProcessMode::Offline => OFFLINE_VALUE,
@@ -1301,7 +1289,7 @@ mod tests {
 
     #[test]
     fn test_first_render_call_is_processed() {
-        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let plugin = boxed(AuProcessor::<ModeModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
 
         let mut input = StereoList::filled(0.5);
@@ -1366,7 +1354,7 @@ mod tests {
 
     #[test]
     fn test_render_call_does_not_allocate() {
-        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let plugin = boxed(AuProcessor::<ModeModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
@@ -1384,24 +1372,19 @@ mod tests {
 
     /// A plugin whose processor doubles its input, in f32 only.
     #[derive(Default)]
-    struct DoublingPlugin {
-        parameters: Arc<TestParameters>,
+    struct DoublingModel {
+        fields: TestFields,
     }
 
     struct DoublingProcessor;
 
-    impl HasParameters for DoublingPlugin {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(DoublingModel, fields);
 
-    impl Descriptor for DoublingPlugin {
+    impl Model for DoublingModel {
         type Setup = ();
         type Processor = DoublingProcessor;
 
-        fn prepare(&self, _: ()) -> Self::Processor {
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
             DoublingProcessor
         }
     }
@@ -1464,7 +1447,7 @@ mod tests {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::AURenderEventType;
 
-        let plugin = boxed(AuProcessor::<TestPlugin, TestPresets>::new());
+        let plugin = boxed(AuProcessor::<TestModel, TestPresets>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
@@ -1523,8 +1506,8 @@ mod tests {
 
     /// A plugin that records the MIDI of each process() call and passes it on.
     #[derive(Default)]
-    struct RecordingPlugin {
-        parameters: Arc<TestParameters>,
+    struct RecordingModel {
+        fields: TestFields,
     }
 
     #[derive(Default)]
@@ -1532,18 +1515,13 @@ mod tests {
         midi_offsets: Vec<u32>,
     }
 
-    impl HasParameters for RecordingPlugin {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(RecordingModel, fields);
 
-    impl Descriptor for RecordingPlugin {
+    impl Model for RecordingModel {
         type Setup = ();
         type Processor = RecordingProcessor;
 
-        fn prepare(&self, _: ()) -> Self::Processor {
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
             RecordingProcessor::default()
         }
     }
@@ -1583,7 +1561,7 @@ mod tests {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::{AURenderEventType, MidiOutputSink};
 
-        let plugin = boxed(AuProcessor::<RecordingPlugin>::new());
+        let plugin = boxed(AuProcessor::<RecordingModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
@@ -1636,7 +1614,7 @@ mod tests {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::{AURenderEventType, MidiOutputSink};
 
-        let plugin = boxed(AuProcessor::<RecordingPlugin>::new());
+        let plugin = boxed(AuProcessor::<RecordingModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
         let model = plugin.lock().unwrap().shared_model();
         let gain_before = model.parameter_store().get_normalized(gain_id());
@@ -1696,7 +1674,7 @@ mod tests {
 
     #[test]
     fn test_f64_render_converts_for_an_f32_processor_without_allocating() {
-        let plugin = boxed(AuProcessor::<DoublingPlugin>::new());
+        let plugin = boxed(AuProcessor::<DoublingModel>::new());
         let bus_config = stereo_bus_config();
         plugin
             .lock()
@@ -1751,7 +1729,7 @@ mod tests {
 
     #[test]
     fn test_f64_conversion_starts_from_silence_without_main_input() {
-        let mut plugin = AuProcessor::<DoublingPlugin>::new();
+        let mut plugin = AuProcessor::<DoublingModel>::new();
         plugin
             .allocate_render_resources(44100.0, FRAMES as u32, &stereo_bus_config(), ProcessMode::Realtime)
             .expect("prepare");
@@ -1781,24 +1759,19 @@ mod tests {
     /// A plugin with two sidechains whose processor plays the second one
     /// when only that one is connected.
     #[derive(Default)]
-    struct SecondSidechainPlugin {
-        parameters: Arc<TestParameters>,
+    struct SecondSidechainModel {
+        fields: TestFields,
     }
 
     struct SecondSidechainProcessor;
 
-    impl HasParameters for SecondSidechainPlugin {
-        type Parameters = TestParameters;
-        fn parameters(&self) -> &Arc<Self::Parameters> {
-            &self.parameters
-        }
-    }
+    beamer_core::__forward_model!(SecondSidechainModel, fields);
 
-    impl Descriptor for SecondSidechainPlugin {
+    impl Model for SecondSidechainModel {
         type Setup = ();
         type Processor = SecondSidechainProcessor;
 
-        fn prepare(&self, _: ()) -> Self::Processor {
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
             SecondSidechainProcessor
         }
 
@@ -1833,7 +1806,7 @@ mod tests {
 
     #[test]
     fn test_f64_conversion_keeps_a_sidechain_after_an_unconnected_one() {
-        let mut plugin = AuProcessor::<SecondSidechainPlugin>::new();
+        let mut plugin = AuProcessor::<SecondSidechainModel>::new();
         let bus_config = CachedBusConfig::new(
             vec![
                 CachedBusInfo::new(1, BusType::Main),
@@ -1866,7 +1839,7 @@ mod tests {
 
     #[test]
     fn test_preparing_again_delivers_the_process_mode() {
-        let plugin = boxed(AuProcessor::<ModePlugin>::new());
+        let plugin = boxed(AuProcessor::<ModeModel>::new());
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
 
@@ -1887,7 +1860,7 @@ mod tests {
     #[test]
     fn test_output_starts_silent_without_main_input() {
         // TestProcessor does not write its output.
-        let plugin = boxed(AuProcessor::<TestPlugin, TestPresets>::new());
+        let plugin = boxed(AuProcessor::<TestModel, TestPresets>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
 
         // Without input, what the host left in the buffers must not come out.
@@ -1931,7 +1904,7 @@ mod tests {
     unsafe impl Send for Instance {}
 
     fn test_handle() -> Box<BeamerInstanceHandle> {
-        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel, TestPresets>::new();
         Box::new(BeamerInstanceHandle::new(Box::new(plugin)))
     }
 
@@ -2033,7 +2006,7 @@ mod tests {
         beamer_au_set_parameter_value(instance, gain_id(), 0.25);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
 
-        // Preparing creates a processor that shares the parameters.
+        // Preparing creates a processor that shares the model.
         assert_eq!(allocate(instance, false), 0);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
         beamer_au_set_parameter_value(instance, gain_id(), 0.75);
@@ -2252,19 +2225,19 @@ mod tests {
     #[test]
     fn test_state_of_any_size_is_saved_and_loaded_whole() {
         // An instance whose state holds some hundred kilobytes.
-        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel, TestPresets>::new();
         let shared = plugin.shared_model();
         let model = shared
             .as_any()
-            .downcast_ref::<TestParameters>()
+            .downcast_ref::<TestModel>()
             .expect("the model of the test plugin");
         let blob: Vec<u8> = (0..300_000u32).map(|index| (index % 251) as u8).collect();
-        model.blob.set(blob.clone());
+        model.fields.blob.set(blob.clone());
         let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;
         beamer_au_set_parameter_value(instance, gain_id(), 0.25);
 
-        // The bridge hands out exactly what the parameters save.
+        // The bridge hands out exactly what the model saves.
         let state = saved_state(instance);
         assert!(state.len() > blob.len());
         assert_eq!(state, beamer_core::ModelFields::save_state(model));
@@ -2342,7 +2315,7 @@ mod tests {
         assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
         assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
 
-        // The new processor shares the parameters: its latency follows them.
+        // The new processor shares the model: its latency follows the gain.
         assert_eq!(render_instance(instance), 0);
         assert_eq!(beamer_au_get_latency_samples(instance), latency_for(0.25));
 
@@ -2418,8 +2391,8 @@ mod tests {
 
         // SAFETY: The handle is alive, and it is only used shared here.
         let shared = unsafe { &*instance };
-        // With the plugin held elsewhere nothing is unprepared. The
-        // parameters do not depend on that.
+        // With the plugin held elsewhere nothing is unprepared. The model
+        // does not depend on that.
         shared.with_plugin_locked(|| beamer_au_deallocate_render_resources(instance));
 
         let locks = plugin_lock_count(instance);
@@ -2476,7 +2449,7 @@ mod tests {
 
     #[test]
     fn test_dropping_the_instance_frees_the_parameters() {
-        let plugin = AuProcessor::<TestPlugin, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel, TestPresets>::new();
         let model = Arc::downgrade(&plugin.shared_model());
         let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;

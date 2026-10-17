@@ -1,5 +1,5 @@
 //! Events from Rust to the web UI: what a plugin emits into the queue of
-//! its parameter struct reaches the editor through the format wrappers.
+//! its model reaches the editor through the format wrappers.
 
 #![cfg(feature = "derive")]
 
@@ -10,7 +10,7 @@ use beamer::prelude::*;
 static CONFIG: Config = Config::new("Events", Category::Effect, "Bmer", "evnt");
 
 thread_local! {
-    /// The queue of the descriptor that was created last on this thread.
+    /// The queue of the model that was created last on this thread.
     static LAST_EVENTS: RefCell<Option<WebViewEvents>> = const { RefCell::new(None) };
 }
 
@@ -18,11 +18,14 @@ thread_local! {
 fn last_events() -> WebViewEvents {
     LAST_EVENTS
         .with(|events| events.borrow().clone())
-        .expect("a descriptor was created on this thread")
+        .expect("a model was created on this thread")
 }
 
-#[derive(Parameters)]
-struct EventsParameters {
+/// A model that notes its queue when it is created, so that a test finds
+/// the queue of the instance a wrapper just created. Its `Default` is
+/// written by hand for that.
+#[beamer::model(no_default)]
+struct EventsModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
     gain: FloatParameter,
 
@@ -32,25 +35,24 @@ struct EventsParameters {
     events: WebViewEvents,
 }
 
-#[derive(HasParameters)]
-struct EventsDescriptor {
-    #[parameters]
-    parameters: Arc<EventsParameters>,
-}
-
-impl Default for EventsDescriptor {
+impl Default for EventsModel {
     fn default() -> Self {
-        let parameters = Arc::new(EventsParameters::default());
-        LAST_EVENTS.with(|events| *events.borrow_mut() = Some(parameters.events.clone()));
-        Self { parameters }
+        let mut model = Self {
+            gain: FloatParameter::new("Gain", 0.0, 0.0..=1.0),
+            zoom: State::default(),
+            events: WebViewEvents::default(),
+        };
+        model.assign_ids("");
+        LAST_EVENTS.with(|events| *events.borrow_mut() = Some(model.events.clone()));
+        model
     }
 }
 
-impl Descriptor for EventsDescriptor {
+impl Model for EventsModel {
     type Setup = ();
     type Processor = Silence;
 
-    fn prepare(&self, _: ()) -> Silence {
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
 }
@@ -62,17 +64,17 @@ impl Processor for Silence {
 }
 
 #[test]
-fn test_queue_in_the_parameter_struct_starts_empty() {
-    let parameters = EventsParameters::default();
+fn test_queue_in_the_model_starts_empty() {
+    let model = EventsModel::default();
 
     // No wrapper took this queue, so nothing is kept.
-    parameters.events.emit("lost", &1);
-    assert_eq!(parameters.events.take_script(), None);
+    model.events.emit("lost", &1);
+    assert_eq!(model.events.take_script(), None);
 }
 
 #[test]
 fn test_vst3_delivers_the_queue_of_its_instance() {
-    let wrapper = beamer_vst3::Vst3Processor::<EventsDescriptor>::new(&CONFIG);
+    let wrapper = beamer_vst3::Vst3Processor::<EventsModel>::new(&CONFIG);
     let events = last_events();
 
     // Before an editor is open, events are dropped.
@@ -107,7 +109,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     use beamer_au::{AuPluginInstance, AuProcessor};
 
     fn create() -> Box<dyn AuPluginInstance> {
-        Box::new(AuProcessor::<EventsDescriptor>::new())
+        Box::new(AuProcessor::<EventsModel>::new())
     }
 
     /// The text of a script the bridge returned, which is then freed.
@@ -127,7 +129,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     let instance = beamer_au_create_instance();
     assert!(!instance.is_null());
     let events = last_events();
-    let gain = EventsParameters::default().gain.id();
+    let gain = EventsModel::default().gain.id();
 
     // Before an editor is open, events are dropped.
     events.emit("early", &1);
@@ -195,33 +197,33 @@ fn test_au_delivers_the_queue_of_its_instance() {
     beamer_au_editor_sync_close(std::ptr::null_mut());
 }
 
-/// A struct whose queue sits in a nested struct.
-#[derive(Parameters)]
-struct OuterParameters {
+/// A model whose queue sits in a nested model.
+#[beamer::model]
+struct OuterModel {
     #[parameter(id = "mix", name = "Mix", default = 1.0, range = 0.0..=1.0)]
     mix: FloatParameter,
 
     #[nested(group = "Inner")]
-    inner: EventsParameters,
+    inner: EventsModel,
 }
 
-/// A struct without a queue.
-#[derive(Parameters)]
-struct QuietParameters {
+/// A model without a queue.
+#[beamer::model]
+struct QuietModel {
     #[parameter(id = "mix", name = "Mix", default = 1.0, range = 0.0..=1.0)]
     mix: FloatParameter,
 }
 
 #[test]
 fn test_derive_finds_the_queue_by_its_type() {
-    let parameters = EventsParameters::default();
-    let found = ModelFields::webview_events(&parameters).expect("the queue is found");
-    assert!(std::ptr::eq(found, &parameters.events));
+    let model = EventsModel::default();
+    let found = ModelFields::webview_events(&model).expect("the queue is found");
+    assert!(std::ptr::eq(found, &model.events));
 
-    // Also in a nested struct.
-    let outer = OuterParameters::default();
+    // Also in a nested model.
+    let outer = OuterModel::default();
     let found = ModelFields::webview_events(&outer).expect("the nested queue is found");
     assert!(std::ptr::eq(found, &outer.inner.events));
 
-    assert!(ModelFields::webview_events(&QuietParameters::default()).is_none());
+    assert!(ModelFields::webview_events(&QuietModel::default()).is_none());
 }

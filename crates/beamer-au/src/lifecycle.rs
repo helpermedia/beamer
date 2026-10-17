@@ -2,9 +2,9 @@
 //!
 //! This module provides `AuState`, which holds the two parts of a plugin
 //! instance:
-//! - the **Descriptor**, created with the instance and kept for its whole
-//!   life. It holds the model and answers the host's questions about buses
-//!   and MIDI.
+//! - the **Model**, created with the instance and kept for its whole life
+//!   in an `Arc`. It holds the parameters and answers the host's questions
+//!   about buses and MIDI.
 //! - the **Processor** with its buffers, which exists while render resources
 //!   are allocated.
 //!
@@ -18,9 +18,9 @@
 //! Unprepared <--[deallocateRenderResources]-----|
 //! ```
 //!
-//! Preparing creates a processor from the descriptor and unpreparing drops
-//! it. If the sample rate, buffer size or process mode changes while
-//! prepared, the processor is dropped and a new one is created for the new
+//! Preparing creates a processor from the model and unpreparing drops it.
+//! If the sample rate, buffer size or process mode changes while prepared,
+//! the processor is dropped and a new one is created for the new
 //! configuration. The model is not part of this: it stays where it is.
 //!
 //! # Setup Extraction
@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use beamer_core::{
-    BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig, Parameters,
+    BusLayout, CachedBusConfig, ConversionBuffers, MidiCcConfig, Model,
     PluginSetup, ProcessMode, Processor,
 };
 
@@ -42,17 +42,16 @@ use beamer_core::{
 ///
 /// This mirrors the VST3 wrapper and maps directly to AU's
 /// `allocateRenderResources` / `deallocateRenderResources` lifecycle.
-pub(crate) struct AuState<P: Descriptor> {
-    /// The plugin as the host sees it. It holds the model and lives as
-    /// long as the instance. Every method of it takes `&self`, so it can be
-    /// shared in an `Arc`.
-    pub(crate) descriptor: Arc<P>,
+pub(crate) struct AuState<P: Model> {
+    /// The model of the plugin. It lives as long as the instance, in an
+    /// `Arc` that every processor of the instance shares.
+    pub(crate) model: Arc<P>,
     /// What exists while render resources are allocated.
     pub(crate) prepared: Option<Prepared<P>>,
 }
 
 /// A processor and the resources that were allocated with it.
-pub(crate) struct Prepared<P: Descriptor> {
+pub(crate) struct Prepared<P: Model> {
     pub(crate) processor: P::Processor,
     pub(crate) sample_rate: f64,
     pub(crate) max_frames: u32,
@@ -66,11 +65,11 @@ pub(crate) struct Prepared<P: Descriptor> {
     pub(crate) midi_output_buffer: Box<beamer_core::MidiBuffer>,
 }
 
-impl<P: Descriptor> AuState<P> {
-    /// Create an unprepared state around a descriptor.
-    pub fn with_descriptor(descriptor: P) -> Self {
+impl<P: Model> AuState<P> {
+    /// Create an unprepared state around a model.
+    pub fn with_model(model: Arc<P>) -> Self {
         Self {
-            descriptor: Arc::new(descriptor),
+            model,
             prepared: None,
         }
     }
@@ -187,7 +186,7 @@ fn allocate_processing_resources(
     (conversion_buffers, midi_cc_state, midi_output_buffer)
 }
 
-impl<P: Descriptor> AuState<P> {
+impl<P: Model> AuState<P> {
     /// Create a processor for a configuration.
     ///
     /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for
@@ -213,13 +212,13 @@ impl<P: Descriptor> AuState<P> {
         let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
         // The smoothers ramp at the host's rate unless the plugin sets
         // another one in prepare.
-        self.descriptor.parameters().set_sample_rate(sample_rate);
-        let processor = self.descriptor.prepare(plugin_setup);
+        self.model.set_sample_rate(sample_rate);
+        let processor = Arc::clone(&self.model).prepare(plugin_setup);
 
         let (conversion_buffers, midi_cc_state, midi_output_buffer) =
             allocate_processing_resources(
                 processor.supports_double_precision(),
-                self.descriptor.midi_cc_config(),
+                self.model.midi_cc_config(),
                 max_frames,
                 &layout,
                 bus_config,

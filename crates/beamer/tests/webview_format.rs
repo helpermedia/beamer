@@ -13,8 +13,8 @@ enum Mode {
     Warm,
 }
 
-#[derive(Parameters)]
-struct TestParameters {
+#[beamer::model]
+struct TestModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     gain: FloatParameter,
 
@@ -30,8 +30,8 @@ struct TestParameters {
 
 #[test]
 fn test_init_dump_reports_the_format_of_each_parameter_kind() {
-    let parameters = TestParameters::default();
-    let json = beamer::core::params_to_init_json(&parameters);
+    let model = TestModel::default();
+    let json = beamer::core::params_to_init_json(&model);
     let dump: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     let format_of = |string_id: &str| {

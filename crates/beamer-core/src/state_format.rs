@@ -560,8 +560,7 @@ mod tests {
         assert_eq!(data, state(&[entry(KIND_PARAMETER, "gain", &0.25f64.to_le_bytes())]));
     }
 
-    /// A parameter struct that is written by hand, with a parameter and a
-    /// state.
+    /// A model that is written by hand, with a parameter and a state.
     struct Manual {
         gain: FloatParameter,
         name: State<String>,
@@ -620,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parameters_and_state_round_trip_through_a_parameter_struct() {
+    fn test_parameters_and_state_round_trip_through_a_model() {
         let saved = Manual::new(true);
         saved.gain.set_normalized(0.25);
         saved.name.set(String::from("kick"));

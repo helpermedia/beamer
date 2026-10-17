@@ -1,12 +1,14 @@
 //! Beamer Equalizer - Example 3-band parametric EQ demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`EqualizerParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`EqualizerDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`EqualizerProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`EqualizerModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, how the
+//!    host sees it and how it creates the processor.
+//! 2. **`EqualizerProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -123,21 +125,22 @@ impl BiquadCoeffs {
 }
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
-/// Equalizer plugin parameters.
+/// Equalizer plugin model.
 ///
 /// 3-band parametric EQ with peak (bell) filters:
 /// - Low band (20-2000 Hz)
 /// - Mid band (200-8000 Hz)
 /// - High band (2000-20000 Hz)
 ///
-/// Each band has frequency, gain, and width controls.
+/// Each band has frequency, gain and width controls.
 /// Width controls bandwidth (higher = wider = more audible).
 /// Parameters are organized into flat groups for DAW display.
-#[derive(Parameters)]
-pub struct EqualizerParameters {
+#[beamer::export]
+#[beamer::model]
+pub struct EqualizerModel {
     // =========================================================================
     // Low Band (Peak)
     // =========================================================================
@@ -244,27 +247,12 @@ pub struct EqualizerParameters {
     pub high_width: FloatParameter,
 }
 
-// =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Equalizer plugin descriptor.
-///
-/// Holds the parameters and creates the processor when prepared.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct EqualizerDescriptor {
-    #[parameters]
-    pub parameters: Arc<EqualizerParameters>,
-}
-
-impl Descriptor for EqualizerDescriptor {
+impl Model for EqualizerModel {
     type Setup = SampleRate;
     type Processor = EqualizerProcessor;
 
-    fn prepare(&self, sample_rate: SampleRate) -> EqualizerProcessor {
+    fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> EqualizerProcessor {
         EqualizerProcessor {
-            parameters: Arc::clone(&self.parameters),
             sample_rate: sample_rate.hz(),
             low_state: [BiquadState::default(); 2],
             mid_state: [BiquadState::default(); 2],
@@ -272,6 +260,7 @@ impl Descriptor for EqualizerDescriptor {
             low_coeffs: BiquadCoeffs::default(),
             mid_coeffs: BiquadCoeffs::default(),
             high_coeffs: BiquadCoeffs::default(),
+            model: self,
         }
     }
 
@@ -304,7 +293,7 @@ impl Descriptor for EqualizerDescriptor {
 ///
 /// Contains filter state and coefficients for all three bands.
 pub struct EqualizerProcessor {
-    pub parameters: Arc<EqualizerParameters>,
+    pub model: Arc<EqualizerModel>,
 
     /// Sample rate in Hz
     sample_rate: f64,
@@ -326,23 +315,23 @@ impl EqualizerProcessor {
     /// Width is converted to Q via `Q = 1/width`, so higher width = lower Q = wider band.
     fn update_coefficients(&mut self) {
         self.low_coeffs = BiquadCoeffs::peak(
-            self.parameters.low_freq.get(),
-            self.parameters.low_gain.get(),
-            1.0 / self.parameters.low_width.get(),
+            self.model.low_freq.get(),
+            self.model.low_gain.get(),
+            1.0 / self.model.low_width.get(),
             self.sample_rate,
         );
 
         self.mid_coeffs = BiquadCoeffs::peak(
-            self.parameters.mid_freq.get(),
-            self.parameters.mid_gain.get(),
-            1.0 / self.parameters.mid_width.get(),
+            self.model.mid_freq.get(),
+            self.model.mid_gain.get(),
+            1.0 / self.model.mid_width.get(),
             self.sample_rate,
         );
 
         self.high_coeffs = BiquadCoeffs::peak(
-            self.parameters.high_freq.get(),
-            self.parameters.high_gain.get(),
-            1.0 / self.parameters.high_width.get(),
+            self.model.high_freq.get(),
+            self.model.high_gain.get(),
+            1.0 / self.model.high_width.get(),
             self.sample_rate,
         );
     }

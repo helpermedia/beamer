@@ -16,7 +16,7 @@
 //!        ↓
 //! AuPluginInstance / RenderBlock
 //!        ↓
-//! beamer_core::Descriptor / Processor
+//! beamer_core::Model / Processor
 //! ```
 //!
 //! # Safety
@@ -441,7 +441,7 @@ pub struct BeamerInstanceHandle {
     /// The bus configuration of the last successful allocation, cleared when
     /// the resources are deallocated. Only host threads take this lock.
     bus_config: Mutex<Option<CachedBusConfig>>,
-    /// Where the web UI's invoke calls and events go (the descriptor),
+    /// Where the web UI's invoke calls and events go (the model),
     /// captured at instance creation to avoid locking the plugin mutex on
     /// every invoke/event call.
     webview_dispatch: Arc<dyn WebViewDispatch>,
@@ -2674,7 +2674,7 @@ pub extern "C" fn beamer_au_param_set_from_ui(
 /// Handle an invoke call from JavaScript.
 ///
 /// Called when the WebView sends an `invoke` message. Dispatches to the
-/// descriptor's `on_invoke`. Returns a
+/// model's `on_invoke`. Returns a
 /// heap-allocated JSON string with `{"ok":...}` or `{"err":"..."}` that the
 /// caller must free with `beamer_au_free_string`. Returns null on failure.
 ///
@@ -2730,7 +2730,7 @@ pub unsafe extern "C" fn beamer_au_on_invoke(
 /// Handle a custom event from JavaScript.
 ///
 /// Called when the WebView sends an `event` message. Dispatches to the
-/// descriptor's `on_event`.
+/// model's `on_event`.
 ///
 /// # Safety
 ///

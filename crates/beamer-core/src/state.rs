@@ -9,14 +9,14 @@
 //! it as a whole, and the audio thread reads it through a
 //! [`HandoverReader`] without waiting.
 //!
-//! `#[derive(Parameters)]` saves and loads the fields that are marked with
+//! `#[beamer::model]` and `#[beamer::group]` save and load the fields that are marked with
 //! `#[state(id = "...")]`. The id is what the value is saved under, so it
 //! has to stay the same from one version of a plugin to the next. Ids of
 //! states and parameters share one namespace.
 //!
 //! ```ignore
-//! #[derive(Parameters)]
-//! struct SamplerParameters {
+//! #[beamer::model]
+//! struct SamplerModel {
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     gain: FloatParameter,
 //!
@@ -24,11 +24,11 @@
 //!     sample_path: State<String>,
 //! }
 //!
-//! // On a host or UI thread, for example in a WebView handler:
-//! parameters.sample_path.set(String::from("kick.wav"));
+//! // On a host or UI thread, for example in on_invoke():
+//! model.sample_path.set(String::from("kick.wav"));
 //!
-//! // In prepare():
-//! SamplerProcessor { sample_path: self.parameters.sample_path.reader(), /* ... */ }
+//! // In prepare(), before `self` moves into the processor:
+//! SamplerProcessor { sample_path: self.sample_path.reader(), model: self, /* ... */ }
 //!
 //! // In process():
 //! if let Some(path) = self.sample_path.changed() { /* ... */ }

@@ -1,6 +1,6 @@
 //! Plugin setup types for declaring host information requirements.
 //!
-//! Use these types with [`Descriptor::Setup`](crate::Descriptor::Setup) to specify what
+//! Use these types with [`Model::Setup`](crate::Model::Setup) to specify what
 //! information your plugin needs from the host during preparation.
 //!
 //! # Quick Reference
@@ -32,26 +32,26 @@
 //! use beamer::setup::*;
 //!
 //! // Stateless plugin (gain, pan)
-//! impl Descriptor for Gain {
+//! impl Model for GainModel {
 //!     type Setup = ();
-//!     fn prepare(&self, _: ()) -> GainProcessor {
-//!         GainProcessor { parameters: Arc::clone(&self.parameters) }
+//!     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+//!         GainProcessor { model: self }
 //!     }
 //! }
 //!
 //! // Time-based DSP (delay, filter, envelope, smoothing)
-//! impl Descriptor for Delay {
+//! impl Model for DelayModel {
 //!     type Setup = SampleRate;
-//!     fn prepare(&self, sample_rate: SampleRate) -> DelayProcessor {
+//!     fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> DelayProcessor {
 //!         let buffer_size = (2.0 * sample_rate.hz()) as usize;
 //!         DelayProcessor { buffer: vec![0.0; buffer_size], /* ... */ }
 //!     }
 //! }
 //!
 //! // FFT or lookahead processing
-//! impl Descriptor for Fft {
+//! impl Model for FftModel {
 //!     type Setup = (SampleRate, MaxBufferSize);
-//!     fn prepare(&self, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
+//!     fn prepare(self: Arc<Self>, (sr, mbs): (SampleRate, MaxBufferSize)) -> FftProcessor {
 //!         FftProcessor { fft_buffer: vec![0.0; mbs.0], /* ... */ }
 //!     }
 //! }

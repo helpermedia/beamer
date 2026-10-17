@@ -14,7 +14,7 @@
 /// # Arguments
 ///
 /// * `$config` - The [`beamer_core::Config`] static containing all plugin metadata
-/// * `$plugin` - The plugin type implementing the [`beamer_core::Descriptor`] trait
+/// * `$plugin` - The model type implementing the [`beamer_core::Model`] trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
 ///
 /// # Example
@@ -82,6 +82,6 @@ macro_rules! export_vst3 {
 
     // Without presets (default to NoPresets)
     ($config:expr, $plugin:ty) => {
-        $crate::export_vst3!($config, $plugin, $crate::NoPresets<<$plugin as $crate::HasParameters>::Parameters>);
+        $crate::export_vst3!($config, $plugin, $crate::NoPresets<$plugin>);
     };
 }

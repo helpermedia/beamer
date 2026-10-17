@@ -1,5 +1,5 @@
-//! State beyond parameters: `State` fields of a parameter struct are saved
-//! and loaded with the parameters and handed over to the audio thread.
+//! State beyond parameters: `State` fields of a model are saved and loaded
+//! with the parameters and handed over to the audio thread.
 
 #![cfg(feature = "derive")]
 
@@ -14,8 +14,8 @@ struct Sample {
     root_note: u8,
 }
 
-#[derive(Parameters)]
-struct LayerParameters {
+#[beamer::group]
+struct LayerGroup {
     #[parameter(id = "level", name = "Level", default = 1.0, range = 0.0..=1.0)]
     level: FloatParameter,
 
@@ -23,8 +23,8 @@ struct LayerParameters {
     sample: State<Sample>,
 }
 
-#[derive(Parameters)]
-struct SamplerParameters {
+#[beamer::model]
+struct SamplerModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
     gain: FloatParameter,
 
@@ -32,27 +32,27 @@ struct SamplerParameters {
     name: State<String>,
 
     #[nested(group = "Layer A")]
-    layer: LayerParameters,
+    layer: LayerGroup,
 
     /// Not saved: what the audio thread plays, decoded from the sample.
     decoded: Handover<Vec<f32>>,
 }
 
 /// A struct that has state and no parameters of its own.
-#[derive(Parameters)]
-struct EditorParameters {
+#[beamer::model]
+struct EditorModel {
     #[state(id = "zoom")]
     zoom: State<u32>,
 }
 
 /// The same nested struct in two fields.
-#[derive(Parameters)]
-struct TwoLayerParameters {
+#[beamer::model]
+struct TwoLayerModel {
     #[nested(group = "Layer A")]
-    first: LayerParameters,
+    first: LayerGroup,
 
     #[nested(group = "Layer B")]
-    second: LayerParameters,
+    second: LayerGroup,
 }
 
 fn kick() -> Sample {
@@ -64,18 +64,18 @@ fn kick() -> Sample {
 
 #[test]
 fn test_state_fields_start_with_their_defaults() {
-    let parameters = SamplerParameters::default();
+    let model = SamplerModel::default();
 
-    assert_eq!(*parameters.name.get(), "");
-    assert_eq!(*parameters.layer.sample.get(), Sample::default());
-    assert!(parameters.decoded.get().is_empty());
+    assert_eq!(*model.name.get(), "");
+    assert_eq!(*model.layer.sample.get(), Sample::default());
+    assert!(model.decoded.get().is_empty());
 }
 
 #[test]
 fn test_state_fields_are_saved_after_the_parameters() {
-    let parameters = SamplerParameters::default();
-    parameters.gain.set_normalized(0.25);
-    parameters.name.set(String::from("a"));
+    let model = SamplerModel::default();
+    model.gain.set_normalized(0.25);
+    model.name.set(String::from("a"));
 
     // Written out in full, so that a change of the format fails here.
     let expected: Vec<u8> = [
@@ -109,12 +109,12 @@ fn test_state_fields_are_saved_after_the_parameters() {
     ]
     .concat();
 
-    assert_eq!(parameters.save_state(), expected);
+    assert_eq!(model.save_state(), expected);
 }
 
 #[test]
 fn test_state_round_trip_restores_parameters_and_state() {
-    let saved = SamplerParameters::default();
+    let saved = SamplerModel::default();
     saved.gain.set_normalized(0.25);
     saved.name.set(String::from("My Kit"));
     saved.layer.level.set_normalized(0.5);
@@ -122,7 +122,7 @@ fn test_state_round_trip_restores_parameters_and_state() {
     saved.decoded.set(vec![0.5; 8]);
     let bytes = saved.save_state();
 
-    let loaded = SamplerParameters::default();
+    let loaded = SamplerModel::default();
     loaded.load_state(&bytes).expect("state loads");
 
     assert_eq!(loaded.gain.get_normalized(), 0.25);
@@ -138,16 +138,16 @@ fn test_state_round_trip_restores_parameters_and_state() {
 
 #[test]
 fn test_loaded_state_reaches_the_audio_thread() {
-    let saved = SamplerParameters::default();
+    let saved = SamplerModel::default();
     saved.layer.sample.set(kick());
     let bytes = saved.save_state();
 
-    let parameters = SamplerParameters::default();
+    let model = SamplerModel::default();
     // As a processor would in prepare().
-    let mut sample = parameters.layer.sample.reader();
+    let mut sample = model.layer.sample.reader();
     assert_eq!(sample.changed(), None);
 
-    parameters.load_state(&bytes).expect("state loads");
+    model.load_state(&bytes).expect("state loads");
     assert_eq!(sample.changed(), Some(&kick()));
     assert_eq!(sample.changed(), None);
 }
@@ -155,7 +155,7 @@ fn test_loaded_state_reaches_the_audio_thread() {
 #[test]
 fn test_state_without_an_entry_goes_back_to_its_default() {
     // A state that was saved before the plugin had state fields.
-    let saved = SamplerParameters::default();
+    let saved = SamplerModel::default();
     saved.gain.set_normalized(0.25);
     let bytes = saved.save_state();
     let name_entry: &[u8] = &[2, 4, 0, b'n', b'a', b'm', b'e', 2, 0, 0, 0, b'"', b'"'];
@@ -168,17 +168,17 @@ fn test_state_without_an_entry_goes_back_to_its_default() {
     let payload = (without_name.len() - 12) as u32;
     without_name[8..12].copy_from_slice(&payload.to_le_bytes());
 
-    let parameters = SamplerParameters::default();
-    parameters.name.set(String::from("before"));
-    parameters.load_state(&without_name).expect("state loads");
+    let model = SamplerModel::default();
+    model.name.set(String::from("before"));
+    model.load_state(&without_name).expect("state loads");
 
-    assert_eq!(parameters.gain.get_normalized(), 0.25);
-    assert_eq!(*parameters.name.get(), "");
+    assert_eq!(model.gain.get_normalized(), 0.25);
+    assert_eq!(*model.name.get(), "");
 }
 
 #[test]
 fn test_state_entry_that_does_not_fit_gives_the_default_and_keeps_the_rest() {
-    let saved = SamplerParameters::default();
+    let saved = SamplerModel::default();
     saved.gain.set_normalized(0.25);
     saved.name.set(String::from("kit"));
     let mut bytes = saved.save_state();
@@ -190,42 +190,42 @@ fn test_state_entry_that_does_not_fit_gives_the_default_and_keeps_the_rest() {
         .expect("the name is in the state");
     bytes[json] = b'[';
 
-    let parameters = SamplerParameters::default();
-    parameters.name.set(String::from("before"));
-    parameters.load_state(&bytes).expect("state loads");
+    let model = SamplerModel::default();
+    model.name.set(String::from("before"));
+    model.load_state(&bytes).expect("state loads");
 
-    assert_eq!(*parameters.name.get(), "");
-    assert_eq!(parameters.gain.get_normalized(), 0.25);
+    assert_eq!(*model.name.get(), "");
+    assert_eq!(model.gain.get_normalized(), 0.25);
 }
 
 #[test]
 fn test_state_fields_are_not_parameters() {
-    let parameters = SamplerParameters::default();
+    let model = SamplerModel::default();
 
     // The gain and the level of the nested layer.
-    assert_eq!(Parameters::count(&parameters), 2);
-    assert_eq!(parameters.iter().count(), 2);
+    assert_eq!(Parameters::count(&model), 2);
+    assert_eq!(model.iter().count(), 2);
 }
 
 #[test]
 fn test_struct_with_state_and_no_parameters() {
-    let saved = EditorParameters::default();
+    let saved = EditorModel::default();
     assert_eq!(Parameters::count(&saved), 0);
     assert_eq!(saved.iter().count(), 0);
     saved.zoom.set(150);
 
-    let loaded = EditorParameters::default();
+    let loaded = EditorModel::default();
     loaded.load_state(&saved.save_state()).expect("state loads");
     assert_eq!(*loaded.zoom.get(), 150);
 }
 
 #[test]
 fn test_nested_struct_in_two_fields_keeps_two_states() {
-    let saved = TwoLayerParameters::default();
+    let saved = TwoLayerModel::default();
     saved.first.sample.set(kick());
     saved.second.level.set_normalized(0.25);
 
-    let loaded = TwoLayerParameters::default();
+    let loaded = TwoLayerModel::default();
     loaded.load_state(&saved.save_state()).expect("state loads");
 
     assert_eq!(*loaded.first.sample.get(), kick());
@@ -236,35 +236,35 @@ fn test_nested_struct_in_two_fields_keeps_two_states() {
 
 #[test]
 fn test_loading_a_state_counts_as_a_change_for_a_ui() {
-    let saved = SamplerParameters::default();
+    let saved = SamplerModel::default();
     saved.name.set(String::from("My Kit"));
     let bytes = saved.save_state();
 
-    let parameters = SamplerParameters::default();
-    let before = parameters.name.generation();
-    parameters.load_state(&bytes).expect("state loads");
+    let model = SamplerModel::default();
+    let before = model.name.generation();
+    model.load_state(&bytes).expect("state loads");
 
     // A UI that polls the generation notices that it has to read again.
-    assert!(parameters.name.generation() > before);
+    assert!(model.name.generation() > before);
 }
 
 #[test]
 fn test_state_generation_changes_with_state_fields_only() {
-    let parameters = SamplerParameters::default();
-    let start = parameters.state_generation();
+    let model = SamplerModel::default();
+    let start = model.state_generation();
 
     // Parameters and fields that are not saved do not count.
-    parameters.gain.set_normalized(0.5);
-    parameters.decoded.set(vec![0.0; 4]);
-    assert_eq!(parameters.state_generation(), start);
+    model.gain.set_normalized(0.5);
+    model.decoded.set(vec![0.0; 4]);
+    assert_eq!(model.state_generation(), start);
 
-    parameters.name.set(String::from("a"));
-    let after_name = parameters.state_generation();
+    model.name.set(String::from("a"));
+    let after_name = model.state_generation();
     assert_ne!(after_name, start);
 
     // A State field of a nested struct counts too.
-    parameters.layer.sample.set(kick());
-    assert_ne!(parameters.state_generation(), after_name);
+    model.layer.sample.set(kick());
+    assert_ne!(model.state_generation(), after_name);
 }
 
 /// The paths and JSON values that `for_each_state` visits, through the
@@ -280,14 +280,14 @@ fn visited(model: &dyn beamer::core::SharedModel) -> Vec<(String, String)> {
 
 #[test]
 fn test_state_fields_are_visited_by_their_paths() {
-    let parameters = SamplerParameters::default();
-    parameters.name.set(String::from("My Kit"));
-    parameters.layer.sample.set(kick());
+    let model = SamplerModel::default();
+    model.name.set(String::from("My Kit"));
+    model.layer.sample.set(kick());
 
     // The paths of the saved state: the id, behind the field of a nested
     // struct. The fields that are not saved are not visited.
     assert_eq!(
-        visited(&parameters),
+        visited(&model),
         vec![
             (String::from("name"), String::from("\"My Kit\"")),
             (
@@ -300,26 +300,26 @@ fn test_state_fields_are_visited_by_their_paths() {
 
 #[test]
 fn test_nested_struct_in_two_fields_is_visited_twice() {
-    let parameters = TwoLayerParameters::default();
-    let paths: Vec<String> = visited(&parameters).into_iter().map(|(path, _)| path).collect();
+    let model = TwoLayerModel::default();
+    let paths: Vec<String> = visited(&model).into_iter().map(|(path, _)| path).collect();
     assert_eq!(paths, ["first/sample", "second/sample"]);
 }
 
 /// A keyword as the name of a nested field, three levels deep.
-#[derive(Parameters)]
-struct KitParameters {
+#[beamer::model]
+struct KitModel {
     #[nested(group = "Type")]
-    r#type: SamplerParameters,
+    r#type: SamplerModel,
 }
 
 #[test]
 fn test_deeply_nested_state_fields_have_the_paths_of_the_saved_state() {
-    let parameters = KitParameters::default();
-    let paths: Vec<String> = visited(&parameters).into_iter().map(|(path, _)| path).collect();
+    let model = KitModel::default();
+    let paths: Vec<String> = visited(&model).into_iter().map(|(path, _)| path).collect();
     assert_eq!(paths, ["type/name", "type/layer/sample"]);
 
     // Each path is the path of an entry of the saved state.
-    let saved = parameters.save_state();
+    let saved = model.save_state();
     for path in &paths {
         let mut needle = (path.len() as u16).to_le_bytes().to_vec();
         needle.extend_from_slice(path.as_bytes());
@@ -332,21 +332,21 @@ fn test_deeply_nested_state_fields_have_the_paths_of_the_saved_state() {
 
 #[test]
 fn test_a_visited_state_field_can_be_set() {
-    let parameters = EditorParameters::default();
-    parameters.for_each_state(&mut |path, state| {
+    let model = EditorModel::default();
+    model.for_each_state(&mut |path, state| {
         assert_eq!(path, "zoom");
         state.load_json(b"150").expect("JSON fits");
     });
-    assert_eq!(*parameters.zoom.get(), 150);
+    assert_eq!(*model.zoom.get(), 150);
 }
 
 #[test]
 fn test_struct_without_state_fields_visits_nothing() {
-    #[derive(Parameters)]
-    struct GainParameters {
+    #[beamer::model]
+    struct GainModel {
         #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
         gain: FloatParameter,
     }
 
-    assert!(visited(&GainParameters::default()).is_empty());
+    assert!(visited(&GainModel::default()).is_empty());
 }

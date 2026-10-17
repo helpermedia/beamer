@@ -7,58 +7,51 @@
 //!
 //! ## Quick Start
 //!
-//! A plugin has three structs: the parameters, a descriptor that describes
-//! the plugin to the host and a processor that handles the audio. The
-//! `#[beamer::export]` attribute on the descriptor reads `Config.toml` at
-//! compile time and generates the plugin metadata and the entry points for
-//! the enabled formats.
+//! A plugin has two structs: the model, which every thread shares, and the
+//! processor, which the audio thread owns. The `#[beamer::export]`
+//! attribute on the model reads `Config.toml` at compile time and generates
+//! the plugin metadata and the entry points for the enabled formats.
 //!
-// The example needs the derive macros, so it is only compiled as a doctest
-// when the `derive` feature is enabled.
+// The example needs the macros, so it is only compiled as a doctest when
+// the `derive` feature is enabled.
 #![cfg_attr(feature = "derive", doc = "```rust")]
 #![cfg_attr(not(feature = "derive"), doc = "```rust,ignore")]
 //! use beamer::prelude::*;
 //!
-//! // 1. Parameters: pure data with derive macros.
-//! #[derive(Parameters)]
-//! struct GainParameters {
-//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-//!     gain: FloatParameter,
-//! }
-//!
-//! // 2. Descriptor: holds the parameters and describes the plugin to the host.
-//! //    It lives as long as the plugin instance.
+//! // 1. Model: what every thread shares. It holds the parameters and
+//! //    describes the plugin to the host. It lives as long as the plugin
+//! //    instance.
 //! # // The attribute reads Config.toml, which this crate does not have, so
 //! # // the doctest comments it out. The rendered page still shows the line.
 //! # /*
 //! #[beamer::export]
 //! # */
-//! #[derive(Default, HasParameters)]
-//! struct GainDescriptor {
-//!     #[parameters]
-//!     parameters: Arc<GainParameters>,
+//! #[beamer::model]
+//! struct GainModel {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     gain: FloatParameter,
 //! }
 //!
-//! impl Descriptor for GainDescriptor {
+//! impl Model for GainModel {
 //!     // A plain gain needs no setup. Use SampleRate for delays and
 //!     // MaxBufferSize for FFT.
 //!     type Setup = ();
 //!     type Processor = GainProcessor;
 //!
-//!     fn prepare(&self, _: ()) -> GainProcessor {
-//!         GainProcessor { parameters: Arc::clone(&self.parameters) }
+//!     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+//!         GainProcessor { model: self }
 //!     }
 //! }
 //!
-//! // 3. Processor: what the audio thread owns. It shares the parameters
-//! //    with the host and the UI.
+//! // 2. Processor: what the audio thread owns. It shares the model with the
+//! //    host and the UI.
 //! struct GainProcessor {
-//!     parameters: Arc<GainParameters>,
+//!     model: Arc<GainModel>,
 //! }
 //!
 //! impl Processor for GainProcessor {
 //!     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-//!         let gain = self.parameters.gain.as_linear() as f32;
+//!         let gain = self.model.gain.as_linear() as f32;
 //!         for (input, output) in buffer.zip_channels() {
 //!             for (i, o) in input.iter().zip(output.iter_mut()) {
 //!                 *o = *i * gain;
@@ -128,13 +121,9 @@ pub mod vst3 {
 #[cfg(feature = "au")]
 pub use beamer_au as au_impl;
 
-// Re-export derive macros when feature is enabled
-#[cfg(feature = "derive")]
-pub use beamer_macros::Parameters;
+// Re-export the macros when the feature is enabled
 #[cfg(feature = "derive")]
 pub use beamer_macros::EnumParameter;
-#[cfg(feature = "derive")]
-pub use beamer_macros::HasParameters;
 #[cfg(feature = "derive")]
 pub use beamer_macros::export;
 #[cfg(feature = "derive")]
@@ -143,19 +132,19 @@ pub use beamer_macros::{group, model};
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///
 /// Plugins normally do not call this macro themselves. `#[beamer::export]` on
-/// the descriptor struct generates the `CONFIG` static from `Config.toml` and
+/// the model struct generates the `CONFIG` static from `Config.toml` and
 /// the presets from `Presets.toml`, then calls this macro with them. The
 /// macro in turn calls the export macro of every enabled format crate.
 ///
 /// # Arguments
 ///
 /// * `$config` - The [`Config`](beamer_core::Config) static containing all plugin metadata
-/// * `$plugin` - The plugin type implementing the [`Descriptor`](beamer_core::Descriptor) trait
+/// * `$plugin` - The model type implementing the [`Model`](beamer_core::Model) trait
 /// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`](beamer_core::FactoryPresets)
 ///
 /// # Example
 ///
-/// In outline, what `#[beamer::export]` generates for a descriptor `MyPlugin`:
+/// In outline, what `#[beamer::export]` generates for a model `MyModel`:
 ///
 /// ```rust,ignore
 /// pub static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
@@ -163,10 +152,10 @@ pub use beamer_macros::{group, model};
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///
 /// // Without a Presets.toml.
-/// export_plugin!(CONFIG, MyPlugin);
+/// export_plugin!(CONFIG, MyModel);
 ///
 /// // With a Presets.toml, from which the macro also generates __BeamerPresets.
-/// export_plugin!(CONFIG, MyPlugin, __BeamerPresets);
+/// export_plugin!(CONFIG, MyModel, __BeamerPresets);
 /// ```
 #[macro_export]
 macro_rules! export_plugin {
@@ -184,7 +173,7 @@ macro_rules! export_plugin {
         $crate::export_plugin!(
             $config,
             $plugin,
-            $crate::core::NoPresets<<$plugin as $crate::core::HasParameters>::Parameters>
+            $crate::core::NoPresets<$plugin>
         );
     };
 }
@@ -210,7 +199,7 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        Descriptor, GuiDelegate, HasParameters, ModelFields, Processor,
+        GuiDelegate, Model, ModelFields, Processor,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         AuxInputCount, AuxOutputCount, ProcessMode,
@@ -257,9 +246,9 @@ pub mod prelude {
     // Unified export macro
     pub use crate::export_plugin;
 
-    // Derive macros for parameters (when feature enabled)
-    // These share names with the traits/types they implement, which is allowed
-    // because traits and derive macros live in different namespaces.
+    // The enum derive (when the feature is enabled). It shares its name with
+    // the type it is used for, which is allowed because types and derive
+    // macros live in different namespaces.
     #[cfg(feature = "derive")]
-    pub use beamer_macros::{EnumParameter, HasParameters, Parameters};
+    pub use beamer_macros::EnumParameter;
 }

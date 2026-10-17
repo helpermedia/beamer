@@ -4,7 +4,7 @@
 //! extracted from the plugin or host. This avoids repeated queries and provides
 //! fast access during audio processing.
 
-use crate::plugin::{BusInfo, BusLayout, BusType, Descriptor};
+use crate::plugin::{BusInfo, BusLayout, BusType, Model};
 use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// Lightweight bus information for caching.
@@ -82,17 +82,17 @@ impl CachedBusConfig {
         }
     }
 
-    /// Create from a plugin's bus configuration.
-    pub fn from_plugin<P: Descriptor>(plugin: &P) -> Self {
-        let input_bus_count = plugin.input_bus_count();
-        let output_bus_count = plugin.output_bus_count();
+    /// Create from the bus configuration a model declares.
+    pub fn from_model<P: Model>(model: &P) -> Self {
+        let input_bus_count = model.input_bus_count();
+        let output_bus_count = model.output_bus_count();
 
         let input_buses: Vec<CachedBusInfo> = (0..input_bus_count)
-            .filter_map(|i| plugin.input_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
+            .filter_map(|i| model.input_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
             .collect();
 
         let output_buses: Vec<CachedBusInfo> = (0..output_bus_count)
-            .filter_map(|i| plugin.output_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
+            .filter_map(|i| model.output_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
             .collect();
 
         Self {

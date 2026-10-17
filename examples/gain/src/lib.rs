@@ -1,12 +1,14 @@
 //! Beamer Gain - Example gain plugin demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`GainParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`GainDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`GainProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`GainModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, how the
+//!    host sees it and how it creates the processor.
+//! 2. **`GainProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -17,24 +19,28 @@
 use beamer::prelude::*;
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
-/// Gain plugin parameters.
+/// Gain plugin model.
 ///
-/// The `#[derive(Parameters)]` macro generates:
+/// The `#[beamer::model]` attribute generates:
 /// - `Parameters` trait (count, iter, by_id, groups, smoothing)
 /// - `ModelFields` trait (`State` fields, the event queue, saving and loading)
 /// - `ParameterStore` trait (host integration)
 /// - `Default` trait (from attribute values)
-#[derive(Parameters)]
-pub struct GainParameters {
+///
+/// It lives as long as the plugin instance and creates the `GainProcessor`
+/// via `prepare()` once the audio configuration is known.
+#[beamer::export]
+#[beamer::model]
+pub struct GainModel {
     /// Gain parameter: -60 dB to +12 dB, default 0 dB (unity gain)
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 }
 
-impl GainParameters {
+impl GainModel {
     /// Get the gain as a linear multiplier for DSP calculations.
     ///
     /// Converts dB to linear amplitude: `linear = 10^(dB / 20)`
@@ -44,30 +50,12 @@ impl GainParameters {
     }
 }
 
-// =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Gain plugin descriptor.
-///
-/// Holds the parameters and describes the plugin to the host, for as long as
-/// the plugin instance lives. Creates the `GainProcessor` via `prepare()`
-/// once the audio configuration is known.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct GainDescriptor {
-    #[parameters]
-    pub parameters: Arc<GainParameters>,
-}
-
-impl Descriptor for GainDescriptor {
+impl Model for GainModel {
     type Setup = ();
     type Processor = GainProcessor;
 
-    fn prepare(&self, _: ()) -> GainProcessor {
-        GainProcessor {
-            parameters: Arc::clone(&self.parameters),
-        }
+    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
+        GainProcessor { model: self }
     }
 }
 
@@ -77,15 +65,15 @@ impl Descriptor for GainDescriptor {
 
 /// Gain plugin processor.
 ///
-/// Ready for audio processing. Created by `GainDescriptor::prepare()`.
+/// Ready for audio processing. Created by `GainModel::prepare()`.
 pub struct GainProcessor {
-    pub parameters: Arc<GainParameters>,
+    pub model: Arc<GainModel>,
 }
 
 impl GainProcessor {
     /// Generic processing implementation for both f32 and f64.
     fn process_generic<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
-        let gain = S::from_f32(self.parameters.gain_linear());
+        let gain = S::from_f32(self.model.gain_linear());
 
         for (input, output) in buffer.zip_channels() {
             for (i, o) in input.iter().zip(output.iter_mut()) {

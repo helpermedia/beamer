@@ -5,13 +5,13 @@
 //! JavaScript receives them with `__BEAMER__.on("name", callback)`.
 //!
 //! The queue lives in the model, which every thread of a plugin
-//! instance shares, as a field without an attribute. `#[derive(Parameters)]`
-//! finds it by its type, also in a nested struct, and the format wrappers
+//! instance shares, as a field without an attribute. `#[beamer::model]`
+//! finds it by its type, also in a nested group, and the format wrappers
 //! take it from there:
 //!
 //! ```ignore
-//! #[derive(Parameters)]
-//! struct SamplerParameters {
+//! #[beamer::model]
+//! struct SamplerModel {
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     gain: FloatParameter,
 //!
@@ -19,7 +19,7 @@
 //! }
 //!
 //! // On a host or UI thread, or on a thread the plugin started:
-//! parameters.events.emit("sampleLoaded", &"kick.wav");
+//! model.events.emit("sampleLoaded", &"kick.wav");
 //! ```
 //!
 //! ```js
@@ -127,8 +127,8 @@ impl WebViewEvents {
     /// Take this queue for a plugin instance.
     ///
     /// For format wrappers, which call it when they create the instance.
-    /// It is what tells a queue the framework delivers from one that the
-    /// descriptor never handed over.
+    /// It is what tells a queue the framework delivers from one that no
+    /// model of an instance holds.
     pub fn claim(&self) {
         self.shared.claimed.store(true, Ordering::Release);
     }

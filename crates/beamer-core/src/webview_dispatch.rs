@@ -1,19 +1,18 @@
 //! How the format wrappers pass messages from the web UI to the plugin.
 //!
 //! A plugin answers `__BEAMER__.invoke()` calls and custom events from
-//! JavaScript in its [`Descriptor`]: [`Descriptor::on_invoke()`] and
-//! [`Descriptor::on_event()`]. The wrappers reach those methods through
-//! [`WebViewDispatch`], which every descriptor implements. Parameter
+//! JavaScript in its [`Model`]: [`Model::on_invoke()`] and
+//! [`Model::on_event()`]. The wrappers reach those methods through
+//! [`WebViewDispatch`], which every model implements. Parameter
 //! synchronization is automatic and does not go through here.
 
-use crate::plugin::Descriptor;
+use crate::plugin::Model;
 
 /// The web UI's way into a plugin, for the format wrappers.
 ///
-/// Implemented for every [`Descriptor`], so a wrapper turns its
-/// `Arc<P>` into an `Arc<dyn WebViewDispatch>` without a wrapper type. The
-/// methods have their own names, so that calls on a descriptor stay
-/// unambiguous.
+/// Implemented for every [`Model`], so a wrapper turns its `Arc<P>` into an
+/// `Arc<dyn WebViewDispatch>` without a wrapper type. The methods have their
+/// own names, so that calls on a model stay unambiguous.
 #[doc(hidden)]
 pub trait WebViewDispatch: Send + Sync {
     /// Pass an invoke call from JavaScript to the plugin.
@@ -27,7 +26,7 @@ pub trait WebViewDispatch: Send + Sync {
     fn dispatch_event(&self, name: &str, data: &serde_json::Value);
 }
 
-impl<P: Descriptor> WebViewDispatch for P {
+impl<P: Model> WebViewDispatch for P {
     fn dispatch_invoke(
         &self,
         method: &str,

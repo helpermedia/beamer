@@ -1,12 +1,14 @@
 //! Beamer Synthesizer - Example polyphonic synthesizer demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`SynthesizerParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`SynthesizerDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`SynthesizerProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`SynthesizerModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, how the
+//!    host sees it and how it creates the processor.
+//! 2. **`SynthesizerProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -74,12 +76,12 @@ enum EnvelopeStage {
 }
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
-/// Synthesizer plugin parameters.
+/// Synthesizer plugin model.
 ///
-/// The `#[derive(Parameters)]` macro generates:
+/// The `#[beamer::model]` attribute generates:
 /// - `Parameters` trait (count, iter, by_id, groups, smoothing)
 /// - `ModelFields` trait (`State` fields, the event queue, saving and loading)
 /// - `ParameterStore` trait (host integration)
@@ -87,8 +89,9 @@ enum EnvelopeStage {
 ///
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
-#[derive(Parameters)]
-pub struct  SynthesizerParameters {
+#[beamer::export]
+#[beamer::model]
+pub struct SynthesizerModel {
     // =========================================================================
     // Oscillator
     // =========================================================================
@@ -142,31 +145,14 @@ pub struct  SynthesizerParameters {
     pub gain: FloatParameter,
 }
 
-// =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Synthesizer plugin descriptor.
-///
-/// Holds the parameters and describes the plugin to the host, for as long as
-/// the plugin instance lives. Creates the `SynthesizerProcessor` via `prepare()`
-/// once the audio configuration is known.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct SynthesizerDescriptor {
-    #[parameters]
-    pub parameters: Arc<SynthesizerParameters>,
-}
-
-impl Descriptor for SynthesizerDescriptor {
+impl Model for SynthesizerModel {
     // Synthesizer needs sample rate for filter calculations.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
 
-    fn prepare(&self, setup: SampleRate) -> SynthesizerProcessor {
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
-            parameters: Arc::clone(&self.parameters),
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: setup.hz(),
             time_counter: 0,
@@ -175,12 +161,13 @@ impl Descriptor for SynthesizerDescriptor {
             mod_wheel: 0.0,
             vibrato_phase: 0.0,
             channel_pressure: 0.0,
+            model: self,
         }
     }
 
     fn midi_cc_config(&self) -> Option<MidiCcConfig> {
         // Use the SYNTH_FULL preset which includes pitch bend, aftertouch,
-        // mod wheel, breath, volume, pan, expression, and sustain.
+        // mod wheel, breath, volume, pan, expression and sustain.
         // This solves the VST3 MIDI input problem where most DAWs don't send
         // raw MIDI CC events - instead they use IMidiMapping (hidden parameters).
         Some(MidiCcConfig::SYNTH_FULL)
@@ -209,7 +196,7 @@ impl Descriptor for SynthesizerDescriptor {
 
 /// A single synthesizer voice.
 ///
-/// Each voice contains oscillator, envelope, and filter state, plus
+/// Each voice contains oscillator, envelope and filter state, plus
 /// per-note polyphonic pressure tracking for vibrato modulation.
 /// Uses soft retrigger: when stealing a voice, the envelope level
 /// is not reset (preventing clicks), but poly pressure is reset to
@@ -298,7 +285,7 @@ impl Voice {
     /// 3. **Filter** - Apply resonant lowpass filter
     ///
     /// # Arguments
-    /// * `params` - Plugin parameters (envelope times, etc.)
+    /// * `model` - The plugin's model (envelope times, etc.)
     /// * `waveform` - Selected oscillator waveform
     /// * `cutoff` - Filter cutoff frequency in Hz (smoothed)
     /// * `resonance` - Filter resonance 0.0-0.95 (smoothed)
@@ -311,7 +298,7 @@ impl Voice {
     #[allow(clippy::too_many_arguments)]
     fn process_sample<S: Sample>(
         &mut self,
-        params: &SynthesizerParameters,
+        model: &SynthesizerModel,
         waveform: Waveform,
         cutoff: f64,
         resonance: f64,
@@ -370,10 +357,10 @@ impl Voice {
         //   0.0 |_/____________\___
         //        A  D    S    R
         //
-        let attack_samples = (params.attack.get() / 1000.0 * sample_rate).max(1.0);
-        let decay_samples = (params.decay.get() / 1000.0 * sample_rate).max(1.0);
-        let sustain_level = params.sustain.get();
-        let release_samples = (params.release.get() / 1000.0 * sample_rate).max(1.0);
+        let attack_samples = (model.attack.get() / 1000.0 * sample_rate).max(1.0);
+        let decay_samples = (model.decay.get() / 1000.0 * sample_rate).max(1.0);
+        let sustain_level = model.sustain.get();
+        let release_samples = (model.release.get() / 1000.0 * sample_rate).max(1.0);
 
         match self.envelope_stage {
             EnvelopeStage::Idle => {}
@@ -442,12 +429,12 @@ impl Voice {
 
 /// Synthesizer plugin processor.
 ///
-/// Ready for audio processing. Created by `SynthesizerDescriptor::prepare()`.
+/// Ready for audio processing. Created by `SynthesizerModel::prepare()`.
 /// Manages 8 polyphonic voices with sample-accurate MIDI timing and
 /// oldest-note voice stealing.
 pub struct SynthesizerProcessor {
-    /// Plugin parameters
-    parameters: Arc<SynthesizerParameters>,
+    /// The plugin's model, shared with the host and the UI.
+    model: Arc<SynthesizerModel>,
     /// Polyphonic voices
     voices: [Voice; NUM_VOICES],
     /// Current sample rate (real value from start!)
@@ -533,8 +520,8 @@ impl SynthesizerProcessor {
         _context: &ProcessContext,
     ) {
         let num_samples = buffer.num_samples();
-        let waveform = self.parameters.waveform.get();
-        let gain = S::from_f64(self.parameters.gain.as_linear());
+        let waveform = self.model.waveform.get();
+        let gain = S::from_f64(self.model.gain.as_linear());
 
         let mut event_idx = 0;
 
@@ -602,10 +589,10 @@ impl SynthesizerProcessor {
             // - Cutoff parameter = base frequency (your starting point)
             // - Mod wheel adds up to +8000 Hz (opens filter for brightness)
             // - Clamped at 20kHz to stay below Nyquist frequency
-            let base_cutoff = self.parameters.cutoff.tick_smoothed();
+            let base_cutoff = self.model.cutoff.tick_smoothed();
             let cutoff_modulation = self.mod_wheel * CUTOFF_MOD_RANGE;
             let cutoff = (base_cutoff + cutoff_modulation).min(20000.0);
-            let resonance = self.parameters.resonance.tick_smoothed();
+            let resonance = self.model.resonance.tick_smoothed();
 
             // Render all voices
             let mut out_l = S::ZERO;
@@ -642,12 +629,12 @@ impl SynthesizerProcessor {
                     let total_pitch_mod = self.pitch_bend + vibrato / PITCH_BEND_RANGE;
 
                     let sample = voice.process_sample::<S>(
-                        &self.parameters,
+                        &self.model,
                         waveform,
                         cutoff,
                         resonance,
                         total_pitch_mod,
-                        self.parameters.transpose.get() as i32,
+                        self.model.transpose.get() as i32,
                         self.sample_rate,
                     );
                     out_l = out_l + sample;

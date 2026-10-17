@@ -50,19 +50,19 @@ impl FactoryPresetAccess {
 
 /// Type-erased interface for AU plugin instances.
 ///
-/// This trait enables the native wrappers to work with any `Descriptor`
+/// This trait enables the native wrappers to work with any `Model`
 /// implementation through dynamic dispatch.
 ///
 /// # Implementation
 ///
-/// This trait is implemented by `AuProcessor<P>` for any `P: Descriptor`.
+/// This trait is implemented by `AuProcessor<P>` for any `P: Model`.
 /// Plugin authors don't implement this directly - they implement the
-/// `beamer_core::Descriptor` trait instead.
+/// `beamer_core::Model` trait instead.
 pub trait AuPluginInstance: Send + 'static {
     /// Allocate render resources (prepare for audio processing).
     ///
     /// Called when AU host calls `allocateRenderResourcesAndReturnError:`.
-    /// The Descriptor creates a Processor for this configuration.
+    /// The model creates a Processor for this configuration.
     ///
     /// # Arguments
     /// * `sample_rate` - The sample rate in Hz
@@ -80,7 +80,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Deallocate render resources (return to unprepared state).
     ///
     /// Called when AU host calls `deallocateRenderResources`.
-    /// This drops the Processor. The Descriptor and the model stay.
+    /// This drops the Processor. The model stays.
     ///
     /// This method must be idempotent: calling it when already unprepared
     /// is a safe no-op. The destroy path relies on this to ensure cleanup
@@ -193,7 +193,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Get reference to MIDI CC state (if configured).
     ///
     /// Returns `None` if the plugin didn't configure MIDI CC tracking via
-    /// `Config::midi_cc_config()`. When `Some`, the state contains
+    /// `Model::midi_cc_config()`. When `Some`, the state contains
     /// current values for all enabled MIDI controllers (CC, pitch bend, aftertouch).
     ///
     /// The framework automatically updates this state from incoming MIDI events
@@ -228,8 +228,8 @@ pub trait AuPluginInstance: Send + 'static {
     // WebView
     // =========================================================================
 
-    /// Returns where the web UI's invoke calls and events go: the
-    /// descriptor. Parameter synchronization is automatic and does not go
+    /// Returns where the web UI's invoke calls and events go: the model.
+    /// Parameter synchronization is automatic and does not go
     /// through here.
     fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch>;
 

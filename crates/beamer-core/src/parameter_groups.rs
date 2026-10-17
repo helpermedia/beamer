@@ -68,7 +68,7 @@ impl GroupInfo {
 
 /// Trait for querying parameter group hierarchy.
 ///
-/// Implemented automatically by `#[derive(Parameters)]` when nested groups are present.
+/// Implemented automatically by `#[beamer::model]` and `#[beamer::group]` when nested groups are present.
 /// Provides information about parameter groups for DAW display.
 ///
 /// Group IDs are assigned dynamically at runtime to support deeply nested groups

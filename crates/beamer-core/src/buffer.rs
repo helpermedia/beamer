@@ -27,7 +27,7 @@
 //!
 //! ```ignore
 //! fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
-//!     let gain = self.parameters.gain();
+//!     let gain = self.model.gain();
 //!     for (input, output) in buffer.zip_channels() {
 //!         for (i, o) in input.iter().zip(output.iter_mut()) {
 //!             *o = *i * gain;

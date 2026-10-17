@@ -10,18 +10,21 @@
 //!
 //! And it shows an event from Rust to the web UI: the plugin tells the
 //! editor the sample rate whenever the host prepares it.
+//!
+//! The plugin is two structs: the model, which every thread shares, and
+//! the processor, which the audio thread owns.
 
 use beamer::prelude::*;
 use beamer::serde::{Deserialize, Serialize};
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
 /// How the pan control distributes the signal over the two channels.
 ///
 /// This is a setting and not a parameter: a host does not automate it. The
-/// plugin keeps it in a `State` field.
+/// model keeps it in a `State` field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(crate = "beamer::serde", rename_all = "snake_case")]
 pub enum PanLaw {
@@ -32,9 +35,16 @@ pub enum PanLaw {
     Linear,
 }
 
-/// Parameters for the WebView demo plugin.
-#[derive(Parameters)]
-pub struct WebViewDemoParameters {
+/// Everything the plugin knows, shared by the host, the web UI and the
+/// audio thread for the life of the instance.
+///
+/// `#[beamer::model]` makes this struct the model: the host sees the
+/// parameters, the state fields are saved with the project and the events
+/// reach the editor. The `#[beamer::export]` macro scans `webview/dist/`
+/// at compile time and embeds all built assets via `include_bytes!()`.
+#[beamer::export]
+#[beamer::model]
+pub struct WebViewDemoModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
@@ -54,41 +64,27 @@ pub struct WebViewDemoParameters {
     pub events: WebViewEvents,
 }
 
-// =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Plugin descriptor with WebView GUI support.
-///
-/// The `#[beamer::export]` macro scans `webview/dist/` at compile time
-/// and embeds all built assets via `include_bytes!()`.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct WebViewDemoDescriptor {
-    #[parameters]
-    pub parameters: Arc<WebViewDemoParameters>,
-}
-
-impl Descriptor for WebViewDemoDescriptor {
+impl Model for WebViewDemoModel {
     type Setup = SampleRate;
     type Processor = WebViewDemoProcessor;
 
-    fn prepare(&self, setup: SampleRate) -> WebViewDemoProcessor {
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
         // Keep the sample rate for an editor that opens later and tell the
         // one that is open. A host calls this on one of its own threads,
         // never on the audio thread, so emitting is fine here.
         let sample_rate = setup.hz();
-        self.parameters.sample_rate.set(sample_rate);
-        self.parameters.events.emit("sampleRate", &sample_rate);
+        self.sample_rate.set(sample_rate);
+        self.events.emit("sampleRate", &sample_rate);
 
         WebViewDemoProcessor {
-            parameters: Arc::clone(&self.parameters),
-            // The audio thread's end of the state field.
-            pan_law: self.parameters.pan_law.reader(),
+            // The audio thread's end of the state field. Taken before the
+            // model moves into the processor.
+            pan_law: self.pan_law.reader(),
+            model: self,
         }
     }
 
-    /// Answers `__BEAMER__.invoke()` calls from JavaScript.
+    /// Handles `__BEAMER__.invoke()` calls from JavaScript.
     fn on_invoke(
         &self,
         method: &str,
@@ -102,7 +98,7 @@ impl Descriptor for WebViewDemoDescriptor {
             })),
             // The sample rate of the host, 0 before it prepared the plugin.
             // An open editor then follows it through the "sampleRate" event.
-            "getSampleRate" => Ok(serde_json::json!(*self.parameters.sample_rate.get())),
+            "getSampleRate" => Ok(serde_json::json!(*self.sample_rate.get())),
             _ => Err(format!("unknown method: {method}")),
         }
     }
@@ -114,7 +110,7 @@ impl Descriptor for WebViewDemoDescriptor {
 
 /// Audio processor with simple gain.
 pub struct WebViewDemoProcessor {
-    pub parameters: Arc<WebViewDemoParameters>,
+    model: Arc<WebViewDemoModel>,
     /// The pan law as the audio thread sees it.
     pan_law: HandoverReader<PanLaw>,
 }
@@ -128,10 +124,10 @@ impl Processor for WebViewDemoProcessor {
     ) {
         debug_assert!(buffer.num_output_channels() <= 2, "pan assumes stereo");
 
-        let gain = self.parameters.gain.as_linear() as f32;
+        let gain = self.model.gain.as_linear() as f32;
 
         // The pan position from 0.0 (left) to 1.0 (right).
-        let position = ((self.parameters.pan.get() + 1.0) * 0.5) as f32;
+        let position = ((self.model.pan.get() + 1.0) * 0.5) as f32;
 
         // Take over a pan law that the UI or a loaded state set since the
         // last block. This takes no lock and does not allocate.

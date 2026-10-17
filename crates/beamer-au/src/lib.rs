@@ -32,7 +32,7 @@
 //! - **Rust**: All DSP, parameters and plugin logic via C-ABI bridge functions
 //!
 //! ```text
-//! User Plugin (implements beamer_core::Descriptor)
+//! User Plugin (implements beamer_core::Model)
 //!        ↓
 //! AuProcessor<P> (generic AU wrapper)
 //!        ↓
@@ -136,7 +136,7 @@ pub use render::{AuParameterEvent, AuParameterRampEvent, ParameterEventBuffer};
 
 // Re-exports for factory presets support (used by export_au! macro)
 #[cfg(target_os = "macos")]
-pub use beamer_core::{FactoryPresets, HasParameters, NoPresets};
+pub use beamer_core::{FactoryPresets, NoPresets};
 
 // C-ABI bridge exports for hybrid AU architecture
 #[cfg(target_os = "macos")]

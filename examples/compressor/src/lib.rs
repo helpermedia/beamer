@@ -1,12 +1,14 @@
 //! Beamer Compressor - Example compressor plugin demonstrating the Beamer framework.
 //!
-//! # Three-Struct Pattern
+//! # Two-Struct Pattern
 //!
-//! Beamer plugins use three structs for clear separation of concerns:
+//! Beamer plugins use two structs:
 //!
-//! 1. **`CompressorParameters`** - Pure parameter definitions with `#[derive(Parameters)]`
-//! 2. **`CompressorDescriptor`** - Plugin descriptor that holds parameters and implements `Descriptor`
-//! 3. **`CompressorProcessor`** - Runtime processor created by `prepare()`, implements `Processor`
+//! 1. **`CompressorModel`** - What every thread shares, marked with
+//!    `#[beamer::model]` and implementing `Model`: its parameters, how the
+//!    host sees it and how it creates the processor.
+//! 2. **`CompressorProcessor`** - What the audio thread owns, created by
+//!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
 //!
@@ -69,15 +71,16 @@ impl Ratio {
 }
 
 // =============================================================================
-// Parameters
+// Model
 // =============================================================================
 
-/// Compressor plugin parameters.
+/// Compressor plugin model.
 ///
-/// All configuration is in attributes, and the `#[derive(Parameters)]` macro
+/// All configuration is in attributes, and the `#[beamer::model]` attribute
 /// generates everything including the `Default` implementation.
-#[derive(Parameters)]
-pub struct CompressorParameters {
+#[beamer::export]
+#[beamer::model]
+pub struct CompressorModel {
     // =========================================================================
     // Compression Controls
     // =========================================================================
@@ -157,40 +160,24 @@ pub struct CompressorParameters {
     pub use_sidechain: BoolParameter,
 }
 
-// =============================================================================
-// Descriptor
-// =============================================================================
-
-/// Compressor plugin descriptor.
-///
-/// Holds the parameters and describes the plugin to the host, for as long as
-/// the plugin instance lives. Creates the `CompressorProcessor` via `prepare()`
-/// once the audio configuration is known.
-#[beamer::export]
-#[derive(Default, HasParameters)]
-pub struct CompressorDescriptor {
-    #[parameters]
-    pub parameters: Arc<CompressorParameters>,
-}
-
-impl Descriptor for CompressorDescriptor {
+impl Model for CompressorModel {
     // Compressor needs sample rate for envelope coefficients.
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
     type Processor = CompressorProcessor;
 
-    fn prepare(&self, setup: SampleRate) -> CompressorProcessor {
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
-            parameters: Arc::clone(&self.parameters),
             bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
             state: CompressionState {
                 env_db: DC_OFFSET,
                 average_gr_db: 0.0,
             },
             sample_rate: setup.hz(),
+            model: self,
         }
     }
 
@@ -279,11 +266,11 @@ const DC_OFFSET: f64 = 1e-25;
 
 /// Compressor plugin processor.
 ///
-/// Ready for audio processing. Created by `CompressorDescriptor::prepare()`
+/// Ready for audio processing. Created by `CompressorModel::prepare()`
 /// with valid sample rate configuration. All DSP state is properly initialized.
 pub struct CompressorProcessor {
-    /// Plugin parameters
-    parameters: Arc<CompressorParameters>,
+    /// The plugin's model, shared with the host and the UI.
+    model: Arc<CompressorModel>,
 
     /// Bypass handler for smooth crossfade transitions
     bypass_handler: BypassHandler,
@@ -318,7 +305,7 @@ impl CompressorProcessor {
         process_compression_inner(
             buffer,
             aux,
-            &self.parameters,
+            &self.model,
             &mut self.state,
             self.sample_rate,
         );
@@ -335,7 +322,7 @@ impl CompressorProcessor {
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
-    params: &CompressorParameters,
+    model: &CompressorModel,
     state: &mut CompressionState,
     sample_rate: f64,
 ) {
@@ -347,26 +334,26 @@ fn process_compression_inner<S: Sample>(
     }
 
     // Get parameter values
-    let threshold_db = params.threshold.get();
-    let ratio = params.ratio.get().to_value();
-    let knee_width = if params.soft_knee.get() {
+    let threshold_db = model.threshold.get();
+    let ratio = model.ratio.get().to_value();
+    let knee_width = if model.soft_knee.get() {
         SOFT_KNEE_WIDTH_DB
     } else {
         0.0
     };
 
-    let manual_makeup_db = params.makeup_gain.get();
+    let manual_makeup_db = model.makeup_gain.get();
 
     // Only use sidechain when explicitly enabled by parameter and buffer exists
-    let use_sidechain = params.use_sidechain.get() && aux.sidechain().is_some();
+    let use_sidechain = model.use_sidechain.get() && aux.sidechain().is_some();
 
     // Pre-calculate envelope coefficients from smoothed attack/release values.
     // The times are read once per block, so the smoothers advance by a whole
     // block here.
-    let attack_ms = params.attack.smoothed();
-    let release_ms = params.release.smoothed();
-    params.attack.skip_smoothing(num_samples);
-    params.release.skip_smoothing(num_samples);
+    let attack_ms = model.attack.smoothed();
+    let release_ms = model.release.smoothed();
+    model.attack.skip_smoothing(num_samples);
+    model.release.skip_smoothing(num_samples);
     let attack_coeff = time_to_coeff(attack_ms, sample_rate);
     let release_coeff = time_to_coeff(release_ms, sample_rate);
 
@@ -443,7 +430,7 @@ fn process_compression_inner<S: Sample>(
         // Update smoothed average gain reduction
         state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
 
-        let auto_makeup_db = if params.auto_makeup.get() {
+        let auto_makeup_db = if model.auto_makeup.get() {
             -state.average_gr_db
         } else {
             0.0
@@ -481,7 +468,7 @@ impl Processor for CompressorProcessor {
         aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
-        let is_bypassed = self.parameters.bypass.get();
+        let is_bypassed = self.model.bypass.get();
 
         // Split API: begin() returns what action to take
         match self.bypass_handler.begin(is_bypassed) {
@@ -515,7 +502,7 @@ impl Processor for CompressorProcessor {
         aux: &mut AuxiliaryBuffers<f64>,
         _context: &ProcessContext,
     ) {
-        let is_bypassed = self.parameters.bypass.get();
+        let is_bypassed = self.model.bypass.get();
 
         // Split API: same pattern for f64 processing
         match self.bypass_handler.begin(is_bypassed) {
