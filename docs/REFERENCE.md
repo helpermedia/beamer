@@ -781,7 +781,7 @@ pub trait HasParameters: Send + 'static {
 }
 ```
 
-`prepare()` takes `&self`, so the Descriptor stays and keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may read it at the same time: a Descriptor is `Sync`. Methods that change it, such as `on_midi_learn()`, take `&mut self` and get it exclusively.
+`prepare()` takes `&self`, so the Descriptor stays and keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may read it at the same time: a Descriptor is `Sync`. Every method takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the parameters, an atomic or a `Mutex`.
 
 **HasParameters via Derive Macro:** Use `#[derive(HasParameters)]` on the Descriptor struct with a `#[parameters]` field annotation. The field is an `Arc` of the parameter struct, and `prepare()` gives the Processor a clone of it:
 
@@ -1690,8 +1690,8 @@ fn physical_ui_mappings(&self, _bus: i32, _channel: i16) -> &[PhysicalUIMap] {
 **MPE Zone Configuration:**
 
 ```rust
-fn enable_mpe_input_processing(&mut self, enabled: bool) -> bool { true }
-fn set_mpe_input_device_settings(&mut self, settings: MpeInputDeviceSettings) -> bool { true }
+fn enable_mpe_input_processing(&self, enabled: bool) -> bool { true }
+fn set_mpe_input_device_settings(&self, settings: MpeInputDeviceSettings) -> bool { true }
 
 // Presets
 MpeInputDeviceSettings::lower_zone()  // Master=0, Members=1-14
@@ -1822,9 +1822,12 @@ fn midi_cc_to_parameter(&self, _bus: i32, _channel: i16, cc: u8) -> Option<u32> 
 **IMidiLearn:**
 
 ```rust
-fn on_midi_learn(&mut self, _bus: i32, _channel: i16, cc: u8) -> bool {
-    if let Some(parameter_id) = self.learning_parameter.take() {
-        self.midi_map.insert(cc, parameter_id);
+// Host threads share the descriptor, so what MIDI learn changes sits
+// behind a Mutex (or in a `State` field, which is also saved).
+fn on_midi_learn(&self, _bus: i32, _channel: i16, cc: u8) -> bool {
+    let mut learn = self.learn.lock().unwrap();
+    if let Some(parameter_id) = learn.parameter.take() {
+        learn.map.insert(cc, parameter_id);
         true
     } else {
         false

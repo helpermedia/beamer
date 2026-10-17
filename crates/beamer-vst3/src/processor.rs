@@ -24,7 +24,7 @@ use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 #[cfg(feature = "webview")]
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::Arc;
 
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
@@ -299,21 +299,20 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 /// interface only provides `&self`.
 ///
 /// A host calls the other interfaces from its own threads while `process()`
-/// runs. What those calls use is kept apart from what `process()` uses: the
-/// descriptor sits behind a lock that `process()` never takes, the parameters
-/// are shared in an `Arc` and work through a shared reference, and latency,
-/// tail and the smoother reset are exchanged through atomics.
+/// runs. What those calls use is kept apart from what `process()` uses.
+/// Only host threads use the descriptor. The parameters are shared in an
+/// `Arc` and work through a shared reference. Latency, tail and the
+/// smoother reset are exchanged through atomics.
 pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
 where
     P: Descriptor,
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     /// The plugin as the host sees it. It lives as long as the wrapper and
-    /// is only used by host threads, never by `process()`. Host threads
-    /// read it at the same time, also while `setupProcessing()` lets it
-    /// create a processor. The write side is for its few methods that
-    /// change it (MIDI learn, MPE settings).
-    descriptor: RwLock<P>,
+    /// is only used by host threads, never by `process()`. Every method of
+    /// it takes `&self`, so host threads use it at the same time, also
+    /// while `setupProcessing()` lets it create a processor.
+    descriptor: Arc<P>,
     /// The parameters of the plugin, shared with the descriptor and with
     /// every processor it creates. `process()` and the host threads use
     /// them through this handle at the same time.
@@ -398,7 +397,7 @@ where
 // - VST3 guarantees process() is called from one thread at a time
 // - The parameters are Sync, and process() reaches them through its own
 //   `Arc`, not through the descriptor
-// - The descriptor is Sync and behind an RwLock that only host threads take
+// - The descriptor is Sync and only host threads use it
 // - component_handler is used by controller calls, which the host never
 //   makes concurrently
 // - What a host thread uses while process() runs is atomic: the parameter
@@ -443,7 +442,7 @@ where
         let known_state_generation = Arc::new(AtomicU64::new(parameters.state_generation()));
 
         Self {
-            descriptor: RwLock::new(plugin),
+            descriptor: Arc::new(plugin),
             parameters,
             processor: UnsafeCell::new(None),
             config,
@@ -590,24 +589,9 @@ where
         }
     }
 
-    /// Read the descriptor for a call of the host.
-    ///
-    /// Not for `process()`: a host thread may hold the write side.
-    fn descriptor(&self) -> RwLockReadGuard<'_, P> {
-        // A poisoned lock only means a panic in an earlier call. The
-        // descriptor answers the host all the same.
-        self.descriptor
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Lock the descriptor for a call of the host that changes it.
-    ///
-    /// Not for `process()`.
-    fn descriptor_mut(&self) -> RwLockWriteGuard<'_, P> {
-        self.descriptor
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// The descriptor, for a call of the host. Not for `process()`.
+    fn descriptor(&self) -> &P {
+        &self.descriptor
     }
 
     // =========================================================================
@@ -1541,10 +1525,9 @@ where
                 || *self.process_mode.get() != setup.processMode
         };
 
-        // Host threads keep reading the descriptor while it creates the
+        // Host threads keep using the descriptor while it creates the
         // processor below.
         let plugin = self.descriptor();
-        let plugin = &*plugin;
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
         let slot = unsafe { &mut *self.processor.get() };
 
@@ -2463,13 +2446,11 @@ where
         channel: i16,
         midi_cc: i16,
     ) -> tresult {
-        {
-            let mut plugin = self.descriptor_mut();
-            if plugin.on_midi_learn(bus_index, channel, midi_cc as u8) {
-                return kResultOk;
-            }
+        if self.descriptor().on_midi_learn(bus_index, channel, midi_cc as u8) {
+            kResultOk
+        } else {
+            kResultFalse
         }
-        kResultFalse
     }
 }
 
@@ -2589,13 +2570,11 @@ where
         channel: u8,
         midi_cc: i16,
     ) -> tresult {
-        {
-            let mut plugin = self.descriptor_mut();
-            if plugin.on_midi1_learn(bus_index, channel, midi_cc as u8) {
-                return kResultOk;
-            }
+        if self.descriptor().on_midi1_learn(bus_index, channel, midi_cc as u8) {
+            kResultOk
+        } else {
+            kResultFalse
         }
-        kResultFalse
     }
 
     unsafe fn onLiveMidi2ControllerInput(
@@ -2604,18 +2583,16 @@ where
         channel: u8,
         midi_cc: Midi2Controller,
     ) -> tresult {
-        {
-            let mut plugin = self.descriptor_mut();
-            let controller = beamer_core::Midi2Controller {
-                bank: midi_cc.bank,
-                registered: midi_cc.registered != 0,
-                index: midi_cc.index,
-            };
-            if plugin.on_midi2_learn(bus_index, channel, controller) {
-                return kResultOk;
-            }
+        let controller = beamer_core::Midi2Controller {
+            bank: midi_cc.bank,
+            registered: midi_cc.registered != 0,
+            index: midi_cc.index,
+        };
+        if self.descriptor().on_midi2_learn(bus_index, channel, controller) {
+            kResultOk
+        } else {
+            kResultFalse
         }
-        kResultFalse
     }
 }
 
@@ -2804,13 +2781,11 @@ where
     Presets: FactoryPresets<Parameters = P::Parameters>,
 {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
-        {
-            let mut plugin = self.descriptor_mut();
-            if plugin.enable_mpe_input_processing(state != 0) {
-                return kResultOk;
-            }
+        if self.descriptor().enable_mpe_input_processing(state != 0) {
+            kResultOk
+        } else {
+            kResultFalse
         }
-        kResultFalse
     }
 
     unsafe fn setMPEInputDeviceSettings(
@@ -2819,18 +2794,16 @@ where
         member_begin_channel: i32,
         member_end_channel: i32,
     ) -> tresult {
-        {
-            let mut plugin = self.descriptor_mut();
-            let settings = beamer_core::MpeInputDeviceSettings {
-                master_channel,
-                member_begin_channel,
-                member_end_channel,
-            };
-            if plugin.set_mpe_input_device_settings(settings) {
-                return kResultOk;
-            }
+        let settings = beamer_core::MpeInputDeviceSettings {
+            master_channel,
+            member_begin_channel,
+            member_end_channel,
+        };
+        if self.descriptor().set_mpe_input_device_settings(settings) {
+            kResultOk
+        } else {
+            kResultFalse
         }
-        kResultFalse
     }
 }
 
@@ -3604,7 +3577,7 @@ mod tests {
     struct MidiPlugin {
         parameters: Arc<NoParameters>,
         /// The controller of the last MIDI learn call.
-        learned: Option<u8>,
+        learned: Mutex<Option<u8>>,
     }
 
     struct MidiProcessor;
@@ -3644,10 +3617,17 @@ mod tests {
             (cc == MAPPED_CC).then_some(MAPPED_PARAMETER)
         }
 
-        fn on_midi_learn(&mut self, _bus_index: i32, _channel: i16, cc: u8) -> bool {
+        fn on_midi_learn(&self, _bus_index: i32, _channel: i16, cc: u8) -> bool {
             assert_ne!(cc, PANICKING_CC, "a plugin that panics in a callback");
-            self.learned = Some(cc);
+            *self.learned.lock().expect("no test panics while holding it") = Some(cc);
             true
+        }
+    }
+
+    impl MidiPlugin {
+        /// The controller of the last MIDI learn call.
+        fn learned(&self) -> Option<u8> {
+            *self.learned.lock().expect("no test panics while holding it")
         }
     }
 
@@ -3907,8 +3887,9 @@ mod tests {
     fn test_descriptor_answers_after_a_panic_in_one_of_its_calls() {
         let wrapper = Vst3Processor::<MidiPlugin>::new(&MIDI_CONFIG);
 
-        // The plugin panics while the wrapper holds its descriptor for
-        // writing.
+        // Nothing of the wrapper stands between a host call and the
+        // descriptor, so a panic in one call leaves nothing behind for the
+        // next. The plugin panics in a call of the host.
         let learn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // SAFETY: The wrapper is alive for the call.
             unsafe { wrapper.onLiveMIDIControllerInput(0, 0, PANICKING_CC as i16) }
@@ -3919,7 +3900,7 @@ mod tests {
         assert_eq!(bus_counts(&wrapper), [2, 1, 1, 1]);
         // SAFETY: The wrapper is alive for the call.
         assert_eq!(unsafe { wrapper.onLiveMIDIControllerInput(0, 0, 1) }, kResultOk);
-        assert_eq!(wrapper.descriptor().learned, Some(1));
+        assert_eq!(wrapper.descriptor().learned(), Some(1));
     }
 
     #[test]
@@ -3936,7 +3917,7 @@ mod tests {
         let learn = |wrapper: &Vst3Processor<MidiPlugin>, cc: u8| {
             // SAFETY: The wrapper is alive for the call.
             let result = unsafe { wrapper.onLiveMIDIControllerInput(0, 0, cc as i16) };
-            (result, wrapper.descriptor().learned)
+            (result, wrapper.descriptor().learned())
         };
         assert_eq!(mapped(&wrapper), (kResultOk, MAPPED_PARAMETER));
         assert_eq!(learn(&wrapper, 1), (kResultOk, Some(1)));
@@ -4495,28 +4476,6 @@ mod tests {
         process_change(&wrapper, 0, GAIN_ID, 0.75);
         // SAFETY: The wrapper is alive.
         assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.75));
-    }
-
-    #[test]
-    fn test_process_does_not_wait_for_the_descriptor() {
-        let wrapper = prepared_state_wrapper();
-
-        // A host thread holds the descriptor for a call that changes it,
-        // while the audio thread processes.
-        let host_call = wrapper.descriptor_mut();
-        let (done, processed) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            let wrapper = &wrapper;
-            scope.spawn(move || {
-                process_block(wrapper);
-                done.send(()).expect("the test thread waits");
-            });
-            let in_time = processed.recv_timeout(std::time::Duration::from_secs(10));
-            // Release the descriptor first, so that a process call that did
-            // wait can end and the scope can close.
-            drop(host_call);
-            assert!(in_time.is_ok(), "process() waited for the descriptor");
-        });
     }
 
     #[test]

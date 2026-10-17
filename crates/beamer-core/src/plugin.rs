@@ -959,11 +959,12 @@ pub trait Processor: Send + 'static {
 ///
 /// A host asks the descriptor about buses and MIDI from its own threads,
 /// also while audio is processed and from more than one thread at the same
-/// time. A descriptor is therefore `Sync`: its `&self` methods must be
-/// callable from several threads at once. The methods that change it, such
-/// as [`on_midi_learn()`](Descriptor::on_midi_learn), take `&mut self` and
-/// have it to themselves. No method of the descriptor is called on the
-/// audio thread.
+/// time. A descriptor is therefore `Sync`, and every method takes `&self`
+/// and must be callable from several threads at once. A method that
+/// changes something, such as [`on_midi_learn()`](Descriptor::on_midi_learn),
+/// keeps what it changes in a value that is safe to share: a `State` field
+/// of the parameters (which is also saved with the project), an atomic or
+/// a `Mutex`. No method of the descriptor is called on the audio thread.
 ///
 /// # Note on HasParameters
 ///
@@ -1151,6 +1152,10 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// enables "MIDI Learn" mode and moves a MIDI CC knob, the DAW calls this
     /// method so the plugin can map that CC to a parameter.
     ///
+    /// Keep the learned mapping in a `State` field of the parameters, so
+    /// that it is saved with the project, or in another value that is safe
+    /// to share between threads.
+    ///
     /// # Arguments
     /// * `bus_index` - MIDI bus index (usually 0)
     /// * `channel` - MIDI channel (0-15)
@@ -1158,7 +1163,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     ///
     /// # Returns
     /// `true` if the input was handled (learned), `false` otherwise.
-    fn on_midi_learn(&mut self, bus_index: i32, channel: i16, cc: u8) -> bool {
+    fn on_midi_learn(&self, bus_index: i32, channel: i16, cc: u8) -> bool {
         let _ = (bus_index, channel, cc);
         false
     }
@@ -1196,7 +1201,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// for MIDI 1.0 and MIDI 2.0 controllers.
     ///
     /// Default returns `false` (not handled).
-    fn on_midi1_learn(&mut self, bus_index: i32, channel: u8, cc: u8) -> bool {
+    fn on_midi1_learn(&self, bus_index: i32, channel: u8, cc: u8) -> bool {
         let _ = (bus_index, channel, cc);
         false
     }
@@ -1206,7 +1211,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// Override to implement MIDI 2.0 controller learning.
     ///
     /// Default returns `false` (not handled).
-    fn on_midi2_learn(&mut self, bus_index: i32, channel: u8, controller: Midi2Controller) -> bool {
+    fn on_midi2_learn(&self, bus_index: i32, channel: u8, controller: Midi2Controller) -> bool {
         let _ = (bus_index, channel, controller);
         false
     }
@@ -1332,7 +1337,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// Override to handle MPE enable/disable notifications from wrappers.
     ///
     /// Default does nothing and returns true.
-    fn enable_mpe_input_processing(&mut self, enabled: bool) -> bool {
+    fn enable_mpe_input_processing(&self, enabled: bool) -> bool {
         let _ = enabled;
         true
     }
@@ -1342,7 +1347,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// Override to receive MPE zone configuration from wrappers.
     ///
     /// Default does nothing and returns true.
-    fn set_mpe_input_device_settings(&mut self, settings: MpeInputDeviceSettings) -> bool {
+    fn set_mpe_input_device_settings(&self, settings: MpeInputDeviceSettings) -> bool {
         let _ = settings;
         true
     }

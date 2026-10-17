@@ -32,6 +32,8 @@
 //!
 //! Standard Beamer setups (Nothing, SampleRate, BufferSetup, FullSetup) are provided.
 
+use std::sync::Arc;
+
 use beamer_core::{
     BusLayout, CachedBusConfig, ConversionBuffers, Descriptor, MidiCcConfig, Parameters,
     PluginSetup, ProcessMode, Processor,
@@ -43,8 +45,9 @@ use beamer_core::{
 /// `allocateRenderResources` / `deallocateRenderResources` lifecycle.
 pub(crate) struct AuState<P: Descriptor> {
     /// The plugin as the host sees it. It holds the parameters and lives as
-    /// long as the instance.
-    pub(crate) descriptor: P,
+    /// long as the instance. Every method of it takes `&self`, so it can be
+    /// shared in an `Arc`.
+    pub(crate) descriptor: Arc<P>,
     /// What exists while render resources are allocated.
     pub(crate) prepared: Option<Prepared<P>>,
 }
@@ -68,7 +71,7 @@ impl<P: Descriptor> AuState<P> {
     /// Create an unprepared state around a descriptor.
     pub fn with_descriptor(descriptor: P) -> Self {
         Self {
-            descriptor,
+            descriptor: Arc::new(descriptor),
             prepared: None,
         }
     }
