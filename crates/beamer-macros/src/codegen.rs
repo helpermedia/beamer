@@ -7,11 +7,11 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::ir::{
-    FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ParametersIR, SmoothingStyle,
+    FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ModelIR, SmoothingStyle,
 };
 
 /// Generate all code for the derive macro.
-pub fn generate(ir: &ParametersIR) -> TokenStream {
+pub fn generate(ir: &ModelIR) -> TokenStream {
     let unit_consts = generate_group_consts(ir);
     let units_impl = generate_groups_impl(ir);
     let vst3_parameters_impl = generate_parameter_store_impl(ir);
@@ -32,7 +32,7 @@ pub fn generate(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate group ID constants for each nested field and flat group.
-fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
+fn generate_group_consts(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -92,7 +92,7 @@ fn generate_group_consts(ir: &ParametersIR) -> TokenStream {
 ///
 /// For structs with nested groups or flat groups, this generates unit discovery
 /// that includes both flat groups and deeply nested ones.
-fn generate_groups_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_groups_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -189,7 +189,7 @@ fn generate_groups_impl(ir: &ParametersIR) -> TokenStream {
 /// This handles both flat groups (group="...") and nested groups (#[nested(...)]).
 /// For flat groups, it sets group_id directly on the parameters based on their group.
 /// For nested groups, it uses the recursive `assign_group_ids` method.
-fn generate_set_group_ids(ir: &ParametersIR) -> TokenStream {
+fn generate_set_group_ids(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -268,7 +268,7 @@ fn generate_set_group_ids(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the `Parameters` trait implementation.
-fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_parameters_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -309,7 +309,7 @@ fn generate_parameters_impl(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the `set_all_group_ids()` method for the Parameters trait.
-fn generate_set_all_group_ids(ir: &ParametersIR) -> TokenStream {
+fn generate_set_all_group_ids(ir: &ModelIR) -> TokenStream {
     if ir.parameter_count() == 0 {
         // No direct parameters = use default no-op
         return quote! {};
@@ -334,7 +334,7 @@ fn generate_set_all_group_ids(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the nested group discovery methods for the Parameters trait.
-fn generate_nested_discovery(ir: &ParametersIR) -> TokenStream {
+fn generate_nested_discovery(ir: &ModelIR) -> TokenStream {
     if !ir.has_nested() {
         // No nested fields = use default implementations (return 0/None)
         return quote! {};
@@ -390,7 +390,7 @@ fn generate_nested_discovery(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the count() method body.
-fn generate_count(ir: &ParametersIR) -> TokenStream {
+fn generate_count(ir: &ModelIR) -> TokenStream {
     let parameter_count = ir.parameter_count();
 
     if ir.has_nested() {
@@ -412,7 +412,7 @@ fn generate_count(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the iter() method body.
-fn generate_iter(ir: &ParametersIR) -> TokenStream {
+fn generate_iter(ir: &ModelIR) -> TokenStream {
     let parameter_iters: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
@@ -459,7 +459,7 @@ fn generate_iter(ir: &ParametersIR) -> TokenStream {
 ///
 /// The ids are compared at run time: a parameter of a nested struct has an
 /// id that depends on where the struct sits.
-fn generate_by_id(ir: &ParametersIR) -> TokenStream {
+fn generate_by_id(ir: &ModelIR) -> TokenStream {
     let parameter_lookups: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
@@ -498,7 +498,7 @@ fn generate_by_id(ir: &ParametersIR) -> TokenStream {
 ///
 /// The path segments are the same as in `save_entries()`: the `id` of a
 /// parameter and the field name of a nested struct.
-fn generate_assign_ids(ir: &ParametersIR) -> TokenStream {
+fn generate_assign_ids(ir: &ModelIR) -> TokenStream {
     let parameter_assignments: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
@@ -544,7 +544,7 @@ fn generate_assign_ids(ir: &ParametersIR) -> TokenStream {
 /// Parameters come first, in declaration order, then the `State` fields,
 /// then the nested structs. The bytes are laid out by
 /// `beamer_core::state_format`.
-fn generate_save_state(ir: &ParametersIR) -> TokenStream {
+fn generate_save_state(ir: &ModelIR) -> TokenStream {
     let parameter_saves: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
@@ -604,7 +604,7 @@ fn generate_save_state(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate `load_entries()`: every field takes its value from its entry.
-fn generate_load_state(ir: &ParametersIR) -> TokenStream {
+fn generate_load_state(ir: &ModelIR) -> TokenStream {
     let parameter_loads: Vec<TokenStream> = ir
         .parameter_fields()
         .map(|parameter| {
@@ -662,7 +662,7 @@ fn generate_load_state(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the `ParameterStore` trait implementation.
-fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_parameter_store_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -721,7 +721,7 @@ fn generate_parameter_store_impl(ir: &ParametersIR) -> TokenStream {
 
 /// Generate the `ModelFields` trait implementation: what the struct holds
 /// beyond its parameters, and saving and loading all of it.
-fn generate_model_fields_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_model_fields_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
@@ -748,7 +748,7 @@ fn generate_model_fields_impl(ir: &ParametersIR) -> TokenStream {
 
 /// Generate `state_generation()`: the sum of the generations of the `State`
 /// fields of this struct and of its nested structs.
-fn generate_state_generation(ir: &ParametersIR) -> TokenStream {
+fn generate_state_generation(ir: &ModelIR) -> TokenStream {
     let state_generations = ir.state_fields().map(|state| {
         let field = &state.field_name;
         quote! {
@@ -771,7 +771,7 @@ fn generate_state_generation(ir: &ParametersIR) -> TokenStream {
 
 /// Generate `webview_events()`: the queue of this struct, or else the first
 /// one a nested struct has.
-fn generate_webview_events(ir: &ParametersIR) -> TokenStream {
+fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     if let Some(field) = ir.events_fields().next() {
         return quote! {
             fn webview_events(&self) -> Option<&::beamer::core::WebViewEvents> {
@@ -808,7 +808,7 @@ fn generate_webview_events(ir: &ParametersIR) -> TokenStream {
 /// Generate `for_each_state()`: the `State` fields of this struct with
 /// their ids, then those of the nested structs under the names of their
 /// fields, the same paths as in a saved state.
-fn generate_for_each_state(ir: &ParametersIR) -> TokenStream {
+fn generate_for_each_state(ir: &ModelIR) -> TokenStream {
     let states: Vec<TokenStream> = ir
         .state_fields()
         .map(|state| {
@@ -852,7 +852,7 @@ fn generate_for_each_state(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the info() method for the Parameters trait.
-fn generate_info(ir: &ParametersIR) -> TokenStream {
+fn generate_info(ir: &ModelIR) -> TokenStream {
     // Generate match arms for direct parameters
     let parameter_match_arms: Vec<TokenStream> = ir
         .parameter_fields()
@@ -911,7 +911,7 @@ fn generate_info(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the `set_sample_rate()` method for the Parameters trait.
-fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
+fn generate_set_sample_rate(ir: &ModelIR) -> TokenStream {
     // Generate calls for the float parameter fields. Only they can have a
     // smoother.
     let parameter_calls: Vec<TokenStream> = ir
@@ -946,7 +946,7 @@ fn generate_set_sample_rate(ir: &ParametersIR) -> TokenStream {
 }
 
 /// Generate the `reset_smoothing()` method for the Parameters trait.
-fn generate_reset_smoothing(ir: &ParametersIR) -> TokenStream {
+fn generate_reset_smoothing(ir: &ModelIR) -> TokenStream {
     // Generate calls for the float parameter fields. Only they can have a
     // smoother.
     let parameter_calls: Vec<TokenStream> = ir
@@ -989,7 +989,7 @@ fn generate_reset_smoothing(ir: &ParametersIR) -> TokenStream {
 /// This is the core of the declarative parameter system. When all parameters
 /// have the required attributes (name, default, range, etc.), the macro
 /// generates a complete `Default` implementation.
-fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
+fn generate_default_impl(ir: &ModelIR) -> TokenStream {
     // Only generate if all parameters have declarative attributes
     if !ir.can_generate_default() {
         return quote! {};
@@ -1020,7 +1020,7 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
     // Add set_group_ids() call if there are groups (flat or nested)
     let group_id_init = if ir.has_nested() || ir.has_flat_groups() {
         quote! {
-            parameters.set_group_ids();
+            this.set_group_ids();
         }
     } else {
         quote! {}
@@ -1029,12 +1029,12 @@ fn generate_default_impl(ir: &ParametersIR) -> TokenStream {
     quote! {
         impl #impl_generics Default for #struct_name #ty_generics #where_clause {
             fn default() -> Self {
-                let mut parameters = Self {
+                let mut this = Self {
                     #(#field_inits),*
                 };
-                ::beamer::core::parameter_types::Parameters::assign_ids(&mut parameters, "");
+                ::beamer::core::parameter_types::Parameters::assign_ids(&mut this, "");
                 #group_id_init
-                parameters
+                this
             }
         }
     }

@@ -8,7 +8,7 @@
 //!
 //! ## Main Traits
 //!
-//! - [`Descriptor`] - The plugin as the host sees it (holds the parameters, lives as long as the instance)
+//! - [`Descriptor`] - The plugin as the host sees it (holds the model, lives as long as the instance)
 //! - [`Processor`] - Core DSP processing trait (created for an audio configuration)
 //! - [`Parameters`] - Parameter collection trait
 //! - [`GuiDelegate`] - GUI configuration and callbacks

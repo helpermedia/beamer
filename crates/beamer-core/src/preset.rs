@@ -68,10 +68,10 @@ pub struct PresetValue {
 ///
 /// # Type Parameter
 ///
-/// The `Parameters` associated type must match the plugin's parameter struct.
-/// This ensures type safety when applying presets.
+/// The `Parameters` associated type is the type whose parameters the presets
+/// set: the plugin's model. This ensures type safety when applying presets.
 pub trait FactoryPresets: Send + Sync + 'static {
-    /// The parameter struct type this preset collection applies to.
+    /// The type whose parameters this preset collection sets.
     type Parameters: Parameters;
 
     /// Returns the total number of factory presets.

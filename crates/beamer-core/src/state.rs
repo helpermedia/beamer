@@ -2,7 +2,7 @@
 //!
 //! A [`State`] holds a value that is saved and restored with the plugin
 //! state, next to the parameters: the path of a loaded sample, the layout of
-//! an editor, a table the user edited. It lives in the parameter struct,
+//! an editor, a table the user edited. It lives in the model,
 //! which every thread of a plugin instance shares.
 //!
 //! A `State` is a [`Handover`] that is also saved: host and UI threads set

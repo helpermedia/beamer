@@ -16,7 +16,7 @@
 //!
 //! The processor keeps the plugin's `Descriptor` for the whole life of the
 //! instance and manages two lifecycle states via `AuState<P>`:
-//! - **Unprepared**: Parameters available, no audio resources
+//! - **Unprepared**: The model is available, no audio resources
 //! - **Prepared**: A `Processor` and its resources exist, ready for `process()` calls
 //!
 //! Transitions are triggered by `allocate_render_resources()` and
@@ -56,7 +56,7 @@ where
     Presets: FactoryPresets<Parameters = <P as HasParameters>::Parameters>,
 {
     state: AuState<P>,
-    /// The Descriptor's queue of events for the web UI, if it has one.
+    /// The plugin's queue of events for the web UI, if its model has one.
     webview_events: Option<WebViewEvents>,
     _presets: PhantomData<Presets>,
 }
@@ -352,7 +352,7 @@ where
         // its end value: the parameter's own smoother interpolates, with the time
         // constant configured at parameter construction, which is also what the
         // other format wrappers do.
-        let parameters: &P::Parameters = self.state.descriptor.parameters();
+        let model: &P::Parameters = self.state.descriptor.parameters();
 
         // The values are in AU format (plain value, or index for an indexed
         // parameter), like the ones the host sets on the parameter directly.
@@ -362,9 +362,9 @@ where
         for (address, value) in immediate.chain(ramps) {
             // AU parameter addresses map directly to beamer parameter IDs.
             let param_id = address as u32;
-            let normalized = crate::bridge::au_value_to_normalized(parameters, param_id, value);
+            let normalized = crate::bridge::au_value_to_normalized(model, param_id, value);
 
-            if let Some(param) = Parameters::by_id(parameters, param_id) {
+            if let Some(param) = Parameters::by_id(model, param_id) {
                 param.set_normalized(normalized);
             }
         }
@@ -399,7 +399,7 @@ where
             return;
         };
         let core_output = midi_output_buffer.as_mut();
-        let parameters: &P::Parameters = self.state.descriptor.parameters();
+        let model: &P::Parameters = self.state.descriptor.parameters();
 
         // Clear for reuse.
         core_output.clear();
@@ -432,7 +432,7 @@ where
                 for index in 0..input.len() {
                     if let MidiEventKind::ProgramChange(pc) = &input[index].event {
                         if (pc.program as usize) < preset_count {
-                            Presets::apply(pc.program as usize, parameters);
+                            Presets::apply(pc.program as usize, model);
                             continue;
                         }
                     }
@@ -483,7 +483,7 @@ where
 /// same preset again and expect its values back.
 fn apply_preset<Presets: FactoryPresets>(model: &dyn SharedModel, index: usize) -> bool {
     match model.as_any().downcast_ref::<Presets::Parameters>() {
-        Some(parameters) => Presets::apply(index, parameters),
+        Some(model) => Presets::apply(index, model),
         None => false,
     }
 }

@@ -259,7 +259,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// Set group ID for all direct parameters in this collection.
     ///
     /// Called by parent structs when initializing nested parameter groups.
-    /// The default implementation does nothing (for flat parameter structs).
+    /// The default implementation does nothing (for structs without nested groups).
     fn set_all_group_ids(&mut self, _group_id: GroupId) {
         // Default: no-op (macro generates override for parameter-containing structs)
     }
@@ -814,7 +814,7 @@ impl FloatParameter {
         self
     }
 
-    /// Set both ids from the path of the parameter in its parameter struct.
+    /// Set both ids from the path of the parameter in its model.
     ///
     /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
@@ -1389,7 +1389,7 @@ impl IntParameter {
         self
     }
 
-    /// Set both ids from the path of the parameter in its parameter struct.
+    /// Set both ids from the path of the parameter in its model.
     ///
     /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
@@ -1697,7 +1697,7 @@ impl BoolParameter {
         self
     }
 
-    /// Set both ids from the path of the parameter in its parameter struct.
+    /// Set both ids from the path of the parameter in its model.
     ///
     /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
@@ -2020,7 +2020,7 @@ impl<E: EnumParameterValue> EnumParameter<E> {
         self
     }
 
-    /// Set both ids from the path of the parameter in its parameter struct.
+    /// Set both ids from the path of the parameter in its model.
     ///
     /// See [`ParameterInfo::set_path`]. Called by `#[derive(Parameters)]`.
     pub fn set_path(&mut self, path: Cow<'static, str>) {

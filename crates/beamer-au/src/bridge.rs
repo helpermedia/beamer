@@ -425,7 +425,7 @@ impl DeclaredBuses {
 ///
 /// The render call only tries to take the plugin mutex and fails when it is
 /// held. Nothing a host calls while audio runs may therefore take it: those
-/// functions use the shared parameters, the values captured at creation and
+/// functions use the shared model, the values captured at creation and
 /// `shared`. The mutex is for preparing and unpreparing.
 ///
 /// Every field can be used through a shared reference, because the host
@@ -2772,7 +2772,7 @@ pub unsafe extern "C" fn beamer_au_on_event(
 /// What one open editor uses to keep its web UI in step with the plugin.
 ///
 /// An editor holds this from the moment it opens until it closes. It holds
-/// the parameters and the event queue itself and does not point into the
+/// the model and the event queue itself and does not point into the
 /// instance, so it stays valid when a host destroys the instance before the
 /// editor.
 pub struct BeamerAuEditorSync(EditorSync);
@@ -2807,8 +2807,8 @@ pub extern "C" fn beamer_au_editor_sync_open(
     result.unwrap_or(ptr::null_mut())
 }
 
-/// The script that hands a freshly loaded page its parameters and the
-/// plugin format (`"auv2"`, `"auv3"`).
+/// The script that hands a freshly loaded page its parameters, the values
+/// of its `State` fields and the plugin format (`"auv2"`, `"auv3"`).
 ///
 /// Returns a heap-allocated null-terminated C string that the caller must
 /// free with `beamer_au_free_string`, or null on failure.

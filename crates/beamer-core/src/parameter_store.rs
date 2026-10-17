@@ -5,7 +5,7 @@
 //!
 //! # How the Traits Work Together
 //!
-//! A parameter struct implements three traits:
+//! A model and each nested group in it implement three traits:
 //!
 //! - **[`Parameters`](crate::parameter_types::Parameters)**: the parameters themselves,
 //!   with type-erased iteration, ids, groups and smoothing, for parameter types like

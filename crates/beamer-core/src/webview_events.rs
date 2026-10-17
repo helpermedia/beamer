@@ -4,7 +4,7 @@
 //! Rust code puts events in with [`emit()`](WebViewEvents::emit), and
 //! JavaScript receives them with `__BEAMER__.on("name", callback)`.
 //!
-//! The queue lives in the parameter struct, which every thread of a plugin
+//! The queue lives in the model, which every thread of a plugin
 //! instance shares, as a field without an attribute. `#[derive(Parameters)]`
 //! finds it by its type, also in a nested struct, and the format wrappers
 //! take it from there:
@@ -31,8 +31,8 @@
 //! An event is a notification for an editor that is open. It is delivered
 //! on the editor's next sync tick, about 16 ms later. While no editor is
 //! open, events are dropped: an editor that opens asks for what it shows,
-//! with `invoke()` or through the parameters. Events are therefore not the
-//! place for anything that has to arrive.
+//! with `invoke()` or through the parameters and `State` fields. Events are
+//! therefore not the place for anything that has to arrive.
 //!
 //! # Threads
 //!
@@ -196,7 +196,7 @@ impl WebViewEvents {
 
         let message = format!(
             "WebView event {name:?} was dropped: no plugin instance delivers this queue. \
-             Is it the only `WebViewEvents` field of the parameter struct and its nested structs?"
+             Is it the only `WebViewEvents` field of the model and its nested groups?"
         );
         // A plugin has no logger unless it sets `log_level` in its
         // Config.toml, so the message also goes to standard error.

@@ -1,7 +1,7 @@
 //! The model of a plugin: everything it knows, shared by every thread.
 //!
-//! The model is the parameter struct of a plugin with all its fields: the
-//! parameters, the `State` fields that are saved with them, the
+//! The model is the struct of a plugin that holds what every thread
+//! shares: the parameters, the `State` fields that are saved with them, the
 //! `WebViewEvents` queue of the web UI and plain values such as a
 //! `Handover`. It lives in one `Arc` for the life of the instance.
 //!

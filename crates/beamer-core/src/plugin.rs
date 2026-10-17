@@ -2,12 +2,13 @@
 //!
 //! A plugin consists of three parts:
 //!
-//! - **[`Descriptor`]**: The plugin as the host sees it. It holds the parameters
+//! - **[`Descriptor`]**: The plugin as the host sees it. It holds the model
 //!   and describes buses and MIDI behavior. It is created with the plugin
 //!   instance and lives as long as the instance does.
 //!
-//! - **The parameters**: One struct in an [`Arc`], shared by the host, the UI
-//!   and the audio thread for the life of the instance.
+//! - **The model**: One struct in an [`Arc`], shared by the host, the UI and
+//!   the audio thread for the life of the instance. It holds the parameters,
+//!   the `State` fields and everything else the threads share.
 //!
 //! - **[`Processor`]**: What the audio thread owns. It is created by
 //!   [`Descriptor::prepare()`] with the real sample rate and buffer
@@ -525,8 +526,8 @@ impl BusInfo {
 /// A `Processor` is created by calling [`Descriptor::prepare()`] with the
 /// audio configuration, so it holds valid configuration from the start - no
 /// placeholder values. It belongs to the audio thread. Everything that other
-/// threads need to see or change lives in the shared parameters, of which
-/// the processor keeps its own `Arc`.
+/// threads need to see or change lives in the shared model, of which the
+/// processor keeps its own `Arc`.
 ///
 /// # Lifecycle
 ///
@@ -545,7 +546,7 @@ impl BusInfo {
 /// ```
 ///
 /// A processor is dropped on a host thread, never on the audio thread. What
-/// has to outlive a processor belongs in the parameters.
+/// has to outlive a processor belongs in the model.
 ///
 /// # Thread Safety
 ///
@@ -872,11 +873,11 @@ pub trait Processor: Send + 'static {
 // Descriptor Trait
 // =============================================================================
 
-/// The plugin as the host sees it: parameters, buses and MIDI behavior.
+/// The plugin as the host sees it: its model, buses and MIDI behavior.
 ///
 /// This is the primary trait that plugin authors implement to create a complete
 /// audio plugin. A `Descriptor` is created with the plugin instance and lives
-/// as long as the instance does. It holds the parameters and everything else
+/// as long as the instance does. It holds the model and everything else
 /// that does not depend on the audio configuration, and it creates a
 /// [`Processor`] via [`Descriptor::prepare()`] when the configuration is
 /// known.
@@ -963,8 +964,8 @@ pub trait Processor: Send + 'static {
 /// and must be callable from several threads at once. A method that
 /// changes something, such as [`on_midi_learn()`](Descriptor::on_midi_learn),
 /// keeps what it changes in a value that is safe to share: a `State` field
-/// of the parameters (which is also saved with the project), an atomic or
-/// a `Mutex`. No method of the descriptor is called on the audio thread.
+/// of the model (which is also saved with the project), an atomic or a
+/// `Mutex`. No method of the descriptor is called on the audio thread.
 ///
 /// # Note on HasParameters
 ///
@@ -992,7 +993,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// during `setupProcessing()`), and again when it changes: the previous
     /// processor is dropped and a new one is created with the new setup.
     ///
-    /// Give the processor its own handle to the parameters with
+    /// Give the processor its own handle to the model with
     /// `Arc::clone(&self.parameters)`. The framework has set the host's
     /// sample rate on the parameter smoothers before this call.
     ///
@@ -1152,7 +1153,7 @@ pub trait Descriptor: HasParameters + Sync + Default {
     /// enables "MIDI Learn" mode and moves a MIDI CC knob, the DAW calls this
     /// method so the plugin can map that CC to a parameter.
     ///
-    /// Keep the learned mapping in a `State` field of the parameters, so
+    /// Keep the learned mapping in a `State` field of the model, so
     /// that it is saved with the project, or in another value that is safe
     /// to share between threads.
     ///

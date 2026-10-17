@@ -182,7 +182,7 @@ impl ParameterInfo {
         self
     }
 
-    /// Set both ids from the path of the parameter in its parameter struct.
+    /// Set both ids from the path of the parameter in its model.
     ///
     /// The path becomes the string id, and its FNV-1a hash the id that
     /// hosts see. `#[derive(Parameters)]` calls this for every parameter.

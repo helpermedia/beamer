@@ -195,7 +195,7 @@ macro_rules! export_plugin {
 /// ```
 pub mod prelude {
     // Core traits and types
-    // The parameters of a plugin live in an `Arc`.
+    // The model of a plugin lives in an `Arc`.
     pub use std::sync::Arc;
 
     pub use beamer_core::{

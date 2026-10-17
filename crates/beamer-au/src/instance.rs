@@ -80,7 +80,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Deallocate render resources (return to unprepared state).
     ///
     /// Called when AU host calls `deallocateRenderResources`.
-    /// This drops the Processor. The Descriptor and the parameters stay.
+    /// This drops the Processor. The Descriptor and the model stay.
     ///
     /// This method must be idempotent: calling it when already unprepared
     /// is a safe no-op. The destroy path relies on this to ensure cleanup

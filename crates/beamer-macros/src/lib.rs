@@ -92,7 +92,7 @@ mod validate;
 /// - `group = "..."` - Visual grouping in DAW without nested struct
 ///
 /// ## Nested Groups
-/// - `#[nested(group = "...")]` - For fields containing nested parameter structs
+/// - `#[nested(group = "...")]` - For fields containing nested groups
 ///
 /// ## State Beyond Parameters
 /// - `#[state(id = "...")]` - For `State<T>` fields: values that are saved
@@ -137,7 +137,7 @@ fn derive_parameters_impl(input: syn::DeriveInput) -> syn::Result<proc_macro2::T
 /// Derive macro for implementing `EnumParameterValue` trait on enums.
 ///
 /// This macro generates the `EnumParameterValue` implementation that allows
-/// an enum to be used with `EnumParameter<E>` in parameter structs.
+/// an enum to be used with `EnumParameter<E>` in models and their nested groups.
 ///
 /// # Requirements
 ///

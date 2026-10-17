@@ -2,7 +2,7 @@
 //!
 //! This module implements the `#[derive(EnumParameter)]` macro that generates
 //! the `EnumParameterValue` trait implementation for enums, enabling them to
-//! be used with `EnumParameter<E>` in parameter structs.
+//! be used with `EnumParameter<E>` in models and their nested groups.
 //!
 //! # Example
 //!

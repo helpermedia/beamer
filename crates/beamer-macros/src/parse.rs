@@ -9,12 +9,12 @@ use syn::{Data, DeriveInput, Field, Fields, LitStr};
 use beamer_utils::fnv1a_32;
 use crate::ir::{
     FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType,
-    ParametersIR, RangeSpec, SmoothingSpec, SmoothingStyle, StateFieldIR,
+    ModelIR, RangeSpec, SmoothingSpec, SmoothingStyle, StateFieldIR,
 };
 use crate::range_eval;
 
 /// Parse a `DeriveInput` into our intermediate representation.
-pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
+pub fn parse(input: DeriveInput) -> syn::Result<ModelIR> {
     // Ensure it's a struct with named fields
     let data_struct = match &input.data {
         Data::Struct(s) => s,
@@ -54,7 +54,7 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
         parsed_fields.push(parse_field(field)?);
     }
 
-    // Fields without an attribute do not make a parameter struct.
+    // Fields without an attribute do not make a model or a group.
     if parsed_fields
         .iter()
         .all(|field| matches!(field, FieldIR::Other(_) | FieldIR::Events(_)))
@@ -68,7 +68,7 @@ pub fn parse(input: DeriveInput) -> syn::Result<ParametersIR> {
     // Assign sequential group IDs to nested fields
     assign_group_ids(&mut parsed_fields);
 
-    Ok(ParametersIR {
+    Ok(ModelIR {
         struct_name: input.ident.clone(),
         generics: input.generics.clone(),
         fields: parsed_fields,

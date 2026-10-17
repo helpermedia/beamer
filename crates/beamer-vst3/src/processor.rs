@@ -262,8 +262,8 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 ///
 /// # Lifecycle
 ///
-/// The wrapper keeps the plugin's descriptor and its parameters for its
-/// whole life, and a processor while the plugin is prepared:
+/// The wrapper keeps the plugin's descriptor and its model for its whole
+/// life, and a processor while the plugin is prepared:
 ///
 /// ```text
 /// Vst3Processor::new()
@@ -300,9 +300,9 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 ///
 /// A host calls the other interfaces from its own threads while `process()`
 /// runs. What those calls use is kept apart from what `process()` uses.
-/// Only host threads use the descriptor. The parameters are shared in an
-/// `Arc` and work through a shared reference. Latency, tail and the
-/// smoother reset are exchanged through atomics.
+/// Only host threads use the descriptor. The model is shared in an `Arc`
+/// and works through a shared reference. Latency, tail and the smoother
+/// reset are exchanged through atomics.
 pub struct Vst3Processor<P, Presets = NoPresets<<P as HasParameters>::Parameters>>
 where
     P: Descriptor,
@@ -313,10 +313,10 @@ where
     /// it takes `&self`, so host threads use it at the same time, also
     /// while `setupProcessing()` lets it create a processor.
     descriptor: Arc<P>,
-    /// The parameters of the plugin, shared with the descriptor and with
-    /// every processor it creates. `process()` and the host threads use
-    /// them through this handle at the same time.
-    parameters: Arc<P::Parameters>,
+    /// The model of the plugin, shared with the descriptor and with every
+    /// processor it creates. `process()` and the host threads use it
+    /// through this handle at the same time.
+    model: Arc<P::Parameters>,
     /// The processor, once `setupProcessing()` has created one. It belongs
     /// to `process()`. Host calls only touch it when the host guarantees
     /// that `process()` does not run (`setupProcessing()`, `setActive()`).
@@ -383,7 +383,7 @@ where
 // Safety: Vst3Processor is Send because:
 // - Descriptor: Send is required by the Descriptor trait
 // - Processor: Send is required by the Processor trait
-// - The parameters are Send + Sync
+// - The model is Send + Sync
 unsafe impl<P: Descriptor, Presets> Send for Vst3Processor<P, Presets>
 where
     Presets: FactoryPresets<Parameters = P::Parameters>,
@@ -392,8 +392,8 @@ where
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
-// - The parameters are Sync, and process() reaches them through its own
-//   `Arc`, not through the descriptor
+// - The model is Sync, and process() reaches it through its own `Arc`,
+//   not through the descriptor
 // - The descriptor is Sync and only host threads use it
 // - component_handler is used by controller calls, which the host never
 //   makes concurrently
@@ -430,14 +430,14 @@ where
         #[cfg(feature = "webview")]
         let webview_events = events.cloned();
 
-        let parameters = Arc::clone(plugin.parameters());
+        let model = Arc::clone(plugin.parameters());
         #[cfg(feature = "webview")]
         let known_state_generation =
-            Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*parameters)));
+            Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*model)));
 
         Self {
             descriptor: Arc::new(plugin),
-            parameters,
+            model,
             processor: UnsafeCell::new(None),
             config,
             sample_rate: UnsafeCell::new(44100.0),
@@ -491,7 +491,7 @@ where
     /// `output`, so that the host and the edit controller learn them. Each
     /// parameter takes the last value of its queue.
     fn apply_parameter_changes(&self, input: ComRef<'_, IParameterChanges>, output: *mut IParameterChanges) {
-        let parameters = self.parameters();
+        let model = self.model();
         // SAFETY: input is a valid ComRef.
         let parameter_count = unsafe { input.getParameterCount() };
         let queues = || {
@@ -508,7 +508,7 @@ where
                 continue;
             }
             if let Some(index) = last_value(queue).and_then(Self::preset_index_for) {
-                Presets::apply(index, parameters);
+                Presets::apply(index, model);
                 self.current_preset_index.store(index as i32, Ordering::Relaxed);
                 preset_index = Some(index);
             }
@@ -521,7 +521,7 @@ where
                 continue;
             }
             if let Some(value) = last_value(queue) {
-                parameters.set_normalized(parameter_id, value);
+                model.set_normalized(parameter_id, value);
             }
         }
 
@@ -531,7 +531,7 @@ where
         };
         for value in Presets::values(index) {
             // A preset value whose id names no parameter was not applied.
-            if beamer_core::parameter_types::Parameters::by_id(parameters, value.id).is_none() {
+            if beamer_core::parameter_types::Parameters::by_id(model, value.id).is_none() {
                 continue;
             }
             let mut queue_index = 0;
@@ -540,7 +540,7 @@ where
             if let Some(queue) = queue {
                 let mut point_index = 0;
                 // SAFETY: queue is a valid ComRef, the pointer is valid for the call.
-                unsafe { queue.addPoint(0, parameters.get_normalized(value.id), &mut point_index) };
+                unsafe { queue.addPoint(0, model.get_normalized(value.id), &mut point_index) };
             }
         }
     }
@@ -623,20 +623,20 @@ where
     }
 
     // =========================================================================
-    // Parameter Access (works in both states)
+    // Model Access (works in both states)
     // =========================================================================
 
-    /// Get the parameters (works in both states, from every thread).
+    /// Get the model (works in both states, from every thread).
     #[inline]
-    fn parameters(&self) -> &P::Parameters {
-        &self.parameters
+    fn model(&self) -> &P::Parameters {
+        &self.model
     }
 
     /// Get a handle to the model for an editor view. The view may live
     /// longer than a processor and uses the model from its own thread.
     #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     fn shared_model(&self) -> Arc<dyn SharedModel> {
-        let model: Arc<P::Parameters> = Arc::clone(&self.parameters);
+        let model: Arc<P::Parameters> = Arc::clone(&self.model);
         model
     }
 
@@ -1100,7 +1100,7 @@ where
         // and so would a parameter with an id of the wrapper's own. The
         // reason also goes to standard error: a plugin has no logger unless
         // it sets `log_level` in its Config.toml.
-        let parameters: &dyn beamer_core::parameter_types::Parameters = &*processor.parameters;
+        let parameters: &dyn beamer_core::parameter_types::Parameters = &*processor.model;
         let checked = beamer_core::parameter_types::check_unique_ids(parameters)
             .and_then(|()| check_reserved_ids(parameters));
         if let Err(error) = checked {
@@ -1329,10 +1329,11 @@ where
             return kResultOk;
         }
 
-        // The state is the parameters. Their values are atomic, so they are
-        // loaded through a shared reference: in both states, and also while
-        // process() runs, which is when a host loads a preset during playback.
-        match beamer_core::ModelFields::load_state(self.parameters(), &buffer) {
+        // The state is the model: its parameters and `State` fields. Their
+        // values are atomic or shared, so they are loaded through a shared
+        // reference: in both states, and also while process() runs, which is
+        // when a host loads a preset during playback.
+        match beamer_core::ModelFields::load_state(self.model(), &buffer) {
             Ok(()) => {
                 // The smoothers belong to the audio thread: the next process()
                 // call makes them jump to the loaded values, so that those do
@@ -1341,7 +1342,7 @@ where
                 // A loaded state is one the host knows.
                 #[cfg(feature = "webview")]
                 self.known_state_generation
-                    .store(beamer_core::ModelFields::state_generation(self.parameters()), Ordering::Relaxed);
+                    .store(beamer_core::ModelFields::state_generation(self.model()), Ordering::Relaxed);
                 kResultOk
             }
             Err(_) => kResultFalse,
@@ -1353,10 +1354,11 @@ where
             return kInvalidArgument;
         }
 
-        // The state is the parameters. Their values are atomic, so they are
-        // saved through a shared reference: in both states, and also while
-        // process() runs, which is when a host saves during playback.
-        let data: Vec<u8> = beamer_core::ModelFields::save_state(self.parameters());
+        // The state is the model: its parameters and `State` fields. Their
+        // values are atomic or shared, so they are saved through a shared
+        // reference: in both states, and also while process() runs, which is
+        // when a host saves during playback.
+        let data: Vec<u8> = beamer_core::ModelFields::save_state(self.model());
 
         if data.is_empty() {
             return kResultOk;
@@ -1562,10 +1564,10 @@ where
 
             // The smoothers ramp at the host's rate unless the plugin
             // sets another one in prepare.
-            beamer_core::Parameters::set_sample_rate(self.parameters(), setup.sampleRate);
+            beamer_core::Parameters::set_sample_rate(self.model(), setup.sampleRate);
 
             // Create the processor. A state that was loaded before is in
-            // the parameters it shares with the descriptor.
+            // the model it shares with the descriptor.
             let processor = plugin.prepare(plugin_setup);
 
             // Pre-allocate buffer storage based on bus config
@@ -1624,7 +1626,7 @@ where
         // belong to this thread.
         if self.smoothing_reset_requested.swap(false, Ordering::AcqRel) {
             use beamer_core::Parameters;
-            self.parameters().reset_smoothing();
+            self.model().reset_smoothing();
         }
 
         // 1. Handle incoming parameter changes from host. This needs the
@@ -1891,7 +1893,7 @@ where
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        let user_parameters = self.parameters().count();
+        let user_parameters = self.model().count();
         // MIDI CC state is framework-owned, always available
         let cc_parameters = self
             .midi_cc_state
@@ -1908,12 +1910,12 @@ where
             return kInvalidArgument;
         }
 
-        let parameters = self.parameters();
-        let user_parameter_count = parameters.count();
+        let model = self.model();
+        let user_parameter_count = model.count();
 
         // User-defined parameters first
         if (parameter_index as usize) < user_parameter_count {
-            if let Some(parameter_info) = parameters.info(parameter_index as usize) {
+            if let Some(parameter_info) = model.info(parameter_index as usize) {
                 // SAFETY: info is non-null (checked above) and host guarantees validity.
                 let info = unsafe { &mut *info };
                 info.id = parameter_info.id;
@@ -2028,8 +2030,8 @@ where
             return kResultOk;
         }
 
-        let parameters = self.parameters();
-        let display = parameters.normalized_to_string(id, value_normalized);
+        let model = self.model();
+        let display = model.normalized_to_string(id, value_normalized);
         // SAFETY: string is non-null (checked above) and host guarantees validity.
         copy_wstring(&display, unsafe { &mut *string });
         kResultOk
@@ -2066,8 +2068,8 @@ where
                 return kInvalidArgument;
             }
 
-            let parameters = self.parameters();
-            if let Some(value) = parameters.string_to_normalized(id, &s) {
+            let model = self.model();
+            if let Some(value) = model.string_to_normalized(id, &s) {
                 // SAFETY: value_normalized is non-null (checked above).
                 unsafe { *value_normalized = value };
                 return kResultOk;
@@ -2086,7 +2088,7 @@ where
             }
             return 0.0;
         }
-        self.parameters().normalized_to_plain(id, value_normalized)
+        self.model().normalized_to_plain(id, value_normalized)
     }
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
@@ -2099,7 +2101,7 @@ where
             }
             return 0.0;
         }
-        self.parameters().plain_to_normalized(id, plain_value)
+        self.model().plain_to_normalized(id, plain_value)
     }
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
@@ -2123,7 +2125,7 @@ where
             return 0.0;
         }
 
-        self.parameters().get_normalized(id)
+        self.model().get_normalized(id)
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
@@ -2142,7 +2144,7 @@ where
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
                 // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
-                Presets::apply(preset_index, self.parameters());
+                Presets::apply(preset_index, self.model());
                 self.current_preset_index.store(preset_index as i32, Ordering::Relaxed);
 
                 // Notify host that parameter values changed so UI refreshes.
@@ -2162,7 +2164,7 @@ where
             return kInvalidArgument;
         }
 
-        self.parameters().set_normalized(id, value);
+        self.model().set_normalized(id, value);
         kResultOk
     }
 
@@ -2246,7 +2248,7 @@ where
 {
     unsafe fn getUnitCount(&self) -> i32 {
         use beamer_core::parameter_groups::ParameterGroups;
-        self.parameters().group_count() as i32
+        self.model().group_count() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2255,9 +2257,9 @@ where
         }
 
         use beamer_core::parameter_groups::ParameterGroups;
-        let parameters = self.parameters();
+        let model = self.model();
 
-        if let Some(group_info) = parameters.group_info(unit_index as usize) {
+        if let Some(group_info) = model.group_info(unit_index as usize) {
             // SAFETY: info is non-null (checked above) and host guarantees validity.
             let info = unsafe { &mut *info };
             info.id = group_info.id;

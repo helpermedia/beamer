@@ -1,7 +1,7 @@
 //! Intermediate representation for the derive macro.
 //!
-//! This module defines the data structures that represent a parsed parameter
-//! struct, after AST parsing but before code generation.
+//! This module defines the data structures that represent a parsed model
+//! or nested group, after AST parsing but before code generation.
 
 use proc_macro2::Span;
 
@@ -158,11 +158,12 @@ impl SmoothingStyle {
 // Core IR Types
 // =============================================================================
 
-/// Intermediate representation of a parameter struct.
+/// Intermediate representation of a model struct or of a nested group in
+/// one: its parameters, `State` fields, event queue and other fields.
 ///
 /// This captures all the information needed to generate the trait implementations.
 #[allow(dead_code)]
-pub struct ParametersIR {
+pub struct ModelIR {
     /// The struct name (e.g., `GainParameters`)
     pub struct_name: syn::Ident,
     /// Generic parameters, if any
@@ -173,11 +174,11 @@ pub struct ParametersIR {
     pub span: Span,
 }
 
-/// A single field in the parameter struct.
+/// A single field of a model or of a nested group.
 pub enum FieldIR {
     /// A direct parameter field (boxed to reduce enum size)
     Parameter(Box<ParameterFieldIR>),
-    /// A nested parameter struct (boxed to reduce enum size)
+    /// A nested group (boxed to reduce enum size)
     Nested(Box<NestedFieldIR>),
     /// A `State` field that is saved with the plugin state.
     State(Box<StateFieldIR>),
@@ -226,7 +227,7 @@ impl ParameterFieldIR {
     }
 }
 
-/// A nested parameter struct field.
+/// A field that holds a nested group.
 #[allow(dead_code)]
 pub struct NestedFieldIR {
     /// Field name (e.g., `output`)
@@ -252,7 +253,7 @@ pub enum ParameterType {
     Enum,
 }
 
-impl ParametersIR {
+impl ModelIR {
     /// Iterate over all parameter fields (excluding nested).
     pub fn parameter_fields(&self) -> impl Iterator<Item = &ParameterFieldIR> {
         self.fields.iter().filter_map(|f| match f {

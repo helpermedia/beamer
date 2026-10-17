@@ -1,11 +1,10 @@
 //! The bytes a plugin state is saved to.
 //!
-//! The state of a plugin is the state of its parameter struct: the values
+//! The state of a plugin is the state of its model: the values
 //! of the parameters and the [`State`](crate::State) fields. This module
-//! is the one place that knows how those are laid out in bytes. A parameter
-//! struct only says which entries it has ([`ModelFields::save_entries`]) and
-//! takes its values back from a set of entries
-//! ([`ModelFields::load_entries`]).
+//! is the one place that knows how those are laid out in bytes. A model
+//! only says which entries it has ([`ModelFields::save_entries`]) and takes
+//! its values back from a set of entries ([`ModelFields::load_entries`]).
 //!
 //! # Format, version 1
 //!
@@ -28,7 +27,7 @@
 //! | value length | u32 | number of bytes of the value |
 //! | value | value length | kind 1: the normalized value as f64. kind 2: JSON |
 //!
-//! The path of a field is its id. A field of a nested parameter struct has
+//! The path of a field is its id. A field of a nested group has
 //! the name of the nested field in front: `filter/cutoff`.
 //!
 //! # Loading

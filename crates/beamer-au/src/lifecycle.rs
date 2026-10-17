@@ -3,8 +3,8 @@
 //! This module provides `AuState`, which holds the two parts of a plugin
 //! instance:
 //! - the **Descriptor**, created with the instance and kept for its whole
-//!   life. It holds the parameters and answers the host's questions about
-//!   buses and MIDI.
+//!   life. It holds the model and answers the host's questions about buses
+//!   and MIDI.
 //! - the **Processor** with its buffers, which exists while render resources
 //!   are allocated.
 //!
@@ -21,8 +21,7 @@
 //! Preparing creates a processor from the descriptor and unpreparing drops
 //! it. If the sample rate, buffer size or process mode changes while
 //! prepared, the processor is dropped and a new one is created for the new
-//! configuration. The parameters are not part of this: they stay where they
-//! are.
+//! configuration. The model is not part of this: it stays where it is.
 //!
 //! # Setup Extraction
 //!
@@ -44,7 +43,7 @@ use beamer_core::{
 /// This mirrors the VST3 wrapper and maps directly to AU's
 /// `allocateRenderResources` / `deallocateRenderResources` lifecycle.
 pub(crate) struct AuState<P: Descriptor> {
-    /// The plugin as the host sees it. It holds the parameters and lives as
+    /// The plugin as the host sees it. It holds the model and lives as
     /// long as the instance. Every method of it takes `&self`, so it can be
     /// shared in an `Arc`.
     pub(crate) descriptor: Arc<P>,

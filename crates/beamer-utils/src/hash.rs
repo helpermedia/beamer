@@ -42,7 +42,7 @@
 /// Two different strings can have the same hash. The derive macro
 /// (`#[derive(Parameters)]`) reports that at compile time for the
 /// parameter ids of one struct, and the format wrappers check the ids of
-/// the whole parameter struct when a plugin instance is created.
+/// the whole model when a plugin instance is created.
 ///
 /// # VST3 Integration
 ///

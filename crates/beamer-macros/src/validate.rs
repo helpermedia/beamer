@@ -4,10 +4,10 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType, ParametersIR};
+use crate::ir::{FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType, ModelIR};
 
 /// Validate the IR for semantic correctness.
-pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
+pub fn validate(ir: &ModelIR) -> syn::Result<()> {
     check_unique_string_ids(ir)?;
     check_one_event_queue(ir)?;
     check_no_hash_collisions(ir)?;
@@ -19,7 +19,7 @@ pub fn validate(ir: &ParametersIR) -> syn::Result<()> {
 ///
 /// Parameters and `State` fields share one namespace: the id of a field is
 /// the path its value is saved under.
-fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
+fn check_unique_string_ids(ir: &ModelIR) -> syn::Result<()> {
     let mut seen: HashMap<&str, &syn::Ident> = HashMap::new();
 
     for field in &ir.fields {
@@ -55,14 +55,14 @@ fn check_unique_string_ids(ir: &ParametersIR) -> syn::Result<()> {
 
 /// Check that the struct has at most one queue of events for the web UI:
 /// the editor gets the events of one.
-fn check_one_event_queue(ir: &ParametersIR) -> syn::Result<()> {
+fn check_one_event_queue(ir: &ModelIR) -> syn::Result<()> {
     let mut queues = ir.events_fields();
     let first = queues.next();
     if let (Some(first), Some(second)) = (first, queues.next()) {
         return Err(syn::Error::new_spanned(
             second,
             format!(
-                "a parameter struct has one `WebViewEvents` queue for the web UI; \
+                "a model has one `WebViewEvents` queue for the web UI; \
                  `{first}` is it already"
             ),
         ));
@@ -77,7 +77,7 @@ fn check_one_event_queue(ir: &ParametersIR) -> syn::Result<()> {
 /// they are when the struct is the root, which is the common case. The
 /// format wrappers check the ids that are really in use, across nested
 /// structs, when a plugin instance is created (`check_unique_ids()`).
-fn check_no_hash_collisions(ir: &ParametersIR) -> syn::Result<()> {
+fn check_no_hash_collisions(ir: &ModelIR) -> syn::Result<()> {
     let mut seen: HashMap<u32, &str> = HashMap::new();
 
     for field in &ir.fields {
@@ -105,7 +105,7 @@ fn check_no_hash_collisions(ir: &ParametersIR) -> syn::Result<()> {
 // =============================================================================
 
 /// Validate declarative attributes on all parameters.
-fn validate_parameter_attributes(ir: &ParametersIR) -> syn::Result<()> {
+fn validate_parameter_attributes(ir: &ModelIR) -> syn::Result<()> {
     for field in &ir.fields {
         if let FieldIR::Parameter(parameter) = field {
             validate_single_parameter(parameter)?;
