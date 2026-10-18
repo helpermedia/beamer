@@ -2934,6 +2934,18 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             } else {
                 note_on.noteId
             };
+            // A note-on with velocity 0 ends the note, as in MIDI 1.0 and
+            // as the Audio Unit wrapper reads it.
+            if note_on.velocity <= 0.0 {
+                return Some(MidiEvent::note_off(
+                    sample_offset,
+                    note_on.channel as u8,
+                    note_on.pitch as u8,
+                    0.0,
+                    note_id,
+                    note_on.tuning,
+                ));
+            }
             Some(MidiEvent::note_on(
                 sample_offset,
                 note_on.channel as u8,
@@ -3696,6 +3708,31 @@ mod tests {
         };
         let last = (calls - 1) as f32 / calls as f32;
         assert!((cc.value - last).abs() < 1e-6, "{} is not the last value {}", cc.value, last);
+    }
+
+    #[test]
+    fn test_note_on_with_velocity_zero_is_a_note_off() {
+        // SAFETY: zeroed Event is valid for VST3 Event union type.
+        let mut event: Event = unsafe { std::mem::zeroed() };
+        event.r#type = K_NOTE_ON_EVENT;
+        event.sampleOffset = 12;
+        event.__field0.noteOn.channel = 2;
+        event.__field0.noteOn.pitch = 64;
+        event.__field0.noteOn.noteId = -1;
+
+        // SAFETY: The event is a valid note-on event.
+        let received = unsafe { convert_vst3_to_midi(&event) }.expect("a note event");
+        let MidiEventKind::NoteOff(note_off) = &received.event else {
+            panic!("a note-off, not {:?}", received.event);
+        };
+        assert_eq!(received.sample_offset, 12);
+        assert_eq!((note_off.channel, note_off.pitch, note_off.note_id), (2, 64, 64));
+
+        // Any velocity above 0 starts a note.
+        event.__field0.noteOn.velocity = 0.01;
+        // SAFETY: The event is a valid note-on event.
+        let received = unsafe { convert_vst3_to_midi(&event) }.expect("a note event");
+        assert!(matches!(received.event, MidiEventKind::NoteOn(_)));
     }
 
     #[test]

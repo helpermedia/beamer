@@ -1591,6 +1591,8 @@ MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<Mid
 - **Semantic constructors** - Used by VST3 which provides already-parsed event structures
 - **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and Note On velocity 0 → Note Off conversion
 
+Both formats deliver a note-on with velocity 0 as a `NoteOff`, so a plugin never receives a `NoteOn` with velocity 0.
+
 ### MidiBuffer
 
 ```rust

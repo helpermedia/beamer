@@ -532,13 +532,9 @@ impl SynthesizerProcessor {
                 let event = &self.pending_events[event_idx];
                 if event.sample_offset as usize <= sample_idx {
                     match &event.event {
+                        // A note-on with velocity 0 arrives as a note-off.
                         MidiEventKind::NoteOn(note_on) => {
-                            if note_on.velocity > 0.0 {
-                                self.handle_note_on(note_on.note_id, note_on.pitch, note_on.velocity);
-                            } else {
-                                // Velocity 0 note-on is treated as note-off
-                                self.handle_note_off(note_on.note_id);
-                            }
+                            self.handle_note_on(note_on.note_id, note_on.pitch, note_on.velocity);
                         }
                         MidiEventKind::NoteOff(note_off) => {
                             self.handle_note_off(note_off.note_id);

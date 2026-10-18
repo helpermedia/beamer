@@ -380,9 +380,7 @@ impl DrumsProcessor {
                 let event = &self.pending_events[event_idx];
                 if event.sample_offset as usize <= sample_idx {
                     if let MidiEventKind::NoteOn(note_on) = &event.event {
-                        if note_on.velocity > 0.0 {
-                            self.handle_note_on(note_on.note_id, note_on.pitch, note_on.velocity);
-                        }
+                        self.handle_note_on(note_on.note_id, note_on.pitch, note_on.velocity);
                     }
                     event_idx += 1;
                 } else {

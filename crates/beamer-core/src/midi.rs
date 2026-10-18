@@ -74,7 +74,8 @@ pub struct NoteOn {
     pub channel: MidiChannel,
     /// Note number (0-127).
     pub pitch: MidiNote,
-    /// Velocity (0.0 to 1.0, where 0.0 is silent).
+    /// Velocity (0.0 to 1.0). A note-on from the host with velocity 0
+    /// reaches the plugin as a [`NoteOff`].
     pub velocity: f32,
     /// Unique note ID for tracking this note instance.
     pub note_id: NoteId,
