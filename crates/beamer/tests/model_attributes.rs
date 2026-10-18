@@ -6,6 +6,7 @@
 
 use std::sync::Mutex;
 
+use beamer::core::ParameterUnit;
 use beamer::prelude::*;
 
 /// A nested group with a parameter and a `State` field.
@@ -34,6 +35,22 @@ struct SamplerModel {
     decoded: Handover<Vec<f32>>,
 
     events: WebViewEventQueue,
+}
+
+/// Percent and pan parameters with and without a range of their own.
+#[beamer::model]
+struct MixerModel {
+    #[parameter(id = "mix", name = "Mix", default = 0.5, kind = "percent")]
+    mix: FloatParameter,
+
+    #[parameter(id = "amount", name = "Amount", default = 0.0, range = 0.0..=0.95, kind = "percent")]
+    amount: FloatParameter,
+
+    #[parameter(id = "pan", name = "Pan", default = 0.0, kind = "pan")]
+    pan: FloatParameter,
+
+    #[parameter(id = "width", name = "Width", default = 0.0, range = -0.5..=0.5, kind = "pan")]
+    width: FloatParameter,
 }
 
 /// A value without `Default`, kept in a plain field.
@@ -121,4 +138,22 @@ fn test_model_without_a_generated_default_uses_its_own() {
     let loaded = DeviceModel::default();
     loaded.load_state(&model.save_state()).expect("the state loads");
     assert_eq!(loaded.gain.get_normalized(), 0.75);
+}
+
+#[test]
+fn test_percent_and_pan_take_a_given_range() {
+    let model = MixerModel::default();
+    let bounds = |parameter: &FloatParameter| {
+        (parameter.normalized_to_plain(0.0), parameter.normalized_to_plain(1.0))
+    };
+
+    assert_eq!(bounds(&model.mix), (0.0, 1.0));
+    assert_eq!(bounds(&model.amount), (0.0, 0.95));
+    assert_eq!(bounds(&model.pan), (-1.0, 1.0));
+    assert_eq!(bounds(&model.width), (-0.5, 0.5));
+
+    // A given range keeps the kind's unit and display.
+    assert_eq!(model.amount.info().unit, ParameterUnit::Percent);
+    assert_eq!(model.amount.display_normalized(1.0), "95");
+    assert_eq!(model.width.info().unit, ParameterUnit::Pan);
 }

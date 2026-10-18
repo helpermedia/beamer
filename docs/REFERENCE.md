@@ -214,7 +214,7 @@ pub struct GainModel {
 
 The generated `Default` takes every parameter from its attribute, so each one needs what its type needs:
 
-- `FloatParameter`: `name`, `default` and `range`. `kind = "percent"` and `kind = "pan"` bring their own range.
+- `FloatParameter`: `name`, `default` and `range`. `kind = "percent"` and `kind = "pan"` default to 0.0..=1.0 and -1.0..=1.0, and a `range` replaces that.
 - `IntParameter`: `name`, `default` and `range`.
 - `BoolParameter`: `name` and `default`, or only `bypass`.
 - `EnumParameter`: `name`. Its default is the variant marked `#[default]`, or else the first.

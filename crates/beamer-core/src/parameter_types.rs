@@ -418,7 +418,7 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 /// - [`FloatParameter::hz`]: Frequency parameter with logarithmic mapping
 /// - [`FloatParameter::ms`]: Milliseconds parameter
 /// - [`FloatParameter::seconds`]: Seconds parameter
-/// - [`FloatParameter::percent`]: Percentage parameter (0-100%)
+/// - [`FloatParameter::percent`]: Percentage parameter (usually 0-100%)
 /// - [`FloatParameter::pan`]: Pan parameter (L-C-R)
 /// - [`FloatParameter::ratio`]: Compressor ratio parameter
 ///
@@ -736,7 +736,8 @@ impl FloatParameter {
 
     /// Create a percentage parameter.
     ///
-    /// The value is stored as 0.0-1.0 internally but displayed as 0%-100%.
+    /// The value is a fraction, displayed as a percentage: 0.0-1.0 shows as
+    /// 0%-100%, and a range of 0.0..=0.95 ends at 95%.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
     /// or by `#[beamer::model]` and `#[beamer::group]`.
@@ -744,9 +745,10 @@ impl FloatParameter {
     /// # Arguments
     ///
     /// * `name` - Display name
-    /// * `default_pct` - Default value as 0.0-1.0 (not 0-100)
-    pub fn percent(name: &'static str, default_pct: f64) -> Self {
-        let mut parameter = Self::new(name, default_pct, 0.0..=1.0);
+    /// * `default_pct` - Default value as a fraction (0.5, not 50)
+    /// * `range_pct` - Valid range as fractions (inclusive), usually 0.0..=1.0
+    pub fn percent(name: &'static str, default_pct: f64, range_pct: RangeInclusive<f64>) -> Self {
+        let mut parameter = Self::new(name, default_pct, range_pct);
         let formatter = Formatter::Percent { precision: 0 };
         parameter.info.units = formatter.unit();
         parameter.info.unit = ParameterUnit::Percent;
@@ -756,7 +758,7 @@ impl FloatParameter {
 
     /// Create a pan parameter.
     ///
-    /// Range is -1.0 (full left) to +1.0 (full right), with 0.0 being center.
+    /// -1.0 is full left, +1.0 full right and 0.0 center.
     /// Display: "L50", "C", "R50"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
@@ -765,9 +767,10 @@ impl FloatParameter {
     /// # Arguments
     ///
     /// * `name` - Display name
-    /// * `default` - Default value (-1.0 to +1.0, typically 0.0)
-    pub fn pan(name: &'static str, default: f64) -> Self {
-        let mut parameter = Self::new(name, default, -1.0..=1.0);
+    /// * `default` - Default value, typically 0.0
+    /// * `range` - Valid range (inclusive), usually -1.0..=1.0
+    pub fn pan(name: &'static str, default: f64, range: RangeInclusive<f64>) -> Self {
+        let mut parameter = Self::new(name, default, range);
         parameter.info.unit = ParameterUnit::Pan;
         parameter.formatter = Formatter::Pan;
         parameter
@@ -2639,7 +2642,7 @@ mod tests {
 
     #[test]
     fn test_float_parameter_with_precision_percent() {
-        let param = FloatParameter::percent("Mix", 0.5).with_precision(1);
+        let param = FloatParameter::percent("Mix", 0.5, 0.0..=1.0).with_precision(1);
 
         assert_eq!(param.formatter().precision(), Some(1));
 
@@ -2650,7 +2653,7 @@ mod tests {
 
     #[test]
     fn test_float_parameter_with_precision_pan_no_effect() {
-        let param = FloatParameter::pan("Pan", 0.0).with_precision(3);
+        let param = FloatParameter::pan("Pan", 0.0, -1.0..=1.0).with_precision(3);
 
         // Pan formatter doesn't support precision, should remain unchanged
         assert_eq!(param.formatter().precision(), None);
@@ -2805,13 +2808,13 @@ mod tests {
 
     #[test]
     fn test_float_parameter_unit_percent() {
-        let param = FloatParameter::percent("Mix", 0.5);
+        let param = FloatParameter::percent("Mix", 0.5, 0.0..=1.0);
         assert_eq!(param.info().unit, ParameterUnit::Percent);
     }
 
     #[test]
     fn test_float_parameter_unit_pan() {
-        let param = FloatParameter::pan("Pan", 0.0);
+        let param = FloatParameter::pan("Pan", 0.0, -1.0..=1.0);
         assert_eq!(param.info().unit, ParameterUnit::Pan);
     }
 

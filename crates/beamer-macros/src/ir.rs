@@ -40,7 +40,7 @@ impl ParameterAttributes {
             ParameterType::Float => {
                 self.name.is_some()
                     && self.default.is_some()
-                    && (self.range.is_some() || self.kind.as_ref().is_some_and(|k| k.has_fixed_range()))
+                    && (self.range.is_some() || self.kind.as_ref().is_some_and(|k| k.has_default_range()))
             }
             ParameterType::Int => {
                 self.name.is_some() && self.default.is_some() && self.range.is_some()
@@ -110,13 +110,14 @@ impl ParameterKind {
         }
     }
 
-    /// Check if this kind has a fixed range (doesn't require explicit range attribute).
-    pub fn has_fixed_range(&self) -> bool {
+    /// Check if this kind has a default range (a `range` attribute is
+    /// optional and replaces it).
+    pub fn has_default_range(&self) -> bool {
         matches!(self, ParameterKind::Percent | ParameterKind::Pan)
     }
 
-    /// Get the fixed range for kinds that have one.
-    pub fn fixed_range(&self) -> Option<(f64, f64)> {
+    /// Get the range used when a kind that has one is given no `range`.
+    pub fn default_range(&self) -> Option<(f64, f64)> {
         match self {
             ParameterKind::Percent => Some((0.0, 1.0)),
             ParameterKind::Pan => Some((-1.0, 1.0)),

@@ -974,28 +974,13 @@ fn generate_float_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     // Get kind, defaulting to Linear
     let kind = parameter.attributes.kind.unwrap_or(ParameterKind::Linear);
 
-    // Handle special kinds with fixed ranges
-    match kind {
-        ParameterKind::Percent => {
-            return quote! {
-                ::beamer::core::parameter_types::FloatParameter::percent(#name, #default)
-            };
-        }
-        ParameterKind::Pan => {
-            return quote! {
-                ::beamer::core::parameter_types::FloatParameter::pan(#name, #default)
-            };
-        }
-        _ => {}
-    }
-
-    // Get range (required for non-fixed-range kinds)
+    // Get range (required unless the kind has a default range).
     let (start, end) = parameter
         .attributes
         .range
         .as_ref()
         .map(|r| (r.start, r.end))
-        .or_else(|| kind.fixed_range())
+        .or_else(|| kind.default_range())
         .expect("FloatParameter requires range");
 
     match kind {
@@ -1017,6 +1002,12 @@ fn generate_float_constructor(parameter: &ParameterFieldIR) -> TokenStream {
         ParameterKind::Seconds => quote! {
             ::beamer::core::parameter_types::FloatParameter::seconds(#name, #default, #start..=#end)
         },
+        ParameterKind::Percent => quote! {
+            ::beamer::core::parameter_types::FloatParameter::percent(#name, #default, #start..=#end)
+        },
+        ParameterKind::Pan => quote! {
+            ::beamer::core::parameter_types::FloatParameter::pan(#name, #default, #start..=#end)
+        },
         ParameterKind::Ratio => quote! {
             ::beamer::core::parameter_types::FloatParameter::ratio(#name, #default, #start..=#end)
         },
@@ -1029,8 +1020,6 @@ fn generate_float_constructor(parameter: &ParameterFieldIR) -> TokenStream {
                 ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
             }
         }
-        // Percent and Pan are handled by early returns above; this is unreachable
-        ParameterKind::Percent | ParameterKind::Pan => unreachable!("handled by early return"),
     }
 }
 

@@ -153,7 +153,14 @@ fn validate_range_ordering(parameter: &ParameterFieldIR) -> syn::Result<()> {
 
 /// Validate that default value is within the specified range.
 fn validate_default_in_range(parameter: &ParameterFieldIR) -> syn::Result<()> {
-    let (default_val, range) = match (&parameter.attributes.default, &parameter.attributes.range) {
+    // The given range, or the default range of a kind such as percent.
+    let range = parameter
+        .attributes
+        .range
+        .as_ref()
+        .map(|r| (r.start, r.end))
+        .or_else(|| parameter.attributes.kind.and_then(|k| k.default_range()));
+    let (default_val, (start, end)) = match (&parameter.attributes.default, range) {
         (Some(d), Some(r)) => (d, r),
         _ => return Ok(()), // Can't validate without both
     };
@@ -165,14 +172,14 @@ fn validate_default_in_range(parameter: &ParameterFieldIR) -> syn::Result<()> {
     };
 
     // Check if default is within range
-    if default_f64 < range.start || default_f64 > range.end {
+    if default_f64 < start || default_f64 > end {
         return Err(syn::Error::new(
             parameter.span,
             format!(
                 "default value {} is outside range {}..={}",
                 format_number(default_f64, parameter.parameter_type),
-                format_number(range.start, parameter.parameter_type),
-                format_number(range.end, parameter.parameter_type),
+                format_number(start, parameter.parameter_type),
+                format_number(end, parameter.parameter_type),
             ),
         ));
     }
