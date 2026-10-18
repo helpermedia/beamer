@@ -335,11 +335,7 @@ where
         Ok(())
     }
 
-    fn apply_parameter_events(
-        &mut self,
-        immediate: &[crate::render::AuParameterEvent],
-        ramps: &[crate::render::AuParameterRampEvent],
-    ) -> PluginResult<()> {
+    fn apply_parameter_events(&mut self, events: &[crate::render::AuParameterEvent]) -> PluginResult<()> {
         // Only apply if in prepared state
         if !self.state.is_prepared() {
             return Ok(());
@@ -348,21 +344,16 @@ where
         use beamer_core::parameter_types::Parameters;
 
         // The events arrive in sub-blocks that start at their sample offset, so
-        // applying them here is sample accurate. A ramp is applied as a change to
-        // its end value: the parameter's own smoother interpolates, with the time
-        // constant configured at parameter construction, which is also what the
-        // other format wrappers do.
+        // applying them here is sample accurate. A ramp is a change to its end
+        // value (see AuParameterEvent).
         let model: &P = &self.state.model;
 
         // The values are in AU format (plain value, or index for an indexed
         // parameter), like the ones the host sets on the parameter directly.
-        let immediate = immediate.iter().map(|e| (e.parameter_address, e.value));
-        let ramps = ramps.iter().map(|e| (e.parameter_address, e.end_value));
-
-        for (address, value) in immediate.chain(ramps) {
+        for event in events {
             // AU parameter addresses map directly to beamer parameter IDs.
-            let param_id = address as u32;
-            let normalized = crate::bridge::au_value_to_normalized(model, param_id, value);
+            let param_id = event.parameter_address as u32;
+            let normalized = crate::bridge::au_value_to_normalized(model, param_id, event.value);
 
             if let Some(param) = Parameters::by_id(model, param_id) {
                 param.set_normalized(normalized);

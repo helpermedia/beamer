@@ -179,13 +179,9 @@ pub trait AuPluginInstance: Send + 'static {
     /// parameter changes from the host. The default implementation does nothing.
     ///
     /// # Arguments
-    /// * `immediate` - Immediate parameter value changes
-    /// * `ramps` - Ramped parameter changes for smooth automation
-    fn apply_parameter_events(
-        &mut self,
-        _immediate: &[crate::render::AuParameterEvent],
-        _ramps: &[crate::render::AuParameterRampEvent],
-    ) -> PluginResult<()> {
+    /// * `events` - Parameter value changes, ramps included (see
+    ///   [`AuParameterEvent`](crate::render::AuParameterEvent))
+    fn apply_parameter_events(&mut self, _events: &[crate::render::AuParameterEvent]) -> PluginResult<()> {
         // Default: do nothing
         Ok(())
     }

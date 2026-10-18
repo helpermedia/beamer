@@ -132,7 +132,7 @@ pub use instance::AuPluginInstance;
 #[cfg(target_os = "macos")]
 pub use processor::AuProcessor;
 #[cfg(target_os = "macos")]
-pub use render::{AuParameterEvent, AuParameterRampEvent, ParameterEventBuffer};
+pub use render::{AuParameterEvent, ParameterEventBuffer};
 
 // Re-exports for factory presets support (used by export_au! macro)
 #[cfg(target_os = "macos")]

@@ -39,6 +39,7 @@ use crate::instance::AuPluginInstance;
 use crate::objc_block;
 use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
+use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
     SharedModel, MAX_BUSES,
@@ -142,76 +143,35 @@ impl Default for MidiBuffer {
 // Parameter Events
 // =============================================================================
 
-/// Immediate parameter value change from host automation.
+/// A parameter value change from host automation.
 ///
-/// These events are applied sample-accurately by splitting the render call into
-/// sub-blocks at event boundaries and applying changes at the start of each sub-block.
-///
-/// - `parameter_address`: Used to look up the target parameter by ID.
-///
-/// - `value`: The new value in AU format: the plain value, or the index for an
-///   indexed parameter. It is converted to a normalized value when it is applied.
+/// The render call runs as sub-blocks that start at these events, so a
+/// change is applied at its sample offset. A ramp from the host becomes a
+/// change to its end value at its start: the parameter's own smoother
+/// interpolates towards it, with the time constant configured at parameter
+/// construction. The VST3 wrapper does the same with the points of its
+/// parameter queues.
 #[derive(Clone, Debug)]
 pub struct AuParameterEvent {
     /// Sample offset within the current buffer.
     pub sample_offset: u32,
     /// AU parameter address (maps to beamer parameter ID)
     pub parameter_address: u64,
-    /// New value in AU format (plain value, or index for indexed parameters)
+    /// New value in AU format: the plain value, or the index for an indexed
+    /// parameter. It is converted to a normalized value when it is applied.
     pub value: f32,
 }
 
-/// Ramped parameter change for smooth automation.
-///
-/// AU describes a ramp by its end value and duration. The ramp is applied as a
-/// value change at `sample_offset` (sample-accurately, by sub-block processing)
-/// and the parameter's own smoother interpolates towards it. The format wrappers
-/// share this approach: the host chooses when a change starts and the plugin
-/// chooses how it smooths.
-#[derive(Clone, Debug)]
-pub struct AuParameterRampEvent {
-    /// Sample offset where ramp starts.
-    pub sample_offset: u32,
-    /// AU parameter address (maps to beamer parameter ID)
-    pub parameter_address: u64,
-    /// Value at the end of the ramp, in AU format like `AuParameterEvent::value`.
-    pub end_value: f32,
-    /// Duration of the ramp in samples.
-    ///
-    /// Not used: the parameter smoothers have a fixed time constant that is
-    /// configured at parameter construction.
-    #[allow(dead_code)]
-    pub duration_samples: u32,
-}
-
-/// Sort by a sample offset on the audio thread: stable and without
-/// allocating.
-///
-/// The standard library's stable sort allocates a scratch buffer, and an
-/// unstable sort would reorder events at the same offset, of which the last
-/// has to win. Event lists arrive sorted or nearly sorted, where an
-/// insertion sort takes one pass. A list in reverse order takes quadratic
-/// time, bounded by the capacity of the buffer it sorts.
-fn sort_by_offset<T>(items: &mut [T], offset: impl Fn(&T) -> u32) {
-    for i in 1..items.len() {
-        let mut j = i;
-        while j > 0 && offset(&items[j - 1]) > offset(&items[j]) {
-            items.swap(j - 1, j);
-            j -= 1;
-        }
-    }
-}
-
-/// How many parameter events of each kind one render call keeps.
-const MAX_PARAMETER_EVENTS: usize = 1024;
+/// How many parameter events one render call keeps.
+const MAX_PARAMETER_EVENTS: usize = 2048;
 
 /// Buffer for parameter events (pre-allocated).
 ///
 /// It never grows on the audio thread: events beyond its capacity are
 /// dropped and `overflowed` is set.
 pub struct ParameterEventBuffer {
-    pub immediate: Vec<AuParameterEvent>,
-    pub ramps: Vec<AuParameterRampEvent>,
+    /// The changes and ramps of one render call, in one list.
+    pub events: Vec<AuParameterEvent>,
     /// Events were dropped since the last `clear()`.
     pub overflowed: bool,
 }
@@ -225,41 +185,29 @@ impl Default for ParameterEventBuffer {
 impl ParameterEventBuffer {
     pub fn new() -> Self {
         Self {
-            immediate: Vec::with_capacity(MAX_PARAMETER_EVENTS),
-            ramps: Vec::with_capacity(MAX_PARAMETER_EVENTS),
+            events: Vec::with_capacity(MAX_PARAMETER_EVENTS),
             overflowed: false,
         }
     }
 
     pub fn clear(&mut self) {
-        self.immediate.clear();
-        self.ramps.clear();
+        self.events.clear();
         self.overflowed = false;
     }
 
-    /// Keep an immediate change, or drop it when the buffer is full.
-    fn push_immediate(&mut self, event: AuParameterEvent) {
-        if self.immediate.len() < self.immediate.capacity() {
-            self.immediate.push(event);
+    /// Keep an event, or drop it when the buffer is full.
+    fn push(&mut self, event: AuParameterEvent) {
+        if self.events.len() < self.events.capacity() {
+            self.events.push(event);
         } else {
             self.overflowed = true;
         }
     }
 
-    /// Keep a ramp, or drop it when the buffer is full.
-    fn push_ramp(&mut self, event: AuParameterRampEvent) {
-        if self.ramps.len() < self.ramps.capacity() {
-            self.ramps.push(event);
-        } else {
-            self.overflowed = true;
-        }
-    }
-
-    /// Sort both lists by sample offset, keeping the order of events at
-    /// the same offset.
+    /// Sort by sample offset, keeping the order of events at the same
+    /// offset.
     pub fn sort_by_sample_offset(&mut self) {
-        sort_by_offset(&mut self.immediate, |event| event.sample_offset);
-        sort_by_offset(&mut self.ramps, |event| event.sample_offset);
+        sort_by_offset(&mut self.events, |event| event.sample_offset);
     }
 }
 
@@ -967,11 +915,14 @@ pub unsafe fn extract_parameter_events(
         let event_type = unsafe { event.head.event_type };
 
         match event_type {
-            // AU_RENDER_EVENT_PARAMETER (type 1)
-            1 => {
-                // SAFETY: event_type == 1 (Parameter), so parameter field is the active variant.
+            // AU_RENDER_EVENT_PARAMETER (type 1) and
+            // AU_RENDER_EVENT_PARAMETER_RAMP (type 2). A ramp is kept as a
+            // change to its end value at its start (see AuParameterEvent).
+            1 | 2 => {
+                // SAFETY: event_type is 1 (Parameter) or 2 (ParameterRamp),
+                // so the parameter field is the active variant.
                 let param_event = unsafe { &event.parameter };
-                buffer.push_immediate(AuParameterEvent {
+                buffer.push(AuParameterEvent {
                     sample_offset: buffer_offset(
                         param_event.event_sample_time,
                         buffer_start,
@@ -979,21 +930,6 @@ pub unsafe fn extract_parameter_events(
                     ),
                     parameter_address: param_event.parameter_address,
                     value: param_event.value,
-                });
-            }
-            // AU_RENDER_EVENT_PARAMETER_RAMP (type 2)
-            2 => {
-                // SAFETY: event_type == 2 (ParameterRamp), so parameter field is the active variant.
-                let ramp_event = unsafe { &event.parameter };
-                buffer.push_ramp(AuParameterRampEvent {
-                    sample_offset: buffer_offset(
-                        ramp_event.event_sample_time,
-                        buffer_start,
-                        num_samples,
-                    ),
-                    parameter_address: ramp_event.parameter_address,
-                    end_value: ramp_event.value,
-                    duration_samples: ramp_event.ramp_duration_sample_frames,
                 });
             }
             _ => {
@@ -1649,146 +1585,84 @@ impl<S: RenderSample> RenderBlock<S> {
         let cc_state_ptr: Option<*const beamer_core::MidiCcState> =
             plugin_guard.midi_cc_state().map(|cc| cc as *const _);
 
-        // Sample-accurate automation via sub-block processing.
-        // We split at parameter event boundaries and apply changes exactly at the start of each sub-block.
+        // Sample-accurate automation: the render call runs as sub-blocks
+        // that start at the parameter events, each with its own MIDI.
         let mut result = os_status::NO_ERR;
+        let unreached = run_sub_blocks(
+            render_samples,
+            &parameter_events.events,
+            |event| event.sample_offset,
+            midi_buffer.as_mut_slice(),
+            |block| {
+                // If application fails, continue processing (parameters may already be correct).
+                let _ = plugin_guard.apply_parameter_events(block.changes);
 
-        let immediate = &parameter_events.immediate;
-        let ramps = &parameter_events.ramps;
+                // The MIDI of this sub-block, for the process() call that
+                // follows. Its MIDI output gets the offsets of the whole
+                // buffer.
+                let output_start = midi_output.len();
+                plugin_guard.process_midi(block.midi, midi_output);
+                offset_from_sub_block(&mut midi_output.as_mut_slice()[output_start..], block.start);
 
-        let mut imm_idx: usize = 0;
-        let mut ramp_idx: usize = 0;
-        let midi_events = midi_buffer.as_mut_slice();
-        let mut midi_idx: usize = 0;
-
-        let mut block_start: usize = 0;
-        while block_start < render_samples {
-            // Collect all parameter events scheduled at or before this boundary.
-            let imm_apply_start = imm_idx;
-            while imm_idx < immediate.len()
-                && immediate[imm_idx].sample_offset as usize <= block_start
-            {
-                imm_idx += 1;
-            }
-            let ramp_apply_start = ramp_idx;
-            while ramp_idx < ramps.len() && ramps[ramp_idx].sample_offset as usize <= block_start {
-                ramp_idx += 1;
-            }
-
-            // The next boundary: the next parameter event or the end of the
-            // buffer. The loops above stop at the first event after
-            // block_start, so the boundary lies after it. Keeping it at least
-            // one sample past block_start makes sure of that: the loop always
-            // advances and the events collected above are always applied.
-            // block_start is below num_samples, so the sub-block stays within
-            // the buffer.
-            let mut next_boundary = num_samples;
-            if imm_idx < immediate.len() {
-                next_boundary = next_boundary.min(immediate[imm_idx].sample_offset as usize);
-            }
-            if ramp_idx < ramps.len() {
-                next_boundary = next_boundary.min(ramps[ramp_idx].sample_offset as usize);
-            }
-            let next_boundary = next_boundary.max(block_start + 1);
-            let block_len = next_boundary - block_start;
-
-            // Apply parameter changes scheduled at this boundary.
-            // If application fails, continue processing (parameters may already be correct).
-            let _ = plugin_guard.apply_parameter_events(
-                &immediate[imm_apply_start..imm_idx],
-                &ramps[ramp_apply_start..ramp_idx],
-            );
-
-            // The MIDI events of this sub-block, with offsets relative to its
-            // start, as the plugin expects them for the process() call that
-            // follows. Its MIDI output gets the offsets of the whole buffer.
-            let block_end = block_start + block_len;
-            let midi_end = midi_idx
-                + midi_events[midi_idx..]
-                    .iter()
-                    .take_while(|event| (event.sample_offset as usize) < block_end)
-                    .count();
-            let block_midi = &mut midi_events[midi_idx..midi_end];
-            for event in block_midi.iter_mut() {
-                event.sample_offset = event.sample_offset.saturating_sub(block_start as u32);
-            }
-            let output_start = midi_output.len();
-            plugin_guard.process_midi(block_midi, midi_output);
-            for event in &mut midi_output.as_mut_slice()[output_start..] {
-                event.sample_offset += block_start as u32;
-            }
-            midi_idx = midi_end;
-
-            // Adjust transport sample positions for this sub-block.
-            let mut seg_transport = transport;
-            if let Some(t) = seg_transport.project_time_samples {
-                seg_transport.project_time_samples = Some(t + block_start as i64);
-            }
-            if let Some(t) = seg_transport.continuous_time_samples {
-                seg_transport.continuous_time_samples = Some(t + block_start as i64);
-            }
-
-            let context = if let Some(cc_ptr) = cc_state_ptr {
-                // SAFETY: cc_ptr obtained from plugin_guard earlier in this function.
-                // MidiCcState uses atomics internally and is safe to read.
-                let cc_state = unsafe { &*cc_ptr };
-                ProcessContext::with_midi_cc(self.sample_rate, block_len, seg_transport, cc_state)
-            } else {
-                ProcessContext::new(self.sample_rate, block_len, seg_transport)
-            };
-
-            // The channels of this sub-block. The buffers keep the slices in
-            // arrays of a fixed size, so building them does not allocate.
-            // The pointers were collected from the host's buffers for this
-            // render call and are valid for num_samples samples;
-            // block_start + block_len is within num_samples. The host renders
-            // one call at a time per instance, so no other reference to the
-            // output memory exists while the plugin processes.
-            let main_inputs = storage.main_inputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) }
-            });
-            let main_outputs = storage.main_outputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) }
-            });
-            let aux_inputs = storage.aux_inputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts(ptr.add(block_start), block_len) }
-                })
-            });
-            let aux_outputs = storage.aux_outputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts_mut(ptr.add(block_start), block_len) }
-                })
-            });
-            let mut buffer = Buffer::new(main_inputs, main_outputs, block_len);
-            let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, block_len);
-
-            let block_status =
-                match S::process_block(&mut **plugin_guard, &mut buffer, &mut aux, &context) {
-                    Ok(()) => os_status::NO_ERR,
-                    Err(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
+                let block_transport = transport.advanced_by(block.start, self.sample_rate);
+                let context = if let Some(cc_ptr) = cc_state_ptr {
+                    // SAFETY: cc_ptr obtained from plugin_guard earlier in this function.
+                    // MidiCcState uses atomics internally and is safe to read.
+                    let cc_state = unsafe { &*cc_ptr };
+                    ProcessContext::with_midi_cc(self.sample_rate, block.len, block_transport, cc_state)
+                } else {
+                    ProcessContext::new(self.sample_rate, block.len, block_transport)
                 };
 
-            if block_status != os_status::NO_ERR {
-                result = block_status;
-                break;
-            }
+                // The channels of this sub-block. The buffers keep the slices in
+                // arrays of a fixed size, so building them does not allocate.
+                // The pointers were collected from the host's buffers for this
+                // render call and are valid for num_samples samples; the
+                // sub-block lies within them. The host renders one call at a
+                // time per instance, so no other reference to the output memory
+                // exists while the plugin processes.
+                let (start, len) = (block.start, block.len);
+                let main_inputs = storage.main_inputs.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
+                });
+                let main_outputs = storage.main_outputs.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+                });
+                let aux_inputs = storage.aux_inputs.iter().map(|bus| {
+                    bus.iter().map(|&ptr| {
+                        // SAFETY: See above.
+                        unsafe { slice::from_raw_parts(ptr.add(start), len) }
+                    })
+                });
+                let aux_outputs = storage.aux_outputs.iter().map(|bus| {
+                    bus.iter().map(|&ptr| {
+                        // SAFETY: See above.
+                        unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+                    })
+                });
+                let mut buffer = Buffer::new(main_inputs, main_outputs, len);
+                let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, len);
 
-            block_start = next_boundary;
-        }
+                match S::process_block(&mut **plugin_guard, &mut buffer, &mut aux, &context) {
+                    Ok(()) => true,
+                    Err(_) => {
+                        result = os_status::K_AUDIO_UNIT_ERR_RENDER;
+                        false
+                    }
+                }
+            },
+        );
 
         // The events no sub-block reached: all of them when nothing was
         // rendered, or those after a sub-block that failed. The parameter
         // changes are applied and the MIDI is processed, so that none of them
         // is lost. No process() call follows, so the MIDI keeps the offsets of
         // the whole buffer.
-        let _ = plugin_guard.apply_parameter_events(&immediate[imm_idx..], &ramps[ramp_idx..]);
-        if render_samples == 0 || midi_idx < midi_events.len() {
-            plugin_guard.process_midi(&mut midi_events[midi_idx..], midi_output);
+        let _ = plugin_guard.apply_parameter_events(unreached.changes);
+        if render_samples == 0 || !unreached.midi.is_empty() {
+            plugin_guard.process_midi(unreached.midi, midi_output);
         }
         self.send_midi_output(midi_output, midi_output_sink);
 
@@ -1989,17 +1863,6 @@ mod tests {
     const START: i64 = 5_000_000_000;
 
     #[test]
-    fn test_sort_by_offset_keeps_the_order_at_one_offset() {
-        // Pairs of (offset, arrival), out of order between offsets.
-        let mut items = [(8, 0), (0, 1), (8, 2), (4, 3), (0, 4), (8, 5), (4, 6)];
-        sort_by_offset(&mut items, |item| item.0);
-        assert_eq!(
-            items,
-            [(0, 1), (0, 4), (4, 3), (4, 6), (8, 0), (8, 2), (8, 5)]
-        );
-    }
-
-    #[test]
     fn test_event_layout_matches_audio_toolbox() {
         // The AudioToolbox declarations are packed to 4 bytes.
         assert_eq!(size_of::<AURenderEventHeader>(), 20);
@@ -2085,15 +1948,14 @@ mod tests {
         // SAFETY: The list is valid and ends with a null `next`.
         unsafe { extract_parameter_events(list, &mut buffer, START, 512) };
 
-        assert_eq!(buffer.immediate.len(), 1);
-        assert_eq!(buffer.immediate[0].sample_offset, 256);
-        assert_eq!(buffer.immediate[0].parameter_address, 7);
-        assert_eq!(buffer.immediate[0].value, -6.0);
-
-        assert_eq!(buffer.ramps.len(), 1);
-        assert_eq!(buffer.ramps[0].sample_offset, 100);
-        assert_eq!(buffer.ramps[0].end_value, 3.0);
-        assert_eq!(buffer.ramps[0].duration_samples, 64);
+        // The ramp is kept as a change to its end value at its start, in
+        // the order of the list.
+        assert_eq!(buffer.events.len(), 2);
+        assert_eq!(buffer.events[0].sample_offset, 256);
+        assert_eq!(buffer.events[0].parameter_address, 7);
+        assert_eq!(buffer.events[0].value, -6.0);
+        assert_eq!(buffer.events[1].sample_offset, 100);
+        assert_eq!(buffer.events[1].value, 3.0);
     }
 
     #[test]

@@ -316,6 +316,38 @@ impl Transport {
         self.smpte_offset_subframes
             .map(|sf| (sf.div_euclid(80), sf.rem_euclid(80)))
     }
+
+    /// The transport `samples` samples later within the same host block,
+    /// for a sub-block that starts there.
+    ///
+    /// The positions in samples move on, and the position in quarter notes
+    /// moves on at the current tempo. The bar start, the cycle and the
+    /// state stay as the host gave them for the block. The samples to the
+    /// next MIDI clock count from the later position, which needs the tempo
+    /// once that clock has passed.
+    pub fn advanced_by(&self, samples: usize, sample_rate: f64) -> Self {
+        let mut transport = *self;
+        if samples == 0 {
+            return transport;
+        }
+        let samples_i64 = samples as i64;
+        transport.project_time_samples = self.project_time_samples.map(|t| t + samples_i64);
+        transport.continuous_time_samples = self.continuous_time_samples.map(|t| t + samples_i64);
+        if let (Some(beats), Some(tempo)) = (self.project_time_beats, self.tempo) {
+            transport.project_time_beats = Some(beats + samples as f64 / sample_rate * tempo / 60.0);
+        }
+        transport.samples_to_next_clock = self.samples_to_next_clock.and_then(|next| {
+            let next = next as i64 - samples_i64;
+            if next >= 0 {
+                return Some(next as i32);
+            }
+            // The clock passed: count to the one after it, 24 per quarter
+            // note.
+            let period = sample_rate * 60.0 / (self.tempo? * 24.0);
+            Some((next as f64).rem_euclid(period).round() as i32)
+        });
+        transport
+    }
 }
 
 // =============================================================================
@@ -484,5 +516,54 @@ impl Default for ProcessContext<'_> {
             transport: Transport::default(),
             midi_cc_state: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_advanced_transport_moves_its_positions() {
+        let transport = Transport {
+            tempo: Some(120.0),
+            project_time_samples: Some(1000),
+            continuous_time_samples: Some(5000),
+            project_time_beats: Some(8.0),
+            bar_position_beats: Some(8.0),
+            samples_to_next_clock: Some(100),
+            is_playing: true,
+            ..Default::default()
+        };
+
+        // At 120 BPM and 48 kHz a quarter note is 24000 samples.
+        let later = transport.advanced_by(12000, 48000.0);
+        assert_eq!(later.project_time_samples, Some(13000));
+        assert_eq!(later.continuous_time_samples, Some(17000));
+        assert_eq!(later.project_time_beats, Some(8.5));
+        assert_eq!(later.bar_position_beats, Some(8.0));
+        assert!(later.is_playing);
+
+        // A clock every 1000 samples: 100 samples to the next, then one
+        // every 1000.
+        assert_eq!(transport.advanced_by(60, 48000.0).samples_to_next_clock, Some(40));
+        assert_eq!(transport.advanced_by(350, 48000.0).samples_to_next_clock, Some(750));
+    }
+
+    #[test]
+    fn test_advanced_transport_without_tempo_keeps_beats() {
+        let transport = Transport {
+            project_time_samples: Some(0),
+            project_time_beats: Some(4.0),
+            samples_to_next_clock: Some(10),
+            ..Default::default()
+        };
+        let later = transport.advanced_by(64, 48000.0);
+        assert_eq!(later.project_time_samples, Some(64));
+        assert_eq!(later.project_time_beats, Some(4.0));
+        // The clock passed and its period is unknown.
+        assert_eq!(later.samples_to_next_clock, None);
+        // Nothing moves for the first sub-block.
+        assert_eq!(transport.advanced_by(0, 48000.0).project_time_samples, Some(0));
     }
 }
