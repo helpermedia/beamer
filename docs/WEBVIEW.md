@@ -17,7 +17,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 │  └───────────┬───────────┘  └───────────────┬──────────────┘    │
 │              │                              │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
-│  beamer-core │ WebViewDispatch (internal)   │ beamer_runtime.js │
+│  beamer-core │ WebViewDispatch (internal)   │                   │
 │              │ EditorSync                   │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
@@ -27,6 +27,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview (platform layer)                                │
 │  - WKWebView on macOS, WebView2 stub on Windows                 │
+│  - Injects beamer_runtime.js (the window.__BEAMER__ runtime)    │
 │  - Custom URL scheme handler (beamer://localhost/...)           │
 │  - Message handler (WKScriptMessageHandler)                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -36,8 +37,8 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEvents` queue, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
-| `beamer-webview` | Platform WebView creation, custom URL scheme, C-ABI bridge |
+| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-webview` | Platform WebView creation, the injected `beamer_runtime.js`, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
 
@@ -179,7 +180,7 @@ Events provide fire-and-forget communication in both directions:
 // JS -> Rust, handled by Model::on_event
 __BEAMER__.emit("myEvent", { some: "data" });
 
-// Rust -> JS, sent with WebViewEvents::emit
+// Rust -> JS, sent with WebViewEventQueue::emit
 __BEAMER__.on("sampleLoaded", (name) => {
   showSample(name);
 });
@@ -207,7 +208,7 @@ statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
 
 ## Events from Rust
 
-A `WebViewEvents` is a queue of named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group, and the framework takes it when the plugin instance is created:
+A `WebViewEventQueue` holds named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group, and the framework takes it when the plugin instance is created:
 
 ```rust
 #[beamer::export]
@@ -216,7 +217,7 @@ pub struct WebViewDemoModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
-    pub events: WebViewEvents,
+    pub events: WebViewEventQueue,
 }
 ```
 
@@ -237,7 +238,7 @@ What to know about events:
 - **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **One queue per plugin.** Two `WebViewEvents` fields in one struct are a compile error. With a queue in the model and one in a nested group, or in two nested groups, the first in field order is the plugin's and the others are not delivered. The attribute knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `ModelFields::webview_events()`.
+- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. With a queue in the model and one in a nested group, or in two nested groups, the first in field order is the plugin's and the others are not delivered. The attribute knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
 
 ### Example (from `webview-demo`)
 
@@ -555,7 +556,7 @@ This is independent from any background set in HTML, CSS or JS. You can use eith
 
 Lock-free data transfer from the audio thread to the WebView for spectrum analyzers, level meters, waveform displays and other real-time visualizations.
 
-**Problem:** `WebViewEvents::emit()` allocates (JSON serialization) and takes a lock, and is therefore not safe to call from the audio thread.
+**Problem:** `WebViewEventQueue::emit()` allocates (JSON serialization) and takes a lock, and is therefore not safe to call from the audio thread.
 
 **Planned approach:**
 

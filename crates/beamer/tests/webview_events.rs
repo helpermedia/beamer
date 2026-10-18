@@ -11,11 +11,11 @@ static CONFIG: Config = Config::new("Events", Category::Effect, "Bmer", "evnt");
 
 thread_local! {
     /// The queue of the model that was created last on this thread.
-    static LAST_EVENTS: RefCell<Option<WebViewEvents>> = const { RefCell::new(None) };
+    static LAST_EVENTS: RefCell<Option<WebViewEventQueue>> = const { RefCell::new(None) };
 }
 
 /// The plugin's end of the queue of the instance a wrapper just created.
-fn last_events() -> WebViewEvents {
+fn last_events() -> WebViewEventQueue {
     LAST_EVENTS
         .with(|events| events.borrow().clone())
         .expect("a model was created on this thread")
@@ -32,7 +32,7 @@ struct EventsModel {
     #[state(id = "zoom")]
     zoom: State<u32>,
 
-    events: WebViewEvents,
+    events: WebViewEventQueue,
 }
 
 impl Default for EventsModel {
@@ -40,7 +40,7 @@ impl Default for EventsModel {
         let mut model = Self {
             gain: FloatParameter::new("Gain", 0.0, 0.0..=1.0),
             zoom: State::default(),
-            events: WebViewEvents::default(),
+            events: WebViewEventQueue::default(),
         };
         model.assign_ids("");
         LAST_EVENTS.with(|events| *events.borrow_mut() = Some(model.events.clone()));
@@ -217,13 +217,13 @@ struct QuietModel {
 #[test]
 fn test_derive_finds_the_queue_by_its_type() {
     let model = EventsModel::default();
-    let found = ModelFields::webview_events(&model).expect("the queue is found");
+    let found = WebViewEvents::webview_events(&model).expect("the queue is found");
     assert!(std::ptr::eq(found, &model.events));
 
     // Also in a nested model.
     let outer = OuterModel::default();
-    let found = ModelFields::webview_events(&outer).expect("the nested queue is found");
+    let found = WebViewEvents::webview_events(&outer).expect("the nested queue is found");
     assert!(std::ptr::eq(found, &outer.inner.events));
 
-    assert!(ModelFields::webview_events(&QuietModel::default()).is_none());
+    assert!(WebViewEvents::webview_events(&QuietModel::default()).is_none());
 }

@@ -43,7 +43,7 @@ use beamer_core::{
 
 use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
-use beamer_core::{WebViewDispatch, WebViewEvents};
+use beamer_core::{WebViewDispatch, WebViewEventQueue};
 use crate::factory::ComponentFactory;
 use crate::util::{copy_wstring, len_wstring};
 
@@ -353,7 +353,7 @@ where
     component_handler: Arc<ComponentHandler>,
     /// The plugin's queue of events for the web UI, if it has one.
     #[cfg(feature = "webview")]
-    webview_events: Option<WebViewEvents>,
+    webview_events: Option<WebViewEventQueue>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
     /// the answer must not need the processor (see `publish_timing`).
@@ -417,7 +417,7 @@ where
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        let events = beamer_core::ModelFields::webview_events(&*model);
+        let events = beamer_core::WebViewEvents::webview_events(&*model);
         if let Some(events) = events {
             events.claim();
         }
@@ -426,7 +426,7 @@ where
 
         #[cfg(feature = "webview")]
         let known_state_generation =
-            Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*model)));
+            Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
 
         Self {
             model,
@@ -1320,7 +1320,7 @@ where
         // values are atomic or shared, so they are loaded through a shared
         // reference: in both states, and also while process() runs, which is
         // when a host loads a preset during playback.
-        match beamer_core::ModelFields::load_state(self.model(), &buffer) {
+        match beamer_core::Saved::load_state(self.model(), &buffer) {
             Ok(()) => {
                 // The smoothers belong to the audio thread: the next process()
                 // call makes them jump to the loaded values, so that those do
@@ -1329,7 +1329,7 @@ where
                 // A loaded state is one the host knows.
                 #[cfg(feature = "webview")]
                 self.known_state_generation
-                    .store(beamer_core::ModelFields::state_generation(self.model()), Ordering::Relaxed);
+                    .store(beamer_core::Saved::state_generation(self.model()), Ordering::Relaxed);
                 kResultOk
             }
             Err(_) => kResultFalse,
@@ -1345,7 +1345,7 @@ where
         // values are atomic or shared, so they are saved through a shared
         // reference: in both states, and also while process() runs, which is
         // when a host saves during playback.
-        let data: Vec<u8> = beamer_core::ModelFields::save_state(self.model());
+        let data: Vec<u8> = beamer_core::Saved::save_state(self.model());
 
         if data.is_empty() {
             return kResultOk;
@@ -3384,7 +3384,7 @@ mod tests {
 
     use beamer_core::parameter_types::{FloatParameter, ParameterRef, Parameters};
     use beamer_core::preset::{PresetInfo, PresetValue};
-    use beamer_core::{ParameterGroups, ParameterInfo, ParameterStore};
+    use beamer_core::ParameterGroups;
     use std::cell::Cell;
     use std::sync::Mutex;
 
@@ -3448,38 +3448,9 @@ mod tests {
         }
     }
 
-    impl beamer_core::ModelFields for StateParameters {}
+    impl beamer_core::Saved for StateParameters {}
 
-    impl ParameterStore for StateParameters {
-        fn count(&self) -> usize {
-            1
-        }
-        fn info(&self, index: usize) -> Option<&ParameterInfo> {
-            (index == 0).then(|| ParameterRef::info(&self.gain))
-        }
-        fn get_normalized(&self, id: u32) -> f64 {
-            Parameters::by_id(self, id).map_or(0.0, |parameter| parameter.get_normalized())
-        }
-        fn set_normalized(&self, id: u32, value: f64) {
-            if let Some(parameter) = Parameters::by_id(self, id) {
-                parameter.set_normalized(value);
-            }
-        }
-        fn normalized_to_string(&self, id: u32, normalized: f64) -> String {
-            Parameters::by_id(self, id)
-                .map_or_else(String::new, |parameter| parameter.display_normalized(normalized))
-        }
-        fn string_to_normalized(&self, id: u32, string: &str) -> Option<f64> {
-            Parameters::by_id(self, id)?.parse(string)
-        }
-        fn normalized_to_plain(&self, id: u32, normalized: f64) -> f64 {
-            Parameters::by_id(self, id)
-                .map_or(0.0, |parameter| parameter.normalized_to_plain(normalized))
-        }
-        fn plain_to_normalized(&self, id: u32, plain: f64) -> f64 {
-            Parameters::by_id(self, id).map_or(0.0, |parameter| parameter.plain_to_normalized(plain))
-        }
-    }
+    impl beamer_core::WebViewEvents for StateParameters {}
 
     #[derive(Default)]
     struct StateModel {

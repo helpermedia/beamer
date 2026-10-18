@@ -7,20 +7,24 @@
 //!
 //! A model and each nested group in it implement three traits:
 //!
-//! - **[`Parameters`](crate::parameter_types::Parameters)**: the parameters themselves,
-//!   with type-erased iteration, ids, groups and smoothing, for parameter types like
+//! - **[`Parameters`]**: the parameters themselves, with type-erased
+//!   iteration, ids, groups and smoothing, for parameter types like
 //!   `FloatParameter`, `IntParameter` and `BoolParameter`.
 //!
-//! - **[`ModelFields`](crate::model::ModelFields)**: what the struct holds beyond its
-//!   parameters (`State` fields, the event queue of the web UI) and saving and loading
-//!   all of it.
+//! - **[`Saved`](crate::model::Saved)**: the `State` fields beside the
+//!   parameters, and saving and loading the parameters and `State` fields
+//!   together.
 //!
-//! - **[`ParameterStore`]**: the parameters as the host sees them, with raw access to
-//!   normalized values and parameter metadata. Useful when you need fine-grained
-//!   control over parameter handling or are building custom parameter systems.
+//! - **[`WebViewEvents`](crate::model::WebViewEvents)**: where the event
+//!   queue of the web UI is.
 //!
 //! For most plugins, use `#[beamer::model]` (and `#[beamer::group]` for
 //! nested groups), which implements all three.
+//!
+//! Every [`Parameters`] is also a [`ParameterStore`]: the parameters as the
+//! host sees them, with raw access to normalized values and parameter
+//! metadata. A store without parameter objects, such as the MIDI CC
+//! parameters of the VST3 wrapper, implements [`ParameterStore`] directly.
 //!
 //! # Thread Safety
 //!
@@ -34,12 +38,15 @@
 
 use crate::parameter_groups::ParameterGroups;
 use crate::parameter_info::ParameterInfo;
+use crate::parameter_types::Parameters;
 use crate::types::{ParameterId, ParameterValue};
 
 /// Low-level trait for plugin parameter collections (host interface).
 ///
-/// Implement this trait to declare your plugin's parameters. The format wrappers
-/// (AU, VST3) use this to communicate parameter information and values to the host.
+/// The format wrappers (AU, VST3) use this to communicate parameter
+/// information and values to the host. Every [`Parameters`] implements it
+/// through its parameter objects. Implement it directly only for a store
+/// that keeps values without parameter objects.
 ///
 /// # Example
 ///
@@ -47,12 +54,12 @@ use crate::types::{ParameterId, ParameterValue};
 /// use std::sync::atomic::{AtomicU64, Ordering};
 /// use beamer_core::{ParameterStore, ParameterInfo, ParameterId, ParameterValue};
 ///
-/// pub struct MyModel {
+/// pub struct MyStore {
 ///     gain: AtomicU64,
 ///     gain_info: ParameterInfo,
 /// }
 ///
-/// impl ParameterStore for MyModel {
+/// impl ParameterStore for MyStore {
 ///     fn count(&self) -> usize { 1 }
 ///
 ///     fn info(&self, index: usize) -> Option<&ParameterInfo> {
@@ -85,7 +92,10 @@ pub trait ParameterStore: Send + Sync {
 
     /// Returns parameter info by index (0 to count-1).
     ///
-    /// Returns `None` if index is out of bounds.
+    /// Returns `None` if index is out of bounds. For listing the parameters
+    /// on host and editor threads: the implementation of every
+    /// [`Parameters`] walks its parameters and allocates. Use
+    /// [`info_by_id`](Self::info_by_id) to look one up.
     fn info(&self, index: usize) -> Option<&ParameterInfo>;
 
     /// Gets the current normalized value (0.0 to 1.0) for a parameter.
@@ -129,7 +139,6 @@ pub trait ParameterStore: Send + Sync {
         "float"
     }
 
-
     /// Find parameter info by ID.
     ///
     /// Default implementation searches linearly through all parameters.
@@ -145,45 +154,68 @@ pub trait ParameterStore: Send + Sync {
     }
 }
 
+/// Every parameter collection is a parameter store: the host view looks the
+/// parameters up through [`Parameters`].
+impl<T: Parameters> ParameterStore for T {
+    fn count(&self) -> usize {
+        Parameters::count(self)
+    }
+
+    // Builds the iterator, so it allocates: for the host and editor threads,
+    // which list the parameters by index.
+    fn info(&self, index: usize) -> Option<&ParameterInfo> {
+        self.iter().nth(index).map(|parameter| parameter.info())
+    }
+
+    fn get_normalized(&self, id: ParameterId) -> ParameterValue {
+        self.by_id(id).map_or(0.0, |parameter| parameter.get_normalized())
+    }
+
+    fn set_normalized(&self, id: ParameterId, value: ParameterValue) {
+        if let Some(parameter) = self.by_id(id) {
+            parameter.set_normalized(value);
+        }
+    }
+
+    fn normalized_to_string(&self, id: ParameterId, normalized: ParameterValue) -> String {
+        self.by_id(id)
+            .map(|parameter| parameter.display_normalized(normalized))
+            .unwrap_or_default()
+    }
+
+    fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue> {
+        self.by_id(id).and_then(|parameter| parameter.parse(string))
+    }
+
+    fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue {
+        self.by_id(id)
+            .map_or(0.0, |parameter| parameter.normalized_to_plain(normalized))
+    }
+
+    fn plain_to_normalized(&self, id: ParameterId, plain: ParameterValue) -> ParameterValue {
+        self.by_id(id)
+            .map_or(0.0, |parameter| parameter.plain_to_normalized(plain))
+    }
+
+    fn formatter_kind(&self, id: ParameterId) -> &'static str {
+        self.by_id(id)
+            .map_or("float", |parameter| parameter.formatter_kind())
+    }
+
+    // The AU render thread converts the values of parameter events through
+    // this, so it must not allocate: by_id compares ids without one.
+    fn info_by_id(&self, id: ParameterId) -> Option<&ParameterInfo> {
+        self.by_id(id).map(|parameter| parameter.info())
+    }
+}
+
 /// Empty parameter collection for plugins with no parameters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoParameters;
 
 impl ParameterGroups for NoParameters {}
 
-impl ParameterStore for NoParameters {
-    fn count(&self) -> usize {
-        0
-    }
-
-    fn info(&self, _index: usize) -> Option<&ParameterInfo> {
-        None
-    }
-
-    fn get_normalized(&self, _id: ParameterId) -> ParameterValue {
-        0.0
-    }
-
-    fn set_normalized(&self, _id: ParameterId, _value: ParameterValue) {}
-
-    fn normalized_to_string(&self, _id: ParameterId, _normalized: ParameterValue) -> String {
-        String::new()
-    }
-
-    fn string_to_normalized(&self, _id: ParameterId, _string: &str) -> Option<ParameterValue> {
-        None
-    }
-
-    fn normalized_to_plain(&self, _id: ParameterId, normalized: ParameterValue) -> ParameterValue {
-        normalized
-    }
-
-    fn plain_to_normalized(&self, _id: ParameterId, plain: ParameterValue) -> ParameterValue {
-        plain
-    }
-}
-
-impl crate::parameter_types::Parameters for NoParameters {
+impl Parameters for NoParameters {
     fn count(&self) -> usize {
         0
     }
@@ -197,7 +229,9 @@ impl crate::parameter_types::Parameters for NoParameters {
     }
 }
 
-impl crate::model::ModelFields for NoParameters {}
+impl crate::model::Saved for NoParameters {}
+
+impl crate::model::WebViewEvents for NoParameters {}
 
 /// Build a JSON array of parameter info for WebView init dumps.
 ///

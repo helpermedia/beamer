@@ -23,8 +23,9 @@
 //! ```
 //!
 //! The attribute generates implementations of `Parameters`,
-//! [`ModelFields`](crate::model::ModelFields) and
-//! [`ParameterStore`](crate::parameter_store::ParameterStore). See
+//! [`Saved`](crate::model::Saved) and
+//! [`WebViewEvents`](crate::model::WebViewEvents). Every `Parameters` is a
+//! [`ParameterStore`](crate::parameter_store::ParameterStore) as well. See
 //! [`crate::parameter_store`] for details on the relationship between
 //! these traits.
 //!
@@ -126,8 +127,8 @@ pub trait ParameterRef: Send + Sync {
 
     /// Get the full ParameterInfo for this parameter.
     ///
-    /// This is used by `#[beamer::model]` and `#[beamer::group]` to generate the
-    /// `ParameterStore::info()` implementation.
+    /// The [`ParameterStore`](crate::parameter_store::ParameterStore) of
+    /// every [`Parameters`] answers `info()` and `info_by_id()` with it.
     fn info(&self) -> &ParameterInfo;
 }
 
@@ -201,9 +202,10 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
 ///
 /// Implement this trait to declare your plugin's parameters. It covers the
 /// parameters alone: type-erased iteration, ids, groups and smoothing.
-/// Saving and loading, `State` fields and the event queue are in
-/// [`ModelFields`](crate::model::ModelFields), which a hand-written
-/// implementation adds as an empty `impl`.
+/// Saving and loading and `State` fields are in
+/// [`Saved`](crate::model::Saved), the event queue is in
+/// [`WebViewEvents`](crate::model::WebViewEvents). A hand-written
+/// implementation adds both as an empty `impl`.
 ///
 /// # Example
 ///

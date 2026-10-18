@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use beamer_core::{
     EditorSync, GuiConstraints, GuiDelegate, SharedModel, Size, WebViewDispatch,
-    WebViewEvents,
+    WebViewEventQueue,
 };
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
@@ -30,7 +30,7 @@ struct IpcContext {
     /// Where the web UI's invoke calls and events go: the model.
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
-    events: Option<WebViewEvents>,
+    events: Option<WebViewEventQueue>,
     /// The `state_generation()` of the model that the host knows
     /// about, shared with the processor.
     known_state_generation: Arc<AtomicU64>,
@@ -100,7 +100,7 @@ impl WebViewPlugView {
         model: Arc<dyn SharedModel>,
         component_handler: Arc<ComponentHandler>,
         dispatch: Arc<dyn WebViewDispatch>,
-        events: Option<WebViewEvents>,
+        events: Option<WebViewEventQueue>,
         known_state_generation: Arc<AtomicU64>,
     ) -> Self {
         let size = delegate.gui_size();
@@ -713,7 +713,7 @@ fn get_or_register_timer_class() -> &'static objc2::runtime::AnyClass {
 
 #[cfg(test)]
 mod tests {
-    use beamer_core::{NoParameters, ParameterStore};
+    use beamer_core::NoParameters;
     use vst3::Steinberg::Vst::IComponentHandler;
 
     use super::*;
@@ -734,7 +734,7 @@ mod tests {
     }
 
     /// The context of a view of a plugin with this event queue.
-    fn context(events: Option<WebViewEvents>) -> IpcContext {
+    fn context(events: Option<WebViewEventQueue>) -> IpcContext {
         IpcContext {
             model: Arc::new(NoParameters),
             handler: Arc::new(ComponentHandler::new()),
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_view_opens_and_closes_the_event_queue_once() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         events.claim();
         let mut ipc = context(Some(events.clone()));
 
@@ -859,41 +859,9 @@ mod tests {
         }
     }
 
-    impl beamer_core::ModelFields for OneState {
+    impl beamer_core::Saved for OneState {
         fn state_generation(&self) -> u64 {
             self.zoom.generation()
-        }
-    }
-
-    impl ParameterStore for OneState {
-        fn count(&self) -> usize {
-            0
-        }
-
-        fn info(&self, _index: usize) -> Option<&beamer_core::ParameterInfo> {
-            None
-        }
-
-        fn get_normalized(&self, _id: u32) -> f64 {
-            0.0
-        }
-
-        fn set_normalized(&self, _id: u32, _value: f64) {}
-
-        fn normalized_to_string(&self, _id: u32, _normalized: f64) -> String {
-            String::new()
-        }
-
-        fn string_to_normalized(&self, _id: u32, _string: &str) -> Option<f64> {
-            None
-        }
-
-        fn normalized_to_plain(&self, _id: u32, normalized: f64) -> f64 {
-            normalized
-        }
-
-        fn plain_to_normalized(&self, _id: u32, plain: f64) -> f64 {
-            plain
         }
     }
 
@@ -905,7 +873,7 @@ mod tests {
             .as_com_ref::<IComponentHandler>()
             .expect("the recorder is an IComponentHandler")
             .as_ptr();
-        let known = Arc::new(AtomicU64::new(beamer_core::ModelFields::state_generation(&*model)));
+        let known = Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
         let slot = Arc::new(ComponentHandler::new());
         let ipc = IpcContext {
             model: Arc::clone(&model) as Arc<dyn SharedModel>,
@@ -931,7 +899,7 @@ mod tests {
 
         // A state the host loaded is one it knows.
         model.zoom.set(3);
-        known.store(beamer_core::ModelFields::state_generation(&*model), Ordering::Relaxed);
+        known.store(beamer_core::Saved::state_generation(&*model), Ordering::Relaxed);
         ipc.report_state_change();
         assert_eq!(dirty(), 1);
     }

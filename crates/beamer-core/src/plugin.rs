@@ -24,8 +24,7 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::midi_cc_config::MidiCcConfig;
-use crate::model::ModelFields;
-use crate::parameter_store::ParameterStore;
+use crate::model::{Saved, WebViewEvents};
 use crate::process_context::ProcessContext;
 
 // =============================================================================
@@ -909,7 +908,7 @@ pub trait Processor: Send + 'static {
 /// in a value that is safe to share: a `State` field (which is also saved
 /// with the project), an atomic or a `Mutex`. No method of this trait is
 /// called on the audio thread.
-pub trait Model: ModelFields + ParameterStore + Default + 'static {
+pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// The setup information this plugin needs to prepare.
     ///
     /// Request exactly what you need:

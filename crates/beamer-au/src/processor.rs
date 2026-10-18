@@ -38,7 +38,7 @@ use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, FactoryPresets, Model,
     MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
-    WebViewEvents, MAX_AUX_BUSES,
+    WebViewEventQueue, MAX_AUX_BUSES,
 };
 
 /// Generic AU processor wrapper.
@@ -57,7 +57,7 @@ where
 {
     state: AuState<P>,
     /// The plugin's queue of events for the web UI, if its model has one.
-    webview_events: Option<WebViewEvents>,
+    webview_events: Option<WebViewEventQueue>,
     _presets: PhantomData<Presets>,
 }
 
@@ -75,7 +75,7 @@ where
         let model = Arc::new(P::default());
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = beamer_core::ModelFields::webview_events(&*model).cloned();
+        let events = beamer_core::WebViewEvents::webview_events(&*model).cloned();
         if let Some(events) = &events {
             events.claim();
         }
@@ -464,7 +464,7 @@ where
         Arc::clone(&self.state.model) as Arc<dyn WebViewDispatch>
     }
 
-    fn webview_events(&self) -> Option<WebViewEvents> {
+    fn webview_events(&self) -> Option<WebViewEventQueue> {
         self.webview_events.clone()
     }
 
@@ -514,7 +514,6 @@ mod tests {
     use crate::render::MidiBuffer;
     use beamer_core::parameter_groups::{GroupInfo, ParameterGroups};
     use beamer_core::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
-    use beamer_core::parameter_store::ParameterStore;
     use beamer_core::parameter_types::{ParameterRef, Parameters};
     use beamer_core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
     use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind};
@@ -700,7 +699,7 @@ mod tests {
         }
     }
 
-    impl beamer_core::ModelFields for TestFields {
+    impl beamer_core::Saved for TestFields {
         fn save_state(&self) -> Vec<u8> {
             SAVE_STATE_HOOK.with(|hook| {
                 if let Some(hook) = hook.borrow().as_ref() {
@@ -721,58 +720,7 @@ mod tests {
         }
     }
 
-    impl ParameterStore for TestFields {
-        fn count(&self) -> usize {
-            1
-        }
-        fn info(&self, index: usize) -> Option<&ParameterInfo> {
-            if index == 0 {
-                Some(&self.gain.info)
-            } else {
-                None
-            }
-        }
-        fn get_normalized(&self, id: u32) -> f64 {
-            if id == self.gain.id {
-                self.gain.get_normalized()
-            } else {
-                0.0
-            }
-        }
-        fn set_normalized(&self, id: u32, value: f64) {
-            if id == self.gain.id {
-                self.gain.set_normalized(value);
-            }
-        }
-        fn normalized_to_string(&self, id: u32, normalized: f64) -> String {
-            if id == self.gain.id {
-                self.gain.display_normalized(normalized)
-            } else {
-                String::new()
-            }
-        }
-        fn string_to_normalized(&self, id: u32, string: &str) -> Option<f64> {
-            if id == self.gain.id {
-                self.gain.parse(string)
-            } else {
-                None
-            }
-        }
-        fn normalized_to_plain(&self, id: u32, normalized: f64) -> f64 {
-            if id == self.gain.id {
-                self.gain.normalized_to_plain(normalized)
-            } else {
-                0.0
-            }
-        }
-        fn plain_to_normalized(&self, id: u32, plain: f64) -> f64 {
-            if id == self.gain.id {
-                self.gain.plain_to_normalized(plain)
-            } else {
-                0.0
-            }
-        }
-    }
+    impl beamer_core::WebViewEvents for TestFields {}
 
     // =========================================================================
     // Mock Plugin
@@ -2240,7 +2188,7 @@ mod tests {
         // The bridge hands out exactly what the model saves.
         let state = saved_state(instance);
         assert!(state.len() > blob.len());
-        assert_eq!(state, beamer_core::ModelFields::save_state(model));
+        assert_eq!(state, beamer_core::Saved::save_state(model));
 
         // Another instance takes all of it.
         let mut other = test_handle();

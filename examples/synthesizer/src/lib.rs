@@ -82,9 +82,10 @@ enum EnvelopeStage {
 /// Synthesizer plugin model.
 ///
 /// The `#[beamer::model]` attribute generates:
-/// - `Parameters` trait (count, iter, by_id, groups, smoothing)
-/// - `ModelFields` trait (`State` fields, the event queue, saving and loading)
-/// - `ParameterStore` trait (host integration)
+/// - `Parameters` trait (count, iter, by_id, groups, smoothing), which also
+///   makes the model a `ParameterStore` for the host
+/// - `Saved` trait (parameters and `State` fields, saving and loading)
+/// - `WebViewEvents` trait (where the event queue of the web UI is)
 /// - `Default` trait (from attribute values)
 ///
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.

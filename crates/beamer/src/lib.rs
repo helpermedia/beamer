@@ -199,7 +199,7 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        GuiDelegate, Model, ModelFields, Processor,
+        GuiDelegate, Model, Processor, Saved, WebViewEvents,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         AuxInputCount, AuxOutputCount, ProcessMode,
@@ -235,7 +235,7 @@ pub mod prelude {
         // FourCharCode
         FourCharCode,
         // WebView support
-        WebViewEvents, serde_json,
+        WebViewEventQueue, serde_json,
         // For the types kept in a `State`
         serde,
     };

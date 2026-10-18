@@ -8,7 +8,6 @@
 
 use std::collections::HashSet;
 
-use beamer::core::parameter_info::ParameterInfo;
 use beamer::core::parameter_store::ParameterStore;
 use beamer::core::parameter_types::check_unique_ids;
 use beamer::core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
@@ -305,7 +304,9 @@ struct ClashingParameters {
 
 impl ParameterGroups for ClashingParameters {}
 
-impl ModelFields for ClashingParameters {}
+impl Saved for ClashingParameters {}
+
+impl WebViewEvents for ClashingParameters {}
 
 impl Parameters for ClashingParameters {
     fn count(&self) -> usize {
@@ -318,43 +319,6 @@ impl Parameters for ClashingParameters {
 
     fn by_id(&self, id: ParameterId) -> Option<&dyn ParameterRef> {
         self.iter().find(|parameter| parameter.id() == id)
-    }
-}
-
-impl ParameterStore for ClashingParameters {
-    fn count(&self) -> usize {
-        2
-    }
-
-    fn info(&self, index: usize) -> Option<&ParameterInfo> {
-        self.iter().nth(index).map(|parameter| parameter.info())
-    }
-
-    fn get_normalized(&self, id: ParameterId) -> f64 {
-        self.by_id(id).map_or(0.0, |parameter| parameter.get_normalized())
-    }
-
-    fn set_normalized(&self, id: ParameterId, value: f64) {
-        if let Some(parameter) = self.by_id(id) {
-            parameter.set_normalized(value);
-        }
-    }
-
-    fn normalized_to_string(&self, id: ParameterId, normalized: f64) -> String {
-        self.by_id(id)
-            .map_or_else(String::new, |parameter| parameter.display_normalized(normalized))
-    }
-
-    fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<f64> {
-        self.by_id(id)?.parse(string)
-    }
-
-    fn normalized_to_plain(&self, id: ParameterId, normalized: f64) -> f64 {
-        self.by_id(id).map_or(0.0, |parameter| parameter.normalized_to_plain(normalized))
-    }
-
-    fn plain_to_normalized(&self, id: ParameterId, plain: f64) -> f64 {
-        self.by_id(id).map_or(0.0, |parameter| parameter.plain_to_normalized(plain))
     }
 }
 

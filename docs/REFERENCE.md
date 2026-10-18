@@ -204,9 +204,9 @@ pub struct GainModel {
 ```
 
 `#[beamer::model]` (and `#[beamer::group]` for a nested group) generates:
-- `Parameters` trait implementation (count, iter, by_id, groups, smoothing)
-- `ModelFields` trait implementation (`State` fields, the event queue, saving and loading)
-- `ParameterStore` trait implementation (host integration)
+- `Parameters` trait implementation (count, iter, by_id, groups, smoothing), which also makes the struct a `ParameterStore` for the host
+- `Saved` trait implementation (parameters and `State` fields, saving and loading)
+- `WebViewEvents` trait implementation (where the event queue of the web UI is)
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (`State` fields and fields without an attribute get their own default)
 - The ids of every parameter: its path as text and the FNV-1a hash of the path as the number hosts see (see [Parameter Ids](#parameter-ids))
@@ -745,9 +745,9 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterGroups` (the group tree; an empty impl is enough without groups), `ParameterStore` (the parameters as the host sees them), `ModelFields` and `Default` directly. An empty `impl ModelFields` saves the parameters under their numeric ids. If the struct has `State` fields, override in `ModelFields`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. A struct with a `WebViewEvents` queue returns it from `webview_events()`.
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents` and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`.
 
-`ParameterStore` and the metadata it returns:
+Every `Parameters` is also a `ParameterStore`: the parameters as the host sees them, looked up through `Parameters`. A store that keeps values without parameter objects implements `ParameterStore` directly. For a `Parameters`, `info(index)` walks the parameters and allocates. It is for listing them on host and editor threads, never per frame or on the audio thread. `info_by_id()` looks one up through `by_id()` and does not allocate. The trait and the metadata it returns:
 
 ```rust
 pub trait ParameterStore: Send + Sync {
@@ -803,7 +803,7 @@ impl ParameterInfo {
 The `Model` trait is implemented by the model struct: what every thread shares, and the plugin as the host sees it (buses and MIDI behavior). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
 
 ```rust
-pub trait Model: ModelFields + ParameterStore + Default + 'static {
+pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// Setup type for prepare() - determines what info is needed
     type Setup: PluginSetup;
 

@@ -25,9 +25,10 @@ use beamer::prelude::*;
 /// Gain plugin model.
 ///
 /// The `#[beamer::model]` attribute generates:
-/// - `Parameters` trait (count, iter, by_id, groups, smoothing)
-/// - `ModelFields` trait (`State` fields, the event queue, saving and loading)
-/// - `ParameterStore` trait (host integration)
+/// - `Parameters` trait (count, iter, by_id, groups, smoothing), which also
+///   makes the model a `ParameterStore` for the host
+/// - `Saved` trait (parameters and `State` fields, saving and loading)
+/// - `WebViewEvents` trait (where the event queue of the web UI is)
 /// - `Default` trait (from attribute values)
 ///
 /// It lives as long as the plugin instance and creates the `GainProcessor`

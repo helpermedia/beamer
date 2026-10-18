@@ -61,7 +61,7 @@ pub struct WebViewDemoModel {
 
     /// Events for the web UI. What is emitted here reaches the editor
     /// while it is open.
-    pub events: WebViewEvents,
+    pub events: WebViewEventQueue,
 }
 
 impl Model for WebViewDemoModel {

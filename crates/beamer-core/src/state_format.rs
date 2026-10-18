@@ -3,8 +3,8 @@
 //! The state of a plugin is the state of its model: the values
 //! of the parameters and the [`State`](crate::State) fields. This module
 //! is the one place that knows how those are laid out in bytes. A model
-//! only says which entries it has ([`ModelFields::save_entries`]) and takes
-//! its values back from a set of entries ([`ModelFields::load_entries`]).
+//! only says which entries it has ([`Saved::save_entries`]) and takes
+//! its values back from a set of entries ([`Saved::load_entries`]).
 //!
 //! # Format, version 1
 //!
@@ -49,8 +49,8 @@
 //! A load is always a whole state: it cannot be used to change some fields
 //! and leave the others.
 //!
-//! [`ModelFields::save_entries`]: crate::ModelFields::save_entries
-//! [`ModelFields::load_entries`]: crate::ModelFields::load_entries
+//! [`Saved::save_entries`]: crate::Saved::save_entries
+//! [`Saved::load_entries`]: crate::Saved::load_entries
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -308,7 +308,7 @@ impl<'a> StateEntries<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FloatParameter, ModelFields, Parameters, State};
+    use crate::{FloatParameter, Parameters, Saved, State};
 
     fn parameter(default: f64) -> FloatParameter {
         FloatParameter::new("Test", default, 0.0..=1.0)
@@ -594,7 +594,7 @@ mod tests {
         }
     }
 
-    impl crate::ModelFields for Manual {
+    impl crate::Saved for Manual {
         fn save_entries(&self, writer: &mut StateWriter, prefix: &str) {
             if self.named {
                 writer.parameter(&join_path(prefix, "gain"), &self.gain);

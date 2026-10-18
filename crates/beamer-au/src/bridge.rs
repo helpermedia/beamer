@@ -39,7 +39,7 @@ use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
     BusType, CachedBusConfig, CachedBusInfo, EditorSync, ParameterInfo, ParameterUnit,
-    ProcessMode, SharedModel, WebViewDispatch, WebViewEvents, MAX_BUSES,
+    ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue, MAX_BUSES,
 };
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
@@ -446,7 +446,7 @@ pub struct BeamerInstanceHandle {
     /// every invoke/event call.
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
-    webview_events: Option<WebViewEvents>,
+    webview_events: Option<WebViewEventQueue>,
     /// The model of the plugin. It stays in this one place for the life of
     /// the instance, so the functions that only need it (values, state,
     /// groups, presets) never take the plugin mutex.
@@ -1587,20 +1587,9 @@ pub extern "C" fn beamer_au_get_parameter_value_count(
     param_id: u32,
 ) -> u32 {
     with_instance!(instance, 0, |handle| {
-        with_param_store(handle, |store| {
-            // Find the parameter info by ID.
-            let count = store.count();
-            for i in 0..count {
-                if let Some(info) = store.info(i) {
-                    if info.id == param_id {
-                        if is_au_indexed(info) {
-                            return (info.step_count + 1) as u32;
-                        }
-                        return 0;
-                    }
-                }
-            }
-            0
+        with_param_store(handle, |store| match store.info_by_id(param_id) {
+            Some(info) if is_au_indexed(info) => (info.step_count + 1) as u32,
+            _ => 0,
         })
     })
 }
@@ -1634,24 +1623,9 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
 
     with_instance!(instance, false, |handle| {
         let result = with_param_store(handle, |store| {
-            // Find the parameter info by ID to get step_count.
-            let count = store.count();
-            let mut step_count: Option<i32> = None;
-
-            for i in 0..count {
-                if let Some(info) = store.info(i) {
-                    if info.id == param_id {
-                        if is_au_indexed(info) {
-                            step_count = Some(info.step_count);
-                        }
-                        break;
-                    }
-                }
-            }
-
-            let step_count = match step_count {
-                Some(sc) => sc,
-                None => return None,
+            let step_count = match store.info_by_id(param_id) {
+                Some(info) if is_au_indexed(info) => info.step_count,
+                _ => return None,
             };
 
             if value_index > step_count as u32 {

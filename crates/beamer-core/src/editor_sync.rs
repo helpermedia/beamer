@@ -26,7 +26,7 @@ use crate::model::SharedModel;
 use crate::parameter_store::{params_to_init_json, ParameterStore};
 use crate::state_format::SavedState;
 use crate::types::ParameterId;
-use crate::webview_events::WebViewEvents;
+use crate::webview_events::WebViewEventQueue;
 
 /// The link between one open editor and the plugin it shows.
 ///
@@ -37,11 +37,12 @@ pub struct EditorSync {
     /// The model of the plugin: its parameters and `State` fields.
     model: Arc<dyn SharedModel>,
     /// The plugin's queue of events for the web UI, if it has one.
-    events: Option<WebViewEvents>,
-    /// The bits of the normalized value of each parameter the web UI
-    /// knows, by index as in `ParameterStore::info`. `None` until it was
-    /// sent.
-    last_values: Vec<Option<u64>>,
+    events: Option<WebViewEventQueue>,
+    /// The id of each parameter, in the order of `ParameterStore::info`,
+    /// with the bits of the normalized value the web UI knows. `None` until
+    /// it was sent. The ids are taken once: listing the parameters by index
+    /// is slow, and they stay the same for the life of the plugin.
+    last_values: Vec<(ParameterId, Option<u64>)>,
     /// The generation of the value of each `State` field the web UI got
     /// last, by path.
     state_generations: HashMap<String, u64>,
@@ -59,12 +60,16 @@ const LARGE_STATE: usize = 1 << 20;
 impl EditorSync {
     /// Start keeping an editor in step. Events the plugin emits from now
     /// on reach it.
-    pub fn open(model: Arc<dyn SharedModel>, events: Option<WebViewEvents>) -> Self {
+    pub fn open(model: Arc<dyn SharedModel>, events: Option<WebViewEventQueue>) -> Self {
         if let Some(events) = &events {
             events.editor_opened();
         }
         // Nothing was sent yet, so the first frame sends every parameter.
-        let last_values = vec![None; model.parameter_store().count()];
+        let parameters = model.parameter_store();
+        let last_values = (0..parameters.count())
+            .filter_map(|index| parameters.info(index))
+            .map(|info| (info.id, None))
+            .collect();
         Self {
             model,
             events,
@@ -110,11 +115,9 @@ impl EditorSync {
         let parameters = self.model.parameter_store();
 
         let mut any = false;
-        for (index, last) in self.last_values.iter_mut().enumerate() {
-            let Some(info) = parameters.info(index) else {
-                continue;
-            };
-            let value = parameters.get_normalized(info.id);
+        for (id, last) in self.last_values.iter_mut() {
+            let id = *id;
+            let value = parameters.get_normalized(id);
             // Bits, so that a value that stays NaN is not sent again.
             if *last == Some(value.to_bits()) {
                 continue;
@@ -122,7 +125,7 @@ impl EditorSync {
             *last = Some(value.to_bits());
             script.push_str(if any { "," } else { "window.__BEAMER__._onParams({" });
             any = true;
-            write_parameter(&mut script, parameters, info.id, value);
+            write_parameter(&mut script, parameters, id, value);
         }
         if any {
             script.push_str("});");
@@ -145,7 +148,7 @@ impl EditorSync {
             }
         }
 
-        if let Some(events) = self.events.as_ref().and_then(WebViewEvents::take_script) {
+        if let Some(events) = self.events.as_ref().and_then(WebViewEventQueue::take_script) {
             script.push_str(&events);
         }
 
@@ -162,9 +165,7 @@ impl EditorSync {
     pub fn parameter_script(&mut self, id: ParameterId) -> String {
         let parameters = self.model.parameter_store();
         let value = parameters.get_normalized(id);
-        let index = (0..parameters.count())
-            .find(|&index| parameters.info(index).is_some_and(|info| info.id == id));
-        if let Some(last) = index.and_then(|index| self.last_values.get_mut(index)) {
+        if let Some((_, last)) = self.last_values.iter_mut().find(|(known, _)| *known == id) {
             *last = Some(value.to_bits());
         }
 
@@ -303,7 +304,7 @@ mod tests {
     use super::*;
     use crate::parameter_info::ParameterInfo;
     use crate::parameter_store::NoParameters;
-    use crate::model::ModelFields;
+    use crate::model::Saved;
     use crate::parameter_groups::ParameterGroups;
     use crate::parameter_types::{ParameterRef, Parameters};
     use crate::state::State;
@@ -485,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_frame_delivers_the_events_after_the_parameters() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         events.claim();
         let parameters = Arc::new(TwoParameters::new());
         let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, Some(events.clone()));
@@ -504,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_events_reach_the_editor_only_while_it_is_open() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         events.claim();
 
         events.emit("before", &1);
@@ -542,38 +543,6 @@ mod tests {
         name: State<String>,
     }
 
-    impl ParameterStore for TwoStates {
-        fn count(&self) -> usize {
-            0
-        }
-
-        fn info(&self, _index: usize) -> Option<&ParameterInfo> {
-            None
-        }
-
-        fn get_normalized(&self, _id: ParameterId) -> ParameterValue {
-            0.0
-        }
-
-        fn set_normalized(&self, _id: ParameterId, _value: ParameterValue) {}
-
-        fn normalized_to_string(&self, _id: ParameterId, _normalized: ParameterValue) -> String {
-            String::new()
-        }
-
-        fn string_to_normalized(&self, _id: ParameterId, _string: &str) -> Option<ParameterValue> {
-            None
-        }
-
-        fn normalized_to_plain(&self, _id: ParameterId, normalized: ParameterValue) -> ParameterValue {
-            normalized
-        }
-
-        fn plain_to_normalized(&self, _id: ParameterId, plain: ParameterValue) -> ParameterValue {
-            plain
-        }
-    }
-
     impl ParameterGroups for TwoStates {}
 
     impl Parameters for TwoStates {
@@ -590,7 +559,7 @@ mod tests {
         }
     }
 
-    impl ModelFields for TwoStates {
+    impl Saved for TwoStates {
         fn state_generation(&self) -> u64 {
             self.zoom.generation().wrapping_add(self.name.generation())
         }

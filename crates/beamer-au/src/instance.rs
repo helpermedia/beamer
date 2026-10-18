@@ -20,7 +20,7 @@ use crate::error::PluginResult;
 use beamer_core::preset::PresetInfo;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
-    SharedModel, WebViewDispatch, WebViewEvents,
+    SharedModel, WebViewDispatch, WebViewEventQueue,
 };
 
 /// The factory presets of a plugin type.
@@ -236,7 +236,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Returns the plugin's queue of events for the web UI.
     ///
     /// Returns `None` if the plugin sends no events.
-    fn webview_events(&self) -> Option<WebViewEvents> {
+    fn webview_events(&self) -> Option<WebViewEventQueue> {
         None
     }
 

@@ -36,7 +36,7 @@ fn check_unique_string_ids(ir: &ModelIR) -> syn::Result<()> {
                 state.span,
                 "state",
             ),
-            FieldIR::Nested(_) | FieldIR::Other(_) | FieldIR::Events(_) => continue,
+            FieldIR::Nested(_) | FieldIR::Other(_) | FieldIR::EventQueue(_) => continue,
         };
         if let Some(first_field) = seen.get(id) {
             return Err(syn::Error::new(
@@ -56,13 +56,13 @@ fn check_unique_string_ids(ir: &ModelIR) -> syn::Result<()> {
 /// Check that the struct has at most one queue of events for the web UI:
 /// the editor gets the events of one.
 fn check_one_event_queue(ir: &ModelIR) -> syn::Result<()> {
-    let mut queues = ir.events_fields();
+    let mut queues = ir.event_queue_fields();
     let first = queues.next();
     if let (Some(first), Some(second)) = (first, queues.next()) {
         return Err(syn::Error::new_spanned(
             second,
             format!(
-                "a model has one `WebViewEvents` queue for the web UI; \
+                "a model has one `WebViewEventQueue` for the web UI; \
                  `{first}` is it already"
             ),
         ));

@@ -64,7 +64,7 @@ pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
     // Fields without an attribute do not make a model or a group.
     if parsed_fields
         .iter()
-        .all(|field| matches!(field, FieldIR::Other(_) | FieldIR::Events(_)))
+        .all(|field| matches!(field, FieldIR::Other(_) | FieldIR::EventQueue(_)))
     {
         return Err(syn::Error::new_spanned(
             &input,
@@ -143,8 +143,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
     // type. A type alias, a renamed import or a wrapper such as `Option`
     // hides it; the queue then reports its first event that nothing
     // delivers.
-    if extract_type_name(&field.ty).as_deref() == Some("WebViewEvents") {
-        return Ok(FieldIR::Events(field_name));
+    if extract_type_name(&field.ty).as_deref() == Some("WebViewEventQueue") {
+        return Ok(FieldIR::EventQueue(field_name));
     }
     Ok(FieldIR::Other(field_name))
 }

@@ -4,7 +4,7 @@ Format-agnostic core abstractions for building audio plugins with Beamer.
 
 This crate provides the shared traits and types used by all plugin formats (AU, VST3):
 
-- **Plugin traits**: `Model`, `Processor`, `ModelFields`, `Parameters`
+- **Plugin traits**: `Model`, `Processor`, `Parameters`, `Saved`, `WebViewEvents`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
 - **Parameter types**: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter` with smoothing

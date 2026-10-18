@@ -67,10 +67,12 @@ mod validate;
 ///
 /// The attribute generates:
 /// - the `Parameters` trait implementation (count, iter, by_id, groups,
-///   smoothing)
-/// - the `ModelFields` trait implementation (`State` fields, the event
-///   queue, saving and loading)
-/// - the `ParameterStore` trait implementation (host integration)
+///   smoothing), which also makes the struct a `ParameterStore` for the
+///   host
+/// - the `Saved` trait implementation (parameters and `State` fields,
+///   saving and loading)
+/// - the `WebViewEvents` trait implementation (where the event queue of
+///   the web UI is)
 /// - the `ParameterGroups` trait implementation
 /// - `Default`
 /// - the ids of every parameter (`assign_ids`), and a compile error for two
@@ -108,9 +110,10 @@ mod validate;
 /// this id. Ids share one namespace with parameter ids.
 ///
 /// ## Other fields
-/// A `WebViewEvents` field is the event queue of the web UI. A field without
-/// an attribute (a `Handover`, a cache) is not part of the parameters or the
-/// saved state; the generated `Default` initializes it with its own default.
+/// A `WebViewEventQueue` field is the event queue of the web UI. A field
+/// without an attribute (a `Handover`, a cache) is not part of the
+/// parameters or the saved state; the generated `Default` initializes it
+/// with its own default.
 ///
 /// A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is
 /// applied to the fields. Put the whole struct behind the `#[cfg]`.

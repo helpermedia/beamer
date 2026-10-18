@@ -1,7 +1,7 @@
 //! Events from Rust to the web UI.
 //!
-//! A [`WebViewEvents`] is a queue of named events for the plugin's editor.
-//! Rust code puts events in with [`emit()`](WebViewEvents::emit), and
+//! A [`WebViewEventQueue`] holds named events for the plugin's editor.
+//! Rust code puts events in with [`emit()`](WebViewEventQueue::emit), and
 //! JavaScript receives them with `__BEAMER__.on("name", callback)`.
 //!
 //! The queue lives in the model, which every thread of a plugin
@@ -15,7 +15,7 @@
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     gain: FloatParameter,
 //!
-//!     events: WebViewEvents,
+//!     events: WebViewEventQueue,
 //! }
 //!
 //! // On a host or UI thread, or on a thread the plugin started:
@@ -57,7 +57,7 @@ const MAX_PENDING: usize = 1024;
 /// See the [module documentation](self). Cloning gives another handle to
 /// the same queue.
 #[derive(Clone, Default)]
-pub struct WebViewEvents {
+pub struct WebViewEventQueue {
     shared: Arc<Shared>,
 }
 
@@ -74,7 +74,7 @@ struct Shared {
     reported: AtomicBool,
 }
 
-impl WebViewEvents {
+impl WebViewEventQueue {
     /// Create an empty queue.
     pub fn new() -> Self {
         Self::default()
@@ -91,7 +91,7 @@ impl WebViewEvents {
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn emit(&self, name: &str, data: &impl Serialize) {
         crate::audio_thread::assert_not_in_process(
-            "WebViewEvents::emit()",
+            "WebViewEventQueue::emit()",
             "Data from the audio thread needs a lock-free channel to the editor.",
         );
         if !self.shared.claimed.load(Ordering::Acquire) {
@@ -196,7 +196,7 @@ impl WebViewEvents {
 
         let message = format!(
             "WebView event {name:?} was dropped: no plugin instance delivers this queue. \
-             Is it the only `WebViewEvents` field of the model and its nested groups?"
+             Is it the only `WebViewEventQueue` field of the model and its nested groups?"
         );
         // A plugin has no logger unless it sets `log_level` in its
         // Config.toml, so the message also goes to standard error.
@@ -210,8 +210,8 @@ mod tests {
     use super::*;
 
     /// A queue as it is while an editor is open.
-    fn open_queue() -> WebViewEvents {
-        let events = WebViewEvents::new();
+    fn open_queue() -> WebViewEventQueue {
+        let events = WebViewEventQueue::new();
         events.claim();
         events.editor_opened();
         events
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_events_are_dropped_without_an_editor() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         events.claim();
 
         events.emit("early", &1);
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_clone_is_the_same_queue() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         let wrapper_end = events.clone();
         wrapper_end.claim();
         wrapper_end.editor_opened();
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_queue_that_nothing_delivers_reports_once() {
-        let events = WebViewEvents::new();
+        let events = WebViewEventQueue::new();
         assert!(!events.shared.reported.load(Ordering::Acquire));
 
         events.emit("lost", &1);

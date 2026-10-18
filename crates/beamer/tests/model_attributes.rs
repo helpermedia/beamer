@@ -33,7 +33,7 @@ struct SamplerModel {
     /// Not saved: what the audio thread plays.
     decoded: Handover<Vec<f32>>,
 
-    events: WebViewEvents,
+    events: WebViewEventQueue,
 }
 
 /// A value without `Default`, kept in a plain field.
@@ -101,8 +101,8 @@ fn test_model_lists_the_parameters_of_its_groups() {
 fn test_model_finds_its_event_queue() {
     let model = SamplerModel::default();
 
-    assert!(ModelFields::webview_events(&model).is_some());
-    assert!(ModelFields::webview_events(&LayerGroup::default()).is_none());
+    assert!(WebViewEvents::webview_events(&model).is_some());
+    assert!(WebViewEvents::webview_events(&LayerGroup::default()).is_none());
 }
 
 #[test]

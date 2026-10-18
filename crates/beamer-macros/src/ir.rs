@@ -189,10 +189,10 @@ pub enum FieldIR {
     /// the saved state. The generated `Default` initializes it with its
     /// own default.
     Other(syn::Ident),
-    /// A `WebViewEvents` field: the plugin's queue of events for the web
-    /// UI, which the format wrappers find through
-    /// `ModelFields::webview_events`. Initialized like `Other`.
-    Events(syn::Ident),
+    /// A `WebViewEventQueue` field: the plugin's queue of events for the
+    /// web UI, which the format wrappers find through
+    /// `WebViewEvents::webview_events`. Initialized like `Other`.
+    EventQueue(syn::Ident),
 }
 
 /// A field with `#[state(id = "...")]`.
@@ -273,10 +273,10 @@ impl ModelIR {
         })
     }
 
-    /// Iterate over the `WebViewEvents` fields.
-    pub fn events_fields(&self) -> impl Iterator<Item = &syn::Ident> {
+    /// Iterate over the `WebViewEventQueue` fields.
+    pub fn event_queue_fields(&self) -> impl Iterator<Item = &syn::Ident> {
         self.fields.iter().filter_map(|f| match f {
-            FieldIR::Events(field) => Some(field),
+            FieldIR::EventQueue(field) => Some(field),
             _ => None,
         })
     }

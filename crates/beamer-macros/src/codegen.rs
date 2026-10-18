@@ -1,7 +1,8 @@
 //! Code generation for the model and group attributes.
 //!
-//! This module generates the Rust code for the `Parameters`, `ModelFields` and
-//! `ParameterStore` trait implementations from the validated IR.
+//! This module generates the Rust code for the `Parameters`, `Saved` and
+//! `WebViewEvents` trait implementations from the validated IR. The
+//! `ParameterStore` of the struct follows from `Parameters`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,18 +15,18 @@ use crate::ir::{
 pub fn generate(ir: &ModelIR) -> TokenStream {
     let unit_consts = generate_group_consts(ir);
     let units_impl = generate_groups_impl(ir);
-    let vst3_parameters_impl = generate_parameter_store_impl(ir);
     let parameters_impl = generate_parameters_impl(ir);
-    let model_fields_impl = generate_model_fields_impl(ir);
+    let saved_impl = generate_saved_impl(ir);
+    let webview_events_impl = generate_webview_events_impl(ir);
     let set_group_ids_impl = generate_set_group_ids(ir);
     let default_impl = generate_default_impl(ir);
 
     quote! {
         #unit_consts
         #units_impl
-        #vst3_parameters_impl
         #parameters_impl
-        #model_fields_impl
+        #saved_impl
+        #webview_events_impl
         #set_group_ids_impl
         #default_impl
     }
@@ -398,7 +399,7 @@ fn generate_count(ir: &ModelIR) -> TokenStream {
             .nested_fields()
             .map(|nested| {
                 let field = &nested.field_name;
-                // Use fully qualified syntax to disambiguate between Parameters::count and ParameterStore::count
+                // Fully qualified: a `ParameterStore` has a `count` as well.
                 quote! { ::beamer::core::parameter_types::Parameters::count(&self.#field) }
             })
             .collect();
@@ -581,7 +582,7 @@ fn generate_save_state(ir: &ModelIR) -> TokenStream {
             let field = &nested.field_name;
             let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
             quote! {
-                ::beamer::core::model::ModelFields::save_entries(
+                ::beamer::core::model::Saved::save_entries(
                     &self.#field,
                     writer,
                     &::beamer::core::state_format::join_path(prefix, #segment),
@@ -639,7 +640,7 @@ fn generate_load_state(ir: &ModelIR) -> TokenStream {
             let field = &nested.field_name;
             let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
             quote! {
-                ::beamer::core::model::ModelFields::load_entries(
+                ::beamer::core::model::Saved::load_entries(
                     &self.#field,
                     entries,
                     &::beamer::core::state_format::join_path(prefix, #segment),
@@ -661,80 +662,19 @@ fn generate_load_state(ir: &ModelIR) -> TokenStream {
     }
 }
 
-/// Generate the `ParameterStore` trait implementation.
-fn generate_parameter_store_impl(ir: &ModelIR) -> TokenStream {
+/// Generate the `Saved` trait implementation: the `State` fields of the
+/// struct, and saving and loading them with the parameters.
+fn generate_saved_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
-    let count_impl = generate_count(ir);
-
-    // Generate info() - iterate and return by index
-    let info_impl = generate_info(ir);
-
-    quote! {
-        impl #impl_generics ::beamer::core::parameter_store::ParameterStore for #struct_name #ty_generics #where_clause {
-            fn count(&self) -> usize {
-                #count_impl
-            }
-
-            #info_impl
-
-            fn get_normalized(&self, id: ::beamer::core::types::ParameterId) -> ::beamer::core::types::ParameterValue {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).map(|p| p.get_normalized()).unwrap_or(0.0)
-            }
-
-            fn set_normalized(&self, id: ::beamer::core::types::ParameterId, value: ::beamer::core::types::ParameterValue) {
-                use ::beamer::core::parameter_types::Parameters;
-                if let Some(parameter) = self.by_id(id) {
-                    parameter.set_normalized(value);
-                }
-            }
-
-            fn normalized_to_string(&self, id: ::beamer::core::types::ParameterId, normalized: ::beamer::core::types::ParameterValue) -> String {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).map(|p| p.display_normalized(normalized)).unwrap_or_default()
-            }
-
-            fn string_to_normalized(&self, id: ::beamer::core::types::ParameterId, string: &str) -> Option<::beamer::core::types::ParameterValue> {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).and_then(|p| p.parse(string))
-            }
-
-            fn normalized_to_plain(&self, id: ::beamer::core::types::ParameterId, normalized: ::beamer::core::types::ParameterValue) -> ::beamer::core::types::ParameterValue {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).map(|p| p.normalized_to_plain(normalized)).unwrap_or(0.0)
-            }
-
-            fn plain_to_normalized(&self, id: ::beamer::core::types::ParameterId, plain: ::beamer::core::types::ParameterValue) -> ::beamer::core::types::ParameterValue {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).map(|p| p.plain_to_normalized(plain)).unwrap_or(0.0)
-            }
-
-            fn formatter_kind(&self, id: ::beamer::core::types::ParameterId) -> &'static str {
-                use ::beamer::core::parameter_types::Parameters;
-                self.by_id(id).map(|p| p.formatter_kind()).unwrap_or("float")
-            }
-        }
-    }
-}
-
-/// Generate the `ModelFields` trait implementation: what the struct holds
-/// beyond its parameters, and saving and loading all of it.
-fn generate_model_fields_impl(ir: &ModelIR) -> TokenStream {
-    let struct_name = &ir.struct_name;
-    let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
-
-    let webview_events_impl = generate_webview_events(ir);
     let state_generation_impl = generate_state_generation(ir);
     let for_each_state_impl = generate_for_each_state(ir);
     let save_state_impl = generate_save_state(ir);
     let load_state_impl = generate_load_state(ir);
 
     quote! {
-        impl #impl_generics ::beamer::core::model::ModelFields for #struct_name #ty_generics #where_clause {
-            #webview_events_impl
-
+        impl #impl_generics ::beamer::core::model::Saved for #struct_name #ty_generics #where_clause {
             #state_generation_impl
 
             #for_each_state_impl
@@ -742,6 +682,21 @@ fn generate_model_fields_impl(ir: &ModelIR) -> TokenStream {
             #save_state_impl
 
             #load_state_impl
+        }
+    }
+}
+
+/// Generate the `WebViewEvents` trait implementation: where the event queue
+/// of the web UI is.
+fn generate_webview_events_impl(ir: &ModelIR) -> TokenStream {
+    let struct_name = &ir.struct_name;
+    let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
+
+    let webview_events_impl = generate_webview_events(ir);
+
+    quote! {
+        impl #impl_generics ::beamer::core::model::WebViewEvents for #struct_name #ty_generics #where_clause {
+            #webview_events_impl
         }
     }
 }
@@ -758,7 +713,7 @@ fn generate_state_generation(ir: &ModelIR) -> TokenStream {
     let nested_generations = ir.nested_fields().map(|nested| {
         let field = &nested.field_name;
         quote! {
-            .wrapping_add(::beamer::core::model::ModelFields::state_generation(&self.#field))
+            .wrapping_add(::beamer::core::model::Saved::state_generation(&self.#field))
         }
     });
 
@@ -772,9 +727,9 @@ fn generate_state_generation(ir: &ModelIR) -> TokenStream {
 /// Generate `webview_events()`: the queue of this struct, or else the first
 /// one a nested group has.
 fn generate_webview_events(ir: &ModelIR) -> TokenStream {
-    if let Some(field) = ir.events_fields().next() {
+    if let Some(field) = ir.event_queue_fields().next() {
         return quote! {
-            fn webview_events(&self) -> Option<&::beamer::core::WebViewEvents> {
+            fn webview_events(&self) -> Option<&::beamer::core::WebViewEventQueue> {
                 Some(&self.#field)
             }
         };
@@ -785,7 +740,7 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
         .map(|nested| {
             let field = &nested.field_name;
             quote! {
-                if let Some(events) = ::beamer::core::model::ModelFields::webview_events(&self.#field) {
+                if let Some(events) = ::beamer::core::model::WebViewEvents::webview_events(&self.#field) {
                     return Some(events);
                 }
             }
@@ -798,7 +753,7 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     }
 
     quote! {
-        fn webview_events(&self) -> Option<&::beamer::core::WebViewEvents> {
+        fn webview_events(&self) -> Option<&::beamer::core::WebViewEventQueue> {
             #(#nested)*
             None
         }
@@ -825,7 +780,7 @@ fn generate_for_each_state(ir: &ModelIR) -> TokenStream {
             let field = &nested.field_name;
             let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
             quote! {
-                ::beamer::core::model::ModelFields::for_each_state(
+                ::beamer::core::model::Saved::for_each_state(
                     &self.#field,
                     &mut |path: &str, state: &dyn ::beamer::core::state_format::SavedState| {
                         visit(&::beamer::core::state_format::join_path(#segment, path), state)
@@ -847,65 +802,6 @@ fn generate_for_each_state(ir: &ModelIR) -> TokenStream {
         ) {
             #(#states)*
             #(#nested)*
-        }
-    }
-}
-
-/// Generate the info() method for the Parameters trait.
-fn generate_info(ir: &ModelIR) -> TokenStream {
-    // Generate match arms for direct parameters
-    let parameter_match_arms: Vec<TokenStream> = ir
-        .parameter_fields()
-        .enumerate()
-        .map(|(idx, parameter)| {
-            let field = &parameter.field_name;
-            quote! {
-                #idx => Some(self.#field.info()),
-            }
-        })
-        .collect();
-
-    let parameter_count = ir.parameter_count();
-
-    // Handle nested parameters
-    if ir.has_nested() {
-        let nested_infos: Vec<TokenStream> = ir
-            .nested_fields()
-            .map(|nested| {
-                let field = &nested.field_name;
-                // Use fully qualified syntax to disambiguate
-                quote! {
-                    let nested_count = ::beamer::core::parameter_types::Parameters::count(&self.#field);
-                    if adjusted_index < nested_count {
-                        return ::beamer::core::parameter_store::ParameterStore::info(&self.#field, adjusted_index);
-                    }
-                    adjusted_index -= nested_count;
-                }
-            })
-            .collect();
-
-        quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameter_info::ParameterInfo> {
-                // First check direct parameters
-                match index {
-                    #(#parameter_match_arms)*
-                    _ => {
-                        // Adjust index for nested parameters
-                        let mut adjusted_index = index - #parameter_count;
-                        #(#nested_infos)*
-                        None
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {
-            fn info(&self, index: usize) -> Option<&::beamer::core::parameter_info::ParameterInfo> {
-                match index {
-                    #(#parameter_match_arms)*
-                    _ => None,
-                }
-            }
         }
     }
 }
@@ -1013,7 +909,7 @@ fn generate_default_impl(ir: &ModelIR) -> TokenStream {
                 quote! { #field: Default::default() }
             }
             // A field without an attribute, such as a `Handover`.
-            FieldIR::Other(field) | FieldIR::Events(field) => quote! { #field: Default::default() },
+            FieldIR::Other(field) | FieldIR::EventQueue(field) => quote! { #field: Default::default() },
         })
         .collect();
 

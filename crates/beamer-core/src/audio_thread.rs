@@ -4,7 +4,7 @@
 //! Some calls of the framework take a lock, allocate or free memory:
 //! [`Handover::get`](crate::Handover::get) and the rest of the setting side
 //! of a [`Handover`](crate::Handover) or [`State`](crate::State), and
-//! [`WebViewEvents::emit`](crate::WebViewEvents::emit). On the audio thread
+//! [`WebViewEventQueue::emit`](crate::WebViewEventQueue::emit). On the audio thread
 //! that can make the audio drop out. A call from `process()` still compiles
 //! and mostly works, so the mistake is easy to miss.
 //!
