@@ -19,6 +19,8 @@
 //! - `FloatParameter` for velocity/value scaling
 //! - `process_midi()` for MIDI-only processing
 //! - MIDI event modification with the `with()` method
+//! - Held-note tracking, so a note-off ends the note its note-on started
+//!   when the settings change while the note is held
 //!
 //! # MIDI Event Modification
 //!
@@ -183,7 +185,10 @@ impl Model for MidiTransformModel {
     type Processor = MidiTransformProcessor;
 
     fn prepare(self: Arc<Self>, _: ()) -> MidiTransformProcessor {
-        MidiTransformProcessor { model: self }
+        MidiTransformProcessor {
+            model: self,
+            held_notes: [[None; 128]; 16],
+        }
     }
 
     fn wants_midi(&self) -> bool {
@@ -201,9 +206,21 @@ impl Model for MidiTransformModel {
 /// Created by `MidiTransformModel::prepare()`.
 pub struct MidiTransformProcessor {
     model: Arc<MidiTransformModel>,
+
+    /// The pitch each held note was sent out with, by channel and incoming
+    /// pitch (`None` when the note was filtered out). A note-off goes to
+    /// the note its note-on started, even when the settings or the bypass
+    /// changed while the note was held, so no note hangs. One entry per key:
+    /// a second note-on on a held key replaces the first.
+    held_notes: [[Option<u8>; 128]; 16],
 }
 
 impl MidiTransformProcessor {
+    /// The entry in `held_notes` for a channel and an incoming pitch.
+    fn held_note(&mut self, channel: MidiChannel, pitch: MidiNote) -> &mut Option<u8> {
+        &mut self.held_notes[(channel & 0x0F) as usize][(pitch & 0x7F) as usize]
+    }
+
     /// Transform a MIDI note pitch based on current settings.
     ///
     /// # Transformation Modes
@@ -372,20 +389,34 @@ impl Processor for MidiTransformProcessor {
         buffer.copy_to_output();
     }
 
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
-        // If bypassed, pass everything through unchanged
-        if self.model.bypass.get() {
-            for event in input {
-                output.push(event.clone());
-            }
-            return;
+    fn set_active(&mut self, active: bool) {
+        // A reset ends every note, so none is held any more.
+        if active {
+            self.held_notes = [[None; 128]; 16];
         }
+    }
+
+    fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
+        let bypassed = self.model.bypass.get();
 
         for event in input {
             match &event.event {
                 MidiEventKind::NoteOn(note_on) => {
-                    if let Some(new_pitch) = self.transform_pitch(note_on.pitch) {
-                        let new_velocity = self.transform_velocity(note_on.velocity);
+                    // When bypassed, a note goes out unchanged.
+                    let new_pitch = if bypassed {
+                        Some(note_on.pitch)
+                    } else {
+                        self.transform_pitch(note_on.pitch)
+                    };
+                    *self.held_note(note_on.channel, note_on.pitch) = new_pitch;
+
+                    // If transform_pitch returns None, the note is filtered out.
+                    if let Some(new_pitch) = new_pitch {
+                        let new_velocity = if bypassed {
+                            note_on.velocity
+                        } else {
+                            self.transform_velocity(note_on.velocity)
+                        };
 
                         // Use with() to preserve sample_offset, struct update for the rest
                         output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
@@ -394,12 +425,18 @@ impl Processor for MidiTransformProcessor {
                             ..*note_on
                         })));
                     }
-                    // If transform_pitch returns None, the note is filtered out
                 }
 
                 MidiEventKind::NoteOff(note_off) => {
-                    if let Some(new_pitch) = self.transform_pitch(note_off.pitch) {
-                        let new_velocity = self.transform_velocity(note_off.velocity);
+                    // The pitch the note-on went out with, not the one the
+                    // current settings give. Nothing to end for a note that
+                    // was filtered out.
+                    if let Some(new_pitch) = self.held_note(note_off.channel, note_off.pitch).take() {
+                        let new_velocity = if bypassed {
+                            note_off.velocity
+                        } else {
+                            self.transform_velocity(note_off.velocity)
+                        };
                         output.push(event.clone().with(MidiEventKind::NoteOff(NoteOff {
                             pitch: new_pitch,
                             velocity: new_velocity,
@@ -409,7 +446,10 @@ impl Processor for MidiTransformProcessor {
                 }
 
                 MidiEventKind::PolyPressure(poly) => {
-                    if let Some(new_pitch) = self.transform_pitch(poly.pitch) {
+                    // Pressure follows the note it belongs to and is dropped
+                    // for a note that is not sounding.
+                    let held = *self.held_note(poly.channel, poly.pitch);
+                    if let Some(new_pitch) = held {
                         output.push(event.clone().with(MidiEventKind::PolyPressure(
                             PolyPressure {
                                 pitch: new_pitch,
@@ -417,6 +457,10 @@ impl Processor for MidiTransformProcessor {
                             },
                         )));
                     }
+                }
+
+                MidiEventKind::ControlChange(_) if bypassed => {
+                    output.push(event.clone());
                 }
 
                 MidiEventKind::ControlChange(cc) => {
@@ -438,5 +482,78 @@ impl Processor for MidiTransformProcessor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note_on(pitch: MidiNote) -> MidiEvent {
+        MidiEvent::note_on(0, 0, pitch, 0.8, -1, 0.0, 0)
+    }
+
+    fn note_off(pitch: MidiNote) -> MidiEvent {
+        MidiEvent::note_off(0, 0, pitch, 0.0, -1, 0.0)
+    }
+
+    /// The events the processor sends out for `input`, as (is note-on, pitch).
+    fn run(processor: &mut MidiTransformProcessor, input: &[MidiEvent]) -> Vec<(bool, MidiNote)> {
+        let mut output = MidiBuffer::new_boxed();
+        processor.process_midi(input, &mut output);
+        output
+            .iter()
+            .filter_map(|event| match &event.event {
+                MidiEventKind::NoteOn(note) => Some((true, note.pitch)),
+                MidiEventKind::NoteOff(note) => Some((false, note.pitch)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn remap(output_note: i64) -> (Arc<MidiTransformModel>, MidiTransformProcessor) {
+        let model = Arc::new(MidiTransformModel::default());
+        model.note.mode.set(NoteTransformMode::Remap);
+        model.note.input_note.set(60);
+        model.note.output_note.set(output_note);
+        let processor = Arc::clone(&model).prepare(());
+        (model, processor)
+    }
+
+    #[test]
+    fn test_note_off_ends_the_note_after_a_change() {
+        let (model, mut processor) = remap(72);
+        assert_eq!(run(&mut processor, &[note_on(60)]), [(true, 72)]);
+
+        model.note.output_note.set(74);
+        assert_eq!(run(&mut processor, &[note_off(60)]), [(false, 72)]);
+
+        // The next note takes the new setting.
+        assert_eq!(run(&mut processor, &[note_on(60), note_off(60)]), [(true, 74), (false, 74)]);
+    }
+
+    #[test]
+    fn test_note_off_ends_the_note_across_a_bypass() {
+        let (model, mut processor) = remap(72);
+        assert_eq!(run(&mut processor, &[note_on(60)]), [(true, 72)]);
+        model.bypass.set(true);
+        assert_eq!(run(&mut processor, &[note_off(60)]), [(false, 72)]);
+
+        // A note started while bypassed ends unchanged after the bypass.
+        assert_eq!(run(&mut processor, &[note_on(60)]), [(true, 60)]);
+        model.bypass.set(false);
+        assert_eq!(run(&mut processor, &[note_off(60)]), [(false, 60)]);
+    }
+
+    #[test]
+    fn test_filtered_note_sends_no_note_off() {
+        let model = Arc::new(MidiTransformModel::default());
+        model.note.mode.set(NoteTransformMode::OctaveUp);
+        let mut processor = Arc::clone(&model).prepare(());
+
+        // 120 + 12 is out of range, so the note is filtered out.
+        assert_eq!(run(&mut processor, &[note_on(120)]), []);
+        model.note.mode.set(NoteTransformMode::Through);
+        assert_eq!(run(&mut processor, &[note_off(120)]), []);
     }
 }
