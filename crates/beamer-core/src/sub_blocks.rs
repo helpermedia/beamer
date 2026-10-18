@@ -24,8 +24,8 @@ pub struct SubBlock<'a, C> {
 }
 
 /// What no sub-block reached: everything when `num_samples` is 0, or what
-/// comes after a sub-block that stopped the run. The MIDI keeps the
-/// offsets of the host block.
+/// comes after a sub-block that stopped the run, and the changes at or after
+/// the end of the block. The MIDI keeps the offsets of the host block.
 pub struct Unreached<'a, C> {
     /// Changes still to apply.
     pub changes: &'a [C],
@@ -40,7 +40,9 @@ pub struct Unreached<'a, C> {
 /// (see [`sort_by_offset`]). Changes at the same offset start one sub-block
 /// together; a change at or before the start of the block is applied
 /// before the first one. There is no smallest sub-block size: changes one
-/// sample apart make a sub-block of one sample.
+/// sample apart make a sub-block of one sample. MIDI at or after the end of
+/// the block, which a host should not send, goes to the last sub-block at
+/// its last sample, so that a `process()` call follows it.
 ///
 /// `run` processes one sub-block and returns `false` to stop, for example
 /// when processing failed. What no sub-block reached is returned, so that
@@ -72,13 +74,18 @@ pub fn run_sub_blocks<'a, C>(
             .first()
             .map_or(num_samples, |change| (change_offset(change) as usize).min(num_samples));
 
-        let in_block = midi
-            .iter()
-            .take_while(|event| (event.sample_offset as usize) < end)
-            .count();
+        // The last sub-block takes the rest of the MIDI.
+        let in_block = if end == num_samples {
+            midi.len()
+        } else {
+            midi.iter()
+                .take_while(|event| (event.sample_offset as usize) < end)
+                .count()
+        };
+        let last_offset = (end - start - 1) as u32;
         let (block_midi, later_midi) = std::mem::take(&mut midi).split_at_mut(in_block);
         for event in block_midi.iter_mut() {
-            event.sample_offset = event.sample_offset.saturating_sub(start as u32);
+            event.sample_offset = event.sample_offset.saturating_sub(start as u32).min(last_offset);
         }
 
         let go_on = run(SubBlock {
@@ -195,12 +202,19 @@ mod tests {
 
     #[test]
     fn test_what_no_sub_block_reached_is_returned() {
-        // Changes and MIDI at or after the end of the block.
-        let mut midi = [note(10, 60), note(64, 61)];
-        let (blocks, unreached, unreached_midi) = run(64, &[(64, 'a')], &mut midi);
-        assert_eq!(blocks, [(0, 64, String::new(), vec![(10, 60)])]);
-        assert_eq!(unreached, ['a']);
-        assert_eq!(unreached_midi, [64]);
+        // A change at or after the end of the block. The MIDI there goes
+        // to the last sub-block at its last sample.
+        let mut midi = [note(10, 60), note(64, 61), note(70, 62)];
+        let (blocks, unreached, unreached_midi) = run(64, &[(32, 'a'), (64, 'b')], &mut midi);
+        assert_eq!(
+            blocks,
+            [
+                (0, 32, String::new(), vec![(10, 60)]),
+                (32, 32, "a".into(), vec![(31, 61), (31, 62)]),
+            ]
+        );
+        assert_eq!(unreached, ['b']);
+        assert!(unreached_midi.is_empty());
 
         // A block without samples runs no sub-block.
         let mut midi = [note(0, 60)];

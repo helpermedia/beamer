@@ -21,6 +21,8 @@
 //! - MIDI event modification with the `with()` method
 //! - Held-note tracking, so a note-off ends the note its note-on started
 //!   when the settings change while the note is held
+//! - Sample-accurate automation (`sample_accurate_automation` in
+//!   `Config.toml`), since the settings apply to each note
 //!
 //! # MIDI Event Modification
 //!

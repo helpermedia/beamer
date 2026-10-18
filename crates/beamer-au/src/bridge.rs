@@ -923,6 +923,9 @@ fn prepare_instance(
             .publish_timing(plugin.latency_samples(), plugin.tail_samples());
     }
 
+    let sample_accurate_automation =
+        factory::plugin_config().is_some_and(|config| config.sample_accurate_automation);
+
     // Create the render block based on sample format.
     let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
         BeamerAuSampleFormat::Float32 => {
@@ -937,6 +940,7 @@ fn prepare_instance(
                 storage,
                 max_frames,
                 sample_rate,
+                sample_accurate_automation,
             ))
         }
         BeamerAuSampleFormat::Float64 => {
@@ -951,6 +955,7 @@ fn prepare_instance(
                 storage,
                 max_frames,
                 sample_rate,
+                sample_accurate_automation,
             ))
         }
     };

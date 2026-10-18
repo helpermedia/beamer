@@ -59,6 +59,7 @@ log_level = "warn"
 | `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
 | `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
+| `sample_accurate_automation` | Boolean | Apply host parameter changes within a block instead of before it, by running a block as sub-blocks (default: `false`, see [Sample-Accurate Automation](#sample-accurate-automation)) |
 | `log_level` | String | Log the framework's and the plugin's messages up to this level: `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"` (see [Logging](#logging)). Without it the plugin installs no logger |
 
 **Advanced Optional Fields:**
@@ -506,6 +507,22 @@ Smoothing methods take `&self`, like the methods that read and write the value: 
 **Automatic Reset on State Load:**
 
 When a host loads a state, the framework calls `reset_smoothing()` on the audio thread at the start of the next block, so that the loaded values apply at once instead of ramping in.
+
+#### Sample-Accurate Automation
+
+By default the framework applies the parameter changes a host sends with a block before one `process()` call for the whole block. A change then lands up to a block early, which a smoother hides for most parameters.
+
+A plugin that reads parameters at events, such as a setting applied to each note or a level read once per hit, sets `sample_accurate_automation = true` in `Config.toml`. Both formats then apply each change where it belongs in the block: a step at its sample and a ramp at its start (see below). A block runs as sub-blocks that start at the changes, each with its own `process_midi()` and `process()` call.
+
+- `context.num_samples` and the buffers give the length of each call, which is a single sample when two changes are one sample apart. Work done once per call, such as an FFT frame, an oversampling stage or coefficients computed per block, has to handle any length from 1 sample up to the maximum. Hosts send blocks of varying size anyway.
+- The MIDI of each call has offsets relative to its start, and `context.transport` is moved to its first sample (positions in samples and quarter notes, and the samples to the next MIDI clock).
+- Changes at the same sample start one sub-block together. MIDI does not split a block. MIDI at or after the end of a block, which a host should not send, reaches the last call at its last sample.
+- A ramp's end value applies at the start of the ramp, and the parameter's smoother moves towards it. A ramp is an AU ramp event, or a VST3 queue segment between two points (the first segment starts at the start of the block). A VST3 segment of one sample is a jump, which a host sends as the old value and the new value one sample later: the new value applies at its point. A ramp from the start of a block to its end therefore runs as one call.
+- A discrete parameter (`IntParameter`, `BoolParameter` or `EnumParameter`) has no smoother, so a VST3 ramp changes it at each sample where the line reaches the next step: a ramp from step 0 at the start of a block to step 1 at sample 32 changes it at sample 16.
+- A change that leaves a parameter at the value it holds splits nothing, such as a value that rounds to the step a discrete parameter is already at.
+- The cost is an extra pair of calls for each change at its own sample while automation moves: an AU parameter event, a VST3 jump or a VST3 point inside the block. Without automation a block runs as one call either way.
+
+The `drums` and `midi-transform` examples set it.
 
 #### Flat Parameter Grouping
 

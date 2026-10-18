@@ -1159,10 +1159,20 @@ mod tests {
         )
     }
 
-    /// Prepare the plugin and create its render block, like the bridge does.
+    /// Prepare the plugin and create its render block, like the bridge does,
+    /// with sample-accurate automation.
     fn render_block_for(
         plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
         process_mode: ProcessMode,
+    ) -> Box<dyn RenderBlockTrait> {
+        render_block_with(plugin, process_mode, true)
+    }
+
+    /// Prepare the plugin and create its render block, like the bridge does.
+    fn render_block_with(
+        plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
+        process_mode: ProcessMode,
+        sample_accurate_automation: bool,
     ) -> Box<dyn RenderBlockTrait> {
         let bus_config = stereo_bus_config();
         plugin
@@ -1180,6 +1190,7 @@ mod tests {
             storage,
             FRAMES as u32,
             44100.0,
+            sample_accurate_automation,
         )
     }
 
@@ -1495,18 +1506,18 @@ mod tests {
         received.push(sample_offset);
     }
 
-    #[test]
-    fn test_midi_reaches_each_sub_block_relative_to_it() {
+    /// Render a buffer with a note at sample 10, a gain change at sample 32
+    /// and a note at sample 40. Returns what each process() call got (its
+    /// length and its MIDI offsets) and the MIDI offsets the host got back.
+    fn render_change_between_notes(sample_accurate_automation: bool) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::{AURenderEventType, MidiOutputSink};
 
         let plugin = boxed(AuProcessor::<RecordingModel>::new());
-        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let block = render_block_with(&plugin, ProcessMode::Realtime, sample_accurate_automation);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
 
-        // A parameter change at sample 32 splits the buffer in two halves.
-        // One note falls in each.
         let gain = u64::from(gain_id());
         let mut events = vec![
             midi_event(10, [0x90, 60, 100]),
@@ -1538,11 +1549,28 @@ mod tests {
         );
         assert_eq!(status, 0);
 
-        // Each process() call got the note of its half, relative to its start.
         let recorded = RECORDED.with(|recorded| recorded.borrow().clone());
+        (recorded, sent)
+    }
+
+    #[test]
+    fn test_midi_reaches_each_sub_block_relative_to_it() {
+        // The gain change at sample 32 splits the buffer in two halves, and
+        // each process() call got the note of its half, relative to its
+        // start.
+        let (recorded, sent) = render_change_between_notes(true);
         assert_eq!(recorded, [(32, vec![10]), (32, vec![8])]);
 
         // The host gets the output at the offsets of the whole buffer.
+        assert_eq!(sent, [10, 40]);
+    }
+
+    #[test]
+    fn test_without_sample_accurate_automation_the_buffer_is_one_block() {
+        // The gain change is applied before one process() call for the
+        // whole buffer, which gets both notes.
+        let (recorded, sent) = render_change_between_notes(false);
+        assert_eq!(recorded, [(FRAMES, vec![10, 40])]);
         assert_eq!(sent, [10, 40]);
     }
 
@@ -1629,6 +1657,7 @@ mod tests {
             storage,
             FRAMES as u32,
             44100.0,
+            true,
         );
 
         let mut input = StereoList64::filled(0.25);

@@ -233,6 +233,9 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_sysex_buffer_size(#size) }
     });
 
+    let sample_accurate_automation = (config.sample_accurate_automation == Some(true))
+        .then(|| quote! { .with_sample_accurate_automation() });
+
     let gui_background_color = config
         .gui_background_color
         .as_deref()
@@ -299,6 +302,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #vst3_controller_id
         #sysex_slots
         #sysex_buffer_size
+        #sample_accurate_automation
         #subcategories
         #gui_background_color
         #logging

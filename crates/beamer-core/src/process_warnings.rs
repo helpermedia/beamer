@@ -16,7 +16,9 @@ pub enum ProcessWarning {
     MidiInputOverflow = 1,
     /// More MIDI output in one block than the buffer holds.
     MidiOutputOverflow = 2,
-    /// More parameter events in one block than the buffer holds.
+    /// More parameter changes in one block than the buffer holds. An Audio
+    /// Unit drops the events that do not fit, a VST3 queue that does not fit
+    /// takes its last value at the start of the block.
     ParameterEventOverflow = 4,
     /// An event list that did not end, possibly a damaged one.
     EventListTooLong = 8,
@@ -46,7 +48,7 @@ impl ProcessWarning {
                 "MIDI output events were dropped: more than one block holds"
             }
             ProcessWarning::ParameterEventOverflow => {
-                "parameter events were dropped: more than one block holds"
+                "parameter changes did not all fit into one block, and some were dropped or applied at its start"
             }
             ProcessWarning::EventListTooLong => {
                 "an event list exceeded the maximum length and was cut, possibly a damaged one"

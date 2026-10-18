@@ -6,4 +6,5 @@ plugin_code = "drum"
 vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
+sample_accurate_automation = true
 log_level = "warn"

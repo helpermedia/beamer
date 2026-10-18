@@ -504,6 +504,14 @@ pub trait Processor: Send + 'static {
     /// block of audio. The buffer provides input samples and mutable output
     /// buffers for the main bus.
     ///
+    /// A block is any length from 1 sample up to the maximum the host set
+    /// up. With `sample_accurate_automation` in `Config.toml`, a host block
+    /// runs as several calls that start at its parameter changes, each right
+    /// after [`process_midi`](Self::process_midi) with the MIDI of that call.
+    /// A change on the sample after another then makes a call of a single
+    /// sample, so work done once per call (an FFT frame, an oversampling
+    /// stage or coefficients computed per block) has to handle any length.
+    ///
     /// # Arguments
     ///
     /// * `buffer` - Main audio bus (stereo/surround input and output)

@@ -92,6 +92,27 @@ pub trait ParameterRef: Send + Sync {
     /// Values are clamped to [0.0, 1.0].
     fn set_normalized(&self, value: ParameterValue);
 
+    /// The normalized value the parameter stores for `normalized`: what
+    /// [`get_normalized`](Self::get_normalized) returns after
+    /// [`set_normalized`](Self::set_normalized) with it, such as the value
+    /// of the nearest step of a discrete parameter.
+    ///
+    /// The default clamps the value, as a continuous parameter stores it.
+    fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
+        normalized.clamp(0.0, 1.0)
+    }
+
+    /// Whether the parameter stores only its steps, so that
+    /// [`stored_normalized`](Self::stored_normalized) rounds a value to the
+    /// nearest step and the parameter goes from one step to the next
+    /// without a smoother.
+    ///
+    /// A host ramp then changes such a parameter where the ramp reaches the
+    /// next step. The default is `false`, for a continuous parameter.
+    fn is_discrete(&self) -> bool {
+        false
+    }
+
     /// Get the current plain value in natural units.
     fn get_plain(&self) -> ParameterValue;
 
@@ -1551,6 +1572,14 @@ impl ParameterRef for IntParameter {
         self.set(plain);
     }
 
+    fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
+        self.plain_to_normalized(self.normalized_to_plain(normalized).round())
+    }
+
+    fn is_discrete(&self) -> bool {
+        true
+    }
+
     fn get_plain(&self) -> ParameterValue {
         self.get() as f64
     }
@@ -1816,6 +1845,18 @@ impl ParameterRef for BoolParameter {
 
     fn set_normalized(&self, value: ParameterValue) {
         self.set(value > 0.5);
+    }
+
+    fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
+        if normalized > 0.5 {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn is_discrete(&self) -> bool {
+        true
     }
 
     fn get_plain(&self) -> ParameterValue {
@@ -2144,6 +2185,14 @@ impl<E: EnumParameterValue> ParameterRef for EnumParameter<E> {
     fn set_normalized(&self, value: ParameterValue) {
         let index = normalized_to_index(value, E::COUNT);
         self.value.store(index, Ordering::Relaxed);
+    }
+
+    fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
+        index_to_normalized(normalized_to_index(normalized, E::COUNT), E::COUNT)
+    }
+
+    fn is_discrete(&self) -> bool {
+        true
     }
 
     fn get_plain(&self) -> ParameterValue {
@@ -2925,6 +2974,35 @@ mod tests {
         for text in ["1.5", "3", "-1", "nan", "inf", "D", ""] {
             assert_eq!(param.parse(text), None, "\"{}\"", text);
         }
+
+        assert_stores_as_set(&param);
+        assert!(param.is_discrete());
+    }
+
+    /// Check that `stored_normalized` gives what the parameter returns after
+    /// `set_normalized`, for values on, between and outside its steps.
+    fn assert_stores_as_set(param: &dyn ParameterRef) {
+        for value in [-0.5, 0.0, 0.1, 0.25, 0.3, 0.5, 0.51, 0.7, 0.75, 1.0, 1.5] {
+            param.set_normalized(value);
+            assert_eq!(param.stored_normalized(value), param.get_normalized(), "{}", value);
+        }
+    }
+
+    #[test]
+    fn test_stored_normalized_is_what_set_normalized_stores() {
+        assert_stores_as_set(&FloatParameter::new("Gain", 0.5, 0.0..=1.0));
+        assert_stores_as_set(&IntParameter::new("Steps", 0, 0..=4));
+        assert_stores_as_set(&IntParameter::new("Transpose", 0, -24..=24));
+        assert_stores_as_set(&BoolParameter::new("Enabled", false));
+
+        // A float with steps still stores any value, for its smoother.
+        assert!(!FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_step_size(0.25).is_discrete());
+        assert!(IntParameter::new("Steps", 0, 0..=4).is_discrete());
+        assert!(BoolParameter::new("Enabled", false).is_discrete());
+
+        // A value between two steps stores the nearest step.
+        let steps = IntParameter::new("Steps", 0, 0..=4);
+        assert_eq!(steps.stored_normalized(0.3), 0.25);
     }
 
     #[test]

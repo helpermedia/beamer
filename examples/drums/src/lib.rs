@@ -19,6 +19,8 @@
 //! - Individual synthesis algorithm per drum type
 //! - Per-drum parameter groups
 //! - Sample-accurate MIDI note triggering
+//! - Sample-accurate automation (`sample_accurate_automation` in
+//!   `Config.toml`), since the levels are read once per hit
 //! - Velocity-sensitive response
 //!
 //! # MIDI Note Mapping (GM Standard)

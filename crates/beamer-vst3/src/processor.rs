@@ -41,6 +41,8 @@ use beamer_core::{
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
+use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
+
 use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
 use beamer_core::{WebViewDispatch, WebViewEventQueue};
@@ -98,6 +100,133 @@ fn check_reserved_ids(parameters: &dyn beamer_core::parameter_types::Parameters)
 
 // Program list ID for factory presets
 const FACTORY_PRESETS_LIST_ID: i32 = 0;
+
+/// How many parameter points one process call keeps for the sub-block loop.
+const MAX_PARAMETER_POINTS: usize = 2048;
+
+/// A point of a host parameter queue, applied by the sub-block loop: a
+/// parameter takes `value` at `sample_offset`.
+///
+/// A queue describes a curve through its points, made of segments from one
+/// point to the next (the first from the start of the block). A segment of
+/// one sample is a jump, which a host sends as the old value and the new
+/// value one sample later: the new value applies at its point. A longer
+/// segment is a ramp: its end value applies at its start, so the
+/// parameter's smoother moves towards it during the segment, as for an
+/// Audio Unit ramp. A discrete parameter has no smoother, so a ramp of one
+/// changes it at each sample where the line reaches the next step.
+#[derive(Clone, Copy, Debug)]
+struct ParameterPoint {
+    sample_offset: u32,
+    id: u32,
+    value: f64,
+}
+
+/// What `take_parameter_changes` found besides the parameter points.
+struct TakenChanges {
+    /// The factory preset a program change selected.
+    preset_index: Option<usize>,
+    /// Points did not fit and were left out.
+    overflowed: bool,
+}
+
+/// What the sub-block loop of a process call needs besides its buffers.
+struct BlockInput<'a> {
+    /// The parameter points, sorted by offset.
+    points: &'a [ParameterPoint],
+    /// The MIDI input, sorted by offset.
+    midi_input: &'a mut [MidiEvent],
+    /// Where `process_midi` writes, with the offsets of the whole block.
+    midi_output: &'a mut MidiBuffer,
+    /// The host's transport at the start of the block.
+    transport: Transport,
+    sample_rate: f64,
+}
+
+/// Collect the points of the queue of one parameter into `points`, each at
+/// the sample it applies at (see [`ParameterPoint`]). Returns `false` when
+/// they do not all fit, without growing `points`.
+fn collect_points(
+    parameter: &dyn beamer_core::parameter_types::ParameterRef,
+    id: u32,
+    queue: ComRef<'_, IParamValueQueue>,
+    points: &mut Vec<ParameterPoint>,
+) -> bool {
+    let mut push = |sample_offset: u32, value: f64| {
+        let fits = points.len() < points.capacity();
+        if fits {
+            points.push(ParameterPoint { sample_offset, id, value });
+        }
+        fits
+    };
+
+    // The curve starts at the start of the block, at the value the
+    // parameter holds. `held` is what the parameter holds after the points
+    // so far, and the segment towards the next point starts at the last
+    // point, also one that changed nothing.
+    let mut held = parameter.get_normalized();
+    let mut segment_start = 0;
+    let mut segment_from = held;
+    // SAFETY: queue is a valid ComRef.
+    let point_count = unsafe { queue.getPointCount() };
+    for index in 0..point_count {
+        let mut sample_offset = 0;
+        let mut value = 0.0;
+        // SAFETY: queue is valid, sample_offset and value are valid pointers.
+        if unsafe { queue.getPoint(index, &mut sample_offset, &mut value) } != kResultTrue {
+            continue;
+        }
+        let end = sample_offset.max(0) as u32;
+        let start = std::mem::replace(&mut segment_start, end);
+        let from = std::mem::replace(&mut segment_from, value);
+        let stored = parameter.stored_normalized(value);
+        if stored == held {
+            continue;
+        }
+
+        if end <= start + 1 {
+            // A segment of one sample is a jump, which takes effect at its
+            // point (as do points out of order).
+            if !push(end, value) {
+                return false;
+            }
+            held = stored;
+        } else if parameter.is_discrete() {
+            // A ramp of a discrete parameter: each step applies at the first
+            // sample where the line reaches it.
+            let value_at = |sample: u32| from + (value - from) * f64::from(sample - start) / f64::from(end - start);
+            let mut reached = start;
+            while held != stored {
+                // The line moves one way and `end` is at another step, so a
+                // binary search finds the first sample after `reached` that
+                // is.
+                let (mut low, mut high) = (reached + 1, end);
+                while low < high {
+                    let middle = low + (high - low) / 2;
+                    if parameter.stored_normalized(value_at(middle)) != held {
+                        high = middle;
+                    } else {
+                        low = middle + 1;
+                    }
+                }
+                let step_value = if low == end { value } else { value_at(low) };
+                if !push(low, step_value) {
+                    return false;
+                }
+                held = parameter.stored_normalized(step_value);
+                reached = low;
+            }
+        } else {
+            // A ramp: its end value applies at its start, for the smoother
+            // to move towards.
+            if !push(start, value) {
+                return false;
+            }
+            held = stored;
+        }
+    }
+    true
+}
 
 /// The last value in a parameter queue, which is the value at the end of
 /// the block.
@@ -334,6 +463,9 @@ where
     midi_input_carried: UnsafeCell<bool>,
     /// MIDI output buffer (reused each process call)
     midi_output: UnsafeCell<MidiBuffer>,
+    /// The parameter points of a process call, for the sub-block loop
+    /// (pre-allocated, never grows in `process()`).
+    parameter_points: UnsafeCell<Vec<ParameterPoint>>,
     /// SysEx output buffer pool (for VST3 DataEvent pointer stability)
     sysex_output_pool: UnsafeCell<SysExOutputPool>,
     /// Conversion buffers for f64→f32 processing
@@ -439,6 +571,7 @@ where
             midi_input: UnsafeCell::new(MidiBuffer::new()),
             midi_input_carried: UnsafeCell::new(false),
             midi_output: UnsafeCell::new(MidiBuffer::new()),
+            parameter_points: UnsafeCell::new(Vec::with_capacity(MAX_PARAMETER_POINTS)),
             // Each slot holds a message with its F0 and F7.
             sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
                 config.sysex_slots,
@@ -475,14 +608,26 @@ where
         Some(((value * step_count).round() as usize).min(preset_count - 1))
     }
 
-    /// Apply the parameter changes a host sends with a process call.
+    /// Take the parameter changes a host sends with a process call.
     ///
     /// A change of the program change parameter selects a factory preset.
-    /// It is applied first, before the changes of single parameters in the
-    /// same block. The values of the preset's parameters are then reported in
-    /// `output`, so that the host and the edit controller learn them. Each
-    /// parameter takes the last value of its queue.
-    fn apply_parameter_changes(&self, input: ComRef<'_, IParameterChanges>, output: *mut IParameterChanges) {
+    /// It is applied at once, before the changes of single parameters in the
+    /// same block, and its index is returned for
+    /// [`report_preset_values`](Self::report_preset_values).
+    ///
+    /// The points of the other queues go into `points`, to be applied by the
+    /// sub-block loop (see [`ParameterPoint`] for where each one applies). A
+    /// point that leaves the parameter at the value it holds is left out,
+    /// such as the first of the two points a host sends for a jump, or a
+    /// value between two steps of a discrete parameter that rounds to the
+    /// step it is at. A queue whose points (with the steps of its discrete
+    /// ramps) do not all fit keeps only its last point, at the start of the
+    /// block, which `overflowed` reports.
+    fn take_parameter_changes(
+        &self,
+        input: ComRef<'_, IParameterChanges>,
+        points: &mut Vec<ParameterPoint>,
+    ) -> TakenChanges {
         let model = self.model();
         // SAFETY: input is a valid ComRef.
         let parameter_count = unsafe { input.getParameterCount() };
@@ -506,19 +651,43 @@ where
             }
         }
 
+        let mut overflowed = false;
         for queue in queues() {
             // SAFETY: queue is a valid ComRef.
             let parameter_id = unsafe { queue.getParameterId() };
+            // The program change is applied above. MIDI controller queues
+            // and ids of no parameter are not parameters of the model.
             if parameter_id == PROGRAM_CHANGE_PARAM_ID {
                 continue;
             }
-            if let Some(value) = last_value(queue) {
-                model.set_normalized(parameter_id, value);
+            let Some(parameter) = beamer_core::parameter_types::Parameters::by_id(model, parameter_id) else {
+                continue;
+            };
+            let queue_start = points.len();
+            if !collect_points(parameter, parameter_id, queue, points) {
+                overflowed = true;
+                points.truncate(queue_start);
+                if let Some(value) = last_value(queue) {
+                    if points.len() < points.capacity() {
+                        points.push(ParameterPoint { sample_offset: 0, id: parameter_id, value });
+                    } else {
+                        parameter.set_normalized(value);
+                    }
+                }
             }
         }
 
+        TakenChanges { preset_index, overflowed }
+    }
+
+    /// Report the values of the parameters of the preset at `index` in
+    /// `output`, so that the host and the edit controller learn them. Called
+    /// at the end of the process call that selected the preset, so these are
+    /// the values after its block, with the parameter changes of the block.
+    fn report_preset_values(&self, index: usize, output: *mut IParameterChanges) {
+        let model = self.model();
         // SAFETY: outputParameterChanges may be null; ComRef::from_raw handles this.
-        let (Some(index), Some(output)) = (preset_index, unsafe { ComRef::from_raw(output) }) else {
+        let Some(output) = (unsafe { ComRef::from_raw(output) }) else {
             return;
         };
         for value in Presets::values(index) {
@@ -534,6 +703,18 @@ where
                 // SAFETY: queue is a valid ComRef, the pointer is valid for the call.
                 unsafe { queue.addPoint(0, model.get_normalized(value.id), &mut point_index) };
             }
+        }
+    }
+
+    /// Publish the timing of the processor, if there is one, at the end of
+    /// a process call, after the parameter changes that may have changed it.
+    ///
+    /// Host threads do not touch the processor while audio runs. What they
+    /// want to know about it is published for them with each call.
+    fn publish_timing_if_prepared(&self) {
+        // SAFETY: process() has the processor to itself.
+        if let Some(processor) = unsafe { &*self.processor.get() } {
+            self.publish_timing(processor);
         }
     }
 
@@ -653,6 +834,59 @@ where
     // issue. For now, VST3 hosts are generally compliant.
     // =========================================================================
 
+    /// Run a block of `num_samples` samples through the processor.
+    ///
+    /// With sample-accurate automation the block runs as sub-blocks that
+    /// start at its parameter points; without it every point counts as due
+    /// at the start, so the block runs as one after all of them, in their
+    /// order. Before each sub-block its points are applied and
+    /// `process_midi` gets its MIDI, relative to its start.
+    /// `process_range` then processes the samples `start..start + len`.
+    /// Points at or after the end of the block are applied after the last
+    /// sub-block. MIDI there reaches the last sub-block at its last sample,
+    /// since `num_samples` is not 0 and no sub-block stops the run.
+    fn run_blocks(
+        &self,
+        num_samples: usize,
+        processor: &mut P::Processor,
+        input: BlockInput<'_>,
+        mut process_range: impl FnMut(&mut P::Processor, usize, usize, &CoreProcessContext),
+    ) {
+        let model = self.model();
+        let split = self.config.sample_accurate_automation;
+        let BlockInput { points, midi_input, midi_output, transport, sample_rate } = input;
+
+        let unreached = run_sub_blocks(
+            num_samples,
+            points,
+            |point| if split { point.sample_offset } else { 0 },
+            midi_input,
+            |block| {
+                for point in block.changes {
+                    model.set_normalized(point.id, point.value);
+                }
+
+                // The plugin's MIDI output gets the offsets of the whole block.
+                let output_start = midi_output.len();
+                processor.process_midi(block.midi, midi_output);
+                offset_from_sub_block(&mut midi_output.as_mut_slice()[output_start..], block.start);
+
+                let block_transport = transport.advanced_by(block.start, sample_rate);
+                let context = if let Some(cc_state) = self.midi_cc_state.as_ref() {
+                    CoreProcessContext::with_midi_cc(sample_rate, block.len, block_transport, cc_state)
+                } else {
+                    CoreProcessContext::new(sample_rate, block.len, block_transport)
+                };
+                process_range(processor, block.start, block.len, &context);
+                true
+            },
+        );
+
+        for point in unreached.changes {
+            model.set_normalized(point.id, point.value);
+        }
+    }
+
     /// Process audio at 32-bit (f32) precision.
     ///
     /// This is the standard processing path used when the host uses kSample32.
@@ -663,7 +897,7 @@ where
         process_data: &ProcessData,
         num_samples: usize,
         processor: &mut P::Processor,
-        context: &CoreProcessContext,
+        input: BlockInput<'_>,
     ) {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let storage = unsafe { &mut *self.buffer_storage_f32.get() };
@@ -761,36 +995,37 @@ where
             }
         }
 
-        // Create slices from pointers
-        // SAFETY: Host guarantees channel pointers valid for num_samples elements
-        // for the duration of process().
-        let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
-            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-            unsafe { slice::from_raw_parts(ptr, num_samples) }
-        });
-        let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
-            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-            unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-        });
+        let storage = &*storage;
+        self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
+            // The channels of this sub-block. The host guarantees the channel
+            // pointers valid for num_samples elements for the duration of
+            // process(), and the sub-block lies within them.
+            let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts(ptr.add(start), len) }
+            });
+            let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+            });
 
-        let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-            bus.iter().map(|&ptr| {
-                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-                unsafe { slice::from_raw_parts(ptr, num_samples) }
-            })
-        });
-        let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-            bus.iter().map(|&ptr| {
-                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-            })
-        });
+            let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
+                })
+            });
+            let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+                })
+            });
 
-        // Construct buffers and process
-        let mut buffer = Buffer::new(main_in_iter, main_out_iter, num_samples);
-        let mut aux = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
-
-        processor.process(&mut buffer, &mut aux, context);
+            let mut buffer = Buffer::new(main_in_iter, main_out_iter, len);
+            let mut aux = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, len);
+            processor.process(&mut buffer, &mut aux, context);
+        });
     }
 
     /// Process audio at 64-bit (f64) precision with native plugin support.
@@ -803,7 +1038,7 @@ where
         process_data: &ProcessData,
         num_samples: usize,
         processor: &mut P::Processor,
-        context: &CoreProcessContext,
+        input: BlockInput<'_>,
     ) {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let storage = unsafe { &mut *self.buffer_storage_f64.get() };
@@ -901,37 +1136,37 @@ where
             }
         }
 
-        // Create slices from pointers
-        // SAFETY: Host guarantees channel pointers valid for num_samples elements
-        // for the duration of process().
-        let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
-            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-            unsafe { slice::from_raw_parts(ptr, num_samples) }
-        });
-        let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
-            // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-            unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-        });
+        let storage = &*storage;
+        self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
+            // The channels of this sub-block. The host guarantees the channel
+            // pointers valid for num_samples elements for the duration of
+            // process(), and the sub-block lies within them.
+            let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts(ptr.add(start), len) }
+            });
+            let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
+                // SAFETY: See above.
+                unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+            });
 
-        let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-            bus.iter().map(|&ptr| {
-                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-                unsafe { slice::from_raw_parts(ptr, num_samples) }
-            })
-        });
-        let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-            bus.iter().map(|&ptr| {
-                // SAFETY: Host guarantees buffer pointer valid for num_samples elements.
-                unsafe { slice::from_raw_parts_mut(ptr, num_samples) }
-            })
-        });
+            let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
+                })
+            });
+            let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
+                bus.iter().map(|&ptr| {
+                    // SAFETY: See above.
+                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
+                })
+            });
 
-        // Construct buffers and process
-        let mut buffer: Buffer<f64> = Buffer::new(main_in_iter, main_out_iter, num_samples);
-        let mut aux: AuxiliaryBuffers<f64> =
-            AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, num_samples);
-
-        processor.process_f64(&mut buffer, &mut aux, context);
+            let mut buffer: Buffer<f64> = Buffer::new(main_in_iter, main_out_iter, len);
+            let mut aux: AuxiliaryBuffers<f64> = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, len);
+            processor.process_f64(&mut buffer, &mut aux, context);
+        });
     }
 
     /// Process audio at 64-bit (f64) with conversion to/from f32.
@@ -944,7 +1179,7 @@ where
         process_data: &ProcessData,
         num_samples: usize,
         processor: &mut P::Processor,
-        context: &CoreProcessContext,
+        input: BlockInput<'_>,
     ) {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let conv = unsafe { &mut *self.conversion_buffers.get() };
@@ -1001,26 +1236,25 @@ where
             }
         }
 
-        // Build f32 buffer slices using iterators (no allocation)
-        let main_input_iter = conv.main_input_f32
-            .iter()
-            .map(|v| &v[..num_samples]);
-        let main_output_iter = conv.main_output_f32
-            .iter_mut()
-            .map(|v| &mut v[..num_samples]);
+        self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
+            // The f32 slices of this sub-block (no allocation).
+            let range = start..start + len;
+            let main_input_iter = conv.main_input_f32.iter().map(|v| &v[range.clone()]);
+            let main_output_iter = conv.main_output_f32.iter_mut().map(|v| &mut v[range.clone()]);
 
-        let aux_input_iter = conv.aux_input_f32
-            .iter()
-            .map(|bus| bus.iter().map(|v| &v[..num_samples]));
-        let aux_output_iter = conv.aux_output_f32
-            .iter_mut()
-            .map(|bus| bus.iter_mut().map(|v| &mut v[..num_samples]));
+            let aux_input_iter = conv
+                .aux_input_f32
+                .iter()
+                .map(|bus| bus.iter().map(|v| &v[range.clone()]));
+            let aux_output_iter = conv
+                .aux_output_f32
+                .iter_mut()
+                .map(|bus| bus.iter_mut().map(|v| &mut v[range.clone()]));
 
-        // Construct f32 buffers and process
-        let mut buffer = Buffer::new(main_input_iter, main_output_iter, num_samples);
-        let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, num_samples);
-
-        processor.process(&mut buffer, &mut aux, context);
+            let mut buffer = Buffer::new(main_input_iter, main_output_iter, len);
+            let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, len);
+            processor.process(&mut buffer, &mut aux, context);
+        });
 
         // Convert main output f32 → f64
         if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
@@ -1615,20 +1849,22 @@ where
             self.model().reset_smoothing();
         }
 
-        // 1. Handle incoming parameter changes from host. This needs the
-        // parameters only, so it also works for a call without samples.
+        // 1. Take the parameter changes from the host: a preset change is
+        // applied now, the points of the other parameters are applied at
+        // their offsets while the block runs (see `run_blocks`).
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let points = unsafe { &mut *self.parameter_points.get() };
+        points.clear();
+        let mut preset_index = None;
         // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
         if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
-            self.apply_parameter_changes(parameter_changes, process_data.outputParameterChanges);
+            let taken = self.take_parameter_changes(parameter_changes, points);
+            if taken.overflowed {
+                self.process_warnings.note(ProcessWarning::ParameterEventOverflow);
+            }
+            preset_index = taken.preset_index;
         }
-
-        // Host threads do not touch the processor while audio runs. What they
-        // want to know about it is published for them with each call, after
-        // the parameter changes that may have changed it.
-        // SAFETY: process() has the processor to itself.
-        if let Some(processor) = unsafe { &*self.processor.get() } {
-            self.publish_timing(processor);
-        }
+        sort_by_offset(points, |point| point.sample_offset);
 
         // 2. Handle MIDI events (reuse pre-allocated buffer to avoid stack overflow)
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
@@ -1709,11 +1945,18 @@ where
 
         // A host sends a block without samples to flush parameter changes
         // while it does not process audio. The parameter values are applied
-        // above. Its MIDI events, including the controller changes that came
-        // as parameter changes, stay in the buffer at the start of the next
-        // block with samples: `process_midi` runs right before a `process()`
-        // call, with the events of that call.
+        // here, in their order. Its MIDI events, including the controller
+        // changes that came as parameter changes, stay in the buffer at the
+        // start of the next block with samples: `process_midi` runs right
+        // before a `process()` call, with the events of that call.
         if num_samples == 0 {
+            for point in points.iter() {
+                self.model().set_normalized(point.id, point.value);
+            }
+            if let Some(index) = preset_index {
+                self.report_preset_values(index, process_data.outputParameterChanges);
+            }
+            self.publish_timing_if_prepared();
             *carried = true;
             return kResultOk;
         }
@@ -1756,10 +1999,47 @@ where
         }
         // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
-        // Process MIDI events (process_midi is on Processor)
+        // 3. Extract transport info from VST3 ProcessContext
+        // SAFETY: processContext may be null; extract_transport handles this.
+        let transport = unsafe { extract_transport(process_data.processContext) };
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let sample_rate = unsafe { *self.sample_rate.get() };
+
+        // The sub-blocks take the MIDI in order of its offsets. The
+        // controller changes that came as parameter changes follow the
+        // host's events in the buffer.
+        sort_by_offset(midi_input.as_mut_slice(), |event| event.sample_offset);
+        let input = BlockInput {
+            points,
+            midi_input: midi_input.as_mut_slice(),
+            midi_output: &mut *midi_output,
+            transport,
+            sample_rate,
+        };
+
+        // 4. Process audio based on sample size: the parameter points, MIDI
+        // and audio of the block run through `run_blocks`.
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let symbolic_sample_size = unsafe { *self.symbolic_sample_size.get() };
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let processor = unsafe { self.processor_mut() };
-        processor.process_midi(midi_input.as_slice(), midi_output);
+
+        if symbolic_sample_size == SymbolicSampleSizes_::kSample64 as i32 {
+            // 64-bit processing path
+            if processor.supports_double_precision() {
+                // Native f64: extract f64 buffers and call process_f64()
+                // SAFETY: process_data is valid, processor is valid mutable reference.
+                unsafe { self.process_audio_f64_native(process_data, num_samples, processor, input) };
+            } else {
+                // Conversion: f64→f32, process, f32→f64
+                // SAFETY: process_data is valid, processor is valid mutable reference.
+                unsafe { self.process_audio_f64_converted(process_data, num_samples, processor, input) };
+            }
+        } else {
+            // 32-bit processing path (default)
+            // SAFETY: process_data is valid, processor is valid mutable reference.
+            unsafe { self.process_audio_f32(process_data, num_samples, processor, input) };
+        }
 
         // Write output MIDI events
         // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
@@ -1782,40 +2062,10 @@ where
             self.process_warnings.note(ProcessWarning::SysExOutputOverflow);
         }
 
-        // 3. Extract transport info from VST3 ProcessContext
-        // SAFETY: processContext may be null; extract_transport handles this.
-        let transport = unsafe { extract_transport(process_data.processContext) };
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let sample_rate = unsafe { *self.sample_rate.get() };
-        let context = if let Some(cc_state) = self.midi_cc_state.as_ref() {
-            CoreProcessContext::with_midi_cc(sample_rate, num_samples, transport, cc_state)
-        } else {
-            CoreProcessContext::new(sample_rate, num_samples, transport)
-        };
-
-        // 4. Process audio based on sample size
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let symbolic_sample_size = unsafe { *self.symbolic_sample_size.get() };
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let processor = unsafe { self.processor_mut() };
-
-        if symbolic_sample_size == SymbolicSampleSizes_::kSample64 as i32 {
-            // 64-bit processing path
-            if processor.supports_double_precision() {
-                // Native f64: extract f64 buffers and call process_f64()
-                // SAFETY: process_data is valid, processor is valid mutable reference.
-                unsafe { self.process_audio_f64_native(process_data, num_samples, processor, &context) };
-            } else {
-                // Conversion: f64→f32, process, f32→f64
-                // SAFETY: process_data is valid, processor is valid mutable reference.
-                unsafe { self.process_audio_f64_converted(process_data, num_samples, processor, &context) };
-            }
-        } else {
-            // 32-bit processing path (default)
-            // SAFETY: process_data is valid, processor is valid mutable reference.
-            unsafe { self.process_audio_f32(process_data, num_samples, processor, &context) };
+        if let Some(index) = preset_index {
+            self.report_preset_values(index, process_data.outputParameterChanges);
         }
-
+        self.publish_timing_if_prepared();
         kResultOk
     }
 
@@ -3973,23 +4223,23 @@ mod tests {
         assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
     }
 
-    /// The change of one parameter to one value at the start of a block.
-    struct OneChange {
+    /// The points of one parameter in a block, as (sample offset, value).
+    struct PointQueue {
         id: u32,
-        value: f64,
+        points: Vec<(int32, f64)>,
     }
 
-    impl Class for OneChange {
+    impl Class for PointQueue {
         type Interfaces = (IParamValueQueue,);
     }
 
-    impl IParamValueQueueTrait for OneChange {
+    impl IParamValueQueueTrait for PointQueue {
         unsafe fn getParameterId(&self) -> ParamID {
             self.id
         }
 
         unsafe fn getPointCount(&self) -> int32 {
-            1
+            self.points.len() as int32
         }
 
         unsafe fn getPoint(
@@ -3998,13 +4248,14 @@ mod tests {
             sample_offset: *mut int32,
             value: *mut ParamValue,
         ) -> tresult {
-            if index != 0 {
+            let Some(&(offset, point_value)) = usize::try_from(index).ok().and_then(|i| self.points.get(i))
+            else {
                 return kResultFalse;
-            }
+            };
             // SAFETY: The caller provides valid pointers.
             unsafe {
-                *sample_offset = 0;
-                *value = self.value;
+                *sample_offset = offset;
+                *value = point_value;
             }
             kResultOk
         }
@@ -4046,12 +4297,19 @@ mod tests {
         process_with(wrapper, frames, changes.as_ptr(), std::ptr::null_mut());
     }
 
-    /// The parameter changes of a block, one value per parameter.
+    /// The parameter changes of a block, one value per parameter at its
+    /// start.
     fn changes_of(values: &[(u32, f64)]) -> vst3::ComPtr<IParameterChanges> {
-        let queues = values
+        let queues: Vec<_> = values.iter().map(|&(id, value)| (id, vec![(0, value)])).collect();
+        changes_with_points(&queues)
+    }
+
+    /// The parameter changes of a block, with the points of each parameter.
+    fn changes_with_points(queues: &[(u32, Vec<(int32, f64)>)]) -> vst3::ComPtr<IParameterChanges> {
+        let queues = queues
             .iter()
-            .map(|&(id, value)| {
-                vst3::ComWrapper::new(OneChange { id, value })
+            .map(|(id, points)| {
+                vst3::ComWrapper::new(PointQueue { id: *id, points: points.clone() })
                     .to_com_ptr::<IParamValueQueue>()
                     .expect("the queue is an IParamValueQueue")
             })
@@ -4208,6 +4466,429 @@ mod tests {
         assert_eq!(unsafe { wrapper.getParamNormalized(GAIN_ID) }, 0.4);
         // The host learns the value the gain has after the block.
         assert_eq!(output.reported(), [(GAIN_ID, vec![(0, 0.4)])]);
+    }
+
+    thread_local! {
+        /// Each process() call of a `SplitProcessor` on this thread: its
+        /// length, the gain during it and the offsets of its MIDI.
+        static SPLIT_CALLS: std::cell::RefCell<Vec<(usize, f64, Vec<u32>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        /// The step of the stepped parameter during each of those calls.
+        static SPLIT_STEPS: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// Whether the next `SplitProcessor` processes 64-bit samples itself.
+        static SPLIT_DOUBLE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    const STEPS_ID: u32 = 2;
+
+    /// A gain and a parameter of five steps.
+    struct SplitParameters {
+        gain: FloatParameter,
+        steps: beamer_core::IntParameter,
+    }
+
+    impl Default for SplitParameters {
+        fn default() -> Self {
+            Self {
+                gain: FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_id(GAIN_ID),
+                steps: beamer_core::IntParameter::new("Steps", 0, 0..=4).with_id(STEPS_ID),
+            }
+        }
+    }
+
+    impl ParameterGroups for SplitParameters {}
+
+    impl Parameters for SplitParameters {
+        fn count(&self) -> usize {
+            2
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new([&self.gain as &dyn ParameterRef, &self.steps as &dyn ParameterRef].into_iter())
+        }
+        fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
+            match id {
+                GAIN_ID => Some(&self.gain),
+                STEPS_ID => Some(&self.steps),
+                _ => None,
+            }
+        }
+    }
+
+    impl beamer_core::Saved for SplitParameters {}
+
+    impl beamer_core::WebViewEvents for SplitParameters {}
+
+    /// A plugin with a gain, a stepped parameter, the mod wheel as MIDI and
+    /// an aux bus each way, which records its process() calls and writes
+    /// each input sample plus the gain to its output.
+    #[derive(Default)]
+    struct SplitModel {
+        parameters: SplitParameters,
+    }
+
+    struct SplitProcessor {
+        model: Arc<SplitModel>,
+        midi_offsets: Vec<u32>,
+        double: bool,
+    }
+
+    beamer_core::__forward_model!(SplitModel, parameters);
+
+    impl Model for SplitModel {
+        type Setup = ();
+        type Processor = SplitProcessor;
+
+        fn prepare(self: Arc<Self>, _setup: ()) -> SplitProcessor {
+            SplitProcessor {
+                model: self,
+                midi_offsets: Vec::new(),
+                double: SPLIT_DOUBLE.with(Cell::get),
+            }
+        }
+
+        fn wants_midi(&self) -> bool {
+            true
+        }
+
+        fn midi_cc_config(&self) -> Option<beamer_core::MidiCcConfig> {
+            Some(beamer_core::MidiCcConfig::new().with_mod_wheel())
+        }
+
+        fn input_bus_count(&self) -> usize {
+            2
+        }
+
+        fn output_bus_count(&self) -> usize {
+            2
+        }
+
+        fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+            match index {
+                0 => Some(CoreBusInfo::stereo("Input")),
+                1 => Some(CoreBusInfo::aux("Aux Input", 2)),
+                _ => None,
+            }
+        }
+
+        fn output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+            match index {
+                0 => Some(CoreBusInfo::stereo("Output")),
+                1 => Some(CoreBusInfo::aux("Aux Output", 2)),
+                _ => None,
+            }
+        }
+    }
+
+    /// Write each input sample plus `gain` to the output of the same bus
+    /// and channel, for the main bus and the first aux bus.
+    fn add_gain<S: beamer_core::Sample>(
+        buffer: &mut beamer_core::Buffer<S>,
+        aux: &mut beamer_core::AuxiliaryBuffers<S>,
+        gain: f64,
+    ) {
+        for (input, output) in buffer.zip_channels() {
+            for (input, output) in input.iter().zip(output.iter_mut()) {
+                *output = S::from_f64(input.to_f64() + gain);
+            }
+        }
+
+        let aux_inputs: Vec<Vec<f64>> = aux
+            .input(0)
+            .map(|bus| bus.iter_inputs().map(|channel| channel.iter().map(|sample| sample.to_f64()).collect()).collect())
+            .unwrap_or_default();
+        if let Some(mut bus) = aux.output(0) {
+            for (input, output) in aux_inputs.iter().zip(bus.iter_outputs()) {
+                for (input, output) in input.iter().zip(output.iter_mut()) {
+                    *output = S::from_f64(input + gain);
+                }
+            }
+        }
+    }
+
+    impl SplitProcessor {
+        /// Record a process() call of `len` samples, and return the gain
+        /// during it.
+        fn record(&mut self, len: usize) -> f64 {
+            let gain = self.model.parameters.gain.get_normalized();
+            let offsets = std::mem::take(&mut self.midi_offsets);
+            SPLIT_CALLS.with(|calls| calls.borrow_mut().push((len, gain, offsets)));
+            SPLIT_STEPS.with(|steps| steps.borrow_mut().push(self.model.parameters.steps.get()));
+            gain
+        }
+    }
+
+    impl Processor for SplitProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut beamer_core::Buffer,
+            aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+            let gain = self.record(buffer.num_samples());
+            add_gain(buffer, aux, gain);
+        }
+
+        fn supports_double_precision(&self) -> bool {
+            self.double
+        }
+
+        fn process_f64(
+            &mut self,
+            buffer: &mut beamer_core::Buffer<f64>,
+            aux: &mut beamer_core::AuxiliaryBuffers<f64>,
+            _context: &CoreProcessContext,
+        ) {
+            let gain = self.record(buffer.num_samples());
+            add_gain(buffer, aux, gain);
+        }
+
+        fn process_midi(&mut self, input: &[beamer_core::MidiEvent], _output: &mut beamer_core::MidiBuffer) {
+            self.midi_offsets.extend(input.iter().map(|event| event.sample_offset));
+        }
+    }
+
+    static SPLIT_CONFIG: Config =
+        Config::new("Split Test", Category::Effect, "Test", "splt").with_sample_accurate_automation();
+    static WHOLE_CONFIG: Config = Config::new("Whole Test", Category::Effect, "Test", "whol");
+
+    /// How a test block hands its samples to the plugin.
+    #[derive(Clone, Copy)]
+    enum SampleFormat {
+        Float32,
+        /// 64-bit samples the plugin processes itself.
+        Float64,
+        /// 64-bit samples the wrapper converts for a 32-bit plugin.
+        Float64Converted,
+    }
+
+    /// The process() calls of a block, the step during each and the
+    /// channels of the main and the aux output.
+    struct SplitRun {
+        calls: Vec<(usize, f64, Vec<u32>)>,
+        steps: Vec<i64>,
+        outputs: [[Vec<f64>; 2]; 2],
+    }
+
+    /// The input of a test block at `index` of a channel of a bus (0 for
+    /// the main bus, 1 for the aux bus): every sample of every channel
+    /// differs.
+    fn split_input(bus: usize, channel: usize, index: usize) -> f64 {
+        (200 * bus + 100 * channel + index) as f64
+    }
+
+    /// Run one block of 64 frames with the parameter queues and a mod wheel
+    /// change at sample 40.
+    fn split_run(
+        config: &'static Config,
+        format: SampleFormat,
+        queues: &[(u32, Vec<(int32, f64)>)],
+    ) -> SplitRun {
+        const FRAMES: usize = 64;
+        let double = !matches!(format, SampleFormat::Float32);
+        let sample_size = if double { SymbolicSampleSizes_::kSample64 } else { SymbolicSampleSizes_::kSample32 };
+
+        SPLIT_DOUBLE.with(|split_double| split_double.set(matches!(format, SampleFormat::Float64)));
+        let wrapper = Vst3Processor::<SplitModel>::new(config);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: sample_size as int32,
+            maxSamplesPerBlock: FRAMES as int32,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        SPLIT_CALLS.with(|calls| calls.borrow_mut().clear());
+        SPLIT_STEPS.with(|steps| steps.borrow_mut().clear());
+
+        let mut queues = queues.to_vec();
+        queues.push((MidiCcState::parameter_id(1), vec![(40, 0.5)]));
+        let changes = changes_with_points(&queues);
+
+        // The buffers of the main and the aux bus, each with two channels,
+        // with the input of `split_input`.
+        let mut input32 = [[[0.0f32; FRAMES]; 2]; 2];
+        let mut output32 = [[[0.0f32; FRAMES]; 2]; 2];
+        let mut input64 = [[[0.0f64; FRAMES]; 2]; 2];
+        let mut output64 = [[[0.0f64; FRAMES]; 2]; 2];
+        for bus in 0..2 {
+            for channel in 0..2 {
+                for index in 0..FRAMES {
+                    let value = split_input(bus, channel, index);
+                    input32[bus][channel][index] = value as f32;
+                    input64[bus][channel][index] = value;
+                }
+            }
+        }
+        let mut input32_channels = input32.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut output32_channels = output32.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut input64_channels = input64.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut output64_channels = output64.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let bus_buffers = |channels32: &mut [*mut f32; 2], channels64: &mut [*mut f64; 2]| AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: if double {
+                AudioBusBuffers__type0 { channelBuffers64: channels64.as_mut_ptr() }
+            } else {
+                AudioBusBuffers__type0 { channelBuffers32: channels32.as_mut_ptr() }
+            },
+        };
+        let [main32, aux32] = &mut input32_channels;
+        let [main64, aux64] = &mut input64_channels;
+        let mut input_buses = [bus_buffers(main32, main64), bus_buffers(aux32, aux64)];
+        let [main32, aux32] = &mut output32_channels;
+        let [main64, aux64] = &mut output64_channels;
+        let mut output_buses = [bus_buffers(main32, main64), bus_buffers(aux32, aux64)];
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: sample_size as int32,
+            numSamples: FRAMES as int32,
+            numInputs: 2,
+            numOutputs: 2,
+            inputs: input_buses.as_mut_ptr(),
+            outputs: output_buses.as_mut_ptr(),
+            inputParameterChanges: changes.as_ptr(),
+            outputParameterChanges: std::ptr::null_mut(),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: std::ptr::null_mut(),
+        };
+        // SAFETY: The data and its buffers are valid for the call.
+        assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+
+        let outputs = [0, 1].map(|bus| {
+            [0, 1].map(|channel| {
+                if double {
+                    output64[bus][channel].to_vec()
+                } else {
+                    output32[bus][channel].map(f64::from).to_vec()
+                }
+            })
+        });
+        SplitRun {
+            calls: SPLIT_CALLS.with(|calls| calls.borrow().clone()),
+            steps: SPLIT_STEPS.with(|steps| steps.borrow().clone()),
+            outputs,
+        }
+    }
+
+    /// The process() calls of a 32-bit block with the gain points.
+    fn split_calls(config: &'static Config, gain_points: Vec<(int32, f64)>) -> Vec<(usize, f64, Vec<u32>)> {
+        split_run(config, SampleFormat::Float32, &[(GAIN_ID, gain_points)]).calls
+    }
+
+    #[test]
+    fn test_a_jump_splits_the_block_once() {
+        // A host sends a jump as the old value and the new value one sample
+        // later. The old value changes nothing and makes no sub-block. The
+        // first half runs with the old gain, the second with the new one
+        // and gets the mod wheel at 40 relative to its start.
+        let calls = split_calls(&SPLIT_CONFIG, vec![(31, 0.5), (32, 0.8)]);
+        assert_eq!(calls, [(32, 0.5, vec![]), (32, 0.8, vec![8])]);
+    }
+
+    #[test]
+    fn test_a_ramp_applies_its_end_value_at_its_start() {
+        // A ramp across the block, and one from the start of the block to a
+        // point inside it, run as one call that moves towards the end
+        // value.
+        for points in [vec![(0, 0.5), (63, 0.8)], vec![(32, 0.8)]] {
+            let calls = split_calls(&SPLIT_CONFIG, points);
+            assert_eq!(calls, [(64, 0.8, vec![40])]);
+        }
+    }
+
+    #[test]
+    fn test_a_curve_splits_at_its_inner_points() {
+        // Each segment applies its end value at its start.
+        let calls = split_calls(&SPLIT_CONFIG, vec![(0, 0.5), (20, 0.6), (40, 0.7), (63, 0.8)]);
+        assert_eq!(calls, [(20, 0.6, vec![]), (20, 0.7, vec![]), (24, 0.8, vec![0])]);
+
+        // A ramp after a jump starts with the jump.
+        let calls = split_calls(&SPLIT_CONFIG, vec![(31, 0.5), (32, 0.8), (63, 0.6)]);
+        assert_eq!(calls, [(32, 0.5, vec![]), (32, 0.6, vec![8])]);
+    }
+
+    #[test]
+    fn test_a_point_that_keeps_the_step_makes_no_sub_block() {
+        // 0.05 rounds to the step the parameter is at.
+        let run = split_run(&SPLIT_CONFIG, SampleFormat::Float32, &[(STEPS_ID, vec![(31, 0.05)])]);
+        assert_eq!(run.calls.len(), 1);
+
+        // The old value of a jump, sent between two steps, splits nothing.
+        let run = split_run(&SPLIT_CONFIG, SampleFormat::Float32, &[(STEPS_ID, vec![(31, 0.1), (32, 0.25)])]);
+        assert_eq!(lengths(&run), [32, 32]);
+        assert_eq!(run.steps, [0, 1]);
+    }
+
+    /// The length of each process() call of a run.
+    fn lengths(run: &SplitRun) -> Vec<usize> {
+        run.calls.iter().map(|call| call.0).collect()
+    }
+
+    #[test]
+    fn test_a_discrete_ramp_changes_where_it_reaches_a_step() {
+        // A ramp from step 0 at the start to step 1 at sample 32 reaches
+        // the middle between them at sample 16.
+        let run = split_run(&SPLIT_CONFIG, SampleFormat::Float32, &[(STEPS_ID, vec![(32, 0.25)])]);
+        assert_eq!(lengths(&run), [16, 48]);
+        assert_eq!(run.steps, [0, 1]);
+
+        // A ramp over all five steps takes each where the line reaches it.
+        let run = split_run(&SPLIT_CONFIG, SampleFormat::Float32, &[(STEPS_ID, vec![(0, 0.0), (63, 1.0)])]);
+        assert_eq!(lengths(&run), [8, 16, 16, 16, 8]);
+        assert_eq!(run.steps, [0, 1, 2, 3, 4]);
+
+        // And down again.
+        let run = split_run(&SPLIT_CONFIG, SampleFormat::Float32, &[(STEPS_ID, vec![(0, 1.0), (63, 0.0)])]);
+        assert_eq!(run.steps.first(), Some(&4));
+        assert_eq!(run.steps.last(), Some(&0));
+        assert_eq!(run.steps.len(), 5);
+    }
+
+    #[test]
+    fn test_without_sample_accurate_automation_the_block_is_one_call() {
+        // The gain changes before the block, and the block gets the mod
+        // wheel at its offset in the block.
+        let calls = split_calls(&WHOLE_CONFIG, vec![(31, 0.5), (32, 0.8)]);
+        assert_eq!(calls, [(64, 0.8, vec![40])]);
+    }
+
+    #[test]
+    fn test_a_queue_that_does_not_fit_takes_its_last_value_at_the_start() {
+        let points = (0..MAX_PARAMETER_POINTS as int32 + 1)
+            .map(|index| (index % 64, f64::from(index % 2) * 0.25 + 0.25))
+            .collect::<Vec<_>>();
+        let last = points.last().unwrap().1;
+        // The gain makes no sub-block, and MIDI does not split a block.
+        let calls = split_calls(&SPLIT_CONFIG, points);
+        assert_eq!(calls, [(64, last, vec![40])]);
+    }
+
+    #[test]
+    fn test_each_sub_block_reads_and_writes_its_own_samples() {
+        // In each sample format and on each channel of the main and the aux
+        // bus, every output sample is its own input sample plus the gain:
+        // the old gain before the jump and the new one from it on.
+        for format in [SampleFormat::Float32, SampleFormat::Float64, SampleFormat::Float64Converted] {
+            let run = split_run(&SPLIT_CONFIG, format, &[(GAIN_ID, vec![(31, 0.5), (32, 0.8)])]);
+            assert_eq!(run.calls.len(), 2);
+            for (bus, channels) in run.outputs.iter().enumerate() {
+                for (channel, output) in channels.iter().enumerate() {
+                    for (index, sample) in output.iter().enumerate() {
+                        let gain = if index < 32 { 0.5 } else { 0.8 };
+                        let expected = split_input(bus, channel, index) + gain;
+                        assert!(
+                            (sample - expected).abs() < 1e-4,
+                            "bus {} channel {} sample {} is {}",
+                            bus,
+                            channel,
+                            index,
+                            sample
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A stream in memory, like the one a host hands to getState and setState.

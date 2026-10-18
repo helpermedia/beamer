@@ -41,6 +41,9 @@ pub struct ConfigFile {
     /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
     #[serde(default)]
     pub gui_background_color: Option<String>,
+    /// Apply host automation at the sample it is meant for (default: false).
+    #[serde(default)]
+    pub sample_accurate_automation: Option<bool>,
     /// How much the plugin logs to the system log: "error", "warn", "info",
     /// "debug" or "trace". Without it the plugin installs no logger.
     #[serde(default)]

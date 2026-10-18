@@ -407,7 +407,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - `AUParameterTree` built from `ParameterStore`
 - `implementorValueObserver` - Host → plugin changes
 - `implementorValueProvider` - Plugin → host reads
-- Automation via `AURenderEventParameter`/`ParameterRamp` (sample-accurate via sub-block processing)
+- Automation via `AURenderEventParameter`/`ParameterRamp` (a ramp as a change to its end value; sample-accurate with `sample_accurate_automation`, see below)
 
 **State**: NSDictionary with NSData
 - The state is the model with its parameters and `State` fields (`Saved::save_state`/`load_state`), prepared or not
@@ -458,7 +458,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **MIDI Output** | ✓ (instruments/MIDI effects only) | ✓ |
 | **SysEx Output** | ✓ | ✓ (pool) |
 | **Parameter Sync** | Push (KVO callbacks) | Pull (COM methods) |
-| **Param Automation** | Sample-accurate (sub-block) | Buffer-quantized + smoothing |
+| **Param Automation** | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` |
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |
 | **f64 Conversion** | Pre-allocated | Pre-allocated |
 | **State Format** | NSDictionary | Binary blob |
@@ -469,7 +469,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 
 The format wrappers are thin translation layers: all DSP, parameter, MIDI event, buffer and transport logic lives in `beamer-core`, and only the host-facing API code differs per format.
 
-**Parameter automation.** The AU wrapper applies automation sample-accurately: it splits the render buffer at parameter event boundaries and rebases MIDI events to each sub-block. The VST3 wrapper applies the last queued value at the start of each buffer and relies on the `Smoother` infrastructure to avoid zipper noise. That is buffer-quantized, which is imperceptible for most plugins but not for very fast parameter modulation or sample-accurate gate and trigger parameters. Bringing the VST3 wrapper to parity through the same sub-block processing is planned, with low priority.
+**Parameter automation.** By default both wrappers apply the parameter changes of a host block before one `process()` call for the whole block, so a change lands up to a block early and the parameter's `Smoother` hides the step. A plugin that sets `sample_accurate_automation = true` in `Config.toml` gets each change at its sample: the wrapper runs the block as sub-blocks that start at the changes, with the loop in `beamer_core::sub_blocks` that both formats share. Each sub-block gets its own `process_midi()` and `process()` call, with its MIDI relative to its start and the transport moved to its first sample. A ramp's end value applies at the start of the ramp, for the smoother to move towards: an AU ramp event, or a VST3 queue segment between two points. A VST3 segment of one sample is a jump (sent as the old value and the new value one sample later), whose new value applies at its point, and a point that leaves the parameter at the value it holds is left out, so a jump splits a block once and a ramp across a block not at all. A discrete parameter has no smoother, so a VST3 ramp changes it at each sample where the line reaches the next step (`ParameterRef::is_discrete`). MIDI at or after the end of a block reaches the last sub-block at its last sample. It matters for parameters read at events, such as a setting applied per note, and costs extra `process()` calls while automation moves.
 
 ---
 

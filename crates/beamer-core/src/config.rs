@@ -368,6 +368,12 @@ pub struct Config {
     /// its F0 and F7 (AU and VST3).
     pub sysex_buffer_size: usize,
 
+    /// Apply host automation at the sample it is meant for, by running a
+    /// host block as sub-blocks that start at the parameter changes (AU
+    /// and VST3). Without it every change of a block is applied before one
+    /// `process()` call for the whole block.
+    pub sample_accurate_automation: bool,
+
     /// How much the plugin logs, or nothing for no logger (see
     /// [`logging`](crate::logging)).
     pub log_level: Option<crate::logging::LogLevel>,
@@ -536,6 +542,7 @@ impl Config {
             vst3_controller_id: None,
             sysex_slots: DEFAULT_SYSEX_SLOTS,
             sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
+            sample_accurate_automation: false,
             log_level: None,
             log_subsystem: "",
             gui_assets: None,
@@ -669,6 +676,15 @@ impl Config {
     #[doc(hidden)]
     pub const fn with_sysex_buffer_size(mut self, size: usize) -> Self {
         self.sysex_buffer_size = size;
+        self
+    }
+
+    /// Apply host automation sample-accurately (see
+    /// [`sample_accurate_automation`](Self::sample_accurate_automation)).
+    /// `#[beamer::export]` sets it from `sample_accurate_automation` in
+    /// `Config.toml`.
+    pub const fn with_sample_accurate_automation(mut self) -> Self {
+        self.sample_accurate_automation = true;
         self
     }
 
