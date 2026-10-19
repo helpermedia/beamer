@@ -121,11 +121,11 @@ pub use plugin::{
     HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
     Midi2Assignment, MidiControllerAssignment, Model, PluginSetup, ProcessMode, Processor, SampleRate,
 };
-pub use preset::{fnv1a_hash, FactoryPresets, NoPresets, PresetInfo, PresetValue};
+pub use preset::Preset;
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use sysex_pool::SysExOutputPool;
-pub use types::{ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
+pub use types::{fnv1a_hash, ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
 pub use webview_events::WebViewEventQueue;
 #[doc(hidden)]
 pub use webview_dispatch::WebViewDispatch;

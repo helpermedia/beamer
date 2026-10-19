@@ -14,8 +14,8 @@
 /// # Arguments
 ///
 /// * `$config` - The [`beamer_core::Config`] static containing all plugin metadata
-/// * `$plugin` - The model type implementing the [`beamer_core::Model`] trait
-/// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
+/// * `$plugin` - The model type implementing the [`beamer_core::Model`] trait,
+///   with its factory presets in `Model::PRESETS`
 ///
 /// # Example
 ///
@@ -25,18 +25,11 @@
 /// static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 ///     .with_vendor("My Company");
 ///
-/// // Without presets
 /// export_vst3!(CONFIG, MyPlugin);
-///
-/// // With presets
-/// export_vst3!(CONFIG, MyPlugin, MyPresets);
 /// ```
-///
-/// [`FactoryPresets`]: beamer_core::FactoryPresets
 #[macro_export]
 macro_rules! export_vst3 {
-    // With explicit presets type
-    ($config:expr, $plugin:ty, $presets:ty) => {
+    ($config:expr, $plugin:ty) => {
         // Platform-specific entry points
 
         #[cfg(target_os = "windows")]
@@ -70,7 +63,7 @@ macro_rules! export_vst3 {
             use $crate::vst3::ComWrapper;
             use $crate::Factory;
 
-            let factory = Factory::<$crate::Vst3Processor<$plugin, $presets>>::new(&$config);
+            let factory = Factory::<$crate::Vst3Processor<$plugin>>::new(&$config);
             let wrapper = ComWrapper::new(factory);
 
             wrapper
@@ -78,10 +71,5 @@ macro_rules! export_vst3 {
                 .unwrap()
                 .into_raw() as *mut std::ffi::c_void
         }
-    };
-
-    // Without presets (default to NoPresets)
-    ($config:expr, $plugin:ty) => {
-        $crate::export_vst3!($config, $plugin, $crate::NoPresets<$plugin>);
     };
 }

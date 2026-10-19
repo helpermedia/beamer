@@ -134,10 +134,6 @@ pub use processor::AuProcessor;
 #[cfg(target_os = "macos")]
 pub use render::{AuParameterEvent, ParameterEventBuffer};
 
-// Re-exports for factory presets support (used by export_au! macro)
-#[cfg(target_os = "macos")]
-pub use beamer_core::{FactoryPresets, NoPresets};
-
 // C-ABI bridge exports for hybrid AU architecture
 #[cfg(target_os = "macos")]
 pub use bridge::{

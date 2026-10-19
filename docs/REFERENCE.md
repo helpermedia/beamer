@@ -169,12 +169,11 @@ impl Processor for GainProcessor {
 
 The `#[beamer::export]` macro on the model struct reads `Config.toml` from the crate root at compile time and generates:
 - `pub static CONFIG: Config` from the TOML configuration
-- Optional factory presets from `Presets.toml` (if present)
 - Format-specific plugin entry points for AU and VST3
 
 `#[beamer::export]` and `#[beamer::model]` can be written in either order.
 
-See [Plugin Configuration](#plugin-configuration) for the Config.toml format and [Factory Presets](#factory-presets) for Presets.toml.
+See [Plugin Configuration](#plugin-configuration) for the Config.toml format and [Factory Presets](#factory-presets) for presets.
 
 The following sections cover [Parameters](#parameters), the [Model trait](#model-trait) and the [Processor trait](#processor-trait).
 
@@ -613,7 +612,6 @@ The path is used in every place that names a parameter:
 |-------|--------------|
 | Host (automation, parameter list) | The FNV-1a hash of the path, a `u32`. Read it with `model.filter.cutoff.id()`. |
 | Saved state | The path |
-| `Presets.toml` | The path as key |
 | WebView | The path as `stringId` |
 
 The same nested group can therefore be used in several fields. Each use has its own paths and its own host ids:
@@ -822,7 +820,7 @@ impl ParameterInfo {
 
 ### Model Trait
 
-The `Model` trait is implemented by the model struct: what every thread shares, and the plugin as the host sees it (buses and MIDI behavior). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
+The `Model` trait is implemented by the model struct: what every thread shares, and the plugin as the host sees it (buses, MIDI behavior and factory presets). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
 
 ```rust
 pub trait Model: Saved + WebViewEvents + Default + 'static {
@@ -831,6 +829,9 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     /// The prepared processor type
     type Processor: Processor;
+
+    /// The factory presets, none by default (see Factory Presets).
+    const PRESETS: &'static [Preset<Self>] = &[];
 
     /// Create a processor for the audio setup. Runs on a host thread and may
     /// allocate. The smoothers already have the host's sample rate. Called
@@ -863,7 +864,7 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
 `#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example).
 
-`prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread, and several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
+`prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread (the functions of its factory presets may be), and several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
 
 **Plugins with DSP state** add fields to the Processor:
 
@@ -1030,76 +1031,64 @@ A `Processor` can only come from `prepare()`, so it is always fully initialized 
 
 Factory presets let plugins provide built-in presets that appear in host preset menus (e.g., Logic's preset browser, VST3 program changes). Users can browse and load these presets without needing separate preset files.
 
-#### Presets.toml Format
+#### Writing Presets
 
-Factory presets are defined in a `Presets.toml` file in the crate root (next to `Config.toml`). The `#[beamer::export]` macro automatically detects and loads this file.
-
-**Presets.toml:**
-
-```toml
-[[preset]]
-name = "Default"
-gain = 0.0
-
-[[preset]]
-name = "Subtle"
-gain = -6.0
-
-[[preset]]
-name = "Boost"
-gain = 6.0
-```
-
-**Format:**
-- Each preset is defined with `[[preset]]` (TOML array of tables)
-- `name` field specifies the display name in the DAW
-- Other fields are parameter IDs with their plain values as numbers (e.g., `-6.0` for dB). A bool is `0` or `1`, an enum the index of its variant. Other values, such as `true` or a string, are ignored
-- Parameter IDs match the `id` attribute from `#[parameter(id = "gain", ...)]`
-- A parameter in a nested group is named by its path, as a quoted key: `"filter/cutoff" = 800.0` (see [Parameter Ids](#parameter-ids))
-
-#### Sparse Presets
-
-Presets can specify only a subset of parameters. Unspecified parameters retain their current values:
-
-```toml
-# Full preset: sets all parameters
-[[preset]]
-name = "Initialize"
-gain = 0.0
-mix = 1.0
-bypass = 0
-
-# Sparse preset: only changes gain, mix and bypass unchanged
-[[preset]]
-name = "Quiet"
-gain = -12.0
-```
-
-#### FactoryPresets Trait
-
-The `#[beamer::export]` macro generates an implementation of the `FactoryPresets` trait from `Presets.toml`, so a plugin writes no preset code:
+A factory preset is a name and a function that sets parameters of the model. The presets of a plugin are `Model::PRESETS`, a `const` slice that is empty by default:
 
 ```rust
-pub trait FactoryPresets: Send + Sync + 'static {
-    /// The type whose parameters the presets set: the plugin's model.
-    type Parameters: Parameters;
+#[beamer::export]
+#[beamer::model]
+pub struct DelayModel {
+    #[parameter(id = "sync_mode", name = "Sync Mode")]
+    pub sync_mode: EnumParameter<SyncMode>,
 
-    /// Number of available presets.
-    fn count() -> usize;
+    #[parameter(id = "time", name = "Time", default = 250.0, range = 1.0..=2000.0, kind = "ms")]
+    pub time_ms: FloatParameter,
 
-    /// Get preset metadata by index.
-    fn info(index: usize) -> Option<PresetInfo>;
+    #[parameter(id = "feedback", name = "Feedback", default = 0.4, range = 0.0..=1.0, kind = "percent")]
+    pub feedback: FloatParameter,
+}
 
-    /// Get parameter values for a preset.
-    fn values(index: usize) -> &'static [PresetValue];
+impl Model for DelayModel {
+    type Setup = SampleRate;
+    type Processor = DelayProcessor;
+    const PRESETS: &'static [Preset<Self>] = &[
+        Preset::new("Slapback", |m| {
+            m.sync_mode.set(SyncMode::Free);
+            m.time_ms.set(80.0);
+            m.feedback.set(0.2);
+        }),
+        Preset::new("Eighth Note", |m| {
+            m.sync_mode.set(SyncMode::Eighth);
+            m.feedback.set(0.45);
+        }),
+    ];
 
-    /// Apply a preset to parameters. Returns true if successful. The default
-    /// sets the parameters from values().
-    fn apply(index: usize, parameters: &Self::Parameters) -> bool { ... }
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor { /* ... */ }
 }
 ```
 
-`#[beamer::export]` always uses the generated implementation, or none when there is no `Presets.toml`. It cannot select a hand-written one.
+- Hosts list the presets in the order of the slice
+- A long list can live in a `const` of its own, which `PRESETS` names: `const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;` (as in the delay and synthesizer examples)
+- A preset sets parameters through the fields of the model, with their typed setters: a plain value for a `FloatParameter`, an `i64` for an `IntParameter`, a `bool` for a `BoolParameter` and a variant for an `EnumParameter`. A parameter in a nested group is reached through its field: `m.filter.cutoff.set(800.0)`
+- The compiler checks the presets: a misspelled field, a variant that does not exist or a value of the wrong type does not build
+- A closure that captures nothing, or a named `fn(&DelayModel)`, can be the function. A named function can share steps between presets or compute values
+
+A host may apply a preset from one of its own threads or from the audio thread (a program change) while audio runs. A preset may therefore only set parameters (their values are atomic) and read immutable data: no allocation, no locks and no `State` fields.
+
+#### Sparse and Full Presets
+
+A preset sets only the parameters it names. The others keep their current values, so in the example above "Eighth Note" leaves the time as it is (a synced delay does not use it).
+
+A preset that should sound the same whatever was loaded before starts with `reset_parameters()`, which sets every parameter, also in nested groups, to its default. `#[beamer::model]` and `#[beamer::group]` generate it without allocation, so a preset can call it on the audio thread:
+
+```rust
+Preset::new("Sub Bass", |m| {
+    m.reset_parameters();
+    m.waveform.set(Waveform::Sine);
+    m.transpose.set(-12);
+}),
+```
 
 #### MIDI Program Change Mapping
 
@@ -1117,9 +1106,9 @@ When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) 
 - PC events within the preset range are applied and **filtered out** (not passed to `process_midi()`)
 - PC events outside the preset range pass through unchanged
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
-- Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
+- Plugins without factory presets pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the values of the preset's parameters back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the parameters the preset changed back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
 A new instance holds the declared parameter defaults, and no preset is applied. The AU wrappers report this as the user preset -1 "Untitled". VST3 has no value for "no program", so a host shows the first program. The VST3 wrapper saves the program a host shows with the state and takes it back when the state is loaded, without applying the preset again over the saved values.
 

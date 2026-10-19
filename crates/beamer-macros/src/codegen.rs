@@ -281,6 +281,7 @@ fn generate_parameters_impl(ir: &ModelIR) -> TokenStream {
     let nested_discovery_impl = generate_nested_discovery(ir);
     let set_sample_rate_impl = generate_set_sample_rate(ir);
     let reset_smoothing_impl = generate_reset_smoothing(ir);
+    let reset_parameters_impl = generate_reset_parameters(ir);
 
     quote! {
         impl #impl_generics ::beamer::core::parameter_types::Parameters for #struct_name #ty_generics #where_clause {
@@ -305,6 +306,8 @@ fn generate_parameters_impl(ir: &ModelIR) -> TokenStream {
             #set_sample_rate_impl
 
             #reset_smoothing_impl
+
+            #reset_parameters_impl
         }
     }
 }
@@ -872,6 +875,40 @@ fn generate_reset_smoothing(ir: &ModelIR) -> TokenStream {
                 #(#parameter_calls)*
                 #(#nested_calls)*
             }
+        }
+    }
+}
+
+/// Generate the `reset_parameters()` method for the Parameters trait.
+///
+/// It names each field, so unlike the default of the trait it does not
+/// allocate and a factory preset can call it on the audio thread.
+fn generate_reset_parameters(ir: &ModelIR) -> TokenStream {
+    let parameter_calls: Vec<TokenStream> = ir
+        .parameter_fields()
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            quote! {
+                ::beamer::core::parameter_types::ParameterRef::set_normalized(
+                    &self.#field,
+                    ::beamer::core::parameter_types::ParameterRef::default_normalized(&self.#field),
+                );
+            }
+        })
+        .collect();
+
+    let nested_calls: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            quote! { ::beamer::core::parameter_types::Parameters::reset_parameters(&self.#field); }
+        })
+        .collect();
+
+    quote! {
+        fn reset_parameters(&self) {
+            #(#parameter_calls)*
+            #(#nested_calls)*
         }
     }
 }

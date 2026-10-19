@@ -1,167 +1,68 @@
-//! Factory preset support for Beamer plugins.
+//! Factory presets of Beamer plugins.
 //!
-//! This module provides types for defining factory presets - collections of
-//! predefined parameter values that users can select from their DAW's preset browser.
+//! A factory preset is a name and a function that sets parameters of the
+//! model. A plugin lists its presets in [`Model::PRESETS`](crate::Model::PRESETS):
 //!
-//! # Design
+//! ```ignore
+//! #[beamer::export]
+//! #[beamer::model]
+//! pub struct GainModel {
+//!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
+//!     pub gain: FloatParameter,
+//! }
 //!
-//! Presets are opt-in via the [`FactoryPresets`] trait. Plugins that don't need
-//! presets use the default [`NoPresets`] marker type, which provides an empty
-//! preset list.
+//! impl Model for GainModel {
+//!     type Setup = ();
+//!     type Processor = GainProcessor;
+//!     const PRESETS: &'static [Preset<Self>] = &[
+//!         Preset::new("Unity", |m| m.gain.set(0.0)),
+//!         Preset::new("Quiet", |m| m.gain.set(-12.0)),
+//!         Preset::new("Boost", |m| m.gain.set(6.0)),
+//!     ];
+//!     // ...
+//! }
+//! ```
+//!
+//! Hosts list the presets in this order and select one by its number. The
+//! AU wrappers also apply the preset of a MIDI program change.
 //!
 //! # Sparse Presets
 //!
-//! Presets can be "sparse" - they only specify values for some parameters.
-//! When a sparse preset is applied, unspecified parameters keep their current
-//! values (they are NOT reset to defaults).
-//!
-//! # Usage
-//!
-//! Factory presets are defined in `Presets.toml` in the crate root. The
-//! `#[beamer::export]` macro automatically generates the preset implementation:
-//!
-//! ```toml
-//! [[preset]]
-//! name = "Unity"
-//! gain = 0.0
-//!
-//! [[preset]]
-//! name = "Quiet"
-//! gain = -12.0
-//!
-//! [[preset]]
-//! name = "Boost"
-//! gain = 6.0
-//! ```
+//! A preset sets only the parameters it names. The others keep their
+//! current values (they are NOT reset to defaults). A preset that should
+//! sound the same whatever was loaded before starts with
+//! [`Parameters::reset_parameters`](crate::Parameters::reset_parameters).
 
-use std::marker::PhantomData;
-
-use crate::parameter_types::Parameters;
-use crate::types::ParameterId;
-
-/// Information about a single preset.
-#[derive(Debug, Clone, Copy)]
-pub struct PresetInfo {
-    /// Display name shown in the DAW's preset browser.
-    pub name: &'static str,
+/// A factory preset: the name hosts show and the function that sets the
+/// parameters of the model `M`.
+///
+/// A host may apply a preset from one of its own threads or from the audio
+/// thread (a program change) while audio runs. The function may therefore
+/// only set parameters (their values are atomic) and read immutable data:
+/// no allocation, no locks and no [`State`](crate::State) fields.
+pub struct Preset<M: 'static> {
+    name: &'static str,
+    apply: fn(&M),
 }
 
-/// A single parameter value within a preset.
-///
-/// The parameter is identified by the id that hosts see: the hash of its
-/// path (`"gain"`, or `"filter/cutoff"` for a parameter in the nested field
-/// `filter`).
-#[derive(Debug, Clone, Copy)]
-pub struct PresetValue {
-    /// Parameter hash ID (FNV-1a hash of the path of the parameter).
-    pub id: ParameterId,
-    /// Plain value in natural units (e.g., dB, Hz, ms).
-    /// Converted to normalized at apply time using the parameter's range.
-    pub plain_value: f64,
-}
-
-/// Trait for factory preset collections.
-///
-/// This trait is typically generated automatically by the `#[beamer::export]`
-/// macro when a `Presets.toml` file is present in the crate root. The trait
-/// provides methods to enumerate presets and apply them to a parameter collection.
-///
-/// # Type Parameter
-///
-/// The `Parameters` associated type is the type whose parameters the presets
-/// set: the plugin's model. This ensures type safety when applying presets.
-pub trait FactoryPresets: Send + Sync + 'static {
-    /// The type whose parameters this preset collection sets.
-    type Parameters: Parameters;
-
-    /// Returns the total number of factory presets.
-    fn count() -> usize;
-
-    /// Returns information about a preset at the given index.
+impl<M> Preset<M> {
+    /// A preset with the name `name` that `apply` sets on the model.
     ///
-    /// Returns `None` if `index >= count()`.
-    fn info(index: usize) -> Option<PresetInfo>;
-
-    /// Returns the parameter values for a preset at the given index.
-    ///
-    /// Returns an empty slice if `index >= count()`.
-    /// Each value contains a parameter hash ID and its plain value.
-    fn values(index: usize) -> &'static [PresetValue];
-
-    /// Applies a preset to the given parameters.
-    ///
-    /// Only the parameters specified in the preset are modified.
-    /// Other parameters keep their current values. Plain values are
-    /// converted to normalized using each parameter's range.
-    ///
-    /// Returns `true` if the preset was applied successfully,
-    /// `false` if the index was out of range.
-    ///
-    /// A host may apply a preset from one of its own threads while audio
-    /// runs. An override may therefore only read and write parameter values
-    /// (they are atomic) and immutable data.
-    fn apply(index: usize, parameters: &Self::Parameters) -> bool {
-        if index >= Self::count() {
-            return false;
-        }
-
-        let values = Self::values(index);
-        for value in values {
-            if let Some(param) = parameters.by_id(value.id) {
-                let normalized = param.plain_to_normalized(value.plain_value);
-                param.set_normalized(normalized);
-            }
-        }
-
-        true
-    }
-}
-
-/// Default implementation for plugins without factory presets.
-///
-/// This type provides an empty preset list and is used as the default
-/// when a plugin doesn't define any presets.
-pub struct NoPresets<P>(PhantomData<P>);
-
-impl<P: Parameters + 'static> FactoryPresets for NoPresets<P> {
-    type Parameters = P;
-
-    fn count() -> usize {
-        0
+    /// A closure that captures nothing can be the function, so the presets
+    /// fit in a `const`.
+    pub const fn new(name: &'static str, apply: fn(&M)) -> Self {
+        Self { name, apply }
     }
 
-    fn info(_index: usize) -> Option<PresetInfo> {
-        None
+    /// The name hosts show in their preset browser.
+    pub fn name(&self) -> &'static str {
+        self.name
     }
 
-    fn values(_index: usize) -> &'static [PresetValue] {
-        &[]
+    /// Set the parameters of this preset on `model`.
+    pub fn apply(&self, model: &M) {
+        (self.apply)(model)
     }
-}
-
-// SAFETY: NoPresets contains only PhantomData<P> which is always Send + Sync.
-unsafe impl<P> Send for NoPresets<P> {}
-// SAFETY: NoPresets contains only PhantomData<P> which is always Send + Sync.
-unsafe impl<P> Sync for NoPresets<P> {}
-
-/// Compute the FNV-1a hash of a string at compile time.
-///
-/// This is the same hash algorithm that `#[beamer::model]` and
-/// `#[beamer::group]` use for parameter IDs. Use this to compute preset parameter IDs from the
-/// path of a parameter.
-pub const fn fnv1a_hash(s: &str) -> u32 {
-    const FNV_OFFSET_BASIS: u32 = 2166136261;
-    const FNV_PRIME: u32 = 16777619;
-
-    let bytes = s.as_bytes();
-    let mut hash = FNV_OFFSET_BASIS;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u32;
-        hash = hash.wrapping_mul(FNV_PRIME);
-        i += 1;
-    }
-    hash
 }
 
 #[cfg(test)]
@@ -170,6 +71,7 @@ mod tests {
     use crate::parameter_groups::{GroupInfo, ParameterGroups};
     use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
     use crate::parameter_types::{ParameterRef, Parameters};
+    use crate::types::{fnv1a_hash, ParameterId};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // =========================================================================
@@ -335,308 +237,52 @@ mod tests {
     }
 
     // =========================================================================
-    // Test Preset Implementation
+    // Test Presets
     // =========================================================================
 
-    /// A manual implementation of `FactoryPresets` for testing.
-    struct TestPresets;
-
-    const TEST_PRESET_VALUES_0: &[PresetValue] = &[
-        PresetValue {
-            id: fnv1a_hash("gain"),
-            plain_value: 0.5,
-        },
-        PresetValue {
-            id: fnv1a_hash("mix"),
-            plain_value: 1.0,
-        },
+    /// Two presets, the second sparse.
+    const PRESETS: &[Preset<MockParameters>] = &[
+        Preset::new("Full Mix", |p| {
+            p.gain.set_normalized(0.5);
+            p.mix.set_normalized(1.0);
+        }),
+        Preset::new("Silent", |p| p.gain.set_normalized(0.0)),
     ];
 
-    const TEST_PRESET_VALUES_1: &[PresetValue] = &[PresetValue {
-        id: fnv1a_hash("gain"),
-        plain_value: 0.0,
-    }];
-
-    impl FactoryPresets for TestPresets {
-        type Parameters = MockParameters;
-
-        fn count() -> usize {
-            2
-        }
-
-        fn info(index: usize) -> Option<PresetInfo> {
-            match index {
-                0 => Some(PresetInfo { name: "Full Mix" }),
-                1 => Some(PresetInfo { name: "Silent" }),
-                _ => None,
-            }
-        }
-
-        fn values(index: usize) -> &'static [PresetValue] {
-            match index {
-                0 => TEST_PRESET_VALUES_0,
-                1 => TEST_PRESET_VALUES_1,
-                _ => &[],
-            }
-        }
-    }
-
-    // =========================================================================
-    // NoPresets Tests
-    // =========================================================================
-
     #[test]
-    fn no_presets_count_returns_zero() {
-        assert_eq!(NoPresets::<MockParameters>::count(), 0);
+    fn test_name_of_a_preset() {
+        assert_eq!(PRESETS[0].name(), "Full Mix");
+        assert_eq!(PRESETS[1].name(), "Silent");
     }
 
     #[test]
-    fn no_presets_info_returns_none() {
-        assert!(NoPresets::<MockParameters>::info(0).is_none());
-        assert!(NoPresets::<MockParameters>::info(1).is_none());
-        assert!(NoPresets::<MockParameters>::info(usize::MAX).is_none());
-    }
-
-    #[test]
-    fn no_presets_values_returns_empty_slice() {
-        assert!(NoPresets::<MockParameters>::values(0).is_empty());
-        assert!(NoPresets::<MockParameters>::values(1).is_empty());
-    }
-
-    #[test]
-    fn no_presets_apply_returns_false() {
+    fn test_apply_sets_the_parameters_of_the_preset() {
         let params = MockParameters::new();
-        assert!(!NoPresets::<MockParameters>::apply(0, &params));
-        assert!(!NoPresets::<MockParameters>::apply(1, &params));
-        assert!(!NoPresets::<MockParameters>::apply(usize::MAX, &params));
-    }
-
-    // =========================================================================
-    // PresetInfo Tests
-    // =========================================================================
-
-    #[test]
-    fn preset_info_can_be_created_with_name() {
-        let info = PresetInfo { name: "My Preset" };
-        assert_eq!(info.name, "My Preset");
+        PRESETS[0].apply(&params);
+        assert_eq!(params.gain.get_value(), 0.5);
+        assert_eq!(params.mix.get_value(), 1.0);
     }
 
     #[test]
-    fn preset_info_supports_empty_name() {
-        let info = PresetInfo { name: "" };
-        assert_eq!(info.name, "");
-    }
-
-    #[test]
-    fn preset_info_is_copy() {
-        let info = PresetInfo { name: "Test" };
-        let info2 = info; // Copy
-        assert_eq!(info.name, info2.name);
-    }
-
-    #[test]
-    fn preset_info_is_clone() {
-        fn is_clone<T: Clone>() {}
-        is_clone::<PresetInfo>();
-    }
-
-    // =========================================================================
-    // PresetValue Tests
-    // =========================================================================
-
-    #[test]
-    fn preset_value_stores_id_and_plain_value() {
-        let value = PresetValue {
-            id: 12345,
-            plain_value: 0.75,
-        };
-        assert_eq!(value.id, 12345);
-        assert!((value.plain_value - 0.75).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn preset_value_is_copy() {
-        let value = PresetValue {
-            id: 100,
-            plain_value: 0.5,
-        };
-        let value2 = value; // Copy
-        assert_eq!(value.id, value2.id);
-        assert!((value.plain_value - value2.plain_value).abs() < f64::EPSILON);
-    }
-
-    // =========================================================================
-    // FactoryPresets Trait Tests (via TestPresets)
-    // =========================================================================
-
-    #[test]
-    fn test_presets_count() {
-        assert_eq!(TestPresets::count(), 2);
-    }
-
-    #[test]
-    fn test_presets_info_valid_index() {
-        let info0 = TestPresets::info(0);
-        assert!(info0.is_some());
-        assert_eq!(info0.unwrap().name, "Full Mix");
-
-        let info1 = TestPresets::info(1);
-        assert!(info1.is_some());
-        assert_eq!(info1.unwrap().name, "Silent");
-    }
-
-    #[test]
-    fn test_presets_info_invalid_index() {
-        assert!(TestPresets::info(2).is_none());
-        assert!(TestPresets::info(usize::MAX).is_none());
-    }
-
-    #[test]
-    fn test_presets_values_valid_index() {
-        let values0 = TestPresets::values(0);
-        assert_eq!(values0.len(), 2);
-        assert_eq!(values0[0].id, fnv1a_hash("gain"));
-        assert!((values0[0].plain_value - 0.5).abs() < f64::EPSILON);
-        assert_eq!(values0[1].id, fnv1a_hash("mix"));
-        assert!((values0[1].plain_value - 1.0).abs() < f64::EPSILON);
-
-        let values1 = TestPresets::values(1);
-        assert_eq!(values1.len(), 1);
-        assert_eq!(values1[0].id, fnv1a_hash("gain"));
-        assert!((values1[0].plain_value - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_presets_values_invalid_index() {
-        assert!(TestPresets::values(2).is_empty());
-        assert!(TestPresets::values(usize::MAX).is_empty());
-    }
-
-    #[test]
-    fn test_presets_apply_sets_parameters() {
+    fn test_sparse_preset_keeps_the_other_parameters() {
         let params = MockParameters::new();
-
-        // Initial values should be 0.0
-        assert!((params.gain.get_value() - 0.0).abs() < f64::EPSILON);
-        assert!((params.mix.get_value() - 0.0).abs() < f64::EPSILON);
-
-        // Apply preset 0 (Full Mix: gain=0.5, mix=1.0)
-        let result = TestPresets::apply(0, &params);
-        assert!(result);
-        assert!((params.gain.get_value() - 0.5).abs() < f64::EPSILON);
-        assert!((params.mix.get_value() - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_presets_apply_sparse_preset() {
-        let params = MockParameters::new();
-
-        // Set initial values
         params.gain.set_normalized(0.75);
         params.mix.set_normalized(0.5);
 
-        // Apply preset 1 (Silent: only gain=0.0)
-        // Mix should remain at 0.5 (sparse preset)
-        let result = TestPresets::apply(1, &params);
-        assert!(result);
-        assert!((params.gain.get_value() - 0.0).abs() < f64::EPSILON);
-        assert!((params.mix.get_value() - 0.5).abs() < f64::EPSILON); // Unchanged
+        PRESETS[1].apply(&params);
+        assert_eq!(params.gain.get_value(), 0.0);
+        assert_eq!(params.mix.get_value(), 0.5);
     }
 
     #[test]
-    fn test_presets_apply_invalid_index_returns_false() {
+    fn test_reset_parameters_sets_the_defaults() {
+        // MockParameter has the default 0.0.
         let params = MockParameters::new();
-
-        // Set initial values
         params.gain.set_normalized(0.75);
         params.mix.set_normalized(0.5);
 
-        // Apply invalid preset
-        let result = TestPresets::apply(2, &params);
-        assert!(!result);
-
-        // Values should remain unchanged
-        assert!((params.gain.get_value() - 0.75).abs() < f64::EPSILON);
-        assert!((params.mix.get_value() - 0.5).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_presets_apply_with_unknown_parameter_id() {
-        // Test that preset values with unknown parameter IDs are silently ignored
-        struct PresetsWithUnknownParam;
-
-        const UNKNOWN_PARAM_VALUES: &[PresetValue] = &[
-            PresetValue {
-                id: fnv1a_hash("gain"),
-                plain_value: 0.5,
-            },
-            PresetValue {
-                id: fnv1a_hash("unknown"),
-                plain_value: 0.9,
-            },
-        ];
-
-        impl FactoryPresets for PresetsWithUnknownParam {
-            type Parameters = MockParameters;
-
-            fn count() -> usize {
-                1
-            }
-
-            fn info(index: usize) -> Option<PresetInfo> {
-                if index == 0 {
-                    Some(PresetInfo { name: "Test" })
-                } else {
-                    None
-                }
-            }
-
-            fn values(index: usize) -> &'static [PresetValue] {
-                if index == 0 {
-                    UNKNOWN_PARAM_VALUES
-                } else {
-                    &[]
-                }
-            }
-        }
-
-        let params = MockParameters::new();
-
-        // Apply preset with unknown parameter ID - should succeed and apply known params
-        let result = PresetsWithUnknownParam::apply(0, &params);
-        assert!(result);
-        assert!((params.gain.get_value() - 0.5).abs() < f64::EPSILON);
-    }
-
-    // =========================================================================
-    // fnv1a_hash Tests
-    // =========================================================================
-
-    #[test]
-    fn fnv1a_hash_produces_consistent_values() {
-        // Same input should produce same hash
-        assert_eq!(fnv1a_hash("gain"), fnv1a_hash("gain"));
-        assert_eq!(fnv1a_hash("mix"), fnv1a_hash("mix"));
-    }
-
-    #[test]
-    fn fnv1a_hash_different_inputs_produce_different_hashes() {
-        // Different inputs should (usually) produce different hashes
-        assert_ne!(fnv1a_hash("gain"), fnv1a_hash("mix"));
-        assert_ne!(fnv1a_hash("a"), fnv1a_hash("b"));
-    }
-
-    #[test]
-    fn fnv1a_hash_empty_string() {
-        // Empty string should produce a consistent hash (the offset basis)
-        let hash = fnv1a_hash("");
-        assert_eq!(hash, 2166136261); // FNV offset basis
-    }
-
-    #[test]
-    fn fnv1a_hash_is_const() {
-        // Verify hash can be used in const context
-        const GAIN_HASH: u32 = fnv1a_hash("gain");
-        assert_eq!(GAIN_HASH, fnv1a_hash("gain"));
+        params.reset_parameters();
+        assert_eq!(params.gain.get_value(), 0.0);
+        assert_eq!(params.mix.get_value(), 0.0);
     }
 }

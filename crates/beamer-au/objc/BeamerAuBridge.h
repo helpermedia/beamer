@@ -1523,8 +1523,8 @@ bool beamer_au_get_preset_info(
 /**
  * Apply a factory preset by index.
  *
- * This sets all parameters defined in the preset to their preset values.
- * Parameters not defined in the preset retain their current values (sparse application).
+ * The preset sets the parameters it names. The others keep their current
+ * values.
  *
  * Thread Safety: Can be called from any thread (parameter changes use atomics internally).
  *

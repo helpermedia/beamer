@@ -1,15 +1,12 @@
 //! The `#[beamer::export]` attribute macro implementation.
 //!
-//! Reads Config.toml and (optionally) Presets.toml from the plugin crate's
-//! root directory, then generates the `CONFIG` static, preset implementation,
-//! and format-specific entry points.
+//! Reads Config.toml from the plugin crate's root directory, then
+//! generates the `CONFIG` static and the format-specific entry points.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use beamer_utils::fnv1a_32;
-
-use crate::config_file::{category_variant, ConfigFile, PresetsFile};
+use crate::config_file::{category_variant, ConfigFile};
 
 /// Map a category string from Config.toml to the corresponding token stream.
 fn category_tokens(category: &str) -> Result<TokenStream, String> {
@@ -319,95 +316,10 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     })
 }
 
-/// Generate the FactoryPresets implementation from a parsed PresetsFile.
-fn generate_presets(presets: &PresetsFile, model: &syn::Ident) -> Result<TokenStream, String> {
-    let count = presets.preset.len();
-
-    // Generate info match arms
-    let info_arms: Vec<TokenStream> = presets
-        .preset
-        .iter()
-        .enumerate()
-        .map(|(idx, preset)| {
-            let name = &preset.name;
-            quote! {
-                #idx => Some(::beamer::core::preset::PresetInfo { name: #name }),
-            }
-        })
-        .collect();
-
-    // Generate static value arrays and match arms
-    let mut values_statics = Vec::new();
-    let mut values_arms = Vec::new();
-
-    for (idx, preset) in presets.preset.iter().enumerate() {
-        let static_name = format_ident!("__BEAMER_PRESET_{}_VALUES", idx);
-
-        let values: Vec<TokenStream> = preset
-            .values
-            .iter()
-            .filter_map(|(key, val)| {
-                let plain_value = match val {
-                    toml::Value::Float(f) => *f,
-                    toml::Value::Integer(i) => *i as f64,
-                    _ => return None, // skip non-numeric values
-                };
-                let hash = fnv1a_32(key);
-                Some(quote! {
-                    ::beamer::core::preset::PresetValue {
-                        id: #hash,
-                        plain_value: #plain_value,
-                    }
-                })
-            })
-            .collect();
-
-        let values_count = values.len();
-
-        values_statics.push(quote! {
-            static #static_name: [::beamer::core::preset::PresetValue; #values_count] = [
-                #(#values),*
-            ];
-        });
-
-        values_arms.push(quote! {
-            #idx => &#static_name,
-        });
-    }
-
-    Ok(quote! {
-        #(#values_statics)*
-
-        pub struct __BeamerPresets;
-
-        impl ::beamer::core::preset::FactoryPresets for __BeamerPresets {
-            type Parameters = #model;
-
-            fn count() -> usize {
-                #count
-            }
-
-            fn info(index: usize) -> Option<::beamer::core::preset::PresetInfo> {
-                match index {
-                    #(#info_arms)*
-                    _ => None,
-                }
-            }
-
-            fn values(index: usize) -> &'static [::beamer::core::preset::PresetValue] {
-                match index {
-                    #(#values_arms)*
-                    _ => &[],
-                }
-            }
-        }
-    })
-}
-
 /// Main entry point for the `#[beamer::export]` attribute macro.
 ///
-/// Generates the CONFIG static, optional presets and format entry points
-/// for the given model struct.
+/// Generates the CONFIG static and the format entry points for the given
+/// model struct.
 pub fn export_impl(model: syn::Ident) -> Result<TokenStream, String> {
     // Read Config.toml from the crate's root directory
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
@@ -425,52 +337,13 @@ pub fn export_impl(model: syn::Ident) -> Result<TokenStream, String> {
     // Generate Config static
     let config_tokens = generate_config(&config, &manifest_dir)?;
 
-    // Check for Presets.toml
-    let presets_path = std::path::Path::new(&manifest_dir).join("Presets.toml");
-    let has_presets = presets_path.exists();
-
-    let presets_tokens = if has_presets {
-        let presets_str = std::fs::read_to_string(&presets_path)
-            .map_err(|e| format!("failed to read {}: {}", presets_path.display(), e))?;
-
-        let presets: PresetsFile =
-            toml::from_str(&presets_str).map_err(|e| format!("invalid Presets.toml: {}", e))?;
-
-        Some(generate_presets(&presets, &model)?)
-    } else {
-        None
-    };
-
-    // Generate export call
-    let export_tokens = if has_presets {
-        quote! {
-            ::beamer::export_plugin!(CONFIG, #model, __BeamerPresets);
-        }
-    } else {
-        quote! {
-            ::beamer::export_plugin!(CONFIG, #model);
-        }
-    };
-
-    // File dependency tracking: include_str! tells cargo to re-run when files change
+    // File dependency tracking: include_str! tells cargo to re-run when the file changes.
     let config_path_str = config_path.to_string_lossy().to_string();
-    let file_tracking = if has_presets {
-        let presets_path_str = presets_path.to_string_lossy().to_string();
-        quote! {
-            const _: &str = include_str!(#config_path_str);
-            const _: &str = include_str!(#presets_path_str);
-        }
-    } else {
-        quote! {
-            const _: &str = include_str!(#config_path_str);
-        }
-    };
 
     Ok(quote! {
-        #file_tracking
+        const _: &str = include_str!(#config_path_str);
         #config_tokens
-        #presets_tokens
-        #export_tokens
+        ::beamer::export_plugin!(CONFIG, #model);
     })
 }
 

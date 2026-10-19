@@ -4,7 +4,7 @@
 //!   shares, with its parameters, `State` fields and event queue.
 //! - `#[beamer::group]` marks a nested group of a model.
 //! - `#[beamer::export]` exports the model as a plugin, with its
-//!   `Config.toml` and `Presets.toml`.
+//!   `Config.toml`.
 //! - `#[derive(EnumParameter)]` makes an enum the value of an
 //!   `EnumParameter`.
 //!
@@ -232,13 +232,14 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 ///
 /// Place `#[beamer::export]` on your model struct to automatically generate:
 /// - `pub static CONFIG: Config` from `Config.toml` in the crate root
-/// - Factory presets from `Presets.toml` (if present)
 /// - `export_plugin!` call with the correct arguments
 ///
 /// # Requirements
 ///
 /// - A `Config.toml` file must exist in the crate root (next to `Cargo.toml`)
 /// - The struct must be marked with `#[beamer::model]` and implement `Model`
+///
+/// The factory presets of the plugin are `Model::PRESETS`.
 ///
 /// # Example
 ///
@@ -256,7 +257,14 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
 /// // No CONFIG static or export_plugin! needed!
 /// ```
 #[proc_macro_attribute]
-pub fn export(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        let attr = proc_macro2::TokenStream::from(attr);
+        return syn::Error::new_spanned(attr, "#[beamer::export] takes no arguments")
+            .to_compile_error()
+            .into();
+    }
+
     let input = syn::parse_macro_input!(item as syn::DeriveInput);
     let struct_ident = input.ident.clone();
 

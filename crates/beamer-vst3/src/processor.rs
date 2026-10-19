@@ -31,9 +31,9 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
     BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
-    FactoryPresets, FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
-    MidiEvent, MidiEventKind, NoPresets, NoteExpressionInt, NoteExpressionText,
-    NoteExpressionValue as CoreNoteExpressionValue, ParameterStore, Config, PluginSetup,
+    FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
+    MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
+    NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
     ProcessWarnings, Processor, ScaleInfo, SysEx,
     SharedModel, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
@@ -125,8 +125,8 @@ struct ParameterPoint {
 
 /// What `take_parameter_changes` found besides the parameter points.
 struct TakenChanges {
-    /// The factory preset a program change selected.
-    preset_index: Option<usize>,
+    /// A program change applied a factory preset.
+    preset_applied: bool,
     /// Points did not fit and were left out.
     overflowed: bool,
 }
@@ -438,10 +438,9 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 /// `process()` uses.
 /// The model is shared in an `Arc` and works through a shared reference.
 /// Latency, tail and the smoother reset are exchanged through atomics.
-pub struct Vst3Processor<P, Presets = NoPresets<P>>
+pub struct Vst3Processor<P>
 where
     P: Model,
-    Presets: FactoryPresets<Parameters = P>,
 {
     /// The model of the plugin, shared with every processor it creates and
     /// with the editor. Every method of it takes `&self`: `process()` reads
@@ -489,6 +488,16 @@ where
     /// host threads and by process(), read by host threads. Saved with the
     /// state and taken back from it.
     current_preset_index: AtomicU32,
+    /// The parameters the factory preset of the last program change in
+    /// `process()` changed, with their values before it, for
+    /// [`report_preset_changes`](Self::report_preset_changes). Before the
+    /// preset is applied it holds every parameter. Allocated for all
+    /// parameters when the plugin has presets, so `process()` never grows
+    /// it. Belongs to `process()`.
+    preset_changes: UnsafeCell<Vec<(ParameterId, f64)>>,
+    /// The ids of all parameters of the model, for the comparison around a
+    /// factory preset. Empty when the plugin has no presets.
+    parameter_ids: Box<[ParameterId]>,
     /// The component handler the host set, shared with the editors.
     component_handler: Arc<ComponentHandler>,
     /// The plugin's queue of events for the web UI, if it has one.
@@ -512,18 +521,14 @@ where
     /// tells the host when it changed.
     #[cfg(feature = "webview")]
     known_state_generation: Arc<AtomicU64>,
-    /// Marker for the plugin type and preset collection
-    _marker: PhantomData<(P, Presets)>,
+    /// Marker for the plugin type
+    _marker: PhantomData<P>,
 }
 
 // Safety: Vst3Processor is Send because:
 // - The model is Send + Sync, required by the Model trait
 // - Processor: Send is required by the Processor trait
-unsafe impl<P: Model, Presets> Send for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
-}
+unsafe impl<P: Model> Send for Vst3Processor<P> {}
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
@@ -534,22 +539,24 @@ where
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), the current preset,
 //   latency, tail and the request to reset the smoothers
-unsafe impl<P: Model, Presets> Sync for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
-}
+unsafe impl<P: Model> Sync for Vst3Processor<P> {}
 
-impl<P: Model, Presets> Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> Vst3Processor<P> {
     /// Create a new VST3 processor wrapping the given plugin configuration.
     ///
     /// The wrapper starts unprepared, with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static Config) -> Self {
         let model = Arc::new(P::default());
+
+        // The ids for the comparison around a factory preset in `process()`.
+        let parameter_ids: Box<[ParameterId]> = if !P::PRESETS.is_empty() {
+            beamer_core::parameter_types::Parameters::iter(&*model)
+                .map(|parameter| parameter.id())
+                .collect()
+        } else {
+            Box::default()
+        };
 
         // Create MidiCcState from the model's config (framework-managed). The
         // controllers are MIDI input, so a plugin without it has none: no
@@ -597,6 +604,8 @@ where
             midi_cc_state,
             // Default to first preset.
             current_preset_index: AtomicU32::new(0),
+            preset_changes: UnsafeCell::new(Vec::with_capacity(parameter_ids.len())),
+            parameter_ids,
             component_handler: Arc::new(ComponentHandler::new()),
             #[cfg(feature = "webview")]
             webview_events,
@@ -613,7 +622,7 @@ where
     /// The factory preset that a normalized value of the program change
     /// parameter selects, or `None` when the plugin has no presets.
     fn preset_index_for(value: f64) -> Option<usize> {
-        let preset_count = Presets::count();
+        let preset_count = P::PRESETS.len();
         if preset_count == 0 {
             return None;
         }
@@ -626,8 +635,8 @@ where
     ///
     /// A change of the program change parameter selects a factory preset.
     /// It is applied at once, before the changes of single parameters in the
-    /// same block, and its index is returned for
-    /// [`report_preset_values`](Self::report_preset_values).
+    /// same block, and the parameters it changed are kept for
+    /// [`report_preset_changes`](Self::report_preset_changes).
     ///
     /// The points of the other queues go into `points`, to be applied by the
     /// sub-block loop (see [`ParameterPoint`] for where each one applies). A
@@ -652,16 +661,23 @@ where
             })
         };
 
-        let mut preset_index = None;
+        let mut preset_applied = false;
         for queue in queues() {
             // SAFETY: queue is a valid ComRef.
             if unsafe { queue.getParameterId() } != PROGRAM_CHANGE_PARAM_ID {
                 continue;
             }
             if let Some(index) = last_value(queue).and_then(Self::preset_index_for) {
-                Presets::apply(index, model);
+                // A preset is a function, so what it changed is found by
+                // comparing the values before and after it.
+                // SAFETY: process() has the preset changes to itself.
+                let changes = unsafe { &mut *self.preset_changes.get() };
+                changes.clear();
+                changes.extend(self.parameter_ids.iter().map(|&id| (id, model.get_normalized(id))));
+                P::PRESETS[index].apply(model);
+                changes.retain(|&(id, before)| model.get_normalized(id) != before);
                 self.current_preset_index.store(index as u32, Ordering::Relaxed);
-                preset_index = Some(index);
+                preset_applied = true;
             }
         }
 
@@ -691,31 +707,30 @@ where
             }
         }
 
-        TakenChanges { preset_index, overflowed }
+        TakenChanges { preset_applied, overflowed }
     }
 
-    /// Report the values of the parameters of the preset at `index` in
-    /// `output`, so that the host and the edit controller learn them. Called
-    /// at the end of the process call that selected the preset, so these are
-    /// the values after its block, with the parameter changes of the block.
-    fn report_preset_values(&self, index: usize, output: *mut IParameterChanges) {
+    /// Report the parameters that the factory preset of this process call
+    /// changed in `output`, so that the host and the edit controller learn
+    /// them. Called at the end of the process call that applied the preset,
+    /// so these are the values after its block, with the parameter changes
+    /// of the block.
+    fn report_preset_changes(&self, output: *mut IParameterChanges) {
         let model = self.model();
         // SAFETY: outputParameterChanges may be null; ComRef::from_raw handles this.
         let Some(output) = (unsafe { ComRef::from_raw(output) }) else {
             return;
         };
-        for value in Presets::values(index) {
-            // A preset value whose id names no parameter was not applied.
-            if beamer_core::parameter_types::Parameters::by_id(model, value.id).is_none() {
-                continue;
-            }
+        // SAFETY: process() has the preset changes to itself.
+        let changes = unsafe { &*self.preset_changes.get() };
+        for &(id, _) in changes {
             let mut queue_index = 0;
             // SAFETY: output is a valid ComRef, the pointers are valid for the call.
-            let queue = unsafe { ComRef::from_raw(output.addParameterData(&value.id, &mut queue_index)) };
+            let queue = unsafe { ComRef::from_raw(output.addParameterData(&id, &mut queue_index)) };
             if let Some(queue) = queue {
                 let mut point_index = 0;
                 // SAFETY: queue is a valid ComRef, the pointer is valid for the call.
-                unsafe { queue.addPoint(0, model.get_normalized(value.id), &mut point_index) };
+                unsafe { queue.addPoint(0, model.get_normalized(id), &mut point_index) };
             }
         }
     }
@@ -1329,10 +1344,7 @@ where
     }
 }
 
-impl<P: Model, Presets> ComponentFactory for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> ComponentFactory for Vst3Processor<P> {
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
 
@@ -1353,10 +1365,7 @@ where
     }
 }
 
-impl<P: Model, Presets> Class for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> Class for Vst3Processor<P> {
     type Interfaces = (
         IComponent,
         IAudioProcessor,
@@ -1378,10 +1387,7 @@ where
 // IPluginBase implementation
 // =============================================================================
 
-impl<P: Model, Presets> IPluginBaseTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IPluginBaseTrait for Vst3Processor<P> {
     unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
         kResultOk
     }
@@ -1400,10 +1406,7 @@ where
 // IComponent implementation
 // =============================================================================
 
-impl<P: Model, Presets> IComponentTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IComponentTrait for Vst3Processor<P> {
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
         if class_id.is_null() {
             return kInvalidArgument;
@@ -1584,7 +1587,7 @@ where
                 // first, like a new instance.
                 let preset_index = entries
                     .factory_preset()
-                    .filter(|&index| (index as usize) < Presets::count())
+                    .filter(|&index| (index as usize) < P::PRESETS.len())
                     .unwrap_or(0);
                 self.current_preset_index.store(preset_index, Ordering::Relaxed);
                 // The smoothers belong to the audio thread: the next process()
@@ -1616,7 +1619,7 @@ where
         beamer_core::Saved::save_entries(self.model(), &mut writer, "");
         // With factory presets, also the program the host shows: a host
         // keeps no value of the program change parameter itself.
-        if Presets::count() > 0 {
+        if !P::PRESETS.is_empty() {
             writer.factory_preset(self.current_preset_index.load(Ordering::Relaxed));
         }
         let data: Vec<u8> = writer.finish();
@@ -1653,10 +1656,7 @@ where
 // IAudioProcessor implementation
 // =============================================================================
 
-impl<P: Model, Presets> IAudioProcessorTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
     unsafe fn setBusArrangements(
         &self,
         inputs: *mut SpeakerArrangement,
@@ -1895,14 +1895,14 @@ where
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let points = unsafe { &mut *self.parameter_points.get() };
         points.clear();
-        let mut preset_index = None;
+        let mut preset_applied = false;
         // SAFETY: inputParameterChanges may be null; ComRef::from_raw handles this.
         if let Some(parameter_changes) = unsafe { ComRef::from_raw(process_data.inputParameterChanges) } {
             let taken = self.take_parameter_changes(parameter_changes, points);
             if taken.overflowed {
                 self.process_warnings.note(ProcessWarning::ParameterEventOverflow);
             }
-            preset_index = taken.preset_index;
+            preset_applied = taken.preset_applied;
         }
         sort_by_offset(points, |point| point.sample_offset);
 
@@ -1996,8 +1996,8 @@ where
             for point in points.iter() {
                 self.model().set_normalized(point.id, point.value);
             }
-            if let Some(index) = preset_index {
-                self.report_preset_values(index, process_data.outputParameterChanges);
+            if preset_applied {
+                self.report_preset_changes(process_data.outputParameterChanges);
             }
             self.publish_timing_if_prepared();
             *carried = true;
@@ -2107,8 +2107,8 @@ where
             self.process_warnings.note(ProcessWarning::SysExOutputOverflow);
         }
 
-        if let Some(index) = preset_index {
-            self.report_preset_values(index, process_data.outputParameterChanges);
+        if preset_applied {
+            self.report_preset_changes(process_data.outputParameterChanges);
         }
         self.publish_timing_if_prepared();
         kResultOk
@@ -2120,10 +2120,7 @@ where
     }
 }
 
-impl<P: Model, Presets> IProcessContextRequirementsTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IProcessContextRequirementsTrait for Vst3Processor<P> {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         // Request all available transport information from host.
         // These flags tell the host which ProcessContext fields we need.
@@ -2156,10 +2153,7 @@ where
 // IEditController implementation
 // =============================================================================
 
-impl<P: Model, Presets> IEditControllerTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
         // For combined component, state is handled by IComponent::setState
         kResultOk
@@ -2182,7 +2176,7 @@ where
             .map(|s| s.enabled_count())
             .unwrap_or(0);
         // Add program change parameter if we have factory presets
-        let preset_parameter = if Presets::count() > 0 { 1 } else { 0 };
+        let preset_parameter = if !P::PRESETS.is_empty() { 1 } else { 0 };
         (user_parameters + cc_parameters + preset_parameter) as i32
     }
 
@@ -2258,7 +2252,7 @@ where
         }
 
         // Program change parameter for factory presets (after all other parameters)
-        let preset_count = Presets::count();
+        let preset_count = P::PRESETS.len();
         if preset_count > 0 {
             let preset_param_index = user_parameter_count + cc_parameter_count;
             if parameter_index as usize == preset_param_index {
@@ -2293,16 +2287,16 @@ where
 
         // Handle program change parameter (preset names)
         if id == PROGRAM_CHANGE_PARAM_ID {
-            let preset_count = Presets::count();
+            let preset_count = P::PRESETS.len();
             if preset_count > 0 {
                 // Convert normalized value to preset index
                 let step_count = (preset_count - 1).max(1) as f64;
                 let preset_index = (value_normalized * step_count).round() as usize;
                 let preset_index = preset_index.min(preset_count - 1);
 
-                if let Some(preset_info) = Presets::info(preset_index) {
+                if let Some(name) = P::PRESETS.get(preset_index).map(Preset::name) {
                     // SAFETY: string is non-null (checked above) and host guarantees validity.
-                    copy_wstring(preset_info.name, unsafe { &mut *string });
+                    copy_wstring(name, unsafe { &mut *string });
                     return kResultOk;
                 }
             }
@@ -2334,11 +2328,11 @@ where
         if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string as *const u16, len) }) {
             // Handle program change parameter (preset name to value)
             if id == PROGRAM_CHANGE_PARAM_ID {
-                let preset_count = Presets::count();
+                let preset_count = P::PRESETS.len();
                 // Find preset by name
                 for i in 0..preset_count {
-                    if let Some(preset_info) = Presets::info(i) {
-                        if preset_info.name == s {
+                    if let Some(name) = P::PRESETS.get(i).map(Preset::name) {
+                        if name == s {
                             let step_count = (preset_count - 1).max(1) as f64;
                             // SAFETY: value_normalized is non-null (checked above).
                             unsafe { *value_normalized = (i as f64) / step_count };
@@ -2362,7 +2356,7 @@ where
     unsafe fn normalizedParamToPlain(&self, id: u32, value_normalized: f64) -> f64 {
         // Handle program change parameter (normalized to index)
         if id == PROGRAM_CHANGE_PARAM_ID {
-            let preset_count = Presets::count();
+            let preset_count = P::PRESETS.len();
             if preset_count > 0 {
                 let step_count = (preset_count - 1).max(1) as f64;
                 return (value_normalized * step_count).round();
@@ -2375,7 +2369,7 @@ where
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
         // Handle program change parameter (index to normalized)
         if id == PROGRAM_CHANGE_PARAM_ID {
-            let preset_count = Presets::count();
+            let preset_count = P::PRESETS.len();
             if preset_count > 1 {
                 let step_count = (preset_count - 1) as f64;
                 return plain_value / step_count;
@@ -2395,7 +2389,7 @@ where
 
         // Check if this is the program change parameter
         if id == PROGRAM_CHANGE_PARAM_ID {
-            let preset_count = Presets::count();
+            let preset_count = P::PRESETS.len();
             if preset_count > 1 {
                 let current_index = self.current_preset_index.load(Ordering::Relaxed);
                 let step_count = (preset_count - 1) as f64;
@@ -2425,7 +2419,7 @@ where
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
                 // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
-                Presets::apply(preset_index, self.model());
+                P::PRESETS[preset_index].apply(self.model());
                 self.current_preset_index.store(preset_index as u32, Ordering::Relaxed);
 
                 // Notify host that parameter values changed so UI refreshes.
@@ -2523,10 +2517,7 @@ where
 // IUnitInfo implementation (VST3 Unit/Group hierarchy)
 // =============================================================================
 
-impl<P: Model, Presets> IUnitInfoTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IUnitInfoTrait for Vst3Processor<P> {
     unsafe fn getUnitCount(&self) -> i32 {
         self.model().group_count() as i32
     }
@@ -2544,7 +2535,7 @@ where
             info.id = group_info.id;
             info.parentUnitId = group_info.parent_id;
             // Assign program list to root unit if we have presets
-            info.programListId = if group_info.id == 0 && Presets::count() > 0 {
+            info.programListId = if group_info.id == 0 && !P::PRESETS.is_empty() {
                 FACTORY_PRESETS_LIST_ID
             } else {
                 kNoProgramListId
@@ -2557,7 +2548,7 @@ where
     }
 
     unsafe fn getProgramListCount(&self) -> i32 {
-        if Presets::count() > 0 {
+        if !P::PRESETS.is_empty() {
             1 // One program list for factory presets
         } else {
             0
@@ -2574,14 +2565,14 @@ where
         }
 
         // Only support our single factory presets list
-        if list_index != 0 || Presets::count() == 0 {
+        if list_index != 0 || P::PRESETS.is_empty() {
             return kInvalidArgument;
         }
 
         // SAFETY: info is non-null (checked above) and host guarantees validity.
         let info = unsafe { &mut *info };
         info.id = FACTORY_PRESETS_LIST_ID;
-        info.programCount = Presets::count() as i32;
+        info.programCount = P::PRESETS.len() as i32;
         copy_wstring("Factory Presets", &mut info.name);
 
         kResultOk
@@ -2597,9 +2588,9 @@ where
             return kInvalidArgument;
         }
 
-        if let Some(preset_info) = Presets::info(program_index as usize) {
+        if let Some(preset_name) = P::PRESETS.get(program_index as usize).map(Preset::name) {
             // SAFETY: name is non-null (checked above) and host guarantees validity.
-            copy_wstring(preset_info.name, unsafe { &mut *name });
+            copy_wstring(preset_name, unsafe { &mut *name });
             kResultOk
         } else {
             kInvalidArgument
@@ -2663,10 +2654,7 @@ where
 // IMidiMapping implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Model, Presets> IMidiMappingTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IMidiMappingTrait for Vst3Processor<P> {
     unsafe fn getMidiControllerAssignment(
         &self,
         bus_index: i32,
@@ -2707,10 +2695,7 @@ where
 // IMidiLearn implementation (VST3 SDK 3.8.0)
 // =============================================================================
 
-impl<P: Model, Presets> IMidiLearnTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IMidiLearnTrait for Vst3Processor<P> {
     unsafe fn onLiveMIDIControllerInput(
         &self,
         bus_index: i32,
@@ -2729,10 +2714,7 @@ where
 // IMidiMapping2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Model, Presets> IMidiMapping2Trait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IMidiMapping2Trait for Vst3Processor<P> {
     unsafe fn getNumMidi1ControllerAssignments(&self, direction: BusDirections) -> u32 {
         // Only support input direction
         if direction != BusDirections_::kInput {
@@ -2831,10 +2813,7 @@ where
 // IMidiLearn2 implementation (VST3 SDK 3.8.0 - MIDI 2.0)
 // =============================================================================
 
-impl<P: Model, Presets> IMidiLearn2Trait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IMidiLearn2Trait for Vst3Processor<P> {
     unsafe fn onLiveMidi1ControllerInput(
         &self,
         bus_index: i32,
@@ -2871,10 +2850,7 @@ where
 // INoteExpressionController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Model, Presets> INoteExpressionControllerTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> INoteExpressionControllerTrait for Vst3Processor<P> {
     unsafe fn getNoteExpressionCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.model().note_expression_count(bus_index, channel) as i32
     }
@@ -2965,10 +2941,7 @@ where
 // IKeyswitchController implementation (VST3 SDK 3.5.0)
 // =============================================================================
 
-impl<P: Model, Presets> IKeyswitchControllerTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IKeyswitchControllerTrait for Vst3Processor<P> {
     unsafe fn getKeyswitchCount(&self, bus_index: i32, channel: i16) -> i32 {
         self.model().keyswitch_count(bus_index, channel) as i32
     }
@@ -3009,10 +2982,7 @@ where
 // INoteExpressionPhysicalUIMapping implementation (VST3 SDK 3.6.11)
 // =============================================================================
 
-impl<P: Model, Presets> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> INoteExpressionPhysicalUIMappingTrait for Vst3Processor<P> {
     unsafe fn getPhysicalUIMapping(
         &self,
         bus_index: i32,
@@ -3047,10 +3017,7 @@ where
 // IVst3WrapperMPESupport implementation (VST3 SDK 3.6.12)
 // =============================================================================
 
-impl<P: Model, Presets> IVst3WrapperMPESupportTrait for Vst3Processor<P, Presets>
-where
-    Presets: FactoryPresets<Parameters = P>,
-{
+impl<P: Model> IVst3WrapperMPESupportTrait for Vst3Processor<P> {
     unsafe fn enableMPEInputProcessing(&self, state: TBool) -> tresult {
         if self.model().enable_mpe_input_processing(state != 0) {
             kResultOk
@@ -3690,7 +3657,7 @@ mod tests {
     // processor.
 
     use beamer_core::parameter_types::{FloatParameter, ParameterRef, Parameters};
-    use beamer_core::preset::{PresetInfo, PresetValue};
+    use beamer_core::preset::Preset;
     use beamer_core::ParameterGroups;
     use std::cell::Cell;
     use std::sync::Mutex;
@@ -4303,10 +4270,7 @@ mod tests {
         wrapper
     }
 
-    fn prepare_state_wrapper<Presets>(wrapper: &Vst3Processor<StateModel, Presets>)
-    where
-        Presets: FactoryPresets<Parameters = StateModel>,
-    {
+    fn prepare_state_wrapper<P: Model>(wrapper: &Vst3Processor<P>) {
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -4325,22 +4289,21 @@ mod tests {
     /// Call process like a host, with `frames` of the 64 frames the buffers
     /// hold, with the parameter changes of the block and a list for the
     /// changes the plugin reports, if any.
-    fn process_with<P, Presets>(
-        wrapper: &Vst3Processor<P, Presets>,
+    fn process_with<P>(
+        wrapper: &Vst3Processor<P>,
         frames: int32,
         changes: *mut IParameterChanges,
         output_changes: *mut IParameterChanges,
     ) where
         P: Model,
-        Presets: FactoryPresets<Parameters = P>,
     {
         let no_events = std::ptr::null_mut();
         process_with_events(wrapper, frames, changes, output_changes, no_events, no_events);
     }
 
     /// Like `process_with`, with event lists for the MIDI in and out.
-    fn process_with_events<P, Presets>(
-        wrapper: &Vst3Processor<P, Presets>,
+    fn process_with_events<P>(
+        wrapper: &Vst3Processor<P>,
         frames: int32,
         changes: *mut IParameterChanges,
         output_changes: *mut IParameterChanges,
@@ -4348,7 +4311,6 @@ mod tests {
         output_events: *mut IEventList,
     ) where
         P: Model,
-        Presets: FactoryPresets<Parameters = P>,
     {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];
@@ -4594,38 +4556,43 @@ mod tests {
         }
     }
 
-    /// Two factory presets for the gain of the `StateModel`. The second
-    /// also has a value for an id that names no parameter, as a misspelled
-    /// preset key gives.
-    struct GainPresets;
+    /// The parameters of the `StateModel` with two factory presets for the
+    /// gain, whose range is 0 to 1.
+    #[derive(Default)]
+    struct GainPresetModel {
+        parameters: StateParameters,
+    }
 
-    const GAIN_PRESET_VALUES: [&[PresetValue]; 2] = [
-        &[PresetValue { id: GAIN_ID, plain_value: 0.2 }],
-        &[
-            PresetValue { id: GAIN_ID, plain_value: 0.9 },
-            PresetValue { id: 777, plain_value: 0.5 },
-        ],
-    ];
+    struct GainPresetProcessor;
 
-    impl FactoryPresets for GainPresets {
-        type Parameters = StateModel;
+    beamer_core::__forward_model!(GainPresetModel, parameters);
 
-        fn count() -> usize {
-            GAIN_PRESET_VALUES.len()
+    impl Model for GainPresetModel {
+        type Setup = ();
+        type Processor = GainPresetProcessor;
+        const PRESETS: &'static [Preset<Self>] = &[
+            Preset::new("Low", |m| m.parameters.gain.set(0.2)),
+            Preset::new("High", |m| m.parameters.gain.set(0.9)),
+        ];
+
+        fn prepare(self: Arc<Self>, _setup: ()) -> GainPresetProcessor {
+            GainPresetProcessor
         }
+    }
 
-        fn info(index: usize) -> Option<PresetInfo> {
-            (index < Self::count()).then_some(PresetInfo { name: "Gain" })
-        }
-
-        fn values(index: usize) -> &'static [PresetValue] {
-            GAIN_PRESET_VALUES.get(index).copied().unwrap_or(&[])
+    impl Processor for GainPresetProcessor {
+        fn process(
+            &mut self,
+            _buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
         }
     }
 
     #[test]
     fn test_program_change_in_process_applies_and_reports_the_preset() {
-        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
         let output = vst3::ComWrapper::new(OutputChanges::default());
         let output_pointer = output
@@ -4641,13 +4608,30 @@ mod tests {
             assert_eq!(wrapper.getParamNormalized(GAIN_ID), 0.9);
             assert_eq!(wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID), 1.0);
         }
-        // The value for an unknown id is neither applied nor reported.
         assert_eq!(output.reported(), [(GAIN_ID, vec![(0, 0.9)])]);
     }
 
     #[test]
+    fn test_a_preset_reports_only_the_parameters_it_changed() {
+        let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
+        prepare_state_wrapper(&wrapper);
+        let changes = changes_of(&[(PROGRAM_CHANGE_PARAM_ID, 1.0)]);
+        process_with(&wrapper, 64, changes.as_ptr(), std::ptr::null_mut());
+
+        // The gain already holds the value of the preset, so the second
+        // time there is nothing to report.
+        let output = vst3::ComWrapper::new(OutputChanges::default());
+        let output_pointer = output
+            .as_com_ref::<IParameterChanges>()
+            .expect("the changes are IParameterChanges")
+            .as_ptr();
+        process_with(&wrapper, 64, changes.as_ptr(), output_pointer);
+        assert!(output.reported().is_empty());
+    }
+
+    #[test]
     fn test_a_parameter_change_after_a_preset_in_the_same_block() {
-        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
         let output = vst3::ComWrapper::new(OutputChanges::default());
         let output_pointer = output
@@ -5145,10 +5129,9 @@ mod tests {
     }
 
     /// Save the state of a wrapper like a host and return the bytes.
-    fn saved_state<P, Presets>(wrapper: &Vst3Processor<P, Presets>) -> Vec<u8>
+    fn saved_state<P>(wrapper: &Vst3Processor<P>) -> Vec<u8>
     where
         P: Model,
-        Presets: FactoryPresets<Parameters = P>,
     {
         let stream = vst3::ComWrapper::new(MemoryStream::default());
         let pointer = stream.to_com_ptr::<IBStream>().expect("the stream is an IBStream");
@@ -5159,10 +5142,9 @@ mod tests {
     }
 
     /// Load a state into a wrapper like a host.
-    fn load_state<P, Presets>(wrapper: &Vst3Processor<P, Presets>, bytes: &[u8]) -> tresult
+    fn load_state<P>(wrapper: &Vst3Processor<P>, bytes: &[u8]) -> tresult
     where
         P: Model,
-        Presets: FactoryPresets<Parameters = P>,
     {
         let stream = vst3::ComWrapper::new(MemoryStream {
             content: Mutex::new((bytes.to_vec(), 0)),
@@ -5238,7 +5220,7 @@ mod tests {
 
     #[test]
     fn test_state_keeps_the_program_the_host_shows() {
-        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         // SAFETY: The wrapper is alive for the calls.
         unsafe {
             // The second preset, then a change of the gain after it.
@@ -5248,7 +5230,7 @@ mod tests {
         let state = saved_state(&wrapper);
 
         // A new instance, as when a host opens the project.
-        let reopened = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        let reopened = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         assert_eq!(load_state(&reopened, &state), kResultOk);
         // SAFETY: The wrapper is alive for the calls.
         unsafe {
@@ -5272,7 +5254,7 @@ mod tests {
         let unknown_program = writer.finish();
 
         for loaded in [&state, &unknown_program] {
-            let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+            let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
             // SAFETY: The wrapper is alive for the call.
             unsafe {
                 assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0), kResultOk);
@@ -5554,6 +5536,11 @@ mod tests {
     impl Model for ThreadedModel {
         type Setup = ();
         type Processor = ThreadedProcessor;
+        // Two factory presets for the level.
+        const PRESETS: &'static [Preset<Self>] = &[
+            Preset::new("Quiet", |m| m.parameters.level.set(0.1)),
+            Preset::new("Loud", |m| m.parameters.level.set(0.8)),
+        ];
 
         fn prepare(self: Arc<Self>, _setup: ()) -> ThreadedProcessor {
             ThreadedProcessor {
@@ -5592,30 +5579,6 @@ mod tests {
         }
     }
 
-    /// Two factory presets for the level of the `ThreadedModel`.
-    struct LevelPresets;
-
-    const LEVEL_PRESET_VALUES: [&[PresetValue]; 2] = [
-        &[PresetValue { id: LEVEL_ID, plain_value: 0.1 }],
-        &[PresetValue { id: LEVEL_ID, plain_value: 0.8 }],
-    ];
-
-    impl FactoryPresets for LevelPresets {
-        type Parameters = ThreadedModel;
-
-        fn count() -> usize {
-            LEVEL_PRESET_VALUES.len()
-        }
-
-        fn info(index: usize) -> Option<PresetInfo> {
-            (index < Self::count()).then_some(PresetInfo { name: "Level" })
-        }
-
-        fn values(index: usize) -> &'static [PresetValue] {
-            LEVEL_PRESET_VALUES.get(index).copied().unwrap_or(&[])
-        }
-    }
-
     /// Sets a flag when dropped.
     struct StopOnDrop<'a>(&'a AtomicBool);
 
@@ -5629,7 +5592,7 @@ mod tests {
 
     #[test]
     fn test_host_calls_while_process_runs_on_another_thread() {
-        let wrapper = Vst3Processor::<ThreadedModel, LevelPresets>::new(&THREADED_CONFIG);
+        let wrapper = Vst3Processor::<ThreadedModel>::new(&THREADED_CONFIG);
         let model = Arc::clone(&wrapper.model);
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
@@ -5698,7 +5661,7 @@ mod tests {
                 // SAFETY: The wrapper is alive for the calls.
                 unsafe {
                     // A preset from the host's list.
-                    let preset = (round % LEVEL_PRESET_VALUES.len()) as f64;
+                    let preset = (round % ThreadedModel::PRESETS.len()) as f64;
                     assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, preset), kResultOk);
 
                     // What the plugin reports to the host.

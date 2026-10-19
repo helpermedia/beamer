@@ -132,15 +132,15 @@ pub use beamer_macros::{group, model};
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///
 /// Plugins normally do not call this macro themselves. `#[beamer::export]` on
-/// the model struct generates the `CONFIG` static from `Config.toml` and
-/// the presets from `Presets.toml`, then calls this macro with them. The
-/// macro in turn calls the export macro of every enabled format crate.
+/// the model struct generates the `CONFIG` static from `Config.toml`, then
+/// calls this macro with it and the model. The macro in turn calls the
+/// export macro of every enabled format crate.
 ///
 /// # Arguments
 ///
 /// * `$config` - The [`Config`](beamer_core::Config) static containing all plugin metadata
-/// * `$plugin` - The model type implementing the [`Model`](beamer_core::Model) trait
-/// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`](beamer_core::FactoryPresets)
+/// * `$plugin` - The model type implementing the [`Model`](beamer_core::Model) trait,
+///   with its factory presets in [`Model::PRESETS`](beamer_core::Model::PRESETS)
 ///
 /// # Example
 ///
@@ -151,30 +151,16 @@ pub use beamer_macros::{group, model};
 ///     .with_vendor("My Company")
 ///     .with_version(env!("CARGO_PKG_VERSION"));
 ///
-/// // Without a Presets.toml.
 /// export_plugin!(CONFIG, MyModel);
-///
-/// // With a Presets.toml, from which the macro also generates __BeamerPresets.
-/// export_plugin!(CONFIG, MyModel, __BeamerPresets);
 /// ```
 #[macro_export]
 macro_rules! export_plugin {
-    // With explicit presets type
-    ($config:expr, $plugin:ty, $presets:ty) => {
+    ($config:expr, $plugin:ty) => {
         #[cfg(feature = "au")]
-        $crate::au_impl::export_au!($config, $plugin, $presets);
+        $crate::au_impl::export_au!($config, $plugin);
 
         #[cfg(feature = "vst3")]
-        $crate::vst3_impl::export_vst3!($config, $plugin, $presets);
-    };
-
-    // Without presets (default to NoPresets)
-    ($config:expr, $plugin:ty) => {
-        $crate::export_plugin!(
-            $config,
-            $plugin,
-            $crate::core::NoPresets<$plugin>
-        );
+        $crate::vst3_impl::export_vst3!($config, $plugin);
     };
 }
 
@@ -210,7 +196,7 @@ pub mod prelude {
         // Parameter metadata
         NoParameters, ParameterFlags, ParameterInfo,
         // Factory presets
-        FactoryPresets, NoPresets, PresetInfo, PresetValue,
+        Preset,
         // Parameter types
         BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, ParameterRef, Parameters,
         // MIDI CC configuration (framework manages runtime state)

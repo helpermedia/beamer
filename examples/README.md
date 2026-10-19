@@ -135,7 +135,7 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
 - Ring buffer delay line implementation
 - Proper tail length via `tail_samples()`
-- Factory presets via `Presets.toml` file
+- Factory presets in code that set only some parameters
 
 ---
 
@@ -169,11 +169,14 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - **Priority logic**: Polyphonic aftertouch overrides channel aftertouch per-note
 - **Filter modulation**: Mod wheel opens cutoff by up to +8000 Hz for brightness
 
-**Typical Settings:**
-- **Pad**: Sine wave, slow attack (200ms), high sustain, long release (1000ms)
-- **Bass**: Saw wave, fast attack (5ms), low cutoff (400Hz), short release, transpose -12
-- **Lead**: Square wave, medium attack, high cutoff, add expression via mod wheel + aftertouch
-- **Pluck**: Triangle wave, instant attack, short decay, low sustain, medium release
+**Factory Presets:**
+- **Init**: The declared defaults
+- **Soft Pad**: Triangle wave, slow attack (600ms), high sustain, long release (1500ms)
+- **Pluck**: Saw wave, instant attack, short decay, no sustain, resonant filter
+- **Sub Bass**: Sine wave, fast attack, low cutoff (400Hz), transpose -12
+- **Square Lead**: Square wave, high cutoff, add expression via mod wheel + aftertouch
+
+Each preset starts from the defaults with `reset_parameters()`, so it sounds the same whatever was loaded before.
 
 **Why MidiCcConfig?** VST3 doesn't pass pitch bend and CC messages directly to plugins. Instead, DAWs use `IMidiMapping` to convert them to parameter changes. `MidiCcConfig` tells the framework which controllers to enable - it creates hidden parameters that receive these values and converts them back to MIDI events for your plugin. No manual state management needed!
 
@@ -190,6 +193,7 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - ADSR envelope generator
 - One-pole lowpass filter with resonance
 - Parameter smoothing (exponential for filter cutoff/resonance)
+- Factory presets that start from the defaults (`reset_parameters()`)
 - Generic f32/f64 processing
 
 ---

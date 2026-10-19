@@ -29,15 +29,14 @@
 //! `Processor::process()` method. Transport information comes from the host
 //! via the render callback (currently placeholder).
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::{PluginError, PluginResult};
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, CachedBusConfig, FactoryPresets, Model,
-    MidiEvent, NoPresets, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
+    AuxiliaryBuffers, Buffer, CachedBusConfig, Model,
+    MidiEvent, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEventQueue, MAX_AUX_BUSES,
 };
 
@@ -49,22 +48,18 @@ use beamer_core::{
 /// # Type Parameters
 ///
 /// * `P` - The model type implementing `beamer_core::Model`
-/// * `Presets` - Optional factory presets collection (default: `NoPresets`)
-pub struct AuProcessor<P, Presets = NoPresets<P>>
+pub struct AuProcessor<P>
 where
     P: Model,
-    Presets: FactoryPresets<Parameters = P>,
 {
     state: AuState<P>,
     /// The plugin's queue of events for the web UI, if its model has one.
     webview_events: Option<WebViewEventQueue>,
-    _presets: PhantomData<Presets>,
 }
 
-impl<P, Presets> AuProcessor<P, Presets>
+impl<P> AuProcessor<P>
 where
     P: Model,
-    Presets: FactoryPresets<Parameters = P>,
 {
     /// Create a new AU processor.
     ///
@@ -83,25 +78,22 @@ where
         Self {
             state: AuState::with_model(model),
             webview_events: events,
-            _presets: PhantomData,
         }
     }
 }
 
-impl<P, Presets> Default for AuProcessor<P, Presets>
+impl<P> Default for AuProcessor<P>
 where
     P: Model,
-    Presets: FactoryPresets<Parameters = P>,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<P, Presets> AuPluginInstance for AuProcessor<P, Presets>
+impl<P> AuPluginInstance for AuProcessor<P>
 where
     P: Model,
-    Presets: FactoryPresets<Parameters = P>,
 {
     fn allocate_render_resources(
         &mut self,
@@ -371,7 +363,7 @@ where
         use beamer_core::MidiEventKind;
 
         // Check if we have factory presets for automatic MIDI PC mapping
-        let preset_count = Presets::count();
+        let preset_count = P::PRESETS.len();
 
         // Borrow processor and midi_output_buffer simultaneously from the
         // prepared state. This avoids mem::take, which would construct a new
@@ -423,7 +415,7 @@ where
                 for index in 0..input.len() {
                     if let MidiEventKind::ProgramChange(pc) = &input[index].event {
                         if (pc.program as usize) < preset_count {
-                            Presets::apply(pc.program as usize, model);
+                            P::PRESETS[pc.program as usize].apply(model);
                             continue;
                         }
                     }
@@ -461,9 +453,9 @@ where
 
     fn factory_presets(&self) -> FactoryPresetAccess {
         FactoryPresetAccess {
-            count: Presets::count(),
-            info: Presets::info,
-            apply: apply_preset::<Presets>,
+            count: P::PRESETS.len(),
+            name: preset_name::<P>,
+            apply: apply_preset::<P>,
         }
     }
 }
@@ -472,11 +464,19 @@ where
 ///
 /// Always applies, also when the preset is the current one: hosts send the
 /// same preset again and expect its values back.
-fn apply_preset<Presets: FactoryPresets>(model: &dyn SharedModel, index: usize) -> bool {
-    match model.as_any().downcast_ref::<Presets::Parameters>() {
-        Some(model) => Presets::apply(index, model),
-        None => false,
+fn apply_preset<P: Model>(model: &dyn SharedModel, index: usize) -> bool {
+    match (model.as_any().downcast_ref::<P>(), P::PRESETS.get(index)) {
+        (Some(model), Some(preset)) => {
+            preset.apply(model);
+            true
+        }
+        _ => false,
     }
+}
+
+/// The name of the factory preset at `index` of a plugin.
+fn preset_name<P: Model>(index: usize) -> Option<&'static str> {
+    P::PRESETS.get(index).map(Preset::name)
 }
 
 /// Factory function type for creating AU processor instances.
@@ -506,7 +506,7 @@ mod tests {
     use beamer_core::parameter_groups::{GroupInfo, ParameterGroups};
     use beamer_core::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
     use beamer_core::parameter_types::{ParameterRef, Parameters};
-    use beamer_core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
+    use beamer_core::types::fnv1a_hash;
     use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind};
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -733,6 +733,13 @@ mod tests {
     impl Model for TestModel {
         type Setup = ();
         type Processor = TestProcessor;
+        // Each preset sets the gain to a normalized value of its own, so the
+        // assertions see which one was applied.
+        const PRESETS: &'static [Preset<Self>] = &[
+            Preset::new("Unity", |m| m.fields.gain.set_normalized(0.5)),
+            Preset::new("Quiet", |m| m.fields.gain.set_normalized(0.25)),
+            Preset::new("Boost", |m| m.fields.gain.set_normalized(0.75)),
+        ];
 
         fn prepare(self: Arc<Self>, _setup: ()) -> Self::Processor {
             SMOOTHING_SAMPLE_RATE_AT_PREPARE
@@ -795,64 +802,12 @@ mod tests {
     }
 
     // =========================================================================
-    // Test Presets
-    // =========================================================================
-    //
-    // Note: MockParameter uses identity mapping (normalized == plain), so preset
-    // plain_values are used directly as normalized values in assertions. This
-    // simplifies the tests since we're testing MIDI PC → preset application flow,
-    // not the actual dB-to-normalized conversion (which is tested in beamer-core).
-
-    struct TestPresets;
-
-    const PRESET_UNITY: &[PresetValue] = &[PresetValue {
-        id: fnv1a_hash("gain"),
-        plain_value: 0.5, // Unity (middle)
-    }];
-
-    const PRESET_QUIET: &[PresetValue] = &[PresetValue {
-        id: fnv1a_hash("gain"),
-        plain_value: 0.25, // Quiet
-    }];
-
-    const PRESET_BOOST: &[PresetValue] = &[PresetValue {
-        id: fnv1a_hash("gain"),
-        plain_value: 0.75, // Boost
-    }];
-
-    impl FactoryPresets for TestPresets {
-        type Parameters = TestModel;
-
-        fn count() -> usize {
-            3
-        }
-
-        fn info(index: usize) -> Option<PresetInfo> {
-            match index {
-                0 => Some(PresetInfo { name: "Unity" }),
-                1 => Some(PresetInfo { name: "Quiet" }),
-                2 => Some(PresetInfo { name: "Boost" }),
-                _ => None,
-            }
-        }
-
-        fn values(index: usize) -> &'static [PresetValue] {
-            match index {
-                0 => PRESET_UNITY,
-                1 => PRESET_QUIET,
-                2 => PRESET_BOOST,
-                _ => &[],
-            }
-        }
-    }
-
-    // =========================================================================
     // Test Helpers
     // =========================================================================
 
     /// Create a prepared AuProcessor for testing MIDI functionality.
-    fn create_prepared_processor() -> AuProcessor<TestModel, TestPresets> {
-        let mut processor = AuProcessor::<TestModel, TestPresets>::new();
+    fn create_prepared_processor() -> AuProcessor<TestModel> {
+        let mut processor = AuProcessor::<TestModel>::new();
 
         let bus_config = CachedBusConfig::new(
             vec![CachedBusInfo::new(2, BusType::Main)],
@@ -867,7 +822,7 @@ mod tests {
     }
 
     /// Get the gain parameter's normalized value.
-    fn get_gain_normalized(processor: &AuProcessor<TestModel, TestPresets>) -> f64 {
+    fn get_gain_normalized(processor: &AuProcessor<TestModel>) -> f64 {
         let model = processor.shared_model();
         let parameters = model.parameter_store();
         let gain_id = parameters.info(0).unwrap().id;
@@ -875,7 +830,7 @@ mod tests {
     }
 
     /// Set the gain parameter's normalized value.
-    fn set_gain_normalized(processor: &mut AuProcessor<TestModel, TestPresets>, value: f64) {
+    fn set_gain_normalized(processor: &mut AuProcessor<TestModel>, value: f64) {
         let model = processor.shared_model();
         let parameters = model.parameter_store();
         let gain_id = parameters.info(0).unwrap().id;
@@ -890,7 +845,7 @@ mod tests {
     fn test_main_channels_of_declared_buses() {
         // The test plugin declares one stereo input and keeps the default
         // stereo output.
-        let processor = AuProcessor::<TestModel, TestPresets>::new();
+        let processor = AuProcessor::<TestModel>::new();
         let declared = crate::bridge::DeclaredBuses::capture(&processor);
         assert_eq!(declared.main_channels(), (2, 2));
     }
@@ -1406,7 +1361,7 @@ mod tests {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::AURenderEventType;
 
-        let plugin = boxed(AuProcessor::<TestModel, TestPresets>::new());
+        let plugin = boxed(AuProcessor::<TestModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
@@ -1861,7 +1816,7 @@ mod tests {
     #[test]
     fn test_output_starts_silent_without_main_input() {
         // TestProcessor does not write its output.
-        let plugin = boxed(AuProcessor::<TestModel, TestPresets>::new());
+        let plugin = boxed(AuProcessor::<TestModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
 
         // Without input, what the host left in the buffers must not come out.
@@ -1905,7 +1860,7 @@ mod tests {
     unsafe impl Send for Instance {}
 
     fn test_handle() -> Box<BeamerInstanceHandle> {
-        let plugin = AuProcessor::<TestModel, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel>::new();
         Box::new(BeamerInstanceHandle::new(Box::new(plugin)))
     }
 
@@ -2242,7 +2197,7 @@ mod tests {
     #[test]
     fn test_state_of_any_size_is_saved_and_loaded_whole() {
         // An instance whose state holds some hundred kilobytes.
-        let plugin = AuProcessor::<TestModel, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel>::new();
         let shared = plugin.shared_model();
         let model = shared
             .as_any()
@@ -2484,7 +2439,7 @@ mod tests {
 
     #[test]
     fn test_dropping_the_instance_frees_the_parameters() {
-        let plugin = AuProcessor::<TestModel, TestPresets>::new();
+        let plugin = AuProcessor::<TestModel>::new();
         let model = Arc::downgrade(&plugin.shared_model());
         let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;

@@ -20,6 +20,7 @@
 //! - Proper tail length declaration for delay decay
 //! - `SampleRate` setup for sample-rate-dependent initialization
 //! - `reset()` to clear internal state on playback restart
+//! - Factory presets that set only some parameters
 
 use beamer::prelude::*;
 
@@ -98,6 +99,8 @@ impl Model for DelayModel {
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
     type Processor = DelayProcessor;
+    // The factory presets, in the Factory Presets section below.
+    const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;
 
     fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor {
         DelayProcessor {
@@ -108,6 +111,44 @@ impl Model for DelayModel {
         }
     }
 }
+
+// =============================================================================
+// Factory Presets
+// =============================================================================
+
+/// The factory presets, in the order hosts list them.
+///
+/// A preset sets only the parameters it names, the others keep their
+/// values. The synced presets leave the time alone, since a synced delay
+/// does not use it.
+const FACTORY_PRESETS: &[Preset<DelayModel>] = &[
+    Preset::new("Slapback", |m| {
+        m.sync_mode.set(SyncMode::Free);
+        m.stereo_mode.set(StereoMode::Stereo);
+        m.time_ms.set(80.0);
+        m.feedback.set(0.2);
+        m.mix.set(0.3);
+    }),
+    Preset::new("Eighth Note", |m| {
+        m.sync_mode.set(SyncMode::Eighth);
+        m.stereo_mode.set(StereoMode::Stereo);
+        m.feedback.set(0.45);
+        m.mix.set(0.4);
+    }),
+    Preset::new("Ping Pong", |m| {
+        m.sync_mode.set(SyncMode::Quarter);
+        m.stereo_mode.set(StereoMode::PingPong);
+        m.feedback.set(0.5);
+        m.mix.set(0.5);
+    }),
+    Preset::new("Ambient", |m| {
+        m.sync_mode.set(SyncMode::Free);
+        m.stereo_mode.set(StereoMode::Stereo);
+        m.time_ms.set(750.0);
+        m.feedback.set(0.7);
+        m.mix.set(0.6);
+    }),
+];
 
 // =============================================================================
 // Delay Buffer

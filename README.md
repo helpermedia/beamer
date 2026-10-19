@@ -141,7 +141,7 @@ Contributions for testing and fixes on Windows are welcome.
 |-------|-------------|
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
-| `beamer-macros` | `#[beamer::model]` and `#[beamer::group]` for the model, `#[derive(EnumParameter)]` for enum parameters, `#[beamer::export]` for config and presets |
+| `beamer-macros` | `#[beamer::model]` and `#[beamer::group]` for the model, `#[derive(EnumParameter)]` for enum parameters, `#[beamer::export]` for config and entry points |
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-vst3` | VST3 wrapper implementation |

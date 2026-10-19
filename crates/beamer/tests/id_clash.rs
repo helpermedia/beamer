@@ -4,7 +4,7 @@
 #![cfg(feature = "derive")]
 
 use beamer::core::parameter_types::check_unique_ids;
-use beamer::core::preset::fnv1a_hash;
+use beamer::core::types::fnv1a_hash;
 use beamer::prelude::*;
 use beamer_vst3::factory::ComponentFactory;
 use beamer_vst3::Vst3Processor;
@@ -85,8 +85,8 @@ fn test_no_clash_where_the_paths_differ() {
 
 #[test]
 fn test_vst3_refuses_an_instance_with_a_clash() {
-    type Clash = Vst3Processor<ClashModel, NoPresets<ClashModel>>;
-    type Fine = Vst3Processor<NestedClashModel, NoPresets<NestedClashModel>>;
+    type Clash = Vst3Processor<ClashModel>;
+    type Fine = Vst3Processor<NestedClashModel>;
 
     assert!(<Clash as ComponentFactory>::create(&CONFIG).is_none());
     assert!(<Fine as ComponentFactory>::create(&CONFIG).is_some());
@@ -128,8 +128,8 @@ impl Model for ProgramIdModel {
 
 #[test]
 fn test_vst3_refuses_an_id_it_uses_itself() {
-    type MidiCcId = Vst3Processor<MidiCcIdModel, NoPresets<MidiCcIdModel>>;
-    type ProgramId = Vst3Processor<ProgramIdModel, NoPresets<ProgramIdModel>>;
+    type MidiCcId = Vst3Processor<MidiCcIdModel>;
+    type ProgramId = Vst3Processor<ProgramIdModel>;
 
     assert_eq!(fnv1a_hash("hvcbaeyv"), 0x1000_0007);
     assert_eq!(fnv1a_hash("ukaqaxdz"), 0x2000_0000);
@@ -150,7 +150,7 @@ fn test_au_refuses_an_instance_with_a_clash() {
     use beamer_au::{AuPluginInstance, AuProcessor};
 
     fn create() -> Box<dyn AuPluginInstance> {
-        Box::new(AuProcessor::<ClashModel, NoPresets<ClashModel>>::new())
+        Box::new(AuProcessor::<ClashModel>::new())
     }
 
     // One plugin per process: this test is the only one that registers.

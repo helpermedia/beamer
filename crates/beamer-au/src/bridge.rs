@@ -2426,11 +2426,11 @@ pub extern "C" fn beamer_au_get_preset_info(
             return false;
         }
 
-        if let Some(info) = (handle.presets.info)(index as usize) {
+        if let Some(name) = (handle.presets.name)(index as usize) {
             // SAFETY: out_info was validated as non-null at function start.
             let out = unsafe { &mut *out_info };
             out.number = index as i32;
-            copy_str_to_char_array(info.name, &mut out.name);
+            copy_str_to_char_array(name, &mut out.name);
             true
         } else {
             false
@@ -2440,8 +2440,8 @@ pub extern "C" fn beamer_au_get_preset_info(
 
 /// Apply a factory preset by index.
 ///
-/// This sets all parameters defined in the preset to their preset values.
-/// Parameters not defined in the preset retain their current values (sparse application).
+/// The preset sets the parameters it names. The others keep their current
+/// values.
 ///
 /// # Safety
 ///

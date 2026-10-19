@@ -26,6 +26,7 @@
 //! - Polyphonic aftertouch (per-note vibrato control)
 //! - Channel aftertouch (global vibrato control)
 //! - `SampleRate` setup for sample-rate-dependent initialization
+//! - Factory presets that start from the defaults (`reset_parameters()`)
 
 use beamer::prelude::*;
 
@@ -87,6 +88,9 @@ enum EnvelopeStage {
 /// - `Saved` trait (parameters and `State` fields, saving and loading)
 /// - `WebViewEvents` trait (where the event queue of the web UI is)
 /// - `Default` trait (from attribute values)
+///
+/// The `#[beamer::export]` attribute exports the model as a plugin, with
+/// `Config.toml`.
 ///
 /// Parameters are organized into flat groups: Oscillator, Envelope, Filter, Global.
 /// Filter parameters use exponential smoothing to prevent zipper noise.
@@ -151,6 +155,8 @@ impl Model for SynthesizerModel {
     // See `beamer::setup` for all available types.
     type Setup = SampleRate;
     type Processor = SynthesizerProcessor;
+    // The factory presets, in the Factory Presets section below.
+    const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;
 
     fn prepare(self: Arc<Self>, setup: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
@@ -185,6 +191,65 @@ impl Model for SynthesizerModel {
     fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
         None // No inputs
     }
+}
+
+// =============================================================================
+// Factory Presets
+// =============================================================================
+
+/// The factory presets, in the order hosts list them.
+///
+/// A preset sets only the parameters it names, the others keep their
+/// values. A synthesizer preset should sound the same whatever was loaded
+/// before, so each one here starts from the defaults.
+///
+/// A host may load a preset on the audio thread (a program change), so a
+/// preset only sets parameters: no allocation, no locks, no `State` fields.
+const FACTORY_PRESETS: &[Preset<SynthesizerModel>] = &[
+    // The defaults of the declarations, what a new instance holds.
+    Preset::new("Init", |m| m.reset_parameters()),
+    Preset::new("Soft Pad", |m| {
+        m.reset_parameters();
+        m.waveform.set(Waveform::Triangle);
+        m.attack.set(600.0);
+        m.decay.set(400.0);
+        m.sustain.set(0.8);
+        m.release.set(1500.0);
+        m.cutoff.set(2000.0);
+        m.resonance.set(0.1);
+    }),
+    Preset::new("Pluck", |m| {
+        m.reset_parameters();
+        m.attack.set(1.0);
+        m.decay.set(180.0);
+        m.sustain.set(0.0);
+        m.release.set(120.0);
+        m.cutoff.set(1800.0);
+        m.resonance.set(0.4);
+    }),
+    Preset::new("Sub Bass", |m| {
+        m.reset_parameters();
+        m.waveform.set(Waveform::Sine);
+        m.attack.set(2.0);
+        m.sustain.set(1.0);
+        m.release.set(60.0);
+        m.cutoff.set(400.0);
+        m.transpose.set(-12);
+        m.gain.set(-3.0);
+    }),
+    Preset::new("Square Lead", lead),
+];
+
+/// A preset can also be a named function, to share steps between presets
+/// or to compute values.
+fn lead(m: &SynthesizerModel) {
+    m.reset_parameters();
+    m.waveform.set(Waveform::Square);
+    m.decay.set(80.0);
+    m.sustain.set(0.7);
+    m.release.set(200.0);
+    m.cutoff.set(3500.0);
+    m.resonance.set(0.3);
 }
 
 // =============================================================================

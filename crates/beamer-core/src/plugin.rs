@@ -25,6 +25,7 @@ use crate::midi::{
 };
 use crate::midi_cc_config::MidiCcConfig;
 use crate::model::{Saved, WebViewEvents};
+use crate::preset::Preset;
 use crate::process_context::ProcessContext;
 
 // =============================================================================
@@ -915,7 +916,8 @@ pub trait Processor: Send + 'static {
 /// such as [`on_midi_learn()`](Model::on_midi_learn), keeps what it changes
 /// in a value that is safe to share: a `State` field (which is also saved
 /// with the project), an atomic or a `Mutex`. No method of this trait is
-/// called on the audio thread.
+/// called on the audio thread. The functions of the
+/// [`PRESETS`](Model::PRESETS) may be.
 pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// The setup information this plugin needs to prepare.
     ///
@@ -930,6 +932,25 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     /// The prepared processor type created by [`Model::prepare()`].
     type Processor: Processor;
+
+    /// The factory presets, in the order hosts list them. None by default.
+    ///
+    /// A host may apply a preset from one of its own threads or from the
+    /// audio thread (a program change), so a preset only sets parameters.
+    /// See [`Preset`].
+    ///
+    /// ```ignore
+    /// impl Model for GainModel {
+    ///     type Setup = ();
+    ///     type Processor = GainProcessor;
+    ///     const PRESETS: &'static [Preset<Self>] = &[
+    ///         Preset::new("Unity", |m| m.gain.set(0.0)),
+    ///         Preset::new("Quiet", |m| m.gain.set(-12.0)),
+    ///     ];
+    ///     // ...
+    /// }
+    /// ```
+    const PRESETS: &'static [Preset<Self>] = &[];
 
     /// Create a processor for an audio configuration.
     ///

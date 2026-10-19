@@ -424,6 +424,23 @@ pub trait Parameters: Send + Sync + ParameterGroups {
         // Default no-op. #[beamer::model] and #[beamer::group] generate an override
         // that calls reset_smoothing on each float parameter and nested field.
     }
+
+    // =========================================================================
+    // Defaults
+    // =========================================================================
+
+    /// Set every parameter, also in nested groups, to its default value.
+    ///
+    /// A factory preset that should sound the same whatever was loaded
+    /// before starts with this. `#[beamer::model]` and `#[beamer::group]`
+    /// generate an override that does not allocate, so it is safe on the
+    /// audio thread; the default goes through [`iter`](Self::iter), which
+    /// allocates.
+    fn reset_parameters(&self) {
+        for parameter in self.iter() {
+            parameter.set_normalized(parameter.default_normalized());
+        }
+    }
 }
 
 // =============================================================================

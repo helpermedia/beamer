@@ -17,7 +17,6 @@
 use std::sync::Arc;
 
 use crate::error::PluginResult;
-use beamer_core::preset::PresetInfo;
 use beamer_core::{
     AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
     SharedModel, WebViewDispatch, WebViewEventQueue,
@@ -31,8 +30,8 @@ use beamer_core::{
 pub struct FactoryPresetAccess {
     /// Number of factory presets.
     pub count: usize,
-    /// Returns the info of the preset at an index.
-    pub info: fn(usize) -> Option<PresetInfo>,
+    /// Returns the name of the preset at an index.
+    pub name: fn(usize) -> Option<&'static str>,
     /// Applies the preset at an index to the parameters of the plugin.
     pub apply: fn(&dyn SharedModel, usize) -> bool,
 }
@@ -42,7 +41,7 @@ impl FactoryPresetAccess {
     pub fn none() -> Self {
         Self {
             count: 0,
-            info: |_| None,
+            name: |_| None,
             apply: |_, _| false,
         }
     }

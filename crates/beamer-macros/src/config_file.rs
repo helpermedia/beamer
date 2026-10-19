@@ -1,6 +1,4 @@
-//! Serde structs for Config.toml and Presets.toml.
-
-use std::collections::HashMap;
+//! Serde structs for Config.toml.
 
 use serde::Deserialize;
 
@@ -69,23 +67,6 @@ pub fn log_level_variant(level: &str) -> Result<&'static str, String> {
             "log_level must be \"error\", \"warn\", \"info\", \"debug\" or \"trace\", got {level:?}"
         )),
     }
-}
-
-/// Presets file from Presets.toml.
-#[derive(Deserialize)]
-pub struct PresetsFile {
-    /// List of preset definitions.
-    pub preset: Vec<PresetEntry>,
-}
-
-/// A single preset definition.
-#[derive(Deserialize)]
-pub struct PresetEntry {
-    /// Display name shown in the DAW's preset browser.
-    pub name: String,
-    /// Parameter values (parameter_id -> plain value).
-    #[serde(flatten)]
-    pub values: HashMap<String, toml::Value>,
 }
 
 /// Category names in Config.toml and the `Category` variant each one selects.

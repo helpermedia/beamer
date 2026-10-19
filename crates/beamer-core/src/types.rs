@@ -103,5 +103,15 @@ impl Rect {
 /// Parameter identifier.
 pub type ParameterId = u32;
 
+/// The id that hosts see for the parameter at `path`: the FNV-1a hash of
+/// the path (`"gain"`, or `"filter/cutoff"` for a parameter in the nested
+/// field `filter`).
+///
+/// This is the hash that `#[beamer::model]` and `#[beamer::group]` use.
+/// A parameter of a model also tells its id: `model.filter.cutoff.id()`.
+pub const fn fnv1a_hash(path: &str) -> ParameterId {
+    beamer_utils::fnv1a_32(path)
+}
+
 /// Parameter value (normalized 0.0 to 1.0).
 pub type ParameterValue = f64;

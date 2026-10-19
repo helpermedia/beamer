@@ -26,7 +26,7 @@
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Presets.toml file |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
 | | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Saved state beyond parameters, read on the audio thread |
 | | Hand-written `Default` (`no_default`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Covered by docs (REFERENCE.md) and tests; no example needs it |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |

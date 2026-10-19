@@ -53,7 +53,6 @@ pub use processor::Vst3Processor;
 
 // Re-export shared types from beamer-core
 pub use beamer_core::Config;
-pub use beamer_core::{FactoryPresets, NoPresets};
 
 // Re-export vst3 crate for use in macros and UIDs
 pub use vst3;

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use beamer::core::parameter_store::ParameterStore;
 use beamer::core::parameter_types::check_unique_ids;
-use beamer::core::preset::{fnv1a_hash, FactoryPresets, PresetInfo, PresetValue};
+use beamer::core::types::fnv1a_hash;
 use beamer::core::types::ParameterId;
 use beamer::prelude::*;
 
@@ -171,44 +171,17 @@ fn test_web_ui_gets_the_paths() {
     assert_eq!(string_ids, paths(&model));
 }
 
-/// What `Presets.toml` turns into: the key of a value, hashed.
-struct LayerPresets;
-
-impl FactoryPresets for LayerPresets {
-    type Parameters = TwoLayerModel;
-
-    fn count() -> usize {
-        1
-    }
-
-    fn info(index: usize) -> Option<PresetInfo> {
-        (index == 0).then_some(PresetInfo { name: "Quiet B" })
-    }
-
-    fn values(_index: usize) -> &'static [PresetValue] {
-        const VALUES: &[PresetValue] = &[
-            PresetValue {
-                id: fnv1a_hash("second/level"),
-                plain_value: 0.1,
-            },
-            PresetValue {
-                id: fnv1a_hash("first/voices"),
-                plain_value: 8.0,
-            },
-        ];
-        VALUES
-    }
-}
-
 #[test]
-fn test_preset_names_a_nested_parameter_by_its_path() {
+fn test_reset_parameters_reaches_nested_groups() {
     let model = TwoLayerModel::default();
-    assert!(LayerPresets::apply(0, &model));
+    model.level.set(0.9);
+    model.first.voices.set(8);
+    model.second.envelope.attack.set(500.0);
 
-    assert!((model.second.level.get() - 0.1).abs() < 1e-9);
-    assert_eq!(model.first.voices.get(), 8);
-    assert_eq!(model.first.level.get(), 1.0);
-    assert_eq!(model.second.voices.get(), 4);
+    model.reset_parameters();
+    assert_eq!(model.level.get(), 0.5);
+    assert_eq!(model.first.voices.get(), 4);
+    assert!((model.second.envelope.attack.get() - 10.0).abs() < 1e-9);
 }
 
 #[test]

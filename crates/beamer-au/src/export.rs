@@ -23,8 +23,8 @@
 /// # Arguments
 ///
 /// * `$config` - The [`beamer_core::Config`] static containing all plugin metadata
-/// * `$plugin` - The model type implementing the [`beamer_core::Model`] trait
-/// * `$presets` - (Optional) The presets type implementing [`FactoryPresets`]. If omitted, `NoPresets` is used.
+/// * `$plugin` - The model type implementing the [`beamer_core::Model`] trait,
+///   with its factory presets in `Model::PRESETS`
 ///
 /// # Example
 ///
@@ -34,11 +34,7 @@
 /// static CONFIG: Config = Config::new("My Plugin", Category::Effect, "Mfgr", "plgn")
 ///     .with_vendor("My Company");
 ///
-/// // Without presets
 /// export_au!(CONFIG, MyPlugin);
-///
-/// // With presets
-/// export_au!(CONFIG, MyPlugin, MyPresets);
 /// ```
 ///
 /// # Generated Symbols
@@ -60,7 +56,7 @@
 ///    function and `Open`, AUv3: `createAudioUnitWithComponentDescription:error:` of the
 ///    extension or the extension's factory function)
 /// 4. The wrapper calls `beamer_au_create_instance()` which uses the registered factory
-/// 5. `AuProcessor<YourPlugin, Presets>::new()` creates the actual plugin instance
+/// 5. `AuProcessor<YourPlugin>::new()` creates the actual plugin instance
 ///
 /// # Initialization Guarantees
 ///
@@ -71,16 +67,14 @@
 ///
 /// [`OnceLock`]: std::sync::OnceLock
 /// [`AuProcessor`]: crate::AuProcessor
-/// [`FactoryPresets`]: beamer_core::FactoryPresets
 #[macro_export]
 macro_rules! export_au {
-    // With explicit presets type
-    ($config:expr, $plugin:ty, $presets:ty) => {
+    ($config:expr, $plugin:ty) => {
         // Factory registration function
         fn __beamer_au_do_register() {
             $crate::factory::register_factory(
                 || {
-                    Box::new($crate::AuProcessor::<$plugin, $presets>::new())
+                    Box::new($crate::AuProcessor::<$plugin>::new())
                         as Box<dyn $crate::AuPluginInstance>
                 },
                 &$config,
@@ -106,10 +100,5 @@ macro_rules! export_au {
         pub fn __beamer_au_manual_init() {
             __beamer_au_do_register();
         }
-    };
-
-    // Without presets (default to NoPresets)
-    ($config:expr, $plugin:ty) => {
-        $crate::export_au!($config, $plugin, $crate::NoPresets<$plugin>);
     };
 }

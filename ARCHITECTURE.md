@@ -175,7 +175,7 @@ beamer/
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`Model`, `Processor`, `Saved`, `WebViewEvents`), buffer types, MIDI types, `Config` |
-| `beamer-macros` | Attribute macros: `#[beamer::model]`, `#[beamer::group]` and `#[beamer::export]` (reads Config.toml/Presets.toml). Derive macro: `#[derive(EnumParameter)]` |
+| `beamer-macros` | Attribute macros: `#[beamer::model]`, `#[beamer::group]` and `#[beamer::export]` (reads Config.toml). Derive macro: `#[derive(EnumParameter)]` |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |
@@ -308,23 +308,22 @@ Beamer uses **TOML-based configuration** with compile-time code generation to el
 
 ### Configuration Architecture
 
-Plugin metadata is declared in `Config.toml` (required) and optionally `Presets.toml` in the plugin crate root. The `#[beamer::export]` attribute macro reads these files at compile time and generates:
+Plugin metadata is declared in `Config.toml` in the plugin crate root. Factory presets are Rust code: `Model::PRESETS`, a `const` slice of `Preset` values. The `#[beamer::export]` attribute macro reads `Config.toml` at compile time and generates:
 - The `CONFIG` static with all metadata
-- Factory presets implementation (if Presets.toml exists)
 - Format entry points via `export_plugin!` macro
 
 ```
 Plugin Crate Root
 ├── Cargo.toml
 ├── Config.toml              # Required: plugin metadata
-├── Presets.toml             # Optional: factory presets
 └── src/
     └── lib.rs
         ├── Model struct with #[beamer::export] and #[beamer::model]
+        ├── Factory presets (optional, Model::PRESETS)
         └── Processor struct
 ```
 
-See [Plugin Configuration](docs/REFERENCE.md#plugin-configuration) for all `Config.toml` fields and [Factory Presets](docs/REFERENCE.md#factory-presets) for `Presets.toml`.
+See [Plugin Configuration](docs/REFERENCE.md#plugin-configuration) for all `Config.toml` fields and [Factory Presets](docs/REFERENCE.md#factory-presets) for presets.
 
 ### Why TOML Configuration?
 
@@ -337,10 +336,9 @@ See [Plugin Configuration](docs/REFERENCE.md#plugin-configuration) for all `Conf
 The `#[beamer::export]` macro generates:
 
 1. **CONFIG static**: `pub static CONFIG: Config = Config::new(...).with_vendor(...).with_version(...)`
-2. **Presets implementation** (if Presets.toml exists): Implements `FactoryPresets` trait
-3. **Plugin exports**: Calls `export_plugin!(CONFIG, ModelStruct)` or `export_plugin!(CONFIG, ModelStruct, PresetsStruct)`
+2. **Plugin exports**: Calls `export_plugin!(CONFIG, ModelStruct)`
 
-The macro uses `include_str!()` to track file dependencies, so Cargo automatically rebuilds when Config.toml or Presets.toml changes.
+The macro uses `include_str!()` to track file dependencies, so Cargo automatically rebuilds when Config.toml changes.
 
 ### VST3 ID Generation
 

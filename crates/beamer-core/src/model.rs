@@ -278,6 +278,10 @@ macro_rules! __forward_model {
             fn reset_smoothing(&self) {
                 $crate::parameter_types::Parameters::reset_smoothing(&self.$field);
             }
+
+            fn reset_parameters(&self) {
+                $crate::parameter_types::Parameters::reset_parameters(&self.$field);
+            }
         }
 
         impl $crate::model::Saved for $model {

@@ -4,7 +4,7 @@ Attribute macros and a derive macro for building audio plugins with Beamer.
 
 This crate provides procedural macros that generate boilerplate code for plugins:
 
-- **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration, factory presets (from `Presets.toml`) and format-specific entry points
+- **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration and format-specific entry points
 - **`#[beamer::model]`**: Marks the model of a plugin, the struct every thread shares, and generates its parameter traits, host integration, state persistence and `Default` implementation
 - **`#[beamer::group]`**: Marks a nested group of a model, with the same code generation
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
