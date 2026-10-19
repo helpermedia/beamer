@@ -21,7 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "webview")]
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ use beamer_core::{
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
+use beamer_core::state_format::{StateEntries, StateWriter};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
@@ -485,8 +486,9 @@ where
     midi_cc_state: Option<MidiCcState>,
     /// Current factory preset index (0-based).
     /// Used for the program change parameter exposed to the host. Set by
-    /// host threads and by process(), read by host threads.
-    current_preset_index: AtomicI32,
+    /// host threads and by process(), read by host threads. Saved with the
+    /// state and taken back from it.
+    current_preset_index: AtomicU32,
     /// The component handler the host set, shared with the editors.
     component_handler: Arc<ComponentHandler>,
     /// The plugin's queue of events for the web UI, if it has one.
@@ -594,7 +596,7 @@ where
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
             midi_cc_state,
             // Default to first preset.
-            current_preset_index: AtomicI32::new(0),
+            current_preset_index: AtomicU32::new(0),
             component_handler: Arc::new(ComponentHandler::new()),
             #[cfg(feature = "webview")]
             webview_events,
@@ -658,7 +660,7 @@ where
             }
             if let Some(index) = last_value(queue).and_then(Self::preset_index_for) {
                 Presets::apply(index, model);
-                self.current_preset_index.store(index as i32, Ordering::Relaxed);
+                self.current_preset_index.store(index as u32, Ordering::Relaxed);
                 preset_index = Some(index);
             }
         }
@@ -1571,8 +1573,20 @@ where
         // values are atomic or shared, so they are loaded through a shared
         // reference: in both states, and also while process() runs, which is
         // when a host loads a preset during playback.
-        match beamer_core::Saved::load_state(self.model(), &buffer) {
-            Ok(()) => {
+        match StateEntries::parse(&buffer) {
+            Ok(Some(entries)) => {
+                beamer_core::Saved::load_entries(self.model(), &entries, "");
+                entries.log_unused();
+                // The program the host showed when it saved. Only the
+                // program change parameter changes: the preset is not
+                // applied again over the loaded values. A state without
+                // one, or with one this plugin does not have, shows the
+                // first, like a new instance.
+                let preset_index = entries
+                    .factory_preset()
+                    .filter(|&index| (index as usize) < Presets::count())
+                    .unwrap_or(0);
+                self.current_preset_index.store(preset_index, Ordering::Relaxed);
                 // The smoothers belong to the audio thread: the next process()
                 // call makes them jump to the loaded values, so that those do
                 // not ramp in.
@@ -1583,6 +1597,8 @@ where
                     .store(beamer_core::Saved::state_generation(self.model()), Ordering::Relaxed);
                 kResultOk
             }
+            // The buffer is not empty, so there is a state.
+            Ok(None) => kResultOk,
             Err(_) => kResultFalse,
         }
     }
@@ -1596,7 +1612,14 @@ where
         // values are atomic or shared, so they are saved through a shared
         // reference: in both states, and also while process() runs, which is
         // when a host saves during playback.
-        let data: Vec<u8> = beamer_core::Saved::save_state(self.model());
+        let mut writer = StateWriter::new();
+        beamer_core::Saved::save_entries(self.model(), &mut writer, "");
+        // With factory presets, also the program the host shows: a host
+        // keeps no value of the program change parameter itself.
+        if Presets::count() > 0 {
+            writer.factory_preset(self.current_preset_index.load(Ordering::Relaxed));
+        }
+        let data: Vec<u8> = writer.finish();
 
         if data.is_empty() {
             return kResultOk;
@@ -2403,7 +2426,7 @@ where
                 // when it's already selected) and skipping would break preset 0 on
                 // fresh load when current_preset_index is initialized to 0.
                 Presets::apply(preset_index, self.model());
-                self.current_preset_index.store(preset_index as i32, Ordering::Relaxed);
+                self.current_preset_index.store(preset_index as u32, Ordering::Relaxed);
 
                 // Notify host that parameter values changed so UI refreshes.
                 let handler = self.component_handler.get();
@@ -5214,6 +5237,53 @@ mod tests {
     }
 
     #[test]
+    fn test_state_keeps_the_program_the_host_shows() {
+        let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        // SAFETY: The wrapper is alive for the calls.
+        unsafe {
+            // The second preset, then a change of the gain after it.
+            assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0), kResultOk);
+            assert_eq!(wrapper.setParamNormalized(GAIN_ID, 0.3), kResultOk);
+        }
+        let state = saved_state(&wrapper);
+
+        // A new instance, as when a host opens the project.
+        let reopened = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+        assert_eq!(load_state(&reopened, &state), kResultOk);
+        // SAFETY: The wrapper is alive for the calls.
+        unsafe {
+            assert_eq!(reopened.getParamNormalized(PROGRAM_CHANGE_PARAM_ID), 1.0);
+            // The preset is not applied again over the saved gain.
+            assert_eq!(reopened.getParamNormalized(GAIN_ID), 0.3);
+        }
+    }
+
+    #[test]
+    fn test_state_without_a_program_shows_the_first() {
+        // A plugin without factory presets saves no program.
+        let without_presets = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
+        let state = saved_state(&without_presets);
+        let entries = StateEntries::parse(&state).unwrap().unwrap();
+        assert_eq!(entries.factory_preset(), None);
+
+        // A program this plugin does not have counts as none.
+        let mut writer = StateWriter::new();
+        writer.factory_preset(5);
+        let unknown_program = writer.finish();
+
+        for loaded in [&state, &unknown_program] {
+            let wrapper = Vst3Processor::<StateModel, GainPresets>::new(&STATE_CONFIG);
+            // SAFETY: The wrapper is alive for the call.
+            unsafe {
+                assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0), kResultOk);
+            }
+            assert_eq!(load_state(&wrapper, loaded), kResultOk);
+            // SAFETY: The wrapper is alive for the call.
+            assert_eq!(unsafe { wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID) }, 0.0);
+        }
+    }
+
+    #[test]
     fn test_setup_processing_gives_the_smoothers_the_host_sample_rate() {
         let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
 
@@ -5397,7 +5467,7 @@ mod tests {
     // Under ThreadSanitizer it shows that the two threads share nothing but
     // atomics and locks (see docs/BUILDING.md).
 
-    use beamer_core::state_format::{SavedState, StateEntries, StateWriter};
+    use beamer_core::state_format::SavedState;
     use beamer_core::{HandoverReader, SmoothingStyle, State};
     use std::sync::Barrier;
 

@@ -352,10 +352,12 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     _outputSampleBytes = sizeof(float);
     _bypassSilence = NULL;
 
-    AUAudioUnitPreset* defaultPreset = [[AUAudioUnitPreset alloc] init];
-    defaultPreset.number = 0;
-    defaultPreset.name = @"Default";
-    _currentPreset = defaultPreset;
+    // A new instance holds the declared defaults, not a factory preset, so
+    // it reports "no preset" (a negative number) like the AUv2 does.
+    AUAudioUnitPreset* untitledPreset = [[AUAudioUnitPreset alloc] init];
+    untitledPreset.number = -1;
+    untitledPreset.name = @"Untitled";
+    _currentPreset = untitledPreset;
 
     _rustInstance = beamer_au_create_instance();
     if (_rustInstance == NULL) {

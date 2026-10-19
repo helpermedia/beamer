@@ -21,14 +21,20 @@
 //!
 //! | Field | Size | Value |
 //! |-------|------|-------|
-//! | kind | u8 | 1: parameter, 2: state |
+//! | kind | u8 | 1: parameter, 2: state, 3: factory preset |
 //! | path length | u16 | number of bytes of the path |
 //! | path | path length | UTF-8, segments separated by `/` |
 //! | value length | u32 | number of bytes of the value |
-//! | value | value length | kind 1: the normalized value as f64. kind 2: JSON |
+//! | value | value length | kind 1: the normalized value as f64. kind 2: JSON. kind 3: the index as u32 |
 //!
 //! The path of a field is its id. A field of a nested group has
 //! the name of the nested field in front: `filter/cutoff`.
+//!
+//! An entry of kind 3 is not a field. It holds the factory preset that the
+//! plugin format shows as selected, and its path is empty. The VST3
+//! wrapper writes it for a plugin with factory presets: a VST3 host shows
+//! the selected preset as the value of a parameter, which the model does
+//! not hold.
 //!
 //! # Loading
 //!
@@ -45,6 +51,9 @@
 //!   JSON of a state does not fit its type. Such an entry is logged.
 //! - An entry whose path no field asks for is skipped and logged. When a
 //!   path occurs more than once, the last entry counts.
+//! - The factory preset is read with [`StateEntries::factory_preset`],
+//!   never by a field. A format that does not ask for it ignores it. When
+//!   it occurs more than once, the last entry counts.
 //!
 //! A load is always a whole state: it cannot be used to change some fields
 //! and leave the others.
@@ -68,6 +77,9 @@ const KIND_PARAMETER: u8 = 1;
 
 /// Entry kind of a `State` value.
 const KIND_STATE: u8 = 2;
+
+/// Entry kind of the selected factory preset.
+const KIND_FACTORY_PRESET: u8 = 3;
 
 /// Size of the magic, the version and the payload length.
 const HEADER_SIZE: usize = 12;
@@ -139,8 +151,8 @@ impl StateWriter {
             return;
         }
         // Two fields with the same path would both load the value of the
-        // second one.
-        if !self.paths.insert(path.to_string()) {
+        // second one. The factory preset is not a field and has no path.
+        if kind != KIND_FACTORY_PRESET && !self.paths.insert(path.to_string()) {
             log::warn!("Two fields are saved under the state path '{path}'.");
         }
         self.data.push(kind);
@@ -165,6 +177,12 @@ impl StateWriter {
             Ok(json) => self.entry(KIND_STATE, path, &json),
             Err(error) => log::error!("State '{path}' cannot be saved: {error}"),
         }
+    }
+
+    /// Add the index of the factory preset that the plugin format shows as
+    /// selected.
+    pub fn factory_preset(&mut self, index: u32) {
+        self.entry(KIND_FACTORY_PRESET, "", &index.to_le_bytes());
     }
 
     /// End the state and return its bytes.
@@ -193,6 +211,8 @@ struct Entry<'a> {
 /// The entries of a saved state, for the fields to take their values from.
 pub struct StateEntries<'a> {
     entries: HashMap<&'a str, Entry<'a>>,
+    /// The value of the last factory preset entry.
+    factory_preset: Option<&'a [u8]>,
 }
 
 impl<'a> StateEntries<'a> {
@@ -219,6 +239,7 @@ impl<'a> StateEntries<'a> {
         };
 
         let mut entries = HashMap::new();
+        let mut factory_preset = None;
         while !rest.is_empty() {
             let cut_off = || "a state entry is cut off".to_string();
 
@@ -235,6 +256,11 @@ impl<'a> StateEntries<'a> {
             // like an entry that is cut off.
             let path = std::str::from_utf8(path)
                 .map_err(|_| "a state entry has a path that is not UTF-8".to_string())?;
+            // The factory preset is kept apart, so that no field can take it.
+            if kind == KIND_FACTORY_PRESET {
+                factory_preset = Some(value);
+                continue;
+            }
             // A later entry with the same path replaces an earlier one.
             entries.insert(
                 path,
@@ -246,7 +272,23 @@ impl<'a> StateEntries<'a> {
             );
         }
 
-        Ok(Some(Self { entries }))
+        Ok(Some(Self {
+            entries,
+            factory_preset,
+        }))
+    }
+
+    /// The index of the factory preset that the plugin format showed as
+    /// selected when the state was saved, if the state has one.
+    pub fn factory_preset(&self) -> Option<u32> {
+        let value = self.factory_preset?;
+        match <[u8; 4]>::try_from(value) {
+            Ok(bytes) => Some(u32::from_le_bytes(bytes)),
+            Err(_) => {
+                log::warn!("The factory preset entry of the state is not an index. Ignoring it.");
+                None
+            }
+        }
     }
 
     /// Find the entry of a field, if it has the kind the field expects.
@@ -472,6 +514,47 @@ mod tests {
         let gain = parameter(0.0);
         parse(&data).load_parameter("gain", &gain);
         assert_eq!(gain.get_normalized(), 0.75);
+    }
+
+    #[test]
+    fn test_factory_preset_round_trips() {
+        let gain = parameter(0.0);
+        let mut writer = StateWriter::new();
+        writer.parameter("gain", &gain);
+        writer.factory_preset(2);
+        let data = writer.finish();
+
+        // Written after the fields: kind 3, an empty path, the index.
+        assert!(data.ends_with(&[3, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0]));
+        assert_eq!(parse(&data).factory_preset(), Some(2));
+
+        // A state without it has none.
+        assert_eq!(parse(&state(&[])).factory_preset(), None);
+    }
+
+    #[test]
+    fn test_factory_preset_is_not_a_field() {
+        // A field with an empty id does not take it, and it is not logged
+        // as an entry that no field asked for.
+        let data = state(&[entry(KIND_FACTORY_PRESET, "", &1u32.to_le_bytes())]);
+        let entries = parse(&data);
+        let unnamed = parameter(0.5);
+        entries.load_parameter("", &unnamed);
+        assert_eq!(unnamed.get_normalized(), 0.5);
+        assert!(entries.entries.is_empty());
+        assert_eq!(entries.factory_preset(), Some(1));
+    }
+
+    #[test]
+    fn test_last_factory_preset_counts_and_a_wrong_size_is_ignored() {
+        let data = state(&[
+            entry(KIND_FACTORY_PRESET, "", &1u32.to_le_bytes()),
+            entry(KIND_FACTORY_PRESET, "", &3u32.to_le_bytes()),
+        ]);
+        assert_eq!(parse(&data).factory_preset(), Some(3));
+
+        let data = state(&[entry(KIND_FACTORY_PRESET, "", &[1, 0])]);
+        assert_eq!(parse(&data).factory_preset(), None);
     }
 
     #[test]

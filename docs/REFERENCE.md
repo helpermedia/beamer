@@ -655,6 +655,7 @@ Entry:   kind: u8 | path length: u16 | path: utf8 | value length: u32 | value
 
 kind 1   a parameter: the normalized value as f64
 kind 2   a State field: its value as JSON
+kind 3   the selected factory preset: its index as u32, with an empty path
 
 Path examples:
 - "gain"              - top-level parameter or state, by its id
@@ -663,6 +664,8 @@ Path examples:
 ```
 
 The paths are the ones described under [Parameter Ids](#parameter-ids). A `State` field has a path of the same form, built from its `#[state(id = "...")]`.
+
+An entry of kind 3 is not a field. The VST3 wrapper writes it for a plugin with factory presets, so that a host shows the same program after opening a project again (see [MIDI Program Change Mapping](#midi-program-change-mapping)). The AU wrappers neither write nor read it.
 
 Loading follows these rules:
 
@@ -1117,6 +1120,8 @@ When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) 
 - Plugins without factory presets (`NoPresets`) pass all PC events through unchanged
 
 This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the values of the preset's parameters back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+
+A new instance holds the declared parameter defaults, and no preset is applied. The AU wrappers report this as the user preset -1 "Untitled". VST3 has no value for "no program", so a host shows the first program. The VST3 wrapper saves the program a host shows with the state and takes it back when the state is loaded, without applying the preset again over the saved values.
 
 ### Buffer Types
 
