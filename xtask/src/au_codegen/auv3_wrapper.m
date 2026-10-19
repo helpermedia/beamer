@@ -135,9 +135,11 @@ static void BeamerAuv3PointOutputAtInput(AudioBufferList* output, AudioBufferLis
 
 // Fill the output of a bypassed render: a copy of the input, or silence
 // without one. An output buffer the host gives without memory gets the
-// input's memory, or `silence`, which holds at least `byteSize` zero bytes.
+// input's memory, or `silence`, which holds at least `byteSize` bytes. It is
+// zeroed here first, since the host may have written into it.
 static void BeamerAuv3FillBypassedOutput(AudioBufferList* output, const AudioBufferList* input,
                                          UInt32 byteSize, void* silence) {
+    BOOL silenceZeroed = NO;
     for (UInt32 i = 0; i < output->mNumberBuffers; i++) {
         AudioBuffer* out = &output->mBuffers[i];
         const AudioBuffer* in = (input != NULL && i < input->mNumberBuffers) ? &input->mBuffers[i] : NULL;
@@ -150,6 +152,10 @@ static void BeamerAuv3FillBypassedOutput(AudioBufferList* output, const AudioBuf
                 memcpy(out->mData, in->mData, bytes);
             }
         } else if (out->mData == NULL) {
+            if (!silenceZeroed) {
+                memset(silence, 0, byteSize);
+                silenceZeroed = YES;
+            }
             out->mData = silence;
             out->mDataByteSize = byteSize;
         } else {

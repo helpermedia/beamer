@@ -1175,8 +1175,10 @@ impl<S: RenderSample> RenderBlock<S> {
         num_samples: usize,
     ) {
         // SAFETY: AU hosts call render sequentially per instance, always completing
-        // bus 0 before calling bus N>0. Cache is written during bus 0 and only read here.
-        let cache = unsafe { &*self.aux_output_cache.get() };
+        // bus 0 before calling bus N>0. Cache is written during bus 0 and read here;
+        // a host buffer without memory gets a pointer into it, which the host may
+        // write through until the next render of bus 0.
+        let cache = unsafe { &mut *self.aux_output_cache.get() };
         if aux_idx >= cache.len() {
             // Out-of-bounds aux bus requested - zero the output to avoid stale data.
             // SAFETY: Caller guarantees output_data is a valid, non-null pointer.
@@ -1184,7 +1186,7 @@ impl<S: RenderSample> RenderBlock<S> {
             return;
         }
 
-        let bus_cache = &cache[aux_idx];
+        let bus_cache = &mut cache[aux_idx];
         debug_assert!(
             bus_cache.first().is_none_or(|ch| num_samples <= ch.len()),
             "num_samples ({num_samples}) exceeds cache capacity"
@@ -1195,7 +1197,14 @@ impl<S: RenderSample> RenderBlock<S> {
         for ch in 0..list.number_buffers.min(bus_cache.len() as u32) {
             // SAFETY: ch is within number_buffers bounds.
             let buffer = unsafe { list.buffer_at_mut(ch) };
-            if buffer.data.is_null() || buffer.number_channels != 1 {
+            if buffer.number_channels != 1 {
+                continue;
+            }
+            if buffer.data.is_null() {
+                // An output buffer without memory gets the cache's. Only the
+                // next render of the main bus writes it again.
+                buffer.data = bus_cache[ch as usize].as_mut_ptr().cast::<std::ffi::c_void>();
+                buffer.data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
                 continue;
             }
             let available = buffer.data_byte_size as usize / std::mem::size_of::<S>();
@@ -1298,10 +1307,20 @@ impl<S: RenderSample> RenderBlock<S> {
                     self.copy_aux_cache_to_output(aux_idx, output_data, num_samples);
                 }
             } else {
-                // Aux bus requested before bus 0 was rendered (edge case) - output silence
-                // SAFETY: output_data validated non-null by caller.
+                // Aux bus requested before bus 0 was rendered (edge case) - output
+                // silence: the bus's cache is silenced and copied, so that buffers
+                // without memory get memory too.
+                // SAFETY: output_data validated non-null by caller. AU hosts call
+                // render sequentially per instance, so nothing else uses the cache.
                 unsafe {
-                    Self::zero_output(output_data, num_samples);
+                    let cache = &mut *self.aux_output_cache.get();
+                    if let Some(bus_cache) = cache.get_mut(aux_idx) {
+                        for channel in bus_cache.iter_mut() {
+                            let len = num_samples.min(channel.len());
+                            channel[..len].fill(S::ZERO);
+                        }
+                    }
+                    self.copy_aux_cache_to_output(aux_idx, output_data, num_samples);
                 }
             }
             return os_status::NO_ERR;

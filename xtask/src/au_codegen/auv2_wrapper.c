@@ -128,6 +128,12 @@ typedef struct BeamerAuv2Instance {
     AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
     AudioStreamBasicDescription outputFormats[BEAMER_AU_MAX_BUSES];
 
+    // Memory for the output buffers without memory of a bypassed render
+    // call, bypassSilenceFrames samples of 64 bits. Zeroed before each use,
+    // since the host may write into a buffer it got.
+    void* bypassSilence;
+    UInt32 bypassSilenceFrames;
+
     // Allocated input buffer for pulling
     AudioBufferList* inputBufferList;
     UInt32 inputBufferCapacity;
@@ -531,6 +537,10 @@ static OSStatus BeamerAuv2Close(void* self) {
 
     FreeInputBufferList(inst);
 
+    free(inst->bypassSilence);
+    inst->bypassSilence = NULL;
+    inst->bypassSilenceFrames = 0;
+
     free(inst->midiOutputList);
     inst->midiOutputList = NULL;
 
@@ -685,6 +695,16 @@ static OSStatus BeamerAuv2Initialize(void* self) {
         // Pre-allocate input buffer if we have input buses
         if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
             EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inst->maxFramesPerSlice);
+        }
+
+        // Silence for the bypassed render calls, sized for 64-bit samples.
+        if (inst->bypassSilenceFrames < inst->maxFramesPerSlice) {
+            void* silence = calloc(inst->maxFramesPerSlice, sizeof(Float64));
+            if (silence) {
+                free(inst->bypassSilence);
+                inst->bypassSilence = silence;
+                inst->bypassSilenceFrames = inst->maxFramesPerSlice;
+            }
         }
 
         // The first copy of the callbacks, so that a render call that cannot
@@ -2241,12 +2261,39 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                     inputData->mBuffers[i].mDataByteSize : ioData->mBuffers[i].mDataByteSize;
                 memcpy(out, in, bytesToCopy);
             }
+            // Output buffers beyond the input's channels are silent.
+            for (UInt32 i = buffersToCopy; i < ioData->mNumberBuffers; i++) {
+                if (ioData->mBuffers[i].mData != NULL) {
+                    memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
+                }
+            }
         } else {
             // No input, silence output
             for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
                 if (ioData->mBuffers[i].mData != NULL) {
                     memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
                 }
+            }
+        }
+
+        // An output buffer still without memory (no input for it) gets
+        // silence of our own.
+        UInt32 formatBus = (inOutputBusNumber < BEAMER_AU_MAX_BUSES) ? inOutputBusNumber : 0;
+        UInt32 bytesPerSample = inst->outputFormats[formatBus].mBytesPerFrame;
+        if (bytesPerSample == 0 || bytesPerSample > sizeof(Float64)) {
+            bytesPerSample = sizeof(Float32);
+        }
+        UInt32 silenceBytes = inNumberFrames * bytesPerSample;
+        bool silenceZeroed = false;
+        for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
+            if (ioData->mBuffers[i].mData == NULL && inst->bypassSilence != NULL
+                && inNumberFrames <= inst->bypassSilenceFrames) {
+                if (!silenceZeroed) {
+                    memset(inst->bypassSilence, 0, silenceBytes);
+                    silenceZeroed = true;
+                }
+                ioData->mBuffers[i].mData = inst->bypassSilence;
+                ioData->mBuffers[i].mDataByteSize = silenceBytes;
             }
         }
 

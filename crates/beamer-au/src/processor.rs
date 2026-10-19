@@ -1848,6 +1848,107 @@ mod tests {
         );
     }
 
+    /// A plugin with a stereo aux output whose processor writes 0.25 there.
+    #[derive(Default)]
+    struct AuxOutputModel {
+        fields: TestFields,
+    }
+
+    struct AuxOutputProcessor;
+
+    beamer_core::__forward_model!(AuxOutputModel, fields);
+
+    impl Model for AuxOutputModel {
+        type Setup = ();
+        type Processor = AuxOutputProcessor;
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            AuxOutputProcessor
+        }
+
+        fn output_bus_count(&self) -> usize {
+            2
+        }
+
+        fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
+            match index {
+                0 => Some(BusInfo::stereo("Output")),
+                1 => Some(BusInfo::aux("Aux", 2)),
+                _ => None,
+            }
+        }
+    }
+
+    impl Processor for AuxOutputProcessor {
+        fn process(
+            &mut self,
+            _buffer: &mut Buffer,
+            aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            if let Some(mut bus) = aux.output(0) {
+                bus.fill(0.25);
+            }
+        }
+    }
+
+    #[test]
+    fn test_aux_bus_buffers_without_memory_get_the_rendered_samples() {
+        let plugin = boxed(AuProcessor::<AuxOutputModel>::new());
+        let bus_config = CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(2, BusType::Aux)],
+        );
+        plugin
+            .lock()
+            .unwrap()
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .expect("prepare");
+        let model = plugin.lock().unwrap().shared_model();
+        let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
+        let block = create_render_block_f32(
+            Arc::clone(&plugin),
+            model,
+            Arc::new(SharedState::default()),
+            storage,
+            FRAMES as u32,
+            44100.0,
+            ALL_SETTINGS,
+        );
+
+        // The main bus renders, then the host asks for the aux bus of the
+        // same cycle with buffers without memory.
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let mut main = StereoList::filled(0.0);
+        let mut aux = StereoList::filled(0.0);
+        aux.buffers[0].data = std::ptr::null_mut();
+        aux.buffers[1].data = std::ptr::null_mut();
+        for (bus, list) in [(0, &mut main), (1, &mut aux)] {
+            let status = block.process(
+                &mut action_flags,
+                &timestamp,
+                FRAMES as u32,
+                bus,
+                list.as_list(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                None,
+                None,
+            );
+            assert_eq!(status, 0);
+        }
+
+        for buffer in &aux.buffers {
+            assert!(!buffer.data.is_null());
+            // SAFETY: The render call pointed the buffer at the block's aux
+            // cache of FRAMES samples, alive as long as the block.
+            let samples = unsafe { std::slice::from_raw_parts(buffer.data.cast::<f32>(), FRAMES) };
+            assert!(samples.iter().all(|&sample| sample == 0.25));
+        }
+    }
+
     #[test]
     fn test_input_buffer_without_memory_keeps_the_next_channel_index() {
         // TestProcessor does not write its output. The host gives no memory
