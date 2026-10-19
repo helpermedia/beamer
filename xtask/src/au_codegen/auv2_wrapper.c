@@ -44,12 +44,10 @@
 
 #define MAX_PROPERTY_LISTENERS 64
 #define MAX_RENDER_NOTIFY 32
-#define MIDI_RING_MASK (BEAMER_AU_MAX_MIDI_EVENTS - 1)
 
 // Parameter changes the host schedules for the next render call. A power of
-// two, so that the ring index can wrap with a mask.
-#define PARAMETER_RING_SIZE 512
-#define PARAMETER_RING_MASK (PARAMETER_RING_SIZE - 1)
+// two, like the size of every event queue.
+#define PARAMETER_QUEUE_SIZE 512
 
 // Size of the packet list that collects the MIDI output of one render call.
 // Enough for a full buffer of channel messages. When more is produced, the
@@ -89,6 +87,27 @@ typedef struct {
     AUMIDIOutputCallbackStruct midiOutput;
     HostCallbackInfo host;
 } CallbackSet;
+
+// One place in an event queue. The sequence number says whose turn it is:
+// equal to the position, a producer may fill the slot; one more, the event
+// in it is ready for the consumer.
+typedef struct {
+    _Atomic UInt32 sequence;
+    AURenderEvent event;
+} EventSlot;
+
+// Render events for the next render call, in a bounded ring that several
+// threads may add to at once and one thread at a time takes from, without
+// locks (a ring with a sequence number per slot). Producers claim a position
+// with compare-and-swap. The consumer is whoever holds queueReaderMutex.
+typedef struct {
+    EventSlot* slots;
+    UInt32 mask;
+    // Next position to fill, shared by the producers.
+    _Atomic UInt32 writePosition;
+    // Next position to take. Only the consumer uses it.
+    UInt32 readPosition;
+} EventQueue;
 
 typedef struct BeamerAuv2Instance {
     // AudioComponentPlugInInterface MUST be first (ABI requirement)
@@ -137,16 +156,20 @@ typedef struct BeamerAuv2Instance {
     int32_t currentPresetIndex;        // -1 = no preset, >=0 = factory preset index
     CFStringRef currentPresetName;     // Current preset name for ClassInfo round-trip
 
-    // MIDI event ring buffer (lock-free SPSC: MIDIEvent produces, Render consumes)
-    AURenderEvent midiRingBuffer[BEAMER_AU_MAX_MIDI_EVENTS];
-    _Atomic UInt32 midiWriteHead; // only written by producer (MIDIEvent)
-    _Atomic UInt32 midiReadHead; // only written by consumer (Render)
+    // MIDI input for the next render call. MIDIEvent adds to it, from the
+    // render thread or from another thread.
+    EventSlot midiSlots[BEAMER_AU_MAX_MIDI_EVENTS];
+    EventQueue midiQueue;
 
-    // Parameter changes with a sample offset, as render events (lock-free
-    // SPSC: ScheduleParameters and SetParameter produce, Render consumes).
-    AURenderEvent parameterRingBuffer[PARAMETER_RING_SIZE];
-    _Atomic UInt32 parameterWriteHead;
-    _Atomic UInt32 parameterReadHead;
+    // Parameter changes with a sample offset, as render events.
+    // ScheduleParameters and SetParameter add to it.
+    EventSlot parameterSlots[PARAMETER_QUEUE_SIZE];
+    EventQueue parameterQueue;
+
+    // Held while taking events from the two queues. The render thread only
+    // tries it and leaves the events for its next call when it is held.
+    // Reset, Initialize and Uninitialize take it.
+    pthread_mutex_t queueReaderMutex;
 
     // MIDI output. The list is only allocated for a plugin with MIDI
     // output, and the host sets the callback when it listens.
@@ -198,6 +221,7 @@ static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, voi
 static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame);
 static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst);
+static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst);
 
 // =============================================================================
 // MARK: - Helper Functions
@@ -286,6 +310,78 @@ static void FreeInputBufferList(BeamerAuv2Instance* inst) {
 }
 
 // =============================================================================
+// MARK: - Event Queues
+// =============================================================================
+
+static void EventQueueInit(EventQueue* queue, EventSlot* slots, UInt32 size) {
+    queue->slots = slots;
+    queue->mask = size - 1;
+    for (UInt32 i = 0; i < size; i++) {
+        atomic_init(&slots[i].sequence, i);
+    }
+    atomic_init(&queue->writePosition, 0);
+    queue->readPosition = 0;
+}
+
+// Add an event. Any thread may call it, also several at once. Returns false
+// when the queue is full.
+static bool EventQueuePush(EventQueue* queue, const AURenderEvent* event) {
+    UInt32 position = atomic_load_explicit(&queue->writePosition, memory_order_relaxed);
+    for (;;) {
+        EventSlot* slot = &queue->slots[position & queue->mask];
+        UInt32 sequence = atomic_load_explicit(&slot->sequence, memory_order_acquire);
+        int32_t difference = (int32_t)(sequence - position);
+        if (difference == 0) {
+            // The slot is free: claim the position. On failure position holds
+            // the one another producer moved on to.
+            if (atomic_compare_exchange_weak_explicit(&queue->writePosition, &position,
+                    position + 1, memory_order_relaxed, memory_order_relaxed)) {
+                slot->event = *event;
+                atomic_store_explicit(&slot->sequence, position + 1, memory_order_release);
+                return true;
+            }
+        } else if (difference < 0) {
+            // The consumer has not given this slot back yet.
+            return false;
+        } else {
+            // Another producer claimed this position.
+            position = atomic_load_explicit(&queue->writePosition, memory_order_relaxed);
+        }
+    }
+}
+
+// The number of events ready for the consumer, in order from the read
+// position. An event whose producer is still writing it ends the count.
+static UInt32 EventQueueReadyCount(const EventQueue* queue) {
+    UInt32 count = 0;
+    while (count <= queue->mask) {
+        UInt32 position = queue->readPosition + count;
+        const EventSlot* slot = &queue->slots[position & queue->mask];
+        if (atomic_load_explicit(&slot->sequence, memory_order_acquire) != position + 1) {
+            break;
+        }
+        count++;
+    }
+    return count;
+}
+
+// A ready event, by its index from the read position. It stays the
+// consumer's until it is released.
+static AURenderEvent* EventQueueAt(EventQueue* queue, UInt32 index) {
+    return &queue->slots[(queue->readPosition + index) & queue->mask].event;
+}
+
+// Give the first count ready events back to the producers.
+static void EventQueueRelease(EventQueue* queue, UInt32 count) {
+    for (UInt32 i = 0; i < count; i++) {
+        UInt32 position = queue->readPosition + i;
+        atomic_store_explicit(&queue->slots[position & queue->mask].sequence,
+            position + queue->mask + 1, memory_order_release);
+    }
+    queue->readPosition += count;
+}
+
+// =============================================================================
 // MARK: - Factory Function
 // =============================================================================
 
@@ -312,6 +408,10 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     pthread_mutex_init(&inst->listenerMutex, NULL);
     pthread_mutex_init(&inst->renderNotifyMutex, NULL);
     pthread_mutex_init(&inst->callbacksMutex, NULL);
+    pthread_mutex_init(&inst->queueReaderMutex, NULL);
+
+    EventQueueInit(&inst->midiQueue, inst->midiSlots, BEAMER_AU_MAX_MIDI_EVENTS);
+    EventQueueInit(&inst->parameterQueue, inst->parameterSlots, PARAMETER_QUEUE_SIZE);
 
     return &inst->interface;
 }
@@ -445,6 +545,7 @@ static OSStatus BeamerAuv2Close(void* self) {
     pthread_mutex_destroy(&inst->listenerMutex);
     pthread_mutex_destroy(&inst->renderNotifyMutex);
     pthread_mutex_destroy(&inst->callbacksMutex);
+    pthread_mutex_destroy(&inst->queueReaderMutex);
 
     free(inst);
     return noErr;
@@ -558,12 +659,13 @@ static OSStatus BeamerAuv2Initialize(void* self) {
     OSStatus status = BeamerAuv2AllocateRenderResources(inst);
 
     if (status == noErr) {
-        // Reset the MIDI and parameter ring buffers before parameter changes
-        // can be queued, so that none queued from now on is lost.
-        atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->parameterReadHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->parameterWriteHead, 0, memory_order_relaxed);
+        // MIDI that arrived before does not play. Parameter changes are only
+        // queued while initialized, so none should be left; one that is
+        // still applies.
+        pthread_mutex_lock(&inst->queueReaderMutex);
+        BeamerAuv2DiscardMidi(inst);
+        BeamerAuv2ApplyPendingParameters(inst);
+        pthread_mutex_unlock(&inst->queueReaderMutex);
 
         // Pre-allocate input buffer if we have input buses
         if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
@@ -586,16 +688,16 @@ static OSStatus BeamerAuv2Uninitialize(void* self) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
     if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
-        // Changes queued for a render call that will not come still apply.
-        BeamerAuv2ApplyPendingParameters(inst);
-        beamer_au_deallocate_render_resources(inst->rustInstance);
+        // From now on parameter changes are set right away. Changes queued
+        // for a render call that will not come still apply, and MIDI queued
+        // for it is dropped.
         atomic_store_explicit(&inst->initialized, false, memory_order_release);
-
-        // Reset the MIDI and parameter ring buffers
-        atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->parameterReadHead, 0, memory_order_relaxed);
-        atomic_store_explicit(&inst->parameterWriteHead, 0, memory_order_relaxed);
+        atomic_thread_fence(memory_order_seq_cst);
+        pthread_mutex_lock(&inst->queueReaderMutex);
+        BeamerAuv2ApplyPendingParameters(inst);
+        BeamerAuv2DiscardMidi(inst);
+        pthread_mutex_unlock(&inst->queueReaderMutex);
+        beamer_au_deallocate_render_resources(inst->rustInstance);
     }
 
     return noErr;
@@ -1715,38 +1817,48 @@ static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParamete
         return false;
     }
 
-    UInt32 write = atomic_load_explicit(&inst->parameterWriteHead, memory_order_relaxed);
-    UInt32 read = atomic_load_explicit(&inst->parameterReadHead, memory_order_acquire);
-    UInt32 next = (write + 1) & PARAMETER_RING_MASK;
-    if (next == read) {
+    AURenderEvent event;
+    memset(&event, 0, sizeof(event));
+    event.parameter.eventType = (rampFrames > 0) ? AURenderEventParameterRamp : AURenderEventParameter;
+    // Offset into the next buffer. Render turns it into a sample time.
+    event.parameter.eventSampleTime = (AUEventSampleTime)bufferOffset;
+    event.parameter.rampDurationSampleFrames = rampFrames;
+    event.parameter.parameterAddress = paramID;
+    event.parameter.value = value;
+    if (!EventQueuePush(&inst->parameterQueue, &event)) {
         return false;
     }
 
-    AURenderEvent* event = &inst->parameterRingBuffer[write];
-    memset(event, 0, sizeof(AURenderEvent));
-    event->parameter.eventType = (rampFrames > 0) ? AURenderEventParameterRamp : AURenderEventParameter;
-    // Offset into the next buffer. Render turns it into a sample time.
-    event->parameter.eventSampleTime = (AUEventSampleTime)bufferOffset;
-    event->parameter.rampDurationSampleFrames = rampFrames;
-    event->parameter.parameterAddress = paramID;
-    event->parameter.value = value;
-
-    atomic_store_explicit(&inst->parameterWriteHead, next, memory_order_release);
+    // Uninitialize may have emptied the queue between the check above and
+    // the push, and the change would wait for the next Initialize: apply it
+    // now. Without render calls, nothing holds the mutex for long. The
+    // fence pairs with the one in Uninitialize: either this load sees the
+    // unit uninitialized, or Uninitialize sees the event.
+    atomic_thread_fence(memory_order_seq_cst);
+    if (!atomic_load_explicit(&inst->initialized, memory_order_relaxed)) {
+        pthread_mutex_lock(&inst->queueReaderMutex);
+        BeamerAuv2ApplyPendingParameters(inst);
+        pthread_mutex_unlock(&inst->queueReaderMutex);
+    }
     return true;
 }
 
 // Apply the queued parameter changes now and empty the queue. For a render
 // call that does not process (bypass), for a reset and when the unit
-// stops rendering.
+// stops rendering. The caller holds queueReaderMutex.
 static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst) {
-    UInt32 read = atomic_load_explicit(&inst->parameterReadHead, memory_order_relaxed);
-    UInt32 write = atomic_load_explicit(&inst->parameterWriteHead, memory_order_acquire);
-    for (UInt32 idx = read; idx != write; idx = (idx + 1) & PARAMETER_RING_MASK) {
-        const AURenderEvent* event = &inst->parameterRingBuffer[idx];
+    UInt32 count = EventQueueReadyCount(&inst->parameterQueue);
+    for (UInt32 i = 0; i < count; i++) {
+        const AURenderEvent* event = EventQueueAt(&inst->parameterQueue, i);
         beamer_au_set_parameter_value_au(inst->rustInstance,
             (uint32_t)event->parameter.parameterAddress, event->parameter.value);
     }
-    atomic_store_explicit(&inst->parameterReadHead, write, memory_order_release);
+    EventQueueRelease(&inst->parameterQueue, count);
+}
+
+// Drop the queued MIDI input. The caller holds queueReaderMutex.
+static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst) {
+    EventQueueRelease(&inst->midiQueue, EventQueueReadyCount(&inst->midiQueue));
 }
 
 static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
@@ -1837,7 +1949,9 @@ static void BeamerAuv2FlushMidiOutput(BeamerAuv2MidiOutput* output) {
 }
 
 // Add one MIDI message from the plugin to the list (BeamerAuMidiOutputFn).
-// The time stamp of a packet is its sample offset in the buffer.
+// The time stamp of a packet is its sample offset in the buffer. A full list
+// goes to the host at once, during the render call and with the event
+// queues taken.
 static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length) {
     BeamerAuv2MidiOutput* output = (BeamerAuv2MidiOutput*)context;
 
@@ -2008,15 +2122,16 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
 
         // Consume the pending MIDI input, so that it does not play when bypass
-        // ends. A bypassed MIDI effect passes it on unchanged.
-        if (inOutputBusNumber == 0) {
-            UInt32 pendingRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
-            UInt32 pendingWrite = atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire);
+        // ends. A bypassed MIDI effect passes it on unchanged. When a reset
+        // holds the queues right now, the events wait for the next call.
+        if (inOutputBusNumber == 0 && pthread_mutex_trylock(&inst->queueReaderMutex) == 0) {
+            UInt32 midiCount = EventQueueReadyCount(&inst->midiQueue);
             BeamerAuv2MidiOutput thru;
-            if (pendingRead != pendingWrite && inst->isMidiEffect
-                && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru)) {
-                for (UInt32 idx = pendingRead; idx != pendingWrite; idx = (idx + 1) & MIDI_RING_MASK) {
-                    const AURenderEvent* ev = &inst->midiRingBuffer[idx];
+            bool passesMidi = midiCount > 0 && inst->isMidiEffect
+                && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru);
+            if (passesMidi) {
+                for (UInt32 i = 0; i < midiCount; i++) {
+                    const AURenderEvent* ev = EventQueueAt(&inst->midiQueue, i);
                     // Only channel messages, as in normal processing.
                     uint8_t status = ev->MIDI.data[0];
                     if (status < 0x80 || status >= 0xF0) {
@@ -2025,13 +2140,17 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                     BeamerAuv2SendMidi(&thru, (uint32_t)ev->MIDI.eventSampleTime, ev->MIDI.data,
                         BeamerAuv2MidiMessageLength(status));
                 }
-                BeamerAuv2FlushMidiOutput(&thru);
             }
-            atomic_store_explicit(&inst->midiReadHead, pendingWrite, memory_order_release);
+            EventQueueRelease(&inst->midiQueue, midiCount);
 
             // The plugin does not process now, so the queued parameter
             // changes apply at once.
             BeamerAuv2ApplyPendingParameters(inst);
+            pthread_mutex_unlock(&inst->queueReaderMutex);
+
+            if (passesMidi) {
+                BeamerAuv2FlushMidiOutput(&thru);
+            }
         }
 
         // Call post-render notifications
@@ -2053,51 +2172,42 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames);
     }
 
-    // Drain MIDI ring buffer and build AURenderEvent linked list.
-    // The ring holds offsets into this buffer. Render events carry a sample
-    // time on the timeline of the render timestamp, so add the buffer start.
-    // Only the render of the main bus processes MIDI: a call for another
-    // output bus leaves the events for it, so that none are lost.
+    // Only the render of the main bus processes audio and needs the
+    // transport. It is read before the queues are taken, so that the host
+    // callbacks do not run while a reset waits for them.
+    BeamerAuTransport transport;
+    bool hasTransport = (inOutputBusNumber == 0);
+    if (hasTransport) {
+        BeamerAuv2ReadTransport(&inst->renderCallbacks.host, &transport);
+    }
+
+    // Take the queued events and link them into one list: the MIDI events,
+    // then the parameter changes the host scheduled for this buffer. The
+    // queues hold offsets into this buffer. Render events carry a sample time
+    // on the timeline of the render timestamp, so add the buffer start. Only
+    // the render of the main bus takes events: a call for another output bus
+    // leaves them for it, so that none are lost. When a reset holds the
+    // queues right now, the events wait for the next call.
     const AURenderEvent* eventList = NULL;
-    AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
-    UInt32 midiRead = atomic_load_explicit(&inst->midiReadHead, memory_order_relaxed);
-    UInt32 midiWrite = (inOutputBusNumber == 0)
-        ? atomic_load_explicit(&inst->midiWriteHead, memory_order_acquire)
-        : midiRead;
-    AURenderEvent* prev = NULL;
-    if (midiRead != midiWrite) {
-        UInt32 idx = midiRead;
-        while (idx != midiWrite) {
-            AURenderEvent* ev = &inst->midiRingBuffer[idx];
+    UInt32 midiCount = 0;
+    UInt32 parameterCount = 0;
+    bool readsQueues = (inOutputBusNumber == 0)
+        && pthread_mutex_trylock(&inst->queueReaderMutex) == 0;
+    if (readsQueues) {
+        AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
+        midiCount = EventQueueReadyCount(&inst->midiQueue);
+        parameterCount = EventQueueReadyCount(&inst->parameterQueue);
+        AURenderEvent* prev = NULL;
+        for (UInt32 i = 0; i < midiCount + parameterCount; i++) {
+            AURenderEvent* ev = (i < midiCount)
+                ? EventQueueAt(&inst->midiQueue, i)
+                : EventQueueAt(&inst->parameterQueue, i - midiCount);
             ev->head.next = NULL;
             ev->head.eventSampleTime += bufferStart;
             if (prev) prev->head.next = ev;
             else eventList = ev;
             prev = ev;
-            idx = (idx + 1) & MIDI_RING_MASK;
         }
-    }
-
-    // The parameter changes the host scheduled for this buffer go in the same
-    // list, after the MIDI events. Like MIDI they are for the main bus.
-    UInt32 parameterRead = atomic_load_explicit(&inst->parameterReadHead, memory_order_relaxed);
-    UInt32 parameterWrite = (inOutputBusNumber == 0)
-        ? atomic_load_explicit(&inst->parameterWriteHead, memory_order_acquire)
-        : parameterRead;
-    for (UInt32 idx = parameterRead; idx != parameterWrite; idx = (idx + 1) & PARAMETER_RING_MASK) {
-        AURenderEvent* ev = &inst->parameterRingBuffer[idx];
-        ev->head.next = NULL;
-        ev->head.eventSampleTime += bufferStart;
-        if (prev) prev->head.next = ev;
-        else eventList = ev;
-        prev = ev;
-    }
-
-    // Only the render of the main bus processes audio and needs the transport.
-    BeamerAuTransport transport;
-    bool hasTransport = (inOutputBusNumber == 0);
-    if (hasTransport) {
-        BeamerAuv2ReadTransport(&inst->renderCallbacks.host, &transport);
     }
 
     // The plugin's MIDI output is collected in a packet list during the call.
@@ -2121,17 +2231,16 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         sendsMidi ? &midiOutput : NULL
     );
 
+    // Give the events back to the queues.
+    if (readsQueues) {
+        EventQueueRelease(&inst->midiQueue, midiCount);
+        EventQueueRelease(&inst->parameterQueue, parameterCount);
+        pthread_mutex_unlock(&inst->queueReaderMutex);
+    }
+
     // Pass the collected MIDI output to the host.
     if (sendsMidi) {
         BeamerAuv2FlushMidiOutput(&midiOutput);
-    }
-
-    // Release consumed MIDI events back to the ring buffer
-    if (midiRead != midiWrite) {
-        atomic_store_explicit(&inst->midiReadHead, midiWrite, memory_order_release);
-    }
-    if (parameterRead != parameterWrite) {
-        atomic_store_explicit(&inst->parameterReadHead, parameterWrite, memory_order_release);
     }
 
     // Call post-render notifications. A failed render call says so in the
@@ -2158,25 +2267,19 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
-    UInt32 write = atomic_load_explicit(&inst->midiWriteHead, memory_order_relaxed);
-    UInt32 read = atomic_load_explicit(&inst->midiReadHead, memory_order_acquire);
-    UInt32 next = (write + 1) & MIDI_RING_MASK;
-    if (next == read) {
-        return noErr; // Ring buffer full, drop event
-    }
-
-    AURenderEvent* event = &inst->midiRingBuffer[write];
-    memset(event, 0, sizeof(AURenderEvent));
-    event->MIDI.eventType = AURenderEventMIDI;
+    AURenderEvent event;
+    memset(&event, 0, sizeof(event));
+    event.MIDI.eventType = AURenderEventMIDI;
     // Offset into the next buffer. Render turns it into a sample time.
-    event->MIDI.eventSampleTime = (AUEventSampleTime)inOffsetSampleFrame;
-    event->MIDI.cable = 0;
-    event->MIDI.length = 3;
-    event->MIDI.data[0] = (uint8_t)(inStatus & 0xFF);
-    event->MIDI.data[1] = (uint8_t)(inData1 & 0xFF);
-    event->MIDI.data[2] = (uint8_t)(inData2 & 0xFF);
+    event.MIDI.eventSampleTime = (AUEventSampleTime)inOffsetSampleFrame;
+    event.MIDI.cable = 0;
+    event.MIDI.length = 3;
+    event.MIDI.data[0] = (uint8_t)(inStatus & 0xFF);
+    event.MIDI.data[1] = (uint8_t)(inData1 & 0xFF);
+    event.MIDI.data[2] = (uint8_t)(inData2 & 0xFF);
 
-    atomic_store_explicit(&inst->midiWriteHead, next, memory_order_release);
+    // A full queue drops the event.
+    EventQueuePush(&inst->midiQueue, &event);
     return noErr;
 }
 
@@ -2192,10 +2295,12 @@ static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitEleme
     beamer_au_reset(inst->rustInstance);
 
     // Flush any pending MIDI events. Pending parameter changes are applied,
-    // so that the values the host set stay set.
-    atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
-    atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
+    // so that the values the host set stay set. A render call that runs
+    // right now holds the mutex until it is done with its events.
+    pthread_mutex_lock(&inst->queueReaderMutex);
+    BeamerAuv2DiscardMidi(inst);
     BeamerAuv2ApplyPendingParameters(inst);
+    pthread_mutex_unlock(&inst->queueReaderMutex);
 
     return noErr;
 }
