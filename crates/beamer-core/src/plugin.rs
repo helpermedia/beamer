@@ -502,8 +502,8 @@ pub trait Processor: Send + 'static {
     /// Process an audio buffer with transport context.
     ///
     /// This is the main DSP entry point, called on the audio thread for each
-    /// block of audio. The buffer provides input samples and mutable output
-    /// buffers for the main bus.
+    /// block of audio. The buffer holds the main bus in place: each channel
+    /// starts with its input and ends with the output (see [`Buffer`]).
     ///
     /// A block is any length from 1 sample up to the maximum the host set
     /// up. With `sample_accurate_automation` in `Config.toml`, a host block
@@ -529,9 +529,9 @@ pub trait Processor: Send + 'static {
     /// ```ignore
     /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     ///     let gain = self.model.gain();
-    ///     for (input, output) in buffer.zip_channels() {
-    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
-    ///             *o = *i * gain;
+    ///     for channel in buffer.channels_mut() {
+    ///         for sample in channel {
+    ///             *sample *= gain;
     ///         }
     ///     }
     /// }
@@ -548,10 +548,10 @@ pub trait Processor: Send + 'static {
     ///
     ///     let increment = (lfo_hz * 2.0 * std::f32::consts::PI) / context.sample_rate as f32;
     ///
-    ///     for (input, output) in buffer.zip_channels() {
-    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
+    ///     for channel in buffer.channels_mut() {
+    ///         for sample in channel {
     ///             let lfo = self.phase.sin();
-    ///             *o = *i * (1.0 + lfo * 0.5);
+    ///             *sample *= 1.0 + lfo * 0.5;
     ///             self.phase += increment;
     ///         }
     ///     }
@@ -566,8 +566,7 @@ pub trait Processor: Send + 'static {
     ///         .map(|sc| (sc.rms(0) * 4.0).min(1.0))
     ///         .unwrap_or(0.0);
     ///
-    ///     buffer.copy_to_output();
-    ///     buffer.apply_output_gain(1.0 - duck * 0.8);
+    ///     buffer.apply_gain(1.0 - duck * 0.8);
     /// }
     /// ```
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext);
@@ -718,9 +717,9 @@ pub trait Processor: Send + 'static {
     ///     context: &ProcessContext,
     /// ) {
     ///     let gain = self.model.gain_linear() as f64;
-    ///     for (input, output) in buffer.zip_channels() {
-    ///         for (i, o) in input.iter().zip(output.iter_mut()) {
-    ///             *o = *i * gain;
+    ///     for channel in buffer.channels_mut() {
+    ///         for sample in channel {
+    ///             *sample *= gain;
     ///         }
     ///     }
     /// }
@@ -743,38 +742,37 @@ pub trait Processor: Send + 'static {
 
         let num_samples = buffer.num_samples();
         let num_input_channels = buffer.num_input_channels();
-        let num_output_channels = buffer.num_output_channels();
 
         // Allocate conversion buffers (VST3 wrapper uses pre-allocated buffers,
         // this is only for the fallback default implementation)
-        let input_f32: Vec<Vec<f32>> = (0..num_input_channels)
-            .map(|ch| buffer.input(ch).iter().map(|&s| s as f32).collect())
+        let mut channels_f32: Vec<Vec<f32>> = buffer
+            .channels_mut()
+            .map(|ch| ch.iter().map(|&s| s as f32).collect())
             .collect();
-        let mut output_f32: Vec<Vec<f32>> = (0..num_output_channels)
-            .map(|_| vec![0.0f32; num_samples])
-            .collect();
-
-        // Build f32 buffer slices
-        let input_slices: Vec<&[f32]> = input_f32.iter().map(|v| v.as_slice()).collect();
-        let output_slices: Vec<&mut [f32]> = output_f32
-            .iter_mut()
-            .map(|v| v.as_mut_slice())
+        let unpaired_f32: Vec<Vec<f32>> = buffer
+            .unpaired_inputs()
+            .map(|ch| ch.iter().map(|&s| s as f32).collect())
             .collect();
 
-        let mut buffer_f32 = Buffer::new(input_slices, output_slices, num_samples);
+        {
+            // Build f32 buffer slices
+            let channel_slices = channels_f32.iter_mut().map(|v| v.as_mut_slice());
+            let unpaired_slices = unpaired_f32.iter().map(|v| v.as_slice());
+            let mut buffer_f32 =
+                Buffer::new(channel_slices, unpaired_slices, num_input_channels, num_samples);
 
-        // For aux buffers, we use empty for now (full aux conversion is complex)
-        // The VST3 wrapper handles proper aux conversion
-        let mut aux_f32: AuxiliaryBuffers<f32> = AuxiliaryBuffers::empty();
+            // For aux buffers, we use empty for now (full aux conversion is complex)
+            // The VST3 wrapper handles proper aux conversion
+            let mut aux_f32: AuxiliaryBuffers<f32> = AuxiliaryBuffers::empty();
 
-        // Process at f32
-        self.process(&mut buffer_f32, &mut aux_f32, context);
+            // Process at f32
+            self.process(&mut buffer_f32, &mut aux_f32, context);
+        }
 
-        // Convert output back to f64
-        for (ch, output_samples) in output_f32.iter().enumerate().take(num_output_channels) {
-            let output_ch = buffer.output(ch);
-            for (i, sample) in output_samples.iter().enumerate() {
-                output_ch[i] = *sample as f64;
+        // Convert the channels back to f64
+        for (channel, converted) in buffer.channels_mut().zip(&channels_f32) {
+            for (to, from) in channel.iter_mut().zip(converted) {
+                *to = *from as f64;
             }
         }
     }
@@ -879,9 +877,9 @@ pub trait Processor: Send + 'static {
 /// impl Processor for GainProcessor {
 ///     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
 ///         let gain = self.model.gain.as_linear() as f32;
-///         for (input, output) in buffer.zip_channels() {
-///             for (i, o) in input.iter().zip(output.iter_mut()) {
-///                 *o = *i * gain;
+///         for channel in buffer.channels_mut() {
+///             for sample in channel {
+///                 *sample *= gain;
 ///             }
 ///         }
 ///     }

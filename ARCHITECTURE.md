@@ -539,11 +539,13 @@ pub struct ProcessBufferStorage<S: Sample> {
 ```
 
 - Pre-allocated in `setupProcessing()` based on plugin's **actual** bus configuration (not worst-case)
-- Config-based allocation: stereo plugin uses 32 bytes, not 4KB worst-case
+- Config-based allocation: pointer capacity, scratch and internal buffers follow the actual channel counts, not the worst case
 - Lazy aux allocation: no heap allocation for plugins without aux buses
-- Internal output buffers allocated only for instruments (hosts may provide null pointers)
+- Internal output buffers for every plugin with main outputs (hosts may provide null pointers)
+- Scratch memory per input and output channel, for hosts that give overlapping buffers
 - `clear()` resets length to 0 without deallocating
 - `push()` into reserved capacity never allocates
+- `prepare_in_place()` runs once per process call, before the sub-blocks: each main output channel gets its input (or silence), and a channel that would overlap another gets scratch, so the plugin processes the main bus in place and its slices never overlap
 
 **Plugin-Declared Capacity** (configurable via Config.toml):
 ```toml

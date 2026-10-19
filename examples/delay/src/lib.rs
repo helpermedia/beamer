@@ -317,7 +317,7 @@ impl DelayProcessor {
         let stereo_mode = self.model.stereo_mode.get();
 
         let num_samples = buffer.num_samples();
-        let num_channels = buffer.num_output_channels().min(2);
+        let num_channels = buffer.num_channels().min(2);
 
         if num_channels == 0 {
             return;
@@ -329,10 +329,11 @@ impl DelayProcessor {
             let feedback = self.model.feedback.tick_smoothed();
             let mix = self.model.mix.tick_smoothed();
 
-            // Read input samples
-            let in_l = buffer.input(0)[sample_idx].to_f64();
+            // Read input samples. The buffer is processed in place, so they
+            // are read before the output is written over them.
+            let in_l = buffer.channel(0)[sample_idx].to_f64();
             let in_r = if num_channels > 1 {
-                buffer.input(1)[sample_idx].to_f64()
+                buffer.channel(1)[sample_idx].to_f64()
             } else {
                 in_l
             };
@@ -375,9 +376,9 @@ impl DelayProcessor {
             }
 
             // Write output
-            buffer.output(0)[sample_idx] = S::from_f64(out_l);
+            buffer.channel(0)[sample_idx] = S::from_f64(out_l);
             if num_channels > 1 {
-                buffer.output(1)[sample_idx] = S::from_f64(out_r);
+                buffer.channel(1)[sample_idx] = S::from_f64(out_r);
             }
         }
     }

@@ -122,7 +122,7 @@ impl Processor for WebViewDemoProcessor {
         _aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
-        debug_assert!(buffer.num_output_channels() <= 2, "pan assumes stereo");
+        debug_assert!(buffer.num_channels() <= 2, "pan assumes stereo");
 
         let gain = self.model.gain.as_linear() as f32;
 
@@ -140,10 +140,10 @@ impl Processor for WebViewDemoProcessor {
             PanLaw::Linear => [gain * (1.0 - position), gain * position],
         };
 
-        for (ch, (input, output)) in buffer.zip_channels().enumerate() {
+        for (ch, channel) in buffer.channels_mut().enumerate() {
             let g = pan_gains[ch.min(1)];
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * g;
+            for sample in channel {
+                *sample *= g;
             }
         }
     }

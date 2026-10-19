@@ -163,20 +163,30 @@ pub struct CompressorModel {
 impl Model for CompressorModel {
     // Compressor needs sample rate for envelope coefficients.
     // See `beamer::setup` for all available types.
-    type Setup = SampleRate;
+    type Setup = (SampleRate, MaxBufferSize, MainInputChannels);
     type Processor = CompressorProcessor;
 
-    fn prepare(self: Arc<Self>, setup: SampleRate) -> CompressorProcessor {
+    fn prepare(
+        self: Arc<Self>,
+        (sample_rate, max_buffer_size, input_channels): (SampleRate, MaxBufferSize, MainInputChannels),
+    ) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
-        let ramp_samples = (setup.hz() * BYPASS_RAMP_MS * 0.001) as u32;
+        let ramp_samples = (sample_rate.hz() * BYPASS_RAMP_MS * 0.001) as u32;
 
         CompressorProcessor {
-            bypass_handler: BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower),
+            // The handler keeps the dry signal of a crossfade, so it needs
+            // the channel count and the longest block.
+            bypass_handler: BypassHandler::new(
+                ramp_samples,
+                CrossfadeCurve::EqualPower,
+                input_channels.0 as usize,
+                max_buffer_size.0,
+            ),
             state: CompressionState {
                 env_db: DC_OFFSET,
                 average_gr_db: 0.0,
             },
-            sample_rate: setup.hz(),
+            sample_rate: sample_rate.hz(),
             model: self,
         }
     }
@@ -327,7 +337,7 @@ fn process_compression_inner<S: Sample>(
     sample_rate: f64,
 ) {
     let num_samples = buffer.num_samples();
-    let num_channels = buffer.num_output_channels().min(2);
+    let num_channels = buffer.num_channels().min(2);
 
     if num_channels == 0 || num_samples == 0 {
         return;
@@ -380,9 +390,9 @@ fn process_compression_inner<S: Sample>(
             }
         } else {
             // Use main input for detection
-            let in_l = buffer.input(0)[sample_idx].to_f64().abs();
+            let in_l = buffer.channel(0)[sample_idx].to_f64().abs();
             let in_r = if num_channels > 1 {
-                buffer.input(1)[sample_idx].to_f64().abs()
+                buffer.channel(1)[sample_idx].to_f64().abs()
             } else {
                 in_l
             };
@@ -441,9 +451,12 @@ fn process_compression_inner<S: Sample>(
         // Apply gain to output
         let gain = S::from_f64(total_gain_linear);
 
-        buffer.output(0)[sample_idx] = buffer.input(0)[sample_idx] * gain;
+        // The buffer is processed in place: this sample still holds the input.
+        let left = &mut buffer.channel(0)[sample_idx];
+        *left = *left * gain;
         if num_channels > 1 {
-            buffer.output(1)[sample_idx] = buffer.input(1)[sample_idx] * gain;
+            let right = &mut buffer.channel(1)[sample_idx];
+            *right = *right * gain;
         }
     }
 }
@@ -471,10 +484,9 @@ impl Processor for CompressorProcessor {
         let is_bypassed = self.model.bypass.get();
 
         // Split API: begin() returns what action to take
-        match self.bypass_handler.begin(is_bypassed) {
+        match self.bypass_handler.begin(is_bypassed, buffer) {
             BypassAction::Passthrough => {
-                // Fully bypassed - just copy input to output
-                buffer.copy_to_output();
+                // Fully bypassed - the buffer already holds the input
             }
             BypassAction::Process => {
                 // Normal processing - no crossfade needed
@@ -505,10 +517,8 @@ impl Processor for CompressorProcessor {
         let is_bypassed = self.model.bypass.get();
 
         // Split API: same pattern for f64 processing
-        match self.bypass_handler.begin(is_bypassed) {
-            BypassAction::Passthrough => {
-                buffer.copy_to_output();
-            }
+        match self.bypass_handler.begin(is_bypassed, buffer) {
+            BypassAction::Passthrough => {}
             BypassAction::Process => {
                 self.process_compression(buffer, aux);
             }

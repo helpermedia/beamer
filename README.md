@@ -50,9 +50,9 @@ struct GainProcessor {
 impl Processor for GainProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.model.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
+        for channel in buffer.channels_mut() {
+            for sample in channel {
+                *sample *= gain;
             }
         }
     }

@@ -51,7 +51,7 @@
 //! }
 //!
 //! // Processing
-//! let kick_out = buffer.output(0); // Main bus
+//! let kick_out = buffer.channel(0); // Main bus
 //! let snare_out = aux.output(0).unwrap().output(0); // Aux bus 0
 //! let hihat_out = aux.output(1).unwrap().output(0); // Aux bus 1
 //! let crash_out = aux.output(2).unwrap().output(0); // Aux bus 2
@@ -399,7 +399,7 @@ impl DrumsProcessor {
 
         // Write to output buses
         // Bus 0 (main) = Kick
-        let kick_out = buffer.output(0);
+        let kick_out = buffer.channel(0);
         for (i, sample) in self.render_buffers[0][..num_samples].iter().enumerate() {
             kick_out[i] = S::from_f64(*sample);
         }

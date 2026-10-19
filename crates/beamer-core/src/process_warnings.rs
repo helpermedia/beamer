@@ -26,16 +26,21 @@ pub enum ProcessWarning {
     SysExOutputOverflow = 16,
     /// SysEx output that did not fit was sent with the next block.
     SysExOutputDelayed = 32,
+    /// A block longer than the host announced needed memory of its own
+    /// (the host gave overlapping input and output buffers) and was
+    /// rendered as silence.
+    BlockTooLong = 64,
 }
 
 impl ProcessWarning {
-    const ALL: [ProcessWarning; 6] = [
+    const ALL: [ProcessWarning; 7] = [
         ProcessWarning::MidiInputOverflow,
         ProcessWarning::MidiOutputOverflow,
         ProcessWarning::ParameterEventOverflow,
         ProcessWarning::EventListTooLong,
         ProcessWarning::SysExOutputOverflow,
         ProcessWarning::SysExOutputDelayed,
+        ProcessWarning::BlockTooLong,
     ];
 
     /// What the warning tells a developer.
@@ -58,6 +63,9 @@ impl ProcessWarning {
             }
             ProcessWarning::SysExOutputDelayed => {
                 "SysEx output messages that did not fit into a block were sent with the next one"
+            }
+            ProcessWarning::BlockTooLong => {
+                "a block longer than the host announced had overlapping buffers and was rendered as silence"
             }
         }
     }

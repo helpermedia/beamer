@@ -379,12 +379,11 @@ impl MidiTransformProcessor {
 impl Processor for MidiTransformProcessor {
     fn process(
         &mut self,
-        buffer: &mut Buffer,
+        _buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
         _context: &ProcessContext,
     ) {
-        // Pass audio through unchanged
-        buffer.copy_to_output();
+        // Audio passes through unchanged: the buffer already holds the input.
     }
 
     fn set_active(&mut self, active: bool) {

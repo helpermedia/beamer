@@ -16,6 +16,9 @@
 //! ```ignore
 //! use beamer_core::{BypassHandler, BypassAction, CrossfadeCurve, Buffer};
 //!
+//! // In prepare(), with (SampleRate, MaxBufferSize, MainInputChannels) as Setup:
+//! // BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower, channels, max_buffer_size)
+//!
 //! struct MyPlugin {
 //!     bypass_handler: BypassHandler,
 //!     gain: f32,
@@ -25,10 +28,9 @@
 //!     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
 //!         let is_bypassed = self.model.bypass.get();
 //!
-//!         match self.bypass_handler.begin(is_bypassed) {
+//!         match self.bypass_handler.begin(is_bypassed, buffer) {
 //!             BypassAction::Passthrough => {
-//!                 // Fully bypassed - just copy input to output
-//!                 buffer.copy_to_output();
+//!                 // Fully bypassed - the buffer already holds the input
 //!             }
 //!             BypassAction::Process => {
 //!                 // Normal processing
@@ -73,8 +75,8 @@ pub enum BypassState {
 /// Returned by [`BypassHandler::begin()`] to tell you what to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BypassAction {
-    /// Plugin is fully bypassed. Copy input to output (or call `buffer.copy_to_output()`).
-    /// No DSP processing needed.
+    /// Plugin is fully bypassed. The buffer already holds the input, so there
+    /// is nothing to do. No DSP processing needed.
     Passthrough,
 
     /// Plugin is fully active. Run your DSP normally.
@@ -144,8 +146,8 @@ impl CrossfadeCurve {
 /// # Usage Pattern
 ///
 /// ```ignore
-/// match self.bypass_handler.begin(is_bypassed) {
-///     BypassAction::Passthrough => buffer.copy_to_output(),
+/// match self.bypass_handler.begin(is_bypassed, buffer) {
+///     BypassAction::Passthrough => {}
 ///     BypassAction::Process => self.process_dsp(buffer),
 ///     BypassAction::ProcessAndCrossfade => {
 ///         self.process_dsp(buffer);
@@ -156,14 +158,22 @@ impl CrossfadeCurve {
 ///
 /// # Sample Type Flexibility
 ///
-/// BypassHandler is not generic over sample type. The `finish()` method
-/// is generic, so a single BypassHandler instance can process both
-/// `Buffer<f32>` and `Buffer<f64>` buffers.
+/// BypassHandler is not generic over sample type. The `begin()` and
+/// `finish()` methods are generic, so a single BypassHandler instance can
+/// process both `Buffer<f32>` and `Buffer<f64>` buffers.
+///
+/// # Dry Signal
+///
+/// The buffer is processed in place, so the input is gone once the DSP
+/// wrote the output. While it crossfades, `begin()` copies the input (the
+/// dry signal) into the handler's own buffer, and `finish()` mixes it back
+/// in.
 ///
 /// # Real-Time Safety
 ///
-/// This struct performs no heap allocations and is safe to use in
-/// audio processing callbacks.
+/// The dry buffer is allocated in [`new()`](Self::new). `begin()` and
+/// `finish()` perform no heap allocations and are safe to use in audio
+/// processing callbacks.
 pub struct BypassHandler {
     /// Current bypass state
     state: BypassState,
@@ -173,20 +183,38 @@ pub struct BypassHandler {
     ramp_samples: u32,
     /// Crossfade curve to use
     curve: CrossfadeCurve,
+    /// The dry signal of the block being crossfaded: one buffer per
+    /// crossfaded channel, `max_buffer_size` samples each.
+    dry: Vec<Vec<f64>>,
+    /// Number of channels `dry` holds for the current block.
+    dry_channels: usize,
+    /// Number of samples `dry` holds for the current block.
+    dry_samples: usize,
+    /// Length of each dry buffer, the longest block `new()` was given.
+    max_buffer_size: usize,
 }
 
 impl BypassHandler {
     /// Create a new bypass handler.
     ///
+    /// Call this in `prepare()`: it allocates the buffer for the dry signal.
+    ///
     /// # Arguments
     /// * `ramp_samples` - Number of samples for crossfade (0 = instant bypass)
     /// * `curve` - Crossfade curve shape
-    pub fn new(ramp_samples: u32, curve: CrossfadeCurve) -> Self {
+    /// * `channels` - Number of main input channels (`MainInputChannels`),
+    ///   the channels whose dry signal is kept; the others fade to silence
+    /// * `max_buffer_size` - Maximum block length (`MaxBufferSize`)
+    pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize) -> Self {
         Self {
             state: BypassState::Active,
             ramp_position: 0,
             ramp_samples,
             curve,
+            dry: vec![vec![0.0; max_buffer_size]; channels],
+            dry_channels: 0,
+            dry_samples: 0,
+            max_buffer_size,
         }
     }
 
@@ -235,23 +263,26 @@ impl BypassHandler {
 
     /// Begin bypass processing for this buffer.
     ///
-    /// Call this at the start of your `process()` method. It updates the internal
-    /// state and returns what action you should take.
+    /// Call this at the start of your `process()` method, before anything
+    /// writes to the buffer. It updates the internal state and returns what
+    /// action you should take. When it returns `ProcessAndCrossfade`, it has
+    /// copied the input (the dry signal) for `finish()`.
     ///
     /// # Arguments
     /// * `bypassed` - Current bypass parameter state (true = bypassed)
+    /// * `buffer` - The buffer of this block, still holding the input
     ///
     /// # Returns
     /// A [`BypassAction`] telling you what to do:
-    /// - `Passthrough`: Just copy input to output, no DSP needed
+    /// - `Passthrough`: Nothing, the buffer already holds the input
     /// - `Process`: Run your DSP normally
     /// - `ProcessAndCrossfade`: Run your DSP, then call `finish()`
     ///
     /// # Example
     ///
     /// ```ignore
-    /// match self.bypass_handler.begin(is_bypassed) {
-    ///     BypassAction::Passthrough => buffer.copy_to_output(),
+    /// match self.bypass_handler.begin(is_bypassed, buffer) {
+    ///     BypassAction::Passthrough => {}
     ///     BypassAction::Process => self.process_dsp(buffer),
     ///     BypassAction::ProcessAndCrossfade => {
     ///         self.process_dsp(buffer);
@@ -259,13 +290,14 @@ impl BypassHandler {
     ///     }
     /// }
     /// ```
-    pub fn begin(&mut self, bypassed: bool) -> BypassAction {
+    pub fn begin<S: Sample>(&mut self, bypassed: bool, buffer: &Buffer<S>) -> BypassAction {
         self.set_bypass(bypassed);
 
         match self.state {
             BypassState::Bypassed => BypassAction::Passthrough,
             BypassState::Active => BypassAction::Process,
             BypassState::RampingToBypassed | BypassState::RampingToActive => {
+                self.capture_dry(buffer);
                 BypassAction::ProcessAndCrossfade
             }
         }
@@ -276,14 +308,33 @@ impl BypassHandler {
     /// Call this AFTER your DSP processing when `begin()` returned
     /// `BypassAction::ProcessAndCrossfade`.
     ///
-    /// This blends the wet signal (in output buffer) with the dry signal
-    /// (in input buffer) according to the current ramp position.
+    /// This blends the wet signal (in the buffer) with the dry signal (copied
+    /// by `begin()`) according to the current ramp position.
     ///
     /// # Arguments
-    /// * `buffer` - The buffer containing processed (wet) output and original (dry) input
+    /// * `buffer` - The buffer containing the processed (wet) signal
     pub fn finish<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
-        let num_samples = buffer.num_samples();
-        self.apply_crossfade(buffer, num_samples);
+        self.apply_crossfade(buffer);
+    }
+
+    /// Copy the channels that hold an input into the dry buffer. A block
+    /// longer than the dry buffer is crossfaded up to its length; the rest
+    /// keeps the wet signal and the ramp continues in the next block. A
+    /// block without input channels still has samples to crossfade (to
+    /// silence).
+    fn capture_dry<S: Sample>(&mut self, buffer: &Buffer<S>) {
+        let channels = buffer
+            .num_input_channels()
+            .min(buffer.num_channels())
+            .min(self.dry.len());
+        let samples = buffer.num_samples().min(self.max_buffer_size);
+        for (dry, channel) in self.dry.iter_mut().zip(buffer.channels()).take(channels) {
+            for (to, from) in dry[..samples].iter_mut().zip(channel) {
+                *to = from.to_f64();
+            }
+        }
+        self.dry_channels = channels;
+        self.dry_samples = samples;
     }
 
     /// Update bypass target state (internal).
@@ -328,14 +379,17 @@ impl BypassHandler {
         }
     }
 
-    fn apply_crossfade<S: Sample>(&mut self, buffer: &mut Buffer<S>, num_samples: usize) {
+    fn apply_crossfade<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
         // Guard: instant bypass when ramp_samples is 0
         if self.ramp_samples == 0 {
             return;
         }
 
-        // Guard: no channels to process
-        let num_channels = buffer.num_input_channels().min(buffer.num_output_channels());
+        // All channels are crossfaded, over the samples begin() copied the
+        // dry signal of. A channel without an input (mono to stereo) has a
+        // silent dry signal, which Passthrough leaves when bypassed.
+        let num_channels = buffer.num_channels();
+        let num_samples = self.dry_samples.min(buffer.num_samples());
         if num_channels == 0 {
             return;
         }
@@ -351,9 +405,13 @@ impl BypassHandler {
 
             // Apply crossfade to all channels for this sample
             for ch in 0..num_channels {
-                let dry = buffer.input(ch)[sample_idx];
-                let wet = buffer.output(ch)[sample_idx];
-                buffer.output(ch)[sample_idx] = wet * wet_gain + dry * dry_gain;
+                let dry = if ch < self.dry_channels {
+                    S::from_f64(self.dry[ch][sample_idx])
+                } else {
+                    S::ZERO
+                };
+                let sample = &mut buffer.channel(ch)[sample_idx];
+                *sample = *sample * wet_gain + dry * dry_gain;
             }
 
             // Advance ramp position (once per sample)
@@ -373,9 +431,31 @@ impl BypassHandler {
     }
 }
 
-impl Default for BypassHandler {
-    /// Create a bypass handler with default settings (64 samples, linear curve).
-    fn default() -> Self {
-        Self::new(64, CrossfadeCurve::Linear)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crossfade_mixes_the_dry_signal_copied_before_processing() {
+        // Mono in, stereo out: channel 0 holds the input, channel 1 starts
+        // silent. A linear ramp of 4 samples to bypassed.
+        let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 8);
+        let mut left = [1.0f32; 4];
+        let mut right = [0.0f32; 4];
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 1, 4);
+
+        assert_eq!(handler.begin(true, &buffer), BypassAction::ProcessAndCrossfade);
+        // The DSP writes the wet signal over the input, in place.
+        for channel in buffer.channels_mut() {
+            channel.fill(0.5);
+        }
+        handler.finish(&mut buffer);
+
+        // Wet 0.5 fades to the dry input 1.0 on channel 0 and to silence on
+        // channel 1, which has no input.
+        assert_eq!(left, [0.5, 0.625, 0.75, 0.875]);
+        assert_eq!(right, [0.5, 0.375, 0.25, 0.125]);
+        assert_eq!(handler.state(), BypassState::Bypassed);
     }
 }

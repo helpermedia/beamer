@@ -35,7 +35,7 @@ use beamer_core::{
     MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
-    ProcessWarnings, Processor, ScaleInfo, SysEx,
+    ProcessWarnings, Processor, Sample, ScaleInfo, SysEx,
     SharedModel, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
@@ -921,6 +921,30 @@ impl<P: Model> Vst3Processor<P> {
         }
     }
 
+    /// Prepare the collected channels of this call for in-place processing
+    /// and return the number of samples to process. A block the channels
+    /// cannot be prepared for (longer than set up, with overlapping buffers)
+    /// is rendered as silence, and 0 is returned.
+    ///
+    /// # Safety
+    ///
+    /// The collected pointers must be valid for `num_samples` samples, and no
+    /// reference to their memory may be alive.
+    unsafe fn prepare_channels<S: Sample>(
+        &self,
+        storage: &mut ProcessBufferStorage<S>,
+        num_samples: usize,
+    ) -> usize {
+        // SAFETY: See the function's safety section.
+        if unsafe { storage.prepare_in_place(num_samples) } {
+            return num_samples;
+        }
+        // SAFETY: See the function's safety section.
+        unsafe { storage.silence_outputs(num_samples) };
+        self.process_warnings.note(ProcessWarning::BlockTooLong);
+        0
+    }
+
     /// Process audio at 32-bit (f32) precision.
     ///
     /// This is the standard processing path used when the host uses kSample32.
@@ -1029,35 +1053,14 @@ impl<P: Model> Vst3Processor<P> {
             }
         }
 
+        // SAFETY: The host guarantees the channel pointers valid for
+        // num_samples elements for the duration of process().
+        let render_samples = unsafe { self.prepare_channels(storage, num_samples) };
         let storage = &*storage;
-        self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
-            // The channels of this sub-block. The host guarantees the channel
-            // pointers valid for num_samples elements for the duration of
-            // process(), and the sub-block lies within them.
-            let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts(ptr.add(start), len) }
-            });
-            let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-            });
-
-            let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
-                })
-            });
-            let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-                })
-            });
-
-            let mut buffer = Buffer::new(main_in_iter, main_out_iter, len);
-            let mut aux = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, len);
+        self.run_blocks(render_samples, processor, input, |processor, start, len, context| {
+            // SAFETY: The channels were prepared for this call and the
+            // sub-block lies within them.
+            let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(start, len) };
             processor.process(&mut buffer, &mut aux, context);
         });
     }
@@ -1170,35 +1173,14 @@ impl<P: Model> Vst3Processor<P> {
             }
         }
 
+        // SAFETY: The host guarantees the channel pointers valid for
+        // num_samples elements for the duration of process().
+        let render_samples = unsafe { self.prepare_channels(storage, num_samples) };
         let storage = &*storage;
-        self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
-            // The channels of this sub-block. The host guarantees the channel
-            // pointers valid for num_samples elements for the duration of
-            // process(), and the sub-block lies within them.
-            let main_in_iter = storage.main_inputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts(ptr.add(start), len) }
-            });
-            let main_out_iter = storage.main_outputs.iter().map(|&ptr| {
-                // SAFETY: See above.
-                unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-            });
-
-            let aux_in_iter = storage.aux_inputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
-                })
-            });
-            let aux_out_iter = storage.aux_outputs.iter().map(|bus| {
-                bus.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-                })
-            });
-
-            let mut buffer: Buffer<f64> = Buffer::new(main_in_iter, main_out_iter, len);
-            let mut aux: AuxiliaryBuffers<f64> = AuxiliaryBuffers::new(aux_in_iter, aux_out_iter, len);
+        self.run_blocks(render_samples, processor, input, |processor, start, len, context| {
+            // SAFETY: The channels were prepared for this call and the
+            // sub-block lies within them.
+            let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(start, len) };
             processor.process_f64(&mut buffer, &mut aux, context);
         });
     }
@@ -1218,7 +1200,17 @@ impl<P: Model> Vst3Processor<P> {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let conv = unsafe { &mut *self.conversion_buffers.get() };
 
-        // Convert main input f64 → f32
+        // The plugin processes the f32 output channels in place. They start
+        // silent, and a channel with a host input gets it below.
+        for channel in &mut conv.main_output_f32 {
+            channel[..num_samples].fill(0.0);
+        }
+        for channel in conv.aux_output_f32.iter_mut().flatten() {
+            channel[..num_samples].fill(0.0);
+        }
+
+        // Convert main input f64 → f32: into the output channel of the same
+        // index, or into the input buffer for a channel without an output.
         if process_data.numInputs > 0 && !process_data.inputs.is_null() {
             // SAFETY: inputs is non-null and host guarantees validity.
             let input_buses = unsafe { slice::from_raw_parts(process_data.inputs, 1) };
@@ -1229,11 +1221,15 @@ impl<P: Model> Vst3Processor<P> {
                 // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
                 let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
                 for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                    if !ptr.is_null() && ch < conv.main_input_f32.len() {
+                    if !ptr.is_null() {
                         // SAFETY: Host guarantees channel pointer valid for num_samples elements.
                         let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
-                        for (i, &s) in src.iter().enumerate() {
-                            conv.main_input_f32[ch][i] = s as f32;
+                        let converted = match conv.main_output_f32.get_mut(ch) {
+                            Some(channel) => channel,
+                            None => &mut conv.main_input_f32[ch],
+                        };
+                        for (to, &from) in converted.iter_mut().zip(src) {
+                            *to = from as f32;
                         }
                     }
                 }
@@ -1273,8 +1269,11 @@ impl<P: Model> Vst3Processor<P> {
         self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
             // The f32 slices of this sub-block (no allocation).
             let range = start..start + len;
-            let main_input_iter = conv.main_input_f32.iter().map(|v| &v[range.clone()]);
-            let main_output_iter = conv.main_output_f32.iter_mut().map(|v| &mut v[range.clone()]);
+            let num_channels = conv.main_output_f32.len();
+            let num_input_channels = conv.main_input_f32.len();
+            let channel_iter = conv.main_output_f32.iter_mut().map(|v| &mut v[range.clone()]);
+            let unpaired_input_iter =
+                conv.main_input_f32.iter().skip(num_channels).map(|v| &v[range.clone()]);
 
             let aux_input_iter = conv
                 .aux_input_f32
@@ -1285,7 +1284,7 @@ impl<P: Model> Vst3Processor<P> {
                 .iter_mut()
                 .map(|bus| bus.iter_mut().map(|v| &mut v[range.clone()]));
 
-            let mut buffer = Buffer::new(main_input_iter, main_output_iter, len);
+            let mut buffer = Buffer::new(channel_iter, unpaired_input_iter, num_input_channels, len);
             let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, len);
             processor.process(&mut buffer, &mut aux, context);
         });
@@ -4763,9 +4762,9 @@ mod tests {
         aux: &mut beamer_core::AuxiliaryBuffers<S>,
         gain: f64,
     ) {
-        for (input, output) in buffer.zip_channels() {
-            for (input, output) in input.iter().zip(output.iter_mut()) {
-                *output = S::from_f64(input.to_f64() + gain);
+        for channel in buffer.channels_mut() {
+            for sample in channel {
+                *sample = S::from_f64(sample.to_f64() + gain);
             }
         }
 
@@ -5563,9 +5562,8 @@ mod tests {
             let level = &self.model.parameters.level;
             for index in 0..buffer.num_samples() {
                 let gain = level.tick_smoothed_f32();
-                for channel in 0..buffer.num_output_channels() {
-                    let input = buffer.input(channel)[index];
-                    buffer.output(channel)[index] = input * gain;
+                for channel in buffer.channels_mut() {
+                    channel[index] *= gain;
                 }
             }
         }

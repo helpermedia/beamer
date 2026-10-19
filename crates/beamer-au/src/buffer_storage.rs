@@ -57,9 +57,10 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
 
     /// Collect output pointers from an AudioBufferList.
     ///
-    /// For instruments (plugins with no inputs), if the host provides null buffer pointers,
-    /// this function will use internal buffers and update the AudioBufferList to point to them.
-    /// This is necessary because some hosts (Logic Pro, Reaper) expect the AU to provide buffers.
+    /// If the host provides null buffer pointers (and the shim did not point them
+    /// at the input), this function will use internal buffers and update the
+    /// AudioBufferList to point to them. This is necessary because some hosts
+    /// (Logic Pro, Reaper) expect the AU to provide buffers.
     ///
     /// # Safety
     ///
@@ -157,9 +158,9 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                     self.main_outputs.push(buffer.data as *mut S);
                 }
             } else if let Some(ref mut internal_buffers) = self.internal_output_buffers {
-                // Host provided null pointer - use our internal buffer (instruments only).
+                // Host provided null pointer - use our internal buffer.
                 // This happens in some hosts (Logic Pro, Reaper) that expect the AU to
-                // provide its own output buffers for instruments/generators.
+                // provide its own output buffers.
                 let channel_idx = i as usize;
                 if channel_idx < internal_buffers.len() && num_samples <= self.max_frames {
                     let internal_buf = &mut internal_buffers[channel_idx];
@@ -173,7 +174,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                     self.main_outputs.push(ptr);
                 }
             }
-            // If null data and no internal buffers (effects), skip this channel
+            // If null data and no internal buffer for it, skip this channel
         }
     }
 
@@ -671,15 +672,17 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_no_internal_buffers() {
-        // Effects have inputs - should NOT allocate internal buffers
+    fn test_effect_internal_buffers_allocated() {
+        // Effects get internal buffers too, for a host that provides null
+        // output pointers with an input of another channel count.
         let config = CachedBusConfig::default(); // 2in/2out
 
         let storage: ProcessBufferStorage<f32> =
             ProcessBufferStorage::allocate_from_config(&config, 512);
 
-        // Effects don't need internal buffers (can use in-place processing)
-        assert!(storage.internal_output_buffers.is_none());
+        let internal = storage.internal_output_buffers.as_ref().unwrap();
+        assert_eq!(internal.len(), 2);
+        assert_eq!(internal[0].len(), 512);
     }
 
     #[test]

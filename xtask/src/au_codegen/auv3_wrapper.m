@@ -93,6 +93,46 @@ static void BeamerAuv3ApplyParameterEvents(BeamerAuInstanceHandle instance, cons
     }
 }
 
+// Whether every buffer of `output` has memory for `byteSize` bytes and the
+// channel count of the buffer of `input` with its index.
+static BOOL BeamerAuv3HasMemory(const AudioBufferList* output, const AudioBufferList* input,
+                                UInt32 byteSize) {
+    for (UInt32 i = 0; i < output->mNumberBuffers; i++) {
+        const AudioBuffer* out = &output->mBuffers[i];
+        if (out->mData == NULL || out->mDataByteSize < byteSize
+            || out->mNumberChannels != input->mBuffers[i].mNumberChannels) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+// Point each output buffer without memory at the pulled input of its index,
+// in our own buffer `owned`. An input the upstream gave in its own memory is
+// copied into ours first.
+static void BeamerAuv3PointOutputAtInput(AudioBufferList* output, AudioBufferList* input,
+                                         const AudioBufferList* owned, UInt32 byteSize) {
+    for (UInt32 i = 0; i < output->mNumberBuffers; i++) {
+        AudioBuffer* out = &output->mBuffers[i];
+        if (out->mData != NULL) {
+            continue;
+        }
+        AudioBuffer* in = &input->mBuffers[i];
+        void* ours = owned->mBuffers[i].mData;
+        if (in->mData != ours) {
+            if (in->mData != NULL) {
+                memcpy(ours, in->mData, (in->mDataByteSize < byteSize) ? in->mDataByteSize : byteSize);
+            } else {
+                memset(ours, 0, byteSize);
+            }
+            in->mData = ours;
+            in->mDataByteSize = byteSize;
+        }
+        out->mData = ours;
+        out->mDataByteSize = byteSize;
+    }
+}
+
 // Fill the output of a bypassed render: a copy of the input, or silence
 // without one. An output buffer the host gives without memory gets the
 // input's memory, or `silence`, which holds at least `byteSize` zero bytes.
@@ -893,16 +933,30 @@ static void beamer_auv3_on_loaded(void* context) {
         AUAudioFrameCount maxFrames = blockSelf->_maxFrames;
         UInt32 inputBytesPerFrame = blockSelf->_inputBytesPerFrame;
 
+        // Pull the main input where the plugin processes it. Only the
+        // render of the main bus processes it; a call for another output bus
+        // copies what that render produced. With matching channel counts the
+        // input goes straight into the host's output buffers when they have
+        // memory. Otherwise it goes into our own buffer, and an output buffer
+        // without memory (the host asks for in place) gets our input
+        // buffer's, valid until the next render call. When the upstream
+        // replaced our buffers with its own, the samples are copied into ours
+        // before an output points at them: the plugin never writes into
+        // memory we do not own.
         AudioBufferList* inputData = NULL;
-        if (inputPCMBuffer != nil && inputMutableABL != NULL && pullInputBlock != nil
-            && frameCount <= maxFrames) {
+        if (outputBusNumber == 0 && inputPCMBuffer != nil && inputMutableABL != NULL
+            && pullInputBlock != nil && frameCount <= maxFrames) {
             const AudioBufferList* originalABL = inputPCMBuffer.audioBufferList;
             UInt32 byteSize = frameCount * inputBytesPerFrame;
+            BOOL matches = outputData != NULL && outputData->mNumberBuffers == originalABL->mNumberBuffers;
+            BOOL intoOutput = matches && BeamerAuv3HasMemory(outputData, originalABL, byteSize);
 
             inputMutableABL->mNumberBuffers = originalABL->mNumberBuffers;
             for (UInt32 i = 0; i < originalABL->mNumberBuffers; ++i) {
                 inputMutableABL->mBuffers[i].mNumberChannels = originalABL->mBuffers[i].mNumberChannels;
-                inputMutableABL->mBuffers[i].mData = originalABL->mBuffers[i].mData;
+                inputMutableABL->mBuffers[i].mData = intoOutput
+                    ? outputData->mBuffers[i].mData
+                    : originalABL->mBuffers[i].mData;
                 inputMutableABL->mBuffers[i].mDataByteSize = byteSize;
             }
 
@@ -910,6 +964,9 @@ static void beamer_auv3_on_loaded(void* context) {
             AUAudioUnitStatus pullStatus = pullInputBlock(&pullFlags, timestamp, frameCount, 0, inputMutableABL);
             if (pullStatus == noErr) {
                 inputData = inputMutableABL;
+                if (matches && !intoOutput) {
+                    BeamerAuv3PointOutputAtInput(outputData, inputMutableABL, originalABL, byteSize);
+                }
             }
         }
 
@@ -1365,7 +1422,7 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 - (BOOL)canProcessInPlace {
-    return NO;
+    return YES;
 }
 
 // =============================================================================

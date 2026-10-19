@@ -13,6 +13,18 @@
 //! This separation solves Rust's lifetime variance constraints with nested mutable
 //! references while providing a clean, ergonomic API.
 //!
+//! # In-Place Processing
+//!
+//! The main bus is processed in place: [`Buffer`] has one channel per output
+//! channel, which holds the input channel of the same index when `process()`
+//! starts and the output when it returns. Hosts often give the same memory
+//! for input and output, and one buffer per channel lets the plugin work in
+//! it directly. Input channels without an output channel (stereo to mono)
+//! are read-only, through [`Buffer::unpaired_input()`].
+//!
+//! A plugin that needs the input after writing the output (a dry signal for
+//! a mix) copies it first, as [`BypassHandler`](crate::BypassHandler) does.
+//!
 //! # Real-Time Safety
 //!
 //! All buffer types use fixed-size stack storage with no heap allocations.
@@ -28,9 +40,9 @@
 //! ```ignore
 //! fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers) {
 //!     let gain = self.model.gain();
-//!     for (input, output) in buffer.zip_channels() {
-//!         for (i, o) in input.iter().zip(output.iter_mut()) {
-//!             *o = *i * gain;
+//!     for channel in buffer.channels_mut() {
+//!         for sample in channel {
+//!             *sample *= gain;
 //!         }
 //!     }
 //! }
@@ -47,11 +59,7 @@
 //!
 //!     // Apply compression based on sidechain
 //!     let reduction = self.compute_gain_reduction(key_level);
-//!     for output in buffer.outputs_mut() {
-//!         for sample in output {
-//!             *sample *= reduction;
-//!         }
-//!     }
+//!     buffer.apply_gain(reduction);
 //! }
 //! ```
 //!
@@ -64,16 +72,19 @@
 //!     let sc = aux.sidechain();
 //!
 //!     for i in 0..buffer.num_samples() {
+//!         // Read the input sample before writing the output over it.
+//!         let input = buffer.channel(0)[i];
+//!
 //!         // Get sidechain sample (returns S::ZERO if disconnected)
 //!         let key = sc.as_ref()
 //!             .map(|s| s.sample(0, i).to_f64().abs())
-//!             .unwrap_or_else(|| buffer.input(0)[i].to_f64().abs());
+//!             .unwrap_or_else(|| input.to_f64().abs());
 //!
 //!         // Compute per-sample gain reduction
 //!         let gain = self.envelope.process(key);
 //!
 //!         // Apply to output
-//!         buffer.output(0)[i] = buffer.input(0)[i] * Sample::from_f64(gain);
+//!         buffer.channel(0)[i] = input * Sample::from_f64(gain);
 //!     }
 //! }
 //! ```
@@ -85,10 +96,13 @@ use crate::types::{MAX_AUX_BUSES, MAX_CHANNELS};
 // Buffer - Main Audio I/O
 // =============================================================================
 
-/// Main audio buffer for plugin processing.
+/// Main audio buffer for plugin processing, processed in place.
 ///
-/// Contains input and output channel slices for the primary audio bus.
-/// This is what most plugins interact with - simple stereo or surround I/O.
+/// Holds one channel per output channel of the main bus. When `process()`
+/// starts, a channel holds the input channel of the same index, or silence
+/// when the input has fewer channels. When it returns, the channel holds
+/// the output. Input channels beyond the output channels are read-only,
+/// through [`unpaired_input()`](Self::unpaired_input).
 ///
 /// # Type Parameter
 ///
@@ -111,50 +125,62 @@ use crate::types::{MAX_AUX_BUSES, MAX_CHANNELS};
 /// This struct uses fixed-size stack storage. No heap allocations occur
 /// during construction or use.
 pub struct Buffer<'a, S: Sample = f32> {
-    /// Input channel slices (immutable audio from host)
-    /// `Option<&[S]>` is Copy, so `[None; N]` works
-    inputs: [Option<&'a [S]>; MAX_CHANNELS],
-    /// Output channel slices (mutable audio to host)
-    outputs: [Option<&'a mut [S]>; MAX_CHANNELS],
-    /// Number of active input channels
+    /// The main channels, one per output channel. On entry a channel holds
+    /// the input channel of the same index, or silence when the input has
+    /// fewer channels. After process() it holds the output.
+    channels: [Option<&'a mut [S]>; MAX_CHANNELS],
+    /// Number of main channels.
+    num_channels: usize,
+    /// Input channels without an output channel of their index, starting at
+    /// input channel `num_channels`. `Option<&[S]>` is Copy, so `[None; N]`
+    /// works.
+    unpaired_inputs: [Option<&'a [S]>; MAX_CHANNELS],
+    /// Number of unpaired input channels.
+    num_unpaired_inputs: usize,
+    /// Number of input channels the host gave, paired and unpaired.
     num_input_channels: usize,
-    /// Number of active output channels
-    num_output_channels: usize,
-    /// Number of samples in this processing block
+    /// Number of samples in this processing block.
     num_samples: usize,
 }
 
 impl<'a, S: Sample> Buffer<'a, S> {
-    /// Create a new buffer from channel slices.
+    /// Create a new buffer.
     ///
-    /// This is called by the VST3 wrapper, not by plugin code.
-    /// Channels beyond [`MAX_CHANNELS`] are silently ignored.
+    /// This is called by the format wrappers, not by plugin code. The
+    /// wrapper fills `channels` with the input before `process()` (see the
+    /// type's documentation). `unpaired_inputs` are the input channels from
+    /// index `channels.len()` on, and `num_input_channels` counts all input
+    /// channels, paired and unpaired. Channels beyond [`MAX_CHANNELS`] are
+    /// silently ignored.
     #[inline]
     pub fn new(
-        inputs: impl IntoIterator<Item = &'a [S]>,
-        outputs: impl IntoIterator<Item = &'a mut [S]>,
+        channels: impl IntoIterator<Item = &'a mut [S]>,
+        unpaired_inputs: impl IntoIterator<Item = &'a [S]>,
+        num_input_channels: usize,
         num_samples: usize,
     ) -> Self {
-        let mut input_arr: [Option<&'a [S]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
-        let mut num_input_channels = 0;
-        for (i, slice) in inputs.into_iter().take(MAX_CHANNELS).enumerate() {
-            input_arr[i] = Some(slice);
-            num_input_channels = i + 1;
+        // Can't use [None; N] for &mut because it's not Copy.
+        let mut channel_arr: [Option<&'a mut [S]>; MAX_CHANNELS] = std::array::from_fn(|_| None);
+        let mut num_channels = 0;
+        for (i, slice) in channels.into_iter().take(MAX_CHANNELS).enumerate() {
+            channel_arr[i] = Some(slice);
+            num_channels = i + 1;
         }
 
-        // Can't use [None; N] for &mut because it's not Copy
-        let mut output_arr: [Option<&'a mut [S]>; MAX_CHANNELS] = std::array::from_fn(|_| None);
-        let mut num_output_channels = 0;
-        for (i, slice) in outputs.into_iter().take(MAX_CHANNELS).enumerate() {
-            output_arr[i] = Some(slice);
-            num_output_channels = i + 1;
+        let mut unpaired_arr: [Option<&'a [S]>; MAX_CHANNELS] = [None; MAX_CHANNELS];
+        let mut num_unpaired_inputs = 0;
+        let unpaired_capacity = MAX_CHANNELS.saturating_sub(num_channels);
+        for (i, slice) in unpaired_inputs.into_iter().take(unpaired_capacity).enumerate() {
+            unpaired_arr[i] = Some(slice);
+            num_unpaired_inputs = i + 1;
         }
 
         Self {
-            inputs: input_arr,
-            outputs: output_arr,
-            num_input_channels,
-            num_output_channels,
+            channels: channel_arr,
+            num_channels,
+            unpaired_inputs: unpaired_arr,
+            num_unpaired_inputs,
+            num_input_channels: num_input_channels.min(MAX_CHANNELS),
             num_samples,
         }
     }
@@ -169,159 +195,127 @@ impl<'a, S: Sample> Buffer<'a, S> {
         self.num_samples
     }
 
-    /// Number of input channels.
+    /// Number of main channels (the output channels of the main bus).
+    #[inline]
+    pub fn num_channels(&self) -> usize {
+        self.num_channels
+    }
+
+    /// Number of input channels the host gave, paired and unpaired.
+    ///
+    /// A mono to stereo plugin sees 1 here and 2 channels, the second one
+    /// silent when `process()` starts.
     #[inline]
     pub fn num_input_channels(&self) -> usize {
         self.num_input_channels
     }
 
-    /// Number of output channels.
-    #[inline]
-    pub fn num_output_channels(&self) -> usize {
-        self.num_output_channels
-    }
-
     /// Returns true if this is a stereo buffer (2 in, 2 out).
     #[inline]
     pub fn is_stereo(&self) -> bool {
-        self.num_input_channels == 2 && self.num_output_channels == 2
+        self.num_input_channels == 2 && self.num_channels == 2
     }
 
     /// Returns true if this is a mono buffer (1 in, 1 out).
     #[inline]
     pub fn is_mono(&self) -> bool {
-        self.num_input_channels == 1 && self.num_output_channels == 1
+        self.num_input_channels == 1 && self.num_channels == 1
     }
 
     // =========================================================================
     // Channel Access
     // =========================================================================
 
-    /// Get an input channel by index.
-    ///
-    /// Returns an empty slice if the channel doesn't exist.
-    #[inline]
-    pub fn input(&self, channel: usize) -> &[S] {
-        self.inputs
-            .get(channel)
-            .and_then(|opt| opt.as_ref())
-            .map(|ch| &ch[..self.num_samples])
-            .unwrap_or(&[])
-    }
-
-    /// Get a mutable output channel by index.
+    /// Get a main channel by index.
     ///
     /// # Panics
     ///
     /// Panics if the channel index is out of bounds.
     #[inline]
-    pub fn output(&mut self, channel: usize) -> &mut [S] {
+    pub fn channel(&mut self, index: usize) -> &mut [S] {
         let n = self.num_samples;
-        self.outputs[channel]
+        self.channels[index]
             .as_mut()
             .map(|ch| &mut ch[..n])
-            .expect("output channel out of bounds")
+            .expect("channel out of bounds")
     }
 
-    /// Try to get a mutable output channel by index.
+    /// Try to get a main channel by index.
     ///
     /// Returns `None` if the channel doesn't exist.
     #[inline]
-    pub fn output_checked(&mut self, channel: usize) -> Option<&mut [S]> {
+    pub fn channel_checked(&mut self, index: usize) -> Option<&mut [S]> {
         let n = self.num_samples;
-        self.outputs
-            .get_mut(channel)
+        self.channels
+            .get_mut(index)
             .and_then(|opt| opt.as_mut())
             .map(|ch| &mut ch[..n])
+    }
+
+    /// Get an input channel that has no output channel of its index.
+    ///
+    /// `channel` is the host's input channel number: with stereo in and
+    /// mono out, the right input is `unpaired_input(1)`. Returns an empty
+    /// slice if the input channel doesn't exist or has an output channel
+    /// (then its input is in [`channel()`](Self::channel)).
+    #[inline]
+    pub fn unpaired_input(&self, channel: usize) -> &[S] {
+        channel
+            .checked_sub(self.num_channels)
+            .and_then(|index| self.unpaired_inputs.get(index))
+            .and_then(|opt| opt.as_ref())
+            .map(|ch| &ch[..self.num_samples])
+            .unwrap_or(&[])
     }
 
     // =========================================================================
     // Iterators
     // =========================================================================
 
-    /// Iterate over all input channels.
+    /// Iterate over the main channels without changing them.
     #[inline]
-    pub fn inputs(&self) -> impl Iterator<Item = &[S]> + '_ {
+    pub fn channels(&self) -> impl Iterator<Item = &[S]> + '_ {
         let n = self.num_samples;
-        self.inputs[..self.num_input_channels]
+        self.channels[..self.num_channels]
             .iter()
-            .filter_map(move |opt| opt.as_ref().map(|ch| &ch[..n]))
+            .filter_map(move |opt| opt.as_deref().map(|ch| &ch[..n]))
     }
 
-    /// Iterate over all output channels mutably.
+    /// Iterate over the main channels.
     #[inline]
-    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'a, S> {
+    pub fn channels_mut(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, 'a, S> {
         let n = self.num_samples;
-        self.outputs[..self.num_output_channels]
+        self.channels[..self.num_channels]
             .iter_mut()
             .filter_map(move |opt| opt.as_mut().map(|ch| &mut ch[..n]))
     }
 
-    /// Iterate over paired (input, output) channels.
-    ///
-    /// This is the most common pattern for in-place processing.
-    /// Only yields channels that exist in both input and output.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// for (input, output) in buffer.zip_channels() {
-    ///     for (i, o) in input.iter().zip(output.iter_mut()) {
-    ///         *o = *i * gain;
-    ///     }
-    /// }
-    /// ```
+    /// Iterate over the input channels that have no output channel, in the
+    /// order of their channel numbers.
     #[inline]
-    pub fn zip_channels(&mut self) -> impl Iterator<Item = (&[S], &mut [S])> + use<'_, 'a, S> {
+    pub fn unpaired_inputs(&self) -> impl Iterator<Item = &[S]> + '_ {
         let n = self.num_samples;
-        let num_pairs = self.num_input_channels.min(self.num_output_channels);
-        self.inputs[..num_pairs]
+        self.unpaired_inputs[..self.num_unpaired_inputs]
             .iter()
-            .zip(self.outputs[..num_pairs].iter_mut())
-            .filter_map(move |(i_opt, o_opt)| {
-                match (i_opt.as_ref(), o_opt.as_mut()) {
-                    (Some(i), Some(o)) => Some((&i[..n], &mut o[..n])),
-                    _ => None,
-                }
-            })
+            .filter_map(move |opt| opt.as_ref().map(|ch| &ch[..n]))
     }
 
     // =========================================================================
     // Bulk Operations
     // =========================================================================
 
-    /// Copy all input channels to output channels.
-    ///
-    /// Useful for bypass or passthrough. Only copies channels that exist
-    /// in both input and output.
-    pub fn copy_to_output(&mut self) {
-        let num_channels = self.num_input_channels.min(self.num_output_channels);
-        let n = self.num_samples;
-        for ch in 0..num_channels {
-            if let (Some(input), Some(output)) = (self.inputs[ch].as_ref(), self.outputs[ch].as_mut()) {
-                output[..n].copy_from_slice(&input[..n]);
-            }
+    /// Clear all main channels to silence.
+    pub fn clear(&mut self) {
+        for channel in self.channels_mut() {
+            channel.fill(S::ZERO);
         }
     }
 
-    /// Clear all output channels to silence.
-    pub fn clear_outputs(&mut self) {
-        let n = self.num_samples;
-        for opt in self.outputs[..self.num_output_channels].iter_mut() {
-            if let Some(output) = opt.as_mut() {
-                output[..n].fill(S::ZERO);
-            }
-        }
-    }
-
-    /// Apply a gain factor to all output channels.
-    pub fn apply_output_gain(&mut self, gain: S) {
-        let n = self.num_samples;
-        for opt in self.outputs[..self.num_output_channels].iter_mut() {
-            if let Some(output) = opt.as_mut() {
-                for sample in &mut output[..n] {
-                    *sample = *sample * gain;
-                }
+    /// Apply a gain factor to all main channels.
+    pub fn apply_gain(&mut self, gain: S) {
+        for channel in self.channels_mut() {
+            for sample in channel {
+                *sample = *sample * gain;
             }
         }
     }
@@ -383,7 +377,7 @@ pub struct AuxiliaryBuffers<'a, S: Sample = f32> {
 impl<'a, S: Sample> AuxiliaryBuffers<'a, S> {
     /// Create new auxiliary buffers.
     ///
-    /// This is called by the VST3 wrapper, not by plugin code.
+    /// This is called by the format wrappers, not by plugin code.
     /// Buses/channels beyond the limits are silently ignored.
     #[inline]
     pub fn new(
@@ -635,7 +629,6 @@ impl<'a, S: Sample> AuxInput<'a, S> {
     /// Get an input channel by index.
     ///
     /// Returns an empty slice if the channel doesn't exist.
-    /// Matches [`Buffer::input()`] naming for API consistency.
     #[inline]
     pub fn input(&self, index: usize) -> &[S] {
         self.channels
@@ -767,8 +760,6 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
     }
 
     /// Get a mutable output channel by index.
-    ///
-    /// Matches [`Buffer::output()`] naming for API consistency.
     ///
     /// # Panics
     ///

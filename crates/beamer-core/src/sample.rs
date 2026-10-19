@@ -20,9 +20,9 @@ use std::ops::{Add, Div, Mul, Sub};
 /// ```ignore
 /// fn process_generic<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
 ///     let gain = S::from_f32(self.model.gain_linear());
-///     for (input, output) in buffer.zip_channels() {
-///         for (i, o) in input.iter().zip(output.iter_mut()) {
-///             *o = *i * gain;
+///     for channel in buffer.channels_mut() {
+///         for sample in channel {
+///             *sample = *sample * gain;
 ///         }
 ///     }
 /// }

@@ -216,8 +216,18 @@ where
         })?;
         let num_samples = buffer.num_samples();
 
-        for (ch, input) in buffer.inputs().enumerate() {
-            if let Some(converted) = conversion.main_input_mut(ch) {
+        // The main channels hold their input (in place); the input channels
+        // without an output channel are read-only.
+        for (ch, channel) in buffer.channels().enumerate() {
+            if let Some(converted) = conversion.main_output_mut(ch) {
+                for (to, from) in converted.iter_mut().zip(channel) {
+                    *to = *from as f32;
+                }
+            }
+        }
+        let num_channels = buffer.num_channels();
+        for (index, input) in buffer.unpaired_inputs().enumerate() {
+            if let Some(converted) = conversion.main_input_mut(num_channels + index) {
                 for (to, from) in converted.iter_mut().zip(input) {
                     *to = *from as f32;
                 }
@@ -238,16 +248,8 @@ where
             }
         }
 
-        // The processor starts from what the host's output buffers hold, as
-        // in the 32-bit path, where it writes into them directly. They are
-        // silent when there is no main input.
-        for (ch, output) in buffer.outputs_mut().enumerate() {
-            if let Some(converted) = conversion.main_output_mut(ch) {
-                for (to, from) in converted.iter_mut().zip(output.iter()) {
-                    *to = *from as f32;
-                }
-            }
-        }
+        // The aux outputs start from what their buffers hold, silence (see
+        // ProcessBufferStorage::prepare_in_place).
         for bus_index in 0..aux.num_output_buses() {
             let Some(mut bus) = aux.output(bus_index) else {
                 continue;
@@ -265,7 +267,6 @@ where
         // only those, as in the 32-bit path, and not a channel holding the
         // samples of the last block in which it was connected.
         let main_input_channels = buffer.num_input_channels();
-        let main_output_channels = buffer.num_output_channels();
         let mut aux_input_channels = [0usize; MAX_AUX_BUSES];
         for (bus_index, channels) in aux_input_channels.iter_mut().enumerate() {
             *channels = aux.input(bus_index).map_or(0, |bus| bus.num_channels());
@@ -276,16 +277,17 @@ where
         }
 
         {
-            let main_inputs = conversion
+            let channels = conversion
+                .main_output_f32
+                .iter_mut()
+                .take(num_channels)
+                .map(|ch| &mut ch[..num_samples]);
+            let unpaired_inputs = conversion
                 .main_input_f32
                 .iter()
                 .take(main_input_channels)
+                .skip(num_channels)
                 .map(|ch| &ch[..num_samples]);
-            let main_outputs = conversion
-                .main_output_f32
-                .iter_mut()
-                .take(main_output_channels)
-                .map(|ch| &mut ch[..num_samples]);
             let aux_inputs = conversion
                 .aux_input_f32
                 .iter()
@@ -299,14 +301,15 @@ where
                     bus.iter_mut().take(channels).map(|ch| &mut ch[..num_samples])
                 });
 
-            let mut buffer_f32 = Buffer::new(main_inputs, main_outputs, num_samples);
+            let mut buffer_f32 =
+                Buffer::new(channels, unpaired_inputs, main_input_channels, num_samples);
             let mut aux_f32 = AuxiliaryBuffers::new(aux_inputs, aux_outputs, num_samples);
             processor.process(&mut buffer_f32, &mut aux_f32, context);
         }
 
-        for (ch, output) in buffer.outputs_mut().enumerate() {
+        for (ch, channel) in buffer.channels_mut().enumerate() {
             if let Some(converted) = conversion.main_output(ch) {
-                for (to, from) in output.iter_mut().zip(converted) {
+                for (to, from) in channel.iter_mut().zip(converted) {
                     *to = *from as f64;
                 }
             }
@@ -1065,8 +1068,8 @@ mod tests {
             _aux: &mut AuxiliaryBuffers,
             _context: &ProcessContext,
         ) {
-            for (_, output) in buffer.zip_channels() {
-                output.fill(self.value);
+            for channel in buffer.channels_mut() {
+                channel.fill(self.value);
             }
         }
     }
@@ -1317,9 +1320,9 @@ mod tests {
             _context: &ProcessContext,
         ) {
             SAW_PROCESS_SCOPE.with(|saw| saw.set(Some(beamer_core::audio_thread::in_process())));
-            for (input, output) in buffer.zip_channels() {
-                for (from, to) in input.iter().zip(output) {
-                    *to = from * 2.0;
+            for channel in buffer.channels_mut() {
+                for sample in channel {
+                    *sample *= 2.0;
                 }
             }
         }
@@ -1618,13 +1621,24 @@ mod tests {
     }
 
     #[test]
-    fn test_call_without_channels_applies_its_events() {
-        // Null output buffers and no input: an effect has no channels to
-        // write to.
-        let mut output = StereoList::filled(0.0);
+    fn test_null_outputs_without_input_get_silent_buffers_of_our_own() {
+        // Null output buffers and no input: the effect renders into buffers
+        // of its own, which start silent, and the host's list points at them.
+        // TestProcessor does not write its output.
+        let plugin = boxed(AuProcessor::<TestModel>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut output = StereoList::filled(0.77);
         output.buffers[0].data = std::ptr::null_mut();
         output.buffers[1].data = std::ptr::null_mut();
-        assert_eq!(render_events_without_audio(&mut output, FRAMES as u32), [0]);
+        render(block.as_ref(), None, &mut output);
+
+        for buffer in &output.buffers {
+            assert!(!buffer.data.is_null());
+            // SAFETY: The render call pointed the buffer at the block's own
+            // memory of FRAMES samples, alive as long as the block.
+            let samples = unsafe { std::slice::from_raw_parts(buffer.data.cast::<f32>(), FRAMES) };
+            assert!(samples.iter().all(|&sample| sample == 0.0));
+        }
     }
 
     #[test]
@@ -1690,21 +1704,21 @@ mod tests {
             .allocate_render_resources(44100.0, FRAMES as u32, &stereo_bus_config(), ProcessMode::Realtime)
             .expect("prepare");
         let context = ProcessContext::with_empty_transport(44100.0, FRAMES);
-        let input = [0.25f64; FRAMES];
-        let mut left = [0.0f64; FRAMES];
-        let mut right = [0.0f64; FRAMES];
+        // The channels hold their input, as the render call prepares them.
+        let mut left = [0.25f64; FRAMES];
+        let mut right = [0.25f64; FRAMES];
 
-        let mut buffer = Buffer::new([&input[..], &input[..]], [&mut left[..], &mut right[..]], FRAMES);
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 2, FRAMES);
         plugin
             .process_block_f64(&mut buffer, &mut AuxiliaryBuffers::empty(), &context)
             .expect("process");
         assert_eq!(left, [0.5; FRAMES]);
 
-        // Without main input the render call silences the outputs first, and
-        // the processor gets no input channels and these silent outputs.
+        // Without main input the render call silences the channels first, and
+        // the processor gets no input channels and these silent channels.
         left.fill(0.0);
         right.fill(0.0);
-        let mut buffer = Buffer::new(std::iter::empty(), [&mut left[..], &mut right[..]], FRAMES);
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 0, FRAMES);
         plugin
             .process_block_f64(&mut buffer, &mut AuxiliaryBuffers::empty(), &context)
             .expect("process");
@@ -1752,7 +1766,7 @@ mod tests {
             aux: &mut AuxiliaryBuffers,
             _context: &ProcessContext,
         ) {
-            let output = buffer.output(0);
+            let output = buffer.channel(0);
             match (aux.input(0), aux.input(1)) {
                 (None, Some(second)) => output.copy_from_slice(second.input(0)),
                 _ => output.fill(-1.0),
@@ -1775,10 +1789,11 @@ mod tests {
             .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
             .expect("prepare");
 
-        let main_input = [0.0f64; FRAMES];
         let second = [0.75f64; FRAMES];
+        // The main channel holds its (silent) input, as the render call
+        // prepares it.
         let mut main_output = [0.0f64; FRAMES];
-        let mut buffer = Buffer::new([&main_input[..]], [&mut main_output[..]], FRAMES);
+        let mut buffer = Buffer::new([&mut main_output[..]], std::iter::empty(), 1, FRAMES);
         // The host connected the second sidechain only.
         let mut aux = AuxiliaryBuffers::new(
             [Vec::new(), vec![&second[..]]],
@@ -1823,14 +1838,41 @@ mod tests {
         let mut output = StereoList::filled(0.77);
         assert_eq!(render(block.as_ref(), None, &mut output), [0.0; 2]);
 
-        // With input the output is the processor's business: the buffers may
-        // be the input itself when the host processes in place.
+        // With input each output channel starts with its input, which the
+        // processor works on in place.
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.77);
         assert_eq!(
             render(block.as_ref(), Some(&mut input), &mut output),
-            [0.77; 2]
+            [0.5; 2]
         );
+    }
+
+    #[test]
+    fn test_render_in_place_when_input_and_output_share_memory() {
+        // The shims pull the input into the output buffers when they can, so
+        // both lists point at the same memory. The processor works on it
+        // directly.
+        let plugin = boxed(AuProcessor::<DoublingModel>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut output = StereoList::filled(0.25);
+        let shared = output.as_list().cast_const();
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let status = block.process(
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            shared,
+            None,
+            None,
+        );
+        assert_eq!(status, 0);
+        assert_eq!(output.samples, [[0.5; FRAMES]; 2]);
     }
 
     // =========================================================================

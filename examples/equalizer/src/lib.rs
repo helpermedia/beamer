@@ -342,16 +342,16 @@ impl EqualizerProcessor {
         self.update_coefficients();
 
         // Process stereo buffer: chain filters low -> mid -> high per channel
-        for (ch, (input, output)) in buffer.zip_channels().enumerate() {
-            for (in_sample, out_sample) in input.iter().zip(output.iter_mut()) {
-                let sample = in_sample.to_f64();
+        for (ch, channel) in buffer.channels_mut().enumerate() {
+            for value in channel {
+                let sample = value.to_f64();
 
                 // Chain the three EQ bands (using per-channel state)
                 let sample = self.low_state[ch].process(sample, &self.low_coeffs);
                 let sample = self.mid_state[ch].process(sample, &self.mid_coeffs);
                 let sample = self.high_state[ch].process(sample, &self.high_coeffs);
 
-                *out_sample = S::from_f64(sample);
+                *value = S::from_f64(sample);
             }
         }
     }

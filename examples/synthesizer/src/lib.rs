@@ -701,8 +701,8 @@ impl SynthesizerProcessor {
             }
 
             // Apply master gain and write to output
-            buffer.output(0)[sample_idx] = out_l * gain;
-            buffer.output(1)[sample_idx] = out_r * gain;
+            buffer.channel(0)[sample_idx] = out_l * gain;
+            buffer.channel(1)[sample_idx] = out_r * gain;
         }
 
         self.pending_events.clear();

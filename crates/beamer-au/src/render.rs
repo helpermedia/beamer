@@ -29,7 +29,6 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::slice;
 use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
@@ -1419,58 +1418,14 @@ impl<S: RenderSample> RenderBlock<S> {
         // Collect pointers from AudioBufferList
         // SAFETY: output_data is valid for the duration of this render call
         unsafe {
-            // Use input_data provided by ObjC (already pulled using AVAudioPCMBuffer).
-            // This matches Apple's pattern where input pulling happens in ObjC.
-            if !input_data.is_null() {
-                let in_list = &*input_data;
-
-                // Collect inputs from the ObjC-provided buffer
-                storage.collect_inputs(input_data, num_samples);
-
-                // Handle in-place processing: if output buffers have null data pointers,
-                // fill them with input buffer pointers (like Apple's FilterDemo does).
-                if !output_data.is_null() {
-                    let out_list = &mut *output_data;
-
-                    // Check if ANY output buffer has null data (in-place processing expected)
-                    let mut needs_in_place = false;
-                    for i in 0..out_list.number_buffers {
-                        if out_list.buffer_at(i).data.is_null() {
-                            needs_in_place = true;
-                            break;
-                        }
-                    }
-
-                    // If in-place processing is needed, fill null output pointers with input pointers
-                    if needs_in_place {
-                        let num_to_fill = out_list.number_buffers.min(in_list.number_buffers);
-                        for i in 0..num_to_fill {
-                            let out_buf = out_list.buffer_at_mut(i);
-                            if out_buf.data.is_null() {
-                                let in_buf = in_list.buffer_at(i);
-                                out_buf.data = in_buf.data;
-                                out_buf.data_byte_size = in_buf.data_byte_size;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Now collect output pointers (after in-place fixup)
+            // The shims pull the main input (input_data) where the plugin
+            // processes it: into the output buffers when the channel counts
+            // match, so that both point at the same memory, and otherwise
+            // into their own buffers. An output buffer the host gives
+            // without memory gets the input's own buffer from the shim, or
+            // an internal buffer here.
+            storage.collect_inputs(input_data, num_samples);
             storage.collect_outputs(output_data, num_samples);
-
-            if input_data.is_null() {
-                // No main input: the plugin has no input bus or the host did not
-                // feed it. Start from silence, so that a processor that only
-                // transforms its input does not leave whatever was in the
-                // buffers (the host's, or our own for null output pointers) in
-                // the output.
-                for &channel in &storage.main_outputs {
-                    // SAFETY: collect_outputs only keeps pointers that are valid
-                    // for num_samples samples.
-                    std::ptr::write_bytes(channel, 0, num_samples);
-                }
-            }
 
             // Collect auxiliary output pointers from pre-allocated cache buffers.
             // AU calls render per-bus, so we render aux outputs into our cache on
@@ -1479,20 +1434,14 @@ impl<S: RenderSample> RenderBlock<S> {
             // from a clean state each render cycle (no unbounded growth).
             let aux_cache = &mut *self.aux_output_cache.get();
             debug_assert_eq!(aux_cache.len(), storage.aux_outputs.len());
+            // prepare_in_place() below zeroes them before rendering.
             for (bus_cache, aux_output) in
                 aux_cache.iter_mut().zip(storage.aux_outputs.iter_mut())
             {
                 for ch_buf in bus_cache.iter_mut() {
-                    // Zero the cache before rendering into it
-                    ch_buf[..num_samples].fill(S::ZERO);
                     aux_output.push(ch_buf.as_mut_ptr());
                 }
             }
-
-            // Note: With a main input we do NOT zero output buffers here because:
-            // 1. For in-place processing, output now points to input data which we need
-            // 2. The plugin's process() will overwrite output anyway
-            // 3. Zeroing would destroy the input data in the in-place case
 
             // Pull auxiliary bus inputs if available
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
@@ -1580,12 +1529,26 @@ impl<S: RenderSample> RenderBlock<S> {
             }
         }
 
-        // Without input and output channels (the host gave null output
-        // buffers and no input to use in their place) there is nothing to
-        // write to, and a call without samples has nothing to write. Neither
-        // runs the sub-blocks below; their events are handled after them.
+        // The plugin processes the main bus in place: each output channel
+        // gets its input, overlapping buffers get memory of their own. A
+        // block that cannot be prepared (longer than set up, with
+        // overlapping buffers) is rendered as silence.
+        // SAFETY: The collected pointers are valid for num_samples samples
+        // for this render call, and nothing else refers to them.
+        let prepared = unsafe { storage.prepare_in_place(num_samples) };
+        if !prepared {
+            // SAFETY: As above.
+            unsafe { storage.silence_outputs(num_samples) };
+            self.shared.note_render_warning(ProcessWarning::BlockTooLong);
+        }
+        let storage = &*storage;
+
+        // Without input and output channels (the host gave no output
+        // buffers we could use and no input) there is nothing to write to,
+        // and a call without samples has nothing to write. Neither runs the
+        // sub-blocks below; their events are handled after them.
         let has_channels = storage.output_channel_count() > 0 || !storage.main_inputs.is_empty();
-        let render_samples = if has_channels { num_samples } else { 0 };
+        let render_samples = if has_channels && prepared { num_samples } else { 0 };
 
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
         // MidiCcState uses atomics internally and we only read it.
@@ -1626,34 +1589,11 @@ impl<S: RenderSample> RenderBlock<S> {
 
                 // The channels of this sub-block. The buffers keep the slices in
                 // arrays of a fixed size, so building them does not allocate.
-                // The pointers were collected from the host's buffers for this
-                // render call and are valid for num_samples samples; the
-                // sub-block lies within them. The host renders one call at a
-                // time per instance, so no other reference to the output memory
+                // SAFETY: The channels were prepared for this render call and
+                // the sub-block lies within them. The host renders one call at
+                // a time per instance, so no other reference to the memory
                 // exists while the plugin processes.
-                let (start, len) = (block.start, block.len);
-                let main_inputs = storage.main_inputs.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts(ptr.add(start), len) }
-                });
-                let main_outputs = storage.main_outputs.iter().map(|&ptr| {
-                    // SAFETY: See above.
-                    unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-                });
-                let aux_inputs = storage.aux_inputs.iter().map(|bus| {
-                    bus.iter().map(|&ptr| {
-                        // SAFETY: See above.
-                        unsafe { slice::from_raw_parts(ptr.add(start), len) }
-                    })
-                });
-                let aux_outputs = storage.aux_outputs.iter().map(|bus| {
-                    bus.iter().map(|&ptr| {
-                        // SAFETY: See above.
-                        unsafe { slice::from_raw_parts_mut(ptr.add(start), len) }
-                    })
-                });
-                let mut buffer = Buffer::new(main_inputs, main_outputs, len);
-                let mut aux = AuxiliaryBuffers::new(aux_inputs, aux_outputs, len);
+                let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(block.start, block.len) };
 
                 match S::process_block(&mut **plugin_guard, &mut buffer, &mut aux, &context) {
                     Ok(()) => true,
@@ -2032,7 +1972,7 @@ mod tests {
         let (received, bytes) = unsafe {
             (
                 &mut *context.cast::<Vec<(u32, Vec<u8>)>>(),
-                slice::from_raw_parts(bytes, length as usize),
+                std::slice::from_raw_parts(bytes, length as usize),
             )
         };
         received.push((sample_offset, bytes.to_vec()));

@@ -120,6 +120,8 @@ typedef struct BeamerAuv2Instance {
     UInt32 maxFramesPerSlice;
     _Atomic bool initialized;
     _Atomic bool bypassed;
+    // kAudioUnitProperty_InPlaceProcessing: on unless the host turns it off.
+    _Atomic bool processesInPlace;
     bool offlineRender;
 
     // Stream formats per bus (indexed by element number)
@@ -415,6 +417,7 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     inst->maxFramesPerSlice = 1024;
     atomic_init(&inst->initialized, false);
     atomic_init(&inst->bypassed, false);
+    atomic_init(&inst->processesInPlace, true);
 
     // Initialize mutexes
     pthread_mutex_init(&inst->listenerMutex, NULL);
@@ -1342,7 +1345,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            *(UInt32*)outData = 0; // Not using in-place processing
+            *(UInt32*)outData = atomic_load_explicit(&inst->processesInPlace, memory_order_relaxed) ? 1 : 0;
             *ioDataSize = sizeof(UInt32);
             return noErr;
         }
@@ -1751,9 +1754,17 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             return noErr;
         }
 
-        case kAudioUnitProperty_InPlaceProcessing:
+        case kAudioUnitProperty_InPlaceProcessing: {
+            if (!inData || inDataSize < sizeof(UInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            atomic_store_explicit(&inst->processesInPlace, *(UInt32*)inData != 0, memory_order_relaxed);
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }
+
         case kAudioUnitProperty_ShouldAllocateBuffer:
-            // Accept but ignore these
+            // Accept but ignore this
             return noErr;
 
         default:
@@ -2081,28 +2092,87 @@ static void BeamerAuv2ReadTransport(const HostCallbackInfo* host, BeamerAuTransp
 // MARK: - Render
 // =============================================================================
 
-// Pull the main input through the callback or the connection the host set.
-// Returns NULL when there is no input source or the pull failed.
+// Whether every buffer of `list` is one channel with memory for `byteSize`
+// bytes.
+static bool BeamerAuv2HasMemory(const AudioBufferList* list, UInt32 byteSize) {
+    for (UInt32 i = 0; i < list->mNumberBuffers; i++) {
+        const AudioBuffer* buffer = &list->mBuffers[i];
+        if (buffer->mData == NULL || buffer->mNumberChannels != 1 || buffer->mDataByteSize < byteSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Pull the main input through the callback or the connection the host set,
+// where the plugin processes it. Returns NULL when there is no input source
+// or the pull failed.
+//
+// In place (kAudioUnitProperty_InPlaceProcessing on) and with matching
+// channel counts, the input goes straight into the host's output buffers
+// when they have memory. Otherwise it goes into our own buffers, and in
+// place an output buffer without memory gets our input buffer's. When the
+// input callback replaced our buffers with its own, the samples are copied
+// into ours before an output points at them: the plugin never writes into
+// memory the host gave as input.
 static AudioBufferList* BeamerAuv2PullInput(BeamerAuv2Instance* inst, const AudioTimeStamp* timeStamp,
-    UInt32 frames) {
+    UInt32 frames, AudioBufferList* ioData) {
 
     const CallbackSet* callbacks = &inst->renderCallbacks;
     if (!callbacks->input.inputProc && !callbacks->inputConnection.sourceAU) {
         return NULL;
     }
 
-    EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, frames);
+    if (EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, frames) != noErr) {
+        return NULL;
+    }
+    AudioBufferList* input = inst->inputBufferList;
+    UInt32 byteSize = frames * sizeof(Float32);
+    bool inPlace = atomic_load_explicit(&inst->processesInPlace, memory_order_relaxed)
+        && ioData != NULL && ioData->mNumberBuffers == input->mNumberBuffers;
+    bool intoOutput = inPlace && BeamerAuv2HasMemory(ioData, byteSize);
+    if (intoOutput) {
+        for (UInt32 i = 0; i < input->mNumberBuffers; i++) {
+            input->mBuffers[i].mData = ioData->mBuffers[i].mData;
+        }
+    }
+
     AudioUnitRenderActionFlags pullFlags = 0;
     OSStatus pullStatus;
     if (callbacks->input.inputProc) {
         pullStatus = callbacks->input.inputProc(callbacks->input.inputProcRefCon,
-            &pullFlags, timeStamp, 0, frames, inst->inputBufferList);
+            &pullFlags, timeStamp, 0, frames, input);
     } else {
         pullStatus = AudioUnitRender(callbacks->inputConnection.sourceAU,
             &pullFlags, timeStamp, callbacks->inputConnection.sourceOutputNumber,
-            frames, inst->inputBufferList);
+            frames, input);
     }
-    return (pullStatus == noErr) ? inst->inputBufferList : NULL;
+    if (pullStatus != noErr) {
+        return NULL;
+    }
+
+    if (inPlace && !intoOutput) {
+        for (UInt32 i = 0; i < input->mNumberBuffers; i++) {
+            AudioBuffer* out = &ioData->mBuffers[i];
+            if (out->mData != NULL) {
+                continue;
+            }
+            AudioBuffer* in = &input->mBuffers[i];
+            void* owned = inst->ownedInputBuffers[i];
+            if (in->mData != owned) {
+                if (in->mData != NULL) {
+                    memcpy(owned, in->mData, (in->mDataByteSize < byteSize) ? in->mDataByteSize : byteSize);
+                } else {
+                    memset(owned, 0, byteSize);
+                }
+                in->mData = owned;
+                in->mDataByteSize = byteSize;
+            }
+            out->mData = owned;
+            out->mDataByteSize = byteSize;
+        }
+    }
+    return input;
 }
 
 static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActionFlags,
@@ -2144,21 +2214,39 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 
     // Bypass: the input goes to the output unchanged.
     if (atomic_load_explicit(&inst->bypassed, memory_order_relaxed)) {
-        AudioBufferList* inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames);
+        // Only the main bus passes its input on; another output bus is
+        // silent. In place the input may already be in the output buffers.
+        AudioBufferList* inputData = (inOutputBusNumber == 0)
+            ? BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames, ioData)
+            : NULL;
 
         // Copy input to output for bypass
         if (inputData) {
             UInt32 buffersToCopy = (inputData->mNumberBuffers < ioData->mNumberBuffers) ?
                 inputData->mNumberBuffers : ioData->mNumberBuffers;
             for (UInt32 i = 0; i < buffersToCopy; i++) {
+                void* out = ioData->mBuffers[i].mData;
+                void* in = inputData->mBuffers[i].mData;
+                // An output buffer without memory (left so with in-place
+                // processing off) gets the input's.
+                if (out == NULL && in != NULL) {
+                    ioData->mBuffers[i].mData = in;
+                    ioData->mBuffers[i].mDataByteSize = inputData->mBuffers[i].mDataByteSize;
+                    continue;
+                }
+                if (out == NULL || in == NULL || out == in) {
+                    continue;
+                }
                 UInt32 bytesToCopy = (inputData->mBuffers[i].mDataByteSize < ioData->mBuffers[i].mDataByteSize) ?
                     inputData->mBuffers[i].mDataByteSize : ioData->mBuffers[i].mDataByteSize;
-                memcpy(ioData->mBuffers[i].mData, inputData->mBuffers[i].mData, bytesToCopy);
+                memcpy(out, in, bytesToCopy);
             }
         } else {
             // No input, silence output
             for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
-                memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
+                if (ioData->mBuffers[i].mData != NULL) {
+                    memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
+                }
             }
         }
 
@@ -2207,10 +2295,11 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         return noErr;
     }
 
-    // Pull input audio
+    // Pull input audio. Only the render of the main bus processes it; a
+    // call for another output bus copies what that render produced.
     AudioBufferList* inputData = NULL;
-    if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
-        inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames);
+    if (inOutputBusNumber == 0 && beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
+        inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames, ioData);
     }
 
     // Only the render of the main bus processes audio and needs the

@@ -156,9 +156,9 @@ pub struct GainProcessor {
 impl Processor for GainProcessor {
     fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
         let gain = self.model.gain.as_linear() as f32;
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
+        for channel in buffer.channels_mut() {
+            for sample in channel {
+                *sample *= gain;
             }
         }
     }
@@ -453,11 +453,11 @@ impl Model for MyModel {
 
 ```rust
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-    for (input, output) in buffer.zip_channels() {
-        for (i, o) in input.iter().zip(output.iter_mut()) {
-            // Advances smoother.
-            let gain = self.model.gain.tick_smoothed();
-            *o = *i * gain as f32;
+    for index in 0..buffer.num_samples() {
+        // Advances smoother, once per sample for all channels.
+        let gain = self.model.gain.tick_smoothed() as f32;
+        for channel in buffer.channels_mut() {
+            channel[index] *= gain;
         }
     }
 }
@@ -469,13 +469,9 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
     // Current value, no advance.
     let gain = self.model.gain.smoothed();
-    self.model.gain.skip_smoothing(buffer.len());
+    self.model.gain.skip_smoothing(buffer.num_samples());
 
-    for (input, output) in buffer.zip_channels() {
-        for (i, o) in input.iter().zip(output.iter_mut()) {
-            *o = *i * gain as f32;
-        }
-    }
+    buffer.apply_gain(gain as f32);
 }
 ```
 
@@ -1114,42 +1110,41 @@ A new instance holds the declared parameter defaults, and no preset is applied. 
 
 ### Buffer Types
 
-Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` handles your primary input/output channels, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
+Beamer provides safe, ergonomic access to audio buffers using a two-buffer architecture. The main `Buffer` holds the main bus, processed in place, while `AuxiliaryBuffers` provides access to sidechains and multi-bus routing.
 
 **Design Goals:**
 - Stack-allocated for real-time safety (no heap allocations in `process()`)
-- Clear separation between input (read-only) and output (mutable) channels
+- In-place processing of the main bus: a host that gives the same memory for input and output needs no copy
 - Support for mono, stereo and surround processing
 - Generic over sample type (`f32` or `f64`)
 
 #### Main Buffer
 
+The main buffer has one channel per output channel of the main bus. When `process()` starts, a channel holds the input channel of the same index; when it returns, it holds the output. A channel without an input (mono to stereo) starts silent. An input channel without an output (stereo to mono) is read-only through `unpaired_input(channel)`, indexed by the host's input channel number.
+
+A plugin that needs the input after writing the output copies it first, as `BypassHandler` does for its dry signal. Where the host gives overlapping buffers (an input in the memory of another channel's output, or one memory for two outputs), the format wrapper gives the plugin memory of its own, so its slices never overlap.
+
 ```rust
-/// Main audio buffer (main bus only).
+/// Main audio buffer (main bus only), processed in place.
 /// Generic over sample type S (f32 or f64).
-pub struct Buffer<'a, S: Sample = f32> {
-    inputs: [Option<&'a [S]>; MAX_CHANNELS],
-    outputs: [Option<&'a mut [S]>; MAX_CHANNELS],
-    num_input_channels: usize,
-    num_output_channels: usize,
-    num_samples: usize,
-}
+pub struct Buffer<'a, S: Sample = f32> { /* ... */ }
 
 impl<'a, S: Sample> Buffer<'a, S> {
     pub fn num_samples(&self) -> usize;
+    /// The main channels (the output channels of the main bus).
+    pub fn num_channels(&self) -> usize;
+    /// The input channels the host gave, paired and unpaired.
     pub fn num_input_channels(&self) -> usize;
-    pub fn num_output_channels(&self) -> usize;
     pub fn is_stereo(&self) -> bool;
     pub fn is_mono(&self) -> bool;
-    pub fn input(&self, channel: usize) -> &[S];
-    pub fn output(&mut self, channel: usize) -> &mut [S];
-    pub fn output_checked(&mut self, channel: usize) -> Option<&mut [S]>;
-    pub fn inputs(&self) -> impl Iterator<Item = &[S]>;
-    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut [S]>;
-    pub fn zip_channels(&mut self) -> impl Iterator<Item = (&[S], &mut [S])>;
-    pub fn copy_to_output(&mut self);
-    pub fn clear_outputs(&mut self);
-    pub fn apply_output_gain(&mut self, gain: S);
+    pub fn channel(&mut self, index: usize) -> &mut [S];
+    pub fn channel_checked(&mut self, index: usize) -> Option<&mut [S]>;
+    pub fn channels(&self) -> impl Iterator<Item = &[S]>;
+    pub fn channels_mut(&mut self) -> impl Iterator<Item = &mut [S]>;
+    pub fn unpaired_input(&self, channel: usize) -> &[S];
+    pub fn unpaired_inputs(&self) -> impl Iterator<Item = &[S]>;
+    pub fn clear(&mut self);
+    pub fn apply_gain(&mut self, gain: S);
 }
 ```
 
@@ -1345,9 +1340,9 @@ impl GainProcessor {
         _context: &ProcessContext,
     ) {
         let gain = S::from_f64(self.model.gain.as_linear());
-        for (input, output) in buffer.zip_channels() {
-            for (i, o) in input.iter().zip(output.iter_mut()) {
-                *o = *i * gain;
+        for channel in buffer.channels_mut() {
+            for sample in channel {
+                *sample = *sample * gain;
             }
         }
     }
@@ -1392,7 +1387,7 @@ pub enum BypassState {
 
 /// What action the plugin should take for this buffer.
 pub enum BypassAction {
-    /// Fully bypassed: copy input to output.
+    /// Fully bypassed: nothing to do, the buffer already holds the input.
     Passthrough,
     /// Fully active: run DSP normally.
     Process,
@@ -1412,10 +1407,14 @@ pub enum CrossfadeCurve {
 pub struct BypassHandler { /* ... */ }
 
 impl BypassHandler {
-    pub fn new(ramp_samples: u32, curve: CrossfadeCurve) -> Self;
+    /// Allocates the dry buffer: call in prepare(), with MainInputChannels
+    /// and MaxBufferSize.
+    pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize) -> Self;
 
-    /// Begin bypass processing. Returns what action to take.
-    pub fn begin(&mut self, bypassed: bool) -> BypassAction;
+    /// Begin bypass processing, before anything writes to the buffer.
+    /// Returns what action to take, and copies the dry signal when it is
+    /// ProcessAndCrossfade.
+    pub fn begin<S: Sample>(&mut self, bypassed: bool, buffer: &Buffer<S>) -> BypassAction;
 
     /// Finish bypass processing by applying crossfade.
     /// Call after DSP when begin() returned ProcessAndCrossfade.
@@ -1448,9 +1447,9 @@ impl Processor for ReverbProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let is_bypassed = self.model.bypass.get();
 
-        match self.bypass_handler.begin(is_bypassed) {
+        match self.bypass_handler.begin(is_bypassed, buffer) {
             BypassAction::Passthrough => {
-                buffer.copy_to_output();
+                // The buffer already holds the input.
             }
             BypassAction::Process => {
                 self.process_reverb(buffer);
