@@ -30,6 +30,7 @@ struct ConfigFile {
     vendor: Option<String>,
     has_gui: Option<bool>,
     subcategories: Option<Vec<String>>,
+    midi_input: Option<bool>,
 }
 
 /// Extension trait for converting paths to strings with proper error handling.
@@ -263,13 +264,16 @@ impl AuNames {
     }
 }
 
-/// Maps a `Config.toml` category to its AU component type code.
+/// Maps a `Config.toml` category and `midi_input`, `None` when it is not
+/// set, to the AU component type code. An effect with MIDI input is a music
+/// effect.
 ///
-/// Has to match `Category::to_au_component_type` in beamer-core, which is the
+/// Has to match `Config::au_component_type` in beamer-core, which is the
 /// type the plugin reports at runtime. Unknown categories map to `aufx`.
 #[must_use]
-pub fn au_component_type(category: &str) -> &'static str {
+pub fn au_component_type(category: &str, midi_input: Option<bool>) -> &'static str {
     match category {
+        "effect" if midi_input == Some(true) => "aumf",
         "instrument" => "aumu",
         "midi_effect" => "aumi",
         "generator" => "augn",
@@ -290,7 +294,7 @@ pub fn au_tags(component_type: &str, subcategories: &[String]) -> Vec<&'static s
         "aumi" => "MIDI",
         // Generator.
         "augn" => "Generator",
-        // Audio effect, and the fallback.
+        // Audio effect, music effect and the fallback.
         _ => "Effects",
     };
 
@@ -674,7 +678,7 @@ pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, 
     let config_path = package_dir.join("Config.toml");
     if let Ok(toml_str) = fs::read_to_string(&config_path) {
         if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
-            let component_type = au_component_type(&config.category).to_string();
+            let component_type = au_component_type(&config.category, config.midi_input).to_string();
 
             return (
                 component_type,
@@ -702,7 +706,9 @@ pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, 
             // Default to effect (aufx).
             "effect"
         };
-        let component_type = au_component_type(category).to_string();
+        // Detect MIDI input from the builder call on the config.
+        let midi_input = content.contains(".with_midi_input(true)").then_some(true);
+        let component_type = au_component_type(category, midi_input).to_string();
 
         // Detect manufacturer and subtype from Config::new()
         let (manufacturer, subtype) = detect_au_fourcc_codes(&content);
@@ -817,7 +823,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use beamer_core::config::Category;
+    use beamer_core::config::{Category, Config};
 
     use super::*;
 
@@ -916,7 +922,7 @@ mod tests {
     #[test]
     fn test_au_component_type_matches_core() {
         // The type written into Info.plist has to equal the type the plugin
-        // reports at runtime.
+        // reports at runtime, with MIDI input set or not.
         let categories = [
             Category::Effect,
             Category::Instrument,
@@ -925,13 +931,32 @@ mod tests {
         ];
         for category in categories {
             let name = config_name(category);
+            let config = Config::new("Test", category, "Test", "test");
             assert_eq!(
-                au_component_type(name).as_bytes(),
-                category.to_au_component_type().to_be_bytes(),
+                au_component_type(name, None).as_bytes(),
+                config.au_component_type().to_be_bytes(),
                 "category \"{}\"",
                 name
             );
+            // A MIDI effect always has MIDI input, a generator never.
+            for midi_input in [false, true] {
+                let valid = match category {
+                    Category::MidiEffect => midi_input,
+                    Category::Generator => !midi_input,
+                    Category::Effect | Category::Instrument => true,
+                };
+                if valid {
+                    assert_eq!(
+                        au_component_type(name, Some(midi_input)).as_bytes(),
+                        config.clone().with_midi_input(midi_input).au_component_type().to_be_bytes(),
+                        "category \"{}\", midi_input {}",
+                        name,
+                        midi_input
+                    );
+                }
+            }
         }
+        assert_eq!(au_component_type("effect", Some(true)), "aumf");
     }
 
     #[test]

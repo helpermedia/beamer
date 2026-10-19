@@ -137,8 +137,8 @@ typedef struct BeamerAuv2Instance {
     _Atomic UInt32 parameterWriteHead;
     _Atomic UInt32 parameterReadHead;
 
-    // MIDI output. The list is only allocated for plugin types that can
-    // produce MIDI, and the host sets the callback when it listens.
+    // MIDI output. The list is only allocated for a plugin with MIDI
+    // output, and the host sets the callback when it listens.
     bool isMidiEffect;
     MIDIPacketList* midiOutputList;
     AUMIDIOutputCallbackStruct midiOutputCallback;
@@ -339,7 +339,7 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         InitDefaultFormat(&inst->outputFormats[i], inst->sampleRate, ch);
     }
 
-    // Prepare MIDI output for the plugin types that can produce MIDI.
+    // Prepare MIDI output for a plugin with MIDI output.
     AudioComponentDescription desc;
     beamer_au_get_component_description(&desc);
     inst->isMidiEffect = (desc.componentType == kAudioUnitType_MIDIProcessor);
@@ -793,7 +793,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = false;
             return noErr;
 
-        // MIDI output - only supported when the plugin can produce MIDI.
+        // MIDI output - only supported when the plugin has MIDI output.
         case kAudioUnitProperty_MIDIOutputCallbackInfo:
         case kAudioUnitProperty_MIDIOutputCallback:
             if (scope != kAudioUnitScope_Global) {

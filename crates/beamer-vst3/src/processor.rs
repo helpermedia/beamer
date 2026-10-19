@@ -549,8 +549,14 @@ where
     pub fn new(config: &'static Config) -> Self {
         let model = Arc::new(P::default());
 
-        // Create MidiCcState from the model's config (framework-managed)
-        let midi_cc_state = model.midi_cc_config().map(|cfg| MidiCcState::from_config(&cfg));
+        // Create MidiCcState from the model's config (framework-managed). The
+        // controllers are MIDI input, so a plugin without it has none: no
+        // hidden parameters, no mapping and no events from them.
+        let midi_cc_state = config
+            .midi_input
+            .then(|| model.midi_cc_config())
+            .flatten()
+            .map(|cfg| MidiCcState::from_config(&cfg));
 
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
@@ -790,10 +796,15 @@ where
         self.model().output_bus_info(index)
     }
 
-    /// Check if plugin wants MIDI.
+    /// Whether the plugin has an event bus in this direction: input for
+    /// MIDI it receives, output for MIDI it sends.
     #[inline]
-    fn wants_midi(&self) -> bool {
-        self.model().wants_midi()
+    fn has_event_bus(&self, dir: BusDirection) -> bool {
+        match dir as BusDirections {
+            BusDirections_::kInput => self.config.midi_input,
+            BusDirections_::kOutput => self.config.midi_output,
+            _ => false,
+        }
     }
 
     // =========================================================================
@@ -1418,8 +1429,8 @@ where
                 BusDirections_::kOutput => self.output_bus_count() as i32,
                 _ => 0,
             },
-            // One event bus in each direction if the plugin wants MIDI.
-            MediaTypes_::kEvent if self.wants_midi() => 1,
+            // One event bus for MIDI input and one for MIDI output.
+            MediaTypes_::kEvent if self.has_event_bus(dir) => 1,
             _ => 0,
         }
     }
@@ -1465,8 +1476,8 @@ where
                 }
             }
             MediaTypes_::kEvent => {
-                // Only index 0 for event bus and only if plugin wants MIDI
-                if index != 0 || !self.wants_midi() {
+                // Only index 0, and only in a direction with an event bus.
+                if index != 0 || !self.has_event_bus(dir) {
                     return kInvalidArgument;
                 }
 
@@ -1882,8 +1893,11 @@ where
             midi_input.clear();
         }
 
+        // A plugin without MIDI input gets no events, also from a host that
+        // sends them without an event bus.
         // SAFETY: inputEvents may be null; ComRef::from_raw handles this.
-        if let Some(event_list) = unsafe { ComRef::from_raw(process_data.inputEvents) } {
+        let input_events = unsafe { ComRef::from_raw(process_data.inputEvents) };
+        if let Some(event_list) = input_events.filter(|_| self.config.midi_input) {
             // SAFETY: event_list is valid ComRef.
             let event_count = unsafe { event_list.getEventCount() };
 
@@ -2047,9 +2061,11 @@ where
             unsafe { self.process_audio_f32(process_data, num_samples, processor, input) };
         }
 
-        // Write output MIDI events
+        // Write output MIDI events. A plugin without MIDI output sends none,
+        // also when the host passes an event list without an event bus.
         // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
-        if let Some(event_list) = unsafe { ComRef::from_raw(process_data.outputEvents) } {
+        let output_events = unsafe { ComRef::from_raw(process_data.outputEvents) };
+        if let Some(event_list) = output_events.filter(|_| self.config.midi_output) {
             for midi_event in midi_output.iter() {
                 if let Some(mut vst3_event) = convert_midi_to_vst3(midi_event, sysex_pool) {
                     // SAFETY: event_list is valid ComRef, vst3_event is valid mutable pointer.
@@ -3777,7 +3793,8 @@ mod tests {
 
     static STATE_CONFIG: Config = Config::new("State Test", Category::Effect, "Test", "stat");
 
-    /// A plugin that wants MIDI. Only its model can say so.
+    /// A plugin with a sidechain, which maps and learns MIDI controllers.
+    /// Its config says which event buses it has.
     #[derive(Default)]
     struct MidiModel {
         parameters: NoParameters,
@@ -3795,10 +3812,6 @@ mod tests {
 
         fn prepare(self: Arc<Self>, _setup: ()) -> MidiProcessor {
             MidiProcessor
-        }
-
-        fn wants_midi(&self) -> bool {
-            true
         }
 
         fn input_bus_count(&self) -> usize {
@@ -3845,7 +3858,8 @@ mod tests {
         }
     }
 
-    static MIDI_CONFIG: Config = Config::new("Midi Test", Category::Instrument, "Test", "midi");
+    static MIDI_CONFIG: Config =
+        Config::new("Midi Test", Category::Instrument, "Test", "midi").with_midi_output(true);
 
     thread_local! {
         /// The input of each `process_midi` call of a `CcProcessor` on this
@@ -3854,7 +3868,8 @@ mod tests {
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// A plugin that gets the mod wheel as a parameter change.
+    /// A plugin that gets the mod wheel as a parameter change, and sends
+    /// the MIDI it gets back.
     #[derive(Default)]
     struct CcModel {
         parameters: NoParameters,
@@ -3872,10 +3887,6 @@ mod tests {
             CcProcessor
         }
 
-        fn wants_midi(&self) -> bool {
-            true
-        }
-
         fn midi_cc_config(&self) -> Option<beamer_core::MidiCcConfig> {
             Some(beamer_core::MidiCcConfig::new().with_mod_wheel())
         }
@@ -3890,8 +3901,11 @@ mod tests {
         ) {
         }
 
-        fn process_midi(&mut self, input: &[beamer_core::MidiEvent], _output: &mut beamer_core::MidiBuffer) {
+        fn process_midi(&mut self, input: &[beamer_core::MidiEvent], output: &mut beamer_core::MidiBuffer) {
             CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().push(input.to_vec()));
+            for event in input {
+                output.push(event.clone());
+            }
         }
     }
 
@@ -3931,6 +3945,78 @@ mod tests {
         // And the block after that has no events left.
         process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
         assert_eq!(calls().get(1).map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn test_midi_follows_the_config_whatever_the_host_sends() {
+        static WITHOUT_INPUT: Config = Config::new("No Input", Category::Instrument, "Test", "noin")
+            .with_midi_input(false)
+            .with_midi_output(true);
+        static WITHOUT_OUTPUT: Config = Config::new("No Output", Category::Instrument, "Test", "noou");
+        static WITH_BOTH: Config =
+            Config::new("Both", Category::Instrument, "Test", "both").with_midi_output(true);
+
+        // A host that passes event lists both ways, whatever buses the
+        // plugin has, and sends a note. Returns how many events the plugin
+        // got and how many the host got back.
+        let run = |config: &'static Config| {
+            let wrapper = Vst3Processor::<CcModel>::new(config);
+            let mut setup = ProcessSetup {
+                processMode: ProcessModes_::kRealtime as int32,
+                symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+                maxSamplesPerBlock: 64,
+                sampleRate: 44100.0,
+            };
+            // SAFETY: The setup is valid for the call.
+            assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+            CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
+
+            let mut pool = SysExOutputPool::with_capacity(1, 16);
+            let note = convert_midi_to_vst3(&beamer_core::MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0), &mut pool)
+                .expect("a note-on converts");
+            let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(vec![note]) });
+            let output = vst3::ComWrapper::new(Events::default());
+            let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+            let output_list = output.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+            let no_changes = std::ptr::null_mut();
+            process_with_events(&wrapper, 64, no_changes, no_changes, input_list.as_ptr(), output_list.as_ptr());
+
+            let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().iter().map(Vec::len).sum::<usize>());
+            let sent = output.events.borrow().len();
+            (received, sent)
+        };
+
+        assert_eq!(run(&WITH_BOTH), (1, 1));
+        assert_eq!(run(&WITHOUT_INPUT), (0, 0));
+        assert_eq!(run(&WITHOUT_OUTPUT), (1, 0));
+    }
+
+    #[test]
+    fn test_midi_controllers_need_midi_input() {
+        static WITHOUT_INPUT: Config = Config::new("No Input", Category::Effect, "Test", "nocc");
+        let wrapper = Vst3Processor::<CcModel>::new(&WITHOUT_INPUT);
+
+        // The host finds no mapping for the mod wheel.
+        let mut id = 0u32;
+        // SAFETY: The wrapper and the id are alive for the call.
+        let mapped = unsafe { wrapper.getMidiControllerAssignment(0, 0, 1, &mut id) };
+        assert_ne!(mapped, kResultOk);
+
+        // And a change of the parameter it would have mapped to reaches the
+        // plugin as no event.
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
+        let mod_wheel = changes_of(&[(MidiCcState::parameter_id(1), 0.5)]);
+        process_with(&wrapper, 64, mod_wheel.as_ptr(), std::ptr::null_mut());
+        let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+        assert_eq!(received, [vec![]]);
     }
 
     #[test]
@@ -4104,6 +4190,39 @@ mod tests {
     }
 
     #[test]
+    fn test_event_buses_follow_the_config() {
+        static INSTRUMENT: Config = Config::new("Instrument", Category::Instrument, "Test", "inst");
+        static EFFECT: Config = Config::new("Effect", Category::Effect, "Test", "efct");
+        static MUSIC_EFFECT: Config =
+            Config::new("Music Effect", Category::Effect, "Test", "mfx_").with_midi_input(true);
+        static MIDI_EFFECT: Config = Config::new("Midi Effect", Category::MidiEffect, "Test", "mfx2");
+        static TRACKER: Config =
+            Config::new("Tracker", Category::Effect, "Test", "trck").with_midi_output(true);
+
+        // The event buses in and out.
+        let event_buses = |config: &'static Config| {
+            let [.., event_in, event_out] = bus_counts(&Vst3Processor::<MidiModel>::new(config));
+            [event_in, event_out]
+        };
+        assert_eq!(event_buses(&INSTRUMENT), [1, 0]);
+        assert_eq!(event_buses(&EFFECT), [0, 0]);
+        assert_eq!(event_buses(&MUSIC_EFFECT), [1, 0]);
+        assert_eq!(event_buses(&MIDI_EFFECT), [1, 1]);
+        assert_eq!(event_buses(&TRACKER), [0, 1]);
+
+        // A host gets no info for a bus that is not there.
+        let wrapper = Vst3Processor::<MidiModel>::new(&INSTRUMENT);
+        let event_info = |dir: BusDirections| {
+            // SAFETY: A zeroed BusInfo is valid, and it is alive for the call.
+            let mut info: BusInfo = unsafe { std::mem::zeroed() };
+            // SAFETY: The wrapper and the info are alive for the call.
+            unsafe { wrapper.getBusInfo(MediaTypes_::kEvent as MediaType, dir as BusDirection, 0, &mut info) }
+        };
+        assert_eq!(event_info(BusDirections_::kInput), kResultOk);
+        assert_eq!(event_info(BusDirections_::kOutput), kInvalidArgument);
+    }
+
+    #[test]
     fn test_model_answers_after_a_panic_in_one_of_its_calls() {
         let wrapper = Vst3Processor::<MidiModel>::new(&MIDI_CONFIG);
 
@@ -4192,6 +4311,22 @@ mod tests {
         P: Model,
         Presets: FactoryPresets<Parameters = P>,
     {
+        let no_events = std::ptr::null_mut();
+        process_with_events(wrapper, frames, changes, output_changes, no_events, no_events);
+    }
+
+    /// Like `process_with`, with event lists for the MIDI in and out.
+    fn process_with_events<P, Presets>(
+        wrapper: &Vst3Processor<P, Presets>,
+        frames: int32,
+        changes: *mut IParameterChanges,
+        output_changes: *mut IParameterChanges,
+        input_events: *mut IEventList,
+        output_events: *mut IEventList,
+    ) where
+        P: Model,
+        Presets: FactoryPresets<Parameters = P>,
+    {
         const FRAMES: usize = 64;
         let mut input = [[0.5f32; FRAMES]; 2];
         let mut output = [[0.0f32; FRAMES]; 2];
@@ -4221,12 +4356,45 @@ mod tests {
             outputs: &mut output_bus,
             inputParameterChanges: changes,
             outputParameterChanges: output_changes,
-            inputEvents: std::ptr::null_mut(),
-            outputEvents: std::ptr::null_mut(),
+            inputEvents: input_events,
+            outputEvents: output_events,
             processContext: std::ptr::null_mut(),
         };
         // SAFETY: The data and its buffers are valid for the call.
         assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+    }
+
+    /// The events a host sends with a process call, or gets back from one.
+    #[derive(Default)]
+    struct Events {
+        events: std::cell::RefCell<Vec<Event>>,
+    }
+
+    impl Class for Events {
+        type Interfaces = (IEventList,);
+    }
+
+    impl IEventListTrait for Events {
+        unsafe fn getEventCount(&self) -> int32 {
+            self.events.borrow().len() as int32
+        }
+
+        unsafe fn getEvent(&self, index: int32, event: *mut Event) -> tresult {
+            match self.events.borrow().get(index as usize) {
+                Some(stored) => {
+                    // SAFETY: The wrapper passes a valid event to fill.
+                    unsafe { *event = *stored };
+                    kResultOk
+                }
+                None => kInvalidArgument,
+            }
+        }
+
+        unsafe fn addEvent(&self, event: *mut Event) -> tresult {
+            // SAFETY: The wrapper passes a valid event.
+            self.events.borrow_mut().push(unsafe { *event });
+            kResultOk
+        }
     }
 
     /// The points of one parameter in a block, as (sample offset, value).
@@ -4552,10 +4720,6 @@ mod tests {
             }
         }
 
-        fn wants_midi(&self) -> bool {
-            true
-        }
-
         fn midi_cc_config(&self) -> Option<beamer_core::MidiCcConfig> {
             Some(beamer_core::MidiCcConfig::new().with_mod_wheel())
         }
@@ -4653,9 +4817,11 @@ mod tests {
         }
     }
 
-    static SPLIT_CONFIG: Config =
-        Config::new("Split Test", Category::Effect, "Test", "splt").with_sample_accurate_automation();
-    static WHOLE_CONFIG: Config = Config::new("Whole Test", Category::Effect, "Test", "whol");
+    static SPLIT_CONFIG: Config = Config::new("Split Test", Category::Effect, "Test", "splt")
+        .with_midi_input(true)
+        .with_sample_accurate_automation();
+    static WHOLE_CONFIG: Config =
+        Config::new("Whole Test", Category::Effect, "Test", "whol").with_midi_input(true);
 
     /// How a test block hands its samples to the plugin.
     #[derive(Clone, Copy)]

@@ -1065,7 +1065,8 @@ mod tests {
     use crate::buffer_storage::ProcessBufferStorage;
     use crate::buffers::{AudioBuffer, AudioBufferList};
     use crate::render::{
-        create_render_block_f32, create_render_block_f64, AudioTimeStamp, RenderBlockTrait, SMPTETime,
+        create_render_block_f32, create_render_block_f64, AudioTimeStamp, RenderBlockTrait, RenderSettings,
+        SMPTETime,
     };
     use crate::shared_state::SharedState;
     use std::sync::{Arc, Mutex};
@@ -1159,20 +1160,28 @@ mod tests {
         )
     }
 
+    /// The settings of a plugin with sample-accurate automation and MIDI in
+    /// and out.
+    const ALL_SETTINGS: RenderSettings = RenderSettings {
+        sample_accurate_automation: true,
+        midi_input: true,
+        midi_output: true,
+    };
+
     /// Prepare the plugin and create its render block, like the bridge does,
-    /// with sample-accurate automation.
+    /// with sample-accurate automation and MIDI in and out.
     fn render_block_for(
         plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
         process_mode: ProcessMode,
     ) -> Box<dyn RenderBlockTrait> {
-        render_block_with(plugin, process_mode, true)
+        render_block_with(plugin, process_mode, ALL_SETTINGS)
     }
 
     /// Prepare the plugin and create its render block, like the bridge does.
     fn render_block_with(
         plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
         process_mode: ProcessMode,
-        sample_accurate_automation: bool,
+        settings: RenderSettings,
     ) -> Box<dyn RenderBlockTrait> {
         let bus_config = stereo_bus_config();
         plugin
@@ -1190,7 +1199,7 @@ mod tests {
             storage,
             FRAMES as u32,
             44100.0,
-            sample_accurate_automation,
+            settings,
         )
     }
 
@@ -1509,12 +1518,12 @@ mod tests {
     /// Render a buffer with a note at sample 10, a gain change at sample 32
     /// and a note at sample 40. Returns what each process() call got (its
     /// length and its MIDI offsets) and the MIDI offsets the host got back.
-    fn render_change_between_notes(sample_accurate_automation: bool) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
+    fn render_change_between_notes(settings: RenderSettings) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::{AURenderEventType, MidiOutputSink};
 
         let plugin = boxed(AuProcessor::<RecordingModel>::new());
-        let block = render_block_with(&plugin, ProcessMode::Realtime, sample_accurate_automation);
+        let block = render_block_with(&plugin, ProcessMode::Realtime, settings);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
 
@@ -1558,7 +1567,7 @@ mod tests {
         // The gain change at sample 32 splits the buffer in two halves, and
         // each process() call got the note of its half, relative to its
         // start.
-        let (recorded, sent) = render_change_between_notes(true);
+        let (recorded, sent) = render_change_between_notes(ALL_SETTINGS);
         assert_eq!(recorded, [(32, vec![10]), (32, vec![8])]);
 
         // The host gets the output at the offsets of the whole buffer.
@@ -1569,9 +1578,33 @@ mod tests {
     fn test_without_sample_accurate_automation_the_buffer_is_one_block() {
         // The gain change is applied before one process() call for the
         // whole buffer, which gets both notes.
-        let (recorded, sent) = render_change_between_notes(false);
+        let (recorded, sent) = render_change_between_notes(RenderSettings {
+            sample_accurate_automation: false,
+            ..ALL_SETTINGS
+        });
         assert_eq!(recorded, [(FRAMES, vec![10, 40])]);
         assert_eq!(sent, [10, 40]);
+    }
+
+    #[test]
+    fn test_midi_follows_the_config_whatever_the_host_does() {
+        // Without MIDI input the plugin gets none of the notes the host
+        // sends, as an instrument's type takes MIDI anyway.
+        let (recorded, sent) = render_change_between_notes(RenderSettings {
+            midi_input: false,
+            ..ALL_SETTINGS
+        });
+        assert_eq!(recorded, [(32, vec![]), (32, vec![])]);
+        assert!(sent.is_empty());
+
+        // Without MIDI output the host gets nothing back, also when it set
+        // a sink.
+        let (recorded, sent) = render_change_between_notes(RenderSettings {
+            midi_output: false,
+            ..ALL_SETTINGS
+        });
+        assert_eq!(recorded, [(32, vec![10]), (32, vec![8])]);
+        assert!(sent.is_empty());
     }
 
     /// Render a buffer of `frames` samples without input, with a gain change
@@ -1657,7 +1690,7 @@ mod tests {
             storage,
             FRAMES as u32,
             44100.0,
-            true,
+            ALL_SETTINGS,
         );
 
         let mut input = StereoList64::filled(0.25);

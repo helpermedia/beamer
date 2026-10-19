@@ -55,6 +55,8 @@ log_level = "warn"
 | `url` | String | Vendor website |
 | `email` | String | Support email |
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
+| `midi_input` | Boolean | Whether the plugin receives MIDI (default: `true` for instruments and MIDI effects, `false` otherwise). An effect with MIDI input is a music effect in AU (see [AU Component Types](#au-component-types)). A MIDI effect always has MIDI input, a generator never |
+| `midi_output` | Boolean | Whether the plugin sends MIDI (default: `true` for MIDI effects, `false` otherwise) |
 | `has_gui` | Boolean | Whether plugin has a GUI (default: `false`) |
 | `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
 | `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
@@ -81,7 +83,7 @@ log_level = "warn"
 - Version is automatically read from `CARGO_PKG_VERSION`
 - VST3 UUID is auto-derived from `manufacturer_code` and `plugin_code` unless `vst3_id` is specified
 - The 4-character codes are used for both AU FourCC identifiers and VST3 UUID derivation
-- `category` determines the AU component type (`aufx`, `aumu`, `aumi`, `augn`)
+- `category`, and `midi_input` for an effect, determine the AU component type (see [AU Component Types](#au-component-types))
 - By convention fields are ordered as in the example above: first identity (`name`, `category`, `subcategories`), then codes (`manufacturer_code`, `plugin_code`) and finally metadata (`vendor`, `url`, `email`)
 
 #### Logging
@@ -841,9 +843,6 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     fn output_bus_count(&self) -> usize { 1 }
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
     fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
-
-    /// Whether this plugin processes MIDI events.
-    fn wants_midi(&self) -> bool { false }
 
     /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
@@ -1656,14 +1655,15 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 }
 ```
 
-The plugin says that it processes MIDI on its model:
+Whether a plugin receives and sends MIDI is set in `Config.toml`, so that every format can declare it when the plugin is built. Instruments and MIDI effects receive MIDI and MIDI effects send it, without any setting. Other plugins turn it on:
 
-```rust
-impl Model for MyModel {
-    // ...
-    fn wants_midi(&self) -> bool { true }
-}
+```toml
+category = "effect"
+# An effect played from MIDI, such as a vocoder or a gate.
+midi_input = true
 ```
+
+A plugin without MIDI input gets no events in `process_midi()`, and the MIDI it writes without MIDI output is dropped.
 
 ### SysEx Handling
 
@@ -1772,7 +1772,7 @@ MpeInputDeviceSettings::upper_zone()
 
 ### MIDI CC Emulation (MidiCcConfig)
 
-VST3 doesn't send MIDI CC, pitch bend or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically. The AU wrappers fill the same state from incoming MIDI, so `context.midi_cc()` works in every format:
+VST3 doesn't send MIDI CC, pitch bend or aftertouch directly to plugins. Most DAWs convert these to parameter changes via the `IMidiMapping` interface. `MidiCcConfig` tells the framework which controllers you want - it handles all the state management automatically. The AU wrappers fill the same state from incoming MIDI, so `context.midi_cc()` works in every format. The controllers are MIDI input, so a plugin needs `midi_input` (on by default for instruments and MIDI effects):
 
 ```rust
 use beamer::prelude::*;
@@ -2049,11 +2049,12 @@ Audio Units are supported on macOS through the `beamer-au` crate, as AUv2 (`.com
 
 #### AU Component Types
 
-The `category` field in `Config.toml` determines the AU component type:
+The `category` field in `Config.toml` determines the AU component type, together with `midi_input` for an effect. Hosts send MIDI only to the component types that take it, and the type is part of the bundle:
 
 | Category | AU Component Type | Use For |
 |----------|-------------------|---------|
 | `"effect"` | `aufx` | EQ, compressor, reverb |
+| `"effect"` with `midi_input = true` | `aumf` | Effects played from MIDI, such as vocoders and gates |
 | `"midi_effect"` | `aumi` | Arpeggiator, harmonizer, MIDI effects |
 | `"instrument"` | `aumu` | Synths, samplers, drum machines |
 | `"generator"` | `augn` | Test tones, noise generators |

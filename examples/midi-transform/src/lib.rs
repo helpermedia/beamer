@@ -192,10 +192,6 @@ impl Model for MidiTransformModel {
             held_notes: [[None; 128]; 16],
         }
     }
-
-    fn wants_midi(&self) -> bool {
-        true // MIDI transformer needs MIDI input/output
-    }
 }
 
 // =============================================================================

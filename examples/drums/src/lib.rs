@@ -185,10 +185,6 @@ impl Model for DrumsModel {
     fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
         None
     }
-
-    fn wants_midi(&self) -> bool {
-        true
-    }
 }
 
 // =============================================================================

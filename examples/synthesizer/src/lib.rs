@@ -185,10 +185,6 @@ impl Model for SynthesizerModel {
     fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
         None // No inputs
     }
-
-    fn wants_midi(&self) -> bool {
-        true // Synthesizer needs MIDI input
-    }
 }
 
 // =============================================================================

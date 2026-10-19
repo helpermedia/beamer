@@ -1237,8 +1237,8 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 - (NSArray<NSString*>*)MIDIOutputNames {
-    // One output for the plugin types that can produce MIDI. The host then
-    // sets MIDIOutputEventBlock to receive it.
+    // One output for a plugin with MIDI output. The host then sets
+    // MIDIOutputEventBlock to receive it.
     if (_rustInstance != NULL && beamer_au_produces_midi(_rustInstance)) {
         return @[@"MIDI Out"];
     }

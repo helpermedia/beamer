@@ -233,6 +233,13 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_sysex_buffer_size(#size) }
     });
 
+    let midi_input = config.midi_input.map(|enabled| {
+        quote! { .with_midi_input(#enabled) }
+    });
+    let midi_output = config.midi_output.map(|enabled| {
+        quote! { .with_midi_output(#enabled) }
+    });
+
     let sample_accurate_automation = (config.sample_accurate_automation == Some(true))
         .then(|| quote! { .with_sample_accurate_automation() });
 
@@ -300,6 +307,8 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #gui_size
         #vst3_id
         #vst3_controller_id
+        #midi_input
+        #midi_output
         #sysex_slots
         #sysex_buffer_size
         #sample_accurate_automation

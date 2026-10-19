@@ -1543,21 +1543,10 @@ bool beamer_au_apply_preset(
 // =============================================================================
 
 /**
- * Check if the plugin accepts MIDI input.
- *
- * Returns true for instruments (aumu) and MIDI effects (aumi).
- *
- * Thread Safety: Can be called from any thread.
- *
- * @param instance Handle to the plugin instance.
- * @return true if plugin accepts MIDI input events.
- */
-bool beamer_au_accepts_midi(BeamerAuInstanceHandle _Nullable instance);
-
-/**
  * Check if the plugin produces MIDI output.
  *
- * Returns true for instruments (aumu) and MIDI effects (aumi).
+ * Returns midi_output of the plugin's config, on by default for MIDI
+ * effects (aumi).
  *
  * Thread Safety: Can be called from any thread.
  *

@@ -31,6 +31,13 @@ pub struct ConfigFile {
     pub has_gui: Option<bool>,
     /// Initial GUI size as [width, height] in pixels.
     pub gui_size: Option<(u32, u32)>,
+    /// Whether the plugin receives MIDI (default: true for instruments and
+    /// MIDI effects). An effect with MIDI input is a music effect in AU.
+    #[serde(default)]
+    pub midi_input: Option<bool>,
+    /// Whether the plugin sends MIDI (default: true for MIDI effects).
+    #[serde(default)]
+    pub midi_output: Option<bool>,
     /// Number of SysEx output slots per process block (default: 16).
     #[serde(default)]
     pub sysex_slots: Option<usize>,
@@ -144,6 +151,18 @@ impl ConfigFile {
             ));
         }
         category_variant(&self.category)?;
+        match (self.category.as_str(), self.midi_input) {
+            ("midi_effect", Some(false)) => {
+                return Err("a midi_effect needs MIDI input, remove midi_input = false".to_string());
+            }
+            ("generator", Some(true)) => {
+                return Err(
+                    "a generator has no MIDI input, use category = \"instrument\" for a plugin that plays MIDI"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
         if let Some(ref level) = self.log_level {
             log_level_variant(level)?;
         }
@@ -160,5 +179,31 @@ impl ConfigFile {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_midi_input_has_to_fit_the_category() {
+        let validate = |category: &str, midi_input: bool| {
+            toml::from_str::<ConfigFile>(&format!(
+                "name = \"Test\"\ncategory = \"{category}\"\nmanufacturer_code = \"Test\"\n\
+                 plugin_code = \"test\"\nmidi_input = {midi_input}\n"
+            ))
+            .expect("a Config.toml with the required fields")
+            .validate()
+        };
+        assert!(validate("effect", true).is_ok());
+        assert!(validate("instrument", false).is_ok());
+        assert!(validate("midi_effect", true).is_ok());
+        assert!(validate("generator", false).is_ok());
+
+        // A MIDI effect without MIDI input, or a generator with it, is an
+        // error that names the way out.
+        assert!(validate("midi_effect", false).unwrap_err().contains("midi_input = false"));
+        assert!(validate("generator", true).unwrap_err().contains("\"instrument\""));
     }
 }

@@ -1004,16 +1004,6 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
         }
     }
 
-    /// Returns whether this plugin processes MIDI events.
-    ///
-    /// Override to return `true` if your plugin needs MIDI input/output.
-    /// This is used by the host to determine event bus configuration.
-    ///
-    /// Default returns `false`.
-    fn wants_midi(&self) -> bool {
-        false
-    }
-
     // =========================================================================
     // MIDI Mapping (IMidiMapping)
     // =========================================================================
@@ -1063,6 +1053,9 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// This solves the VST3 MIDI input problem where most DAWs don't send
     /// `kLegacyMIDICCOutEvent` for input. Instead, they use the `IMidiMapping`
     /// interface to map MIDI controllers to parameters.
+    ///
+    /// The controllers are MIDI input: a plugin without `midi_input` (see
+    /// [`Config::midi_input`](crate::Config::midi_input)) gets none of them.
     ///
     /// # Example
     ///

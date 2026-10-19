@@ -1019,9 +1019,8 @@ pub struct RenderBlock<S: Sample> {
     parameter_events: UnsafeCell<ParameterEventBuffer>,
     /// Current sample rate for ProcessContext
     sample_rate: f64,
-    /// Split a render call at its parameter events (see
-    /// `Config::sample_accurate_automation`).
-    sample_accurate_automation: bool,
+    /// What the plugin's config says about rendering.
+    settings: RenderSettings,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
     /// One per aux input bus (bus 1, 2, 3, ...)
     ///
@@ -1106,8 +1105,7 @@ impl<S: RenderSample> RenderBlock<S> {
     /// * `storage` - Pre-allocated buffer storage (created from bus config)
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
-    /// * `sample_accurate_automation` - Split a render call at its parameter
-    ///   events (see `Config::sample_accurate_automation`)
+    /// * `settings` - What the plugin's config says about rendering
     pub(crate) fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
         model: Arc<dyn SharedModel>,
@@ -1115,7 +1113,7 @@ impl<S: RenderSample> RenderBlock<S> {
         storage: ProcessBufferStorage<S>,
         max_frames: u32,
         sample_rate: f64,
-        sample_accurate_automation: bool,
+        settings: RenderSettings,
     ) -> Self {
         let aux_input_bus_count = storage.aux_input_bus_count();
         let sample_type_size = std::mem::size_of::<S>();
@@ -1154,7 +1152,7 @@ impl<S: RenderSample> RenderBlock<S> {
             midi_buffer: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
             sample_rate,
-            sample_accurate_automation,
+            settings,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
@@ -1362,10 +1360,12 @@ impl<S: RenderSample> RenderBlock<S> {
         // SAFETY: bridge.rs validates timestamp non-null before calling process_impl.
         let buffer_start_sample = unsafe { (*timestamp).sample_time as i64 };
 
-        // Extract MIDI events from the AU render event linked list
+        // Extract MIDI events from the AU render event linked list. A plugin
+        // without MIDI input gets none, also from a host that sends them
+        // anyway (an instrument's type takes MIDI).
         // SAFETY: event_list is valid for this render call (provided by AU host)
-        let midi_list_too_long =
-            unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples) };
+        let midi_list_too_long = self.settings.midi_input
+            && unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples) };
         if midi_list_too_long {
             self.shared.note_render_warning(ProcessWarning::EventListTooLong);
         }
@@ -1596,7 +1596,7 @@ impl<S: RenderSample> RenderBlock<S> {
         // that start at the parameter events, each with its own MIDI.
         // Without it every event counts as due at the start, so the call
         // runs as one block after all of them, in their order.
-        let split = self.sample_accurate_automation;
+        let split = self.settings.sample_accurate_automation;
         let mut result = os_status::NO_ERR;
         let unreached = run_sub_blocks(
             render_samples,
@@ -1692,10 +1692,11 @@ impl<S: RenderSample> RenderBlock<S> {
     }
 
     /// Hand the plugin's MIDI output of a render call to the host, and note
-    /// when it overflowed. Without a sink the host is not listening and the
-    /// events are discarded.
+    /// when it overflowed. Without a sink the host is not listening, and
+    /// without MIDI output the plugin has none to send: the events are
+    /// discarded.
     fn send_midi_output(&self, midi_output: &MidiBuffer, sink: Option<MidiOutputSink>) {
-        if let Some(sink) = sink {
+        if let Some(sink) = sink.filter(|_| self.settings.midi_output) {
             send_midi_output(midi_output.as_slice(), sink);
         }
         if midi_output.has_overflowed() {
@@ -1748,6 +1749,29 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
     }
 }
 
+/// What the plugin's config says about rendering.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderSettings {
+    /// Split a render call at its parameter events (see
+    /// `Config::sample_accurate_automation`).
+    pub(crate) sample_accurate_automation: bool,
+    /// Hand the host's MIDI to the plugin (see `Config::midi_input`).
+    pub(crate) midi_input: bool,
+    /// Hand the plugin's MIDI to the host (see `Config::midi_output`).
+    pub(crate) midi_output: bool,
+}
+
+impl RenderSettings {
+    /// The settings of a plugin with this config.
+    pub(crate) fn from_config(config: &beamer_core::Config) -> Self {
+        Self {
+            sample_accurate_automation: config.sample_accurate_automation,
+            midi_input: config.midi_input,
+            midi_output: config.midi_output,
+        }
+    }
+}
+
 /// Create the AU render block for audio processing (f32).
 ///
 /// Returns a boxed RenderBlock that can be stored and used for audio processing.
@@ -1760,7 +1784,7 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-/// * `sample_accurate_automation` - Split a render call at its parameter events
+/// * `settings` - What the plugin's config says about rendering
 pub(crate) fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     model: Arc<dyn SharedModel>,
@@ -1768,7 +1792,7 @@ pub(crate) fn create_render_block_f32(
     storage: ProcessBufferStorage<f32>,
     max_frames: u32,
     sample_rate: f64,
-    sample_accurate_automation: bool,
+    settings: RenderSettings,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
@@ -1777,7 +1801,7 @@ pub(crate) fn create_render_block_f32(
         storage,
         max_frames,
         sample_rate,
-        sample_accurate_automation,
+        settings,
     ))
 }
 
@@ -1793,7 +1817,7 @@ pub(crate) fn create_render_block_f32(
 /// * `storage` - Pre-allocated buffer storage (created from bus config)
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
-/// * `sample_accurate_automation` - Split a render call at its parameter events
+/// * `settings` - What the plugin's config says about rendering
 pub(crate) fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     model: Arc<dyn SharedModel>,
@@ -1801,7 +1825,7 @@ pub(crate) fn create_render_block_f64(
     storage: ProcessBufferStorage<f64>,
     max_frames: u32,
     sample_rate: f64,
-    sample_accurate_automation: bool,
+    settings: RenderSettings,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
@@ -1810,7 +1834,7 @@ pub(crate) fn create_render_block_f64(
         storage,
         max_frames,
         sample_rate,
-        sample_accurate_automation,
+        settings,
     ))
 }
 

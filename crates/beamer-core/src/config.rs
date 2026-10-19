@@ -269,16 +269,6 @@ pub enum Category {
 }
 
 impl Category {
-    /// Convert to AU component type code (FourCC as u32, big-endian)
-    pub const fn to_au_component_type(&self) -> u32 {
-        match self {
-            Category::Effect => u32::from_be_bytes(*b"aufx"),
-            Category::Instrument => u32::from_be_bytes(*b"aumu"),
-            Category::MidiEffect => u32::from_be_bytes(*b"aumi"),
-            Category::Generator => u32::from_be_bytes(*b"augn"),
-        }
-    }
-
     /// Convert to VST3 base category string
     pub const fn to_vst3_category(&self) -> &'static str {
         match self {
@@ -286,16 +276,6 @@ impl Category {
             Category::Instrument => "Instrument",
             Category::Generator => "Generator",
         }
-    }
-
-    /// Check if this type accepts MIDI input
-    pub const fn accepts_midi(&self) -> bool {
-        matches!(self, Category::Instrument | Category::MidiEffect)
-    }
-
-    /// Check if this type can produce MIDI output
-    pub const fn produces_midi(&self) -> bool {
-        matches!(self, Category::Instrument | Category::MidiEffect)
     }
 }
 
@@ -346,6 +326,15 @@ pub struct Config {
 
     /// Plugin subcategories for more specific classification.
     pub subcategories: &'static [Subcategory],
+
+    /// Whether the plugin receives MIDI (AU and VST3). On by default for
+    /// instruments and MIDI effects. An effect with MIDI input is a music
+    /// effect in AU (see [`au_component_type`](Self::au_component_type)).
+    pub midi_input: bool,
+
+    /// Whether the plugin sends MIDI (AU and VST3). On by default for MIDI
+    /// effects.
+    pub midi_output: bool,
 
     /// Manufacturer code (4-character identifier for your company/brand).
     pub manufacturer: FourCharCode,
@@ -536,6 +525,9 @@ impl Config {
             version: "1.0.0",
             has_gui: false,
             subcategories: &[],
+            // Instruments and MIDI effects receive MIDI, MIDI effects send it.
+            midi_input: matches!(category, Category::Instrument | Category::MidiEffect),
+            midi_output: matches!(category, Category::MidiEffect),
             manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer_code)),
             subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
             vst3_id: None,
@@ -679,6 +671,35 @@ impl Config {
         self
     }
 
+    /// Set whether the plugin receives MIDI (see
+    /// [`midi_input`](Self::midi_input)). `#[beamer::export]` sets it from
+    /// `midi_input` in `Config.toml`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a MIDI effect turns MIDI input off or a generator turns
+    /// it on, at compile time for a `static`. A generator that plays MIDI
+    /// is an instrument.
+    pub const fn with_midi_input(mut self, enabled: bool) -> Self {
+        match self.category {
+            Category::MidiEffect => assert!(enabled, "a MIDI effect needs MIDI input"),
+            Category::Generator => {
+                assert!(!enabled, "a generator has no MIDI input, use the instrument category")
+            }
+            Category::Effect | Category::Instrument => {}
+        }
+        self.midi_input = enabled;
+        self
+    }
+
+    /// Set whether the plugin sends MIDI (see
+    /// [`midi_output`](Self::midi_output)). `#[beamer::export]` sets it from
+    /// `midi_output` in `Config.toml`.
+    pub const fn with_midi_output(mut self, enabled: bool) -> Self {
+        self.midi_output = enabled;
+        self
+    }
+
     /// Apply host automation sample-accurately (see
     /// [`sample_accurate_automation`](Self::sample_accurate_automation)).
     /// `#[beamer::export]` sets it from `sample_accurate_automation` in
@@ -722,6 +743,22 @@ impl Config {
     /// Get VST3 controller UID as [u32; 4], if split component/controller mode is enabled.
     pub const fn vst3_controller_uid_parts(&self) -> Option<[u32; 4]> {
         self.vst3_controller_id
+    }
+
+    /// The AU component type code (FourCC as u32, big-endian).
+    ///
+    /// Follows the category, except that an effect with MIDI input is a
+    /// music effect (`aumf`): hosts send MIDI only to the component types
+    /// that take it.
+    pub const fn au_component_type(&self) -> u32 {
+        let code = match self.category {
+            Category::Effect if self.midi_input => b"aumf",
+            Category::Effect => b"aufx",
+            Category::Instrument => b"aumu",
+            Category::MidiEffect => b"aumi",
+            Category::Generator => b"augn",
+        };
+        u32::from_be_bytes(*code)
     }
 
     /// Get the manufacturer code as a u32.

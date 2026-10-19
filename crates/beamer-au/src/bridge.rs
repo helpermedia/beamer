@@ -45,7 +45,7 @@ use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
-    BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait,
+    BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait, RenderSettings,
 };
 use crate::shared_state::SharedState;
 use crate::transport::BeamerAuTransport;
@@ -678,7 +678,7 @@ pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
     // a valid AudioComponentDescription struct with at least 5 u32 fields.
     // The pointer arithmetic accesses consecutive fields in the struct.
     unsafe {
-        *desc.add(0) = config.category.to_au_component_type();
+        *desc.add(0) = config.au_component_type();
         *desc.add(1) = u32::from_be_bytes(config.subtype.0);
         *desc.add(2) = u32::from_be_bytes(config.manufacturer.0);
         *desc.add(3) = 0; // componentFlags
@@ -923,8 +923,7 @@ fn prepare_instance(
             .publish_timing(plugin.latency_samples(), plugin.tail_samples());
     }
 
-    let sample_accurate_automation =
-        factory::plugin_config().is_some_and(|config| config.sample_accurate_automation);
+    let settings = factory::plugin_config().map(RenderSettings::from_config).unwrap_or_default();
 
     // Create the render block based on sample format.
     let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
@@ -940,7 +939,7 @@ fn prepare_instance(
                 storage,
                 max_frames,
                 sample_rate,
-                sample_accurate_automation,
+                settings,
             ))
         }
         BeamerAuSampleFormat::Float64 => {
@@ -955,7 +954,7 @@ fn prepare_instance(
                 storage,
                 max_frames,
                 sample_rate,
-                sample_accurate_automation,
+                settings,
             ))
         }
     };
@@ -2253,27 +2252,6 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
 // MIDI Support
 // =============================================================================
 
-/// Check if the plugin accepts MIDI input.
-///
-/// # Safety
-///
-/// - `_instance` parameter is currently unused but accepted for API consistency
-/// - Thread safety: Safe to call from any thread
-#[no_mangle]
-pub extern "C" fn beamer_au_accepts_midi(_instance: BeamerAuInstanceHandle) -> bool {
-    // Check plugin type from plugin config
-    let result = catch_unwind(|| {
-        let config = match factory::plugin_config() {
-            Some(c) => c,
-            None => return false,
-        };
-
-        config.category.accepts_midi()
-    });
-
-    result.unwrap_or(false)
-}
-
 /// Check if the plugin produces MIDI output.
 ///
 /// # Safety
@@ -2282,14 +2260,14 @@ pub extern "C" fn beamer_au_accepts_midi(_instance: BeamerAuInstanceHandle) -> b
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
 pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> bool {
-    // Check plugin type from plugin config
+    // The plugin's config says whether it sends MIDI.
     let result = catch_unwind(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
 
-        config.category.produces_midi()
+        config.midi_output
     });
 
     result.unwrap_or(false)
