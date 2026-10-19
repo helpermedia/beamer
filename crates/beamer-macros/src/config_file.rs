@@ -3,7 +3,11 @@
 use serde::Deserialize;
 
 /// Plugin configuration from Config.toml.
+///
+/// A key that is not a field is an error, so that a misspelled key does not
+/// leave its setting at the default without a word.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     /// Plugin display name.
     pub name: String,
@@ -166,6 +170,18 @@ impl ConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_unknown_key_is_an_error_that_names_it() {
+        let error = toml::from_str::<ConfigFile>(
+            "name = \"Test\"\ncategory = \"effect\"\nmanufacturer_code = \"Test\"\n\
+             plugin_code = \"test\"\nhas_gu = true\n",
+        )
+        .err()
+        .expect("an unknown key is an error")
+        .to_string();
+        assert!(error.contains("has_gu"), "{}", error);
+    }
 
     #[test]
     fn test_midi_input_has_to_fit_the_category() {

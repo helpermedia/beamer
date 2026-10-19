@@ -18,7 +18,7 @@ This document provides detailed API documentation for Beamer. For high-level arc
 
 ### Plugin Configuration
 
-Every plugin requires a `Config.toml` file in the crate root (next to `Cargo.toml`) containing format-agnostic metadata. This configuration is read at compile time by the `#[beamer::export]` macro and applies to all plugin formats (AU and VST3).
+Every plugin requires a `Config.toml` file in the crate root (next to `Cargo.toml`) containing format-agnostic metadata. This configuration is read at compile time by the `#[beamer::export]` macro and applies to all plugin formats (AU and VST3). A key that is not one of the fields below is a build error, so a misspelled key cannot leave its setting at the default unnoticed.
 
 **Config.toml:**
 
