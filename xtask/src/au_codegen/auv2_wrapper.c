@@ -2230,12 +2230,12 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     // leaves them for it, so that none are lost. When a reset holds the
     // queues right now, the events wait for the next call.
     const AURenderEvent* eventList = NULL;
+    AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
     UInt32 midiCount = 0;
     UInt32 parameterCount = 0;
     bool readsQueues = (inOutputBusNumber == 0)
         && pthread_mutex_trylock(&inst->queueReaderMutex) == 0;
     if (readsQueues) {
-        AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
         midiCount = EventQueueReadyCount(&inst->midiQueue);
         parameterCount = EventQueueReadyCount(&inst->parameterQueue);
         AURenderEvent* prev = NULL;
@@ -2272,10 +2272,26 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         sendsMidi ? &midiOutput : NULL
     );
 
-    // Give the events back to the queues.
+    // Give the events back to the queues. A render call that was refused
+    // before the plugin processed (resources being prepared again, not
+    // prepared, too many frames) leaves them for the next call, at their
+    // offsets into its buffer, so that no note-off or parameter change is
+    // lost.
     if (readsQueues) {
-        EventQueueRelease(&inst->midiQueue, midiCount);
-        EventQueueRelease(&inst->parameterQueue, parameterCount);
+        bool refused = (status == kAudioUnitErr_CannotDoInCurrentContext
+            || status == kAudioUnitErr_Uninitialized
+            || status == kAudioUnitErr_TooManyFramesToProcess);
+        if (refused) {
+            for (UInt32 i = 0; i < midiCount; i++) {
+                EventQueueAt(&inst->midiQueue, i)->head.eventSampleTime -= bufferStart;
+            }
+            for (UInt32 i = 0; i < parameterCount; i++) {
+                EventQueueAt(&inst->parameterQueue, i)->head.eventSampleTime -= bufferStart;
+            }
+        } else {
+            EventQueueRelease(&inst->midiQueue, midiCount);
+            EventQueueRelease(&inst->parameterQueue, parameterCount);
+        }
         pthread_mutex_unlock(&inst->queueReaderMutex);
     }
 
