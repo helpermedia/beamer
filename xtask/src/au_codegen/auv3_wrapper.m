@@ -136,6 +136,18 @@ static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBl
 }
 
 // =============================================================================
+// MARK: - Host Blocks
+// =============================================================================
+
+// The host's blocks that the render block calls. The struct does not retain
+// them, the wrapper keeps them alive.
+typedef struct {
+    __unsafe_unretained AUHostMusicalContextBlock musicalContext;
+    __unsafe_unretained AUHostTransportStateBlock transportState;
+    __unsafe_unretained AUMIDIOutputEventBlock midiOutput;
+} BeamerAuv3HostBlocks;
+
+// =============================================================================
 // MARK: - {{WRAPPER_CLASS}} Interface
 // =============================================================================
 
@@ -156,9 +168,21 @@ static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBl
     AudioBufferList* _inputMutableABL;
     AUAudioUnitPreset* _currentPreset;
     AUInternalRenderBlock _cachedInternalRenderBlock;
-    AUHostMusicalContextBlock _hostMusicalContext;
-    AUHostTransportStateBlock _hostTransportState;
-    AUMIDIOutputEventBlock _hostMidiOutput;
+    // The host's blocks as the render block should call them, written under
+    // _hostBlocksLock from the allocation of render resources to their
+    // deallocation. The render block only tries the lock and copies them
+    // into _renderHostBlocks, which only it uses: it never waits, and a copy
+    // is never half written.
+    BeamerAuv3HostBlocks _hostBlocks;
+    os_unfair_lock _hostBlocksLock;
+    BeamerAuv3HostBlocks _renderHostBlocks;
+    // Whether host threads hand changed blocks to _hostBlocks: from the
+    // allocation of render resources to their deallocation.
+    BOOL _hostBlocksInUse;
+    // Every block put in _hostBlocks since render resources were allocated.
+    // A render call may still use a block that the host has replaced, so
+    // they all live until the resources are deallocated.
+    NSMutableSet* _hostBlocksKeptAlive;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
     NSTimer* _syncTimer;
@@ -318,6 +342,9 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     _sampleRate = kDefaultSampleRate;
     _maxFrames = kDefaultMaxFrames;
     _resourcesAllocated = NO;
+    _hostBlocksLock = OS_UNFAIR_LOCK_INIT;
+    _hostBlocksInUse = NO;
+    _hostBlocksKeptAlive = [[NSMutableSet alloc] init];
     _webviewHandle = NULL;
     memset(&_busConfig, 0, sizeof(_busConfig));
     atomic_store_explicit(&_bypassed, NO, memory_order_relaxed);
@@ -687,12 +714,6 @@ static void beamer_auv3_on_loaded(void* context) {
         }
     }
 
-    // The host sets these blocks before it allocates. Keep them in ivars so
-    // that the render thread does not have to read the properties.
-    _hostMusicalContext = self.musicalContextBlock;
-    _hostTransportState = self.transportStateBlock;
-    _hostMidiOutput = self.MIDIOutputEventBlock;
-
     OSStatus result = beamer_au_allocate_render_resources(
         _rustInstance,
         _sampleRate,
@@ -712,6 +733,7 @@ static void beamer_auv3_on_loaded(void* context) {
         return NO;
     }
 
+    [self _handOverHostBlocksAllocating:YES];
     _resourcesAllocated = YES;
     return YES;
 }
@@ -721,9 +743,17 @@ static void beamer_auv3_on_loaded(void* context) {
     _inputPCMBuffer = nil;
     free(_bypassSilence);
     _bypassSilence = NULL;
-    _hostMusicalContext = nil;
-    _hostTransportState = nil;
-    _hostMidiOutput = nil;
+
+    // No render call runs now, so the blocks it used can go. They are
+    // released after the lock, since releasing one runs the host's code.
+    os_unfair_lock_lock(&_hostBlocksLock);
+    _hostBlocksInUse = NO;
+    _hostBlocks = (BeamerAuv3HostBlocks){ nil, nil, nil };
+    _renderHostBlocks = _hostBlocks;
+    __attribute__((objc_precise_lifetime)) NSMutableSet* releasedHostBlocks = _hostBlocksKeptAlive;
+    _hostBlocksKeptAlive = [[NSMutableSet alloc] init];
+    os_unfair_lock_unlock(&_hostBlocksLock);
+    releasedHostBlocks = nil;
 
     if (_rustInstance != NULL && _resourcesAllocated) {
         beamer_au_deallocate_render_resources(_rustInstance);
@@ -731,6 +761,58 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     [super deallocateRenderResources];
+}
+
+// Hand the host's blocks to the render block. A host should set them before
+// it allocates render resources, but may set or change them later: Apple's
+// bridge for AUv2 hosts passes on host callbacks set after initialization
+// this way, without allocating again. A render call may still call a block
+// that was replaced, so each one is kept alive until the resources are
+// deallocated.
+- (void)_handOverHostBlocksAllocating:(BOOL)allocating {
+    AUHostMusicalContextBlock musicalContext = self.musicalContextBlock;
+    AUHostTransportStateBlock transportState = self.transportStateBlock;
+    AUMIDIOutputEventBlock midiOutput = self.MIDIOutputEventBlock;
+
+    os_unfair_lock_lock(&_hostBlocksLock);
+    if (allocating) {
+        _hostBlocksInUse = YES;
+    }
+    if (_hostBlocksInUse) {
+        if (musicalContext != nil) {
+            [_hostBlocksKeptAlive addObject:musicalContext];
+        }
+        if (transportState != nil) {
+            [_hostBlocksKeptAlive addObject:transportState];
+        }
+        if (midiOutput != nil) {
+            [_hostBlocksKeptAlive addObject:midiOutput];
+        }
+        _hostBlocks.musicalContext = musicalContext;
+        _hostBlocks.transportState = transportState;
+        _hostBlocks.midiOutput = midiOutput;
+        // The first copy, so that a render call that cannot take the lock
+        // still has the blocks the host set before allocating.
+        if (allocating) {
+            _renderHostBlocks = _hostBlocks;
+        }
+    }
+    os_unfair_lock_unlock(&_hostBlocksLock);
+}
+
+- (void)setMusicalContextBlock:(AUHostMusicalContextBlock)musicalContextBlock {
+    [super setMusicalContextBlock:musicalContextBlock];
+    [self _handOverHostBlocksAllocating:NO];
+}
+
+- (void)setTransportStateBlock:(AUHostTransportStateBlock)transportStateBlock {
+    [super setTransportStateBlock:transportStateBlock];
+    [self _handOverHostBlocksAllocating:NO];
+}
+
+- (void)setMIDIOutputEventBlock:(AUMIDIOutputEventBlock)MIDIOutputEventBlock {
+    [super setMIDIOutputEventBlock:MIDIOutputEventBlock];
+    [self _handOverHostBlocksAllocating:NO];
 }
 
 // A host should set this before it allocates render resources. When it
@@ -796,6 +878,14 @@ static void beamer_auv3_on_loaded(void* context) {
             return kAudioUnitErr_Uninitialized;
         }
 
+        // Copy the host's blocks. When a host thread is changing them right
+        // now, this call keeps the copy of the previous call.
+        if (os_unfair_lock_trylock(&blockSelf->_hostBlocksLock)) {
+            blockSelf->_renderHostBlocks = blockSelf->_hostBlocks;
+            os_unfair_lock_unlock(&blockSelf->_hostBlocksLock);
+        }
+        BeamerAuv3HostBlocks hostBlocks = blockSelf->_renderHostBlocks;
+
         AVAudioPCMBuffer* inputPCMBuffer = blockSelf->_inputPCMBuffer;
         AudioBufferList* inputMutableABL = blockSelf->_inputMutableABL;
         AUAudioFrameCount maxFrames = blockSelf->_maxFrames;
@@ -834,9 +924,8 @@ static void beamer_auv3_on_loaded(void* context) {
                                          frameCount * blockSelf->_outputSampleBytes, silence);
             if (outputBusNumber == 0) {
                 BeamerAuv3ApplyParameterEvents(rustInstance, realtimeEventListHead);
-                AUMIDIOutputEventBlock __unsafe_unretained midiOutputBlock = blockSelf->_hostMidiOutput;
-                if (blockSelf->_isMidiEffect && midiOutputBlock != nil) {
-                    BeamerAuv3PassMidiOn(realtimeEventListHead, midiOutputBlock);
+                if (blockSelf->_isMidiEffect && hostBlocks.midiOutput != nil) {
+                    BeamerAuv3PassMidiOn(realtimeEventListHead, hostBlocks.midiOutput);
                 }
             }
             return noErr;
@@ -846,14 +935,14 @@ static void beamer_auv3_on_loaded(void* context) {
         BeamerAuTransport transport;
         BOOL hasTransport = (outputBusNumber == 0);
         if (hasTransport) {
-            BeamerAuv3ReadTransport(blockSelf->_hostMusicalContext,
-                                    blockSelf->_hostTransportState,
+            BeamerAuv3ReadTransport(hostBlocks.musicalContext,
+                                    hostBlocks.transportState,
                                     &transport);
         }
 
         // The plugin's MIDI output goes to the host's block, if it set one.
         BeamerAuv3MidiOutput midiOutput;
-        midiOutput.block = blockSelf->_hostMidiOutput;
+        midiOutput.block = hostBlocks.midiOutput;
         midiOutput.bufferStart = (AUEventSampleTime)timestamp->mSampleTime;
         BOOL sendsMidi = (outputBusNumber == 0 && midiOutput.block != nil);
 
