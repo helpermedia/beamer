@@ -861,11 +861,10 @@ impl<P: Model> Vst3Processor<P> {
     // If adding a third sample type (e.g., i32 for fixed-point), consider
     // refactoring to a macro-based approach.
     //
-    // TODO: Null buffer handling - Currently we skip null channel pointers.
-    // This is correct for VST3's parameter flushing (numSamples=0). Some hosts
-    // may send null buffers with non-zero numSamples. Consider adding internal
-    // buffer fallback like beamer-au does for instruments if this becomes an
-    // issue. For now, VST3 hosts are generally compliant.
+    // Null buffers: a bus without a channel array has no channels. A null
+    // channel pointer in it keeps its index; prepare_in_place gives it
+    // memory of our own (silence for an input, discarded scratch for an
+    // output).
     // =========================================================================
 
     /// Run a block of `num_samples` samples through the processor.
@@ -973,10 +972,9 @@ impl<P: Model> Vst3Processor<P> {
                 let channel_ptrs = unsafe {
                     slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
                 };
+                // A null channel keeps its index (see prepare_in_place).
                 for &ptr in channel_ptrs.iter().take(max_channels) {
-                    if !ptr.is_null() {
-                        storage.main_inputs.push(ptr);
-                    }
+                    storage.main_inputs.push(ptr);
                 }
             }
         }
@@ -993,10 +991,9 @@ impl<P: Model> Vst3Processor<P> {
                 let channel_ptrs = unsafe {
                     slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
                 };
+                // A null channel keeps its index (see prepare_in_place).
                 for &ptr in channel_ptrs.iter().take(max_channels) {
-                    if !ptr.is_null() {
-                        storage.main_outputs.push(ptr);
-                    }
+                    storage.main_outputs.push(ptr);
                 }
             }
         }
@@ -1017,10 +1014,9 @@ impl<P: Model> Vst3Processor<P> {
                         let channel_ptrs = unsafe {
                             slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
                         };
+                        // A null channel keeps its index (see prepare_in_place).
                         for &ptr in channel_ptrs.iter().take(max_channels) {
-                            if !ptr.is_null() {
-                                storage.aux_inputs[aux_idx].push(ptr);
-                            }
+                            storage.aux_inputs[aux_idx].push(ptr);
                         }
                     }
                 }
@@ -1043,10 +1039,9 @@ impl<P: Model> Vst3Processor<P> {
                         let channel_ptrs = unsafe {
                             slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
                         };
+                        // A null channel keeps its index (see prepare_in_place).
                         for &ptr in channel_ptrs.iter().take(max_channels) {
-                            if !ptr.is_null() {
-                                storage.aux_outputs[aux_idx].push(ptr);
-                            }
+                            storage.aux_outputs[aux_idx].push(ptr);
                         }
                     }
                 }
@@ -1093,10 +1088,9 @@ impl<P: Model> Vst3Processor<P> {
                 let channel_ptrs = unsafe {
                     slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
                 };
+                // A null channel keeps its index (see prepare_in_place).
                 for &ptr in channel_ptrs.iter().take(max_channels) {
-                    if !ptr.is_null() {
-                        storage.main_inputs.push(ptr);
-                    }
+                    storage.main_inputs.push(ptr);
                 }
             }
         }
@@ -1113,10 +1107,9 @@ impl<P: Model> Vst3Processor<P> {
                 let channel_ptrs = unsafe {
                     slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
                 };
+                // A null channel keeps its index (see prepare_in_place).
                 for &ptr in channel_ptrs.iter().take(max_channels) {
-                    if !ptr.is_null() {
-                        storage.main_outputs.push(ptr);
-                    }
+                    storage.main_outputs.push(ptr);
                 }
             }
         }
@@ -1137,10 +1130,9 @@ impl<P: Model> Vst3Processor<P> {
                         let channel_ptrs = unsafe {
                             slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
                         };
+                        // A null channel keeps its index (see prepare_in_place).
                         for &ptr in channel_ptrs.iter().take(max_channels) {
-                            if !ptr.is_null() {
-                                storage.aux_inputs[aux_idx].push(ptr);
-                            }
+                            storage.aux_inputs[aux_idx].push(ptr);
                         }
                     }
                 }
@@ -1163,10 +1155,9 @@ impl<P: Model> Vst3Processor<P> {
                         let channel_ptrs = unsafe {
                             slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
                         };
+                        // A null channel keeps its index (see prepare_in_place).
                         for &ptr in channel_ptrs.iter().take(max_channels) {
-                            if !ptr.is_null() {
-                                storage.aux_outputs[aux_idx].push(ptr);
-                            }
+                            storage.aux_outputs[aux_idx].push(ptr);
                         }
                     }
                 }

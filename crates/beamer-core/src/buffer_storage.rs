@@ -96,10 +96,12 @@ pub struct ProcessBufferStorage<S: Sample> {
     /// Memory for input channels that overlap an output channel, one per
     /// input channel: the main bus, then the aux buses in order.
     input_scratch: Vec<Vec<S>>,
-    /// Memory for output channels that overlap another output channel, one
-    /// per output channel: the main bus, then the aux buses in order. What
-    /// the plugin writes there is discarded.
+    /// Memory for output channels that overlap another output channel or
+    /// have no memory, one per output channel: the main bus, then the aux
+    /// buses in order. What the plugin writes there is discarded.
     output_scratch: Vec<Vec<S>>,
+    /// Silence for input channels without memory. Nothing writes to it.
+    silence: Vec<S>,
 }
 
 impl<S: Sample> ProcessBufferStorage<S> {
@@ -114,6 +116,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
             max_frames: 0,
             input_scratch: Vec::new(),
             output_scratch: Vec::new(),
+            silence: Vec::new(),
         }
     }
 
@@ -213,6 +216,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
             max_frames,
             input_scratch: vec![vec![S::ZERO; max_frames]; input_channels],
             output_scratch: vec![vec![S::ZERO; max_frames]; output_channels],
+            silence: if input_channels > 0 { vec![S::ZERO; max_frames] } else { Vec::new() },
         }
     }
 
@@ -255,6 +259,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
             max_frames: 0,
             input_scratch: Vec::new(),
             output_scratch: Vec::new(),
+            silence: Vec::new(),
         }
     }
 
@@ -312,9 +317,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
     /// Push a main input pointer.
     ///
+    /// A null pointer stands for a channel without memory, which keeps its
+    /// index and reads silence (see [`prepare_in_place()`](Self::prepare_in_place)).
+    ///
     /// # Safety
     ///
-    /// The pointer must be valid for the duration of the current render call.
+    /// The pointer must be null or valid for the duration of the current render call.
     #[inline]
     pub unsafe fn push_main_input(&mut self, ptr: *const S) {
         self.main_inputs.push(ptr);
@@ -322,9 +330,13 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
     /// Push a main output pointer.
     ///
+    /// A null pointer stands for a channel without memory, which keeps its
+    /// index and writes into memory of our own that is discarded (see
+    /// [`prepare_in_place()`](Self::prepare_in_place)).
+    ///
     /// # Safety
     ///
-    /// The pointer must be valid for the duration of the current render call.
+    /// The pointer must be null or valid for the duration of the current render call.
     #[inline]
     pub unsafe fn push_main_output(&mut self, ptr: *mut S) {
         self.main_outputs.push(ptr);
@@ -332,9 +344,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
     /// Push an auxiliary input pointer for a specific bus.
     ///
+    /// A null pointer stands for a channel without memory, as for
+    /// [`push_main_input()`](Self::push_main_input).
+    ///
     /// # Safety
     ///
-    /// The pointer must be valid for the duration of the current render call.
+    /// The pointer must be null or valid for the duration of the current render call.
     #[inline]
     pub unsafe fn push_aux_input(&mut self, bus_index: usize, ptr: *const S) {
         if bus_index < self.aux_inputs.len() {
@@ -344,9 +359,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
     /// Push an auxiliary output pointer for a specific bus.
     ///
+    /// A null pointer stands for a channel without memory, as for
+    /// [`push_main_output()`](Self::push_main_output).
+    ///
     /// # Safety
     ///
-    /// The pointer must be valid for the duration of the current render call.
+    /// The pointer must be null or valid for the duration of the current render call.
     #[inline]
     pub unsafe fn push_aux_output(&mut self, bus_index: usize, ptr: *mut S) {
         if bus_index < self.aux_outputs.len() {
@@ -430,6 +448,9 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// - Each main output channel holds the main input channel of its index,
     ///   or silence when the input has fewer channels. Aux outputs are
     ///   silent.
+    /// - A null pointer (a channel the host gave no memory for) keeps its
+    ///   index: an output gets scratch memory, whose samples are discarded,
+    ///   and an input reads silence.
     ///
     /// Returns false when memory of its own is needed for a block longer
     /// than the storage was allocated for. The channels are then not
@@ -438,20 +459,20 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///
     /// # Safety
     ///
-    /// Every collected input pointer must be valid for reads and every
-    /// output pointer for writes of `num_samples` samples, and no reference
-    /// to that memory may be alive.
+    /// Every collected input pointer must be null or valid for reads and
+    /// every output pointer null or valid for writes of `num_samples`
+    /// samples, and no reference to that memory may be alive.
     pub unsafe fn prepare_in_place(&mut self, num_samples: usize) -> bool {
         let fits = num_samples <= self.max_frames;
 
-        // Outputs overlapping an earlier output get scratch. They are
-        // compared with the earlier outputs as they are now, after their own
-        // replacement.
+        // Outputs without memory or overlapping an earlier output get
+        // scratch. They are compared with the earlier outputs as they are
+        // now, after their own replacement.
         let mut flat = 0;
         for bus in 0..=self.aux_outputs.len() {
             for channel in 0..self.output_bus_len(bus) {
                 let ptr = self.output_at(bus, channel);
-                if self.overlaps_output_before(ptr, num_samples, bus, channel) {
+                if ptr.is_null() || self.overlaps_output_before(ptr, num_samples, bus, channel) {
                     let Some(scratch) = self.output_scratch.get_mut(flat).filter(|_| fits) else {
                         return false;
                     };
@@ -464,10 +485,24 @@ impl<S: Sample> ProcessBufferStorage<S> {
 
         // Inputs overlapping an output are copied into scratch. Nothing is
         // written to an output before this, so all inputs are still intact.
+        // An input without memory reads silence; a main input with an output
+        // channel is not read after this, its output is silenced below.
         let mut flat = 0;
         for bus in 0..=self.aux_inputs.len() {
             for channel in 0..self.input_bus_len(bus) {
                 let ptr = self.input_at(bus, channel);
+                if ptr.is_null() {
+                    let paired = bus == 0 && channel < self.main_outputs.len();
+                    if !paired {
+                        if self.silence.len() < num_samples {
+                            return false;
+                        }
+                        let silence = self.silence.as_ptr();
+                        self.set_input_at(bus, channel, silence);
+                    }
+                    flat += 1;
+                    continue;
+                }
                 let in_place = bus == 0
                     && self
                         .main_outputs
@@ -493,12 +528,12 @@ impl<S: Sample> ProcessBufferStorage<S> {
             match self.main_inputs.get(channel) {
                 // SAFETY: Valid for num_samples (caller). An input that is not
                 // its output's memory overlaps no output (see above).
-                Some(&input) if !std::ptr::eq(input, output) => unsafe {
+                Some(&input) if !input.is_null() && !std::ptr::eq(input, output) => unsafe {
                     std::ptr::copy_nonoverlapping(input, output, num_samples)
                 },
-                Some(_) => {}
+                Some(&input) if !input.is_null() => {}
                 // SAFETY: Valid for num_samples writes (caller), or scratch.
-                None => unsafe { std::ptr::write_bytes(output, 0, num_samples) },
+                _ => unsafe { std::ptr::write_bytes(output, 0, num_samples) },
             }
         }
         for bus in &self.aux_outputs {
@@ -516,12 +551,14 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///
     /// # Safety
     ///
-    /// Every collected output pointer must be valid for writes of
+    /// Every collected output pointer must be null or valid for writes of
     /// `num_samples` samples, and no reference to that memory may be alive.
     pub unsafe fn silence_outputs(&self, num_samples: usize) {
         for &output in self.main_outputs.iter().chain(self.aux_outputs.iter().flatten()) {
-            // SAFETY: See the function's safety section.
-            unsafe { std::ptr::write_bytes(output, 0, num_samples) };
+            if !output.is_null() {
+                // SAFETY: See the function's safety section.
+                unsafe { std::ptr::write_bytes(output, 0, num_samples) };
+            }
         }
     }
 
@@ -538,8 +575,9 @@ impl<S: Sample> ProcessBufferStorage<S> {
         start: usize,
         len: usize,
     ) -> (Buffer<'_, S>, AuxiliaryBuffers<'_, S>) {
-        // After prepare_in_place no two of these slices overlap, and the
-        // unpaired main inputs and the aux inputs overlap no output.
+        // After prepare_in_place no two output slices overlap, and no input
+        // slice (unpaired main inputs, aux inputs) overlaps an output. Inputs
+        // without memory share one silent slice, which is only read.
         let channels = self.main_outputs.iter().map(|&ptr| {
             // SAFETY: See the function's safety section.
             unsafe { std::slice::from_raw_parts_mut(ptr.add(start), len) }
@@ -1086,4 +1124,46 @@ mod tests {
         assert_eq!(output, vec![0.0; long]);
     }
 
+    #[test]
+    fn test_prepare_keeps_the_index_of_null_channels() {
+        // Stereo in, stereo out, with sidechain: the host gives no memory
+        // for main input 0, main output 0 and the sidechain's channel.
+        let mut storage = storage_for(3, 2, &[1], &[]);
+        let right = ramp(20.0);
+        let unpaired = ramp(30.0);
+        let mut output = vec![0.5; FRAMES];
+        unsafe {
+            storage.push_main_input(std::ptr::null());
+            storage.push_main_input(right.as_ptr());
+            storage.push_main_input(unpaired.as_ptr());
+            storage.push_main_output(std::ptr::null_mut());
+            storage.push_main_output(output.as_mut_ptr());
+            storage.push_aux_input(0, std::ptr::null());
+            assert!(storage.prepare_in_place(FRAMES));
+        }
+
+        // Channel 0 writes into memory of our own and starts silent, channel
+        // 1 keeps its index and its input.
+        assert!(!storage.main_outputs[0].is_null());
+        assert_eq!(seen(&storage), (vec![vec![0.0; FRAMES], ramp(20.0)], vec![ramp(30.0)]));
+        assert_eq!(output, ramp(20.0));
+        assert!(no_overlaps(&storage));
+
+        let (_buffer, aux) = unsafe { storage.sub_block_buffers(0, FRAMES) };
+        assert_eq!(aux.sidechain().unwrap().input(0), &[0.0; FRAMES][..]);
+    }
+
+    #[test]
+    fn test_prepare_refuses_a_too_long_block_with_a_null_channel() {
+        let long = FRAMES + 1;
+        let mut storage = storage_for(1, 1, &[], &[]);
+        let input = vec![1.0; long];
+        unsafe {
+            storage.push_main_input(input.as_ptr());
+            storage.push_main_output(std::ptr::null_mut());
+            assert!(!storage.prepare_in_place(long));
+            // Writes nothing through the null pointer.
+            storage.silence_outputs(long);
+        }
+    }
 }

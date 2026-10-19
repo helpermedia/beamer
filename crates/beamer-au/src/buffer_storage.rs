@@ -28,7 +28,7 @@
 //! - No heap operations during audio processing
 //! - All allocations happen in `allocate_from_config()` (non-real-time)
 
-use crate::buffers::AudioBufferList;
+use crate::buffers::{AudioBuffer, AudioBufferList};
 use beamer_core::Sample;
 
 // Re-export ProcessBufferStorage from beamer-core
@@ -52,7 +52,7 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     ///
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
+    /// - A buffer shorter than num_samples becomes a channel without memory
     unsafe fn collect_inputs(&mut self, buffer_list: *const AudioBufferList, num_samples: usize);
 
     /// Collect output pointers from an AudioBufferList.
@@ -66,7 +66,7 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     ///
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes or max_frames
+    /// - A buffer shorter than num_samples becomes a channel without memory
     unsafe fn collect_outputs(&mut self, buffer_list: *mut AudioBufferList, num_samples: usize);
 
     /// Collect auxiliary input pointers from multiple AudioBufferLists.
@@ -75,7 +75,7 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     ///
     /// - `buffer_lists` must be a valid slice of valid pointers
     /// - Each pointer is only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
+    /// - A buffer shorter than num_samples becomes a channel without memory
     unsafe fn collect_aux_inputs(
         &mut self,
         buffer_lists: &[*const AudioBufferList],
@@ -88,7 +88,7 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     ///
     /// - `buffer_lists` must be a valid slice of valid pointers
     /// - Each pointer is only valid for the current render call
-    /// - num_samples must not exceed actual buffer sizes
+    /// - A buffer shorter than num_samples becomes a channel without memory
     unsafe fn collect_aux_outputs(
         &mut self,
         buffer_lists: &[*mut AudioBufferList],
@@ -114,16 +114,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
         for i in 0..list.number_buffers.min(max_channels as u32) {
             // SAFETY: We iterate only up to number_buffers, so index is always valid.
             let buffer = unsafe { list.buffer_at(i) };
-            if !buffer.data.is_null() && buffer.number_channels == 1 {
-                // Non-interleaved: one channel per buffer
-                let data_ptr = buffer.data as *const S;
-                // Validate we have enough data
-                let available_samples = buffer.data_byte_size as usize / std::mem::size_of::<S>();
-                if available_samples >= num_samples {
-                    self.main_inputs.push(data_ptr);
-                }
-            }
-            // Skip interleaved buffers (number_channels > 1) - handled separately
+            self.main_inputs.push(usable_input(buffer, num_samples));
         }
     }
 
@@ -145,25 +136,16 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
             // SAFETY: We iterate only up to number_buffers, so index is always valid.
             let buffer = unsafe { list.buffer_at_mut(i) };
 
-            // Skip interleaved buffers (number_channels > 1)
-            if buffer.number_channels != 1 {
-                continue;
-            }
-
-            if !buffer.data.is_null() {
-                // Host provided a buffer - use it
-                let available_samples =
-                    buffer.data_byte_size as usize / std::mem::size_of::<S>();
-                if available_samples >= num_samples {
-                    self.main_outputs.push(buffer.data as *mut S);
-                }
-            } else if let Some(ref mut internal_buffers) = self.internal_output_buffers {
+            if buffer.data.is_null() && buffer.number_channels == 1 {
                 // Host provided null pointer - use our internal buffer.
                 // This happens in some hosts (Logic Pro, Reaper) that expect the AU to
                 // provide its own output buffers.
-                let channel_idx = i as usize;
-                if channel_idx < internal_buffers.len() && num_samples <= self.max_frames {
-                    let internal_buf = &mut internal_buffers[channel_idx];
+                let internal = self
+                    .internal_output_buffers
+                    .as_mut()
+                    .and_then(|buffers| buffers.get_mut(i as usize))
+                    .filter(|_| num_samples <= self.max_frames);
+                if let Some(internal_buf) = internal {
                     let ptr = internal_buf.as_mut_ptr();
 
                     // Update the AudioBufferList to point to our internal buffer.
@@ -172,9 +154,10 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                     buffer.data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
 
                     self.main_outputs.push(ptr);
+                    continue;
                 }
             }
-            // If null data and no internal buffer for it, skip this channel
+            self.main_outputs.push(usable_output(buffer, num_samples));
         }
     }
 
@@ -196,17 +179,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
             for i in 0..list.number_buffers.min(max_channels as u32) {
                 // SAFETY: We iterate only up to number_buffers, so index is always valid.
                 let buffer = unsafe { list.buffer_at(i) };
-                if !buffer.data.is_null() && buffer.number_channels == 1 {
-                    // Non-interleaved: one channel per buffer
-                    let data_ptr = buffer.data as *const S;
-                    // Validate we have enough data
-                    let available_samples =
-                        buffer.data_byte_size as usize / std::mem::size_of::<S>();
-                    if available_samples >= num_samples {
-                        self.aux_inputs[aux_idx].push(data_ptr);
-                    }
-                }
-                // Skip interleaved buffers (number_channels > 1) - handled separately
+                self.aux_inputs[aux_idx].push(usable_input(buffer, num_samples));
             }
         }
     }
@@ -229,19 +202,29 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
             for i in 0..list.number_buffers.min(max_channels as u32) {
                 // SAFETY: We iterate only up to number_buffers, so index is always valid.
                 let buffer = unsafe { list.buffer_at_mut(i) };
-                if !buffer.data.is_null() && buffer.number_channels == 1 {
-                    // Non-interleaved: one channel per buffer
-                    let data_ptr = buffer.data as *mut S;
-                    // Validate we have enough data
-                    let available_samples =
-                        buffer.data_byte_size as usize / std::mem::size_of::<S>();
-                    if available_samples >= num_samples {
-                        self.aux_outputs[aux_idx].push(data_ptr);
-                    }
-                }
-                // Skip interleaved buffers (number_channels > 1) - handled separately
+                self.aux_outputs[aux_idx].push(usable_output(buffer, num_samples));
             }
         }
+    }
+}
+
+/// The samples of `buffer` as an input channel, or null when it has none
+/// to use: no memory, interleaved (more than one channel per buffer) or too
+/// short. A null channel keeps its index and reads silence (see
+/// `ProcessBufferStorage::prepare_in_place`).
+fn usable_input<S: Sample>(buffer: &AudioBuffer, num_samples: usize) -> *const S {
+    usable_output::<S>(buffer, num_samples).cast_const()
+}
+
+/// The samples of `buffer` as an output channel, or null when it has none
+/// to use, as for `usable_input`. A null channel keeps its index and writes
+/// into memory of our own that is discarded.
+fn usable_output<S: Sample>(buffer: &AudioBuffer, num_samples: usize) -> *mut S {
+    let available_samples = buffer.data_byte_size as usize / std::mem::size_of::<S>();
+    if buffer.data.is_null() || buffer.number_channels != 1 || available_samples < num_samples {
+        std::ptr::null_mut()
+    } else {
+        buffer.data as *mut S
     }
 }
 

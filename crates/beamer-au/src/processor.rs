@@ -1849,6 +1849,19 @@ mod tests {
     }
 
     #[test]
+    fn test_input_buffer_without_memory_keeps_the_next_channel_index() {
+        // TestProcessor does not write its output. The host gives no memory
+        // for the left input: the left output starts silent, the right one
+        // with the right input.
+        let plugin = boxed(AuProcessor::<TestModel>::new());
+        let block = render_block_for(&plugin, ProcessMode::Realtime);
+        let mut input = StereoList::filled(0.5);
+        input.buffers[0].data = std::ptr::null_mut();
+        let mut output = StereoList::filled(0.77);
+        assert_eq!(render(block.as_ref(), Some(&mut input), &mut output), [0.0, 0.5]);
+    }
+
+    #[test]
     fn test_render_in_place_when_input_and_output_share_memory() {
         // The shims pull the input into the output buffers when they can, so
         // both lists point at the same memory. The processor works on it
