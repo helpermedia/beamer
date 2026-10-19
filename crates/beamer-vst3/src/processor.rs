@@ -427,8 +427,14 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 /// We use `UnsafeCell` for interior mutability in `process()` since the COM
 /// interface only provides `&self`.
 ///
-/// A host calls the other interfaces from its own threads while `process()`
-/// runs. What those calls use is kept apart from what `process()` uses.
+/// The SDK headers note the thread and state of each call. `process()` runs
+/// on the processing thread. `setupProcessing()` and `setActive()` run on
+/// the UI thread while the plugin does not process. `getState()`,
+/// `setState()` and the controller calls run on the UI thread, also while
+/// `process()` runs. The headers list `getLatencySamples()` and
+/// `getTailSamples()` for the UI thread before activation, but hosts ask
+/// for them at any time. What all those calls use is kept apart from what
+/// `process()` uses.
 /// The model is shared in an `Arc` and works through a shared reference.
 /// Latency, tail and the smoother reset are exchanged through atomics.
 pub struct Vst3Processor<P, Presets = NoPresets<P>>
@@ -4950,7 +4956,11 @@ mod tests {
     }
 
     /// Save the state of a wrapper like a host and return the bytes.
-    fn saved_state(wrapper: &Vst3Processor<StateModel>) -> Vec<u8> {
+    fn saved_state<P, Presets>(wrapper: &Vst3Processor<P, Presets>) -> Vec<u8>
+    where
+        P: Model,
+        Presets: FactoryPresets<Parameters = P>,
+    {
         let stream = vst3::ComWrapper::new(MemoryStream::default());
         let pointer = stream.to_com_ptr::<IBStream>().expect("the stream is an IBStream");
         // SAFETY: The stream is alive for the call.
@@ -4960,7 +4970,11 @@ mod tests {
     }
 
     /// Load a state into a wrapper like a host.
-    fn load_state(wrapper: &Vst3Processor<StateModel>, bytes: &[u8]) -> tresult {
+    fn load_state<P, Presets>(wrapper: &Vst3Processor<P, Presets>, bytes: &[u8]) -> tresult
+    where
+        P: Model,
+        Presets: FactoryPresets<Parameters = P>,
+    {
         let stream = vst3::ComWrapper::new(MemoryStream {
             content: Mutex::new((bytes.to_vec(), 0)),
         });
@@ -5201,5 +5215,285 @@ mod tests {
             assert_eq!(wrapper.getLatencySamples(), latency_for(0.75));
             assert_eq!(wrapper.getTailSamples(), tail);
         }
+    }
+
+    // =========================================================================
+    // A host thread next to process()
+    // =========================================================================
+    //
+    // The VST3 SDK lets a host call getState, setState and the controller
+    // calls on its UI thread in every state, processing included (the
+    // threading notes of IComponent and IEditController in the SDK
+    // headers). Hosts also ask for latency and tail at any time, although
+    // the notes of IAudioProcessor list them for the UI thread before
+    // activation. Only process() runs on the audio thread. The test
+    // below makes those calls on one thread while another runs process().
+    // Under ThreadSanitizer it shows that the two threads share nothing but
+    // atomics and locks (see docs/BUILDING.md).
+
+    use beamer_core::state_format::{SavedState, StateEntries, StateWriter};
+    use beamer_core::{HandoverReader, SmoothingStyle, State};
+    use std::sync::Barrier;
+
+    const LEVEL_ID: u32 = 2;
+    /// The layouts the editor of the test picks from. The processor reports
+    /// the one it read last as its latency.
+    const LAYOUTS: [u32; 3] = [0, 16, 32];
+    const THREADED_TAIL_SAMPLES: u32 = 256;
+    /// How many rounds of calls the host thread makes.
+    const HOST_ROUNDS: usize = 2000;
+
+    /// Parameters as `#[beamer::model]` generates them: a smoothed parameter
+    /// and a `State` field that the audio thread reads through a reader.
+    struct ThreadedParameters {
+        level: FloatParameter,
+        layout: State<u32>,
+    }
+
+    impl Default for ThreadedParameters {
+        fn default() -> Self {
+            Self {
+                level: FloatParameter::new("Level", 0.5, 0.0..=1.0)
+                    .with_id(LEVEL_ID)
+                    .with_smoother(SmoothingStyle::Linear(5.0)),
+                layout: State::new(LAYOUTS[0]),
+            }
+        }
+    }
+
+    impl ParameterGroups for ThreadedParameters {}
+
+    impl Parameters for ThreadedParameters {
+        fn count(&self) -> usize {
+            1
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(std::iter::once(&self.level as &dyn ParameterRef))
+        }
+        fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
+            (id == LEVEL_ID).then_some(&self.level as &dyn ParameterRef)
+        }
+        fn set_sample_rate(&self, sample_rate: f64) {
+            self.level.set_sample_rate(sample_rate);
+        }
+        fn reset_smoothing(&self) {
+            self.level.reset_smoothing();
+        }
+    }
+
+    impl beamer_core::Saved for ThreadedParameters {
+        fn state_generation(&self) -> u64 {
+            self.layout.generation()
+        }
+
+        fn for_each_state(&self, visit: &mut dyn FnMut(&str, &dyn SavedState)) {
+            visit("layout", &self.layout);
+        }
+
+        fn save_entries(&self, writer: &mut StateWriter, _prefix: &str) {
+            writer.parameter(&LEVEL_ID.to_string(), &self.level);
+            writer.state("layout", &self.layout);
+        }
+
+        fn load_entries(&self, entries: &StateEntries<'_>, _prefix: &str) {
+            entries.load_parameter(&LEVEL_ID.to_string(), &self.level);
+            entries.load_state("layout", &self.layout);
+        }
+    }
+
+    impl beamer_core::WebViewEvents for ThreadedParameters {}
+
+    #[derive(Default)]
+    struct ThreadedModel {
+        parameters: ThreadedParameters,
+    }
+
+    struct ThreadedProcessor {
+        model: Arc<ThreadedModel>,
+        layout: HandoverReader<u32>,
+    }
+
+    beamer_core::__forward_model!(ThreadedModel, parameters);
+
+    impl Model for ThreadedModel {
+        type Setup = ();
+        type Processor = ThreadedProcessor;
+
+        fn prepare(self: Arc<Self>, _setup: ()) -> ThreadedProcessor {
+            ThreadedProcessor {
+                layout: self.parameters.layout.reader(),
+                model: self,
+            }
+        }
+    }
+
+    impl Processor for ThreadedProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut beamer_core::Buffer,
+            _aux: &mut beamer_core::AuxiliaryBuffers,
+            _context: &CoreProcessContext,
+        ) {
+            // Take the layout the editor set last, which `latency_samples`
+            // reports.
+            self.layout.latest();
+            let level = &self.model.parameters.level;
+            for index in 0..buffer.num_samples() {
+                let gain = level.tick_smoothed_f32();
+                for channel in 0..buffer.num_output_channels() {
+                    let input = buffer.input(channel)[index];
+                    buffer.output(channel)[index] = input * gain;
+                }
+            }
+        }
+
+        fn latency_samples(&self) -> u32 {
+            *self.layout.current()
+        }
+
+        fn tail_samples(&self) -> u32 {
+            THREADED_TAIL_SAMPLES
+        }
+    }
+
+    /// Two factory presets for the level of the `ThreadedModel`.
+    struct LevelPresets;
+
+    const LEVEL_PRESET_VALUES: [&[PresetValue]; 2] = [
+        &[PresetValue { id: LEVEL_ID, plain_value: 0.1 }],
+        &[PresetValue { id: LEVEL_ID, plain_value: 0.8 }],
+    ];
+
+    impl FactoryPresets for LevelPresets {
+        type Parameters = ThreadedModel;
+
+        fn count() -> usize {
+            LEVEL_PRESET_VALUES.len()
+        }
+
+        fn info(index: usize) -> Option<PresetInfo> {
+            (index < Self::count()).then_some(PresetInfo { name: "Level" })
+        }
+
+        fn values(index: usize) -> &'static [PresetValue] {
+            LEVEL_PRESET_VALUES.get(index).copied().unwrap_or(&[])
+        }
+    }
+
+    /// Sets a flag when dropped.
+    struct StopOnDrop<'a>(&'a AtomicBool);
+
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    static THREADED_CONFIG: Config = Config::new("Threaded Test", Category::Effect, "Test", "thrd");
+
+    #[test]
+    fn test_host_calls_while_process_runs_on_another_thread() {
+        let wrapper = Vst3Processor::<ThreadedModel, LevelPresets>::new(&THREADED_CONFIG);
+        let model = Arc::clone(&wrapper.model);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The wrapper is alive and the setup is valid for the calls.
+        unsafe {
+            assert_eq!(wrapper.setupProcessing(&mut setup), kResultOk);
+            assert_eq!(wrapper.setActive(1), kResultOk);
+            assert_eq!(wrapper.setProcessing(1), kResultOk);
+        }
+        // The tail with the bypass ramp, which stays the same.
+        // SAFETY: The wrapper is alive.
+        let tail = unsafe { wrapper.getTailSamples() };
+        assert!(tail >= THREADED_TAIL_SAMPLES);
+
+        // An older state that the host goes back to now and then.
+        model.parameters.level.set(0.2);
+        model.parameters.layout.set(LAYOUTS[1]);
+        let older = saved_state(&wrapper);
+
+        let start = Barrier::new(2);
+        let host_done = AtomicBool::new(false);
+        let blocks = std::thread::scope(|scope| {
+            let audio = scope.spawn(|| {
+                start.wait();
+                let mut blocks = 0usize;
+                loop {
+                    // Automation of the level, and a program change now
+                    // and then.
+                    let mut values = vec![(LEVEL_ID, (blocks % 7) as f64 / 7.0)];
+                    if blocks.is_multiple_of(5) {
+                        values.push((PROGRAM_CHANGE_PARAM_ID, 1.0));
+                    }
+                    let changes = changes_of(&values);
+                    process_with(&wrapper, 64, changes.as_ptr(), std::ptr::null_mut());
+                    blocks += 1;
+                    if host_done.load(Ordering::Acquire) {
+                        break blocks;
+                    }
+                }
+            });
+
+            start.wait();
+            // The audio thread stops when the host is done, also when an
+            // assertion below fails.
+            let _stop = StopOnDrop(&host_done);
+            for round in 0..HOST_ROUNDS {
+                // The editor sets the layout and the level.
+                model.parameters.layout.set(LAYOUTS[round % LAYOUTS.len()]);
+                // SAFETY: The wrapper is alive for the calls.
+                unsafe {
+                    assert_eq!(
+                        wrapper.setParamNormalized(LEVEL_ID, (round % 10) as f64 / 10.0),
+                        kResultOk
+                    );
+                }
+
+                // The host saves, and loads that state or the older one.
+                let saved = saved_state(&wrapper);
+                let loaded = if round % 2 == 0 { &saved } else { &older };
+                assert_eq!(load_state(&wrapper, loaded), kResultOk);
+
+                // SAFETY: The wrapper is alive for the calls.
+                unsafe {
+                    // A preset from the host's list.
+                    let preset = (round % LEVEL_PRESET_VALUES.len()) as f64;
+                    assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, preset), kResultOk);
+
+                    // What the plugin reports to the host.
+                    assert!((0.0..=1.0).contains(&wrapper.getParamNormalized(LEVEL_ID)));
+                    let program = wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID);
+                    assert!((0.0..=1.0).contains(&program));
+                    assert!(LAYOUTS.contains(&wrapper.getLatencySamples()));
+                    assert_eq!(wrapper.getTailSamples(), tail);
+                }
+            }
+            drop(_stop);
+            audio.join().expect("the audio thread does not panic")
+        });
+        assert!(blocks > 0);
+
+        // On one thread again: a loaded state is complete after the next
+        // block, the smoothers at the loaded value without a ramp. The
+        // layout moves away from the one of the state first, which the last
+        // round may have left.
+        model.parameters.layout.set(LAYOUTS[2]);
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, LAYOUTS[2]);
+        assert_eq!(load_state(&wrapper, &older), kResultOk);
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        // SAFETY: The wrapper is alive for the calls.
+        unsafe {
+            assert_eq!(wrapper.getParamNormalized(LEVEL_ID), 0.2);
+            assert_eq!(wrapper.getLatencySamples(), LAYOUTS[1]);
+        }
+        assert_eq!(*model.parameters.layout.get(), LAYOUTS[1]);
+        assert!((model.parameters.level.smoothed() - 0.2).abs() < 1e-9);
     }
 }

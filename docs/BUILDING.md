@@ -320,6 +320,26 @@ cargo test
 cargo clippy
 ```
 
+### Thread checks
+
+Some tests run a host thread next to the audio thread: they save, load
+and query a plugin while another thread renders or processes. Under
+ThreadSanitizer they show whether the two threads share anything but
+atomics and locks. ThreadSanitizer needs a nightly toolchain with the
+sources of the standard library, which the build instruments too:
+
+```bash
+rustup toolchain install nightly --component rust-src
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
+    --target aarch64-apple-darwin --target-dir target/tsan \
+    -p beamer-core -p beamer-au -p beamer-vst3 --lib
+```
+
+Name the target of the machine that runs the tests (`rustc -vV` shows it
+as `host`), for example `x86_64-apple-darwin` on an Intel Mac. Rust offers
+ThreadSanitizer for macOS and Linux targets, not for Windows. The separate
+target directory keeps the instrumented build apart from the normal one.
+
 ## Troubleshooting
 
 - A reinstalled Audio Unit does not appear, or the DAW still loads the old
