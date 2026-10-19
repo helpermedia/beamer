@@ -2000,6 +2000,22 @@ mod tests {
     }
 
     #[test]
+    fn test_deallocation_after_a_panic_in_the_plugin() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        assert_eq!(allocate(instance, false), 0);
+
+        // A panic while the plugin mutex was held does not keep the
+        // instance prepared, and the next allocation works at once.
+        handle.poison_plugin_lock();
+        beamer_au_deallocate_render_resources(instance);
+        assert!(!beamer_au_is_prepared(instance));
+        assert_eq!(handle.has_render_setup(), (false, false));
+        assert_eq!(allocate(instance, false), 0);
+        assert!(beamer_au_is_prepared(instance));
+    }
+
+    #[test]
     fn test_parameter_values_stay_through_preparing() {
         let mut handle = test_handle();
         let instance: *mut BeamerInstanceHandle = &mut *handle;
@@ -2384,7 +2400,11 @@ mod tests {
     }
 
     #[test]
-    fn test_deallocate_that_cannot_take_the_plugin_keeps_the_parameters() {
+    fn test_deallocate_waits_for_a_render_call_in_progress() {
+        use crate::error::os_status::K_AUDIO_UNIT_ERR_UNINITIALIZED;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Barrier;
+
         let mut handle = test_handle();
         let instance: *mut BeamerInstanceHandle = &mut *handle;
         assert_eq!(allocate(instance, false), 0);
@@ -2392,15 +2412,29 @@ mod tests {
 
         // SAFETY: The handle is alive, and it is only used shared here.
         let shared = unsafe { &*instance };
-        // With the plugin held elsewhere nothing is unprepared. The model
-        // does not depend on that.
-        shared.with_plugin_locked(|| beamer_au_deallocate_render_resources(instance));
+        let rendering = Barrier::new(2);
+        let render_done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            // A render call that is still running when the host deallocates.
+            scope.spawn(|| {
+                shared.with_render_block_held(|| {
+                    rendering.wait();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    render_done.store(true, Ordering::SeqCst);
+                });
+            });
+            rendering.wait();
+            beamer_au_deallocate_render_resources(instance);
+            assert!(render_done.load(Ordering::SeqCst));
+        });
 
+        // Unprepared after the render call, and the model keeps its values.
+        assert_eq!(beamer_au_get_tail_samples(instance), 0);
+        assert_eq!(render_instance(instance), K_AUDIO_UNIT_ERR_UNINITIALIZED);
         let locks = plugin_lock_count(instance);
         assert_eq!(beamer_au_get_parameter_value(instance, gain_id()), 0.25);
         assert!(!saved_state(instance).is_empty());
         assert_eq!(plugin_lock_count(instance), locks);
-        assert_eq!(beamer_au_get_tail_samples(instance), TEST_TAIL_SAMPLES);
     }
 
     #[test]

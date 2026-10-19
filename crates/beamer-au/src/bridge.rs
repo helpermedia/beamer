@@ -526,10 +526,10 @@ impl BeamerInstanceHandle {
         self.plugin_locks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Run `f` while the plugin mutex is held, as by another thread.
+    /// Run `f` while the render block is held, as by a render call.
     #[cfg(test)]
-    pub(crate) fn with_plugin_locked<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = self.plugin.lock().expect("plugin mutex");
+    pub(crate) fn with_render_block_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.render_block.read().expect("render block lock");
         f()
     }
 }
@@ -969,11 +969,12 @@ fn prepare_instance(
     os_status::NO_ERR
 }
 
-/// Bring an instance into the unprepared state after a failed allocation.
+/// Bring an instance into the unprepared state, after a failed allocation
+/// or when the host deallocates.
 ///
-/// Locks that a panic poisoned are taken over and cleared: what they guard
-/// is replaced as a whole here, so the next allocation can prepare the
-/// plugin again.
+/// Taking the render block waits for a render call in progress. Locks that
+/// a panic poisoned are taken over and cleared: what they guard is replaced
+/// as a whole here, so the next allocation can prepare the plugin again.
 fn leave_unprepared(handle: &BeamerInstanceHandle) {
     *handle
         .render_block
@@ -995,9 +996,12 @@ fn leave_unprepared(handle: &BeamerInstanceHandle) {
 
 /// Deallocate render resources.
 ///
-/// This function uses non-blocking lock acquisition to avoid race conditions with
-/// the render path. If the render block or plugin locks cannot be acquired (because
-/// rendering is in progress), the function returns early without deallocating.
+/// Called on a host thread, never on the render thread. A host should stop
+/// rendering first; when a render call still runs (a host that does not, or
+/// the render call of another output bus), this waits for it, as a new
+/// allocation does. A render call holds the read lock of the render block
+/// while it processes, and calls that start afterwards find no render block
+/// and return `kAudioUnitErr_Uninitialized`.
 ///
 /// # Safety
 ///
@@ -1005,21 +1009,8 @@ fn leave_unprepared(handle: &BeamerInstanceHandle) {
 ///   or null (in which case this function does nothing)
 /// - `instance` must not have been destroyed
 /// - This function validates `instance` is non-null before dereferencing
-/// - Thread safety: Uses non-blocking locks; safe to call from any thread but
-///   host should ensure rendering is stopped first for reliable deallocation
-///
-/// # Real-time Safety
-///
-/// This function uses `try_write()` and `try_lock()` to match the real-time safety
-/// approach used in the render path (`beamer_au_render`). This prevents:
-/// 1. Blocking the calling thread while waiting for locks held by the audio thread
-/// 2. TOCTOU race conditions where resources are deallocated while in use
-///
-/// # Return Behavior
-///
-/// The function silently returns if locks cannot be acquired. The host should
-/// ensure rendering is stopped before calling this function. If called while
-/// rendering is active, the caller may need to retry after rendering stops.
+/// - It must not be called from a render call of the same instance, which
+///   would wait for itself
 #[no_mangle]
 pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstanceHandle) {
     if instance.is_null() {
@@ -1034,72 +1025,7 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         // What the render calls of this setup had to drop.
         handle.shared.log_render_warnings();
 
-        // Use try_write() to avoid blocking if render is in progress.
-        // This prevents a TOCTOU race condition where we could deallocate
-        // resources while another thread is actively using them in process_impl.
-        let render_block_cleared = match handle.render_block.try_write() {
-            Ok(mut guard) => {
-                *guard = None;
-                true
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                // Render is in progress - cannot safely deallocate
-                log::warn!(
-                    "beamer_au_deallocate_render_resources: render_block lock held by render thread, \
-                     cannot deallocate. Ensure rendering is stopped before deallocating."
-                );
-                false
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                // Lock was poisoned by a panic - try to recover by clearing anyway
-                log::error!(
-                    "beamer_au_deallocate_render_resources: render_block lock poisoned, \
-                     attempting recovery"
-                );
-                if let Ok(mut guard) = handle.render_block.write() {
-                    *guard = None;
-                }
-                true
-            }
-        };
-
-        // Only proceed with plugin deallocation if we successfully cleared the render block.
-        // This ensures we don't have a partial deallocation state.
-        if !render_block_cleared {
-            return;
-        }
-
-        // Use try_lock() for the plugin mutex, consistent with render path.
-        // At this point the render_block is None, so even if a render call
-        // is starting, it will fail at the render_block check and not access
-        // the plugin.
-        match handle.plugin.try_lock() {
-            Ok(mut plugin) => {
-                plugin.deallocate_render_resources();
-
-                // An unprepared plugin has no latency and no tail.
-                handle.shared.publish_timing(0, 0);
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                // This shouldn't normally happen since we cleared render_block first,
-                // but handle it gracefully.
-                log::warn!(
-                    "beamer_au_deallocate_render_resources: plugin lock held, \
-                     render_block cleared but plugin resources not deallocated"
-                );
-                return;
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                log::error!(
-                    "beamer_au_deallocate_render_resources: plugin lock poisoned, \
-                     cannot deallocate plugin resources"
-                );
-                return;
-            }
-        }
-
-        // Clear bus config only after successful deallocation.
-        *handle.lock_bus_config() = None;
+        leave_unprepared(handle);
     }));
 }
 
