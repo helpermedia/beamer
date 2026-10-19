@@ -80,6 +80,16 @@ typedef struct {
     UInt32 sourceOutputNumber;
 } InputConnection;
 
+// What the host sets for the render thread to call: the input source (a
+// callback or a connection), the MIDI output callback and the host
+// callbacks.
+typedef struct {
+    AURenderCallbackStruct input;
+    InputConnection inputConnection;
+    AUMIDIOutputCallbackStruct midiOutput;
+    HostCallbackInfo host;
+} CallbackSet;
+
 typedef struct BeamerAuv2Instance {
     // AudioComponentPlugInInterface MUST be first (ABI requirement)
     AudioComponentPlugInInterface interface;
@@ -89,17 +99,13 @@ typedef struct BeamerAuv2Instance {
     // Audio configuration
     Float64 sampleRate;
     UInt32 maxFramesPerSlice;
-    bool initialized;
-    bool bypassed;
+    _Atomic bool initialized;
+    _Atomic bool bypassed;
     bool offlineRender;
 
     // Stream formats per bus (indexed by element number)
     AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
     AudioStreamBasicDescription outputFormats[BEAMER_AU_MAX_BUSES];
-
-    // Input handling - either callback or connection
-    AURenderCallbackStruct inputCallback;
-    InputConnection inputConnection;
 
     // Allocated input buffer for pulling
     AudioBufferList* inputBufferList;
@@ -116,8 +122,13 @@ typedef struct BeamerAuv2Instance {
     UInt32 renderNotifyCount;
     pthread_mutex_t renderNotifyMutex;
 
-    // Host callbacks (for tempo, transport, etc.)
-    HostCallbackInfo hostCallbacks;
+    // Callbacks as the host set them. Host threads write them under the
+    // mutex. The render thread only tries the mutex and copies them into
+    // renderCallbacks, which only it uses: it never waits, and a copy is
+    // never half written.
+    CallbackSet callbacks;
+    pthread_mutex_t callbacksMutex;
+    CallbackSet renderCallbacks;
 
     // Factory presets
     CFArrayRef factoryPresets;         // CFArray of AUPreset pointers (NULL callbacks)
@@ -141,7 +152,6 @@ typedef struct BeamerAuv2Instance {
     // output, and the host sets the callback when it listens.
     bool isMidiEffect;
     MIDIPacketList* midiOutputList;
-    AUMIDIOutputCallbackStruct midiOutputCallback;
 } BeamerAuv2Instance;
 
 // MIDI output of one render call.
@@ -295,12 +305,13 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     // Set defaults
     inst->sampleRate = 44100.0;
     inst->maxFramesPerSlice = 1024;
-    inst->initialized = false;
-    inst->bypassed = false;
+    atomic_init(&inst->initialized, false);
+    atomic_init(&inst->bypassed, false);
 
     // Initialize mutexes
     pthread_mutex_init(&inst->listenerMutex, NULL);
     pthread_mutex_init(&inst->renderNotifyMutex, NULL);
+    pthread_mutex_init(&inst->callbacksMutex, NULL);
 
     return &inst->interface;
 }
@@ -393,9 +404,9 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
 static OSStatus BeamerAuv2Close(void* self) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
-    if (inst->initialized) {
+    if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         beamer_au_deallocate_render_resources(inst->rustInstance);
-        inst->initialized = false;
+        atomic_store_explicit(&inst->initialized, false, memory_order_release);
     }
 
     if (inst->rustInstance) {
@@ -433,6 +444,7 @@ static OSStatus BeamerAuv2Close(void* self) {
 
     pthread_mutex_destroy(&inst->listenerMutex);
     pthread_mutex_destroy(&inst->renderNotifyMutex);
+    pthread_mutex_destroy(&inst->callbacksMutex);
 
     free(inst);
     return noErr;
@@ -539,7 +551,7 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
 static OSStatus BeamerAuv2Initialize(void* self) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
-    if (inst->initialized) {
+    if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         return noErr; // Already initialized
     }
 
@@ -552,12 +564,19 @@ static OSStatus BeamerAuv2Initialize(void* self) {
         atomic_store_explicit(&inst->midiWriteHead, 0, memory_order_relaxed);
         atomic_store_explicit(&inst->parameterReadHead, 0, memory_order_relaxed);
         atomic_store_explicit(&inst->parameterWriteHead, 0, memory_order_relaxed);
-        inst->initialized = true;
 
         // Pre-allocate input buffer if we have input buses
         if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
             EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inst->maxFramesPerSlice);
         }
+
+        // The first copy of the callbacks, so that a render call that cannot
+        // take the mutex still has the ones the host set before.
+        pthread_mutex_lock(&inst->callbacksMutex);
+        inst->renderCallbacks = inst->callbacks;
+        pthread_mutex_unlock(&inst->callbacksMutex);
+
+        atomic_store_explicit(&inst->initialized, true, memory_order_release);
     }
 
     return status;
@@ -566,11 +585,11 @@ static OSStatus BeamerAuv2Initialize(void* self) {
 static OSStatus BeamerAuv2Uninitialize(void* self) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
-    if (inst->initialized) {
+    if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         // Changes queued for a render call that will not come still apply.
         BeamerAuv2ApplyPendingParameters(inst);
         beamer_au_deallocate_render_resources(inst->rustInstance);
-        inst->initialized = false;
+        atomic_store_explicit(&inst->initialized, false, memory_order_release);
 
         // Reset the MIDI and parameter ring buffers
         atomic_store_explicit(&inst->midiReadHead, 0, memory_order_relaxed);
@@ -1101,7 +1120,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            *(UInt32*)outData = inst->bypassed ? 1 : 0;
+            *(UInt32*)outData = atomic_load_explicit(&inst->bypassed, memory_order_relaxed) ? 1 : 0;
             *ioDataSize = sizeof(UInt32);
             return noErr;
         }
@@ -1423,7 +1442,7 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            inst->bypassed = (*(UInt32*)inData != 0);
+            atomic_store_explicit(&inst->bypassed, *(UInt32*)inData != 0, memory_order_relaxed);
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }
@@ -1435,9 +1454,11 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(AURenderCallbackStruct)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            inst->inputCallback = *(AURenderCallbackStruct*)inData;
-            // Clear connection when callback is set
-            inst->inputConnection.sourceAU = NULL;
+            pthread_mutex_lock(&inst->callbacksMutex);
+            inst->callbacks.input = *(AURenderCallbackStruct*)inData;
+            // Clear connection when callback is set.
+            inst->callbacks.inputConnection.sourceAU = NULL;
+            pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
 
@@ -1449,11 +1470,13 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
             const AudioUnitConnection* conn = (const AudioUnitConnection*)inData;
-            inst->inputConnection.sourceAU = conn->sourceAudioUnit;
-            inst->inputConnection.sourceOutputNumber = conn->sourceOutputNumber;
-            // Clear callback when connection is set
-            inst->inputCallback.inputProc = NULL;
-            inst->inputCallback.inputProcRefCon = NULL;
+            pthread_mutex_lock(&inst->callbacksMutex);
+            inst->callbacks.inputConnection.sourceAU = conn->sourceAudioUnit;
+            inst->callbacks.inputConnection.sourceOutputNumber = conn->sourceOutputNumber;
+            // Clear callback when connection is set.
+            inst->callbacks.input.inputProc = NULL;
+            inst->callbacks.input.inputProcRefCon = NULL;
+            pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
 
@@ -1467,7 +1490,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(AUMIDIOutputCallbackStruct)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            inst->midiOutputCallback = *(const AUMIDIOutputCallbackStruct*)inData;
+            pthread_mutex_lock(&inst->callbacksMutex);
+            inst->callbacks.midiOutput = *(const AUMIDIOutputCallbackStruct*)inData;
+            pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
 
@@ -1481,7 +1506,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             memset(&callbacks, 0, sizeof(callbacks));
             memcpy(&callbacks, inData,
                 inDataSize < sizeof(callbacks) ? inDataSize : sizeof(callbacks));
-            inst->hostCallbacks = callbacks;
+            pthread_mutex_lock(&inst->callbacksMutex);
+            inst->callbacks.host = callbacks;
+            pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
 
@@ -1568,7 +1595,7 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             inst->offlineRender = offline;
             // The plugin learns its process mode when it is prepared, so an
             // initialized unit is prepared again.
-            if (inst->initialized) {
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
                 OSStatus status = BeamerAuv2AllocateRenderResources(inst);
                 if (status != noErr) {
                     // Go back to the state the plugin was prepared for.
@@ -1684,7 +1711,7 @@ static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
 static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParameterID paramID,
     AudioUnitParameterValue value, UInt32 bufferOffset, UInt32 rampFrames) {
 
-    if (!inst->initialized) {
+    if (!atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         return false;
     }
 
@@ -1790,7 +1817,7 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
 static bool BeamerAuv2BeginMidiOutput(BeamerAuv2Instance* inst, const AudioTimeStamp* timeStamp,
     BeamerAuv2MidiOutput* output) {
 
-    output->callback = inst->midiOutputCallback;
+    output->callback = inst->renderCallbacks.midiOutput;
     if (!inst->midiOutputList || !output->callback.midiOutputCallback) {
         return false;
     }
@@ -1899,12 +1926,36 @@ static void BeamerAuv2ReadTransport(const HostCallbackInfo* host, BeamerAuTransp
 // MARK: - Render
 // =============================================================================
 
+// Pull the main input through the callback or the connection the host set.
+// Returns NULL when there is no input source or the pull failed.
+static AudioBufferList* BeamerAuv2PullInput(BeamerAuv2Instance* inst, const AudioTimeStamp* timeStamp,
+    UInt32 frames) {
+
+    const CallbackSet* callbacks = &inst->renderCallbacks;
+    if (!callbacks->input.inputProc && !callbacks->inputConnection.sourceAU) {
+        return NULL;
+    }
+
+    EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, frames);
+    AudioUnitRenderActionFlags pullFlags = 0;
+    OSStatus pullStatus;
+    if (callbacks->input.inputProc) {
+        pullStatus = callbacks->input.inputProc(callbacks->input.inputProcRefCon,
+            &pullFlags, timeStamp, 0, frames, inst->inputBufferList);
+    } else {
+        pullStatus = AudioUnitRender(callbacks->inputConnection.sourceAU,
+            &pullFlags, timeStamp, callbacks->inputConnection.sourceOutputNumber,
+            frames, inst->inputBufferList);
+    }
+    return (pullStatus == noErr) ? inst->inputBufferList : NULL;
+}
+
 static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActionFlags,
     const AudioTimeStamp* inTimeStamp, UInt32 inOutputBusNumber, UInt32 inNumberFrames, AudioBufferList* ioData) {
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
 
-    if (!inst->initialized) {
+    if (!atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         return kAudioUnitErr_Uninitialized;
     }
 
@@ -1928,30 +1979,17 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         }
     }
 
-    // Handle bypass
-    if (inst->bypassed) {
-        // For bypass, we need to copy input to output
-        // Pull input first
-        AudioBufferList* inputData = NULL;
-        if (inst->inputCallback.inputProc) {
-            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
-            AudioUnitRenderActionFlags pullFlags = 0;
-            OSStatus pullStatus = inst->inputCallback.inputProc(
-                inst->inputCallback.inputProcRefCon,
-                &pullFlags, inTimeStamp, 0, inNumberFrames, inst->inputBufferList);
-            if (pullStatus == noErr) {
-                inputData = inst->inputBufferList;
-            }
-        } else if (inst->inputConnection.sourceAU) {
-            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
-            AudioUnitRenderActionFlags pullFlags = 0;
-            OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
-                &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
-                inNumberFrames, inst->inputBufferList);
-            if (pullStatus == noErr) {
-                inputData = inst->inputBufferList;
-            }
-        }
+    // Copy the callbacks after the pre-render notifications, in which a
+    // host may still change them. When a host thread is changing them
+    // right now, this call keeps the copy of the previous call.
+    if (pthread_mutex_trylock(&inst->callbacksMutex) == 0) {
+        inst->renderCallbacks = inst->callbacks;
+        pthread_mutex_unlock(&inst->callbacksMutex);
+    }
+
+    // Bypass: the input goes to the output unchanged.
+    if (atomic_load_explicit(&inst->bypassed, memory_order_relaxed)) {
+        AudioBufferList* inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames);
 
         // Copy input to output for bypass
         if (inputData) {
@@ -2011,28 +2049,8 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 
     // Pull input audio
     AudioBufferList* inputData = NULL;
-    uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
-
-    if (inputBusCount > 0) {
-        if (inst->inputCallback.inputProc) {
-            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
-            AudioUnitRenderActionFlags pullFlags = 0;
-            OSStatus pullStatus = inst->inputCallback.inputProc(
-                inst->inputCallback.inputProcRefCon,
-                &pullFlags, inTimeStamp, 0, inNumberFrames, inst->inputBufferList);
-            if (pullStatus == noErr) {
-                inputData = inst->inputBufferList;
-            }
-        } else if (inst->inputConnection.sourceAU) {
-            EnsureInputBufferList(inst, inst->inputFormats[0].mChannelsPerFrame, inNumberFrames);
-            AudioUnitRenderActionFlags pullFlags = 0;
-            OSStatus pullStatus = AudioUnitRender(inst->inputConnection.sourceAU,
-                &pullFlags, inTimeStamp, inst->inputConnection.sourceOutputNumber,
-                inNumberFrames, inst->inputBufferList);
-            if (pullStatus == noErr) {
-                inputData = inst->inputBufferList;
-            }
-        }
+    if (beamer_au_get_input_bus_count(inst->rustInstance) > 0) {
+        inputData = BeamerAuv2PullInput(inst, inTimeStamp, inNumberFrames);
     }
 
     // Drain MIDI ring buffer and build AURenderEvent linked list.
@@ -2079,9 +2097,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     BeamerAuTransport transport;
     bool hasTransport = (inOutputBusNumber == 0);
     if (hasTransport) {
-        // Work on a copy, so that all callbacks of this call come from one set.
-        HostCallbackInfo hostCallbacks = inst->hostCallbacks;
-        BeamerAuv2ReadTransport(&hostCallbacks, &transport);
+        BeamerAuv2ReadTransport(&inst->renderCallbacks.host, &transport);
     }
 
     // The plugin's MIDI output is collected in a packet list during the call.
