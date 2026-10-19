@@ -1949,6 +1949,202 @@ mod tests {
         }
     }
 
+    /// A plugin with a stereo sidechain whose processor writes the
+    /// sidechain into its output, or -1 without one.
+    #[derive(Default)]
+    struct SidechainModel {
+        fields: TestFields,
+    }
+
+    struct SidechainProcessor;
+
+    beamer_core::__forward_model!(SidechainModel, fields);
+
+    impl Model for SidechainModel {
+        type Setup = ();
+        type Processor = SidechainProcessor;
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            SidechainProcessor
+        }
+
+        fn input_bus_count(&self) -> usize {
+            2
+        }
+
+        fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+            match index {
+                0 => Some(BusInfo::stereo("Input")),
+                1 => Some(BusInfo::aux("Sidechain", 2)),
+                _ => None,
+            }
+        }
+    }
+
+    impl Processor for SidechainProcessor {
+        fn process(
+            &mut self,
+            buffer: &mut Buffer,
+            aux: &mut AuxiliaryBuffers,
+            _context: &ProcessContext,
+        ) {
+            let sidechain = aux.sidechain();
+            for (index, channel) in buffer.channels_mut().enumerate() {
+                match &sidechain {
+                    Some(bus) => channel.copy_from_slice(bus.input(index)),
+                    None => channel.fill(-1.0),
+                }
+            }
+        }
+    }
+
+    /// An Objective-C block as the render reads it: the header with the
+    /// invoke function, and what the test's pull does.
+    #[repr(C)]
+    struct FakePullBlock {
+        isa: *const std::ffi::c_void,
+        flags: u32,
+        reserved: u32,
+        invoke: unsafe extern "C" fn(
+            *const FakePullBlock,
+            *mut u32,
+            *const AudioTimeStamp,
+            u32,
+            isize,
+            *mut AudioBufferList,
+        ) -> i32,
+        descriptor: *const std::ffi::c_void,
+        // Memory of the source's own, for a pull that replaces the pointers.
+        own: [[f32; FRAMES]; 2],
+        replace: bool,
+        fail: bool,
+        // What the pull saw: the buffer count, and whether every buffer had
+        // memory for the call. Checked by the tests, since a panic in the
+        // extern "C" pull would abort the test binary.
+        seen_buffers: std::cell::Cell<u32>,
+        seen_memory: std::cell::Cell<bool>,
+    }
+
+    /// The pull of the fake block: records what the render offers and fills
+    /// bus 1 with 0.5 on the left and 0.25 on the right.
+    unsafe extern "C" fn fake_pull(
+        block: *const FakePullBlock,
+        _flags: *mut u32,
+        _timestamp: *const AudioTimeStamp,
+        frames: u32,
+        bus: isize,
+        list: *mut AudioBufferList,
+    ) -> i32 {
+        // SAFETY: The render passes the block it got and a list of its own.
+        let (block, list) = unsafe { (&*block, &mut *list) };
+        if block.fail || bus != 1 {
+            return -1;
+        }
+        block.seen_buffers.set(list.number_buffers);
+        if list.number_buffers != 2 {
+            return -1;
+        }
+        let mut memory = true;
+        for (channel, value) in [0.5f32, 0.25].into_iter().enumerate() {
+            // SAFETY: The list holds number_buffers buffers.
+            let buffer = unsafe { list.buffer_at_mut(channel as u32) };
+            if buffer.data.is_null() || buffer.data_byte_size != frames * 4 {
+                memory = false;
+                continue;
+            }
+            if block.replace {
+                buffer.data = block.own[channel].as_ptr() as *mut std::ffi::c_void;
+            } else {
+                // SAFETY: The render's memory holds `frames` samples.
+                let samples =
+                    unsafe { std::slice::from_raw_parts_mut(buffer.data.cast::<f32>(), frames as usize) };
+                samples.fill(value);
+            }
+        }
+        block.seen_memory.set(memory);
+        if memory { 0 } else { -1 }
+    }
+
+    /// Render one call of the sidechain plugin with the given pull block
+    /// and return the first left and the last right output sample.
+    fn render_sidechain(block: &FakePullBlock) -> [f32; 2] {
+        let plugin = boxed(AuProcessor::<SidechainModel>::new());
+        let bus_config = CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(2, BusType::Aux)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+        );
+        plugin
+            .lock()
+            .unwrap()
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .expect("prepare");
+        let model = plugin.lock().unwrap().shared_model();
+        let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
+        let render_block = create_render_block_f32(
+            Arc::clone(&plugin),
+            model,
+            Arc::new(SharedState::default()),
+            storage,
+            FRAMES as u32,
+            44100.0,
+            ALL_SETTINGS,
+        );
+
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let mut input = StereoList::filled(0.0);
+        let mut output = StereoList::filled(0.0);
+        let status = render_block.process(
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            (block as *const FakePullBlock).cast(),
+            input.as_list().cast_const(),
+            None,
+            None,
+        );
+        assert_eq!(status, 0);
+        [output.samples[0][0], output.samples[1][FRAMES - 1]]
+    }
+
+    fn fake_pull_block(replace: bool, fail: bool) -> FakePullBlock {
+        FakePullBlock {
+            isa: std::ptr::null(),
+            flags: 0,
+            reserved: 0,
+            invoke: fake_pull,
+            descriptor: std::ptr::null(),
+            own: [[0.75; FRAMES], [0.125; FRAMES]],
+            replace,
+            fail,
+            seen_buffers: std::cell::Cell::new(0),
+            seen_memory: std::cell::Cell::new(false),
+        }
+    }
+
+    #[test]
+    fn test_sidechain_is_pulled_into_memory_of_our_own() {
+        // One buffer per sidechain channel, each with memory for the call.
+        let block = fake_pull_block(false, false);
+        let output = render_sidechain(&block);
+        assert_eq!(block.seen_buffers.get(), 2);
+        assert!(block.seen_memory.get());
+        assert_eq!(output, [0.5, 0.25]);
+    }
+
+    #[test]
+    fn test_sidechain_source_may_give_its_own_memory() {
+        assert_eq!(render_sidechain(&fake_pull_block(true, false)), [0.75, 0.125]);
+    }
+
+    #[test]
+    fn test_sidechain_pull_that_fails_leaves_no_sidechain() {
+        assert_eq!(render_sidechain(&fake_pull_block(false, true)), [-1.0, -1.0]);
+    }
+
     #[test]
     fn test_input_buffer_without_memory_keeps_the_next_channel_index() {
         // TestProcessor does not write its output. The host gives no memory

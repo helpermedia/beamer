@@ -41,8 +41,7 @@ use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
-    SharedModel, MAX_BUSES,
-    MAX_CHANNELS, MAX_SYSEX_SIZE,
+    SharedModel, MAX_BUSES, MAX_SYSEX_SIZE,
 };
 
 // =============================================================================
@@ -503,8 +502,8 @@ type AURenderPullInputBlock = unsafe extern "C" fn(
 
 /// Allocate an AudioBufferList with null data pointers.
 ///
-/// Used for aux buses where the host always provides its own buffer pointers.
-/// The host fills in the data pointers when pullInputBlock is called.
+/// Used for the aux input buses, whose buffers the render points at memory
+/// of its own before each pull.
 ///
 /// # Arguments
 ///
@@ -545,7 +544,8 @@ fn allocate_audio_buffer_list(
             let buffer = (*ptr).buffers.as_mut_ptr().add(i);
             (*buffer).number_channels = 1; // Non-interleaved
             (*buffer).data_byte_size = (num_samples * sample_type_size) as u32;
-            (*buffer).data = std::ptr::null_mut(); // Will be filled by host
+            // The render points it at its own memory before each pull.
+            (*buffer).data = std::ptr::null_mut();
         }
 
         Box::from_raw(ptr)
@@ -1031,6 +1031,10 @@ pub struct RenderBlock<S: Sample> {
     /// because AudioBufferList is not Sized (contains variable-length array).
     #[allow(clippy::vec_box)]
     aux_input_buffer_lists: UnsafeCell<Vec<Box<AudioBufferList>>>,
+    /// The sample memory the aux input buffer lists point at before each
+    /// pull: `[aux_bus_index][channel_index][sample_data]`, `max_frames`
+    /// samples per channel.
+    aux_input_memory: UnsafeCell<Vec<Vec<Vec<S>>>>,
     /// Pre-allocated MIDI output buffer for zero-allocation MIDI output processing
     midi_output: UnsafeCell<MidiBuffer>,
     /// Pre-allocated cache for auxiliary output bus data.
@@ -1121,12 +1125,17 @@ impl<S: RenderSample> RenderBlock<S> {
         // This ensures zero allocation in the render path
         let mut aux_input_buffer_lists = Vec::with_capacity(aux_input_bus_count);
 
-        for _ in 0..aux_input_bus_count {
-            // Each aux bus can have up to MAX_CHANNELS
-            // The host will fill in the actual channel count when we call pullInputBlock
+        let mut aux_input_memory = Vec::with_capacity(aux_input_bus_count);
+
+        for bus_idx in 0..aux_input_bus_count {
+            // One buffer per channel of the bus, backed by memory of our own:
+            // a pull gives the source buffers to render into, which it may
+            // replace with pointers of its own.
+            let channels = storage.aux_input_capacity(bus_idx);
             let buffer_list =
-                allocate_audio_buffer_list(MAX_CHANNELS, max_frames as usize, sample_type_size);
+                allocate_audio_buffer_list(channels, max_frames as usize, sample_type_size);
             aux_input_buffer_lists.push(buffer_list);
+            aux_input_memory.push(vec![vec![S::ZERO; max_frames as usize]; channels]);
         }
 
         // Pre-allocate cache for auxiliary output buses (render-once, copy-on-aux-bus pattern).
@@ -1153,6 +1162,7 @@ impl<S: RenderSample> RenderBlock<S> {
             sample_rate,
             settings,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
+            aux_input_memory: UnsafeCell::new(aux_input_memory),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
             last_render_sample_time: UnsafeCell::new(f64::NAN),
@@ -1270,7 +1280,6 @@ impl<S: RenderSample> RenderBlock<S> {
     #[allow(clippy::too_many_arguments)]
     fn process_impl(
         &self,
-        action_flags: *mut u32,
         timestamp: *const AudioTimeStamp,
         frame_count: u32,
         output_bus_number: i32,
@@ -1466,6 +1475,7 @@ impl<S: RenderSample> RenderBlock<S> {
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
             if !pull_input_block.is_null() {
                 let aux_buffer_lists = &mut *self.aux_input_buffer_lists.get();
+                let aux_input_memory = &mut *self.aux_input_memory.get();
                 let aux_input_count = aux_buffer_lists.len();
 
                 if aux_input_count > 0 {
@@ -1477,7 +1487,8 @@ impl<S: RenderSample> RenderBlock<S> {
                     // - The block must be cast to a function pointer with the correct signature
                     //
                     // Invariants that must hold:
-                    // 1. `pull_input_block` must be a valid AURenderPullInputBlock provided by AU host
+                    // 1. `pull_input_block` must be a valid AURenderPullInputBlock, the AUv3
+                    //    host's or the one the AUv2 shim builds for this call
                     // 2. The block must remain valid for the duration of this render callback
                     // 3. The function signature must exactly match Apple's documented AURenderPullInputBlock:
                     //    - action_flags: pointer to AudioUnitRenderActionFlags
@@ -1517,17 +1528,24 @@ impl<S: RenderSample> RenderBlock<S> {
                     for (aux_idx, buffer_list) in aux_buffer_lists.iter_mut().enumerate() {
                         let bus_number = (aux_idx + 1) as isize; // Bus 0 is main, 1+ are aux
 
-                        // Reset buffer data pointers to null before calling pull
-                        // The host will fill them in
-                        for i in 0..buffer_list.number_buffers {
-                            let buffer = buffer_list.buffers.as_mut_ptr().add(i as usize);
-                            (*buffer).data = std::ptr::null_mut();
+                        // Point the buffers at our own memory before the pull: the
+                        // source renders into it, or replaces the pointers with
+                        // its own. A previous pull may have replaced them.
+                        let memory = &mut aux_input_memory[aux_idx];
+                        for (i, channel) in memory.iter_mut().enumerate() {
+                            let buffer = buffer_list.buffers.as_mut_ptr().add(i);
+                            (*buffer).number_channels = 1;
+                            (*buffer).data = channel.as_mut_ptr().cast();
+                            (*buffer).data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
                         }
 
-                        // Call the pull input block to get audio from this aux bus
+                        // Call the pull input block to get audio from this aux bus.
+                        // The pull gets flags of its own: a source that reports
+                        // silence must not mark this unit's output as silent.
+                        let mut pull_flags: u32 = 0;
                         let status = pull_fn(
                             pull_input_block,
-                            action_flags,
+                            &mut pull_flags,
                             timestamp,
                             frame_count,
                             bus_number,
@@ -1668,7 +1686,8 @@ impl<S: RenderSample> RenderBlock<S> {
 impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
     fn process(
         &self,
-        action_flags: *mut u32,
+        // The unit sets no flags of its own; aux pulls get flags of their own.
+        _action_flags: *mut u32,
         timestamp: *const AudioTimeStamp,
         frame_count: u32,
         output_bus_number: i32,
@@ -1686,7 +1705,6 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
         }
 
         self.process_impl(
-            action_flags,
             timestamp,
             frame_count,
             output_bus_number,

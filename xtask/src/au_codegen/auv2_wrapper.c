@@ -78,12 +78,12 @@ typedef struct {
     UInt32 sourceOutputNumber;
 } InputConnection;
 
-// What the host sets for the render thread to call: the input source (a
-// callback or a connection), the MIDI output callback and the host
-// callbacks.
+// What the host sets for the render thread to call: the input source of
+// each input element (a callback or a connection), the MIDI output
+// callback and the host callbacks.
 typedef struct {
-    AURenderCallbackStruct input;
-    InputConnection inputConnection;
+    AURenderCallbackStruct input[BEAMER_AU_MAX_BUSES];
+    InputConnection inputConnection[BEAMER_AU_MAX_BUSES];
     AUMIDIOutputCallbackStruct midiOutput;
     HostCallbackInfo host;
 } CallbackSet;
@@ -136,7 +136,8 @@ typedef struct BeamerAuv2Instance {
 
     // Allocated input buffer for pulling
     AudioBufferList* inputBufferList;
-    UInt32 inputBufferCapacity;
+    // Samples each owned input buffer holds.
+    UInt32 inputBufferFrames;
     void* ownedInputBuffers[BEAMER_AU_MAX_CHANNELS]; // tracks our calloc'd mData pointers
 
     // Property listeners
@@ -259,6 +260,12 @@ static bool StreamFormatsEqual(const AudioStreamBasicDescription* a, const Audio
         && a->mBitsPerChannel == b->mBitsPerChannel;
 }
 
+// Whether `element` is an input element of the plugin.
+static bool BeamerAuv2IsInputElement(BeamerAuv2Instance* inst, AudioUnitElement element) {
+    return element < BEAMER_AU_MAX_BUSES
+        && element < beamer_au_get_input_bus_count(inst->rustInstance);
+}
+
 static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
     AudioUnitScope scope, AudioUnitElement element) {
     pthread_mutex_lock(&inst->listenerMutex);
@@ -273,14 +280,21 @@ static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyI
     pthread_mutex_unlock(&inst->listenerMutex);
 }
 
+// Bytes per sample of a float format: 4 or 8.
+static UInt32 BeamerAuv2SampleBytes(const AudioStreamBasicDescription* format) {
+    return (format->mBitsPerChannel == 64) ? sizeof(Float64) : sizeof(Float32);
+}
+
+// The input buffers hold 64-bit samples, so that they fit either format.
 static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels, UInt32 frames) {
     if (channels > BEAMER_AU_MAX_CHANNELS) return kAudio_ParamError;
-    UInt32 neededCapacity = frames * channels;
-    if (inst->inputBufferList && inst->inputBufferCapacity >= neededCapacity) {
+    UInt32 byteSize = frames * BeamerAuv2SampleBytes(&inst->inputFormats[0]);
+    if (inst->inputBufferList && inst->inputBufferList->mNumberBuffers == channels
+        && inst->inputBufferFrames >= frames) {
         // Existing buffer is large enough. Restore our owned mData pointers
         // because the host may have replaced them during a previous render.
         for (UInt32 i = 0; i < inst->inputBufferList->mNumberBuffers; i++) {
-            inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
+            inst->inputBufferList->mBuffers[i].mDataByteSize = byteSize;
             inst->inputBufferList->mBuffers[i].mData = inst->ownedInputBuffers[i];
         }
         return noErr;
@@ -303,8 +317,8 @@ static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels,
     inst->inputBufferList->mNumberBuffers = channels;
     for (UInt32 i = 0; i < channels; i++) {
         inst->inputBufferList->mBuffers[i].mNumberChannels = 1;
-        inst->inputBufferList->mBuffers[i].mDataByteSize = frames * sizeof(Float32);
-        inst->ownedInputBuffers[i] = calloc(frames, sizeof(Float32));
+        inst->inputBufferList->mBuffers[i].mDataByteSize = byteSize;
+        inst->ownedInputBuffers[i] = calloc(frames, sizeof(Float64));
         inst->inputBufferList->mBuffers[i].mData = inst->ownedInputBuffers[i];
         if (!inst->ownedInputBuffers[i]) {
             FreeInputBufferList(inst);
@@ -312,7 +326,7 @@ static OSStatus EnsureInputBufferList(BeamerAuv2Instance* inst, UInt32 channels,
         }
     }
 
-    inst->inputBufferCapacity = neededCapacity;
+    inst->inputBufferFrames = frames;
     return noErr;
 }
 
@@ -325,7 +339,7 @@ static void FreeInputBufferList(BeamerAuv2Instance* inst) {
         }
         free(inst->inputBufferList);
         inst->inputBufferList = NULL;
-        inst->inputBufferCapacity = 0;
+        inst->inputBufferFrames = 0;
     }
 }
 
@@ -657,11 +671,25 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
         return kAudioUnitErr_FormatNotSupported;
     }
 
-    // Determine sample format
-    BeamerAuSampleFormat format = BeamerAuSampleFormatFloat32;
-    if (outputBusCount > 0 && inst->outputFormats[0].mBitsPerChannel == 64) {
-        format = BeamerAuSampleFormatFloat64;
+    // Determine sample format. The plugin renders every bus in one sample
+    // type, so all buses must have the same depth.
+    UInt32 bits = 32;
+    if (outputBusCount > 0) {
+        bits = inst->outputFormats[0].mBitsPerChannel;
+    } else if (inputBusCount > 0) {
+        bits = inst->inputFormats[0].mBitsPerChannel;
     }
+    for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        if (inst->inputFormats[i].mBitsPerChannel != bits) {
+            return kAudioUnitErr_FormatNotSupported;
+        }
+    }
+    for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+        if (inst->outputFormats[i].mBitsPerChannel != bits) {
+            return kAudioUnitErr_FormatNotSupported;
+        }
+    }
+    BeamerAuSampleFormat format = (bits == 64) ? BeamerAuSampleFormatFloat64 : BeamerAuSampleFormatFloat32;
 
     // Allocate render resources in Rust
     return beamer_au_allocate_render_resources(
@@ -877,21 +905,27 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
 
         // Render callback (for setting input source)
         case kAudioUnitProperty_SetRenderCallback:
-            if (scope == kAudioUnitScope_Input && element == 0) {
-                if (outDataSize) *outDataSize = sizeof(AURenderCallbackStruct);
-                if (outWritable) *outWritable = true;
-                return noErr;
+            if (scope != kAudioUnitScope_Input) {
+                return kAudioUnitErr_InvalidScope;
             }
-            return kAudioUnitErr_InvalidScope;
+            if (!BeamerAuv2IsInputElement(inst, element)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            if (outDataSize) *outDataSize = sizeof(AURenderCallbackStruct);
+            if (outWritable) *outWritable = true;
+            return noErr;
 
         // Audio unit connection
         case kAudioUnitProperty_MakeConnection:
-            if (scope == kAudioUnitScope_Input && element == 0) {
-                if (outDataSize) *outDataSize = sizeof(AudioUnitConnection);
-                if (outWritable) *outWritable = true;
-                return noErr;
+            if (scope != kAudioUnitScope_Input) {
+                return kAudioUnitErr_InvalidScope;
             }
-            return kAudioUnitErr_InvalidScope;
+            if (!BeamerAuv2IsInputElement(inst, element)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            if (outDataSize) *outDataSize = sizeof(AudioUnitConnection);
+            if (outWritable) *outWritable = true;
+            return noErr;
 
         // Supported channel layouts
         case kAudioUnitProperty_SupportedNumChannels:
@@ -1614,34 +1648,40 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
         }
 
         case kAudioUnitProperty_SetRenderCallback: {
-            if (scope != kAudioUnitScope_Input || element != 0) {
+            if (scope != kAudioUnitScope_Input) {
                 return kAudioUnitErr_InvalidScope;
+            }
+            if (!BeamerAuv2IsInputElement(inst, element)) {
+                return kAudioUnitErr_InvalidElement;
             }
             if (!inData || inDataSize < sizeof(AURenderCallbackStruct)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
             pthread_mutex_lock(&inst->callbacksMutex);
-            inst->callbacks.input = *(AURenderCallbackStruct*)inData;
+            inst->callbacks.input[element] = *(AURenderCallbackStruct*)inData;
             // Clear connection when callback is set.
-            inst->callbacks.inputConnection.sourceAU = NULL;
+            inst->callbacks.inputConnection[element].sourceAU = NULL;
             pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
 
         case kAudioUnitProperty_MakeConnection: {
-            if (scope != kAudioUnitScope_Input || element != 0) {
+            if (scope != kAudioUnitScope_Input) {
                 return kAudioUnitErr_InvalidScope;
+            }
+            if (!BeamerAuv2IsInputElement(inst, element)) {
+                return kAudioUnitErr_InvalidElement;
             }
             if (!inData || inDataSize < sizeof(AudioUnitConnection)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
             const AudioUnitConnection* conn = (const AudioUnitConnection*)inData;
             pthread_mutex_lock(&inst->callbacksMutex);
-            inst->callbacks.inputConnection.sourceAU = conn->sourceAudioUnit;
-            inst->callbacks.inputConnection.sourceOutputNumber = conn->sourceOutputNumber;
+            inst->callbacks.inputConnection[element].sourceAU = conn->sourceAudioUnit;
+            inst->callbacks.inputConnection[element].sourceOutputNumber = conn->sourceOutputNumber;
             // Clear callback when connection is set.
-            inst->callbacks.input.inputProc = NULL;
-            inst->callbacks.input.inputProcRefCon = NULL;
+            inst->callbacks.input[element].inputProc = NULL;
+            inst->callbacks.input[element].inputProcRefCon = NULL;
             pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
@@ -2112,6 +2152,27 @@ static void BeamerAuv2ReadTransport(const HostCallbackInfo* host, BeamerAuTransp
 // MARK: - Render
 // =============================================================================
 
+// Pull input element `element` into `list` from the callback or connection
+// the host set for it. Returns kAudioUnitErr_NoConnection without one.
+static OSStatus BeamerAuv2PullElement(BeamerAuv2Instance* inst, AudioUnitRenderActionFlags* flags,
+    const AudioTimeStamp* timeStamp, UInt32 frames, UInt32 element, AudioBufferList* list) {
+
+    if (element >= BEAMER_AU_MAX_BUSES) {
+        return kAudioUnitErr_InvalidElement;
+    }
+    const CallbackSet* callbacks = &inst->renderCallbacks;
+    if (callbacks->input[element].inputProc) {
+        return callbacks->input[element].inputProc(callbacks->input[element].inputProcRefCon,
+            flags, timeStamp, element, frames, list);
+    }
+    if (callbacks->inputConnection[element].sourceAU) {
+        return AudioUnitRender(callbacks->inputConnection[element].sourceAU,
+            flags, timeStamp, callbacks->inputConnection[element].sourceOutputNumber,
+            frames, list);
+    }
+    return kAudioUnitErr_NoConnection;
+}
+
 // Whether every buffer of `list` is one channel with memory for `byteSize`
 // bytes.
 static bool BeamerAuv2HasMemory(const AudioBufferList* list, UInt32 byteSize) {
@@ -2139,7 +2200,7 @@ static AudioBufferList* BeamerAuv2PullInput(BeamerAuv2Instance* inst, const Audi
     UInt32 frames, AudioBufferList* ioData) {
 
     const CallbackSet* callbacks = &inst->renderCallbacks;
-    if (!callbacks->input.inputProc && !callbacks->inputConnection.sourceAU) {
+    if (!callbacks->input[0].inputProc && !callbacks->inputConnection[0].sourceAU) {
         return NULL;
     }
 
@@ -2147,7 +2208,7 @@ static AudioBufferList* BeamerAuv2PullInput(BeamerAuv2Instance* inst, const Audi
         return NULL;
     }
     AudioBufferList* input = inst->inputBufferList;
-    UInt32 byteSize = frames * sizeof(Float32);
+    UInt32 byteSize = frames * BeamerAuv2SampleBytes(&inst->inputFormats[0]);
     bool inPlace = atomic_load_explicit(&inst->processesInPlace, memory_order_relaxed)
         && ioData != NULL && ioData->mNumberBuffers == input->mNumberBuffers;
     bool intoOutput = inPlace && BeamerAuv2HasMemory(ioData, byteSize);
@@ -2158,16 +2219,7 @@ static AudioBufferList* BeamerAuv2PullInput(BeamerAuv2Instance* inst, const Audi
     }
 
     AudioUnitRenderActionFlags pullFlags = 0;
-    OSStatus pullStatus;
-    if (callbacks->input.inputProc) {
-        pullStatus = callbacks->input.inputProc(callbacks->input.inputProcRefCon,
-            &pullFlags, timeStamp, 0, frames, input);
-    } else {
-        pullStatus = AudioUnitRender(callbacks->inputConnection.sourceAU,
-            &pullFlags, timeStamp, callbacks->inputConnection.sourceOutputNumber,
-            frames, input);
-    }
-    if (pullStatus != noErr) {
+    if (BeamerAuv2PullElement(inst, &pullFlags, timeStamp, frames, 0, input) != noErr) {
         return NULL;
     }
 
@@ -2279,11 +2331,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         // An output buffer still without memory (no input for it) gets
         // silence of our own.
         UInt32 formatBus = (inOutputBusNumber < BEAMER_AU_MAX_BUSES) ? inOutputBusNumber : 0;
-        UInt32 bytesPerSample = inst->outputFormats[formatBus].mBytesPerFrame;
-        if (bytesPerSample == 0 || bytesPerSample > sizeof(Float64)) {
-            bytesPerSample = sizeof(Float32);
-        }
-        UInt32 silenceBytes = inNumberFrames * bytesPerSample;
+        UInt32 silenceBytes = inNumberFrames * BeamerAuv2SampleBytes(&inst->outputFormats[formatBus]);
         bool silenceZeroed = false;
         for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
             if (ioData->mBuffers[i].mData == NULL && inst->bypassSilence != NULL
@@ -2392,6 +2440,19 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     bool sendsMidi = (inOutputBusNumber == 0)
         && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &midiOutput);
 
+    // The aux inputs (sidechains) are pulled by the plugin's render through
+    // this block, from the callback or connection the host set for each
+    // element. It lives on the stack for this call only; unretained, so that
+    // it is not copied to the heap on the render thread.
+    __unsafe_unretained AURenderPullInputBlock pullAuxInput = ^AUAudioUnitStatus(AudioUnitRenderActionFlags* flags,
+        const AudioTimeStamp* timestamp, AUAudioFrameCount frameCount, NSInteger bus,
+        AudioBufferList* list) {
+        if (bus < 1) {
+            return kAudioUnitErr_InvalidElement;
+        }
+        return BeamerAuv2PullElement(inst, flags, timestamp, frameCount, (UInt32)bus, list);
+    };
+
     // Call Rust render function
     OSStatus status = beamer_au_render(
         inst->rustInstance,
@@ -2401,7 +2462,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         inOutputBusNumber,
         ioData,
         eventList,
-        NULL,  // pull_input_block (we pre-pulled via callback/connection)
+        pullAuxInput,
         inputData,
         hasTransport ? &transport : NULL,
         sendsMidi ? BeamerAuv2SendMidi : NULL,
