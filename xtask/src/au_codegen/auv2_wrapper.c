@@ -239,6 +239,18 @@ static void InitDefaultFormat(AudioStreamBasicDescription* format, Float64 sampl
     format->mBitsPerChannel = 32;
 }
 
+// Whether two stream formats are the same, field by field.
+static bool StreamFormatsEqual(const AudioStreamBasicDescription* a, const AudioStreamBasicDescription* b) {
+    return a->mSampleRate == b->mSampleRate
+        && a->mFormatID == b->mFormatID
+        && a->mFormatFlags == b->mFormatFlags
+        && a->mBytesPerPacket == b->mBytesPerPacket
+        && a->mFramesPerPacket == b->mFramesPerPacket
+        && a->mBytesPerFrame == b->mBytesPerFrame
+        && a->mChannelsPerFrame == b->mChannelsPerFrame
+        && a->mBitsPerChannel == b->mBitsPerChannel;
+}
+
 static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
     AudioUnitScope scope, AudioUnitElement element) {
     pthread_mutex_lock(&inst->listenerMutex);
@@ -716,7 +728,8 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
     if (outWritable) *outWritable = false;
 
     switch (propID) {
-        // Stream format (only valid for existing buses)
+        // Stream format (only valid for existing buses). The plugin is
+        // prepared for the format, so it can only change while uninitialized.
         case kAudioUnitProperty_StreamFormat:
             if (scope == kAudioUnitScope_Input) {
                 if (element >= beamer_au_get_input_bus_count(inst->rustInstance))
@@ -726,13 +739,13 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                     return kAudioUnitErr_InvalidElement;
             }
             if (outDataSize) *outDataSize = sizeof(AudioStreamBasicDescription);
-            if (outWritable) *outWritable = true;
+            if (outWritable) *outWritable = !atomic_load_explicit(&inst->initialized, memory_order_acquire);
             return noErr;
 
-        // Sample rate
+        // Sample rate, part of the stream format.
         case kAudioUnitProperty_SampleRate:
             if (outDataSize) *outDataSize = sizeof(Float64);
-            if (outWritable) *outWritable = true;
+            if (outWritable) *outWritable = !atomic_load_explicit(&inst->initialized, memory_order_acquire);
             return noErr;
 
         // Maximum frames per slice
@@ -1499,6 +1512,14 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 }
             }
 
+            // The plugin is prepared for the current format: an initialized
+            // unit only accepts it again.
+            const AudioStreamBasicDescription* current = (scope == kAudioUnitScope_Input)
+                ? &inst->inputFormats[element] : &inst->outputFormats[element];
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
+                return StreamFormatsEqual(desc, current) ? noErr : kAudioUnitErr_PropertyNotWritable;
+            }
+
             // Apply the format change
             if (scope == kAudioUnitScope_Input) {
                 inst->inputFormats[element] = *desc;
@@ -1515,9 +1536,24 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(Float64)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            inst->sampleRate = *(Float64*)inData;
+            Float64 sampleRate = *(Float64*)inData;
             uint32_t inBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
             uint32_t outBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
+
+            // The plugin is prepared for the current rate: an initialized
+            // unit only accepts it again.
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
+                bool changes = (inst->sampleRate != sampleRate);
+                for (uint32_t i = 0; i < inBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+                    changes |= (inst->inputFormats[i].mSampleRate != sampleRate);
+                }
+                for (uint32_t i = 0; i < outBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
+                    changes |= (inst->outputFormats[i].mSampleRate != sampleRate);
+                }
+                return changes ? kAudioUnitErr_PropertyNotWritable : noErr;
+            }
+
+            inst->sampleRate = sampleRate;
             for (uint32_t i = 0; i < inBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
                 inst->inputFormats[i].mSampleRate = inst->sampleRate;
             }
@@ -1531,6 +1567,11 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
         case kAudioUnitProperty_MaximumFramesPerSlice: {
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
+            }
+            // The plugin and the input buffer are prepared for the current
+            // limit, so it can only change while uninitialized.
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
+                return kAudioUnitErr_Initialized;
             }
             inst->maxFramesPerSlice = *(UInt32*)inData;
             NotifyPropertyListeners(inst, propID, scope, element);
