@@ -973,9 +973,11 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// A host may switch aux buses on and off and ask for other channel
     /// sets. Before the plugin is prepared with a new combination that one
     /// of its [`LAYOUTS`](Model::LAYOUTS) allows, it is asked here, on a
-    /// host thread.
-    /// When it refuses, it is prepared with the last combination it
-    /// accepted. It starts with the declared default
+    /// host thread. A format whose host offers channel sets asks it then
+    /// too (VST3 `setBusArrangements`), so that it refuses sets the plugin
+    /// does not support and suggests ones it does. When the plugin refuses
+    /// a combination it is to be prepared with, it is prepared with the
+    /// last combination it accepted. It starts with the declared default
     /// ([`ActiveBuses::default_for`]) without being asked. The
     /// framework bridges the difference: a bus the plugin keeps on reads
     /// silence or renders into memory that is dropped, a bus it keeps off

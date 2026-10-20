@@ -294,14 +294,6 @@ impl BusNegotiation {
         true
     }
 
-    /// The buses of the listed layout nearest to the host's request, with
-    /// the main buses on as the plugin has them (see
-    /// [`channel_layouts::nearest`]), for a format that suggests a layout
-    /// when it refuses one.
-    pub fn nearest(&self, layouts: &'static [Layout]) -> ActiveBuses {
-        channel_layouts::nearest(layouts, &self.requested.with_main_buses_on(&self.accepted))
-    }
-
     /// How input bus `bus` is connected. An undeclared bus is
     /// [`BusRouting::Off`].
     pub fn input_routing(&self, bus: usize) -> BusRouting {
@@ -624,12 +616,6 @@ mod tests {
         assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Mono)));
         assert!(!negotiation.negotiate(&model));
         assert_eq!(negotiation.accepted(), &ActiveBuses::default_for(&model));
-
-        // The main output decides for the nearest listed layout: stereo in
-        // and out.
-        let nearest = negotiation.nearest(MonoOrStereoModel::LAYOUTS);
-        assert_eq!(nearest.input_set(0), Some(ChannelSet::Stereo));
-        assert_eq!(nearest.output_set(0), Some(ChannelSet::Stereo));
 
         // Nor is a set of the same count as a listed one.
         assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Discrete(2))));

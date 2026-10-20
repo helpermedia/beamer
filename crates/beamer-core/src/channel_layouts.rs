@@ -40,11 +40,12 @@ pub enum ChannelSet {
     Surround50,
     /// L R C LFE Ls Rs.
     Surround51,
-    /// 5.0 with two more surround channels.
+    /// L R C Lrs Rrs Lss Rss: the rear surround pair before the side pair.
     Surround70,
-    /// 5.1 with two more surround channels.
+    /// L R C LFE Lrs Rrs Lss Rss.
     Surround71,
-    /// 7.1 with four height speakers.
+    /// 7.1 with four height speakers: L R C LFE Lrs Rrs Lss Rss Ltf Rtf Ltr
+    /// Rtr.
     Surround714,
     /// Ambisonics of an order from 1 (ACN order, SN3D), (order + 1)^2
     /// channels. Orders 1 to 4 fit in [`MAX_CHANNELS`].
@@ -331,20 +332,39 @@ pub fn matching(layouts: &'static [Layout], buses: &ActiveBuses) -> Option<&'sta
 /// `buses` gives them unchanged, as does a request with other bus counts
 /// than the layouts.
 pub fn nearest(layouts: &'static [Layout], buses: &ActiveBuses) -> ActiveBuses {
-    let mut nearest: Option<(&Layout, Closeness)> = None;
-    for layout in layouts {
-        if layout.inputs.len() != buses.input_bus_count() || layout.outputs.len() != buses.output_bus_count() {
-            continue;
-        }
-        let closeness = layout.closeness(buses);
-        if nearest.is_none_or(|(_, best)| closeness > best) {
-            nearest = Some((layout, closeness));
-        }
+    nearest_with(layouts, buses, |_| true)
+}
+
+/// [`nearest`] among the layouts whose buses `accepts` takes: the nearest
+/// layout for which it returns true for `buses` as that layout has them.
+/// When it takes none, [`nearest`] of all layouts.
+///
+/// A format wrapper passes the plugin's
+/// [`supports_buses`](crate::Model::supports_buses), so that it does not
+/// suggest buses the plugin refuses.
+pub fn nearest_with(
+    layouts: &'static [Layout],
+    buses: &ActiveBuses,
+    mut accepts: impl FnMut(&ActiveBuses) -> bool,
+) -> ActiveBuses {
+    let mut ranked: Vec<(&Layout, Closeness)> = layouts
+        .iter()
+        .filter(|layout| {
+            layout.inputs.len() == buses.input_bus_count() && layout.outputs.len() == buses.output_bus_count()
+        })
+        .map(|layout| (layout, layout.closeness(buses)))
+        .collect();
+    if ranked.is_empty() {
+        return *buses;
     }
-    match nearest {
-        Some((layout, _)) => layout.apply(buses),
-        None => *buses,
-    }
+    // Nearest first; the sort is stable, so equally near layouts keep
+    // their order.
+    ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
+    ranked
+        .iter()
+        .map(|(layout, _)| layout.apply(buses))
+        .find(|applied| accepts(applied))
+        .unwrap_or_else(|| ranked[0].0.apply(buses))
 }
 
 /// Checks the layouts a plugin lists: at least one, all with the same
@@ -638,6 +658,15 @@ mod tests {
             Layout::MONO_TO_STEREO,
         ];
         assert_eq!(nearest(FOLLOWED_OR_MONO, &request), buses(&[Some(Mono)], &[Some(Stereo)]));
+
+        // Of the layouts the predicate takes.
+        let request = buses(&[Some(Stereo), None], &[Some(Mono)]);
+        let mono_out = |buses: &ActiveBuses| buses.output_set(0) == Some(Mono);
+        let not_mono_out = |buses: &ActiveBuses| buses.output_set(0) != Some(Mono);
+        assert_eq!(nearest_with(EFFECT, &request, mono_out), buses(&[Some(Mono), None], &[Some(Mono)]));
+        assert_eq!(nearest_with(EFFECT, &request, not_mono_out), buses(&[Some(Stereo), None], &[Some(Stereo)]));
+        // It takes none: the nearest of all.
+        assert_eq!(nearest_with(EFFECT, &request, |_| false), buses(&[Some(Mono), None], &[Some(Mono)]));
 
         // Other bus counts than the layouts: unchanged.
         let request = buses(&[Some(Quad)], &[Some(Quad)]);

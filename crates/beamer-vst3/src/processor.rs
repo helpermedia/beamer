@@ -30,17 +30,18 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusNegotiation, BusRouting,
-    BusType as CoreBusType, CachedBusConfig, ChannelSet, ChordInfo, ConversionBuffers,
+    BusLayout, BusType as CoreBusType, CachedBusConfig, ChannelSet, ChordInfo, ConversionBuffers,
     FrameRate as CoreFrameRate, Layout, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
     ProcessWarnings, Processor, Sample, ScaleInfo, SysEx,
-    SharedModel, SysExOutputPool, Transport, MAX_BUSES, MAX_CHANNELS,
+    SharedModel, SysExOutputPool, Transport, MAX_BUSES,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
 };
 
+use beamer_core::channel_layouts;
 use beamer_core::state_format::{StateEntries, StateWriter};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
@@ -48,6 +49,7 @@ use crate::component_handler::ComponentHandler;
 #[cfg(feature = "webview")]
 use beamer_core::{WebViewDispatch, WebViewEventQueue};
 use crate::factory::ComponentFactory;
+use crate::speakers;
 use crate::util::{copy_wstring, len_wstring};
 
 // VST3 event type constants
@@ -329,21 +331,6 @@ unsafe fn extract_transport(context_ptr: *const ProcessContext) -> Transport {
     }
 }
 
-/// Validate that a speaker arrangement doesn't exceed MAX_CHANNELS.
-///
-/// Returns `Ok(())` if valid, or `Err` with a descriptive message if exceeded.
-fn validate_speaker_arrangement(arrangement: SpeakerArrangement) -> Result<(), String> {
-    let channel_count = arrangement.count_ones() as usize;
-    if channel_count > MAX_CHANNELS {
-        return Err(format!(
-            "Speaker arrangement has {} channels, but MAX_CHANNELS is {}",
-            channel_count, MAX_CHANNELS
-        ));
-    }
-    Ok(())
-}
-
-
 // =============================================================================
 // Setup Extraction
 // =============================================================================
@@ -494,28 +481,216 @@ unsafe fn collect_channels<S: HostSample>(
     }
 }
 
-/// Write silence to the host's channels of the output buses the host has
-/// on and the plugin off, which the plugin does not render.
+/// Write silence to the host's output channels the plugin does not
+/// render: those of a bus the host has on and the plugin off, also those
+/// past the plugin's channels of a bus both have on (a host that keeps an
+/// arrangement the plugin refused).
 ///
 /// # Safety
 ///
 /// The host's buffers in `data` must be of sample type `S` and valid for
 /// `num_samples` samples. No reference to their memory may be alive.
-unsafe fn silence_host_only_outputs<S: HostSample>(
+unsafe fn silence_unrendered_outputs<S: HostSample>(
     data: &ProcessData,
     buses: &BusNegotiation,
     num_samples: usize,
 ) {
     for bus in 0..data.numOutputs.max(0) as usize {
-        if buses.output_routing(bus) != BusRouting::HostOnly {
-            continue;
-        }
+        let rendered = match buses.output_routing(bus) {
+            BusRouting::HostOnly => 0,
+            BusRouting::Connected => buses.accepted().output(bus).unwrap_or(0) as usize,
+            BusRouting::Off | BusRouting::PluginOnly => continue,
+        };
         // SAFETY: See the function's safety section.
-        for &ptr in unsafe { host_channels::<S>(data.outputs, data.numOutputs, bus) } {
+        for &ptr in unsafe { host_channels::<S>(data.outputs, data.numOutputs, bus) }.iter().skip(rendered) {
             if !ptr.is_null() {
                 // SAFETY: Valid for num_samples writes (caller).
                 unsafe { std::ptr::write_bytes(ptr, 0, num_samples) };
             }
+        }
+    }
+}
+
+// =============================================================================
+// Host Buses
+// =============================================================================
+
+/// The buses as the host set them up, kept by host threads.
+///
+/// The host gives every bus a speaker arrangement (`setBusArrangements()`)
+/// and switches buses on and off (`activateBus()`). A bus that is on is
+/// requested with its set; the negotiation decides what the plugin is
+/// prepared with.
+#[derive(Clone, Copy)]
+struct HostBuses {
+    /// The set of every bus, on or off: from the host's arrangement, or
+    /// the first layout's until the host gives one.
+    sets: ActiveBuses,
+    /// The arrangement of each input bus: the host's for the set in `sets`
+    /// it came from, otherwise the one of that set.
+    input_arrangements: [SpeakerArrangement; MAX_BUSES],
+    /// The arrangement of each output bus, as for the inputs.
+    output_arrangements: [SpeakerArrangement; MAX_BUSES],
+    /// The buses the host has on with their sets, then the buses the plugin
+    /// accepted.
+    negotiation: BusNegotiation,
+}
+
+impl HostBuses {
+    /// The first layout of `P`, the buses on as the model declares them
+    /// active (the flags `getBusInfo()` reports).
+    fn new<P: Model>(model: &P) -> Self {
+        let sets = ActiveBuses::all_on(Layout::default_of(P::LAYOUTS));
+        let mut buses = Self {
+            sets,
+            input_arrangements: [0; MAX_BUSES],
+            output_arrangements: [0; MAX_BUSES],
+            negotiation: BusNegotiation::new(model),
+        };
+        for bus in 0..sets.input_bus_count() {
+            buses.input_arrangements[bus] = sets.input_set(bus).map_or(0, speakers::arrangement_for);
+        }
+        for bus in 0..sets.output_bus_count() {
+            buses.output_arrangements[bus] = sets.output_set(bus).map_or(0, speakers::arrangement_for);
+        }
+        buses
+    }
+
+    /// Switches a bus on with its set, or off. Returns false for a bus
+    /// that does not exist.
+    fn activate(&mut self, input: bool, bus: usize, on: bool) -> bool {
+        let requested = self.negotiation.requested_mut();
+        if input {
+            requested.set_input(bus, self.sets.input_set(bus).filter(|_| on))
+        } else {
+            requested.set_output(bus, self.sets.output_set(bus).filter(|_| on))
+        }
+    }
+
+    /// Takes the host's arrangements, one per bus (the caller checks the
+    /// counts). Returns true when one of `layouts` allows their sets and
+    /// `supports_buses` accepts them with the buses the host has on (main
+    /// buses always on). The buses get the sets of the nearest listed
+    /// layout the plugin supports otherwise, which the host reads back
+    /// with `getBusArrangement()`; it returns false then.
+    ///
+    /// Every bus counts, also one the host has off: its set must be listed
+    /// next to the others. An aux bus without speakers (`kEmpty`) keeps its
+    /// set. The buses that are on are requested with their new sets.
+    fn arrange(
+        &mut self,
+        layouts: &'static [Layout],
+        inputs: &[SpeakerArrangement],
+        outputs: &[SpeakerArrangement],
+        supports_buses: impl Fn(&ActiveBuses) -> bool,
+    ) -> bool {
+        // The set each arrangement stands for, `None` for one without a
+        // set (no speakers or too many). An aux bus without speakers keeps
+        // its set.
+        let listed = |buses: fn(&Layout) -> &[BusLayout], bus: usize| {
+            layouts.iter().filter_map(move |layout| match buses(layout).get(bus) {
+                Some(&BusLayout::Set(set)) => Some(set),
+                _ => None,
+            })
+        };
+        let input_sets: Vec<Option<ChannelSet>> = inputs
+            .iter()
+            .enumerate()
+            .map(|(bus, &arrangement)| match arrangement {
+                0 if bus > 0 => self.sets.input_set(bus),
+                _ => speakers::set_for(arrangement, listed(|layout| layout.inputs, bus)),
+            })
+            .collect();
+        let output_sets: Vec<Option<ChannelSet>> = outputs
+            .iter()
+            .enumerate()
+            .map(|(bus, &arrangement)| match arrangement {
+                0 if bus > 0 => self.sets.output_set(bus),
+                _ => speakers::set_for(arrangement, listed(|layout| layout.outputs, bus)),
+            })
+            .collect();
+
+        // Every bus on with the host's set; a bus without a set keeps its
+        // current one: the arrangements are refused.
+        let mut request = self.sets;
+        for (bus, &set) in input_sets.iter().enumerate() {
+            if set.is_some() {
+                let _ = request.set_input(bus, set);
+            }
+        }
+        for (bus, &set) in output_sets.iter().enumerate() {
+            if set.is_some() {
+                let _ = request.set_output(bus, set);
+            }
+        }
+        let every_set = input_sets.iter().chain(&output_sets).all(Option::is_some);
+        let supported = |sets: &ActiveBuses| supports_buses(&self.requested_with(sets));
+        let allowed = every_set && channel_layouts::matching(layouts, &request).is_some() && supported(&request);
+        let sets = if allowed {
+            request
+        } else {
+            channel_layouts::nearest_with(layouts, &request, supported)
+        };
+
+        // A bus keeps the host's arrangement where it keeps its set and the
+        // host gave speakers.
+        for (bus, &arrangement) in inputs.iter().enumerate() {
+            let set = sets.input_set(bus);
+            self.input_arrangements[bus] = if set == input_sets[bus] && arrangement != 0 {
+                arrangement
+            } else {
+                set.map_or(0, speakers::arrangement_for)
+            };
+        }
+        for (bus, &arrangement) in outputs.iter().enumerate() {
+            let set = sets.output_set(bus);
+            self.output_arrangements[bus] = if set == output_sets[bus] && arrangement != 0 {
+                arrangement
+            } else {
+                set.map_or(0, speakers::arrangement_for)
+            };
+        }
+        self.sets = sets;
+
+        let requested = self.negotiation.requested_mut();
+        for bus in 0..sets.input_bus_count() {
+            if requested.is_input_on(bus) {
+                let _ = requested.set_input(bus, sets.input_set(bus));
+            }
+        }
+        for bus in 0..sets.output_bus_count() {
+            if requested.is_output_on(bus) {
+                let _ = requested.set_output(bus, sets.output_set(bus));
+            }
+        }
+        allowed
+    }
+
+    /// The buses the host has on, the main buses always, with the sets of
+    /// `sets`: what the plugin would be asked about with them.
+    fn requested_with(&self, sets: &ActiveBuses) -> ActiveBuses {
+        let requested = self.negotiation.requested();
+        let mut buses = *sets;
+        for bus in 1..buses.input_bus_count() {
+            if !requested.is_input_on(bus) {
+                let _ = buses.set_input(bus, None);
+            }
+        }
+        for bus in 1..buses.output_bus_count() {
+            if !requested.is_output_on(bus) {
+                let _ = buses.set_output(bus, None);
+            }
+        }
+        buses
+    }
+
+    /// The set and arrangement of a bus, `None` for one that does not
+    /// exist.
+    fn bus(&self, dir: BusDirection, bus: usize) -> Option<(ChannelSet, SpeakerArrangement)> {
+        match dir as BusDirections {
+            BusDirections_::kInput => Some((self.sets.input_set(bus)?, self.input_arrangements[bus])),
+            BusDirections_::kOutput => Some((self.sets.output_set(bus)?, self.output_arrangements[bus])),
+            _ => None,
         }
     }
 }
@@ -631,12 +806,12 @@ where
     buffer_storage_f32: UnsafeCell<ProcessBufferStorage<f32>>,
     /// Pre-allocated channel pointer storage for f64 processing
     buffer_storage_f64: UnsafeCell<ProcessBufferStorage<f64>>,
-    /// The buses the host asked for with `activateBus()` and the buses the
-    /// plugin accepted. Host threads only.
-    bus_negotiation: Mutex<BusNegotiation>,
+    /// The buses the host set up with `setBusArrangements()` and
+    /// `activateBus()` and the buses the plugin accepted. Host threads only.
+    host_buses: Mutex<HostBuses>,
     /// The buses as `process()` uses them: what the processor was prepared
     /// with and what the host had asked for then. Copied from
-    /// `bus_negotiation` in `setupProcessing()` and `setActive()`, which
+    /// `host_buses` in `setupProcessing()` and `setActive()`, which
     /// the host does not call while `process()` runs.
     process_buses: UnsafeCell<BusNegotiation>,
     /// MIDI CC state (created from the model's midi_cc_config())
@@ -744,7 +919,7 @@ impl<P: Model> Vst3Processor<P> {
 
         // The buses start as the model declares them active (the flags
         // `getBusInfo()` reports) until the host activates others.
-        let buses = BusNegotiation::new(&*model);
+        let buses = HostBuses::new(&*model);
 
         Self {
             model,
@@ -766,8 +941,8 @@ impl<P: Model> Vst3Processor<P> {
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
-            bus_negotiation: Mutex::new(buses),
-            process_buses: UnsafeCell::new(buses),
+            host_buses: Mutex::new(buses),
+            process_buses: UnsafeCell::new(buses.negotiation),
             midi_cc_state,
             // Default to first preset.
             current_preset_index: AtomicU32::new(0),
@@ -934,9 +1109,16 @@ impl<P: Model> Vst3Processor<P> {
     /// Turn the host's bus requests into the buses the plugin accepts and
     /// return both (see [`BusNegotiation::negotiate`]).
     fn negotiate_buses(&self) -> BusNegotiation {
-        let mut negotiation = self.bus_negotiation.lock().unwrap_or_else(PoisonError::into_inner);
-        negotiation.negotiate(self.model());
-        *negotiation
+        let mut buses = self.lock_host_buses();
+        buses.negotiation.negotiate(self.model());
+        buses.negotiation
+    }
+
+    /// Lock the buses as the host set them up.
+    fn lock_host_buses(&self) -> std::sync::MutexGuard<'_, HostBuses> {
+        // A poisoned lock only means a panic elsewhere: the buses are plain
+        // data and each change leaves them whole.
+        self.host_buses.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The setup of the last `setupProcessing()` call that was accepted.
@@ -972,7 +1154,8 @@ impl<P: Model> Vst3Processor<P> {
             log::error!("Plugin layouts are not valid: {}", msg);
             return false;
         }
-        let declared_buses = CachedBusConfig::from_active_buses(&ActiveBuses::all_on(self.layout()));
+        // The plugin's channels of each bus.
+        let declared_buses = CachedBusConfig::from_active_buses(buses.accepted());
 
         // Store the setup. A setup that was refused above is not kept, so
         // that it does not count as the current one when it comes again.
@@ -1078,16 +1261,6 @@ impl<P: Model> Vst3Processor<P> {
     #[inline]
     fn output_bus_count(&self) -> usize {
         self.layout().outputs.len()
-    }
-
-    /// The channel set of an audio bus in the layout the plugin runs with,
-    /// `None` for a bus it does not have.
-    fn bus_set(&self, dir: BusDirection, index: usize) -> Option<ChannelSet> {
-        match dir as BusDirections {
-            BusDirections_::kInput => self.layout().first_input_set(index),
-            BusDirections_::kOutput => self.layout().first_output_set(index),
-            _ => None,
-        }
     }
 
     /// Get input bus info.
@@ -1258,7 +1431,7 @@ impl<P: Model> Vst3Processor<P> {
         });
 
         // SAFETY: See the function's safety section.
-        unsafe { silence_host_only_outputs::<S>(process_data, buses, num_samples) };
+        unsafe { silence_unrendered_outputs::<S>(process_data, buses, num_samples) };
     }
 
     /// Process audio at 64-bit (f64) with conversion to/from f32.
@@ -1414,7 +1587,7 @@ impl<P: Model> Vst3Processor<P> {
         }
 
         // SAFETY: The host passes kSample64 buffers, valid for the call.
-        unsafe { silence_host_only_outputs::<f64>(process_data, buses, num_samples) };
+        unsafe { silence_unrendered_outputs::<f64>(process_data, buses, num_samples) };
     }
 }
 
@@ -1533,8 +1706,8 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
                     _ => None,
                 };
 
-                let set = usize::try_from(index).ok().and_then(|index| self.bus_set(dir, index));
-                if let (Some(info), Some(set)) = (info, set) {
+                let host_bus = usize::try_from(index).ok().and_then(|index| self.lock_host_buses().bus(dir, index));
+                if let (Some(info), Some((set, _))) = (info, host_bus) {
                     // SAFETY: Validated bus is non-null above. Host guarantees validity.
                     let bus = unsafe { &mut *bus };
                     bus.mediaType = MediaTypes_::kAudio as MediaType;
@@ -1604,16 +1777,13 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
         };
 
         // The request takes effect at the next setupProcessing() or
-        // setActive(true). A bus that is switched on gets the set of the
-        // layout the plugin runs with, the only one setBusArrangements()
-        // accepts.
+        // setActive(true). A bus that is switched on gets the set of its
+        // arrangement.
         let on = state != 0;
-        let set = self.bus_set(dir, index).filter(|_| on);
-        let mut negotiation = self.bus_negotiation.lock().unwrap_or_else(PoisonError::into_inner);
-        let requested = negotiation.requested_mut();
+        let mut buses = self.lock_host_buses();
         let recorded = match dir as BusDirections {
-            BusDirections_::kInput => requested.set_input(index, set),
-            BusDirections_::kOutput => requested.set_output(index, set),
+            BusDirections_::kInput => buses.activate(true, index, on),
+            BusDirections_::kOutput => buses.activate(false, index, on),
             _ => false,
         };
         // A request the plugin refuses is accepted as well: the wrapper
@@ -1797,48 +1967,32 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        // Check if the requested arrangement matches our bus configuration
+        // The bus count is the plugin's in every layout.
         let input_count = self.input_bus_count();
         let output_count = self.output_bus_count();
         if num_ins as usize != input_count || num_outs as usize != output_count {
             return kResultFalse;
         }
 
-        // Validate each input bus
-        for i in 0..num_ins as usize {
-            // Early rejection: channel count exceeds compile-time limits
-            // SAFETY: inputs is non-null (checked above) and host guarantees validity for num_ins.
-            let requested = unsafe { *inputs.add(i) };
-            if validate_speaker_arrangement(requested).is_err() {
-                return kResultFalse;
-            }
+        // SAFETY: Non-null for a count above 0 (checked above), the host
+        // guarantees num_ins and num_outs arrangements.
+        let (inputs, outputs) = unsafe {
+            (
+                if num_ins > 0 { slice::from_raw_parts(inputs, num_ins as usize) } else { &[] },
+                if num_outs > 0 { slice::from_raw_parts(outputs, num_outs as usize) } else { &[] },
+            )
+        };
 
-            if let Some(set) = self.layout().first_input_set(i) {
-                let expected = channel_count_to_speaker_arrangement(set.channel_count());
-                if requested != expected {
-                    return kResultFalse;
-                }
-            }
+        // Arrangements a layout allows and the plugin supports take effect
+        // at the next setupProcessing() or setActive(true). Others are
+        // refused; the buses get the nearest listed layout the plugin
+        // supports, which the host reads back.
+        let model = self.model();
+        if self.lock_host_buses().arrange(P::LAYOUTS, inputs, outputs, |buses| model.supports_buses(buses)) {
+            kResultTrue
+        } else {
+            kResultFalse
         }
-
-        // Validate each output bus
-        for i in 0..num_outs as usize {
-            // Early rejection: channel count exceeds compile-time limits
-            // SAFETY: outputs is non-null (checked above) and host guarantees validity for num_outs.
-            let requested = unsafe { *outputs.add(i) };
-            if validate_speaker_arrangement(requested).is_err() {
-                return kResultFalse;
-            }
-
-            if let Some(set) = self.layout().first_output_set(i) {
-                let expected = channel_count_to_speaker_arrangement(set.channel_count());
-                if requested != expected {
-                    return kResultFalse;
-                }
-            }
-        }
-
-        kResultTrue
     }
 
     unsafe fn getBusArrangement(
@@ -1851,10 +2005,10 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let set = usize::try_from(index).ok().and_then(|index| self.bus_set(dir, index));
-        if let Some(set) = set {
+        let bus = usize::try_from(index).ok().and_then(|index| self.lock_host_buses().bus(dir, index));
+        if let Some((_, arrangement)) = bus {
             // SAFETY: arr is non-null (checked above) and host guarantees validity.
-            unsafe { *arr = channel_count_to_speaker_arrangement(set.channel_count()) };
+            unsafe { *arr = arrangement };
             kResultOk
         } else {
             kInvalidArgument
@@ -3165,16 +3319,6 @@ fn utf16_to_utf8(utf16: &[u16], utf8_buf: &mut [u8]) -> usize {
     }
 
     utf8_pos
-}
-
-/// Convert a channel count to the corresponding VST3 speaker arrangement.
-fn channel_count_to_speaker_arrangement(channel_count: u32) -> SpeakerArrangement {
-    match channel_count {
-        1 => SpeakerArr::kMono,
-        2 => SpeakerArr::kStereo,
-        // For other channel counts, create a bitmask with that many speakers
-        n => (1u64 << n) - 1,
-    }
 }
 
 /// Convert a MIDI CC parameter value to a MidiEvent.
@@ -6091,5 +6235,318 @@ mod tests {
             wrapper.activateBus(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection, 0, 1)
         };
         assert_eq!(event, kResultOk);
+    }
+
+    // =========================================================================
+    // Channel layouts
+    // =========================================================================
+
+    thread_local! {
+        /// The buses each `LayoutModel` on this thread was prepared with.
+        static LAYOUT_PREPARES: std::cell::RefCell<Vec<ActiveBuses>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Stereo, mono or mono to stereo.
+    #[derive(Default)]
+    struct LayoutModel {
+        parameters: NoParameters,
+    }
+
+    struct LayoutProcessor;
+
+    beamer_core::__forward_model!(LayoutModel, parameters);
+
+    impl Model for LayoutModel {
+        type Setup = ActiveBuses;
+        type Processor = LayoutProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO, Layout::MONO_TO_STEREO];
+
+        fn prepare(self: Arc<Self>, buses: ActiveBuses) -> LayoutProcessor {
+            LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().push(buses));
+            LayoutProcessor
+        }
+    }
+
+    impl Processor for LayoutProcessor {
+        /// Each output channel holds the number of input channels.
+        fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &CoreProcessContext) {
+            let inputs = buffer.num_input_channels() as f32;
+            for channel in buffer.channels_mut() {
+                channel.fill(inputs);
+            }
+        }
+    }
+
+    fn layout_wrapper() -> Vst3Processor<LayoutModel> {
+        LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().clear());
+        Vst3Processor::<LayoutModel>::new(&BUS_CONFIG)
+    }
+
+    fn layout_prepares() -> Vec<ActiveBuses> {
+        LAYOUT_PREPARES.with(|prepares| prepares.borrow().clone())
+    }
+
+    /// `setBusArrangements()` with one main bus each way.
+    fn arrange(wrapper: &Vst3Processor<LayoutModel>, input: SpeakerArrangement, output: SpeakerArrangement) -> tresult {
+        arrange_buses(wrapper, &mut [input], &mut [output])
+    }
+
+    /// `setBusArrangements()` with an arrangement per bus.
+    fn arrange_buses<M: Model>(
+        wrapper: &Vst3Processor<M>,
+        inputs: &mut [SpeakerArrangement],
+        outputs: &mut [SpeakerArrangement],
+    ) -> tresult {
+        let (num_ins, num_outs) = (inputs.len() as int32, outputs.len() as int32);
+        // SAFETY: The arrangements are valid for the call.
+        unsafe { wrapper.setBusArrangements(inputs.as_mut_ptr(), num_ins, outputs.as_mut_ptr(), num_outs) }
+    }
+
+    /// The arrangement and channel count of the main bus as the host reads them.
+    fn read_arrangement<M: Model>(wrapper: &Vst3Processor<M>, dir: BusDirections) -> (SpeakerArrangement, i32) {
+        read_bus_arrangement(wrapper, dir, 0)
+    }
+
+    /// The arrangement and channel count of a bus as the host reads them.
+    fn read_bus_arrangement<M: Model>(
+        wrapper: &Vst3Processor<M>,
+        dir: BusDirections,
+        index: i32,
+    ) -> (SpeakerArrangement, i32) {
+        let mut arrangement = 0;
+        // SAFETY: Valid for the call.
+        assert_eq!(unsafe { wrapper.getBusArrangement(dir as BusDirection, index, &mut arrangement) }, kResultOk);
+        // SAFETY: A zeroed BusInfo is a valid value.
+        let mut info: BusInfo = unsafe { std::mem::zeroed() };
+        // SAFETY: Valid for the call.
+        let result = unsafe { wrapper.getBusInfo(MediaTypes_::kAudio as MediaType, dir as BusDirection, index, &mut info) };
+        assert_eq!(result, kResultOk);
+        (arrangement, info.channelCount)
+    }
+
+    fn layout_setup<M: Model>(wrapper: &Vst3Processor<M>) {
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+    }
+
+    /// Process a 32-bit block with `inputs` and `outputs` host channels on
+    /// the main buses, the outputs at 9 before the call. Returns the first
+    /// sample of each output channel.
+    fn layout_block(wrapper: &Vst3Processor<LayoutModel>, inputs: usize, outputs: usize) -> Vec<f32> {
+        const FRAMES: usize = 64;
+        let mut input = vec![[0.5f32; FRAMES]; inputs];
+        let mut output = vec![[9.0f32; FRAMES]; outputs];
+        let mut input_channels: Vec<*mut f32> = input.iter_mut().map(|channel| channel.as_mut_ptr()).collect();
+        let mut output_channels: Vec<*mut f32> = output.iter_mut().map(|channel| channel.as_mut_ptr()).collect();
+        let bus = |count: usize, channels: &mut Vec<*mut f32>| AudioBusBuffers {
+            numChannels: count as int32,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 { channelBuffers32: channels.as_mut_ptr() },
+        };
+        let mut input_bus = bus(inputs, &mut input_channels);
+        let mut output_bus = bus(outputs, &mut output_channels);
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            numSamples: FRAMES as int32,
+            numInputs: 1,
+            numOutputs: 1,
+            inputs: &mut input_bus,
+            outputs: &mut output_bus,
+            inputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: std::ptr::null_mut(),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: std::ptr::null_mut(),
+        };
+        // SAFETY: The data and its buffers are valid for the call.
+        assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+        output.iter().map(|channel| channel[0]).collect()
+    }
+
+    #[test]
+    fn test_buses_start_with_the_first_layout() {
+        let wrapper = layout_wrapper();
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (SpeakerArr::kStereo, 2));
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kOutput), (SpeakerArr::kStereo, 2));
+        layout_setup(&wrapper);
+        assert_eq!(layout_prepares()[0].input_set(0), Some(ChannelSet::Stereo));
+        assert_eq!(layout_block(&wrapper, 2, 2), [2.0, 2.0]);
+    }
+
+    #[test]
+    fn test_a_listed_arrangement_is_accepted() {
+        let wrapper = layout_wrapper();
+        assert_eq!(arrange(&wrapper, SpeakerArr::kMono, SpeakerArr::kStereo), kResultTrue);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (SpeakerArr::kMono, 1));
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kOutput), (SpeakerArr::kStereo, 2));
+
+        layout_setup(&wrapper);
+        let prepares = layout_prepares();
+        assert_eq!(prepares.len(), 1);
+        assert_eq!(prepares[0].input_set(0), Some(ChannelSet::Mono));
+        assert_eq!(prepares[0].output_set(0), Some(ChannelSet::Stereo));
+        assert_eq!(layout_block(&wrapper, 1, 2), [1.0, 1.0]);
+
+        // Another arrangement takes effect at the next activation.
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(0) }, kResultOk);
+        assert_eq!(arrange(&wrapper, SpeakerArr::kMono, SpeakerArr::kMono), kResultTrue);
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(1) }, kResultOk);
+        let prepares = layout_prepares();
+        assert_eq!(prepares.len(), 2);
+        assert_eq!(prepares[1].output_set(0), Some(ChannelSet::Mono));
+        assert_eq!(layout_block(&wrapper, 1, 1), [1.0]);
+    }
+
+    #[test]
+    fn test_an_unlisted_arrangement_gets_the_nearest_layout() {
+        let wrapper = layout_wrapper();
+
+        // Stereo in, mono out: the mono output decides.
+        assert_eq!(arrange(&wrapper, SpeakerArr::kStereo, SpeakerArr::kMono), kResultFalse);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (SpeakerArr::kMono, 1));
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kOutput), (SpeakerArr::kMono, 1));
+
+        // 5.1: nothing listed, the default.
+        assert_eq!(arrange(&wrapper, SpeakerArr::k51, SpeakerArr::k51), kResultFalse);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (SpeakerArr::kStereo, 2));
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kOutput), (SpeakerArr::kStereo, 2));
+
+        // No speakers.
+        assert_eq!(arrange(&wrapper, SpeakerArr::kEmpty, SpeakerArr::kMono), kResultFalse);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (SpeakerArr::kMono, 1));
+
+        // Another bus count.
+        let mut arrangements = [SpeakerArr::kStereo; 2];
+        // SAFETY: Two arrangements each, valid for the call.
+        let result = unsafe { wrapper.setBusArrangements(arrangements.as_mut_ptr(), 2, arrangements.as_mut_ptr(), 2) };
+        assert_eq!(result, kResultFalse);
+    }
+
+    #[test]
+    fn test_host_channels_the_plugin_does_not_render_are_silent() {
+        // A host that keeps 5.1 although the plugin refused it: the plugin
+        // gets its stereo channels, the others are silent.
+        let wrapper = layout_wrapper();
+        assert_eq!(arrange(&wrapper, SpeakerArr::k51, SpeakerArr::k51), kResultFalse);
+        layout_setup(&wrapper);
+        assert_eq!(layout_prepares()[0].input_set(0), Some(ChannelSet::Stereo));
+        assert_eq!(layout_block(&wrapper, 6, 6), [2.0, 2.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_the_hosts_own_arrangement_is_read_back() {
+        // A centre speaker is mono for the plugin.
+        let wrapper = layout_wrapper();
+        assert_eq!(arrange(&wrapper, kSpeakerC, SpeakerArr::kStereo), kResultTrue);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (kSpeakerC, 1));
+        layout_setup(&wrapper);
+        assert_eq!(layout_prepares()[0].input_set(0), Some(ChannelSet::Mono));
+    }
+
+    /// Stereo with a sidechain of any width, off by default.
+    #[derive(Default)]
+    struct AnySidechainModel {
+        parameters: NoParameters,
+    }
+
+    beamer_core::__forward_model!(AnySidechainModel, parameters);
+
+    impl Model for AnySidechainModel {
+        type Setup = ActiveBuses;
+        type Processor = LayoutProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::Any],
+            outputs: &[BusLayout::STEREO],
+        }];
+
+        fn prepare(self: Arc<Self>, buses: ActiveBuses) -> LayoutProcessor {
+            LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().push(buses));
+            LayoutProcessor
+        }
+    }
+
+    #[test]
+    fn test_arrangement_of_an_aux_bus() {
+        LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().clear());
+        let wrapper = Vst3Processor::<AnySidechainModel>::new(&BUS_CONFIG);
+        let stereo = SpeakerArr::kStereo;
+
+        // The sidechain is off, its arrangement still counts: mono is
+        // listed (any width).
+        assert_eq!(arrange_buses(&wrapper, &mut [stereo, SpeakerArr::kMono], &mut [stereo]), kResultTrue);
+        assert_eq!(read_bus_arrangement(&wrapper, BusDirections_::kInput, 1), (SpeakerArr::kMono, 1));
+
+        // Switched on, it is requested with its new set.
+        // SAFETY: Plain values.
+        let result = unsafe {
+            wrapper.activateBus(MediaTypes_::kAudio as MediaType, BusDirections_::kInput as BusDirection, 1, 1)
+        };
+        assert_eq!(result, kResultTrue);
+        layout_setup(&wrapper);
+        assert_eq!(layout_prepares()[0].input_set(1), Some(ChannelSet::Mono));
+
+        // No speakers on the sidechain: it keeps its set, the main buses
+        // decide.
+        assert_eq!(arrange_buses(&wrapper, &mut [stereo, SpeakerArr::kEmpty], &mut [stereo]), kResultTrue);
+        assert_eq!(read_bus_arrangement(&wrapper, BusDirections_::kInput, 1), (SpeakerArr::kMono, 1));
+
+        // No speakers on a main bus: refused, the nearest layout.
+        let result = arrange_buses(&wrapper, &mut [SpeakerArr::kEmpty, SpeakerArr::k51], &mut [stereo]);
+        assert_eq!(result, kResultFalse);
+        assert_eq!(read_bus_arrangement(&wrapper, BusDirections_::kInput, 0), (stereo, 2));
+        assert_eq!(read_bus_arrangement(&wrapper, BusDirections_::kInput, 1), (SpeakerArr::k51, 6));
+    }
+
+    /// Stereo, mono or mono to stereo, refusing a mono output.
+    #[derive(Default)]
+    struct StereoOutputModel {
+        parameters: NoParameters,
+    }
+
+    beamer_core::__forward_model!(StereoOutputModel, parameters);
+
+    impl Model for StereoOutputModel {
+        type Setup = ActiveBuses;
+        type Processor = LayoutProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO, Layout::MONO_TO_STEREO];
+
+        fn prepare(self: Arc<Self>, buses: ActiveBuses) -> LayoutProcessor {
+            LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().push(buses));
+            LayoutProcessor
+        }
+
+        fn supports_buses(&self, buses: &ActiveBuses) -> bool {
+            buses.output_set(0) != Some(ChannelSet::Mono)
+        }
+    }
+
+    #[test]
+    fn test_an_arrangement_the_plugin_refuses_gets_the_nearest_it_supports() {
+        LAYOUT_PREPARES.with(|prepares| prepares.borrow_mut().clear());
+        let wrapper = Vst3Processor::<StereoOutputModel>::new(&BUS_CONFIG);
+        let mono = SpeakerArr::kMono;
+
+        // Mono in and out is listed but refused: mono to stereo is the
+        // nearest the plugin supports.
+        assert_eq!(arrange_buses(&wrapper, &mut [mono], &mut [mono]), kResultFalse);
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kInput), (mono, 1));
+        assert_eq!(read_arrangement(&wrapper, BusDirections_::kOutput), (SpeakerArr::kStereo, 2));
+
+        // What the host reads back is accepted.
+        assert_eq!(arrange_buses(&wrapper, &mut [mono], &mut [SpeakerArr::kStereo]), kResultTrue);
+        layout_setup(&wrapper);
+        let prepares = layout_prepares();
+        assert_eq!(prepares[0].input_set(0), Some(ChannelSet::Mono));
+        assert_eq!(prepares[0].output_set(0), Some(ChannelSet::Stereo));
     }
 }
