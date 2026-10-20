@@ -10,14 +10,15 @@
 //!
 //! - **The processor** ([`Processor`]): what the audio thread owns. It is
 //!   created by [`Model::prepare()`] with the real sample rate and buffer
-//!   configuration, and dropped when the host releases the audio resources or
-//!   changes the configuration.
+//!   configuration. It is dropped when the host releases the audio resources
+//!   or changes the configuration.
 //!
 //! This design eliminates placeholder values by making it impossible to process audio
 //! until proper configuration is available.
 
 use std::sync::Arc;
 
+use crate::active_buses::ActiveBuses;
 use crate::buffer::{AuxiliaryBuffers, Buffer};
 use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
@@ -785,9 +786,9 @@ pub trait Processor: Send + 'static {
     ///
     /// Called right before every `process()` call, with the MIDI events of
     /// that call. Their `sample_offset` counts from the first sample of that
-    /// call, and the events in `output` are timed the same way. A format
-    /// wrapper may split a host buffer into several `process()` calls, for
-    /// example at automation points, and then calls this before each of
+    /// call. The events in `output` are timed the same way. A format
+    /// wrapper may split a host buffer into several `process()` calls (for
+    /// example at automation points) and then calls this before each of
     /// them. Events of a host call without samples (a VST3 host flushes
     /// parameter changes that way) come with the next call, at offset 0.
     /// Plugins can transform events and add them to the output buffer, pass
@@ -821,12 +822,12 @@ pub trait Processor: Send + 'static {
 // Model Trait
 // =============================================================================
 
-/// The model of a plugin: what every thread shares, and the plugin as the
+/// The model of a plugin: what every thread shares and the plugin as the
 /// host sees it.
 ///
 /// This is the primary trait that plugin authors implement. The struct is
 /// marked with `#[beamer::model]`, which reads its parameters, `State`
-/// fields and event queue, and the `impl Model` adds how the plugin behaves:
+/// fields and event queue. The `impl Model` adds how the plugin behaves:
 /// it creates a [`Processor`] via [`Model::prepare()`] when the audio
 /// configuration is known, describes buses and MIDI behavior and answers the
 /// web UI.
@@ -908,7 +909,7 @@ pub trait Processor: Send + 'static {
 ///
 /// A host asks the model about buses and MIDI from its own threads, also
 /// while audio is processed and from more than one thread at the same time.
-/// A model is therefore `Sync`, and every method other than
+/// A model is therefore `Sync`: every method other than
 /// [`prepare()`](Model::prepare) takes `&self` and must be callable from
 /// several threads at once. A method that changes something,
 /// such as [`on_midi_learn()`](Model::on_midi_learn), keeps what it changes
@@ -953,7 +954,7 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// Create a processor for an audio configuration.
     ///
     /// This is called when audio configuration becomes available (in VST3,
-    /// during `setupProcessing()`), and again when it changes: the previous
+    /// during `setupProcessing()`) and again when it changes: the previous
     /// processor is dropped and a new one is created with the new setup.
     ///
     /// The processor keeps `self`, the model's `Arc`, or only the readers and
@@ -1021,6 +1022,24 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
         } else {
             None
         }
+    }
+
+    /// Whether the plugin can process with these buses on.
+    ///
+    /// A host may switch aux buses on and off. Before the plugin is
+    /// prepared with a new combination, it is asked here, on a host thread.
+    /// When it refuses, it is prepared with the last combination it
+    /// accepted, at first the declared default
+    /// ([`ActiveBuses::default_for`]), which it is never asked about. The
+    /// framework bridges the difference: a bus the plugin keeps on reads
+    /// silence or renders into memory that is dropped, a bus it keeps off
+    /// is ignored or silent for the host.
+    ///
+    /// The main buses are always on in `buses` (unless declared with 0
+    /// channels). The default accepts any combination of aux buses.
+    fn supports_buses(&self, buses: &ActiveBuses) -> bool {
+        let _ = buses;
+        true
     }
 
     // =========================================================================

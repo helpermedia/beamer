@@ -8,7 +8,7 @@
 //!
 //! ## Main Traits
 //!
-//! - [`Model`] - What every thread shares, and the plugin as the host sees it (lives as long as the instance)
+//! - [`Model`] - What every thread shares and the plugin as the host sees it (lives as long as the instance)
 //! - [`Processor`] - Core DSP processing trait (created for an audio configuration)
 //! - [`Parameters`] - Parameter collection trait
 //! - [`GuiDelegate`] - GUI configuration and callbacks
@@ -20,12 +20,14 @@
 //! - [`Buffer`] - Main audio I/O buffer
 //! - [`AuxiliaryBuffers`] - Sidechain and aux bus access
 //! - [`BusInfo`] - Audio bus configuration
+//! - [`ActiveBuses`] - The buses a plugin is prepared with
 //! - [`ParameterInfo`] - Parameter metadata
 //! - [`PluginError`] - Error types
 //! - [`MidiEvent`] - MIDI event types
 //! - [`Transport`] - DAW transport/timing state
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
+pub mod active_buses;
 pub mod assets;
 pub mod audio_thread;
 pub mod buffer;
@@ -65,6 +67,7 @@ pub mod webview_events;
 pub mod webview_dispatch;
 
 // Re-exports for convenience
+pub use active_buses::{ActiveBuses, BusNegotiation, BusRouting};
 pub use audio_thread::ProcessScope;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;

@@ -7,8 +7,8 @@
 //!
 //! ## Quick Start
 //!
-//! A plugin has two structs: the model, which every thread shares, and the
-//! processor, which the audio thread owns. The `#[beamer::export]`
+//! A plugin has two structs: the model that every thread shares and the
+//! processor that the audio thread owns. The `#[beamer::export]`
 //! attribute on the model reads `Config.toml` at compile time and generates
 //! the plugin metadata and the entry points for the enabled formats.
 //!
@@ -191,7 +191,7 @@ pub mod prelude {
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         AuxInputCount, AuxOutputCount, ProcessMode,
         // Bus configuration
-        BusInfo, BusType,
+        ActiveBuses, BusInfo, BusType,
         // GUI types
         GuiConstraints, NoGui,
         // Parameter metadata
