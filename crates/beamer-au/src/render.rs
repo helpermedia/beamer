@@ -40,7 +40,7 @@ use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
+    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
     SharedModel, MAX_BUSES, MAX_SYSEX_SIZE,
 };
 
@@ -706,8 +706,8 @@ pub unsafe fn extract_midi_events(
 ///
 /// # Implementation Notes
 ///
-/// - CC values are normalized: 0-127 → 0.0-1.0
-/// - Pitch bend is converted: -1.0 to 1.0 (beamer format) → 0.0-1.0 (MidiCcState format)
+/// - CC values are normalized: 0-127 to 0.0-1.0
+/// - Pitch bend is converted: -1.0 to 1.0 (beamer format) to 0.0-1.0 (MidiCcState format)
 /// - Channel pressure is normalized: 0.0-1.0 (already normalized in beamer)
 /// - Uses atomic operations internally for thread safety (MidiCcState takes `&self`)
 fn update_midi_cc_state(
@@ -757,7 +757,7 @@ pub type BeamerAuMidiOutputFn =
 /// Where the MIDI output of a render call goes.
 ///
 /// The wrapper passes it to `beamer_au_render` when the host listens to the
-/// plugin's MIDI output, and forwards each message to the host in the form its
+/// plugin's MIDI output. It forwards each message to the host in the form its
 /// API generation expects.
 #[derive(Clone, Copy)]
 pub struct MidiOutputSink {
@@ -799,7 +799,7 @@ fn to_data_byte(value: f32) -> u8 {
 /// Encode a MIDI event as a MIDI 1.0 channel message.
 ///
 /// Returns the bytes and how many of them are used (2 or 3). Returns `None`
-/// for SysEx, which `send_midi_output` handles, and for events that have no
+/// for SysEx (which `send_midi_output` handles) and for events that have no
 /// MIDI 1.0 encoding (note expression, chord and scale info).
 fn encode_midi_event(event: &MidiEventKind) -> Option<([u8; 3], usize)> {
     match event {
@@ -1020,8 +1020,12 @@ pub struct RenderBlock<S: Sample> {
     sample_rate: f64,
     /// What the plugin's config says about rendering.
     settings: RenderSettings,
+    /// The buses the host has on and the buses the plugin was prepared
+    /// with. The storage holds the plugin's channels, the aux input lists
+    /// and the aux output cache the host's.
+    buses: BusNegotiation,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
-    /// One per aux input bus (bus 1, 2, 3, ...)
+    /// One per aux input bus (bus 1, 2, 3, ...), with the host's channels
     ///
     /// Clippy Allow: vec_box
     ///
@@ -1042,7 +1046,8 @@ pub struct RenderBlock<S: Sample> {
     /// AU hosts call the render block once per output bus. On bus 0, the plugin
     /// processes all audio and aux outputs are written here. On bus N>0, cached
     /// data is copied to the host's output buffers.
-    /// Layout: `[aux_bus_index][channel_index][sample_data]`
+    /// Layout: `[aux_bus_index][channel_index][sample_data]`, with the host's
+    /// channels.
     aux_output_cache: UnsafeCell<Vec<Vec<Vec<S>>>>,
     /// Sample time of the last full render (bus 0), used to detect new render cycles.
     /// Initialized to NaN so it never matches on the first call.
@@ -1105,15 +1110,19 @@ impl<S: RenderSample> RenderBlock<S> {
     /// * `plugin` - Arc-wrapped plugin instance for audio processing
     /// * `model` - The model of the plugin
     /// * `shared` - State shared with the host threads of the instance
-    /// * `storage` - Pre-allocated buffer storage (created from bus config)
+    /// * `storage` - Pre-allocated buffer storage (created from the bus
+    ///   config the plugin accepted)
+    /// * `buses` - The buses the host has on and the plugin accepted
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
     /// * `settings` - What the plugin's config says about rendering
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
         model: Arc<dyn SharedModel>,
         shared: Arc<SharedState>,
         storage: ProcessBufferStorage<S>,
+        buses: BusNegotiation,
         max_frames: u32,
         sample_rate: f64,
         settings: RenderSettings,
@@ -1128,10 +1137,10 @@ impl<S: RenderSample> RenderBlock<S> {
         let mut aux_input_memory = Vec::with_capacity(aux_input_bus_count);
 
         for bus_idx in 0..aux_input_bus_count {
-            // One buffer per channel of the bus, backed by memory of our own:
-            // a pull gives the source buffers to render into, which it may
-            // replace with pointers of its own.
-            let channels = storage.aux_input_capacity(bus_idx);
+            // One buffer per channel the host has on the bus, backed by
+            // memory of our own: a pull gives the source buffers to render
+            // into, which it may replace with pointers of its own.
+            let channels = buses.requested().input(bus_idx + 1).unwrap_or(0) as usize;
             let buffer_list =
                 allocate_audio_buffer_list(channels, max_frames as usize, sample_type_size);
             aux_input_buffer_lists.push(buffer_list);
@@ -1144,7 +1153,7 @@ impl<S: RenderSample> RenderBlock<S> {
         let aux_output_bus_count = storage.aux_output_bus_count();
         let mut aux_output_cache = Vec::with_capacity(aux_output_bus_count);
         for bus_idx in 0..aux_output_bus_count {
-            let channels = storage.aux_output_capacity(bus_idx);
+            let channels = buses.requested().output(bus_idx + 1).unwrap_or(0) as usize;
             let mut bus_cache = Vec::with_capacity(channels);
             for _ in 0..channels {
                 bus_cache.push(vec![S::ZERO; max_frames as usize]);
@@ -1161,6 +1170,7 @@ impl<S: RenderSample> RenderBlock<S> {
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
             sample_rate,
             settings,
+            buses,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             aux_input_memory: UnsafeCell::new(aux_input_memory),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1352,7 +1362,7 @@ impl<S: RenderSample> RenderBlock<S> {
 
         // Host threads do not touch the processor while audio runs. What they
         // asked for since the last block happens here, before this block is
-        // processed, and what they want to know is published for them.
+        // processed. What they want to know is published for them.
         if self.shared.take_reset_request() {
             plugin_guard.reset();
         }
@@ -1448,8 +1458,8 @@ impl<S: RenderSample> RenderBlock<S> {
         unsafe {
             // The shims pull the main input (input_data) where the plugin
             // processes it: into the output buffers when the channel counts
-            // match, so that both point at the same memory, and otherwise
-            // into their own buffers. An output buffer the host gives
+            // match (so that both point at the same memory), otherwise into
+            // their own buffers. An output buffer the host gives
             // without memory gets the input's own buffer from the shim, or
             // an internal buffer here.
             storage.collect_inputs(input_data, num_samples);
@@ -1460,108 +1470,139 @@ impl<S: RenderSample> RenderBlock<S> {
             // bus 0 and copy them out when the host requests bus N>0.
             // Note: storage.clear() above resets aux_outputs, so push() here repopulates
             // from a clean state each render cycle (no unbounded growth).
+            // The plugin renders into the cache channels of a bus the host
+            // has on too; a channel the host does not have gets memory that
+            // is dropped. prepare_in_place() below zeroes them before
+            // rendering. Cache channels the plugin does not render (a bus it
+            // has off) are silent for the host.
             let aux_cache = &mut *self.aux_output_cache.get();
             debug_assert_eq!(aux_cache.len(), storage.aux_outputs.len());
-            // prepare_in_place() below zeroes them before rendering.
-            for (bus_cache, aux_output) in
-                aux_cache.iter_mut().zip(storage.aux_outputs.iter_mut())
+            for (aux_idx, (bus_cache, aux_output)) in
+                aux_cache.iter_mut().zip(storage.aux_outputs.iter_mut()).enumerate()
             {
-                for ch_buf in bus_cache.iter_mut() {
-                    aux_output.push(ch_buf.as_mut_ptr());
+                let bus = aux_idx + 1;
+                let plugin_channels =
+                    (self.buses.accepted().output(bus).unwrap_or(0) as usize).min(aux_output.capacity());
+                let host_channels = if self.buses.output_routing(bus) == BusRouting::Connected {
+                    bus_cache.len()
+                } else {
+                    0
+                };
+                for channel in 0..plugin_channels {
+                    aux_output.push(match bus_cache.get_mut(channel).filter(|_| channel < host_channels) {
+                        Some(cache) => cache.as_mut_ptr(),
+                        None => std::ptr::null_mut(),
+                    });
+                }
+                for cache in bus_cache.iter_mut().skip(plugin_channels.min(host_channels)) {
+                    let len = num_samples.min(cache.len());
+                    cache[..len].fill(S::ZERO);
                 }
             }
 
-            // Pull auxiliary bus inputs if available
+            // Pull the aux inputs the host and the plugin both have on. A
+            // pull that fails leaves its bus without channels for this call:
+            // the host has no source for it right now.
+            let aux_buffer_lists = &mut *self.aux_input_buffer_lists.get();
+            let aux_input_memory = &mut *self.aux_input_memory.get();
+            let aux_input_count = aux_buffer_lists.len();
+            // Stack array: no allocation in the render path.
+            let mut buffer_list_ptrs: [*const AudioBufferList; MAX_BUSES] =
+                [std::ptr::null(); MAX_BUSES];
             // SAFETY: pull_input_block is valid for this render call (provided by AU host)
-            if !pull_input_block.is_null() {
-                let aux_buffer_lists = &mut *self.aux_input_buffer_lists.get();
-                let aux_input_memory = &mut *self.aux_input_memory.get();
-                let aux_input_count = aux_buffer_lists.len();
+            if !pull_input_block.is_null() && aux_input_count > 0 {
+                // SAFETY: This transmute is required because Rust doesn't have native Objective-C block support.
+                //
+                // Why this transmute is needed:
+                // - AU hosts provide the pull input callback as an Objective-C block (*const c_void)
+                // - We need to call this block to pull audio from auxiliary input buses (e.g., sidechain)
+                // - The block must be cast to a function pointer with the correct signature
+                //
+                // Invariants that must hold:
+                // 1. `pull_input_block` must be a valid AURenderPullInputBlock, the AUv3
+                //    host's or the one the AUv2 shim builds for this call
+                // 2. The block must remain valid for the duration of this render callback
+                // 3. The function signature must exactly match Apple's documented AURenderPullInputBlock:
+                //    - action_flags: pointer to AudioUnitRenderActionFlags
+                //    - timestamp: pointer to AudioTimeStamp for this render call
+                //    - frame_count: number of frames to render
+                //    - input_bus_number: which input bus to pull from (0=main, 1+=aux)
+                //    - input_data: AudioBufferList to fill with audio data
+                //    - Returns: OSStatus (0 = success)
+                // 4. Must be called from the AU render thread only
+                // 5. The AudioBufferList passed must have valid buffer structure
+                //
+                // What could go wrong:
+                // - If block pointer is invalid/corrupted: undefined behavior (crash)
+                // - If signature doesn't match: argument misalignment, undefined behavior
+                // - If called from wrong thread: race conditions (violates AU threading model)
+                // - If AudioBufferList structure is invalid: host may write to wrong memory
+                // - If bus_number is out of range: host may return error or undefined behavior
+                //
+                // Why this is safe in practice:
+                // - AU hosts guarantee the block is valid during the render callback
+                // - Our signature matches Apple's documented API (see AURenderPullInputBlock type alias above)
+                // - We only call from within render callback, never store the pointer
+                // - We pre-allocate valid AudioBufferList structures with correct sizes
+                // - We only request aux buses that exist (based on bus_config)
+                //
+                // Alternative approach:
+                // - Use `block2` crate for proper Objective-C block handling (adds dependency)
+                let invoke = objc_block::invoke_ptr(pull_input_block);
+                let pull_fn: AURenderPullInputBlock = std::mem::transmute(invoke);
 
-                if aux_input_count > 0 {
-                    // SAFETY: This transmute is required because Rust doesn't have native Objective-C block support.
-                    //
-                    // Why this transmute is needed:
-                    // - AU hosts provide the pull input callback as an Objective-C block (*const c_void)
-                    // - We need to call this block to pull audio from auxiliary input buses (e.g., sidechain)
-                    // - The block must be cast to a function pointer with the correct signature
-                    //
-                    // Invariants that must hold:
-                    // 1. `pull_input_block` must be a valid AURenderPullInputBlock, the AUv3
-                    //    host's or the one the AUv2 shim builds for this call
-                    // 2. The block must remain valid for the duration of this render callback
-                    // 3. The function signature must exactly match Apple's documented AURenderPullInputBlock:
-                    //    - action_flags: pointer to AudioUnitRenderActionFlags
-                    //    - timestamp: pointer to AudioTimeStamp for this render call
-                    //    - frame_count: number of frames to render
-                    //    - input_bus_number: which input bus to pull from (0=main, 1+=aux)
-                    //    - input_data: AudioBufferList to fill with audio data
-                    //    - Returns: OSStatus (0 = success)
-                    // 4. Must be called from the AU render thread only
-                    // 5. The AudioBufferList passed must have valid buffer structure
-                    //
-                    // What could go wrong:
-                    // - If block pointer is invalid/corrupted → undefined behavior (crash)
-                    // - If signature doesn't match → argument misalignment, undefined behavior
-                    // - If called from wrong thread → race conditions (violates AU threading model)
-                    // - If AudioBufferList structure is invalid → host may write to wrong memory
-                    // - If bus_number is out of range → host may return error or undefined behavior
-                    //
-                    // Why this is safe in practice:
-                    // - AU hosts guarantee the block is valid during the render callback
-                    // - Our signature matches Apple's documented API (see AURenderPullInputBlock type alias above)
-                    // - We only call from within render callback, never store the pointer
-                    // - We pre-allocate valid AudioBufferList structures with correct sizes
-                    // - We only request aux buses that exist (based on bus_config)
-                    //
-                    // Alternative approach:
-                    // - Use `block2` crate for proper Objective-C block handling (adds dependency)
-                    let invoke = objc_block::invoke_ptr(pull_input_block);
-                    let pull_fn: AURenderPullInputBlock = std::mem::transmute(invoke);
-
-                    // Use stack-based array to avoid heap allocation in render path
-                    // This is real-time safe since MAX_BUSES is a compile-time constant
-                    let mut buffer_list_ptrs: [*const AudioBufferList; MAX_BUSES] =
-                        [std::ptr::null(); MAX_BUSES];
-
-                    // Pull audio from each auxiliary input bus (bus index starts at 1)
-                    for (aux_idx, buffer_list) in aux_buffer_lists.iter_mut().enumerate() {
-                        let bus_number = (aux_idx + 1) as isize; // Bus 0 is main, 1+ are aux
-
-                        // Point the buffers at our own memory before the pull: the
-                        // source renders into it, or replaces the pointers with
-                        // its own. A previous pull may have replaced them.
-                        let memory = &mut aux_input_memory[aux_idx];
-                        for (i, channel) in memory.iter_mut().enumerate() {
-                            let buffer = buffer_list.buffers.as_mut_ptr().add(i);
-                            (*buffer).number_channels = 1;
-                            (*buffer).data = channel.as_mut_ptr().cast();
-                            (*buffer).data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
-                        }
-
-                        // Call the pull input block to get audio from this aux bus.
-                        // The pull gets flags of its own: a source that reports
-                        // silence must not mark this unit's output as silent.
-                        let mut pull_flags: u32 = 0;
-                        let status = pull_fn(
-                            pull_input_block,
-                            &mut pull_flags,
-                            timestamp,
-                            frame_count,
-                            bus_number,
-                            &mut **buffer_list as *mut AudioBufferList,
-                        );
-
-                        // If pull succeeded, store pointer for collection
-                        if status == os_status::NO_ERR {
-                            buffer_list_ptrs[aux_idx] = &**buffer_list as *const AudioBufferList;
-                        }
-                        // If pull failed, leave as null (already initialized to null)
+                // Pull audio from each auxiliary input bus (bus index starts at 1)
+                for (aux_idx, buffer_list) in aux_buffer_lists.iter_mut().enumerate() {
+                    // Bus 0 is main, 1+ are aux.
+                    let bus = aux_idx + 1;
+                    if self.buses.input_routing(bus) != BusRouting::Connected {
+                        continue;
                     }
 
-                    // Collect auxiliary input pointers from pulled buffer lists
-                    // Pass only the slice we actually need (not the whole array)
-                    storage.collect_aux_inputs(&buffer_list_ptrs[..aux_input_count], num_samples);
+                    // Point the buffers at our own memory before the pull: the
+                    // source renders into it, or replaces the pointers with
+                    // its own. A previous pull may have replaced them.
+                    let memory = &mut aux_input_memory[aux_idx];
+                    for (i, channel) in memory.iter_mut().enumerate() {
+                        let buffer = buffer_list.buffers.as_mut_ptr().add(i);
+                        (*buffer).number_channels = 1;
+                        (*buffer).data = channel.as_mut_ptr().cast();
+                        (*buffer).data_byte_size = (num_samples * std::mem::size_of::<S>()) as u32;
+                    }
+
+                    // Call the pull input block to get audio from this aux bus.
+                    // The pull gets flags of its own: a source that reports
+                    // silence must not mark this unit's output as silent.
+                    let mut pull_flags: u32 = 0;
+                    let status = pull_fn(
+                        pull_input_block,
+                        &mut pull_flags,
+                        timestamp,
+                        frame_count,
+                        bus as isize,
+                        &mut **buffer_list as *mut AudioBufferList,
+                    );
+                    if status == os_status::NO_ERR {
+                        buffer_list_ptrs[aux_idx] = &**buffer_list as *const AudioBufferList;
+                    }
+                }
+            }
+
+            // The aux inputs as the plugin has them on: the pulled channels
+            // of a bus the host has on too, silence for one the host has
+            // off.
+            for aux_idx in 0..storage.aux_inputs.len() {
+                let bus = aux_idx + 1;
+                let channels = self.buses.accepted().input(bus).unwrap_or(0) as usize;
+                let list = buffer_list_ptrs.get(aux_idx).copied().unwrap_or(std::ptr::null());
+                match self.buses.input_routing(bus) {
+                    BusRouting::Connected if !list.is_null() => {
+                        storage.collect_aux_input_channels(aux_idx, list, channels, num_samples)
+                    }
+                    BusRouting::PluginOnly => {
+                        storage.collect_aux_input_channels(aux_idx, std::ptr::null(), channels, num_samples)
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1571,7 +1612,7 @@ impl<S: RenderSample> RenderBlock<S> {
         // block that cannot be prepared (longer than set up, with
         // overlapping buffers) is rendered as silence.
         // SAFETY: The collected pointers are valid for num_samples samples
-        // for this render call, and nothing else refers to them.
+        // for this render call. Nothing else refers to them.
         let prepared = unsafe { storage.prepare_in_place(num_samples) };
         if !prepared {
             // SAFETY: As above.
@@ -1581,8 +1622,8 @@ impl<S: RenderSample> RenderBlock<S> {
         let storage = &*storage;
 
         // Without input and output channels (the host gave no output
-        // buffers we could use and no input) there is nothing to write to,
-        // and a call without samples has nothing to write. Neither runs the
+        // buffers we could use and no input) there is nothing to write to.
+        // A call without samples has nothing to write either. Neither runs the
         // sub-blocks below; their events are handled after them.
         let has_channels = storage.output_channel_count() > 0 || !storage.main_inputs.is_empty();
         let render_samples = if has_channels && prepared { num_samples } else { 0 };
@@ -1668,9 +1709,9 @@ impl<S: RenderSample> RenderBlock<S> {
         result
     }
 
-    /// Hand the plugin's MIDI output of a render call to the host, and note
-    /// when it overflowed. Without a sink the host is not listening, and
-    /// without MIDI output the plugin has none to send: the events are
+    /// Hand the plugin's MIDI output of a render call to the host and note
+    /// when it overflowed. Without a sink the host is not listening; without
+    /// MIDI output the plugin has none to send. Either way the events are
     /// discarded.
     fn send_midi_output(&self, midi_output: &MidiBuffer, sink: Option<MidiOutputSink>) {
         if let Some(sink) = sink.filter(|_| self.settings.midi_output) {
@@ -1758,15 +1799,19 @@ impl RenderSettings {
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `model` - The model of the plugin
 /// * `shared` - State shared with the host threads of the instance
-/// * `storage` - Pre-allocated buffer storage (created from bus config)
+/// * `storage` - Pre-allocated buffer storage (created from the bus config
+///   the plugin accepted)
+/// * `buses` - The buses the host has on and the plugin accepted
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     model: Arc<dyn SharedModel>,
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f32>,
+    buses: BusNegotiation,
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
@@ -1776,6 +1821,7 @@ pub(crate) fn create_render_block_f32(
         model,
         shared,
         storage,
+        buses,
         max_frames,
         sample_rate,
         settings,
@@ -1791,15 +1837,19 @@ pub(crate) fn create_render_block_f32(
 /// * `plugin` - Arc-wrapped plugin instance
 /// * `model` - The model of the plugin
 /// * `shared` - State shared with the host threads of the instance
-/// * `storage` - Pre-allocated buffer storage (created from bus config)
+/// * `storage` - Pre-allocated buffer storage (created from the bus config
+///   the plugin accepted)
+/// * `buses` - The buses the host has on and the plugin accepted
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     model: Arc<dyn SharedModel>,
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f64>,
+    buses: BusNegotiation,
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
@@ -1809,6 +1859,7 @@ pub(crate) fn create_render_block_f64(
         model,
         shared,
         storage,
+        buses,
         max_frames,
         sample_rate,
         settings,
@@ -2004,7 +2055,7 @@ mod tests {
         bytes: *const u8,
         length: u32,
     ) {
-        // SAFETY: `sent` passes a pointer to its vector, and the bytes are valid
+        // SAFETY: `sent` passes a pointer to its vector. The bytes are valid
         // for the call.
         let (received, bytes) = unsafe {
             (

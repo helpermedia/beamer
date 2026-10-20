@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::error::PluginResult;
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
+    ActiveBuses, AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
     SharedModel, WebViewDispatch, WebViewEventQueue,
 };
 
@@ -66,7 +66,8 @@ pub trait AuPluginInstance: Send + 'static {
     /// # Arguments
     /// * `sample_rate` - The sample rate in Hz
     /// * `max_frames` - Maximum number of frames per render call
-    /// * `bus_config` - The cached bus configuration from the host
+    /// * `bus_config` - The buses the plugin accepted (a bus that is off has
+    ///   0 channels)
     /// * `process_mode` - Whether the host renders in real time or offline
     fn allocate_render_resources(
         &mut self,
@@ -148,6 +149,10 @@ pub trait AuPluginInstance: Send + 'static {
     /// Returns information about an output bus the plugin declares.
     fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo>;
 
+    /// Whether the plugin can process with these buses on (see
+    /// `Model::supports_buses`).
+    fn supports_buses(&self, buses: &ActiveBuses) -> bool;
+
     /// Process one block of audio (f32).
     ///
     /// Only valid when prepared. Returns an error if not in prepared state.
@@ -198,7 +203,7 @@ pub trait AuPluginInstance: Send + 'static {
         None // Default implementation
     }
 
-    /// Process MIDI events (input → output transformation).
+    /// Process MIDI events (transform input into output).
     ///
     /// This method allows plugins to process, transform or generate MIDI events.
     /// The default implementation passes through all input events unchanged.

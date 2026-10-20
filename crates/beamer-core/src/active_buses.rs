@@ -25,7 +25,9 @@ use crate::types::MAX_BUSES;
 /// As a setup type, it tells [`Model::prepare()`] which aux buses are on.
 /// A bus that is off there is `None` in
 /// [`AuxiliaryBuffers`](crate::AuxiliaryBuffers) for the life of the
-/// processor.
+/// processor. A bus that is on can still be `None` for a single call: an
+/// Audio Unit input the host has no source for right now (a sidechain
+/// without a connection) has no samples.
 ///
 /// # Example
 ///
@@ -53,8 +55,9 @@ pub struct ActiveBuses {
 
 impl ActiveBuses {
     /// No buses on, `input_bus_count` and `output_bus_count` declared
-    /// (each at most [`MAX_BUSES`]).
-    pub(crate) fn all_off(input_bus_count: usize, output_bus_count: usize) -> Self {
+    /// (each at most [`MAX_BUSES`]). A wrapper switches buses on with
+    /// [`set_input`](Self::set_input) and [`set_output`](Self::set_output).
+    pub fn all_off(input_bus_count: usize, output_bus_count: usize) -> Self {
         Self {
             inputs: [None; MAX_BUSES],
             input_bus_count: input_bus_count.min(MAX_BUSES),
@@ -204,10 +207,15 @@ impl BusNegotiation {
     /// Starts with the declared default as both request and accepted
     /// combination.
     pub fn new<M: Model>(model: &M) -> Self {
-        let buses = ActiveBuses::default_for(model);
+        Self::starting_with(ActiveBuses::default_for(model))
+    }
+
+    /// Starts with `default` as both request and accepted combination, for
+    /// a wrapper that declares the buses on the model's behalf.
+    pub fn starting_with(default: ActiveBuses) -> Self {
         Self {
-            requested: buses,
-            accepted: buses,
+            requested: default,
+            accepted: default,
             refused: None,
         }
     }
@@ -238,11 +246,18 @@ impl BusNegotiation {
     /// Returns whether the accepted combination changed, so the plugin
     /// needs to be prepared again.
     pub fn negotiate<M: Model>(&mut self, model: &M) -> bool {
+        self.negotiate_with(|buses| model.supports_buses(buses))
+    }
+
+    /// [`negotiate`](Self::negotiate) with the plugin's answer from
+    /// `supports_buses`, for a wrapper that holds the model behind a trait
+    /// object.
+    pub fn negotiate_with(&mut self, supports_buses: impl FnOnce(&ActiveBuses) -> bool) -> bool {
         let candidate = self.requested.with_main_buses_on(&self.accepted);
         if candidate == self.accepted || self.refused == Some(candidate) {
             return false;
         }
-        if !model.supports_buses(&candidate) {
+        if !supports_buses(&candidate) {
             self.refused = Some(candidate);
             return false;
         }

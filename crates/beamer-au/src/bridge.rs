@@ -38,7 +38,7 @@ use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
 use crate::error::os_status;
 use beamer_core::{
-    BusType, CachedBusConfig, CachedBusInfo, EditorSync, ParameterInfo, ParameterUnit,
+    ActiveBuses, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, EditorSync, ParameterInfo, ParameterUnit,
     ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue, MAX_BUSES,
 };
 use crate::factory;
@@ -399,6 +399,31 @@ impl DeclaredBuses {
         infos.get(index)?.as_ref()
     }
 
+    /// The buses with the default state of each: the main buses on with
+    /// their channels (see `main_channels`), an aux bus on when it is
+    /// active by default. A plugin that refuses the buses a host asks for
+    /// is prepared with these.
+    fn default_buses(&self) -> ActiveBuses {
+        let (main_input, main_output) = self.main_channels();
+        let mut buses = ActiveBuses::all_off(self.input_count, self.output_count);
+        let channels = |direction: BusDirection, bus: usize, main: u32| {
+            if bus == 0 {
+                Some(main)
+            } else {
+                self.info(direction, bus)
+                    .filter(|info| info.is_default_active)
+                    .map(|info| info.channel_count)
+            }
+        };
+        for bus in 0..buses.input_bus_count() {
+            let _ = buses.set_input(bus, channels(BusDirection::Input, bus, main_input));
+        }
+        for bus in 0..buses.output_bus_count() {
+            let _ = buses.set_output(bus, channels(BusDirection::Output, bus, main_output));
+        }
+        buses
+    }
+
     /// Main bus channel counts (see `main_channels`).
     pub(crate) fn main_channels(&self) -> (u32, u32) {
         main_channels(
@@ -441,6 +466,10 @@ pub struct BeamerInstanceHandle {
     /// The bus configuration of the last successful allocation, cleared when
     /// the resources are deallocated. Only host threads take this lock.
     bus_config: Mutex<Option<CachedBusConfig>>,
+    /// The buses the host asked for at the last allocation and the buses
+    /// the plugin accepted. Only host threads take this lock, always before
+    /// the plugin's.
+    bus_negotiation: Mutex<BusNegotiation>,
     /// Where the web UI's invoke calls and events go (the model),
     /// captured at instance creation to avoid locking the plugin mutex on
     /// every invoke/event call.
@@ -472,11 +501,13 @@ impl BeamerInstanceHandle {
         let model = plugin.shared_model();
         let presets = plugin.factory_presets();
         let declared_buses = DeclaredBuses::capture(plugin.as_ref());
+        let bus_negotiation = BusNegotiation::starting_with(declared_buses.default_buses());
 
         Self {
             plugin: Arc::new(Mutex::new(plugin)),
             render_block: std::sync::RwLock::new(None),
             bus_config: Mutex::new(None),
+            bus_negotiation: Mutex::new(bus_negotiation),
             webview_dispatch,
             webview_events,
             model,
@@ -535,8 +566,8 @@ impl BeamerInstanceHandle {
 }
 
 // BeamerInstanceHandle is Send and Sync through its fields, with no unsafe
-// impl: the host calls into one instance from several threads at once, and
-// the compiler checks that every field allows that.
+// impl: the host calls into one instance from several threads at once. The
+// compiler checks that every field allows that.
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<BeamerInstanceHandle>();
@@ -880,6 +911,22 @@ fn prepare_instance(
         return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
     }
 
+    // The host's request: a bus with channels is on, one with 0 channels
+    // (or beyond the configuration) off.
+    let mut negotiation = handle
+        .bus_negotiation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let requested = negotiation.requested_mut();
+    for bus in 0..requested.input_bus_count() {
+        let channels = rust_bus_config.input_bus_info(bus).map(|info| info.channel_count as u32);
+        let _ = requested.set_input(bus, channels);
+    }
+    for bus in 0..requested.output_bus_count() {
+        let channels = rust_bus_config.output_bus_info(bus).map(|info| info.channel_count as u32);
+        let _ = requested.set_output(bus, channels);
+    }
+
     // Take the current render block out. This waits for a render call that
     // is in progress (it holds the read lock while it processes) and makes
     // the following calls return an error until the new block is installed.
@@ -904,10 +951,12 @@ fn prepare_instance(
             ProcessMode::Realtime
         };
 
+        // The plugin is prepared with the buses it accepts.
+        negotiation.negotiate_with(|buses| plugin.supports_buses(buses));
         let prepared = plugin.allocate_render_resources(
             sample_rate,
             max_frames,
-            &rust_bus_config,
+            &CachedBusConfig::from_active_buses(negotiation.accepted()),
             process_mode,
         );
 
@@ -915,8 +964,8 @@ fn prepare_instance(
             return os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE;
         }
 
-        // A new processor needs no reset any more, and the host may ask
-        // for its latency and tail before the first render call.
+        // A new processor needs no reset any more. The host may ask for its
+        // latency and tail before the first render call.
         handle.shared.clear_reset_request();
         handle
             .shared
@@ -924,12 +973,16 @@ fn prepare_instance(
     }
 
     let settings = factory::plugin_config().map(RenderSettings::from_config).unwrap_or_default();
+    let buses = *negotiation;
+    drop(negotiation);
+    // The storage holds the plugin's channels.
+    let plugin_bus_config = CachedBusConfig::from_active_buses(buses.accepted());
 
     // Create the render block based on sample format.
     let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
         BeamerAuSampleFormat::Float32 => {
             let storage = ProcessBufferStorage::<f32>::allocate_from_config(
-                &rust_bus_config,
+                &plugin_bus_config,
                 max_frames as usize,
             );
             Arc::from(create_render_block_f32(
@@ -937,6 +990,7 @@ fn prepare_instance(
                 Arc::clone(&handle.model),
                 Arc::clone(&handle.shared),
                 storage,
+                buses,
                 max_frames,
                 sample_rate,
                 settings,
@@ -944,7 +998,7 @@ fn prepare_instance(
         }
         BeamerAuSampleFormat::Float64 => {
             let storage = ProcessBufferStorage::<f64>::allocate_from_config(
-                &rust_bus_config,
+                &plugin_bus_config,
                 max_frames as usize,
             );
             Arc::from(create_render_block_f64(
@@ -952,6 +1006,7 @@ fn prepare_instance(
                 Arc::clone(&handle.model),
                 Arc::clone(&handle.shared),
                 storage,
+                buses,
                 max_frames,
                 sample_rate,
                 settings,
@@ -1000,8 +1055,8 @@ fn leave_unprepared(handle: &BeamerInstanceHandle) {
 /// rendering first; when a render call still runs (a host that does not, or
 /// the render call of another output bus), this waits for it, as a new
 /// allocation does. A render call holds the read lock of the render block
-/// while it processes, and calls that start afterwards find no render block
-/// and return `kAudioUnitErr_Uninitialized`.
+/// while it processes. Calls that start afterwards find no render block and
+/// return `kAudioUnitErr_Uninitialized`.
 ///
 /// # Safety
 ///
@@ -2883,7 +2938,7 @@ mod tests {
 
         let stereo = || Some(BusInfo::stereo("Bus"));
 
-        // An effect, and an instrument that declares an input.
+        // An effect or an instrument that declares an input.
         assert_eq!(main_channels(1, stereo(), 1, stereo()), (2, 2));
 
         // The usual instrument: no input bus, although the default bus info
@@ -2923,6 +2978,29 @@ mod tests {
         let effect = DeclaredBuses::new(1, 0, vec![Some(BusInfo::stereo("Input"))], vec![None]);
         assert_eq!(effect.count(BusDirection::Output), 0);
         assert_eq!(effect.main_channels(), (2, 0));
+    }
+
+    #[test]
+    fn test_default_buses_have_the_main_buses_and_the_default_aux_buses_on() {
+        use beamer_core::BusInfo;
+
+        // A plugin without buses: the output bus it gets is on.
+        let none = DeclaredBuses::new(0, 0, vec![None; MAX_BUSES], vec![None; MAX_BUSES]);
+        let buses = none.default_buses();
+        assert_eq!((buses.input_bus_count(), buses.output_bus_count()), (0, 1));
+        assert_eq!(buses.output(0), Some(2));
+
+        // A sidechain is off by default, a bus active by default on.
+        let inputs = vec![
+            Some(BusInfo::mono("Input")),
+            Some(BusInfo::aux("Sidechain", 2)),
+            Some(BusInfo { is_default_active: true, ..BusInfo::aux("Return", 1) }),
+        ];
+        let buses = DeclaredBuses::new(3, 1, inputs, vec![Some(BusInfo::stereo("Output"))]).default_buses();
+        assert_eq!(buses.input(0), Some(1));
+        assert_eq!(buses.input(1), None);
+        assert_eq!(buses.input(2), Some(1));
+        assert_eq!(buses.output(0), Some(2));
     }
 
     #[test]
@@ -3013,7 +3091,7 @@ mod tests {
     fn test_indexed_enum_parameter_in_au_format() {
         let store = OneParameter(EnumParameter::<Waveform>::new("Waveform"));
 
-        // The host sees an index, and the default is the second variant.
+        // The host sees an index; the default is the second variant.
         assert_eq!(au_values(&store), [0.0, 3.0, 1.0, 1.0]);
 
         // Every index the host can set comes back as the same index.
@@ -3068,14 +3146,14 @@ mod tests {
     #[test]
     fn test_string_parses_to_the_plain_value() {
         // A typed value comes back as the plain value, also when the range is
-        // not linear: the host must not get a normalized value, and the plain
+        // not linear: the host must not get a normalized value. The plain
         // value is not a linear interpolation between minimum and maximum.
         let store = OneParameter(FloatParameter::hz("Cutoff", 800.0, 20.0..=20000.0));
         let id = store.info(0).unwrap().id;
         let cutoff = string_to_au_value(&store, id, "800").unwrap();
         assert!((cutoff - 800.0).abs() < 0.01, "{}", cutoff);
 
-        // A value outside the range ends at its limit, and text is no value.
+        // A value outside the range ends at its limit; text is no value.
         assert_eq!(string_to_au_value(&store, id, "50000"), Some(20000.0));
         assert_eq!(string_to_au_value(&store, id, "abc"), None);
 

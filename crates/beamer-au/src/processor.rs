@@ -24,7 +24,7 @@
 //!
 //! # DSP Processing
 //!
-//! The `process()` method constructs the proper `Buffer`, `AuxiliaryBuffers`,
+//! The `process()` method constructs the proper `Buffer`, `AuxiliaryBuffers`
 //! and `ProcessContext` from input/output slices, then delegates to the plugin's
 //! `Processor::process()` method. Transport information comes from the host
 //! via the render callback (currently placeholder).
@@ -175,6 +175,10 @@ where
         self.state.model.output_bus_info(index)
     }
 
+    fn supports_buses(&self, buses: &beamer_core::ActiveBuses) -> bool {
+        self.state.model.supports_buses(buses)
+    }
+
     fn process_block(
         &mut self,
         buffer: &mut Buffer<'_, f32>,
@@ -264,7 +268,7 @@ where
         }
 
         // The channels the host connected on each bus. The processor sees
-        // only those, as in the 32-bit path, and not a channel holding the
+        // only those (as in the 32-bit path), not a channel holding the
         // samples of the last block in which it was connected.
         let main_input_channels = buffer.num_input_channels();
         let mut aux_input_channels = [0usize; MAX_AUX_BUSES];
@@ -391,17 +395,17 @@ where
         core_output.clear();
 
         // =========================================================================
-        // MIDI Program Change → Factory Preset Mapping
+        // MIDI Program Change to Factory Preset Mapping
         // =========================================================================
         //
         // When a plugin has factory presets, MIDI Program Change events are
         // automatically mapped to presets at the framework level:
-        // - PC 0 → Preset 0, PC 1 → Preset 1, etc.
+        // - PC 0 is preset 0, PC 1 is preset 1, etc.
         // - PC events within preset range are applied and filtered out
         // - PC events outside preset range pass through to the plugin
         //
         // This mirrors VST3's kIsProgramChange behavior where the host handles
-        // PC→preset mapping automatically.
+        // the mapping of program changes to presets automatically.
         // =========================================================================
 
         if preset_count > 0 {
@@ -854,7 +858,7 @@ mod tests {
     }
 
     // =========================================================================
-    // MIDI Program Change → Factory Preset Tests
+    // MIDI Program Change to Factory Preset Tests
     // =========================================================================
 
     #[test]
@@ -1118,6 +1122,11 @@ mod tests {
         )
     }
 
+    /// The buses of `bus_config`, all on for the host and the plugin.
+    fn all_connected(bus_config: &CachedBusConfig) -> beamer_core::BusNegotiation {
+        beamer_core::BusNegotiation::starting_with(bus_config.to_active_buses())
+    }
+
     /// The settings of a plugin with sample-accurate automation and MIDI in
     /// and out.
     const ALL_SETTINGS: RenderSettings = RenderSettings {
@@ -1155,6 +1164,7 @@ mod tests {
             model,
             shared,
             storage,
+            all_connected(&bus_config),
             FRAMES as u32,
             44100.0,
             settings,
@@ -1522,8 +1532,8 @@ mod tests {
 
     #[test]
     fn test_midi_reaches_each_sub_block_relative_to_it() {
-        // The gain change at sample 32 splits the buffer in two halves, and
-        // each process() call got the note of its half, relative to its
+        // The gain change at sample 32 splits the buffer in two halves. Each
+        // process() call got the note of its half, relative to its
         // start.
         let (recorded, sent) = render_change_between_notes(ALL_SETTINGS);
         assert_eq!(recorded, [(32, vec![10]), (32, vec![8])]);
@@ -1567,7 +1577,7 @@ mod tests {
 
     /// Render a buffer of `frames` samples without input, with a gain change
     /// and a note at sample 0. Checks that nothing was rendered and the gain
-    /// changed, and returns the offsets of the MIDI the host got back.
+    /// changed. Returns the offsets of the MIDI the host got back.
     fn render_events_without_audio(output: &mut StereoList, frames: u32) -> Vec<u32> {
         use crate::render::test_events::{link, midi_event, parameter_event_at};
         use crate::render::{AURenderEventType, MidiOutputSink};
@@ -1623,7 +1633,7 @@ mod tests {
     #[test]
     fn test_null_outputs_without_input_get_silent_buffers_of_our_own() {
         // Null output buffers and no input: the effect renders into buffers
-        // of its own, which start silent, and the host's list points at them.
+        // of its own, which start silent. The host's list points at them.
         // TestProcessor does not write its output.
         let plugin = boxed(AuProcessor::<TestModel>::new());
         let block = render_block_for(&plugin, ProcessMode::Realtime);
@@ -1657,6 +1667,7 @@ mod tests {
             model,
             Arc::new(SharedState::default()),
             storage,
+            all_connected(&bus_config),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -1714,8 +1725,8 @@ mod tests {
             .expect("process");
         assert_eq!(left, [0.5; FRAMES]);
 
-        // Without main input the render call silences the channels first, and
-        // the processor gets no input channels and these silent channels.
+        // Without main input the render call silences the channels first. The
+        // processor gets no input channels and these silent channels.
         left.fill(0.0);
         right.fill(0.0);
         let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 0, FRAMES);
@@ -1911,6 +1922,7 @@ mod tests {
             model,
             Arc::new(SharedState::default()),
             storage,
+            all_connected(&bus_config),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -1999,7 +2011,7 @@ mod tests {
     }
 
     /// An Objective-C block as the render reads it: the header with the
-    /// invoke function, and what the test's pull does.
+    /// invoke function plus what the test's pull does.
     #[repr(C)]
     struct FakePullBlock {
         isa: *const std::ffi::c_void,
@@ -2018,7 +2030,7 @@ mod tests {
         own: [[f32; FRAMES]; 2],
         replace: bool,
         fail: bool,
-        // What the pull saw: the buffer count, and whether every buffer had
+        // What the pull saw: the buffer count and whether every buffer had
         // memory for the call. Checked by the tests, since a panic in the
         // extern "C" pull would abort the test binary.
         seen_buffers: std::cell::Cell<u32>,
@@ -2065,14 +2077,25 @@ mod tests {
         if memory { 0 } else { -1 }
     }
 
+    /// The bus configuration of the sidechain plugin with every bus on.
+    fn sidechain_bus_config() -> CachedBusConfig {
+        CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(2, BusType::Aux)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+        )
+    }
+
     /// Render one call of the sidechain plugin with the given pull block
     /// and return the first left and the last right output sample.
     fn render_sidechain(block: &FakePullBlock) -> [f32; 2] {
+        render_sidechain_with(block, all_connected(&sidechain_bus_config()))
+    }
+
+    /// Like `render_sidechain`, with the buses the host has on and the
+    /// plugin accepted, as the bridge negotiates them.
+    fn render_sidechain_with(block: &FakePullBlock, buses: beamer_core::BusNegotiation) -> [f32; 2] {
         let plugin = boxed(AuProcessor::<SidechainModel>::new());
-        let bus_config = CachedBusConfig::new(
-            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(2, BusType::Aux)],
-            vec![CachedBusInfo::new(2, BusType::Main)],
-        );
+        let bus_config = CachedBusConfig::from_active_buses(buses.accepted());
         plugin
             .lock()
             .unwrap()
@@ -2085,6 +2108,7 @@ mod tests {
             model,
             Arc::new(SharedState::default()),
             storage,
+            buses,
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -2143,6 +2167,85 @@ mod tests {
     #[test]
     fn test_sidechain_pull_that_fails_leaves_no_sidechain() {
         assert_eq!(render_sidechain(&fake_pull_block(false, true)), [-1.0, -1.0]);
+    }
+
+    #[test]
+    fn test_sidechain_the_host_switched_off_reads_silence() {
+        // The plugin refuses to lose its sidechain: it keeps it silent and
+        // nothing is pulled.
+        let mut buses = all_connected(&sidechain_bus_config());
+        assert!(buses.requested_mut().set_input(1, None));
+        assert!(!buses.negotiate_with(|_| false));
+        let block = fake_pull_block(false, false);
+        assert_eq!(render_sidechain_with(&block, buses), [0.0, 0.0]);
+        assert_eq!(block.seen_buffers.get(), 0);
+    }
+
+    #[test]
+    fn test_sidechain_the_plugin_refused_is_not_pulled() {
+        let mut off = sidechain_bus_config().to_active_buses();
+        assert!(off.set_input(1, None));
+        let mut buses = beamer_core::BusNegotiation::starting_with(off);
+        assert!(buses.requested_mut().set_input(1, Some(2)));
+        assert!(!buses.negotiate_with(|_| false));
+        let block = fake_pull_block(false, false);
+        assert_eq!(render_sidechain_with(&block, buses), [-1.0, -1.0]);
+        assert_eq!(block.seen_buffers.get(), 0);
+    }
+
+    #[test]
+    fn test_aux_output_the_plugin_refused_is_silent() {
+        let host_config = CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(2, BusType::Aux)],
+        );
+        let mut off = host_config.to_active_buses();
+        assert!(off.set_output(1, None));
+        let mut buses = beamer_core::BusNegotiation::starting_with(off);
+        assert!(buses.requested_mut().set_output(1, Some(2)));
+        assert!(!buses.negotiate_with(|_| false));
+
+        let plugin = boxed(AuProcessor::<AuxOutputModel>::new());
+        let bus_config = CachedBusConfig::from_active_buses(buses.accepted());
+        plugin
+            .lock()
+            .unwrap()
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .expect("prepare");
+        let model = plugin.lock().unwrap().shared_model();
+        let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
+        let block = create_render_block_f32(
+            Arc::clone(&plugin),
+            model,
+            Arc::new(SharedState::default()),
+            storage,
+            buses,
+            FRAMES as u32,
+            44100.0,
+            ALL_SETTINGS,
+        );
+
+        // The host's aux buffers hold something before the call.
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let mut main = StereoList::filled(0.0);
+        let mut aux = StereoList::filled(9.0);
+        for (bus, list) in [(0, &mut main), (1, &mut aux)] {
+            let status = block.process(
+                &mut action_flags,
+                &timestamp,
+                FRAMES as u32,
+                bus,
+                list.as_list(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                None,
+                None,
+            );
+            assert_eq!(status, 0);
+        }
+        assert!(aux.samples.iter().flatten().all(|&sample| sample == 0.0));
     }
 
     #[test]
@@ -2313,7 +2416,7 @@ mod tests {
         assert_eq!(allocate(instance, false), 0);
 
         // A panic while the plugin mutex was held does not keep the
-        // instance prepared, and the next allocation works at once.
+        // instance prepared. The next allocation works at once.
         handle.poison_plugin_lock();
         beamer_au_deallocate_render_resources(instance);
         assert!(!beamer_au_is_prepared(instance));
@@ -2422,7 +2525,7 @@ mod tests {
     }
 
     fn plugin_lock_count(instance: *mut BeamerInstanceHandle) -> usize {
-        // SAFETY: The handle is alive, and it is only used shared.
+        // SAFETY: The handle is alive and it is only used shared.
         unsafe { &*instance }.plugin_lock_count()
     }
 
@@ -2717,7 +2820,7 @@ mod tests {
         assert_eq!(allocate(instance, false), 0);
         beamer_au_set_parameter_value(instance, gain_id(), 0.25);
 
-        // SAFETY: The handle is alive, and it is only used shared here.
+        // SAFETY: The handle is alive and it is only used shared here.
         let shared = unsafe { &*instance };
         let rendering = Barrier::new(2);
         let render_done = AtomicBool::new(false);
@@ -2735,7 +2838,7 @@ mod tests {
             assert!(render_done.load(Ordering::SeqCst));
         });
 
-        // Unprepared after the render call, and the model keeps its values.
+        // Unprepared after the render call; the model keeps its values.
         assert_eq!(beamer_au_get_tail_samples(instance), 0);
         assert_eq!(render_instance(instance), K_AUDIO_UNIT_ERR_UNINITIALIZED);
         let locks = plugin_lock_count(instance);

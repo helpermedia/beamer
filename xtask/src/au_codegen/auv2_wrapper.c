@@ -124,9 +124,15 @@ typedef struct BeamerAuv2Instance {
     _Atomic bool processesInPlace;
     bool offlineRender;
 
-    // Stream formats per bus (indexed by element number)
+    // Stream formats per bus (indexed by element number). A format with 0
+    // channels switches an aux bus off.
     AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
     AudioStreamBasicDescription outputFormats[BEAMER_AU_MAX_BUSES];
+
+    // Elements per scope as the host set them (kAudioUnitProperty_ElementCount):
+    // the declared buses, or fewer. The trailing buses past the count are off.
+    UInt32 inputElementCount;
+    UInt32 outputElementCount;
 
     // Memory for the output buffers without memory of a bypassed render
     // call, bypassSilenceFrames samples of 64 bits. Zeroed before each use,
@@ -152,7 +158,7 @@ typedef struct BeamerAuv2Instance {
 
     // Callbacks as the host set them. Host threads write them under the
     // mutex. The render thread only tries the mutex and copies them into
-    // renderCallbacks, which only it uses: it never waits, and a copy is
+    // renderCallbacks, which only it uses: it never waits and a copy is
     // never half written.
     CallbackSet callbacks;
     pthread_mutex_t callbacksMutex;
@@ -181,7 +187,7 @@ typedef struct BeamerAuv2Instance {
     pthread_mutex_t queueReaderMutex;
 
     // MIDI output. The list is only allocated for a plugin with MIDI
-    // output, and the host sets the callback when it listens.
+    // output. The host sets the callback when it listens.
     bool isMidiEffect;
     MIDIPacketList* midiOutputList;
 } BeamerAuv2Instance;
@@ -262,8 +268,34 @@ static bool StreamFormatsEqual(const AudioStreamBasicDescription* a, const Audio
 
 // Whether `element` is an input element of the plugin.
 static bool BeamerAuv2IsInputElement(BeamerAuv2Instance* inst, AudioUnitElement element) {
-    return element < BEAMER_AU_MAX_BUSES
-        && element < beamer_au_get_input_bus_count(inst->rustInstance);
+    return element < inst->inputElementCount;
+}
+
+// The elements of an input or output scope as the host set them, 0 for
+// another scope.
+static UInt32 BeamerAuv2ElementCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
+    switch (scope) {
+        case kAudioUnitScope_Input: return inst->inputElementCount;
+        case kAudioUnitScope_Output: return inst->outputElementCount;
+        default: return 0;
+    }
+}
+
+// The buses the plugin declares in an input or output scope, 0 for another
+// scope.
+static UInt32 BeamerAuv2DeclaredCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
+    uint32_t count = 0;
+    switch (scope) {
+        case kAudioUnitScope_Input: count = beamer_au_get_input_bus_count(inst->rustInstance); break;
+        case kAudioUnitScope_Output: count = beamer_au_get_output_bus_count(inst->rustInstance); break;
+        default: break;
+    }
+    return (count < BEAMER_AU_MAX_BUSES) ? count : BEAMER_AU_MAX_BUSES;
+}
+
+// The fewest elements a host may set in a scope: the main bus stays.
+static UInt32 BeamerAuv2MinimumElementCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
+    return (BeamerAuv2DeclaredCount(inst, scope) > 0) ? 1 : 0;
 }
 
 static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
@@ -485,6 +517,10 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         InitDefaultFormat(&inst->outputFormats[i], inst->sampleRate, ch);
     }
 
+    // Every declared bus starts on.
+    inst->inputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input);
+    inst->outputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Output);
+
     // Prepare MIDI output for a plugin with MIDI output.
     AudioComponentDescription desc;
     beamer_au_get_component_description(&desc);
@@ -649,8 +685,11 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     uint32_t inputChannels = 0;
     uint32_t outputChannels = 0;
 
+    // Every declared bus, with 0 channels for one the host switched off:
+    // past the element count or with a format without channels.
     for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        busConfig.input_buses[i].channel_count = inst->inputFormats[i].mChannelsPerFrame;
+        busConfig.input_buses[i].channel_count =
+            (i < inst->inputElementCount) ? inst->inputFormats[i].mChannelsPerFrame : 0;
         busConfig.input_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
     }
     if (inputBusCount > 0) {
@@ -658,7 +697,8 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     }
 
     for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        busConfig.output_buses[i].channel_count = inst->outputFormats[i].mChannelsPerFrame;
+        busConfig.output_buses[i].channel_count =
+            (i < inst->outputElementCount) ? inst->outputFormats[i].mChannelsPerFrame : 0;
         busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
     }
     if (outputBusCount > 0) {
@@ -672,7 +712,7 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     }
 
     // Determine sample format. The plugin renders every bus in one sample
-    // type, so all buses must have the same depth.
+    // type, so all buses that are on must have the same depth.
     UInt32 bits = 32;
     if (outputBusCount > 0) {
         bits = inst->outputFormats[0].mBitsPerChannel;
@@ -680,12 +720,12 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
         bits = inst->inputFormats[0].mBitsPerChannel;
     }
     for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        if (inst->inputFormats[i].mBitsPerChannel != bits) {
+        if (busConfig.input_buses[i].channel_count > 0 && inst->inputFormats[i].mBitsPerChannel != bits) {
             return kAudioUnitErr_FormatNotSupported;
         }
     }
     for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        if (inst->outputFormats[i].mBitsPerChannel != bits) {
+        if (busConfig.output_buses[i].channel_count > 0 && inst->outputFormats[i].mBitsPerChannel != bits) {
             return kAudioUnitErr_FormatNotSupported;
         }
     }
@@ -752,8 +792,8 @@ static OSStatus BeamerAuv2Uninitialize(void* self) {
 
     if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
         // From now on parameter changes are set right away. Changes queued
-        // for a render call that will not come still apply, and MIDI queued
-        // for it is dropped.
+        // for a render call that will not come still apply. MIDI queued for
+        // it is dropped.
         atomic_store_explicit(&inst->initialized, false, memory_order_release);
         atomic_thread_fence(memory_order_seq_cst);
         pthread_mutex_lock(&inst->queueReaderMutex);
@@ -782,11 +822,8 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         // Stream format (only valid for existing buses). The plugin is
         // prepared for the format, so it can only change while uninitialized.
         case kAudioUnitProperty_StreamFormat:
-            if (scope == kAudioUnitScope_Input) {
-                if (element >= beamer_au_get_input_bus_count(inst->rustInstance))
-                    return kAudioUnitErr_InvalidElement;
-            } else if (scope == kAudioUnitScope_Output) {
-                if (element >= beamer_au_get_output_bus_count(inst->rustInstance))
+            if (scope == kAudioUnitScope_Input || scope == kAudioUnitScope_Output) {
+                if (element >= BeamerAuv2ElementCount(inst, scope))
                     return kAudioUnitErr_InvalidElement;
             }
             if (outDataSize) *outDataSize = sizeof(AudioStreamBasicDescription);
@@ -951,10 +988,13 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = true;
             return noErr;
 
-        // Element count
+        // Element count. A host may remove trailing aux buses (and add them
+        // back) while uninitialized.
         case kAudioUnitProperty_ElementCount:
             if (outDataSize) *outDataSize = sizeof(UInt32);
-            if (outWritable) *outWritable = false;
+            if (outWritable) {
+                *outWritable = BeamerAuv2DeclaredCount(inst, scope) > BeamerAuv2MinimumElementCount(inst, scope);
+            }
             return noErr;
 
         // In-place processing
@@ -1040,11 +1080,11 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             }
             AudioStreamBasicDescription* desc = (AudioStreamBasicDescription*)outData;
             if (scope == kAudioUnitScope_Input) {
-                if (element >= beamer_au_get_input_bus_count(inst->rustInstance))
+                if (element >= inst->inputElementCount)
                     return kAudioUnitErr_InvalidElement;
                 *desc = inst->inputFormats[element];
             } else if (scope == kAudioUnitScope_Output) {
-                if (element >= beamer_au_get_output_bus_count(inst->rustInstance))
+                if (element >= inst->outputElementCount)
                     return kAudioUnitErr_InvalidElement;
                 *desc = inst->outputFormats[element];
             } else {
@@ -1382,10 +1422,8 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            if (scope == kAudioUnitScope_Input) {
-                *(UInt32*)outData = beamer_au_get_input_bus_count(inst->rustInstance);
-            } else if (scope == kAudioUnitScope_Output) {
-                *(UInt32*)outData = beamer_au_get_output_bus_count(inst->rustInstance);
+            if (scope == kAudioUnitScope_Input || scope == kAudioUnitScope_Output) {
+                *(UInt32*)outData = BeamerAuv2ElementCount(inst, scope);
             } else if (scope == kAudioUnitScope_Global) {
                 *(UInt32*)outData = 1;
             } else {
@@ -1525,32 +1563,29 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             }
             const AudioStreamBasicDescription* desc = (const AudioStreamBasicDescription*)inData;
 
-            // Validate format (must be float, non-interleaved)
-            if (desc->mFormatID != kAudioFormatLinearPCM) {
-                return kAudioUnitErr_FormatNotSupported;
+            // Validate scope and element (bus must exist)
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
             }
-            if (!(desc->mFormatFlags & kAudioFormatFlagIsFloat)) {
-                return kAudioUnitErr_FormatNotSupported;
+            if (element >= BeamerAuv2ElementCount(inst, scope)) {
+                return kAudioUnitErr_InvalidElement;
             }
 
-            // Validate scope and element (bus must exist)
-            if (scope == kAudioUnitScope_Input) {
-                uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
-                if (element >= inputBusCount) {
-                    return kAudioUnitErr_InvalidElement;
-                }
-            } else if (scope == kAudioUnitScope_Output) {
-                uint32_t outputBusCount = beamer_au_get_output_bus_count(inst->rustInstance);
-                if (element >= outputBusCount) {
-                    return kAudioUnitErr_InvalidElement;
-                }
-            } else {
-                return kAudioUnitErr_InvalidScope;
+            // A format without channels switches an aux bus off. It carries
+            // no samples, so its sample type does not matter.
+            UInt32 proposedChannels = desc->mChannelsPerFrame;
+            bool switchesOff = (proposedChannels == 0 && element > 0);
+
+            // Validate format (must be float, non-interleaved)
+            if (!switchesOff && desc->mFormatID != kAudioFormatLinearPCM) {
+                return kAudioUnitErr_FormatNotSupported;
+            }
+            if (!switchesOff && !(desc->mFormatFlags & kAudioFormatFlagIsFloat)) {
+                return kAudioUnitErr_FormatNotSupported;
             }
 
             // Validate channel count is reasonable (1-64 channels)
-            UInt32 proposedChannels = desc->mChannelsPerFrame;
-            if (proposedChannels == 0 || proposedChannels > 64) {
+            if ((proposedChannels == 0 && !switchesOff) || proposedChannels > 64) {
                 return kAudioUnitErr_FormatNotSupported;
             }
 
@@ -1583,7 +1618,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             } else {
                 inst->outputFormats[element] = *desc;
             }
-            inst->sampleRate = desc->mSampleRate;
+            if (!switchesOff) {
+                inst->sampleRate = desc->mSampleRate;
+            }
 
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
@@ -1599,13 +1636,17 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
 
             // The plugin is prepared for the current rate: an initialized
             // unit only accepts it again.
+            // A bus that is off (past the element count or without channels)
+            // has no rate the plugin uses.
             if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
                 bool changes = (inst->sampleRate != sampleRate);
-                for (uint32_t i = 0; i < inBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-                    changes |= (inst->inputFormats[i].mSampleRate != sampleRate);
+                for (uint32_t i = 0; i < inst->inputElementCount; i++) {
+                    const AudioStreamBasicDescription* f = &inst->inputFormats[i];
+                    changes |= (f->mChannelsPerFrame > 0 && f->mSampleRate != sampleRate);
                 }
-                for (uint32_t i = 0; i < outBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-                    changes |= (inst->outputFormats[i].mSampleRate != sampleRate);
+                for (uint32_t i = 0; i < inst->outputElementCount; i++) {
+                    const AudioStreamBasicDescription* f = &inst->outputFormats[i];
+                    changes |= (f->mChannelsPerFrame > 0 && f->mSampleRate != sampleRate);
                 }
                 return changes ? kAudioUnitErr_PropertyNotWritable : noErr;
             }
@@ -1617,6 +1658,34 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             for (uint32_t i = 0; i < outBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
                 inst->outputFormats[i].mSampleRate = inst->sampleRate;
             }
+            NotifyPropertyListeners(inst, propID, scope, element);
+            return noErr;
+        }
+
+        case kAudioUnitProperty_ElementCount: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inData || inDataSize < sizeof(UInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            // Trailing aux buses go off and come back; the main bus stays and
+            // there are no more buses than declared.
+            UInt32 count = *(const UInt32*)inData;
+            if (count < BeamerAuv2MinimumElementCount(inst, scope)
+                || count > BeamerAuv2DeclaredCount(inst, scope)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            UInt32* current = (scope == kAudioUnitScope_Input)
+                ? &inst->inputElementCount : &inst->outputElementCount;
+            if (count == *current) {
+                return noErr;
+            }
+            // The plugin is prepared for the current buses.
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
+                return kAudioUnitErr_Initialized;
+            }
+            *current = count;
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }
@@ -1942,8 +2011,8 @@ static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParamete
     }
 
     // Uninitialize may have emptied the queue between the check above and
-    // the push, and the change would wait for the next Initialize: apply it
-    // now. Without render calls, nothing holds the mutex for long. The
+    // the push. The change would then wait for the next Initialize: apply
+    // it now. Without render calls, nothing holds the mutex for long. The
     // fence pairs with the one in Uninitialize: either this load sees the
     // unit uninitialized, or Uninitialize sees the event.
     atomic_thread_fence(memory_order_seq_cst);
@@ -2191,8 +2260,8 @@ static bool BeamerAuv2HasMemory(const AudioBufferList* list, UInt32 byteSize) {
 //
 // In place (kAudioUnitProperty_InPlaceProcessing on) and with matching
 // channel counts, the input goes straight into the host's output buffers
-// when they have memory. Otherwise it goes into our own buffers, and in
-// place an output buffer without memory gets our input buffer's. When the
+// when they have memory. Otherwise it goes into our own buffers; in place
+// an output buffer without memory gets our input buffer's. When the
 // input callback replaced our buffers with its own, the samples are copied
 // into ours before an output points at them: the plugin never writes into
 // memory the host gave as input.
@@ -2260,11 +2329,15 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         return kAudioUnitErr_TooManyFramesToProcess;
     }
 
+    if (inOutputBusNumber >= inst->outputElementCount) {
+        return kAudioUnitErr_InvalidElement;
+    }
+
     // The render notifications of this call. The render thread does not
     // wait for the lock: when a host thread is changing the list right now,
     // this call goes without notifications. Holding the lock until the
     // post-render notifications keeps each pre-render one paired with its
-    // post-render one, and a removed notification is not called after
+    // post-render one. A removed notification is not called after
     // AudioUnitRemoveRenderNotify returned. The lock is held across the
     // input pull and the render, which take no lock of their own.
     bool notifies = (pthread_mutex_trylock(&inst->renderNotifyMutex) == 0);
@@ -2675,8 +2748,8 @@ static void beamer_auv2_on_loaded(void* context) {
                                                  selector:@selector(applicationWillTerminate:)
                                                      name:NSApplicationWillTerminateNotification
                                                    object:nil];
-        // The first frame sends every parameter, and events the plugin
-        // emits from now on are kept for this editor.
+        // The first frame sends every parameter. Events the plugin emits
+        // from now on are kept for this editor.
         _sync = beamer_au_editor_sync_open(_rustInstance);
 
         // Start 60 Hz parameter sync timer.
@@ -2764,8 +2837,8 @@ static void beamer_auv2_on_loaded(void* context) {
     void* webviewHandle;
     // Create the GUI view that will be returned to the host.
     // __bridge (no retain) is safe for the callback context because the host
-    // retains this view for the editor lifetime, and -dealloc destroys the
-    // WebView before the view is freed - so the context cannot dangle.
+    // retains this view for the editor lifetime. -dealloc destroys the
+    // WebView before the view is freed, so the context cannot dangle.
     {{COCOA_GUI_VIEW_CLASS}}* guiView = [[{{COCOA_GUI_VIEW_CLASS}} alloc]
         initWithFrame:NSMakeRect(0, 0, viewSize.width, viewSize.height)
         webviewHandle:NULL

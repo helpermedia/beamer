@@ -82,6 +82,24 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
         num_samples: usize,
     );
 
+    /// Collect aux input bus `aux_idx` as the plugin has it on, with
+    /// `channels` channels: the buffers of `buffer_list` where it has them,
+    /// channels without memory (silence) after. A null `buffer_list` gives
+    /// only channels without memory.
+    ///
+    /// # Safety
+    ///
+    /// - `buffer_list` must be null or a valid pointer
+    /// - Pointers are only valid for the current render call
+    /// - A buffer shorter than num_samples becomes a channel without memory
+    unsafe fn collect_aux_input_channels(
+        &mut self,
+        aux_idx: usize,
+        buffer_list: *const AudioBufferList,
+        channels: usize,
+        num_samples: usize,
+    );
+
     /// Collect auxiliary output pointers from multiple AudioBufferLists.
     ///
     /// # Safety
@@ -181,6 +199,31 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                 let buffer = unsafe { list.buffer_at(i) };
                 self.aux_inputs[aux_idx].push(usable_input(buffer, num_samples));
             }
+        }
+    }
+
+    #[inline]
+    unsafe fn collect_aux_input_channels(
+        &mut self,
+        aux_idx: usize,
+        buffer_list: *const AudioBufferList,
+        channels: usize,
+        num_samples: usize,
+    ) {
+        let Some(bus) = self.aux_inputs.get_mut(aux_idx) else {
+            return;
+        };
+        let channels = channels.min(bus.capacity());
+        // SAFETY: Null or valid (caller).
+        let list = unsafe { buffer_list.as_ref() };
+        let buffers = list.map_or(0, |list| list.number_buffers as usize);
+        for channel in 0..channels {
+            let ptr = match list {
+                // SAFETY: channel < number_buffers.
+                Some(list) if channel < buffers => usable_input(unsafe { list.buffer_at(channel as u32) }, num_samples),
+                _ => std::ptr::null(),
+            };
+            bus.push(ptr);
         }
     }
 
@@ -625,7 +668,7 @@ mod tests {
         assert_eq!(storage.aux_outputs[0].len(), 2);
 
         // SAFETY: The pointers point into the 8-element test arrays, which
-        // live for the whole test, and each channel covers 4 samples.
+        // live for the whole test. Each channel covers 4 samples.
         let channels: Vec<&[f32]> = storage.aux_inputs[0]
             .iter()
             .map(|&ptr| unsafe { std::slice::from_raw_parts(ptr, 4) })

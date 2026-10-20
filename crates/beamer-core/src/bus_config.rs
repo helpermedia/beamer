@@ -134,6 +134,18 @@ impl CachedBusConfig {
         self.output_buses.iter().map(|b| b.channel_count).sum()
     }
 
+    /// The configuration of `buses`: a bus that is off has 0 channels.
+    pub fn from_active_buses(buses: &ActiveBuses) -> Self {
+        let bus_type = |bus: usize| if bus == 0 { BusType::Main } else { BusType::Aux };
+        let input_buses = (0..buses.input_bus_count())
+            .map(|bus| CachedBusInfo::new(buses.input(bus).unwrap_or(0) as usize, bus_type(bus)))
+            .collect();
+        let output_buses = (0..buses.output_bus_count())
+            .map(|bus| CachedBusInfo::new(buses.output(bus).unwrap_or(0) as usize, bus_type(bus)))
+            .collect();
+        Self::new(input_buses, output_buses)
+    }
+
     /// The buses of this configuration, each on with its channel count
     /// (off with 0 channels).
     ///
@@ -242,6 +254,8 @@ mod tests {
         assert_eq!(buses.input(1), Some(1));
         assert!(!buses.is_input_on(2));
         assert_eq!(buses.output(0), Some(6));
+
+        assert_eq!(CachedBusConfig::from_active_buses(&buses).to_active_buses(), buses);
 
         let empty = CachedBusConfig::new(Vec::new(), Vec::new()).to_active_buses();
         assert_eq!(empty.input_bus_count(), 0);
