@@ -38,14 +38,19 @@
 //! (accessed via `AuxiliaryBuffers`).
 //!
 //! ```ignore
-//! // Configuration
-//! fn output_bus_count(&self) -> usize { 4 }
+//! // Configuration: no input, four mono outputs.
+//! const LAYOUTS: &'static [Layout] = &[Layout {
+//!     inputs: &[],
+//!     outputs: &[BusLayout::MONO; 4],
+//! }];
 //! fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
 //!     match index {
-//!         0 => Some(BusInfo::mono("Kick")), // Main bus
-//!         1 => Some(BusInfo::aux("Snare", 1)), // Aux bus 0
-//!         2 => Some(BusInfo::aux("Hi-Hat", 1)), // Aux bus 1
-//!         3 => Some(BusInfo::aux("Crash", 1)), // Aux bus 2
+//!         // Main bus.
+//!         0 => Some(BusInfo::main("Kick")),
+//!         // Aux buses 0 to 2.
+//!         1 => Some(BusInfo::aux("Snare")),
+//!         2 => Some(BusInfo::aux("Hi-Hat")),
+//!         3 => Some(BusInfo::aux("Crash")),
 //!         _ => None,
 //!     }
 //! }
@@ -147,6 +152,11 @@ pub struct DrumsModel {
 impl Model for DrumsModel {
     type Setup = SampleRate;
     type Processor = DrumsProcessor;
+    // No audio input, a mono output each for kick, snare, hi-hat and crash.
+    const LAYOUTS: &'static [Layout] = &[Layout {
+        inputs: &[],
+        outputs: &[BusLayout::MONO; 4],
+    }];
 
     fn prepare(self: Arc<Self>, setup: SampleRate) -> DrumsProcessor {
         // Initialize voice pools (4 voices per drum type)
@@ -164,26 +174,16 @@ impl Model for DrumsModel {
         }
     }
 
-    fn output_bus_count(&self) -> usize {
-        4 // Kick, Snare, Hi-Hat, Crash
-    }
-
     fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
         match index {
-            0 => Some(BusInfo::mono("Kick")), // Main bus
-            1 => Some(BusInfo::aux("Snare", 1)), // Aux bus 0 (mono)
-            2 => Some(BusInfo::aux("Hi-Hat", 1)), // Aux bus 1 (mono)
-            3 => Some(BusInfo::aux("Crash", 1)), // Aux bus 2 (mono)
+            // Main bus.
+            0 => Some(BusInfo::main("Kick")),
+            // Aux buses 0 to 2.
+            1 => Some(BusInfo::aux("Snare")),
+            2 => Some(BusInfo::aux("Hi-Hat")),
+            3 => Some(BusInfo::aux("Crash")),
             _ => None,
         }
-    }
-
-    fn input_bus_count(&self) -> usize {
-        0 // No audio input
-    }
-
-    fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
-        None
     }
 }
 

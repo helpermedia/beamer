@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::active_buses::ActiveBuses;
 use crate::buffer::{AuxiliaryBuffers, Buffer};
+use crate::channel_layouts::Layout;
 use crate::midi::{
     KeyswitchInfo, Midi2Controller, MidiBuffer, MidiEvent, MpeInputDeviceSettings,
     NoteExpressionTypeInfo, PhysicalUIMap,
@@ -28,6 +29,7 @@ use crate::midi_cc_config::MidiCcConfig;
 use crate::model::{Saved, WebViewEvents};
 use crate::preset::Preset;
 use crate::process_context::ProcessContext;
+use crate::types::MAX_BUSES;
 
 // =============================================================================
 // Plugin Setup Types - Composable Host Information
@@ -326,60 +328,87 @@ pub enum BusType {
     Aux,
 }
 
-/// Information about an audio bus.
-#[derive(Debug, Clone)]
+/// Names of the aux buses a model does not describe, by bus index.
+const AUX_BUS_NAMES: [&str; MAX_BUSES] = [
+    "Aux", "Aux 1", "Aux 2", "Aux 3", "Aux 4", "Aux 5", "Aux 6", "Aux 7", "Aux 8", "Aux 9",
+    "Aux 10", "Aux 11", "Aux 12", "Aux 13", "Aux 14", "Aux 15",
+];
+
+/// Information about an audio bus: its name, type and default state.
+///
+/// The channels of a bus come from the model's
+/// [`LAYOUTS`](Model::LAYOUTS).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BusInfo {
     /// Display name for the bus (e.g., "Input", "Sidechain").
     pub name: &'static str,
     /// Bus type (main or auxiliary).
     pub bus_type: BusType,
-    /// Number of channels in this bus.
-    pub channel_count: u32,
-    /// Whether the bus is active by default.
+    /// Whether the bus is on before the host switches buses. A main bus
+    /// is always on.
     pub is_default_active: bool,
 }
 
-impl Default for BusInfo {
-    fn default() -> Self {
-        Self {
-            name: "Main",
-            bus_type: BusType::Main,
-            channel_count: 2,
-            is_default_active: true,
-        }
-    }
-}
-
 impl BusInfo {
-    /// Create a stereo main bus.
-    pub const fn stereo(name: &'static str) -> Self {
+    /// A main bus, on by default.
+    pub const fn main(name: &'static str) -> Self {
         Self {
             name,
             bus_type: BusType::Main,
-            channel_count: 2,
             is_default_active: true,
         }
     }
 
-    /// Create a mono main bus.
-    pub const fn mono(name: &'static str) -> Self {
-        Self {
-            name,
-            bus_type: BusType::Main,
-            channel_count: 1,
-            is_default_active: true,
-        }
-    }
-
-    /// Create an auxiliary bus (e.g., sidechain).
-    pub const fn aux(name: &'static str, channel_count: u32) -> Self {
+    /// An auxiliary bus (e.g., sidechain), off until the host switches it
+    /// on.
+    pub const fn aux(name: &'static str) -> Self {
         Self {
             name,
             bus_type: BusType::Aux,
-            channel_count,
             is_default_active: false,
         }
     }
+
+    /// The info of input bus `bus` when the model gives none: the main bus
+    /// "Input", an aux bus "Aux n" with n its bus index.
+    pub const fn default_input(bus: usize) -> Self {
+        if bus == 0 {
+            Self::main("Input")
+        } else {
+            Self::default_aux(bus)
+        }
+    }
+
+    /// The info of output bus `bus` when the model gives none: the main bus
+    /// "Output", an aux bus "Aux n" with n its bus index.
+    pub const fn default_output(bus: usize) -> Self {
+        if bus == 0 {
+            Self::main("Output")
+        } else {
+            Self::default_aux(bus)
+        }
+    }
+
+    /// An aux bus named after its index.
+    const fn default_aux(bus: usize) -> Self {
+        Self::aux(if bus < MAX_BUSES { AUX_BUS_NAMES[bus] } else { "Aux" })
+    }
+}
+
+/// The info of input bus `bus` of `model`, as the model gives it or the
+/// default ([`BusInfo::default_input`]). `None` past the input buses of its
+/// [`LAYOUTS`](Model::LAYOUTS).
+pub fn input_bus_info<M: Model>(model: &M, bus: usize) -> Option<BusInfo> {
+    (bus < Layout::default_of(M::LAYOUTS).inputs.len())
+        .then(|| model.input_bus_info(bus).unwrap_or(BusInfo::default_input(bus)))
+}
+
+/// The info of output bus `bus` of `model`, as the model gives it or the
+/// default ([`BusInfo::default_output`]). `None` past the output buses of
+/// its [`LAYOUTS`](Model::LAYOUTS).
+pub fn output_bus_info<M: Model>(model: &M, bus: usize) -> Option<BusInfo> {
+    (bus < Layout::default_of(M::LAYOUTS).outputs.len())
+        .then(|| model.output_bus_info(bus).unwrap_or(BusInfo::default_output(bus)))
 }
 
 // =============================================================================
@@ -906,50 +935,32 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     // =========================================================================
     // Bus Configuration (static, known before prepare)
     // =========================================================================
-    //
-    // The host and the framework size their buffers from these answers, so
-    // they must stay the same for the life of a plugin instance.
 
-    /// Returns the number of audio input buses.
+    /// The layouts the plugin supports, the default first. They give the
+    /// bus count and the channels of each bus. Default: stereo in and out.
     ///
-    /// Default returns 1 (single stereo input). A plugin without audio input,
-    /// such as most instruments and generators, overrides this to return 0.
-    ///
-    /// The bus methods must give the same answers for the life of a plugin
-    /// instance: the host and the framework size their buffers from them.
-    fn input_bus_count(&self) -> usize {
-        1
-    }
+    /// Every layout has the same number of input buses and of output buses
+    /// (see [`Layout`]); `#[beamer::export]` checks the list when the plugin
+    /// is compiled. A plugin without audio input, such as most instruments
+    /// and generators, lists layouts without input buses
+    /// ([`Layout::INSTRUMENT_STEREO`]). An Audio Unit always has an output
+    /// bus: a plugin without any bus gets a stereo one in the AU formats.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO];
 
-    /// Returns the number of audio output buses.
+    /// Name, type and default state of an input bus, for each bus of the
+    /// [`LAYOUTS`](Model::LAYOUTS). Default: the main bus "Input", aux
+    /// buses "Aux n" off by default. `None` stands for that default too.
     ///
-    /// Default returns 1 (single stereo output). An Audio Unit always has an
-    /// output bus: a plugin that declares no bus at all gets one in the AU
-    /// formats, as wide as `output_bus_info(0)` says or stereo.
-    fn output_bus_count(&self) -> usize {
-        1
-    }
-
-    /// Returns information about an input bus.
-    ///
-    /// Default returns a stereo main bus for index 0.
+    /// The answers must stay the same for the life of a plugin instance.
     fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        if index == 0 {
-            Some(BusInfo::stereo("Input"))
-        } else {
-            None
-        }
+        Some(BusInfo::default_input(index))
     }
 
-    /// Returns information about an output bus.
-    ///
-    /// Default returns a stereo main bus for index 0.
+    /// Name, type and default state of an output bus, as for
+    /// [`input_bus_info`](Model::input_bus_info). Default: the main bus
+    /// "Output", aux buses "Aux n" off by default.
     fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
-        if index == 0 {
-            Some(BusInfo::stereo("Output"))
-        } else {
-            None
-        }
+        Some(BusInfo::default_output(index))
     }
 
     /// Whether the plugin can process with these buses on.
@@ -963,8 +974,8 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// silence or renders into memory that is dropped, a bus it keeps off
     /// is ignored or silent for the host.
     ///
-    /// The main buses are always on in `buses` (unless declared with 0
-    /// channels). The default accepts any combination of aux buses.
+    /// The main buses are always on in `buses`. The default accepts any
+    /// combination of aux buses.
     fn supports_buses(&self, buses: &ActiveBuses) -> bool {
         let _ = buses;
         true

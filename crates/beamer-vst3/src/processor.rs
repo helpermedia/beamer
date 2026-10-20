@@ -30,8 +30,8 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
     ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusNegotiation, BusRouting,
-    BusType as CoreBusType, CachedBusConfig, ChordInfo, ConversionBuffers,
-    FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
+    BusType as CoreBusType, CachedBusConfig, ChannelSet, ChordInfo, ConversionBuffers,
+    FrameRate as CoreFrameRate, Layout, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
@@ -966,12 +966,13 @@ impl<P: Model> Vst3Processor<P> {
     /// Only for host calls the host does not make while `process()` runs
     /// (`setupProcessing()`, `setActive()`).
     unsafe fn prepare(&self, setup: &ProcessSetup, buses: BusNegotiation) -> bool {
-        // Validate the model's bus configuration against compile-time limits.
-        let declared_buses = CachedBusConfig::from_model(self.model());
-        if let Err(msg) = declared_buses.validate() {
-            log::error!("Plugin bus configuration exceeds limits: {}", msg);
+        // Validate the model's layouts against compile-time limits. The
+        // export macro checks them too, a model used without it is not.
+        if let Err(msg) = beamer_core::validate_layouts(P::LAYOUTS) {
+            log::error!("Plugin layouts are not valid: {}", msg);
             return false;
         }
+        let declared_buses = CachedBusConfig::from_active_buses(&ActiveBuses::all_on(self.layout()));
 
         // Store the setup. A setup that was refused above is not kept, so
         // that it does not count as the current one when it comes again.
@@ -1061,30 +1062,46 @@ impl<P: Model> Vst3Processor<P> {
     // Bus and MIDI Answers (works in both states, not for process())
     // =========================================================================
 
+    /// The layout the plugin runs with: the first of its `LAYOUTS`.
+    #[inline]
+    fn layout(&self) -> &'static Layout {
+        Layout::default_of(P::LAYOUTS)
+    }
+
     /// Get input bus count.
     #[inline]
     fn input_bus_count(&self) -> usize {
-        self.model().input_bus_count()
+        self.layout().inputs.len()
     }
 
     /// Get output bus count.
     #[inline]
     fn output_bus_count(&self) -> usize {
-        self.model().output_bus_count()
+        self.layout().outputs.len()
+    }
+
+    /// The channel set of an audio bus in the layout the plugin runs with,
+    /// `None` for a bus it does not have.
+    fn bus_set(&self, dir: BusDirection, index: usize) -> Option<ChannelSet> {
+        match dir as BusDirections {
+            BusDirections_::kInput => self.layout().first_input_set(index),
+            BusDirections_::kOutput => self.layout().first_output_set(index),
+            _ => None,
+        }
     }
 
     /// Get input bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     fn core_input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        self.model().input_bus_info(index)
+        beamer_core::plugin::input_bus_info(self.model(), index)
     }
 
     /// Get output bus info.
     /// Returns beamer_core::BusInfo (not vst3::BusInfo).
     #[inline]
     fn core_output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
-        self.model().output_bus_info(index)
+        beamer_core::plugin::output_bus_info(self.model(), index)
     }
 
     /// Whether the plugin has an event bus in this direction: input for
@@ -1516,12 +1533,13 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
                     _ => None,
                 };
 
-                if let Some(info) = info {
+                let set = usize::try_from(index).ok().and_then(|index| self.bus_set(dir, index));
+                if let (Some(info), Some(set)) = (info, set) {
                     // SAFETY: Validated bus is non-null above. Host guarantees validity.
                     let bus = unsafe { &mut *bus };
                     bus.mediaType = MediaTypes_::kAudio as MediaType;
                     bus.direction = dir;
-                    bus.channelCount = info.channel_count as i32;
+                    bus.channelCount = set.channel_count() as i32;
                     copy_wstring(info.name, &mut bus.name);
                     bus.busType = match info.bus_type {
                         CoreBusType::Main => BusTypes_::kMain,
@@ -1586,20 +1604,16 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
         };
 
         // The request takes effect at the next setupProcessing() or
-        // setActive(true). A bus that is switched on gets its declared
-        // channels, the only ones setBusArrangements() accepts.
+        // setActive(true). A bus that is switched on gets the set of the
+        // layout the plugin runs with, the only one setBusArrangements()
+        // accepts.
         let on = state != 0;
+        let set = self.bus_set(dir, index).filter(|_| on);
         let mut negotiation = self.bus_negotiation.lock().unwrap_or_else(PoisonError::into_inner);
         let requested = negotiation.requested_mut();
         let recorded = match dir as BusDirections {
-            BusDirections_::kInput => {
-                let channels = self.core_input_bus_info(index).filter(|_| on).map(|info| info.channel_count);
-                requested.set_input(index, channels)
-            }
-            BusDirections_::kOutput => {
-                let channels = self.core_output_bus_info(index).filter(|_| on).map(|info| info.channel_count);
-                requested.set_output(index, channels)
-            }
+            BusDirections_::kInput => requested.set_input(index, set),
+            BusDirections_::kOutput => requested.set_output(index, set),
             _ => false,
         };
         // A request the plugin refuses is accepted as well: the wrapper
@@ -1799,8 +1813,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 return kResultFalse;
             }
 
-            if let Some(info) = self.core_input_bus_info(i) {
-                let expected = channel_count_to_speaker_arrangement(info.channel_count);
+            if let Some(set) = self.layout().first_input_set(i) {
+                let expected = channel_count_to_speaker_arrangement(set.channel_count());
                 if requested != expected {
                     return kResultFalse;
                 }
@@ -1816,8 +1830,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 return kResultFalse;
             }
 
-            if let Some(info) = self.core_output_bus_info(i) {
-                let expected = channel_count_to_speaker_arrangement(info.channel_count);
+            if let Some(set) = self.layout().first_output_set(i) {
+                let expected = channel_count_to_speaker_arrangement(set.channel_count());
                 if requested != expected {
                     return kResultFalse;
                 }
@@ -1837,15 +1851,10 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let info = match dir as BusDirections {
-            BusDirections_::kInput => self.core_input_bus_info(index as usize),
-            BusDirections_::kOutput => self.core_output_bus_info(index as usize),
-            _ => None,
-        };
-
-        if let Some(info) = info {
+        let set = usize::try_from(index).ok().and_then(|index| self.bus_set(dir, index));
+        if let Some(set) = set {
             // SAFETY: arr is non-null (checked above) and host guarantees validity.
-            unsafe { *arr = channel_count_to_speaker_arrangement(info.channel_count) };
+            unsafe { *arr = channel_count_to_speaker_arrangement(set.channel_count()) };
             kResultOk
         } else {
             kInvalidArgument
@@ -3581,7 +3590,7 @@ fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> O
 mod tests {
     use super::*;
     use beamer_core::config::Category;
-    use beamer_core::{NoParameters, ProcessMode};
+    use beamer_core::{BusLayout, NoParameters, ProcessMode};
 
     fn process_mode_for(process_mode: int32) -> ProcessMode {
         let setup = ProcessSetup {
@@ -3856,14 +3865,15 @@ mod tests {
             MidiProcessor
         }
 
-        fn input_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
             match index {
-                0 => Some(CoreBusInfo::stereo("Input")),
-                1 => Some(CoreBusInfo::aux("Sidechain", 2)),
+                0 => Some(CoreBusInfo::main("Input")),
+                1 => Some(CoreBusInfo::aux("Sidechain")),
                 _ => None,
             }
         }
@@ -4783,26 +4793,23 @@ mod tests {
             Some(beamer_core::MidiCcConfig::new().with_mod_wheel())
         }
 
-        fn input_bus_count(&self) -> usize {
-            2
-        }
-
-        fn output_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO, BusLayout::STEREO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
             match index {
-                0 => Some(CoreBusInfo::stereo("Input")),
-                1 => Some(CoreBusInfo::aux("Aux Input", 2)),
+                0 => Some(CoreBusInfo::main("Input")),
+                1 => Some(CoreBusInfo::aux("Aux Input")),
                 _ => None,
             }
         }
 
         fn output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
             match index {
-                0 => Some(CoreBusInfo::stereo("Output")),
-                1 => Some(CoreBusInfo::aux("Aux Output", 2)),
+                0 => Some(CoreBusInfo::main("Output")),
+                1 => Some(CoreBusInfo::aux("Aux Output")),
                 _ => None,
             }
         }
@@ -5795,26 +5802,23 @@ mod tests {
             BusProcessor { double: BUS_DOUBLE.with(Cell::get) }
         }
 
-        fn input_bus_count(&self) -> usize {
-            2
-        }
-
-        fn output_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO, BusLayout::STEREO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
             match index {
-                0 => Some(CoreBusInfo::stereo("Input")),
-                1 => Some(CoreBusInfo::aux("Sidechain", 2)),
+                0 => Some(CoreBusInfo::main("Input")),
+                1 => Some(CoreBusInfo::aux("Sidechain")),
                 _ => None,
             }
         }
 
         fn output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
             match index {
-                0 => Some(CoreBusInfo::stereo("Output")),
-                1 => Some(CoreBusInfo::aux("Detector", 2)),
+                0 => Some(CoreBusInfo::main("Output")),
+                1 => Some(CoreBusInfo::aux("Detector")),
                 _ => None,
             }
         }

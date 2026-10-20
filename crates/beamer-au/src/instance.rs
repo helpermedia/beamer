@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::error::PluginResult;
 use beamer_core::{
-    ActiveBuses, AuxiliaryBuffers, Buffer, CachedBusConfig, MidiEvent, ProcessContext, ProcessMode,
+    ActiveBuses, AuxiliaryBuffers, Buffer, MidiEvent, ProcessContext, ProcessMode,
     SharedModel, WebViewDispatch, WebViewEventQueue,
 };
 
@@ -66,14 +66,13 @@ pub trait AuPluginInstance: Send + 'static {
     /// # Arguments
     /// * `sample_rate` - The sample rate in Hz
     /// * `max_frames` - Maximum number of frames per render call
-    /// * `bus_config` - The buses the plugin accepted (a bus that is off has
-    ///   0 channels)
+    /// * `buses` - The buses the plugin accepted
     /// * `process_mode` - Whether the host renders in real time or offline
     fn allocate_render_resources(
         &mut self,
         sample_rate: f64,
         max_frames: u32,
-        bus_config: &CachedBusConfig,
+        buses: &ActiveBuses,
         process_mode: ProcessMode,
     ) -> PluginResult<()>;
 
@@ -133,21 +132,14 @@ pub trait AuPluginInstance: Send + 'static {
     // Bus Configuration (static, known before prepare)
     // =========================================================================
 
-    /// Returns the number of audio input buses the plugin declares.
-    ///
-    /// This is used during AU bus array creation (before allocate/render).
-    fn declared_input_bus_count(&self) -> usize;
+    /// The layouts the plugin supports, the default first (see
+    /// `Model::LAYOUTS`). They give the buses of the AU bus arrays (before
+    /// allocate/render).
+    fn layouts(&self) -> &'static [beamer_core::Layout];
 
-    /// Returns the number of audio output buses the plugin declares.
-    ///
-    /// This is used during AU bus array creation (before allocate/render).
-    fn declared_output_bus_count(&self) -> usize;
-
-    /// Returns information about an input bus the plugin declares.
-    fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo>;
-
-    /// Returns information about an output bus the plugin declares.
-    fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo>;
+    /// The buses of the default layout with the default state of each (see
+    /// `ActiveBuses::default_for`).
+    fn default_buses(&self) -> ActiveBuses;
 
     /// Whether the plugin can process with these buses on (see
     /// `Model::supports_buses`).

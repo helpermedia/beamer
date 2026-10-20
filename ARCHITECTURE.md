@@ -518,7 +518,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 | `MAX_AUX_BUSES` | 15 | Auxiliary buses (total minus main) |
 
 **Enforcement**:
-- `CachedBusConfig::validate()` checks the bus configuration against these constants before the Processor is created. VST3 checks the model's declared buses: `setupProcessing()` returns `kResultFalse` and logs an error. The AU checks the configuration the host set: `allocateRenderResources` returns `kAudioUnitErr_FormatNotSupported`
+- `validate_layouts()` checks the model's layouts against these constants when the plugin is compiled (`#[beamer::export]`) and again before the Processor is created: VST3 `setupProcessing()` returns `kResultFalse`, AU `allocateRenderResources` returns `kAudioUnitErr_FormatNotSupported`, both log an error. The AU also checks the configuration the host set with `CachedBusConfig::validate()`
 - `validate_speaker_arrangement()` rejects invalid host arrangements in `setBusArrangements()`
 
 ### MIDI Data Fidelity
@@ -591,7 +591,7 @@ Plugin Load (creates the Model)
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
 │   • Negotiate the buses (supports_buses)                    │
-│   • CachedBusConfig::validate()                             │
+│   • validate_layouts()                                      │
 │     - Buses ≤ MAX_BUSES, channels per bus ≤ MAX_CHANNELS    │
 │     - Return kResultFalse + log if exceeded                 │
 │   • model.prepare(setup) creates the Processor, when there  │

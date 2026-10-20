@@ -157,6 +157,8 @@ impl Model for SynthesizerModel {
     type Processor = SynthesizerProcessor;
     // The factory presets, in the Factory Presets section below.
     const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;
+    // No audio input, a stereo output.
+    const LAYOUTS: &'static [Layout] = &[Layout::INSTRUMENT_STEREO];
 
     fn prepare(self: Arc<Self>, setup: SampleRate) -> SynthesizerProcessor {
         SynthesizerProcessor {
@@ -178,18 +180,6 @@ impl Model for SynthesizerModel {
         // This solves the VST3 MIDI input problem where most DAWs don't send
         // raw MIDI CC events - instead they use IMidiMapping (hidden parameters).
         Some(MidiCcConfig::SYNTH_FULL)
-    }
-
-    // =========================================================================
-    // Bus Configuration
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        0 // Synthesizer has no audio input
-    }
-
-    fn input_bus_info(&self, _index: usize) -> Option<BusInfo> {
-        None // No inputs
     }
 }
 

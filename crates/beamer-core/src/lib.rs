@@ -21,7 +21,8 @@
 //! - [`Rect`] - Rectangle in pixels
 //! - [`Buffer`] - Main audio I/O buffer
 //! - [`AuxiliaryBuffers`] - Sidechain and aux bus access
-//! - [`BusInfo`] - Audio bus configuration
+//! - [`Layout`], [`BusLayout`], [`ChannelSet`] - The channel layouts a plugin supports
+//! - [`BusInfo`] - Name, type and default state of an audio bus
 //! - [`ActiveBuses`] - The buses a plugin is prepared with
 //! - [`ParameterInfo`] - Parameter metadata
 //! - [`PluginError`] - Error types
@@ -36,6 +37,7 @@ pub mod buffer;
 pub mod buffer_storage;
 pub mod bus_config;
 pub mod bypass;
+pub mod channel_layouts;
 pub mod conversion_buffers;
 pub mod config;
 pub mod editor_sync;
@@ -74,6 +76,7 @@ pub use audio_thread::ProcessScope;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
+pub use channel_layouts::{validate_layouts, BusLayout, ChannelSet, Layout};
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
 pub use config::{Config, FourCharCode};
 pub use conversion_buffers::ConversionBuffers;

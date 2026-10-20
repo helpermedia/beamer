@@ -840,18 +840,22 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// The factory presets, none by default (see Factory Presets).
     const PRESETS: &'static [Preset<Self>] = &[];
 
+    /// The channel layouts the plugin supports, the default first. They
+    /// give the bus count and the channels of each bus (see Switching
+    /// Buses). A plugin without audio input, such as most instruments and
+    /// generators, lists layouts without input buses. An Audio Unit always
+    /// has an output: one without any bus gets a stereo output in the AU
+    /// formats.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO];
+
     /// Create a processor for the audio setup. Runs on a host thread and may
     /// allocate. The smoothers already have the host's sample rate. Called
     /// again when the setup changes: the previous processor is dropped first.
     fn prepare(self: Arc<Self>, setup: Self::Setup) -> Self::Processor;
 
-    // Bus configuration (defaults provided). A plugin without audio input,
-    // such as most instruments and generators, returns 0 from input_bus_count.
-    // An Audio Unit always has an output: one without any bus gets an output
-    // in the AU formats, as wide as output_bus_info(0) says or stereo. The
-    // answers must stay the same for the life of an instance.
-    fn input_bus_count(&self) -> usize { 1 }
-    fn output_bus_count(&self) -> usize { 1 }
+    // Name, type and default state of each bus (defaults: "Input" and
+    // "Output" main buses, "Aux n" aux buses off by default). The answers
+    // must stay the same for the life of an instance.
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
     fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
 
@@ -947,7 +951,28 @@ impl Model for FftModel {
 
 #### Switching Buses
 
-A plugin declares its buses with `input_bus_count()`, `output_bus_count()`, `input_bus_info()` and `output_bus_info()`. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). `BusInfo::stereo` and `BusInfo::mono` declare a main bus. `BusInfo::aux(name, channel_count)` declares an aux bus that is off until the host switches it on (`is_default_active` is false). An aux bus that starts on sets the field: `BusInfo { is_default_active: true, ..BusInfo::aux("Sidechain", 2) }`. A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). The wrappers refuse a model with more.
+A plugin declares its buses with `LAYOUTS`, `input_bus_info()` and `output_bus_info()`. The layouts give the bus count and the channels of each bus, one `BusLayout` per bus. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). The bus info gives the name, the type and the default state: `BusInfo::main(name)` declares a main bus, `BusInfo::aux(name)` an aux bus that is off until the host switches it on (`is_default_active` is false). An aux bus that starts on sets the field: `BusInfo { is_default_active: true, ..BusInfo::aux("Sidechain") }`.
+
+```rust
+impl Model for CompressorModel {
+    // Stereo in and out with a stereo sidechain as input bus 1.
+    const LAYOUTS: &'static [Layout] = &[Layout {
+        inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+        outputs: &[BusLayout::STEREO],
+    }];
+
+    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+        match index {
+            0 => Some(BusInfo::main("Input")),
+            1 => Some(BusInfo::aux("Sidechain")),
+            _ => None,
+        }
+    }
+    // ...
+}
+```
+
+A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). Every layout has the same number of buses. `#[beamer::export]` checks the layouts when the plugin is compiled; the wrappers refuse a model with more buses or channels. The plugin runs with the first layout.
 
 A host switches aux buses on and off. The plugin is prepared with the buses that are on: it requests `ActiveBuses` in its setup. When the host switches a bus, the plugin is prepared again.
 
@@ -966,7 +991,7 @@ impl Model for CompressorModel {
 }
 ```
 
-`input(bus)` and `output(bus)` give the channel count of a bus that is on, `is_input_on(bus)` and `is_output_on(bus)` whether it is on, `input_bus_count()` and `output_bus_count()` the declared buses, on or off.
+`input(bus)` and `output(bus)` give the channel count of a bus that is on, `input_set(bus)` and `output_set(bus)` its `ChannelSet`, `is_input_on(bus)` and `is_output_on(bus)` whether it is on, `input_bus_count()` and `output_bus_count()` the declared buses, on or off.
 
 A plugin that cannot process some combination refuses it in `supports_buses()`:
 

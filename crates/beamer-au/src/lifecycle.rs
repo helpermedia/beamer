@@ -136,7 +136,7 @@ fn allocate_processing_resources(
     supports_f64: bool,
     midi_cc_config: Option<MidiCcConfig>,
     max_frames: u32,
-    bus_config: &CachedBusConfig,
+    buses: &ActiveBuses,
 ) -> (
     Option<ConversionBuffers>,
     Option<Box<beamer_core::MidiCcState>>,
@@ -144,6 +144,7 @@ fn allocate_processing_resources(
 ) {
     // Pre-allocate conversion buffers if processor doesn't support f64.
     let conversion_buffers = if !supports_f64 {
+        let bus_config = CachedBusConfig::from_active_buses(buses);
         let input_channels = bus_config.input_bus_info(0).map_or(0, |bus| bus.channel_count);
         let output_channels = bus_config.output_bus_info(0).map_or(0, |bus| bus.channel_count);
 
@@ -188,27 +189,24 @@ fn allocate_processing_resources(
 impl<P: Model> AuState<P> {
     /// Create a processor for a configuration.
     ///
-    /// Accepts `CachedBusConfig` to derive actual aux bus channel counts for
-    /// proper conversion buffer allocation. A prepared plugin is prepared
+    /// The plugin is prepared with `buses`, the buses it accepted. The
+    /// conversion buffers cover their channels. A prepared plugin is prepared
     /// again, which is how a changed sample rate, buffer size or process mode
     /// reaches it.
     pub fn prepare(
         &mut self,
         sample_rate: f64,
         max_frames: u32,
-        bus_config: &CachedBusConfig,
+        buses: &ActiveBuses,
         process_mode: ProcessMode,
     ) {
-        // Every bus of the configuration is on.
-        let buses = bus_config.to_active_buses();
-
         // A processor of an earlier configuration goes first, so that its
         // buffers are free before the new ones are allocated.
         if self.prepared.take().is_some() {
             log::debug!("Re-preparing plugin due to config change (was prepared)");
         }
 
-        let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &buses, process_mode);
+        let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, buses, process_mode);
         // The smoothers ramp at the host's rate unless the plugin sets
         // another one in prepare.
         self.model.set_sample_rate(sample_rate);
@@ -219,7 +217,7 @@ impl<P: Model> AuState<P> {
                 processor.supports_double_precision(),
                 self.model.midi_cc_config(),
                 max_frames,
-                bus_config,
+                buses,
             );
 
         self.prepared = Some(Prepared {

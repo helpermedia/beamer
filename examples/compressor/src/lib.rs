@@ -167,6 +167,11 @@ impl Model for CompressorModel {
     // types.
     type Setup = (SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses);
     type Processor = CompressorProcessor;
+    // Stereo in and out with a stereo sidechain as input bus 1.
+    const LAYOUTS: &'static [Layout] = &[Layout {
+        inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+        outputs: &[BusLayout::STEREO],
+    }];
 
     fn prepare(
         self: Arc<Self>,
@@ -205,15 +210,11 @@ impl Model for CompressorModel {
     // Multi-Bus Configuration (Sidechain)
     // =========================================================================
 
-    fn input_bus_count(&self) -> usize {
-        2 // Main stereo input + Sidechain input
-    }
-
     fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
         match index {
-            0 => Some(BusInfo::stereo("Input")),
-            // Stereo sidechain, off until the host switches it on.
-            1 => Some(BusInfo::aux("Sidechain", 2)),
+            0 => Some(BusInfo::main("Input")),
+            // The sidechain, off until the host switches it on.
+            1 => Some(BusInfo::aux("Sidechain")),
             _ => None,
         }
     }

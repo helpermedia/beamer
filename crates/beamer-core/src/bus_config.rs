@@ -5,14 +5,15 @@
 //! fast access during audio processing.
 
 use crate::active_buses::ActiveBuses;
-use crate::plugin::{BusInfo, BusType, Model};
+use crate::channel_layouts::ChannelSet;
+use crate::plugin::BusType;
 use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// Lightweight bus information for caching.
 ///
 /// Contains only the data needed for buffer allocation and validation.
-/// This is distinct from [`BusInfo`] which contains full metadata (name, etc.)
-/// for host queries.
+/// This is distinct from [`BusInfo`](crate::BusInfo), which holds the name
+/// and default state for host queries.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CachedBusInfo {
     /// Number of channels in this bus.
@@ -27,14 +28,6 @@ impl CachedBusInfo {
         Self {
             channel_count,
             bus_type,
-        }
-    }
-
-    /// Create from a full BusInfo (drops name and is_default_active).
-    pub fn from_bus_info(info: &BusInfo) -> Self {
-        Self {
-            channel_count: info.channel_count as usize,
-            bus_type: info.bus_type,
         }
     }
 }
@@ -83,33 +76,6 @@ impl CachedBusConfig {
         }
     }
 
-    /// Create from the bus configuration a model declares.
-    ///
-    /// A declared bus without information keeps its index, with 0 channels.
-    pub fn from_model<P: Model>(model: &P) -> Self {
-        let input_bus_count = model.input_bus_count();
-        let output_bus_count = model.output_bus_count();
-
-        let cached = |bus: usize, info: Option<BusInfo>| match info {
-            Some(info) => CachedBusInfo::from_bus_info(&info),
-            None => CachedBusInfo::new(0, if bus == 0 { BusType::Main } else { BusType::Aux }),
-        };
-        let input_buses: Vec<CachedBusInfo> = (0..input_bus_count)
-            .map(|i| cached(i, model.input_bus_info(i)))
-            .collect();
-
-        let output_buses: Vec<CachedBusInfo> = (0..output_bus_count)
-            .map(|i| cached(i, model.output_bus_info(i)))
-            .collect();
-
-        Self {
-            input_bus_count,
-            output_bus_count,
-            input_buses,
-            output_buses,
-        }
-    }
-
     /// Get information about an input bus.
     ///
     /// Returns `None` if the bus index is out of bounds.
@@ -146,18 +112,16 @@ impl CachedBusConfig {
         Self::new(input_buses, output_buses)
     }
 
-    /// The buses of this configuration, each on with its channel count
-    /// (off with 0 channels).
-    ///
-    /// The wrappers prepare a plugin with these until they negotiate the
-    /// buses with the host.
+    /// The buses of this configuration, each on with the set its channel
+    /// count most likely means ([`ChannelSet::for_count`]), off with 0
+    /// channels.
     pub fn to_active_buses(&self) -> ActiveBuses {
         let mut buses = ActiveBuses::all_off(self.input_bus_count, self.output_bus_count);
         for (bus, info) in self.input_buses.iter().enumerate() {
-            let _ = buses.set_input(bus, Some(info.channel_count as u32));
+            let _ = buses.set_input(bus, ChannelSet::for_count(info.channel_count as u32));
         }
         for (bus, info) in self.output_buses.iter().enumerate() {
-            let _ = buses.set_output(bus, Some(info.channel_count as u32));
+            let _ = buses.set_output(bus, ChannelSet::for_count(info.channel_count as u32));
         }
         buses
     }
@@ -260,19 +224,6 @@ mod tests {
         let empty = CachedBusConfig::new(Vec::new(), Vec::new()).to_active_buses();
         assert_eq!(empty.input_bus_count(), 0);
         assert_eq!(empty.output(0), None);
-    }
-
-    #[test]
-    fn test_cached_bus_info_from_bus_info() {
-        let bus_info = BusInfo {
-            name: "Test Bus",
-            bus_type: BusType::Aux,
-            channel_count: 4,
-            is_default_active: true,
-        };
-        let cached = CachedBusInfo::from_bus_info(&bus_info);
-        assert_eq!(cached.channel_count, 4);
-        assert_eq!(cached.bus_type, BusType::Aux);
     }
 
     #[test]

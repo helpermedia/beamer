@@ -7,7 +7,7 @@
 //!
 //! # Real-Time Safety
 //!
-//! - All buffers are allocated once during `allocate()` or `allocate_from_buses()`
+//! - All buffers are allocated once during `allocate()`
 //! - No heap allocations occur during audio processing
 //! - Buffer access is O(1)
 //!
@@ -15,7 +15,7 @@
 //!
 //! ```ignore
 //! // During setup (non-real-time):
-//! let buffers = ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, max_frames);
+//! let buffers = ConversionBuffers::allocate(2, 2, &[2], &[], max_frames);
 //!
 //! // During process (real-time):
 //! // 1. Convert f64 inputs to f32
@@ -30,8 +30,6 @@
 //! // 2. Process with f32 buffers
 //! // 3. Convert f32 outputs back to f64
 //! ```
-
-use crate::BusInfo;
 
 /// Pre-allocated buffers for f64↔f32 conversion.
 ///
@@ -54,7 +52,7 @@ impl ConversionBuffers {
     /// Create empty conversion buffers (no capacity reserved).
     ///
     /// Use this when you don't know the configuration yet.
-    /// Call `allocate()` or `allocate_from_buses()` later.
+    /// Call `allocate()` later.
     pub fn new() -> Self {
         Self {
             main_input_f32: Vec::new(),
@@ -64,71 +62,7 @@ impl ConversionBuffers {
         }
     }
 
-    /// Pre-allocate buffers from bus information.
-    ///
-    /// This is the preferred allocation method when you have access to `BusInfo`.
-    /// Extracts channel counts from main bus (index 0) and auxiliary buses (index 1+).
-    ///
-    /// # Arguments
-    ///
-    /// * `input_buses` - Slice of input bus information
-    /// * `output_buses` - Slice of output bus information
-    /// * `max_frames` - Maximum number of samples per buffer
-    pub fn allocate_from_buses(
-        input_buses: &[BusInfo],
-        output_buses: &[BusInfo],
-        max_frames: usize,
-    ) -> Self {
-        // Main bus (bus 0) channels
-        let main_in_channels = input_buses
-            .first()
-            .map(|b| b.channel_count as usize)
-            .unwrap_or(0);
-        let main_out_channels = output_buses
-            .first()
-            .map(|b| b.channel_count as usize)
-            .unwrap_or(0);
-
-        let main_input_f32: Vec<Vec<f32>> = (0..main_in_channels)
-            .map(|_| vec![0.0f32; max_frames])
-            .collect();
-
-        let main_output_f32: Vec<Vec<f32>> = (0..main_out_channels)
-            .map(|_| vec![0.0f32; max_frames])
-            .collect();
-
-        // Auxiliary buses (bus 1+)
-        let aux_input_f32: Vec<Vec<Vec<f32>>> = input_buses
-            .iter()
-            .skip(1)
-            .map(|info| {
-                (0..info.channel_count)
-                    .map(|_| vec![0.0f32; max_frames])
-                    .collect()
-            })
-            .collect();
-
-        let aux_output_f32: Vec<Vec<Vec<f32>>> = output_buses
-            .iter()
-            .skip(1)
-            .map(|info| {
-                (0..info.channel_count)
-                    .map(|_| vec![0.0f32; max_frames])
-                    .collect()
-            })
-            .collect();
-
-        Self {
-            main_input_f32,
-            main_output_f32,
-            aux_input_f32,
-            aux_output_f32,
-        }
-    }
-
     /// Pre-allocate buffers with explicit channel counts.
-    ///
-    /// Use this when you have channel counts directly rather than `BusInfo`.
     ///
     /// # Arguments
     ///
@@ -334,23 +268,6 @@ mod tests {
         assert_eq!(buffers.aux_input_channel_count(0), 2);
         assert_eq!(buffers.aux_input_channel_count(1), 1);
         assert_eq!(buffers.aux_output_channel_count(0), 2);
-    }
-
-    #[test]
-    fn test_allocate_from_buses() {
-        let input_buses = vec![
-            BusInfo::stereo("Main In"),
-            BusInfo::aux("Sidechain", 2),
-        ];
-        let output_buses = vec![BusInfo::stereo("Main Out")];
-
-        let buffers = ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, 1024);
-
-        assert_eq!(buffers.main_input_channel_count(), 2);
-        assert_eq!(buffers.main_output_channel_count(), 2);
-        assert_eq!(buffers.aux_input_bus_count(), 1);
-        assert_eq!(buffers.aux_input_channel_count(0), 2);
-        assert_eq!(buffers.aux_output_bus_count(), 0);
     }
 
     #[test]

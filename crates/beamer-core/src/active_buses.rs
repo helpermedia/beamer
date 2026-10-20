@@ -8,19 +8,20 @@
 //! request and the accepted combination differ, the wrapper bridges the
 //! difference per bus as its [`BusRouting`] says.
 
-use crate::plugin::{BusInfo, HostSetup, Model, PluginSetup};
+use crate::channel_layouts::{ChannelSet, Layout};
+use crate::plugin::{self, HostSetup, Model, PluginSetup};
 use crate::types::MAX_BUSES;
 
 // =============================================================================
 // Active Buses
 // =============================================================================
 
-/// The buses of an instance as it is prepared: which are on and their
-/// channel counts.
+/// The buses of an instance as it is prepared: which are on and the
+/// channel set of each.
 ///
 /// Bus 0 of each direction is the main bus. It is always on in the
-/// combination a plugin is prepared with, unless it is declared with 0
-/// channels. A host request may have it off; the wrapper then bridges it.
+/// combination a plugin is prepared with. A host request may have it off;
+/// the wrapper then bridges it.
 ///
 /// As a setup type, it tells [`Model::prepare()`] which aux buses are on.
 /// A bus that is off there is `None` in
@@ -45,11 +46,11 @@ use crate::types::MAX_BUSES;
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveBuses {
-    // Channel count of each input bus that is on, `None` past the count.
-    inputs: [Option<u32>; MAX_BUSES],
+    // Channel set of each input bus that is on, `None` past the count.
+    inputs: [Option<ChannelSet>; MAX_BUSES],
     input_bus_count: usize,
-    // Channel count of each output bus that is on, `None` past the count.
-    outputs: [Option<u32>; MAX_BUSES],
+    // Channel set of each output bus that is on, `None` past the count.
+    outputs: [Option<ChannelSet>; MAX_BUSES],
     output_bus_count: usize,
 }
 
@@ -66,31 +67,59 @@ impl ActiveBuses {
         }
     }
 
-    /// The declared buses with the default state of each
-    /// ([`BusInfo::is_default_active`](crate::BusInfo::is_default_active),
-    /// main buses always on).
+    /// Every bus of `layout` on, with the set it starts with
+    /// ([`Layout::first_input_set`]).
     ///
     /// Buses past [`MAX_BUSES`] in a direction are left out. The wrappers
     /// refuse such a model when it is prepared.
-    pub fn default_for<M: Model>(model: &M) -> Self {
-        let mut buses = Self::all_off(model.input_bus_count(), model.output_bus_count());
+    pub fn all_on(layout: &Layout) -> Self {
+        let mut buses = Self::all_off(layout.inputs.len(), layout.outputs.len());
         for bus in 0..buses.input_bus_count {
-            buses.inputs[bus] = default_channels(bus, model.input_bus_info(bus));
+            let _ = buses.set_input(bus, layout.first_input_set(bus));
         }
         for bus in 0..buses.output_bus_count {
-            buses.outputs[bus] = default_channels(bus, model.output_bus_info(bus));
+            let _ = buses.set_output(bus, layout.first_output_set(bus));
         }
         buses
     }
 
+    /// The buses of the model's default layout (the first of its
+    /// [`LAYOUTS`](Model::LAYOUTS)) with the default state of each
+    /// ([`BusInfo::is_default_active`](crate::BusInfo::is_default_active),
+    /// main buses always on).
+    pub fn default_for<M: Model>(model: &M) -> Self {
+        let mut buses = Self::all_on(Layout::default_of(M::LAYOUTS));
+        for bus in 1..buses.input_bus_count {
+            if !plugin::input_bus_info(model, bus).is_some_and(|info| info.is_default_active) {
+                buses.inputs[bus] = None;
+            }
+        }
+        for bus in 1..buses.output_bus_count {
+            if !plugin::output_bus_info(model, bus).is_some_and(|info| info.is_default_active) {
+                buses.outputs[bus] = None;
+            }
+        }
+        buses
+    }
+
+    /// Channel set of input bus `bus` when it is on.
+    pub fn input_set(&self, bus: usize) -> Option<ChannelSet> {
+        self.inputs.get(bus).copied().flatten()
+    }
+
+    /// Channel set of output bus `bus` when it is on.
+    pub fn output_set(&self, bus: usize) -> Option<ChannelSet> {
+        self.outputs.get(bus).copied().flatten()
+    }
+
     /// Channel count of input bus `bus` when it is on.
     pub fn input(&self, bus: usize) -> Option<u32> {
-        self.inputs.get(bus).copied().flatten()
+        self.input_set(bus).map(|set| set.channel_count())
     }
 
     /// Channel count of output bus `bus` when it is on.
     pub fn output(&self, bus: usize) -> Option<u32> {
-        self.outputs.get(bus).copied().flatten()
+        self.output_set(bus).map(|set| set.channel_count())
     }
 
     /// Whether input bus `bus` is on.
@@ -113,34 +142,34 @@ impl ActiveBuses {
         self.output_bus_count
     }
 
-    /// Switches input bus `bus` on with `channels` channels, or off with
-    /// `None` (or 0 channels).
+    /// Switches input bus `bus` on with the channel set `set`, or off with
+    /// `None` (or a set without channels).
     ///
     /// Returns false, changing nothing, when the bus is not declared.
     #[must_use]
-    pub fn set_input(&mut self, bus: usize, channels: Option<u32>) -> bool {
+    pub fn set_input(&mut self, bus: usize, set: Option<ChannelSet>) -> bool {
         if bus >= self.input_bus_count {
             return false;
         }
-        self.inputs[bus] = channels.filter(|&count| count > 0);
+        self.inputs[bus] = set.filter(|set| set.channel_count() > 0);
         true
     }
 
-    /// Switches output bus `bus` on with `channels` channels, or off with
-    /// `None` (or 0 channels).
+    /// Switches output bus `bus` on with the channel set `set`, or off with
+    /// `None` (or a set without channels).
     ///
     /// Returns false, changing nothing, when the bus is not declared.
     #[must_use]
-    pub fn set_output(&mut self, bus: usize, channels: Option<u32>) -> bool {
+    pub fn set_output(&mut self, bus: usize, set: Option<ChannelSet>) -> bool {
         if bus >= self.output_bus_count {
             return false;
         }
-        self.outputs[bus] = channels.filter(|&count| count > 0);
+        self.outputs[bus] = set.filter(|set| set.channel_count() > 0);
         true
     }
 
     /// This combination with the main buses on: as requested, or with the
-    /// channel count of `fallback` where the request has one off.
+    /// set of `fallback` where the request has one off.
     fn with_main_buses_on(mut self, fallback: &ActiveBuses) -> Self {
         if self.input_bus_count > 0 && self.inputs[0].is_none() {
             self.inputs[0] = fallback.inputs[0];
@@ -156,15 +185,6 @@ impl PluginSetup for ActiveBuses {
     fn extract(host: &HostSetup) -> Self {
         host.buses
     }
-}
-
-/// The default channel count of a declared bus: its declared count when it
-/// is the main bus or active by default, `None` otherwise (also for a bus
-/// without information or channels).
-fn default_channels(bus: usize, info: Option<BusInfo>) -> Option<u32> {
-    info.filter(|info| bus == 0 || info.is_default_active)
-        .map(|info| info.channel_count)
-        .filter(|&count| count > 0)
 }
 
 // =============================================================================
@@ -297,8 +317,9 @@ mod tests {
 
     use super::*;
     use crate::buffer::{AuxiliaryBuffers, Buffer};
+    use crate::channel_layouts::BusLayout;
     use crate::parameter_store::NoParameters;
-    use crate::plugin::Processor;
+    use crate::plugin::{BusInfo, Processor};
     use crate::process_context::ProcessContext;
 
     /// A compressor-like model: stereo in and out, a stereo sidechain and
@@ -322,26 +343,23 @@ mod tests {
             SidechainProcessor
         }
 
-        fn input_bus_count(&self) -> usize {
-            2
-        }
-
-        fn output_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO, BusLayout::MONO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
             match index {
-                0 => Some(BusInfo::stereo("Input")),
-                1 => Some(BusInfo::aux("Sidechain", 2)),
+                0 => Some(BusInfo::main("Input")),
+                1 => Some(BusInfo::aux("Sidechain")),
                 _ => None,
             }
         }
 
         fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
             match index {
-                0 => Some(BusInfo::stereo("Output")),
-                1 => Some(BusInfo::aux("Detector", 1)),
+                0 => Some(BusInfo::main("Output")),
+                1 => Some(BusInfo::aux("Detector")),
                 _ => None,
             }
         }
@@ -372,13 +390,7 @@ mod tests {
             SidechainProcessor
         }
 
-        fn input_bus_count(&self) -> usize {
-            0
-        }
-
-        fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
-            (index == 0).then(|| BusInfo::mono("Output"))
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout::INSTRUMENT_MONO];
     }
 
     #[test]
@@ -397,6 +409,60 @@ mod tests {
     }
 
     #[test]
+    fn test_default_has_the_sets_of_the_first_layout() {
+        /// Mono or stereo, with a mono return on by default and an aux
+        /// output without info.
+        #[derive(Default)]
+        struct ReturnModel {
+            fields: NoParameters,
+        }
+
+        crate::__forward_model!(ReturnModel, fields);
+
+        impl Model for ReturnModel {
+            type Setup = ();
+            type Processor = SidechainProcessor;
+            const LAYOUTS: &'static [Layout] = &[
+                Layout {
+                    inputs: &[BusLayout::MONO, BusLayout::MONO],
+                    outputs: &[BusLayout::MONO, BusLayout::Any],
+                },
+                Layout {
+                    inputs: &[BusLayout::STEREO, BusLayout::MONO],
+                    outputs: &[BusLayout::STEREO, BusLayout::Any],
+                },
+            ];
+
+            fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+                SidechainProcessor
+            }
+
+            fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
+                (index == 1).then_some(BusInfo { is_default_active: true, ..BusInfo::aux("Return") })
+            }
+
+            fn output_bus_info(&self, _: usize) -> Option<BusInfo> {
+                None
+            }
+        }
+
+        let model = ReturnModel::default();
+        let buses = ActiveBuses::default_for(&model);
+        assert_eq!(buses.input_set(0), Some(ChannelSet::Mono));
+        assert_eq!(buses.input_set(1), Some(ChannelSet::Mono));
+        assert_eq!(buses.output_set(0), Some(ChannelSet::Mono));
+        // An aux bus without info is off by default.
+        assert!(!buses.is_output_on(1));
+        assert_eq!(plugin::output_bus_info(&model, 1), Some(BusInfo::aux("Aux 1")));
+        assert_eq!(plugin::output_bus_info(&model, 2), None);
+        assert_eq!(plugin::input_bus_info(&model, 0), Some(BusInfo::main("Input")));
+
+        // Every bus on, a wildcard as stereo.
+        let all_on = ActiveBuses::all_on(&ReturnModel::LAYOUTS[0]);
+        assert_eq!(all_on.output_set(1), Some(ChannelSet::Stereo));
+    }
+
+    #[test]
     fn test_default_without_input_bus() {
         let buses = ActiveBuses::default_for(&InstrumentModel::default());
 
@@ -409,13 +475,13 @@ mod tests {
     fn test_set_switches_declared_buses_only() {
         let mut buses = ActiveBuses::default_for(&SidechainModel::default());
 
-        assert!(buses.set_input(1, Some(2)));
+        assert!(buses.set_input(1, Some(ChannelSet::Stereo)));
         assert_eq!(buses.input(1), Some(2));
-        // 0 channels switch a bus off.
-        assert!(buses.set_input(1, Some(0)));
+        // A set without channels switches a bus off.
+        assert!(buses.set_input(1, Some(ChannelSet::Discrete(0))));
         assert!(!buses.is_input_on(1));
-        assert!(!buses.set_input(2, Some(2)));
-        assert!(!buses.set_output(2, Some(2)));
+        assert!(!buses.set_input(2, Some(ChannelSet::Stereo)));
+        assert!(!buses.set_output(2, Some(ChannelSet::Stereo)));
         assert_eq!(buses, ActiveBuses::default_for(&SidechainModel::default()));
     }
 
@@ -423,7 +489,7 @@ mod tests {
     fn test_supported_request_is_accepted() {
         let model = SidechainModel::default();
         let mut negotiation = BusNegotiation::new(&model);
-        assert!(negotiation.requested_mut().set_input(1, Some(2)));
+        assert!(negotiation.requested_mut().set_input(1, Some(ChannelSet::Stereo)));
 
         assert!(negotiation.negotiate(&model));
         assert_eq!(negotiation.accepted().input(1), Some(2));
@@ -437,14 +503,14 @@ mod tests {
         let model = SidechainModel::default();
         let mut negotiation = BusNegotiation::new(&model);
         // The detector output without the sidechain is refused.
-        assert!(negotiation.requested_mut().set_output(1, Some(1)));
+        assert!(negotiation.requested_mut().set_output(1, Some(ChannelSet::Mono)));
 
         assert!(!negotiation.negotiate(&model));
         assert_eq!(negotiation.accepted(), &ActiveBuses::default_for(&model));
         assert_eq!(negotiation.output_routing(1), BusRouting::HostOnly);
 
         // With the sidechain on as well, both are accepted.
-        assert!(negotiation.requested_mut().set_input(1, Some(2)));
+        assert!(negotiation.requested_mut().set_input(1, Some(ChannelSet::Stereo)));
         assert!(negotiation.negotiate(&model));
         assert_eq!(negotiation.output_routing(1), BusRouting::Connected);
 
@@ -461,20 +527,20 @@ mod tests {
     fn test_plugin_is_asked_once_per_combination() {
         let model = SidechainModel::default();
         let mut negotiation = BusNegotiation::new(&model);
-        assert!(negotiation.requested_mut().set_output(1, Some(1)));
+        assert!(negotiation.requested_mut().set_output(1, Some(ChannelSet::Mono)));
 
         assert!(!negotiation.negotiate(&model));
         assert!(!negotiation.negotiate(&model));
         assert_eq!(model.questions.load(Ordering::Relaxed), 1);
 
         // A new request is asked about, also when it was refused before.
-        assert!(negotiation.requested_mut().set_input(1, Some(2)));
+        assert!(negotiation.requested_mut().set_input(1, Some(ChannelSet::Stereo)));
         assert!(negotiation.negotiate(&model));
         assert!(negotiation.requested_mut().set_input(1, None));
         assert!(!negotiation.negotiate(&model));
         assert!(negotiation.requested_mut().set_output(1, None));
         assert!(negotiation.negotiate(&model));
-        assert!(negotiation.requested_mut().set_output(1, Some(1)));
+        assert!(negotiation.requested_mut().set_output(1, Some(ChannelSet::Mono)));
         assert!(!negotiation.negotiate(&model));
         assert_eq!(model.questions.load(Ordering::Relaxed), 5);
     }
@@ -495,7 +561,7 @@ mod tests {
 
         // With an aux bus on as well, the plugin is asked with its main
         // buses on.
-        assert!(negotiation.requested_mut().set_input(1, Some(2)));
+        assert!(negotiation.requested_mut().set_input(1, Some(ChannelSet::Stereo)));
         assert!(negotiation.negotiate(&model));
         assert_eq!(negotiation.accepted().input(0), Some(2));
         assert_eq!(negotiation.accepted().input(1), Some(2));

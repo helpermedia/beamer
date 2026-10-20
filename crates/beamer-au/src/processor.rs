@@ -35,7 +35,7 @@ use crate::error::{PluginError, PluginResult};
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, CachedBusConfig, Model,
+    AuxiliaryBuffers, Buffer, Model,
     MidiEvent, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEventQueue, MAX_AUX_BUSES,
 };
@@ -99,11 +99,10 @@ where
         &mut self,
         sample_rate: f64,
         max_frames: u32,
-        bus_config: &CachedBusConfig,
+        buses: &beamer_core::ActiveBuses,
         process_mode: ProcessMode,
     ) -> PluginResult<()> {
-        self.state
-            .prepare(sample_rate, max_frames, bus_config, process_mode);
+        self.state.prepare(sample_rate, max_frames, buses, process_mode);
         Ok(())
     }
 
@@ -159,20 +158,12 @@ where
             .unwrap_or(false)
     }
 
-    fn declared_input_bus_count(&self) -> usize {
-        self.state.model.input_bus_count()
+    fn layouts(&self) -> &'static [beamer_core::Layout] {
+        P::LAYOUTS
     }
 
-    fn declared_output_bus_count(&self) -> usize {
-        self.state.model.output_bus_count()
-    }
-
-    fn declared_input_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        self.state.model.input_bus_info(index)
-    }
-
-    fn declared_output_bus_info(&self, index: usize) -> Option<beamer_core::BusInfo> {
-        self.state.model.output_bus_info(index)
+    fn default_buses(&self) -> beamer_core::ActiveBuses {
+        beamer_core::ActiveBuses::default_for(&*self.state.model)
     }
 
     fn supports_buses(&self, buses: &beamer_core::ActiveBuses) -> bool {
@@ -508,13 +499,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beamer_core::CachedBusInfo;
+    use beamer_core::{CachedBusConfig, CachedBusInfo};
     use crate::render::MidiBuffer;
     use beamer_core::parameter_groups::{GroupInfo, ParameterGroups};
     use beamer_core::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
     use beamer_core::parameter_types::{ParameterRef, Parameters};
     use beamer_core::types::fnv1a_hash;
-    use beamer_core::{AuxiliaryBuffers, BusInfo, BusType, MidiEventKind};
+    use beamer_core::{AuxiliaryBuffers, BusInfo, BusLayout, BusType, Layout, MidiEventKind};
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -756,15 +747,8 @@ mod tests {
             TestProcessor { model: self }
         }
 
-        fn input_bus_count(&self) -> usize {
-            1
-        }
         fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-            if index == 0 {
-                Some(BusInfo::stereo("Input"))
-            } else {
-                None
-            }
+            (index == 0).then_some(BusInfo::main("Input"))
         }
     }
 
@@ -822,7 +806,7 @@ mod tests {
         );
 
         processor
-            .allocate_render_resources(44100.0, 512, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, 512, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("Failed to prepare processor");
 
         processor
@@ -1154,7 +1138,7 @@ mod tests {
         plugin
             .lock()
             .unwrap()
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, process_mode)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), process_mode)
             .expect("prepare");
         let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
@@ -1658,7 +1642,7 @@ mod tests {
         plugin
             .lock()
             .unwrap()
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
         let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f64>::allocate_from_config(&bus_config, FRAMES);
@@ -1712,7 +1696,7 @@ mod tests {
     fn test_f64_conversion_starts_from_silence_without_main_input() {
         let mut plugin = AuProcessor::<DoublingModel>::new();
         plugin
-            .allocate_render_resources(44100.0, FRAMES as u32, &stereo_bus_config(), ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &stereo_bus_config().to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
         let context = ProcessContext::with_empty_transport(44100.0, FRAMES);
         // The channels hold their input, as the render call prepares them.
@@ -1756,15 +1740,16 @@ mod tests {
             SecondSidechainProcessor
         }
 
-        fn input_bus_count(&self) -> usize {
-            3
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::MONO, BusLayout::MONO, BusLayout::MONO],
+            outputs: &[BusLayout::STEREO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
             match index {
-                0 => Some(BusInfo::mono("Input")),
-                1 => Some(BusInfo::aux("First", 1)),
-                2 => Some(BusInfo::aux("Second", 1)),
+                0 => Some(BusInfo::main("Input")),
+                1 => Some(BusInfo::aux("First")),
+                2 => Some(BusInfo::aux("Second")),
                 _ => None,
             }
         }
@@ -1797,7 +1782,7 @@ mod tests {
             vec![CachedBusInfo::new(1, BusType::Main)],
         );
         plugin
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
 
         let second = [0.75f64; FRAMES];
@@ -1877,14 +1862,15 @@ mod tests {
             AuxOutputProcessor
         }
 
-        fn output_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO, BusLayout::STEREO],
+        }];
 
         fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
             match index {
-                0 => Some(BusInfo::stereo("Output")),
-                1 => Some(BusInfo::aux("Aux", 2)),
+                0 => Some(BusInfo::main("Output")),
+                1 => Some(BusInfo::aux("Aux")),
                 _ => None,
             }
         }
@@ -1913,7 +1899,7 @@ mod tests {
         plugin
             .lock()
             .unwrap()
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
         let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
@@ -1980,14 +1966,15 @@ mod tests {
             SidechainProcessor
         }
 
-        fn input_bus_count(&self) -> usize {
-            2
-        }
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO],
+        }];
 
         fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
             match index {
-                0 => Some(BusInfo::stereo("Input")),
-                1 => Some(BusInfo::aux("Sidechain", 2)),
+                0 => Some(BusInfo::main("Input")),
+                1 => Some(BusInfo::aux("Sidechain")),
                 _ => None,
             }
         }
@@ -2099,7 +2086,7 @@ mod tests {
         plugin
             .lock()
             .unwrap()
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
         let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
@@ -2186,7 +2173,7 @@ mod tests {
         let mut off = sidechain_bus_config().to_active_buses();
         assert!(off.set_input(1, None));
         let mut buses = beamer_core::BusNegotiation::starting_with(off);
-        assert!(buses.requested_mut().set_input(1, Some(2)));
+        assert!(buses.requested_mut().set_input(1, Some(beamer_core::ChannelSet::Stereo)));
         assert!(!buses.negotiate_with(|_| false));
         let block = fake_pull_block(false, false);
         assert_eq!(render_sidechain_with(&block, buses), [-1.0, -1.0]);
@@ -2202,7 +2189,7 @@ mod tests {
         let mut off = host_config.to_active_buses();
         assert!(off.set_output(1, None));
         let mut buses = beamer_core::BusNegotiation::starting_with(off);
-        assert!(buses.requested_mut().set_output(1, Some(2)));
+        assert!(buses.requested_mut().set_output(1, Some(beamer_core::ChannelSet::Stereo)));
         assert!(!buses.negotiate_with(|_| false));
 
         let plugin = boxed(AuProcessor::<AuxOutputModel>::new());
@@ -2210,7 +2197,7 @@ mod tests {
         plugin
             .lock()
             .unwrap()
-            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config, ProcessMode::Realtime)
+            .allocate_render_resources(44100.0, FRAMES as u32, &bus_config.to_active_buses(), ProcessMode::Realtime)
             .expect("prepare");
         let model = plugin.lock().unwrap().shared_model();
         let storage = ProcessBufferStorage::<f32>::allocate_from_config(&bus_config, FRAMES);
@@ -2307,7 +2294,7 @@ mod tests {
         BeamerAuPresetInfo, BeamerAuSampleFormat, BeamerInstanceHandle,
     };
     use crate::error::os_status;
-    use beamer_core::{MAX_BUSES, MAX_CHANNELS};
+    use beamer_core::{ActiveBuses, ChannelSet, MAX_BUSES, MAX_CHANNELS};
     use std::ffi::CStr;
 
     /// An instance pointer that a test hands to a second thread.
@@ -2355,6 +2342,54 @@ mod tests {
             &bus_config,
             rendering_offline,
         )
+    }
+
+    std::thread_local! {
+        /// The buses `AmbisonicModel` was last prepared with.
+        static AMBISONIC_BUSES: std::cell::Cell<Option<ActiveBuses>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// First order ambisonics in, four discrete channels out.
+    #[derive(Default)]
+    struct AmbisonicModel {
+        fields: TestFields,
+    }
+
+    struct AmbisonicProcessor;
+
+    beamer_core::__forward_model!(AmbisonicModel, fields);
+
+    impl Model for AmbisonicModel {
+        type Setup = ActiveBuses;
+        type Processor = AmbisonicProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::Set(ChannelSet::Ambisonic(1))],
+            outputs: &[BusLayout::Set(ChannelSet::Discrete(4))],
+        }];
+
+        fn prepare(self: Arc<Self>, buses: ActiveBuses) -> Self::Processor {
+            AMBISONIC_BUSES.with(|prepared| prepared.set(Some(buses)));
+            AmbisonicProcessor
+        }
+    }
+
+    impl Processor for AmbisonicProcessor {
+        fn process(&mut self, _: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {}
+    }
+
+    #[test]
+    fn test_plugin_is_prepared_with_the_sets_of_its_layout() {
+        let plugin = AuProcessor::<AmbisonicModel>::new();
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // The host gives channel counts only: four channels are the sets of
+        // the layout, not quad.
+        assert_eq!(allocate_with(instance, 4, FRAMES as u32, false), 0);
+        let buses = AMBISONIC_BUSES.with(|prepared| prepared.get()).unwrap();
+        assert_eq!(buses.input_set(0), Some(ChannelSet::Ambisonic(1)));
+        assert_eq!(buses.output_set(0), Some(ChannelSet::Discrete(4)));
+        beamer_au_deallocate_render_resources(instance);
     }
 
     #[test]

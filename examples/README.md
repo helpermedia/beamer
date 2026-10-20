@@ -221,8 +221,8 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 | 49 (C#2) | Crash |
 
 **Demonstrates:**
-- Multi-output auxiliary buses (`output_bus_count()`, `output_bus_info()`, `AuxiliaryBuffers`)
-- Mono bus configuration via `BusInfo::mono()` and `BusInfo::aux()`
+- Multi-output auxiliary buses (`LAYOUTS`, `output_bus_info()`, `AuxiliaryBuffers`)
+- Mono buses via `BusLayout::MONO`, named with `BusInfo::main()` and `BusInfo::aux()`
 - MIDI input from the `instrument` category, without any setting
 - Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the levels are read once per hit
 - `process_midi()` with sample-accurate note triggering

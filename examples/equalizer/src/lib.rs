@@ -15,7 +15,7 @@
 //! - `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
 //! - `FloatParameter` with dB scaling via `kind = "db"`
 //! - Flat parameter groups via `group = "..."` attribute
-//! - Stereo bus configuration via `input_bus_info()` / `output_bus_info()` overrides
+//! - The default layout of `Model::LAYOUTS`, stereo in and out
 //! - Biquad filters using standard bilinear transform mathematics
 //! - Generic f32/f64 processing via `Sample` trait
 
@@ -262,26 +262,6 @@ impl Model for EqualizerModel {
             high_coeffs: BiquadCoeffs::default(),
             model: self,
         }
-    }
-
-    // =========================================================================
-    // Stereo Bus Configuration
-    // =========================================================================
-
-    fn input_bus_count(&self) -> usize {
-        1
-    }
-
-    fn output_bus_count(&self) -> usize {
-        1
-    }
-
-    fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
-        (index == 0).then(|| BusInfo::stereo("Input"))
-    }
-
-    fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
-        (index == 0).then(|| BusInfo::stereo("Output"))
     }
 }
 

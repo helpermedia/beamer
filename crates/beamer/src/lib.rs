@@ -143,6 +143,10 @@ pub use beamer_macros::{group, model};
 /// * `$plugin` - The model type implementing the [`Model`](beamer_core::Model) trait,
 ///   with its factory presets in [`Model::PRESETS`](beamer_core::Model::PRESETS)
 ///
+/// The macro checks the model's [`Model::LAYOUTS`](beamer_core::Model::LAYOUTS)
+/// with [`validate_layouts`](beamer_core::validate_layouts): a list the
+/// wrappers cannot run fails to compile.
+///
 /// # Example
 ///
 /// In outline, what `#[beamer::export]` generates for a model `MyModel`:
@@ -157,6 +161,13 @@ pub use beamer_macros::{group, model};
 #[macro_export]
 macro_rules! export_plugin {
     ($config:expr, $plugin:ty) => {
+        // The layouts are checked when the plugin is compiled.
+        const _: () = if let ::core::result::Result::Err(message) =
+            $crate::core::validate_layouts(<$plugin as $crate::core::Model>::LAYOUTS)
+        {
+            ::core::panic!("{}", message);
+        };
+
         #[cfg(feature = "au")]
         $crate::au_impl::export_au!($config, $plugin);
 
@@ -191,7 +202,7 @@ pub mod prelude {
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         ActiveBuses, ProcessMode,
         // Bus configuration
-        BusInfo, BusType,
+        BusInfo, BusLayout, BusType, ChannelSet, Layout,
         // GUI types
         GuiConstraints, NoGui,
         // Parameter metadata
