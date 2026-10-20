@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use beamer_core::{
-    BusLayout, CachedBusConfig, ConversionBuffers, MidiCcConfig, Model,
+    ActiveBuses, CachedBusConfig, ConversionBuffers, MidiCcConfig, Model,
     PluginSetup, ProcessMode, Processor,
 };
 
@@ -121,12 +121,12 @@ impl<P: Model> AuState<P> {
 fn build_setup<S: PluginSetup>(
     sample_rate: f64,
     max_frames: u32,
-    layout: &BusLayout,
+    buses: &ActiveBuses,
     process_mode: ProcessMode,
 ) -> S {
     use beamer_core::HostSetup;
 
-    let host_setup = HostSetup::new(sample_rate, max_frames as usize, layout.clone(), process_mode);
+    let host_setup = HostSetup::new(sample_rate, max_frames as usize, *buses, process_mode);
 
     S::extract(&host_setup)
 }
@@ -136,20 +136,19 @@ fn allocate_processing_resources(
     supports_f64: bool,
     midi_cc_config: Option<MidiCcConfig>,
     max_frames: u32,
-    layout: &BusLayout,
     bus_config: &CachedBusConfig,
 ) -> (
     Option<ConversionBuffers>,
     Option<Box<beamer_core::MidiCcState>>,
     Box<beamer_core::MidiBuffer>,
 ) {
-    // Pre-allocate conversion buffers if processor doesn't support f64
+    // Pre-allocate conversion buffers if processor doesn't support f64.
     let conversion_buffers = if !supports_f64 {
-        let input_channels = layout.main_input_channels as usize;
-        let output_channels = layout.main_output_channels as usize;
+        let input_channels = bus_config.input_bus_info(0).map_or(0, |bus| bus.channel_count);
+        let output_channels = bus_config.output_bus_info(0).map_or(0, |bus| bus.channel_count);
 
-        // Build aux bus channel counts from CachedBusConfig
-        // Skip main bus (index 0) to get aux buses only
+        // Build aux bus channel counts from CachedBusConfig. Skip main bus
+        // (index 0) to get aux buses only.
         let aux_input_channels: Vec<usize> = bus_config
             .input_buses
             .iter()
@@ -200,8 +199,8 @@ impl<P: Model> AuState<P> {
         bus_config: &CachedBusConfig,
         process_mode: ProcessMode,
     ) {
-        // Convert CachedBusConfig to BusLayout for plugin config
-        let layout = bus_config.to_bus_layout();
+        // Every bus of the configuration is on.
+        let buses = bus_config.to_active_buses();
 
         // A processor of an earlier configuration goes first, so that its
         // buffers are free before the new ones are allocated.
@@ -209,7 +208,7 @@ impl<P: Model> AuState<P> {
             log::debug!("Re-preparing plugin due to config change (was prepared)");
         }
 
-        let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &layout, process_mode);
+        let plugin_setup = build_setup::<P::Setup>(sample_rate, max_frames, &buses, process_mode);
         // The smoothers ramp at the host's rate unless the plugin sets
         // another one in prepare.
         self.model.set_sample_rate(sample_rate);
@@ -220,7 +219,6 @@ impl<P: Model> AuState<P> {
                 processor.supports_double_precision(),
                 self.model.midi_cc_config(),
                 max_frames,
-                &layout,
                 bus_config,
             );
 
@@ -241,9 +239,9 @@ mod tests {
 
     #[test]
     fn test_setup_carries_the_process_mode() {
-        let layout = BusLayout::default();
+        let buses = CachedBusConfig::default().to_active_buses();
         for mode in [ProcessMode::Realtime, ProcessMode::Offline] {
-            assert_eq!(build_setup::<ProcessMode>(48000.0, 512, &layout, mode), mode);
+            assert_eq!(build_setup::<ProcessMode>(48000.0, 512, &buses, mode), mode);
         }
     }
 }

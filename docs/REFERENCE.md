@@ -83,12 +83,12 @@ log_level = "warn"
 - Version is automatically read from `CARGO_PKG_VERSION`
 - VST3 UUID is auto-derived from `manufacturer_code` and `plugin_code` unless `vst3_id` is specified
 - The 4-character codes are used for both AU FourCC identifiers and VST3 UUID derivation
-- `category`, and `midi_input` for an effect, determine the AU component type (see [AU Component Types](#au-component-types))
+- `category` (and `midi_input` for an effect) determines the AU component type (see [AU Component Types](#au-component-types))
 - By convention fields are ordered as in the example above: first identity (`name`, `category`, `subcategories`), then codes (`manufacturer_code`, `plugin_code`) and finally metadata (`vendor`, `url`, `email`)
 
 #### Logging
 
-The framework reports problems through the `log` crate: entries of a saved state it had to skip, MIDI or parameter events the audio thread had to drop, a WebView that could not load. A plugin sees these, and its own `log` messages, once it sets `log_level` in `Config.toml`. The wrappers then install a logger when the plugin is loaded.
+The framework reports problems through the `log` crate: entries of a saved state it had to skip, MIDI or parameter events the audio thread had to drop, a WebView that could not load. A plugin sees these (and its own `log` messages) once it sets `log_level` in `Config.toml`. The wrappers then install a logger when the plugin is loaded.
 
 On macOS the messages go to the unified system log, under the subsystem `com.beamer.<package>` and a category per format (`vst3`, `au`). This works in every host, also in the sandboxed process of an AUv3. Read them as they come with:
 
@@ -98,11 +98,11 @@ cargo xtask log <package>
 
 or later with `/usr/bin/log show --last 1h --predicate 'subsystem == "com.beamer.<package>"'` (the full path, because `log` is a different command in the zsh shell), or in Console.app. Warnings and errors stay in the system log, debug messages only show up while you watch. Other platforms do not log yet.
 
-Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread, and a plugin's `process()` should not log either.
+Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread. A plugin's `process()` should not log either.
 
 ### Two-Struct Pattern
 
-A Beamer plugin is two structs: the **Model**, which every thread shares, and the **Processor**, which the audio thread owns.
+A Beamer plugin is two structs: the **Model** that every thread shares and the **Processor** that the audio thread owns.
 
 | Struct | Marked with | Purpose |
 |--------|-------------|---------|
@@ -216,7 +216,7 @@ pub struct GainModel {
 
 The generated `Default` takes every parameter from its attribute, so each one needs what its type needs:
 
-- `FloatParameter`: `name`, `default` and `range`. `kind = "percent"` and `kind = "pan"` default to 0.0..=1.0 and -1.0..=1.0, and a `range` replaces that.
+- `FloatParameter`: `name`, `default` and `range`. `kind = "percent"` and `kind = "pan"` default to 0.0..=1.0 and -1.0..=1.0; a `range` replaces that.
 - `IntParameter`: `name`, `default` and `range`.
 - `BoolParameter`: `name` and `default`, or only `bypass`.
 - `EnumParameter`: `name`. Its default is the variant marked `#[default]`, or else the first.
@@ -512,9 +512,9 @@ By default the framework applies the parameter changes a host sends with a block
 A plugin that reads parameters at events, such as a setting applied to each note or a level read once per hit, sets `sample_accurate_automation = true` in `Config.toml`. Both formats then apply each change where it belongs in the block: a step at its sample and a ramp at its start (see below). A block runs as sub-blocks that start at the changes, each with its own `process_midi()` and `process()` call.
 
 - `context.num_samples` and the buffers give the length of each call, which is a single sample when two changes are one sample apart. Work done once per call, such as an FFT frame, an oversampling stage or coefficients computed per block, has to handle any length from 1 sample up to the maximum. Hosts send blocks of varying size anyway.
-- The MIDI of each call has offsets relative to its start, and `context.transport` is moved to its first sample (positions in samples and quarter notes, and the samples to the next MIDI clock).
+- The MIDI of each call has offsets relative to its start. `context.transport` is moved to its first sample (positions in samples and quarter notes plus the samples to the next MIDI clock).
 - Changes at the same sample start one sub-block together. MIDI does not split a block. MIDI at or after the end of a block, which a host should not send, reaches the last call at its last sample.
-- A ramp's end value applies at the start of the ramp, and the parameter's smoother moves towards it. A ramp is an AU ramp event, or a VST3 queue segment between two points (the first segment starts at the start of the block). A VST3 segment of one sample is a jump, which a host sends as the old value and the new value one sample later: the new value applies at its point. A ramp from the start of a block to its end therefore runs as one call.
+- A ramp's end value applies at the start of the ramp; the parameter's smoother moves towards it. A ramp is an AU ramp event, or a VST3 queue segment between two points (the first segment starts at the start of the block). A VST3 segment of one sample is a jump, which a host sends as the old value and the new value one sample later: the new value applies at its point. A ramp from the start of a block to its end therefore runs as one call.
 - A discrete parameter (`IntParameter`, `BoolParameter` or `EnumParameter`) has no smoother, so a VST3 ramp changes it at each sample where the line reaches the next step: a ramp from step 0 at the start of a block to step 1 at sample 32 changes it at sample 16.
 - A change that leaves a parameter at the value it holds splits nothing, such as a value that rounds to the step a discrete parameter is already at.
 - The cost is an extra pair of calls for each change at its own sample while automation moves: an AU parameter event, a VST3 jump or a VST3 point inside the block. Without automation a block runs as one call either way.
@@ -684,7 +684,7 @@ pub struct SamplerModel {
 }
 ```
 
-A `State<T>` is saved and loaded with the parameters, under its id. Ids of states and parameters share one namespace, and like a parameter id a state id has to stay the same from one version of a plugin to the next.
+A `State<T>` is saved and loaded with the parameters, under its id. Ids of states and parameters share one namespace. Like a parameter id, a state id has to stay the same from one version of a plugin to the next.
 
 The value is set as a whole by host and UI threads and read by the audio thread through a reader:
 
@@ -757,7 +757,7 @@ pub struct SamplerModel {
 
 **Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change.
 
-Audio Units have no such call, so their wrappers do not tell the host. The nearest thing, a change notification for `kAudioUnitProperty_ClassInfo` in an AUv2 or for the `fullState` property in an AUv3, does not make Reaper mark the project as modified. In practice both hosts that were tried still ask: Logic asks to save on closing even when nothing changed, and Reaper marks the project as modified whenever a plugin window closes. The fields are always saved with the plugin state when the user saves the project. A plugin that needs every Audio Unit host to ask keeps such a value in a parameter instead.
+Audio Units have no such call, so their wrappers do not tell the host. The nearest thing, a change notification for `kAudioUnitProperty_ClassInfo` in an AUv2 or for the `fullState` property in an AUv3, does not make Reaper mark the project as modified. In practice both hosts that were tried still ask: Logic asks to save on closing even when nothing changed; Reaper marks the project as modified whenever a plugin window closes. The fields are always saved with the plugin state when the user saves the project. A plugin that needs every Audio Unit host to ask keeps such a value in a parameter instead.
 
 #### Low-Level Traits
 
@@ -816,7 +816,7 @@ impl ParameterInfo {
 
 ### Model Trait
 
-The `Model` trait is implemented by the model struct: what every thread shares, and the plugin as the host sees it (buses, MIDI behavior and factory presets). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
+The `Model` trait is implemented by the model struct: what every thread shares and the plugin as the host sees it (buses, MIDI behavior and factory presets). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
 
 ```rust
 pub trait Model: Saved + WebViewEvents + Default + 'static {
@@ -860,7 +860,7 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
 `#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example).
 
-`prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread (the functions of its factory presets may be), and several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
+`prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread (the functions of its factory presets may be). Several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
 
 **Plugins with DSP state** add fields to the Processor:
 
@@ -886,8 +886,7 @@ Request exactly what your plugin needs using composable types:
 | `MaxBufferSize` | FFT, lookahead | `usize` |
 | `MainInputChannels` | Per-channel input processing | `u32` |
 | `MainOutputChannels` | Per-channel output state | `u32` |
-| `AuxInputCount` | Sidechain-aware processing | `usize` |
-| `AuxOutputCount` | Multi-bus output | `usize` |
+| `ActiveBuses` | Sidechain-aware and multi-bus processing | struct |
 | `ProcessMode` | Offline quality settings | enum |
 
 For IDE autocomplete, use `beamer::setup::*` to import all available types.
@@ -982,17 +981,17 @@ pub trait Processor: Send + 'static {
     ) {
         // Default: converts to f32, calls process() and converts back.
         // The format wrappers do not use it for a plugin without f64
-        // support: they convert themselves, with buffers they allocated
-        // in advance, and call process().
+        // support: they convert themselves (with buffers they allocated
+        // in advance) and call process().
     }
 }
 ```
 
-**State:** The state a host saves and restores is the state of the model: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[beamer::model]` generates saving and loading, and the wrappers call it directly: a `Processor` has no state methods.
+**State:** The state a host saves and restores is the state of the model: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[beamer::model]` generates saving and loading; the wrappers call it directly: a `Processor` has no state methods.
 
 **When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
 
-**What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail and requests a reset from its own threads at the same time, and none of that touches the processor:
+**What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail or requests a reset from its own threads at the same time. None of that touches the processor:
 
 - The state is read from and written to the model, whose parameter values are atomic and whose `State` fields are shared.
 - `latency_samples()`, `tail_samples()` and `bypass_ramp_samples()` are called on the audio thread for every block. The host gets the values of the most recent block, so they must be realtime-safe.
@@ -1104,9 +1103,9 @@ When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) 
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block, and the wrapper then reports the parameters the preset changed back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block. The wrapper then reports the parameters the preset changed back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
-A new instance holds the declared parameter defaults, and no preset is applied. The AU wrappers report this as the user preset -1 "Untitled". VST3 has no value for "no program", so a host shows the first program. The VST3 wrapper saves the program a host shows with the state and takes it back when the state is loaded, without applying the preset again over the saved values.
+A new instance holds the declared parameter defaults; no preset is applied. The AU wrappers report this as the user preset -1 "Untitled". VST3 has no value for "no program", so a host shows the first program. The VST3 wrapper saves the program a host shows with the state and takes it back when the state is loaded, without applying the preset again over the saved values.
 
 ### Buffer Types
 
@@ -1412,7 +1411,7 @@ impl BypassHandler {
     pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize) -> Self;
 
     /// Begin bypass processing, before anything writes to the buffer.
-    /// Returns what action to take, and copies the dry signal when it is
+    /// Returns what action to take. Copies the dry signal when it is
     /// ProcessAndCrossfade.
     pub fn begin<S: Sample>(&mut self, bypassed: bool, buffer: &Buffer<S>) -> BypassAction;
 
@@ -1656,13 +1655,13 @@ category = "effect"
 midi_input = true
 ```
 
-A plugin without MIDI input gets no events in `process_midi()`, and the MIDI it writes without MIDI output is dropped.
+A plugin without MIDI input gets no events in `process_midi()`. The MIDI a plugin without MIDI output writes is dropped.
 
 ### SysEx Handling
 
 A `SysEx` holds the payload of a message, without the F0 and F7 that frame
-it on the wire. The wrappers add them to outgoing messages in AU and VST3,
-and the VST3 wrapper takes them off incoming ones. The AU formats do not pass
+it on the wire. The wrappers add them to outgoing messages in AU and VST3.
+The VST3 wrapper takes them off incoming ones. The AU formats do not pass
 SysEx input to the plugin yet.
 
 **Buffer Size (Cargo features of `beamer-core`, which a plugin adds as a dependency to enable one):**
@@ -2034,7 +2033,7 @@ let (msb, lsb) = split_14bit_raw(combined);
 
 ## Format Notes
 
-Both formats share the same core traits (`Model`, `Processor`, `Parameters`), so one codebase targets both. The `#[beamer::export]` macro generates the entry points for every format enabled through Cargo features (`au`, `vst3`). Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md), and the design of both wrappers in [ARCHITECTURE.md](../ARCHITECTURE.md#format-specific-implementation-details).
+Both formats share the same core traits (`Model`, `Processor`, `Parameters`), so one codebase targets both. The `#[beamer::export]` macro generates the entry points for every format enabled through Cargo features (`au`, `vst3`). Building, bundle layouts, installing and testing are covered in [BUILDING.md](BUILDING.md), the design of both wrappers in [ARCHITECTURE.md](../ARCHITECTURE.md#format-specific-implementation-details).
 
 ### Audio Unit
 
@@ -2042,7 +2041,7 @@ Audio Units are supported on macOS through the `beamer-au` crate, as AUv2 (`.com
 
 #### AU Component Types
 
-The `category` field in `Config.toml` determines the AU component type, together with `midi_input` for an effect. Hosts send MIDI only to the component types that take it, and the type is part of the bundle:
+The `category` field in `Config.toml` determines the AU component type, together with `midi_input` for an effect. Hosts send MIDI only to the component types that take it. The type is part of the bundle:
 
 | Category | AU Component Type | Use For |
 |----------|-------------------|---------|

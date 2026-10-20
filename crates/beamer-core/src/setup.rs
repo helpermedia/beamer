@@ -12,8 +12,7 @@
 //! | [`MaxBufferSize`] | `usize` | FFT, lookahead buffers |
 //! | [`MainInputChannels`] | `u32` | Per-channel input processing |
 //! | [`MainOutputChannels`] | `u32` | Per-channel output state |
-//! | [`AuxInputCount`] | `usize` | Sidechain-aware processing |
-//! | [`AuxOutputCount`] | `usize` | Multi-bus output |
+//! | [`ActiveBuses`] | struct | Sidechain-aware and multi-bus processing |
 //! | [`ProcessMode`] | enum | Quality settings for offline rendering |
 //!
 //! # Combining Types
@@ -57,12 +56,11 @@
 //! }
 //! ```
 
+pub use crate::active_buses::ActiveBuses;
 pub use crate::plugin::{
     // Core trait
     PluginSetup,
     // Individual setup types
-    AuxInputCount,
-    AuxOutputCount,
     MainInputChannels,
     MainOutputChannels,
     MaxBufferSize,

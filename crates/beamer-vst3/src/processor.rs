@@ -29,7 +29,7 @@ use std::sync::Arc;
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusLayout,
+    ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo,
     BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
     FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
@@ -163,8 +163,8 @@ fn collect_points(
 
     // The curve starts at the start of the block, at the value the
     // parameter holds. `held` is what the parameter holds after the points
-    // so far, and the segment towards the next point starts at the last
-    // point, also one that changed nothing.
+    // so far. The segment towards the next point starts at the last point,
+    // also one that changed nothing.
     let mut held = parameter.get_normalized();
     let mut segment_start = 0;
     let mut segment_from = held;
@@ -352,7 +352,7 @@ fn validate_speaker_arrangement(arrangement: SpeakerArrangement) -> Result<(), S
 ///
 /// Creates a HostSetup with all available information, then uses the
 /// `PluginSetup::extract` method to extract only what the plugin needs.
-fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> S {
+fn build_setup<S: PluginSetup>(setup: &ProcessSetup, buses: &ActiveBuses) -> S {
     use beamer_core::{HostSetup, ProcessMode};
 
     // Convert VST3 process mode to our ProcessMode.
@@ -365,7 +365,7 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
     let host_setup = HostSetup::new(
         setup.sampleRate,
         setup.maxSamplesPerBlock as usize,
-        bus_layout.clone(),
+        *buses,
         process_mode,
     );
 
@@ -392,7 +392,7 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, bus_layout: &BusLayout) -> 
 ///
 /// # Lifecycle
 ///
-/// The wrapper keeps the plugin's model for its whole life, and a
+/// The wrapper keeps the plugin's model for its whole life and a
 /// processor while the plugin is prepared:
 ///
 /// ```text
@@ -444,7 +444,7 @@ where
 {
     /// The model of the plugin, shared with every processor it creates and
     /// with the editor. Every method of it takes `&self`: `process()` reads
-    /// its parameters through the processor's own `Arc`, and host threads
+    /// its parameters through the processor's own `Arc` while host threads
     /// use it at the same time, also while `setupProcessing()` lets it
     /// create a processor.
     model: Arc<P>,
@@ -532,8 +532,8 @@ unsafe impl<P: Model> Send for Vst3Processor<P> {}
 
 // Safety: Vst3Processor is Sync because:
 // - VST3 guarantees process() is called from one thread at a time
-// - The model is Sync, and process() reaches it through the processor's
-//   own `Arc`
+// - The model is Sync; process() reaches it through the processor's own
+//   `Arc`
 // - component_handler is used by controller calls, which the host never
 //   makes concurrently
 // - What a host thread uses while process() runs is atomic: the parameter
@@ -635,7 +635,7 @@ impl<P: Model> Vst3Processor<P> {
     ///
     /// A change of the program change parameter selects a factory preset.
     /// It is applied at once, before the changes of single parameters in the
-    /// same block, and the parameters it changed are kept for
+    /// same block. The parameters it changed are kept for
     /// [`report_preset_changes`](Self::report_preset_changes).
     ///
     /// The points of the other queues go into `points`, to be applied by the
@@ -923,11 +923,11 @@ impl<P: Model> Vst3Processor<P> {
     /// Prepare the collected channels of this call for in-place processing
     /// and return the number of samples to process. A block the channels
     /// cannot be prepared for (longer than set up, with overlapping buffers)
-    /// is rendered as silence, and 0 is returned.
+    /// is rendered as silence and 0 is returned.
     ///
     /// # Safety
     ///
-    /// The collected pointers must be valid for `num_samples` samples, and no
+    /// The collected pointers must be valid for `num_samples` samples. No
     /// reference to their memory may be alive.
     unsafe fn prepare_channels<S: Sample>(
         &self,
@@ -1192,7 +1192,7 @@ impl<P: Model> Vst3Processor<P> {
         let conv = unsafe { &mut *self.conversion_buffers.get() };
 
         // The plugin processes the f32 output channels in place. They start
-        // silent, and a channel with a host input gets it below.
+        // silent; a channel with a host input gets it below.
         for channel in &mut conv.main_output_f32 {
             channel[..num_samples].fill(0.0);
         }
@@ -1338,8 +1338,8 @@ impl<P: Model> ComponentFactory for Vst3Processor<P> {
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
 
-        // Two parameters with one id would be one parameter to the host,
-        // and so would a parameter with an id of the wrapper's own. The
+        // Two parameters with one id would be one parameter to the host. So
+        // would a parameter with an id of the wrapper's own. The
         // reason also goes to standard error: a plugin has no logger unless
         // it sets `log_level` in its Config.toml.
         let parameters: &dyn beamer_core::parameter_types::Parameters = &*processor.model;
@@ -1385,7 +1385,7 @@ impl<P: Model> IPluginBaseTrait for Vst3Processor<P> {
     unsafe fn terminate(&self) -> tresult {
         self.process_warnings.log();
         // The host is done with this instance: let go of its handler.
-        // SAFETY: Null is allowed, and the host makes no other controller
+        // SAFETY: Null is allowed and the host makes no other controller
         // call at the same time.
         unsafe { self.component_handler.set(std::ptr::null_mut()) };
         kResultOk
@@ -1471,7 +1471,7 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
                 }
             }
             MediaTypes_::kEvent => {
-                // Only index 0, and only in a direction with an event bus.
+                // Only index 0 and only in a direction with an event bus.
                 if index != 0 || !self.has_event_bus(dir) {
                     return kInvalidArgument;
                 }
@@ -1564,7 +1564,7 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
 
         // The state is the model: its parameters and `State` fields. Their
         // values are atomic or shared, so they are loaded through a shared
-        // reference: in both states, and also while process() runs, which is
+        // reference: in both states and also while process() runs, which is
         // when a host loads a preset during playback.
         match StateEntries::parse(&buffer) {
             Ok(Some(entries)) => {
@@ -1603,7 +1603,7 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
 
         // The state is the model: its parameters and `State` fields. Their
         // values are atomic or shared, so they are saved through a shared
-        // reference: in both states, and also while process() runs, which is
+        // reference: in both states and also while process() runs, which is
         // when a host saves during playback.
         let mut writer = StateWriter::new();
         beamer_core::Saved::save_entries(self.model(), &mut writer, "");
@@ -1787,13 +1787,13 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 .filter_map(|i| model.output_bus_info(i))
                 .collect();
 
-            let bus_layout = BusLayout::from_model(model);
-
-            // Validate model's bus configuration against compile-time limits
-            if let Err(msg) = CachedBusConfig::from_model(model).validate() {
+            // Validate model's bus configuration against compile-time limits.
+            let declared_buses = CachedBusConfig::from_model(model);
+            if let Err(msg) = declared_buses.validate() {
                 log::error!("Plugin bus configuration exceeds limits: {}", msg);
                 return kResultFalse;
             }
+            let active_buses = declared_buses.to_active_buses();
 
             // Store the setup. A setup that was refused above is not kept,
             // so that it does not count as the current one when it comes
@@ -1806,8 +1806,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 *self.process_mode.get() = setup.processMode;
             }
 
-            // Build the model setup
-            let plugin_setup = build_setup::<P::Setup>(setup, &bus_layout);
+            // Build the model setup.
+            let plugin_setup = build_setup::<P::Setup>(setup, &active_buses);
 
             // A processor of an earlier setup goes first, so that its
             // buffers are free before the new ones are allocated.
@@ -1821,7 +1821,7 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             // that was loaded before is in the model already.
             let processor = Arc::clone(&self.model).prepare(plugin_setup);
 
-            // Pre-allocate buffer storage based on bus config
+            // Pre-allocate buffer storage based on bus config.
             let bus_config = CachedBusConfig::new(
                 input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
                 output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
@@ -1835,7 +1835,7 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                     ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
             }
 
-            // Pre-allocate conversion buffers for f64→f32 processing
+            // Pre-allocate conversion buffers for f64→f32 processing.
             if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
                 && !processor.supports_double_precision()
             {
@@ -2434,7 +2434,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
     }
 
     unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
-        // SAFETY: handler is a valid COM pointer or null, and the host makes
+        // SAFETY: handler is a valid COM pointer or null and the host makes
         // no other controller call at the same time.
         unsafe { self.component_handler.set(handler) };
         kResultOk
@@ -3248,7 +3248,7 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             let data_event = unsafe { &event.__field0.data };
             // Only handle SysEx data type.
             // NOTE: Box::new() allocates here. This runs once per SysEx event per
-            // process block (not per clone), and SysEx input from hosts is rare.
+            // process block (not per clone). SysEx input from hosts is rare.
             // A Box recycling pool could eliminate this, but the complexity is not
             // justified given the low frequency.
             if data_event.r#type == DATA_TYPE_MIDI_SYSEX {
@@ -3528,7 +3528,7 @@ mod tests {
             maxSamplesPerBlock: 512,
             sampleRate: 48000.0,
         };
-        build_setup::<ProcessMode>(&setup, &BusLayout::default())
+        build_setup::<ProcessMode>(&setup, &CachedBusConfig::default().to_active_buses())
     }
 
     #[test]
@@ -3642,7 +3642,7 @@ mod tests {
     // State, latency and tail while process() runs
     // =========================================================================
     //
-    // A host saves and loads the state, and asks for latency and tail, from
+    // A host saves and loads the state (and asks for latency and tail) from
     // its own threads while process() runs. None of that may use the
     // processor.
 
@@ -3848,7 +3848,7 @@ mod tests {
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// A plugin that gets the mod wheel as a parameter change, and sends
+    /// A plugin that gets the mod wheel as a parameter change and sends
     /// the MIDI it gets back.
     #[derive(Default)]
     struct CcModel {
@@ -3936,8 +3936,8 @@ mod tests {
         static WITH_BOTH: Config =
             Config::new("Both", Category::Instrument, "Test", "both").with_midi_output(true);
 
-        // A host that passes event lists both ways, whatever buses the
-        // plugin has, and sends a note. Returns how many events the plugin
+        // A host that passes event lists both ways (whatever buses the
+        // plugin has) and sends a note. Returns how many events the plugin
         // got and how many the host got back.
         let run = |config: &'static Config| {
             let wrapper = Vst3Processor::<CcModel>::new(config);
@@ -4130,7 +4130,7 @@ mod tests {
 
     /// The channel count of an audio input bus as a host sees it.
     fn input_channels(wrapper: &Vst3Processor<MidiModel>, index: i32) -> Option<i32> {
-        // SAFETY: A zeroed BusInfo is valid, and it is alive for the call.
+        // SAFETY: A zeroed BusInfo is valid and it is alive for the call.
         let mut info: BusInfo = unsafe { std::mem::zeroed() };
         // SAFETY: The wrapper and the info are alive for the call.
         let result = unsafe {
@@ -4193,7 +4193,7 @@ mod tests {
         // A host gets no info for a bus that is not there.
         let wrapper = Vst3Processor::<MidiModel>::new(&INSTRUMENT);
         let event_info = |dir: BusDirections| {
-            // SAFETY: A zeroed BusInfo is valid, and it is alive for the call.
+            // SAFETY: A zeroed BusInfo is valid and it is alive for the call.
             let mut info: BusInfo = unsafe { std::mem::zeroed() };
             // SAFETY: The wrapper and the info are alive for the call.
             unsafe { wrapper.getBusInfo(MediaTypes_::kEvent as MediaType, dir as BusDirection, 0, &mut info) }
@@ -4773,7 +4773,7 @@ mod tests {
     }
 
     impl SplitProcessor {
-        /// Record a process() call of `len` samples, and return the gain
+        /// Record a process() call of `len` samples and return the gain
         /// during it.
         fn record(&mut self, len: usize) -> f64 {
             let gain = self.model.parameters.gain.get_normalized();
@@ -4957,7 +4957,7 @@ mod tests {
 
     #[test]
     fn test_a_ramp_applies_its_end_value_at_its_start() {
-        // A ramp across the block, and one from the start of the block to a
+        // A ramp across the block and one from the start of the block to a
         // point inside it, run as one call that moves towards the end
         // value.
         for points in [vec![(0, 0.5), (63, 0.8)], vec![(32, 0.8)]] {
@@ -5016,7 +5016,7 @@ mod tests {
 
     #[test]
     fn test_without_sample_accurate_automation_the_block_is_one_call() {
-        // The gain changes before the block, and the block gets the mod
+        // The gain changes before the block. The block gets the mod
         // wheel at its offset in the block.
         let calls = split_calls(&WHOLE_CONFIG, vec![(31, 0.5), (32, 0.8)]);
         assert_eq!(calls, [(64, 0.8, vec![40])]);
@@ -5028,7 +5028,7 @@ mod tests {
             .map(|index| (index % 64, f64::from(index % 2) * 0.25 + 0.25))
             .collect::<Vec<_>>();
         let last = points.last().unwrap().1;
-        // The gain makes no sub-block, and MIDI does not split a block.
+        // The gain makes no sub-block and MIDI does not split a block.
         let calls = split_calls(&SPLIT_CONFIG, points);
         assert_eq!(calls, [(64, last, vec![40])]);
     }
@@ -5297,7 +5297,7 @@ mod tests {
         assert_eq!(LIVE_PROCESSORS_AT_PREPARE.with(Cell::get), 0);
         assert_eq!(LIVE_PROCESSORS.with(Cell::get), 1);
 
-        // The value is still there, and the new processor shares it: the
+        // The value is still there and the new processor shares it: the
         // latency it reports follows the parameter.
         assert_eq!(gain(&wrapper), 0.25);
         // SAFETY: The wrapper is alive.
@@ -5612,7 +5612,7 @@ mod tests {
                 start.wait();
                 let mut blocks = 0usize;
                 loop {
-                    // Automation of the level, and a program change now
+                    // Automation of the level and a program change now
                     // and then.
                     let mut values = vec![(LEVEL_ID, (blocks % 7) as f64 / 7.0)];
                     if blocks.is_multiple_of(5) {
@@ -5642,7 +5642,7 @@ mod tests {
                     );
                 }
 
-                // The host saves, and loads that state or the older one.
+                // The host saves, then loads that state or the older one.
                 let saved = saved_state(&wrapper);
                 let loaded = if round % 2 == 0 { &saved } else { &older };
                 assert_eq!(load_state(&wrapper, loaded), kResultOk);

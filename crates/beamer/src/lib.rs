@@ -189,9 +189,9 @@ pub mod prelude {
         GuiDelegate, Model, Processor, Saved, WebViewEvents,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
-        AuxInputCount, AuxOutputCount, ProcessMode,
+        ActiveBuses, ProcessMode,
         // Bus configuration
-        ActiveBuses, BusInfo, BusType,
+        BusInfo, BusType,
         // GUI types
         GuiConstraints, NoGui,
         // Parameter metadata

@@ -120,8 +120,7 @@ pub use state::State;
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
-    AuxInputCount, AuxOutputCount, BusInfo, BusLayout, BusType,
-    HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
+    BusInfo, BusType, HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
     Midi2Assignment, MidiControllerAssignment, Model, PluginSetup, ProcessMode, Processor, SampleRate,
 };
 pub use preset::Preset;

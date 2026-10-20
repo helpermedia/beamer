@@ -43,19 +43,19 @@ pub struct HostSetup {
     pub sample_rate: f64,
     /// Maximum number of samples per process() call
     pub max_buffer_size: usize,
-    /// Bus layout information
-    pub layout: BusLayout,
+    /// The buses the plugin is prepared with
+    pub buses: ActiveBuses,
     /// Processing mode (realtime vs offline)
     pub process_mode: ProcessMode,
 }
 
 impl HostSetup {
     /// Create a new HostSetup with the given values.
-    pub fn new(sample_rate: f64, max_buffer_size: usize, layout: BusLayout, process_mode: ProcessMode) -> Self {
+    pub fn new(sample_rate: f64, max_buffer_size: usize, buses: ActiveBuses, process_mode: ProcessMode) -> Self {
         Self {
             sample_rate,
             max_buffer_size,
-            layout,
+            buses,
             process_mode,
         }
     }
@@ -86,8 +86,7 @@ impl HostSetup {
 /// | [`MaxBufferSize`] | `usize` | FFT, lookahead buffers |
 /// | [`MainInputChannels`] | `u32` | Per-channel input processing |
 /// | [`MainOutputChannels`] | `u32` | Per-channel output state |
-/// | [`AuxInputCount`] | `usize` | Sidechain-aware processing |
-/// | [`AuxOutputCount`] | `usize` | Multi-bus output |
+/// | [`ActiveBuses`] | struct | Sidechain-aware and multi-bus processing |
 /// | [`ProcessMode`] | enum | Quality settings for offline rendering |
 pub trait PluginSetup: Clone + Send + 'static {
     /// Extract this setup from the host-provided information.
@@ -184,13 +183,14 @@ impl PluginSetup for MaxBufferSize {
 /// Number of channels on the main input bus.
 ///
 /// Use for plugins that need per-channel input processing,
-/// like channel-specific EQ or surround processors.
+/// like channel-specific EQ or surround processors. 0 for a plugin without
+/// an input bus.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MainInputChannels(pub u32);
 
 impl PluginSetup for MainInputChannels {
     fn extract(host: &HostSetup) -> Self {
-        MainInputChannels(host.layout.main_input_channels)
+        MainInputChannels(host.buses.input(0).unwrap_or(0))
     }
 }
 
@@ -217,32 +217,7 @@ pub struct MainOutputChannels(pub u32);
 
 impl PluginSetup for MainOutputChannels {
     fn extract(host: &HostSetup) -> Self {
-        MainOutputChannels(host.layout.main_output_channels)
-    }
-}
-
-/// Number of auxiliary input buses.
-///
-/// Use for sidechain-aware plugins that need to know
-/// how many aux inputs are available.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AuxInputCount(pub usize);
-
-impl PluginSetup for AuxInputCount {
-    fn extract(host: &HostSetup) -> Self {
-        AuxInputCount(host.layout.aux_input_count)
-    }
-}
-
-/// Number of auxiliary output buses.
-///
-/// Use for multi-bus output plugins.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AuxOutputCount(pub usize);
-
-impl PluginSetup for AuxOutputCount {
-    fn extract(host: &HostSetup) -> Self {
-        AuxOutputCount(host.layout.aux_output_count)
+        MainOutputChannels(host.buses.output(0).unwrap_or(0))
     }
 }
 
@@ -334,54 +309,6 @@ where
 {
     fn extract(host: &HostSetup) -> Self {
         (A::extract(host), B::extract(host), C::extract(host), D::extract(host), E::extract(host))
-    }
-}
-
-// =============================================================================
-// Bus Layout Information
-// =============================================================================
-
-/// Bus layout information for plugins that need channel configuration.
-///
-/// This is used internally to populate the individual setup types
-/// like [`MainInputChannels`], [`MainOutputChannels`], etc.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct BusLayout {
-    /// Number of channels on the main input bus
-    pub main_input_channels: u32,
-    /// Number of channels on the main output bus
-    pub main_output_channels: u32,
-    /// Number of auxiliary input buses
-    pub aux_input_count: usize,
-    /// Number of auxiliary output buses
-    pub aux_output_count: usize,
-}
-
-impl BusLayout {
-    /// Create a stereo (2 in, 2 out) layout with no aux buses.
-    pub const fn stereo() -> Self {
-        Self {
-            main_input_channels: 2,
-            main_output_channels: 2,
-            aux_input_count: 0,
-            aux_output_count: 0,
-        }
-    }
-
-    /// Create a layout from the bus configuration a model declares.
-    pub fn from_model<P: Model>(model: &P) -> Self {
-        Self {
-            main_input_channels: model
-                .input_bus_info(0)
-                .map(|b| b.channel_count)
-                .unwrap_or(2),
-            main_output_channels: model
-                .output_bus_info(0)
-                .map(|b| b.channel_count)
-                .unwrap_or(2),
-            aux_input_count: model.input_bus_count().saturating_sub(1),
-            aux_output_count: model.output_bus_count().saturating_sub(1),
-        }
     }
 }
 

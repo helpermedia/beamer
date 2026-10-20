@@ -8,7 +8,7 @@
 //! request and the accepted combination differ, the wrapper bridges the
 //! difference per bus as its [`BusRouting`] says.
 
-use crate::plugin::{BusInfo, Model};
+use crate::plugin::{BusInfo, HostSetup, Model, PluginSetup};
 use crate::types::MAX_BUSES;
 
 // =============================================================================
@@ -21,6 +21,26 @@ use crate::types::MAX_BUSES;
 /// Bus 0 of each direction is the main bus. It is always on in the
 /// combination a plugin is prepared with, unless it is declared with 0
 /// channels. A host request may have it off; the wrapper then bridges it.
+///
+/// As a setup type, it tells [`Model::prepare()`] which aux buses are on.
+/// A bus that is off there is `None` in
+/// [`AuxiliaryBuffers`](crate::AuxiliaryBuffers) for the life of the
+/// processor.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Model for CompressorModel {
+///     type Setup = (SampleRate, ActiveBuses);
+///     fn prepare(self: Arc<Self>, (sr, buses): (SampleRate, ActiveBuses)) -> CompressorProcessor {
+///         CompressorProcessor {
+///             sample_rate: sr.0,
+///             // The sidechain is input bus 1.
+///             has_sidechain: buses.is_input_on(1),
+///         }
+///     }
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveBuses {
     // Channel count of each input bus that is on, `None` past the count.
@@ -32,6 +52,17 @@ pub struct ActiveBuses {
 }
 
 impl ActiveBuses {
+    /// No buses on, `input_bus_count` and `output_bus_count` declared
+    /// (each at most [`MAX_BUSES`]).
+    pub(crate) fn all_off(input_bus_count: usize, output_bus_count: usize) -> Self {
+        Self {
+            inputs: [None; MAX_BUSES],
+            input_bus_count: input_bus_count.min(MAX_BUSES),
+            outputs: [None; MAX_BUSES],
+            output_bus_count: output_bus_count.min(MAX_BUSES),
+        }
+    }
+
     /// The declared buses with the default state of each
     /// ([`BusInfo::is_default_active`](crate::BusInfo::is_default_active),
     /// main buses always on).
@@ -39,19 +70,11 @@ impl ActiveBuses {
     /// Buses past [`MAX_BUSES`] in a direction are left out. The wrappers
     /// refuse such a model when it is prepared.
     pub fn default_for<M: Model>(model: &M) -> Self {
-        let input_bus_count = model.input_bus_count().min(MAX_BUSES);
-        let output_bus_count = model.output_bus_count().min(MAX_BUSES);
-
-        let mut buses = Self {
-            inputs: [None; MAX_BUSES],
-            input_bus_count,
-            outputs: [None; MAX_BUSES],
-            output_bus_count,
-        };
-        for bus in 0..input_bus_count {
+        let mut buses = Self::all_off(model.input_bus_count(), model.output_bus_count());
+        for bus in 0..buses.input_bus_count {
             buses.inputs[bus] = default_channels(bus, model.input_bus_info(bus));
         }
-        for bus in 0..output_bus_count {
+        for bus in 0..buses.output_bus_count {
             buses.outputs[bus] = default_channels(bus, model.output_bus_info(bus));
         }
         buses
@@ -123,6 +146,12 @@ impl ActiveBuses {
             self.outputs[0] = fallback.outputs[0];
         }
         self
+    }
+}
+
+impl PluginSetup for ActiveBuses {
+    fn extract(host: &HostSetup) -> Self {
+        host.buses
     }
 }
 

@@ -4,7 +4,8 @@
 //! extracted from the plugin or host. This avoids repeated queries and provides
 //! fast access during audio processing.
 
-use crate::plugin::{BusInfo, BusLayout, BusType, Model};
+use crate::active_buses::ActiveBuses;
+use crate::plugin::{BusInfo, BusType, Model};
 use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// Lightweight bus information for caching.
@@ -127,23 +128,20 @@ impl CachedBusConfig {
         self.output_buses.iter().map(|b| b.channel_count).sum()
     }
 
-    /// Convert to a BusLayout for plugin preparation.
+    /// The buses of this configuration, each on with its channel count
+    /// (off with 0 channels).
     ///
-    /// This enables passing the cached bus configuration to the plugin's
-    /// `prepare()` method via `FullAudioSetup`.
-    pub fn to_bus_layout(&self) -> BusLayout {
-        BusLayout {
-            main_input_channels: self
-                .input_bus_info(0)
-                .map(|b| b.channel_count as u32)
-                .unwrap_or(0),
-            main_output_channels: self
-                .output_bus_info(0)
-                .map(|b| b.channel_count as u32)
-                .unwrap_or(0),
-            aux_input_count: self.input_bus_count.saturating_sub(1),
-            aux_output_count: self.output_bus_count.saturating_sub(1),
+    /// The wrappers prepare a plugin with these until they negotiate the
+    /// buses with the host.
+    pub fn to_active_buses(&self) -> ActiveBuses {
+        let mut buses = ActiveBuses::all_off(self.input_bus_count, self.output_bus_count);
+        for (bus, info) in self.input_buses.iter().enumerate() {
+            let _ = buses.set_input(bus, Some(info.channel_count as u32));
         }
+        for (bus, info) in self.output_buses.iter().enumerate() {
+            let _ = buses.set_output(bus, Some(info.channel_count as u32));
+        }
+        buses
     }
 
     /// Validate that this configuration doesn't exceed system limits.
@@ -222,19 +220,26 @@ mod tests {
     }
 
     #[test]
-    fn test_to_bus_layout() {
+    fn test_to_active_buses() {
         let config = CachedBusConfig::new(
             vec![
                 CachedBusInfo::new(2, BusType::Main),
-                CachedBusInfo::new(2, BusType::Aux),
+                CachedBusInfo::new(1, BusType::Aux),
+                CachedBusInfo::new(0, BusType::Aux),
             ],
-            vec![CachedBusInfo::new(2, BusType::Main)],
+            vec![CachedBusInfo::new(6, BusType::Main)],
         );
-        let layout = config.to_bus_layout();
-        assert_eq!(layout.main_input_channels, 2);
-        assert_eq!(layout.main_output_channels, 2);
-        assert_eq!(layout.aux_input_count, 1);
-        assert_eq!(layout.aux_output_count, 0);
+        let buses = config.to_active_buses();
+        assert_eq!(buses.input_bus_count(), 3);
+        assert_eq!(buses.output_bus_count(), 1);
+        assert_eq!(buses.input(0), Some(2));
+        assert_eq!(buses.input(1), Some(1));
+        assert!(!buses.is_input_on(2));
+        assert_eq!(buses.output(0), Some(6));
+
+        let empty = CachedBusConfig::new(Vec::new(), Vec::new()).to_active_buses();
+        assert_eq!(empty.input_bus_count(), 0);
+        assert_eq!(empty.output(0), None);
     }
 
     #[test]
