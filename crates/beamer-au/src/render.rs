@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::{ProcessBufferStorage, ProcessBufferStorageAuExt};
 use crate::buffers::{AudioBuffer, AudioBufferList};
+use crate::channel_labels::ChannelOrders;
 use crate::error::{os_status, PluginResult};
 use crate::instance::AuPluginInstance;
 use crate::objc_block;
@@ -41,7 +42,7 @@ use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
-    SharedModel, MAX_BUSES, MAX_SYSEX_SIZE,
+    SharedModel, MAX_BUSES, MAX_CHANNELS, MAX_SYSEX_SIZE,
 };
 
 // =============================================================================
@@ -1024,6 +1025,8 @@ pub struct RenderBlock<S: Sample> {
     /// with. The storage holds the plugin's channels, the aux input lists
     /// and the aux output cache the host's.
     buses: BusNegotiation,
+    /// The order in which the host has the channels of each bus's set.
+    orders: ChannelOrders,
     /// Pre-allocated AudioBufferList structures for pulling aux input buses
     /// One per aux input bus (bus 1, 2, 3, ...), with the host's channels
     ///
@@ -1113,6 +1116,8 @@ impl<S: RenderSample> RenderBlock<S> {
     /// * `storage` - Pre-allocated buffer storage (created from the bus
     ///   config the plugin accepted)
     /// * `buses` - The buses the host has on and the plugin accepted
+    /// * `orders` - The order in which the host has the channels of each
+    ///   bus's set
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
     /// * `settings` - What the plugin's config says about rendering
@@ -1123,6 +1128,7 @@ impl<S: RenderSample> RenderBlock<S> {
         shared: Arc<SharedState>,
         storage: ProcessBufferStorage<S>,
         buses: BusNegotiation,
+        orders: ChannelOrders,
         max_frames: u32,
         sample_rate: f64,
         settings: RenderSettings,
@@ -1171,6 +1177,7 @@ impl<S: RenderSample> RenderBlock<S> {
             sample_rate,
             settings,
             buses,
+            orders,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             aux_input_memory: UnsafeCell::new(aux_input_memory),
             midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
@@ -1462,8 +1469,8 @@ impl<S: RenderSample> RenderBlock<S> {
             // their own buffers. An output buffer the host gives
             // without memory gets the input's own buffer from the shim, or
             // an internal buffer here.
-            storage.collect_inputs(input_data, num_samples);
-            storage.collect_outputs(output_data, num_samples);
+            storage.collect_inputs(input_data, num_samples, self.orders.input(0));
+            storage.collect_outputs(output_data, num_samples, self.orders.output(0));
 
             // Collect auxiliary output pointers from pre-allocated cache buffers.
             // AU calls render per-bus, so we render aux outputs into our cache on
@@ -1474,7 +1481,8 @@ impl<S: RenderSample> RenderBlock<S> {
             // has on too; a channel the host does not have gets memory that
             // is dropped. prepare_in_place() below zeroes them before
             // rendering. Cache channels the plugin does not render (a bus it
-            // has off) are silent for the host.
+            // has off) are silent for the host. The cache holds the host's
+            // channels in its order.
             let aux_cache = &mut *self.aux_output_cache.get();
             debug_assert_eq!(aux_cache.len(), storage.aux_outputs.len());
             for (aux_idx, (bus_cache, aux_output)) in
@@ -1488,15 +1496,24 @@ impl<S: RenderSample> RenderBlock<S> {
                 } else {
                     0
                 };
+                let order = self.orders.output(bus);
+                // Which host channels the plugin renders.
+                let mut rendered = [false; MAX_CHANNELS];
                 for channel in 0..plugin_channels {
-                    aux_output.push(match bus_cache.get_mut(channel).filter(|_| channel < host_channels) {
-                        Some(cache) => cache.as_mut_ptr(),
+                    let host = order.host_channel(channel);
+                    aux_output.push(match bus_cache.get_mut(host).filter(|_| host < host_channels) {
+                        Some(cache) => {
+                            rendered[host] = true;
+                            cache.as_mut_ptr()
+                        }
                         None => std::ptr::null_mut(),
                     });
                 }
-                for cache in bus_cache.iter_mut().skip(plugin_channels.min(host_channels)) {
-                    let len = num_samples.min(cache.len());
-                    cache[..len].fill(S::ZERO);
+                for (host, cache) in bus_cache.iter_mut().enumerate() {
+                    if !rendered.get(host).copied().unwrap_or(false) {
+                        let len = num_samples.min(cache.len());
+                        cache[..len].fill(S::ZERO);
+                    }
                 }
             }
 
@@ -1597,10 +1614,12 @@ impl<S: RenderSample> RenderBlock<S> {
                 let list = buffer_list_ptrs.get(aux_idx).copied().unwrap_or(std::ptr::null());
                 match self.buses.input_routing(bus) {
                     BusRouting::Connected if !list.is_null() => {
-                        storage.collect_aux_input_channels(aux_idx, list, channels, num_samples)
+                        let order = self.orders.input(bus);
+                        storage.collect_aux_input_channels(aux_idx, list, channels, num_samples, order)
                     }
                     BusRouting::PluginOnly => {
-                        storage.collect_aux_input_channels(aux_idx, std::ptr::null(), channels, num_samples)
+                        let order = self.orders.input(bus);
+                        storage.collect_aux_input_channels(aux_idx, std::ptr::null(), channels, num_samples, order)
                     }
                     _ => {}
                 }
@@ -1802,6 +1821,8 @@ impl RenderSettings {
 /// * `storage` - Pre-allocated buffer storage (created from the bus config
 ///   the plugin accepted)
 /// * `buses` - The buses the host has on and the plugin accepted
+/// * `orders` - The order in which the host has the channels of each bus's
+///   set
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
@@ -1812,6 +1833,7 @@ pub(crate) fn create_render_block_f32(
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f32>,
     buses: BusNegotiation,
+    orders: ChannelOrders,
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
@@ -1822,6 +1844,7 @@ pub(crate) fn create_render_block_f32(
         shared,
         storage,
         buses,
+        orders,
         max_frames,
         sample_rate,
         settings,
@@ -1840,6 +1863,8 @@ pub(crate) fn create_render_block_f32(
 /// * `storage` - Pre-allocated buffer storage (created from the bus config
 ///   the plugin accepted)
 /// * `buses` - The buses the host has on and the plugin accepted
+/// * `orders` - The order in which the host has the channels of each bus's
+///   set
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
@@ -1850,6 +1875,7 @@ pub(crate) fn create_render_block_f64(
     shared: Arc<SharedState>,
     storage: ProcessBufferStorage<f64>,
     buses: BusNegotiation,
+    orders: ChannelOrders,
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
@@ -1860,6 +1886,7 @@ pub(crate) fn create_render_block_f64(
         shared,
         storage,
         buses,
+        orders,
         max_frames,
         sample_rate,
         settings,

@@ -29,6 +29,7 @@
 //! - All allocations happen in `allocate_from_config()` (non-real-time)
 
 use crate::buffers::{AudioBuffer, AudioBufferList};
+use crate::channel_labels::ChannelOrder;
 use beamer_core::Sample;
 
 // Re-export ProcessBufferStorage from beamer-core
@@ -53,7 +54,10 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
     /// - A buffer shorter than num_samples becomes a channel without memory
-    unsafe fn collect_inputs(&mut self, buffer_list: *const AudioBufferList, num_samples: usize);
+    ///
+    /// The channels are collected in `order`: each channel of the plugin's
+    /// set from the host's buffer of that channel.
+    unsafe fn collect_inputs(&mut self, buffer_list: *const AudioBufferList, num_samples: usize, order: &ChannelOrder);
 
     /// Collect output pointers from an AudioBufferList.
     ///
@@ -67,7 +71,9 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     /// - `buffer_list` must be a valid pointer
     /// - Pointers are only valid for the current render call
     /// - A buffer shorter than num_samples becomes a channel without memory
-    unsafe fn collect_outputs(&mut self, buffer_list: *mut AudioBufferList, num_samples: usize);
+    ///
+    /// The channels are collected in `order`, as for `collect_inputs`.
+    unsafe fn collect_outputs(&mut self, buffer_list: *mut AudioBufferList, num_samples: usize, order: &ChannelOrder);
 
     /// Collect auxiliary input pointers from multiple AudioBufferLists.
     ///
@@ -85,7 +91,8 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
     /// Collect aux input bus `aux_idx` as the plugin has it on, with
     /// `channels` channels: the buffers of `buffer_list` where it has them,
     /// channels without memory (silence) after. A null `buffer_list` gives
-    /// only channels without memory.
+    /// only channels without memory. The channels are collected in `order`,
+    /// as for `collect_inputs`.
     ///
     /// # Safety
     ///
@@ -98,6 +105,7 @@ pub trait ProcessBufferStorageAuExt<S: Sample> {
         buffer_list: *const AudioBufferList,
         channels: usize,
         num_samples: usize,
+        order: &ChannelOrder,
     );
 
     /// Collect auxiliary output pointers from multiple AudioBufferLists.
@@ -120,6 +128,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
         &mut self,
         buffer_list: *const AudioBufferList,
         num_samples: usize,
+        order: &ChannelOrder,
     ) {
         if buffer_list.is_null() {
             return;
@@ -127,12 +136,16 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
 
         // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
         let list = unsafe { &*buffer_list };
+        let buffers = list.number_buffers as usize;
         let max_channels = self.main_inputs.capacity();
 
-        for i in 0..list.number_buffers.min(max_channels as u32) {
-            // SAFETY: We iterate only up to number_buffers, so index is always valid.
-            let buffer = unsafe { list.buffer_at(i) };
-            self.main_inputs.push(usable_input(buffer, num_samples));
+        for channel in 0..buffers.min(max_channels) {
+            let ptr = match order.host_channel(channel) {
+                // SAFETY: The index is below number_buffers.
+                i if i < buffers => usable_input(unsafe { list.buffer_at(i as u32) }, num_samples),
+                _ => std::ptr::null(),
+            };
+            self.main_inputs.push(ptr);
         }
     }
 
@@ -141,6 +154,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
         &mut self,
         buffer_list: *mut AudioBufferList,
         num_samples: usize,
+        order: &ChannelOrder,
     ) {
         if buffer_list.is_null() {
             return;
@@ -148,11 +162,17 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
 
         // SAFETY: Caller guarantees buffer_list is a valid pointer. We checked non-null above.
         let list = unsafe { &mut *buffer_list };
+        let buffers = list.number_buffers as usize;
         let max_channels = self.main_outputs.capacity();
 
-        for i in 0..list.number_buffers.min(max_channels as u32) {
-            // SAFETY: We iterate only up to number_buffers, so index is always valid.
-            let buffer = unsafe { list.buffer_at_mut(i) };
+        for channel in 0..buffers.min(max_channels) {
+            let i = order.host_channel(channel);
+            if i >= buffers {
+                self.main_outputs.push(std::ptr::null_mut());
+                continue;
+            }
+            // SAFETY: The index is below number_buffers.
+            let buffer = unsafe { list.buffer_at_mut(i as u32) };
 
             if buffer.data.is_null() && buffer.number_channels == 1 {
                 // Host provided null pointer - use our internal buffer.
@@ -161,7 +181,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
                 let internal = self
                     .internal_output_buffers
                     .as_mut()
-                    .and_then(|buffers| buffers.get_mut(i as usize))
+                    .and_then(|buffers| buffers.get_mut(i))
                     .filter(|_| num_samples <= self.max_frames);
                 if let Some(internal_buf) = internal {
                     let ptr = internal_buf.as_mut_ptr();
@@ -209,6 +229,7 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
         buffer_list: *const AudioBufferList,
         channels: usize,
         num_samples: usize,
+        order: &ChannelOrder,
     ) {
         let Some(bus) = self.aux_inputs.get_mut(aux_idx) else {
             return;
@@ -218,9 +239,10 @@ impl<S: Sample> ProcessBufferStorageAuExt<S> for ProcessBufferStorage<S> {
         let list = unsafe { buffer_list.as_ref() };
         let buffers = list.map_or(0, |list| list.number_buffers as usize);
         for channel in 0..channels {
+            let host = order.host_channel(channel);
             let ptr = match list {
-                // SAFETY: channel < number_buffers.
-                Some(list) if channel < buffers => usable_input(unsafe { list.buffer_at(channel as u32) }, num_samples),
+                // SAFETY: host < number_buffers.
+                Some(list) if host < buffers => usable_input(unsafe { list.buffer_at(host as u32) }, num_samples),
                 _ => std::ptr::null(),
             };
             bus.push(ptr);
@@ -629,6 +651,50 @@ mod tests {
     }
 
     #[test]
+    fn test_aux_input_channels_in_the_order_of_the_set() {
+        // A 7.1 sidechain the host has in Apple's order (side pair first).
+        let config = CachedBusConfig::new(
+            vec![CachedBusInfo::new(2, BusType::Main), CachedBusInfo::new(8, BusType::Aux)],
+            vec![CachedBusInfo::new(2, BusType::Main)],
+        );
+        let mut storage: ProcessBufferStorage<f32> = ProcessBufferStorage::allocate_from_config(&config, 16);
+        let (_, order) = crate::channel_labels::set_for_labels(&[1, 2, 3, 4, 5, 6, 33, 34], []).unwrap();
+
+        #[repr(C)]
+        struct OctoList {
+            number_buffers: u32,
+            buffers: [AudioBuffer; 8],
+        }
+        let mut samples = [[0.0f32; 16]; 8];
+        let mut list = OctoList {
+            number_buffers: 8,
+            buffers: std::array::from_fn(|_| AudioBuffer {
+                number_channels: 1,
+                data_byte_size: 16 * 4,
+                data: std::ptr::null_mut(),
+            }),
+        };
+        for (buffer, channel) in list.buffers.iter_mut().zip(samples.iter_mut()) {
+            buffer.data = channel.as_mut_ptr().cast();
+        }
+
+        unsafe {
+            storage.collect_aux_input_channels(
+                0,
+                &list as *const OctoList as *const AudioBufferList,
+                8,
+                16,
+                &order,
+            );
+        }
+        // The set's rear pair (its channels 4, 5) is the host's 6, 7, its
+        // side pair the host's 4, 5.
+        let host: Vec<*const f32> = samples.iter().map(|channel| channel.as_ptr()).collect();
+        let expected = [0, 1, 2, 3, 6, 7, 4, 5].map(|index| host[index]);
+        assert_eq!(storage.aux_inputs[0].as_slice(), expected);
+    }
+
+    #[test]
     fn test_aux_input_output_slices() {
         // Test building aux input/output slices from collected pointers
         let config = CachedBusConfig::new(
@@ -754,6 +820,7 @@ mod tests {
             storage.collect_outputs(
                 &mut test_abl as *mut TestAudioBufferList as *mut AudioBufferList,
                 num_samples,
+                &ChannelOrder::default(),
             );
         }
 

@@ -101,6 +101,10 @@ pub mod bridge;
 pub mod buffer_storage;
 #[cfg(target_os = "macos")]
 pub mod buffers;
+
+// Audio Unit channel layouts of the channel sets.
+#[cfg(target_os = "macos")]
+mod channel_labels;
 #[cfg(target_os = "macos")]
 pub mod error_helpers;
 #[cfg(target_os = "macos")]

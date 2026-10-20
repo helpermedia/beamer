@@ -36,10 +36,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::buffers::AudioBufferList;
+use crate::channel_labels::{self, ChannelOrder, ChannelOrders};
 use crate::error::os_status;
 use beamer_core::{
-    ActiveBuses, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, EditorSync, Layout,
-    ParameterInfo, ParameterUnit, ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue, MAX_BUSES,
+    ActiveBuses, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, EditorSync,
+    Layout, ParameterInfo, ParameterUnit, ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue,
+    MAX_BUSES, MAX_CHANNELS,
 };
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
@@ -157,6 +159,23 @@ pub struct BeamerAuBusInfo {
     pub channel_count: u32,
     /// Bus type (main or auxiliary)
     pub bus_type: BeamerAuBusType,
+    /// Number of channel labels in `layout_labels`: the channel count when
+    /// the host set a channel layout on the bus, 0 when it set none.
+    pub layout_label_count: u32,
+    /// The channel label of each channel of the host's channel layout.
+    pub layout_labels: [u32; MAX_CHANNELS],
+}
+
+impl BeamerAuBusInfo {
+    /// A bus of `channel_count` channels without a channel layout.
+    pub fn new(channel_count: u32, bus_type: BeamerAuBusType) -> Self {
+        Self { channel_count, bus_type, layout_label_count: 0, layout_labels: [0; MAX_CHANNELS] }
+    }
+
+    /// The host's channel labels, empty without a channel layout.
+    fn labels(&self) -> &[u32] {
+        &self.layout_labels[..(self.layout_label_count as usize).min(MAX_CHANNELS)]
+    }
 }
 
 /// Complete bus configuration for the plugin (matches BeamerAuBusConfig in header).
@@ -327,13 +346,18 @@ impl Default for BeamerAuChannelCapabilities {
 // Instance Handle
 // =============================================================================
 
+/// The layouts of a plugin without any bus: an Audio Unit needs an output
+/// bus, so it gets a stereo one.
+const NO_BUS_LAYOUTS: &[Layout] = &[Layout::INSTRUMENT_STEREO];
+
 /// The buses a plugin declares, captured when the instance is created.
 ///
 /// A host asks for them at any time, also while audio runs, so the answers
 /// must not need the plugin.
 pub(crate) struct DeclaredBuses {
-    /// Every bus on, with the set it has in the layout the plugin runs
-    /// with (the first of its layouts).
+    /// The layouts the plugin lists, the default first.
+    layouts: &'static [Layout],
+    /// Every bus on, with the set it has in the default layout.
     all_on: ActiveBuses,
     /// The buses with the default state of each: the main buses on, an aux
     /// bus on when it is active by default. A plugin that refuses the buses
@@ -351,22 +375,23 @@ impl DeclaredBuses {
         let layouts = plugin.layouts();
         Self {
             validation: beamer_core::validate_layouts(layouts),
-            ..Self::new(ActiveBuses::all_on(Layout::default_of(layouts)), plugin.default_buses())
+            ..Self::new(layouts, plugin.default_buses())
         }
     }
 
-    /// The buses an Audio Unit has for a declaration.
+    /// The buses an Audio Unit has for a declaration: `layouts` with the
+    /// default buses `default`.
     ///
     /// An Audio Unit needs an output bus. A plugin that declares no bus at
     /// all gets a stereo one, on. Both wrappers build their buses from
     /// these.
-    fn new(all_on: ActiveBuses, default: ActiveBuses) -> Self {
-        if all_on.input_bus_count() == 0 && all_on.output_bus_count() == 0 {
-            let mut output = ActiveBuses::all_off(0, 1);
-            let _ = output.set_output(0, Some(ChannelSet::Stereo));
-            return Self { all_on: output, default: output, validation: Ok(()) };
+    fn new(layouts: &'static [Layout], default: ActiveBuses) -> Self {
+        let first = Layout::default_of(layouts);
+        if first.inputs.is_empty() && first.outputs.is_empty() {
+            let output = ActiveBuses::all_on(&NO_BUS_LAYOUTS[0]);
+            return Self { layouts: NO_BUS_LAYOUTS, all_on: output, default: output, validation: Ok(()) };
         }
-        Self { all_on, default, validation: Ok(()) }
+        Self { layouts, all_on: ActiveBuses::all_on(first), default, validation: Ok(()) }
     }
 
     /// Number of buses in a direction.
@@ -377,8 +402,8 @@ impl DeclaredBuses {
         }
     }
 
-    /// Channel count of the bus at an index in a direction, 0 for a bus
-    /// that does not exist.
+    /// Channel count of the bus at an index in a direction in the default
+    /// layout, 0 for a bus that does not exist.
     fn channel_count(&self, direction: BusDirection, index: usize) -> u32 {
         let channels = match direction {
             BusDirection::Input => self.all_on.input(index),
@@ -387,16 +412,126 @@ impl DeclaredBuses {
         channels.unwrap_or(0)
     }
 
-    /// The set a host means with `channels` channels on a bus: the set of
-    /// the layout when the count is its count, the speaker layout of that
-    /// size otherwise (see `ChannelSet::for_count`), `None` for 0 channels.
-    fn set_for(&self, direction: BusDirection, index: usize, channels: u32) -> Option<ChannelSet> {
-        let set = match direction {
-            BusDirection::Input => self.all_on.input_set(index),
-            BusDirection::Output => self.all_on.output_set(index),
+    /// What each layout allows for a bus, the default layout first.
+    fn entries(&self, direction: BusDirection, index: usize) -> impl Iterator<Item = BusLayout> + Clone + '_ {
+        self.layouts.iter().filter_map(move |layout| {
+            let buses = match direction {
+                BusDirection::Input => layout.inputs,
+                BusDirection::Output => layout.outputs,
+            };
+            buses.get(index).copied()
+        })
+    }
+
+    /// The sets the layouts name for a bus, the default layout's first.
+    fn listed(&self, direction: BusDirection, index: usize) -> impl Iterator<Item = ChannelSet> + Clone + '_ {
+        self.entries(direction, index).filter_map(|entry| match entry {
+            BusLayout::Set(set) => Some(set),
+            _ => None,
+        })
+    }
+
+    /// Whether a layout takes `channels` channels on a bus. A bus that
+    /// follows the main input takes any count here; the whole combination
+    /// is checked when the plugin is prepared.
+    fn allows_count(&self, direction: BusDirection, index: usize, channels: u32) -> bool {
+        let fits = channels > 0 && channels as usize <= MAX_CHANNELS;
+        fits && self.entries(direction, index).any(|entry| match entry {
+            BusLayout::Set(set) => set.channel_count() == channels,
+            BusLayout::Any | BusLayout::SameAsMainInput => true,
+        })
+    }
+
+    /// Whether a layout takes the set `set` on a bus, as `allows_count`.
+    fn allows_set(&self, direction: BusDirection, index: usize, set: ChannelSet) -> bool {
+        self.entries(direction, index).any(|entry| match entry {
+            BusLayout::SameAsMainInput => true,
+            entry => entry.allows(set, None),
+        })
+    }
+
+    /// The set a host means with `channels` channels on a bus, with the
+    /// order in which it has them.
+    ///
+    /// With the host's channel labels `labels`, the set they name (see
+    /// `channel_labels::set_for_labels`). Without, the first set a layout
+    /// names for the bus with that count, else the speaker layout of that
+    /// size (see `ChannelSet::for_count`), in the set's order. `None` for 0
+    /// channels.
+    fn set_for(
+        &self,
+        direction: BusDirection,
+        index: usize,
+        channels: u32,
+        labels: &[u32],
+    ) -> Option<(ChannelSet, ChannelOrder)> {
+        if channels == 0 {
+            return None;
+        }
+        if labels.len() == channels as usize {
+            return channel_labels::set_for_labels(labels, self.listed(direction, index));
+        }
+        let set = self
+            .listed(direction, index)
+            .find(|set| set.channel_count() == channels)
+            .or_else(|| ChannelSet::for_count(channels))?;
+        Some((set, ChannelOrder::default()))
+    }
+
+    /// The layout tags of the sets a bus takes: the sets the layouts name,
+    /// and every named set for a bus that takes any set.
+    fn layout_tags(&self, direction: BusDirection, index: usize) -> Vec<u32> {
+        let any = self
+            .entries(direction, index)
+            .any(|entry| matches!(entry, BusLayout::Any | BusLayout::SameAsMainInput));
+        let named = channel_labels::named_sets().filter(|_| any);
+        let mut tags: Vec<u32> = Vec::new();
+        for set in self.listed(direction, index).chain(named) {
+            let tag = channel_labels::tag_of(set);
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        tags
+    }
+
+    /// The main input and output channel counts the layouts list: one
+    /// pair per layout, in the Audio Unit's terms (-1 for any count, -1 for
+    /// an output as wide as the input, -2 for any output with any input).
+    fn channel_capabilities(&self) -> Vec<(i32, i32)> {
+        let mut pairs: Vec<(i32, i32)> = Vec::new();
+        for layout in self.layouts {
+            let input = match layout.inputs.first() {
+                None => 0,
+                Some(BusLayout::Set(set)) => set.channel_count() as i32,
+                Some(_) => -1,
+            };
+            let output = match layout.outputs.first() {
+                None => 0,
+                Some(BusLayout::Set(set)) => set.channel_count() as i32,
+                Some(BusLayout::SameAsMainInput) => input,
+                Some(BusLayout::Any) if input == -1 => -2,
+                Some(BusLayout::Any) => -1,
+            };
+            if !pairs.contains(&(input, output)) {
+                pairs.push((input, output));
+            }
+        }
+        pairs
+    }
+
+    /// Whether a layout takes `input` channels on the main input and
+    /// `output` on the main output (0 for a direction without buses).
+    fn allows_main_channels(&self, input: u32, output: u32) -> bool {
+        let takes = |entry: Option<&BusLayout>, channels: u32, main_input: u32| match entry {
+            None => channels == 0,
+            Some(BusLayout::Set(set)) => set.channel_count() == channels,
+            Some(BusLayout::Any) => channels > 0 && channels as usize <= MAX_CHANNELS,
+            Some(BusLayout::SameAsMainInput) => channels == main_input,
         };
-        set.filter(|set| set.channel_count() == channels)
-            .or_else(|| ChannelSet::for_count(channels))
+        self.layouts.iter().any(|layout| {
+            takes(layout.inputs.first(), input, input) && takes(layout.outputs.first(), output, input)
+        })
     }
 
     /// The buses with the default state of each.
@@ -404,8 +539,9 @@ impl DeclaredBuses {
         self.default
     }
 
-    /// Channel counts of the main input and output bus, 0 in a direction
-    /// without buses.
+    /// Channel counts of the main input and output bus in the default
+    /// layout, 0 in a direction without buses.
+    #[cfg(test)]
     pub(crate) fn main_channels(&self) -> (u32, u32) {
         (
             self.channel_count(BusDirection::Input, 0),
@@ -612,6 +748,15 @@ fn copy_str_to_char_array(s: &str, dest: &mut [c_char]) {
     } else {
         dest[dest.len() - 1] = 0;
     }
+}
+
+/// Channel count and channel labels of bus `bus` of the `count` buses in
+/// `buses`: no channels for one past the count.
+fn host_bus(buses: &[BeamerAuBusInfo; MAX_BUSES], count: u32, bus: usize) -> (u32, &[u32]) {
+    buses
+        .get(bus)
+        .filter(|_| bus < count as usize)
+        .map_or((0, &[][..]), |info| (info.channel_count, info.labels()))
 }
 
 /// Convert a C bus info array to a `Vec<CachedBusInfo>`.
@@ -896,21 +1041,27 @@ fn prepare_instance(
     }
 
     // The host's request: a bus with channels is on, one with 0 channels
-    // (or beyond the configuration) off. The channels have the set of the
-    // layout when their count is its count.
+    // (or beyond the configuration) off, with the set the host means (see
+    // `DeclaredBuses::set_for`). The order in which the host has the
+    // channels of each set is kept for the render block.
     let mut negotiation = handle
         .bus_negotiation
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let requested = negotiation.requested_mut();
     let declared = &handle.declared_buses;
+    let mut host_orders = ChannelOrders::default();
     for bus in 0..requested.input_bus_count() {
-        let channels = rust_bus_config.input_bus_info(bus).map_or(0, |info| info.channel_count as u32);
-        let _ = requested.set_input(bus, declared.set_for(BusDirection::Input, bus, channels));
+        let (channels, labels) = host_bus(&c_bus_config.input_buses, c_bus_config.input_bus_count, bus);
+        let found = declared.set_for(BusDirection::Input, bus, channels, labels);
+        let _ = requested.set_input(bus, found.map(|(set, _)| set));
+        host_orders.set_input(bus, found.map(|(_, order)| order).unwrap_or_default());
     }
     for bus in 0..requested.output_bus_count() {
-        let channels = rust_bus_config.output_bus_info(bus).map_or(0, |info| info.channel_count as u32);
-        let _ = requested.set_output(bus, declared.set_for(BusDirection::Output, bus, channels));
+        let (channels, labels) = host_bus(&c_bus_config.output_buses, c_bus_config.output_bus_count, bus);
+        let found = declared.set_for(BusDirection::Output, bus, channels, labels);
+        let _ = requested.set_output(bus, found.map(|(set, _)| set));
+        host_orders.set_output(bus, found.map(|(_, order)| order).unwrap_or_default());
     }
 
     // Take the current render block out. This waits for a render call that
@@ -937,8 +1088,14 @@ fn prepare_instance(
             ProcessMode::Realtime
         };
 
-        // The plugin is prepared with the buses it accepts.
+        // The plugin is prepared with the buses it accepts. The main buses
+        // cannot be bridged at another width: a plugin that keeps other
+        // main channel counts than the host's refuses the formats.
         negotiation.negotiate_with(plugin.layouts(), |buses| plugin.supports_buses(buses));
+        let (requested, accepted) = (negotiation.requested(), negotiation.accepted());
+        if requested.input(0) != accepted.input(0) || requested.output(0) != accepted.output(0) {
+            return os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED;
+        }
         let prepared = plugin.allocate_render_resources(
             sample_rate,
             max_frames,
@@ -961,6 +1118,20 @@ fn prepare_instance(
     let settings = factory::plugin_config().map(RenderSettings::from_config).unwrap_or_default();
     let buses = *negotiation;
     drop(negotiation);
+    // The host's order of the channels of a bus where the plugin has the
+    // set the host has; otherwise the plugin's set has no order in the
+    // host's channels.
+    let mut orders = ChannelOrders::default();
+    for bus in 0..buses.accepted().input_bus_count() {
+        if buses.accepted().input_set(bus) == buses.requested().input_set(bus) {
+            orders.set_input(bus, *host_orders.input(bus));
+        }
+    }
+    for bus in 0..buses.accepted().output_bus_count() {
+        if buses.accepted().output_set(bus) == buses.requested().output_set(bus) {
+            orders.set_output(bus, *host_orders.output(bus));
+        }
+    }
     // The storage holds the plugin's channels.
     let plugin_bus_config = CachedBusConfig::from_active_buses(buses.accepted());
 
@@ -977,6 +1148,7 @@ fn prepare_instance(
                 Arc::clone(&handle.shared),
                 storage,
                 buses,
+                orders,
                 max_frames,
                 sample_rate,
                 settings,
@@ -993,6 +1165,7 @@ fn prepare_instance(
                 Arc::clone(&handle.shared),
                 storage,
                 buses,
+                orders,
                 max_frames,
                 sample_rate,
                 settings,
@@ -2094,24 +2267,6 @@ pub extern "C" fn beamer_au_is_output_bus_default_active(
     })
 }
 
-/// Declared channel counts of the main input and output bus.
-///
-/// A plugin that declares no bus in a direction has 0 channels there. That is
-/// how an instrument or generator without audio input looks. The exception is
-/// a plugin without any bus, see `DeclaredBuses::new`. Returns `None` when
-/// there is no plugin to ask.
-fn declared_main_channels(instance: BeamerAuInstanceHandle) -> Option<(u32, u32)> {
-    if instance.is_null() {
-        return None;
-    }
-
-    // SAFETY: instance validated non-null above. Caller guarantees a valid
-    // pointer from beamer_au_create_instance.
-    let handle = unsafe { &*instance };
-
-    Some(handle.declared_buses.main_channels())
-}
-
 /// Channel counts to assume when the plugin cannot be asked.
 ///
 /// Stereo out, stereo in only for the categories that normally have an input.
@@ -2126,11 +2281,11 @@ fn fallback_main_channels(category: beamer_core::config::Category) -> (u32, u32)
 
 /// Check if a proposed channel configuration is valid.
 ///
-/// A configuration is valid when it matches the channel counts of the main
-/// input and output bus that the plugin declares. This holds for every
-/// category: an instrument or generator normally declares no input bus and
-/// then needs 0 input channels, but one that declares an input is valid with
-/// that input.
+/// A configuration is valid when one of the plugin's layouts takes these
+/// channel counts on the main input and output bus (0 for a direction
+/// without buses: an instrument or generator normally has no input bus).
+/// The other buses and the channel sets are checked when the plugin is
+/// prepared.
 ///
 /// # Safety
 ///
@@ -2143,25 +2298,26 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
     main_input_channels: u32,
     main_output_channels: u32,
 ) -> bool {
-    use beamer_core::MAX_CHANNELS;
-
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // The fallback depends on the plugin type.
-        let config = match factory::plugin_config() {
-            Some(c) => c,
-            None => return false,
-        };
-
         // Validate channel counts are within bounds
         if main_input_channels > MAX_CHANNELS as u32 || main_output_channels > MAX_CHANNELS as u32 {
             return false;
         }
 
-        // Only the main bus (bus 0) is checked. Sidechain buses are handled separately.
-        let (declared_input, declared_output) = declared_main_channels(instance)
-            .unwrap_or_else(|| fallback_main_channels(config.category));
+        if instance.is_null() {
+            // The fallback depends on the plugin type.
+            let Some(config) = factory::plugin_config() else {
+                return false;
+            };
+            return (main_input_channels, main_output_channels) == fallback_main_channels(config.category);
+        }
 
-        main_input_channels == declared_input && main_output_channels == declared_output
+        // SAFETY: instance validated non-null above. Caller guarantees a
+        // valid pointer from beamer_au_create_instance.
+        let handle = unsafe { &*instance };
+        handle
+            .declared_buses
+            .allows_main_channels(main_input_channels, main_output_channels)
     }));
 
     result.unwrap_or(false)
@@ -2169,15 +2325,19 @@ pub extern "C" fn beamer_au_is_channel_config_valid(
 
 /// Get the supported channel capabilities for the main bus.
 ///
-/// This function returns the [input, output] channel configuration that the
-/// plugin supports: `[M, N]`, the declared channel counts of the main input
-/// and output bus. M is 0 for a plugin that declares no input bus, which is
-/// the normal case for instruments (`aumu`) and generators (`augn`).
+/// One `[input, output]` pair per layout of the plugin, without repeats:
+/// the channel counts of its main input and output bus. The input is 0 for
+/// a layout without input buses, which is the normal case for instruments
+/// (`aumu`) and generators (`augn`). A bus that takes any set is -1; an
+/// output that follows the input is -1 with an input of any count (the
+/// Audio Unit's matched channels) and the input's count otherwise; any
+/// output with any input is -2. At most `BEAMER_AU_MAX_CHANNEL_CAPABILITIES`
+/// pairs are written.
 ///
 /// # Returns
 ///
 /// Returns `true` if capabilities were successfully written to `out_capabilities`.
-/// Returns `false` if the instance is null, the output pointer is null, or an error occurs.
+/// Returns `false` if the output pointer is null or an error occurs.
 ///
 /// # Safety
 ///
@@ -2194,31 +2354,153 @@ pub extern "C" fn beamer_au_get_channel_capabilities(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // The fallback depends on the plugin type.
-        let config = match factory::plugin_config() {
-            Some(c) => c,
-            None => return false,
+        let pairs = if instance.is_null() {
+            // The fallback depends on the plugin type.
+            let Some(config) = factory::plugin_config() else {
+                return false;
+            };
+            let (input, output) = fallback_main_channels(config.category);
+            vec![(input as i32, output as i32)]
+        } else {
+            // SAFETY: instance validated non-null above. Caller guarantees a
+            // valid pointer from beamer_au_create_instance.
+            let handle = unsafe { &*instance };
+            handle.declared_buses.channel_capabilities()
         };
 
         // SAFETY: out_capabilities validated non-null above. Caller guarantees
         // the pointer is valid and writable.
         let capabilities = unsafe { &mut *out_capabilities };
         *capabilities = BeamerAuChannelCapabilities::default();
-
-        // Only the main bus is reported. Sidechain channels are handled separately.
-        let (input_channels, output_channels) = declared_main_channels(instance)
-            .unwrap_or_else(|| fallback_main_channels(config.category));
-
-        capabilities.count = 1;
-        capabilities.capabilities[0] = BeamerAuChannelCapability {
-            input_channels: input_channels as i32,
-            output_channels: output_channels as i32,
-        };
+        for (slot, (input, output)) in capabilities.capabilities.iter_mut().zip(pairs) {
+            *slot = BeamerAuChannelCapability {
+                input_channels: input,
+                output_channels: output,
+            };
+            capabilities.count += 1;
+        }
 
         true
     }));
 
     result.unwrap_or(false)
+}
+
+/// The direction of a bus for the bus functions: input or output.
+fn direction_of(is_input: bool) -> BusDirection {
+    if is_input {
+        BusDirection::Input
+    } else {
+        BusDirection::Output
+    }
+}
+
+/// Whether one of the plugin's layouts takes `channels` channels on a bus.
+///
+/// A bus that follows the main input takes any count here; the whole
+/// combination is checked when the plugin is prepared. False for 0 channels
+/// and for a bus that does not exist.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_bus_supports_channel_count(
+    instance: BeamerAuInstanceHandle,
+    is_input: bool,
+    bus_index: u32,
+    channels: u32,
+) -> bool {
+    with_instance!(instance, false, |handle| {
+        handle
+            .declared_buses
+            .allows_count(direction_of(is_input), bus_index as usize, channels)
+    })
+}
+
+/// Whether one of the plugin's layouts takes the channel layout with the
+/// channel labels `labels` (`count` of them) on a bus, in any order of its
+/// channels.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - `labels` must be valid for `count` values, or null with `count` 0
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_bus_supports_layout(
+    instance: BeamerAuInstanceHandle,
+    is_input: bool,
+    bus_index: u32,
+    labels: *const u32,
+    count: u32,
+) -> bool {
+    if labels.is_null() || count == 0 {
+        return false;
+    }
+    with_instance!(instance, false, |handle| {
+        // SAFETY: Valid for count values (caller), checked non-null above.
+        let labels = unsafe { std::slice::from_raw_parts(labels, count as usize) };
+        let direction = direction_of(is_input);
+        let declared = &handle.declared_buses;
+        let bus = bus_index as usize;
+        channel_labels::set_for_labels(labels, declared.listed(direction, bus))
+            .is_some_and(|(set, _)| declared.allows_set(direction, bus, set))
+    })
+}
+
+/// Write the layout tags of the channel layouts a bus takes into
+/// `out_tags` (at most `capacity`) and return how many the bus has.
+///
+/// A null `out_tags` only returns the count.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - `out_tags` must be null or valid for `capacity` values
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_supported_layout_tags(
+    instance: BeamerAuInstanceHandle,
+    is_input: bool,
+    bus_index: u32,
+    out_tags: *mut u32,
+    capacity: u32,
+) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        let tags = handle.declared_buses.layout_tags(direction_of(is_input), bus_index as usize);
+        if !out_tags.is_null() {
+            for (index, &tag) in tags.iter().take(capacity as usize).enumerate() {
+                // SAFETY: index < capacity, valid (caller).
+                unsafe { *out_tags.add(index) = tag };
+            }
+        }
+        tags.len() as u32
+    })
+}
+
+/// The layout tag of the set a bus has with `channels` channels when the
+/// host sets no channel layout (see `DeclaredBuses::set_for`). 0 for 0
+/// channels.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_layout_tag(
+    instance: BeamerAuInstanceHandle,
+    is_input: bool,
+    bus_index: u32,
+    channels: u32,
+) -> u32 {
+    with_instance!(instance, 0, |handle| {
+        handle
+            .declared_buses
+            .set_for(direction_of(is_input), bus_index as usize, channels, &[])
+            .map_or(0, |(set, _)| channel_labels::tag_of(set))
+    })
 }
 
 // =============================================================================
@@ -2911,10 +3193,14 @@ mod tests {
         EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef,
     };
 
+    /// Declared buses of `layouts`, every bus on by default.
+    fn declared(layouts: &'static [Layout]) -> DeclaredBuses {
+        DeclaredBuses::new(layouts, ActiveBuses::all_on(Layout::default_of(layouts)))
+    }
+
     #[test]
     fn test_a_plugin_without_buses_gets_an_output_bus() {
-        let none = ActiveBuses::all_off(0, 0);
-        let buses = DeclaredBuses::new(none, none);
+        let buses = declared(&[Layout { inputs: &[], outputs: &[] }]);
         assert_eq!(buses.count(BusDirection::Input), 0);
         assert_eq!(buses.count(BusDirection::Output), 1);
         assert_eq!(buses.main_channels(), (0, 2));
@@ -2922,54 +3208,142 @@ mod tests {
         let default = buses.default_buses();
         assert_eq!((default.input_bus_count(), default.output_bus_count()), (0, 1));
         assert_eq!(default.output_set(0), Some(ChannelSet::Stereo));
+        assert_eq!(buses.channel_capabilities(), [(0, 2)]);
 
         // A plugin with an input only keeps its buses.
-        let effect = Layout { inputs: &[beamer_core::BusLayout::STEREO], outputs: &[] };
-        let all_on = ActiveBuses::all_on(&effect);
-        let effect = DeclaredBuses::new(all_on, all_on);
+        let effect = declared(&[Layout { inputs: &[BusLayout::STEREO], outputs: &[] }]);
         assert_eq!(effect.count(BusDirection::Output), 0);
         assert_eq!(effect.main_channels(), (2, 0));
     }
 
     #[test]
     fn test_declared_buses_keep_the_sets_of_buses_off_by_default() {
-        use beamer_core::BusLayout;
-
         // A mono sidechain, off by default.
-        let layout = Layout {
+        const LAYOUTS: &[Layout] = &[Layout {
             inputs: &[BusLayout::STEREO, BusLayout::MONO],
             outputs: &[BusLayout::Set(ChannelSet::Surround51)],
-        };
-        let all_on = ActiveBuses::all_on(&layout);
-        let mut default = all_on;
+        }];
+        let mut default = ActiveBuses::all_on(&LAYOUTS[0]);
         assert!(default.set_input(1, None));
-        let buses = DeclaredBuses::new(all_on, default);
+        let buses = DeclaredBuses::new(LAYOUTS, default);
 
         assert_eq!(buses.count(BusDirection::Input), 2);
         assert_eq!(buses.channel_count(BusDirection::Input, 1), 1);
         assert_eq!(buses.channel_count(BusDirection::Input, 2), 0);
         assert_eq!(buses.main_channels(), (2, 6));
         assert!(!buses.default_buses().is_input_on(1));
+    }
 
-        // A host's channel count means the set of the layout, or the
-        // speaker layout of that size.
-        let ambisonic = Layout {
+    /// Mono or stereo, mono to stereo, with a sidechain of any width.
+    const EFFECT: &[Layout] = &[
+        Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::Any],
+            outputs: &[BusLayout::STEREO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::Any],
+            outputs: &[BusLayout::MONO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::Any],
+            outputs: &[BusLayout::STEREO],
+        },
+    ];
+
+    #[test]
+    fn test_channel_capabilities_of_the_layouts() {
+        assert_eq!(declared(EFFECT).channel_capabilities(), [(2, 2), (1, 1), (1, 2)]);
+        // Wildcards.
+        assert_eq!(declared(&[Layout::MATCHED]).channel_capabilities(), [(-1, -1)]);
+        const ANY: &[Layout] = &[Layout { inputs: &[BusLayout::Any], outputs: &[BusLayout::Any] }];
+        assert_eq!(declared(ANY).channel_capabilities(), [(-1, -2)]);
+        const FIXED_IN: &[Layout] = &[Layout { inputs: &[BusLayout::STEREO], outputs: &[BusLayout::Any] }];
+        assert_eq!(declared(FIXED_IN).channel_capabilities(), [(2, -1)]);
+        const FOLLOWED: &[Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO],
+            outputs: &[BusLayout::SameAsMainInput],
+        }];
+        assert_eq!(declared(FOLLOWED).channel_capabilities(), [(2, 2)]);
+        // Sets of the same count are one pair.
+        const QUAD: &[Layout] = &[
+            Layout {
+                inputs: &[BusLayout::Set(ChannelSet::Quad)],
+                outputs: &[BusLayout::Set(ChannelSet::Quad)],
+            },
+            Layout {
+                inputs: &[BusLayout::Set(ChannelSet::Ambisonic(1))],
+                outputs: &[BusLayout::Set(ChannelSet::Ambisonic(1))],
+            },
+        ];
+        assert_eq!(declared(QUAD).channel_capabilities(), [(4, 4)]);
+        assert_eq!(declared(&[Layout::INSTRUMENT_MONO]).channel_capabilities(), [(0, 1)]);
+    }
+
+    #[test]
+    fn test_main_channels_and_counts_the_layouts_take() {
+        let buses = declared(EFFECT);
+        assert!(buses.allows_main_channels(2, 2));
+        assert!(buses.allows_main_channels(1, 2));
+        assert!(!buses.allows_main_channels(2, 1));
+        assert!(!buses.allows_main_channels(6, 6));
+        let matched = declared(&[Layout::MATCHED]);
+        assert!(matched.allows_main_channels(6, 6));
+        assert!(!matched.allows_main_channels(6, 2));
+        assert!(declared(&[Layout::INSTRUMENT_STEREO]).allows_main_channels(0, 2));
+
+        assert!(buses.allows_count(BusDirection::Input, 0, 1));
+        assert!(!buses.allows_count(BusDirection::Input, 0, 6));
+        // The sidechain takes any count, up to MAX_CHANNELS.
+        assert!(buses.allows_count(BusDirection::Input, 1, 6));
+        assert!(!buses.allows_count(BusDirection::Input, 1, MAX_CHANNELS as u32 + 1));
+        assert!(!buses.allows_count(BusDirection::Input, 1, 0));
+        assert!(!buses.allows_count(BusDirection::Input, 2, 1));
+    }
+
+    #[test]
+    fn test_set_for_the_hosts_channels() {
+        let buses = declared(EFFECT);
+        let set = |direction, bus, channels, labels: &[u32]| {
+            buses.set_for(direction, bus, channels, labels).map(|(set, _)| set)
+        };
+        // By count: a set a layout names, the default layout's first.
+        assert_eq!(set(BusDirection::Input, 0, 1, &[]), Some(ChannelSet::Mono));
+        assert_eq!(set(BusDirection::Input, 0, 2, &[]), Some(ChannelSet::Stereo));
+        assert_eq!(set(BusDirection::Input, 1, 6, &[]), Some(ChannelSet::Surround51));
+        assert_eq!(set(BusDirection::Input, 0, 0, &[]), None);
+
+        // A count of a listed set means that set.
+        const AMBISONIC: &[Layout] = &[Layout {
             inputs: &[BusLayout::Set(ChannelSet::Ambisonic(1))],
             outputs: &[BusLayout::STEREO],
-        };
-        let all_on = ActiveBuses::all_on(&ambisonic);
-        let buses = DeclaredBuses::new(all_on, all_on);
-        assert_eq!(buses.set_for(BusDirection::Input, 0, 4), Some(ChannelSet::Ambisonic(1)));
-        assert_eq!(buses.set_for(BusDirection::Output, 0, 4), Some(ChannelSet::Quad));
-        assert_eq!(buses.set_for(BusDirection::Output, 0, 0), None);
-        assert_eq!(buses.set_for(BusDirection::Output, 1, 1), Some(ChannelSet::Mono));
+        }];
+        let ambisonic = declared(AMBISONIC);
+        let found = ambisonic.set_for(BusDirection::Input, 0, 4, &[]).map(|(set, _)| set);
+        assert_eq!(found, Some(ChannelSet::Ambisonic(1)));
+
+        // With the host's labels, the set they name and their order.
+        let (found, order) = buses.set_for(BusDirection::Input, 1, 8, &[1, 2, 3, 4, 5, 6, 33, 34]).unwrap();
+        assert_eq!(found, ChannelSet::Surround71);
+        assert_eq!(order.host_channel(4), 6);
+        // Labels of another count than the channels are ignored.
+        assert_eq!(set(BusDirection::Input, 0, 2, &[42]), Some(ChannelSet::Stereo));
+    }
+
+    #[test]
+    fn test_layout_tags_of_a_bus() {
+        let buses = declared(EFFECT);
+        // The listed sets, without repeats.
+        assert_eq!(buses.layout_tags(BusDirection::Output, 0), [0x0065_0002, 0x0064_0001]);
+        // A bus of any set: every named set.
+        let any = buses.layout_tags(BusDirection::Input, 1);
+        assert!(any.contains(&0x0079_0006) && any.contains(&0x00c0_000c));
+        assert!(buses.layout_tags(BusDirection::Input, 2).is_empty());
     }
 
     #[test]
     fn test_main_channels_without_a_plugin() {
         use beamer_core::config::Category;
 
-        assert_eq!(declared_main_channels(ptr::null_mut()), None);
 
         assert_eq!(fallback_main_channels(Category::Effect), (2, 2));
         assert_eq!(fallback_main_channels(Category::MidiEffect), (2, 2));
@@ -3128,7 +3502,7 @@ mod tests {
     #[test]
     fn test_beamer_au_bus_info_layout() {
         // Verify C-compatible layout
-        assert_eq!(std::mem::size_of::<BeamerAuBusInfo>(), 8);
+        assert_eq!(std::mem::size_of::<BeamerAuBusInfo>(), 12 + 4 * MAX_CHANNELS);
         assert_eq!(std::mem::align_of::<BeamerAuBusInfo>(), 4);
     }
 
@@ -3232,14 +3606,8 @@ mod tests {
         let mut config = BeamerAuBusConfig {
             input_bus_count: 1,
             output_bus_count: 1,
-            input_buses: [BeamerAuBusInfo {
-                channel_count: 0,
-                bus_type: BeamerAuBusType::Main,
-            }; MAX_BUSES],
-            output_buses: [BeamerAuBusInfo {
-                channel_count: 0,
-                bus_type: BeamerAuBusType::Main,
-            }; MAX_BUSES],
+            input_buses: [BeamerAuBusInfo::new(0, BeamerAuBusType::Main); MAX_BUSES],
+            output_buses: [BeamerAuBusInfo::new(0, BeamerAuBusType::Main); MAX_BUSES],
         };
         config.input_buses[0].channel_count = 2;
         config.output_buses[0].channel_count = 2;

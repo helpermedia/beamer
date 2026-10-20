@@ -19,6 +19,7 @@
 // Include the bridge header for Rust plugin access
 #include "BeamerAuBridge.h"
 #include "au_ipc_helpers.h"
+#include "au_layout_helpers.h"
 
 // CocoaUI class interfaces (implementations at end of file)
 @interface {{COCOA_GUI_VIEW_CLASS}} : NSView {
@@ -130,6 +131,12 @@ typedef struct BeamerAuv2Instance {
     // channels switches an aux bus off.
     AudioStreamBasicDescription inputFormats[BEAMER_AU_MAX_BUSES];
     AudioStreamBasicDescription outputFormats[BEAMER_AU_MAX_BUSES];
+
+    // Channel layouts per bus as the host set them
+    // (kAudioUnitProperty_AudioChannelLayout), none when it set none. A new
+    // channel count in the stream format drops the layout.
+    BeamerAuLayout inputLayouts[BEAMER_AU_MAX_BUSES];
+    BeamerAuLayout outputLayouts[BEAMER_AU_MAX_BUSES];
 
     // Elements per scope as the host set them (kAudioUnitProperty_ElementCount):
     // the declared buses, or fewer. The trailing buses past the count are off.
@@ -298,6 +305,101 @@ static UInt32 BeamerAuv2DeclaredCount(BeamerAuv2Instance* inst, AudioUnitScope s
 // The fewest elements a host may set in a scope: the main bus stays.
 static UInt32 BeamerAuv2MinimumElementCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
     return (BeamerAuv2DeclaredCount(inst, scope) > 0) ? 1 : 0;
+}
+
+// Whether the unit processes in place as the host sees it: when it is on
+// and the main buses have the same channel count. With other counts the
+// input is pulled into buffers of its own (see BeamerAuv2PullInput).
+static bool BeamerAuv2ReportsInPlace(BeamerAuv2Instance* inst) {
+    return atomic_load_explicit(&inst->processesInPlace, memory_order_relaxed)
+        && inst->inputElementCount > 0 && inst->outputElementCount > 0
+        && inst->inputFormats[0].mChannelsPerFrame == inst->outputFormats[0].mChannelsPerFrame;
+}
+
+// The stream format of an element of an input or output scope, NULL for
+// another scope or an element past the count.
+static AudioStreamBasicDescription* BeamerAuv2Format(BeamerAuv2Instance* inst,
+    AudioUnitScope scope, AudioUnitElement element) {
+    if (element >= BeamerAuv2ElementCount(inst, scope)) {
+        return NULL;
+    }
+    return (scope == kAudioUnitScope_Input) ? &inst->inputFormats[element] : &inst->outputFormats[element];
+}
+
+// The channel layout the host set on an element, as for BeamerAuv2Format.
+static BeamerAuLayout* BeamerAuv2HostLayout(BeamerAuv2Instance* inst,
+    AudioUnitScope scope, AudioUnitElement element) {
+    if (element >= BeamerAuv2ElementCount(inst, scope)) {
+        return NULL;
+    }
+    return (scope == kAudioUnitScope_Input) ? &inst->inputLayouts[element] : &inst->outputLayouts[element];
+}
+
+// The channel layout of an element: the host's, or the tag of the set its
+// channels have. An element that is off has none.
+static OSStatus BeamerAuv2CurrentLayout(BeamerAuv2Instance* inst, AudioUnitScope scope,
+    AudioUnitElement element, BeamerAuLayout* out) {
+    if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+        return kAudioUnitErr_InvalidScope;
+    }
+    const AudioStreamBasicDescription* format = BeamerAuv2Format(inst, scope, element);
+    const BeamerAuLayout* host = BeamerAuv2HostLayout(inst, scope, element);
+    if (format == NULL || host == NULL) {
+        return kAudioUnitErr_InvalidElement;
+    }
+    if (format->mChannelsPerFrame == 0) {
+        return kAudioUnitErr_PropertyNotInUse;
+    }
+    if (host->count == format->mChannelsPerFrame) {
+        *out = *host;
+        return noErr;
+    }
+    uint32_t tag = beamer_au_get_layout_tag(inst->rustInstance,
+        scope == kAudioUnitScope_Input, element, format->mChannelsPerFrame);
+    if (tag == 0) {
+        return kAudioUnitErr_InvalidProperty;
+    }
+    *out = beamer_au_layout_of_tag(tag);
+    return noErr;
+}
+
+// Give a bus that is on the labels of the layout the unit reports for it:
+// the host's, or the one of its set's tag, whose channel order the plugin
+// then takes (Apple's 7.x tags have the side pair first).
+static void BeamerAuv2LayoutToBus(BeamerAuv2Instance* inst, AudioUnitScope scope,
+    AudioUnitElement element, BeamerAuBusInfo* bus) {
+    BeamerAuLayout layout;
+    if (bus->channel_count == 0 || BeamerAuv2CurrentLayout(inst, scope, element, &layout) != noErr) {
+        return;
+    }
+    if (layout.count == 0) {
+        AudioChannelLayout tagOnly;
+        memset(&tagOnly, 0, sizeof(tagOnly));
+        tagOnly.mChannelLayoutTag = layout.tag;
+        if (!beamer_au_layout_read(&tagOnly, beamer_au_layout_bytes(0), &layout)) {
+            return;
+        }
+    }
+    beamer_au_layout_to_bus(&layout, bus);
+}
+
+// Whether two channel layouts name the same channels in the same order.
+static bool BeamerAuv2SameLayout(const BeamerAuLayout* a, const BeamerAuLayout* b) {
+    BeamerAuLayout expandedA = *a;
+    BeamerAuLayout expandedB = *b;
+    // A layout of only a tag has its labels from the system.
+    AudioChannelLayout tagOnly;
+    memset(&tagOnly, 0, sizeof(tagOnly));
+    if (a->count == 0) {
+        tagOnly.mChannelLayoutTag = a->tag;
+        if (!beamer_au_layout_read(&tagOnly, beamer_au_layout_bytes(0), &expandedA)) return false;
+    }
+    if (b->count == 0) {
+        tagOnly.mChannelLayoutTag = b->tag;
+        if (!beamer_au_layout_read(&tagOnly, beamer_au_layout_bytes(0), &expandedB)) return false;
+    }
+    return expandedA.count == expandedB.count
+        && memcmp(expandedA.labels, expandedB.labels, expandedA.count * sizeof(UInt32)) == 0;
 }
 
 static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
@@ -696,6 +798,7 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
         busConfig.input_buses[i].channel_count =
             (i < inst->inputElementCount) ? inst->inputFormats[i].mChannelsPerFrame : 0;
         busConfig.input_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+        BeamerAuv2LayoutToBus(inst, kAudioUnitScope_Input, i, &busConfig.input_buses[i]);
     }
     if (inputBusCount > 0) {
         inputChannels = inst->inputFormats[0].mChannelsPerFrame;
@@ -705,6 +808,7 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
         busConfig.output_buses[i].channel_count =
             (i < inst->outputElementCount) ? inst->outputFormats[i].mChannelsPerFrame : 0;
         busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+        BeamerAuv2LayoutToBus(inst, kAudioUnitScope_Output, i, &busConfig.output_buses[i]);
     }
     if (outputBusCount > 0) {
         outputChannels = inst->outputFormats[0].mChannelsPerFrame;
@@ -980,6 +1084,38 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 }
             }
             return kAudioUnitErr_InvalidProperty;
+
+        // The channel layout of a bus. Writable, as hosts expect of a unit
+        // that takes layouts; the plugin is prepared for it, so while
+        // initialized only the same channels are accepted.
+        case kAudioUnitProperty_AudioChannelLayout: {
+            BeamerAuLayout layout;
+            OSStatus status = BeamerAuv2CurrentLayout(inst, scope, element, &layout);
+            if (status != noErr) {
+                return status;
+            }
+            if (outDataSize) *outDataSize = beamer_au_layout_size(&layout);
+            if (outWritable) *outWritable = true;
+            return noErr;
+        }
+
+        // The channel layouts a bus takes.
+        case kAudioUnitProperty_SupportedChannelLayoutTags: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (element >= BeamerAuv2ElementCount(inst, scope)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            uint32_t count = beamer_au_get_supported_layout_tags(inst->rustInstance,
+                scope == kAudioUnitScope_Input, element, NULL, 0);
+            if (count == 0) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (outDataSize) *outDataSize = count * sizeof(AudioChannelLayoutTag);
+            if (outWritable) *outWritable = false;
+            return noErr;
+        }
 
         // Class info (state save/restore)
         case kAudioUnitProperty_ClassInfo:
@@ -1345,6 +1481,44 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             return noErr;
         }
 
+        case kAudioUnitProperty_AudioChannelLayout: {
+            BeamerAuLayout layout;
+            OSStatus status = BeamerAuv2CurrentLayout(inst, scope, element, &layout);
+            if (status != noErr) {
+                return status;
+            }
+            UInt32 needed = beamer_au_layout_size(&layout);
+            if (!outData || !ioDataSize || *ioDataSize < needed) {
+                if (ioDataSize) *ioDataSize = needed;
+                return outData ? kAudioUnitErr_InvalidPropertyValue : noErr;
+            }
+            beamer_au_layout_write(&layout, (AudioChannelLayout*)outData);
+            *ioDataSize = needed;
+            return noErr;
+        }
+
+        case kAudioUnitProperty_SupportedChannelLayoutTags: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (element >= BeamerAuv2ElementCount(inst, scope)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            bool isInput = (scope == kAudioUnitScope_Input);
+            uint32_t count = beamer_au_get_supported_layout_tags(inst->rustInstance, isInput, element, NULL, 0);
+            if (count == 0) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            UInt32 needed = count * sizeof(AudioChannelLayoutTag);
+            if (!outData || !ioDataSize || *ioDataSize < needed) {
+                if (ioDataSize) *ioDataSize = needed;
+                return outData ? kAudioUnitErr_InvalidPropertyValue : noErr;
+            }
+            *ioDataSize = beamer_au_get_supported_layout_tags(inst->rustInstance, isInput, element,
+                (uint32_t*)outData, count) * sizeof(AudioChannelLayoutTag);
+            return noErr;
+        }
+
         case kAudioUnitProperty_SupportedNumChannels: {
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
@@ -1448,7 +1622,7 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            *(UInt32*)outData = atomic_load_explicit(&inst->processesInPlace, memory_order_relaxed) ? 1 : 0;
+            *(UInt32*)outData = BeamerAuv2ReportsInPlace(inst) ? 1 : 0;
             *ioDataSize = sizeof(UInt32);
             return noErr;
         }
@@ -1595,24 +1769,12 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_FormatNotSupported;
             }
 
-            // Validate channel count is reasonable (1-64 channels)
-            if ((proposedChannels == 0 && !switchesOff) || proposedChannels > 64) {
+            // A bus takes the channel counts the plugin's layouts give it.
+            // Whether the main buses go together is checked at Initialize,
+            // which the capabilities in SupportedNumChannels describe.
+            if (!switchesOff && !beamer_au_bus_supports_channel_count(inst->rustInstance,
+                    scope == kAudioUnitScope_Input, element, proposedChannels)) {
                 return kAudioUnitErr_FormatNotSupported;
-            }
-
-            // Validate channel count against declared capability for MAIN bus (element 0).
-            // This enforces the [N, M] capability we report in SupportedNumChannels.
-            // Auxiliary buses (sidechain, etc.) can have any reasonable channel count.
-            if (element == 0) {
-                uint32_t declaredChannels;
-                if (scope == kAudioUnitScope_Input) {
-                    declaredChannels = beamer_au_get_input_bus_channel_count(inst->rustInstance, 0);
-                } else {
-                    declaredChannels = beamer_au_get_output_bus_channel_count(inst->rustInstance, 0);
-                }
-                if (declaredChannels > 0 && proposedChannels != declaredChannels) {
-                    return kAudioUnitErr_FormatNotSupported;
-                }
             }
 
             // The plugin is prepared for the current format: an initialized
@@ -1623,7 +1785,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return StreamFormatsEqual(desc, current) ? noErr : kAudioUnitErr_PropertyNotWritable;
             }
 
-            // Apply the format change
+            // Apply the format change. A channel layout of another count
+            // no longer describes the bus.
+            bool newChannelCount = (current->mChannelsPerFrame != proposedChannels);
             if (scope == kAudioUnitScope_Input) {
                 inst->inputFormats[element] = *desc;
             } else {
@@ -1632,7 +1796,70 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!switchesOff) {
                 inst->sampleRate = desc->mSampleRate;
             }
+            BeamerAuLayout* layout = BeamerAuv2HostLayout(inst, scope, element);
+            if (newChannelCount && layout != NULL) {
+                memset(layout, 0, sizeof(*layout));
+            }
 
+            NotifyPropertyListeners(inst, propID, scope, element);
+            if (newChannelCount) {
+                NotifyPropertyListeners(inst, kAudioUnitProperty_AudioChannelLayout, scope, element);
+            }
+            // Whether it processes in place follows the main buses' counts.
+            if (newChannelCount && element == 0) {
+                NotifyPropertyListeners(inst, kAudioUnitProperty_InPlaceProcessing, kAudioUnitScope_Global, 0);
+            }
+            return noErr;
+        }
+
+        case kAudioUnitProperty_AudioChannelLayout: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            const AudioStreamBasicDescription* format = BeamerAuv2Format(inst, scope, element);
+            BeamerAuLayout* stored = BeamerAuv2HostLayout(inst, scope, element);
+            if (format == NULL || stored == NULL) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            if (format->mChannelsPerFrame == 0) {
+                return kAudioUnitErr_PropertyNotInUse;
+            }
+            bool initialized = atomic_load_explicit(&inst->initialized, memory_order_acquire);
+
+            // No data removes the host's layout: the bus has the set of
+            // its channel count again.
+            if (inData == NULL) {
+                if (initialized && stored->count > 0) {
+                    return kAudioUnitErr_PropertyNotWritable;
+                }
+                memset(stored, 0, sizeof(*stored));
+                NotifyPropertyListeners(inst, propID, scope, element);
+                return noErr;
+            }
+
+            BeamerAuLayout layout;
+            if (!beamer_au_layout_read((const AudioChannelLayout*)inData, inDataSize, &layout)
+                || layout.count != format->mChannelsPerFrame) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            beamer_au_layout_keep(&layout);
+            if (!beamer_au_bus_supports_layout(inst->rustInstance, scope == kAudioUnitScope_Input,
+                    element, layout.labels, layout.count)) {
+                return kAudioUnitErr_FormatNotSupported;
+            }
+
+            // The plugin is prepared for the current layout: an initialized
+            // unit only accepts the same channels again.
+            if (initialized) {
+                BeamerAuLayout current;
+                OSStatus status = BeamerAuv2CurrentLayout(inst, scope, element, &current);
+                if (status != noErr) {
+                    return status;
+                }
+                return BeamerAuv2SameLayout(&layout, &current) ? noErr : kAudioUnitErr_PropertyNotWritable;
+            }
+
+            *stored = layout;
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }

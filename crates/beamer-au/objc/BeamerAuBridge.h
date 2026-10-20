@@ -139,6 +139,12 @@ typedef struct {
     uint32_t channel_count;
     /// Bus type (main or auxiliary)
     BeamerAuBusType bus_type;
+    /// Number of channel labels in layout_labels: the channel count when the
+    /// host set a channel layout on the bus, 0 when it set none.
+    uint32_t layout_label_count;
+    /// The channel label (AudioChannelLabel) of each channel of the host's
+    /// channel layout.
+    uint32_t layout_labels[BEAMER_AU_MAX_CHANNELS];
 } BeamerAuBusInfo;
 
 /**
@@ -1427,8 +1433,9 @@ bool beamer_au_is_output_bus_default_active(
  * Check if a proposed channel configuration is valid.
  *
  * Called when render resources are allocated (AUv3) and on Initialize (AUv2)
- * to check the main bus formats. For example, an effect has to keep the
- * channel counts that its main buses declare.
+ * to check the main bus formats: one of the plugin's layouts has to take
+ * these channel counts on its main input and output bus (0 for a direction
+ * without buses).
  *
  * Thread Safety: Can be called from any thread.
  *
@@ -1491,10 +1498,12 @@ typedef struct {
 /**
  * Get the supported channel capabilities for the main bus.
  *
- * This function returns the [input, output] channel configuration that the
- * plugin supports: [M, N], the declared channel counts of the main input and
- * output bus. M is 0 for a plugin that declares no input bus, which is the
- * normal case for instruments (aumu) and generators (augn).
+ * One [input, output] pair per layout of the plugin, without repeats: the
+ * channel counts of its main input and output bus. The input is 0 for a
+ * layout without input buses, the normal case for instruments (aumu) and
+ * generators (augn). A bus that takes any set is -1; an output that follows
+ * the input is -1 with an input of any count and the input's count
+ * otherwise; any output with any input is -2.
  *
  * Thread Safety: Can be called from any thread.
  *
@@ -1506,6 +1515,95 @@ typedef struct {
 bool beamer_au_get_channel_capabilities(
     BeamerAuInstanceHandle _Nullable instance,
     BeamerAuChannelCapabilities* out_capabilities
+);
+
+/**
+ * Check whether one of the plugin's layouts takes a channel count on a bus.
+ *
+ * A bus that follows the main input takes any count here; the whole
+ * combination is checked when render resources are allocated.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param is_input   Whether the bus is an input bus.
+ * @param bus_index  Index of the bus.
+ * @param channels   Number of channels.
+ *
+ * @return true if a layout takes the count (false for 0 channels or a bus
+ *         that does not exist).
+ */
+bool beamer_au_bus_supports_channel_count(
+    BeamerAuInstanceHandle _Nullable instance,
+    bool is_input,
+    uint32_t bus_index,
+    uint32_t channels
+);
+
+/**
+ * Check whether one of the plugin's layouts takes a channel layout on a bus,
+ * given as the channel label (AudioChannelLabel) of each channel, in any
+ * order of its channels.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param is_input   Whether the bus is an input bus.
+ * @param bus_index  Index of the bus.
+ * @param labels     The channel labels, count of them.
+ * @param count      Number of channels.
+ *
+ * @return true if a layout takes the channel layout.
+ */
+bool beamer_au_bus_supports_layout(
+    BeamerAuInstanceHandle _Nullable instance,
+    bool is_input,
+    uint32_t bus_index,
+    const uint32_t* _Nullable labels,
+    uint32_t count
+);
+
+/**
+ * Get the layout tags (AudioChannelLayoutTag) of the channel layouts a bus
+ * takes: the sets the plugin's layouts name, every known set for a bus that
+ * takes any set.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param is_input   Whether the bus is an input bus.
+ * @param bus_index  Index of the bus.
+ * @param out_tags   Where to write at most capacity tags, or NULL.
+ * @param capacity   Number of tags out_tags holds.
+ *
+ * @return The number of tags the bus has.
+ */
+uint32_t beamer_au_get_supported_layout_tags(
+    BeamerAuInstanceHandle _Nullable instance,
+    bool is_input,
+    uint32_t bus_index,
+    uint32_t* _Nullable out_tags,
+    uint32_t capacity
+);
+
+/**
+ * Get the layout tag (AudioChannelLayoutTag) of the set a bus has with a
+ * channel count when the host sets no channel layout.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance   Handle to the plugin instance.
+ * @param is_input   Whether the bus is an input bus.
+ * @param bus_index  Index of the bus.
+ * @param channels   Number of channels.
+ *
+ * @return The layout tag, 0 for 0 channels.
+ */
+uint32_t beamer_au_get_layout_tag(
+    BeamerAuInstanceHandle _Nullable instance,
+    bool is_input,
+    uint32_t bus_index,
+    uint32_t channels
 );
 
 // =============================================================================

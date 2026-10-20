@@ -1149,6 +1149,7 @@ mod tests {
             shared,
             storage,
             all_connected(&bus_config),
+            Default::default(),
             FRAMES as u32,
             44100.0,
             settings,
@@ -1652,6 +1653,7 @@ mod tests {
             Arc::new(SharedState::default()),
             storage,
             all_connected(&bus_config),
+            Default::default(),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -1909,6 +1911,7 @@ mod tests {
             Arc::new(SharedState::default()),
             storage,
             all_connected(&bus_config),
+            Default::default(),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -2096,6 +2099,7 @@ mod tests {
             Arc::new(SharedState::default()),
             storage,
             buses,
+            Default::default(),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -2207,6 +2211,7 @@ mod tests {
             Arc::new(SharedState::default()),
             storage,
             buses,
+            Default::default(),
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
@@ -2324,10 +2329,7 @@ mod tests {
         max_frames: u32,
         rendering_offline: bool,
     ) -> i32 {
-        let bus = BeamerAuBusInfo {
-            channel_count: channels,
-            bus_type: BeamerAuBusType::Main,
-        };
+        let bus = BeamerAuBusInfo::new(channels, BeamerAuBusType::Main);
         let bus_config = BeamerAuBusConfig {
             input_bus_count: 1,
             output_bus_count: 1,
@@ -2908,9 +2910,239 @@ mod tests {
         );
     }
 
+    /// Stereo or mono.
+    #[derive(Default)]
+    struct MonoOrStereoModel {
+        fields: TestFields,
+    }
+
+    beamer_core::__forward_model!(MonoOrStereoModel, fields);
+
+    impl Model for MonoOrStereoModel {
+        type Setup = ();
+        type Processor = AmbisonicProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO];
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            AmbisonicProcessor
+        }
+    }
+
+    /// 7.1 in and out. Adds 10 times its number (from 1) to each channel.
+    #[derive(Default)]
+    struct SurroundModel {
+        fields: TestFields,
+    }
+
+    struct SurroundProcessor;
+
+    beamer_core::__forward_model!(SurroundModel, fields);
+
+    impl Model for SurroundModel {
+        type Setup = ();
+        type Processor = SurroundProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout {
+            inputs: &[BusLayout::Set(ChannelSet::Surround71)],
+            outputs: &[BusLayout::Set(ChannelSet::Surround71)],
+        }];
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            SurroundProcessor
+        }
+    }
+
+    impl Processor for SurroundProcessor {
+        fn process(&mut self, buffer: &mut Buffer, _: &mut AuxiliaryBuffers, _: &ProcessContext) {
+            for (channel, samples) in buffer.channels_mut().enumerate() {
+                for sample in samples {
+                    *sample += 10.0 * (channel + 1) as f32;
+                }
+            }
+        }
+    }
+
+    /// An AudioBufferList of eight channels, each filled with `value(channel)`.
+    #[repr(C)]
+    struct OctoList {
+        number_buffers: u32,
+        buffers: [AudioBuffer; 8],
+        samples: [[f32; FRAMES]; 8],
+    }
+
+    impl OctoList {
+        fn filled(value: impl Fn(usize) -> f32) -> Box<Self> {
+            let buffer = AudioBuffer {
+                number_channels: 1,
+                data_byte_size: (FRAMES * 4) as u32,
+                data: std::ptr::null_mut(),
+            };
+            let mut list = Box::new(Self {
+                number_buffers: 8,
+                buffers: [buffer; 8],
+                samples: std::array::from_fn(|channel| [value(channel); FRAMES]),
+            });
+            for channel in 0..8 {
+                list.buffers[channel].data = list.samples[channel].as_mut_ptr().cast();
+            }
+            list
+        }
+
+        fn as_list(&mut self) -> *mut AudioBufferList {
+            (self as *mut Self).cast()
+        }
+    }
+
+    /// Render one buffer of a 7.1 plugin whose host has the channel labels
+    /// `labels` on both main buses (none for an empty slice), input channel
+    /// `i` at `i`. Returns the first sample of each output channel.
+    fn render_surround(labels: &[u32]) -> [f32; 8] {
+        let plugin = AuProcessor::<SurroundModel>::new();
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        let mut bus = BeamerAuBusInfo::new(8, BeamerAuBusType::Main);
+        bus.layout_label_count = labels.len() as u32;
+        bus.layout_labels[..labels.len()].copy_from_slice(labels);
+        let bus_config = BeamerAuBusConfig {
+            input_bus_count: 1,
+            output_bus_count: 1,
+            input_buses: [bus; MAX_BUSES],
+            output_buses: [bus; MAX_BUSES],
+        };
+        let status = beamer_au_allocate_render_resources(
+            instance,
+            44100.0,
+            FRAMES as u32,
+            BeamerAuSampleFormat::Float32,
+            &bus_config,
+            false,
+        );
+        assert_eq!(status, 0);
+
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        let mut input = OctoList::filled(|channel| channel as f32);
+        let mut output = OctoList::filled(|_| 0.0);
+        let status = beamer_au_render(
+            instance,
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            input.as_list().cast_const(),
+            std::ptr::null(),
+            None,
+            std::ptr::null_mut(),
+        );
+        assert_eq!(status, 0);
+        beamer_au_deallocate_render_resources(instance);
+        std::array::from_fn(|channel| output.samples[channel][0])
+    }
+
+    #[test]
+    fn test_the_plugin_gets_the_channels_in_the_order_of_its_set() {
+        // Without a layout, or in the set's order (WAVE_7_1): channel i of
+        // the host is channel i of the plugin.
+        let in_order = [10.0, 21.0, 32.0, 43.0, 54.0, 65.0, 76.0, 87.0];
+        assert_eq!(render_surround(&[]), in_order);
+        assert_eq!(render_surround(&[1, 2, 3, 4, 33, 34, 5, 6]), in_order);
+
+        // AudioUnit_7_1 has the side pair (host 4, 5) before the rear pair
+        // (host 6, 7): the plugin's rear pair (its channels 5 and 6 from 1)
+        // is the host's 6 and 7.
+        assert_eq!(
+            render_surround(&[1, 2, 3, 4, 5, 6, 33, 34]),
+            [10.0, 21.0, 32.0, 43.0, 74.0, 85.0, 56.0, 67.0]
+        );
+    }
+
+    /// Any count in, as many out, with a mono or stereo sidechain.
+    #[derive(Default)]
+    struct MatchedModel {
+        fields: TestFields,
+    }
+
+    beamer_core::__forward_model!(MatchedModel, fields);
+
+    impl Model for MatchedModel {
+        type Setup = ();
+        type Processor = AmbisonicProcessor;
+        const LAYOUTS: &'static [Layout] = &[
+            Layout {
+                inputs: &[BusLayout::Any, BusLayout::STEREO],
+                outputs: &[BusLayout::SameAsMainInput],
+            },
+            Layout {
+                inputs: &[BusLayout::Any, BusLayout::MONO],
+                outputs: &[BusLayout::SameAsMainInput],
+            },
+        ];
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            AmbisonicProcessor
+        }
+    }
+
+    #[test]
+    fn test_bus_layout_queries() {
+        use crate::bridge::{
+            beamer_au_bus_supports_channel_count, beamer_au_bus_supports_layout, beamer_au_get_layout_tag,
+            beamer_au_get_supported_layout_tags,
+        };
+
+        let plugin = AuProcessor::<MatchedModel>::new();
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+
+        // Counts: the output follows the input, which takes any count; the
+        // sidechain takes mono or stereo.
+        assert!(beamer_au_bus_supports_channel_count(instance, false, 0, 6));
+        assert!(beamer_au_bus_supports_channel_count(instance, true, 0, 12));
+        assert!(!beamer_au_bus_supports_channel_count(instance, true, 0, 0));
+        assert!(beamer_au_bus_supports_channel_count(instance, true, 1, 1));
+        assert!(!beamer_au_bus_supports_channel_count(instance, true, 1, 6));
+        assert!(!beamer_au_bus_supports_channel_count(instance, true, 2, 1));
+
+        // Layouts: any set on the main input, 5.1 in Apple's order among them.
+        let surround = [1, 2, 3, 4, 5, 6];
+        assert!(beamer_au_bus_supports_layout(instance, true, 0, surround.as_ptr(), 6));
+        assert!(!beamer_au_bus_supports_layout(instance, true, 1, surround.as_ptr(), 6));
+        // Stereo labels are a stereo sidechain; quad is not listed there.
+        assert!(beamer_au_bus_supports_layout(instance, true, 1, [1, 2].as_ptr(), 2));
+        assert!(!beamer_au_bus_supports_layout(instance, true, 1, [1, 2, 5, 6].as_ptr(), 4));
+        assert!(!beamer_au_bus_supports_layout(instance, true, 1, std::ptr::null(), 2));
+
+        // Tags: the sidechain's two, every named set on the main buses.
+        assert_eq!(beamer_au_get_supported_layout_tags(instance, true, 1, std::ptr::null_mut(), 0), 2);
+        let mut tags = [0u32; 1];
+        assert_eq!(beamer_au_get_supported_layout_tags(instance, true, 1, tags.as_mut_ptr(), 1), 2);
+        assert_eq!(tags, [0x0065_0002]);
+        assert!(beamer_au_get_supported_layout_tags(instance, false, 0, std::ptr::null_mut(), 0) > 10);
+        assert_eq!(beamer_au_get_supported_layout_tags(instance, true, 2, std::ptr::null_mut(), 0), 0);
+
+        // The tag of a count without a layout: the set of that size.
+        assert_eq!(beamer_au_get_layout_tag(instance, true, 0, 6), 0x0079_0006);
+        assert_eq!(beamer_au_get_layout_tag(instance, true, 1, 1), 0x0064_0001);
+        assert_eq!(beamer_au_get_layout_tag(instance, true, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_main_channels_no_layout_lists_are_refused() {
+        // The test plugin is stereo only.
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let status = allocate_with(instance, 1, FRAMES as u32, false);
+        assert_eq!(status, os_status::K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED);
+        assert!(!beamer_au_is_prepared(instance));
+    }
+
     #[test]
     fn test_channel_count_follows_the_negotiated_bus_configuration() {
-        let mut handle = test_handle();
+        let plugin = AuProcessor::<MonoOrStereoModel>::new();
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(plugin)));
         let instance: *mut BeamerInstanceHandle = &mut *handle;
         let channel_counts = || {
             [
