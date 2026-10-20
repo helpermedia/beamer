@@ -156,16 +156,12 @@ impl PluginSetup for ActiveBuses {
 }
 
 /// The default channel count of a declared bus: its declared count when it
-/// is the main bus or active by default, `None` otherwise.
+/// is the main bus or active by default, `None` otherwise (also for a bus
+/// without information or channels).
 fn default_channels(bus: usize, info: Option<BusInfo>) -> Option<u32> {
-    match info {
-        Some(info) if bus == 0 || info.is_default_active => {
-            Some(info.channel_count).filter(|&count| count > 0)
-        }
-        // A main bus without information is stereo, as elsewhere.
-        None if bus == 0 => Some(2),
-        _ => None,
-    }
+    info.filter(|info| bus == 0 || info.is_default_active)
+        .map(|info| info.channel_count)
+        .filter(|&count| count > 0)
 }
 
 // =============================================================================

@@ -881,8 +881,9 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// Create a processor for an audio configuration.
     ///
     /// This is called when audio configuration becomes available (in VST3,
-    /// during `setupProcessing()`) and again when it changes: the previous
-    /// processor is dropped and a new one is created with the new setup.
+    /// during `setupProcessing()`) and again when it changes, also when the
+    /// host switches buses (see [`ActiveBuses`]): the previous processor is
+    /// dropped and a new one is created with the new setup.
     ///
     /// The processor keeps `self`, the model's `Arc`, or only the readers and
     /// values it needs. Take readers before `self` moves into the processor:

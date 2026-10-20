@@ -84,16 +84,22 @@ impl CachedBusConfig {
     }
 
     /// Create from the bus configuration a model declares.
+    ///
+    /// A declared bus without information keeps its index, with 0 channels.
     pub fn from_model<P: Model>(model: &P) -> Self {
         let input_bus_count = model.input_bus_count();
         let output_bus_count = model.output_bus_count();
 
+        let cached = |bus: usize, info: Option<BusInfo>| match info {
+            Some(info) => CachedBusInfo::from_bus_info(&info),
+            None => CachedBusInfo::new(0, if bus == 0 { BusType::Main } else { BusType::Aux }),
+        };
         let input_buses: Vec<CachedBusInfo> = (0..input_bus_count)
-            .filter_map(|i| model.input_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
+            .map(|i| cached(i, model.input_bus_info(i)))
             .collect();
 
         let output_buses: Vec<CachedBusInfo> = (0..output_bus_count)
-            .filter_map(|i| model.output_bus_info(i).map(|b| CachedBusInfo::from_bus_info(&b)))
+            .map(|i| cached(i, model.output_bus_info(i)))
             .collect();
 
         Self {

@@ -24,13 +24,13 @@ use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "webview")]
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 
 use beamer_core::{
-    ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo,
-    BusType as CoreBusType, CachedBusConfig, CachedBusInfo, ChordInfo, ConversionBuffers,
+    ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusNegotiation, BusRouting,
+    BusType as CoreBusType, CachedBusConfig, ChordInfo, ConversionBuffers,
     FrameRate as CoreFrameRate, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
@@ -373,6 +373,154 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, buses: &ActiveBuses) -> S {
 }
 
 // =============================================================================
+// Host Channels
+// =============================================================================
+
+/// A sample type a host passes channel buffers of.
+trait HostSample: Sample {
+    /// The channel pointers of a host bus, read as this sample type.
+    ///
+    /// # Safety
+    ///
+    /// The host's sample size must be this type.
+    unsafe fn channel_buffers(bus: &AudioBusBuffers) -> *mut *mut Self;
+}
+
+impl HostSample for f32 {
+    unsafe fn channel_buffers(bus: &AudioBusBuffers) -> *mut *mut f32 {
+        // SAFETY: The host passes kSample32 buffers (caller).
+        unsafe { bus.__field0.channelBuffers32 }
+    }
+}
+
+impl HostSample for f64 {
+    unsafe fn channel_buffers(bus: &AudioBusBuffers) -> *mut *mut f64 {
+        // SAFETY: The host passes kSample64 buffers (caller).
+        unsafe { bus.__field0.channelBuffers64 }
+    }
+}
+
+/// The channel pointers the host passes for bus `index` of the `count`
+/// buses at `buses`, empty when it passes none.
+///
+/// # Safety
+///
+/// `buses` must be null or valid for `count` buses with channel buffers of
+/// sample type `S`, for the lifetime `'a`.
+unsafe fn host_channels<'a, S: HostSample>(
+    buses: *mut AudioBusBuffers,
+    count: int32,
+    index: usize,
+) -> &'a [*mut S] {
+    if buses.is_null() || index >= count.max(0) as usize {
+        return &[];
+    }
+    // SAFETY: index < count (checked above), valid buses (caller).
+    let bus = unsafe { &*buses.add(index) };
+    // SAFETY: The buffers are of sample type S (caller).
+    let channels = unsafe { S::channel_buffers(bus) };
+    if bus.numChannels <= 0 || channels.is_null() {
+        return &[];
+    }
+    // SAFETY: The host passes numChannels channel pointers.
+    unsafe { slice::from_raw_parts(channels, bus.numChannels as usize) }
+}
+
+/// Collect the channels of a process call into `storage`, as the plugin
+/// has its buses on.
+///
+/// A bus the plugin has on gets the channel count it was prepared with: the
+/// host's channels when the host has the bus on too. What the host does not
+/// pass gets null channels (silence for an input, memory that is dropped
+/// for an output). A bus the plugin has off gets no channels, so
+/// the plugin sees `None` for it.
+///
+/// # Safety
+///
+/// The host's buffers in `data` must be of sample type `S` and valid for
+/// the call.
+unsafe fn collect_channels<S: HostSample>(
+    storage: &mut ProcessBufferStorage<S>,
+    data: &ProcessData,
+    buses: &BusNegotiation,
+) {
+    storage.clear();
+    let accepted = buses.accepted();
+
+    for bus in 0..=storage.aux_input_bus_count() {
+        let host = if buses.input_routing(bus) == BusRouting::Connected {
+            // SAFETY: See the function's safety section.
+            unsafe { host_channels::<S>(data.inputs, data.numInputs, bus) }
+        } else {
+            &[]
+        };
+        let capacity = if bus == 0 { storage.main_input_capacity() } else { storage.aux_input_capacity(bus - 1) };
+        let channels = (accepted.input(bus).unwrap_or(0) as usize).min(capacity);
+        for channel in 0..channels {
+            // A null channel keeps its index (see prepare_in_place).
+            let ptr = host.get(channel).map_or(std::ptr::null(), |&ptr| ptr as *const S);
+            // SAFETY: Null or valid for the call (see above).
+            unsafe {
+                if bus == 0 {
+                    storage.push_main_input(ptr);
+                } else {
+                    storage.push_aux_input(bus - 1, ptr);
+                }
+            }
+        }
+    }
+
+    for bus in 0..=storage.aux_output_bus_count() {
+        let host = if buses.output_routing(bus) == BusRouting::Connected {
+            // SAFETY: See the function's safety section.
+            unsafe { host_channels::<S>(data.outputs, data.numOutputs, bus) }
+        } else {
+            &[]
+        };
+        let capacity = if bus == 0 { storage.main_output_capacity() } else { storage.aux_output_capacity(bus - 1) };
+        let channels = (accepted.output(bus).unwrap_or(0) as usize).min(capacity);
+        for channel in 0..channels {
+            // A null channel keeps its index (see prepare_in_place).
+            let ptr = host.get(channel).copied().unwrap_or(std::ptr::null_mut());
+            // SAFETY: Null or valid for the call (see above).
+            unsafe {
+                if bus == 0 {
+                    storage.push_main_output(ptr);
+                } else {
+                    storage.push_aux_output(bus - 1, ptr);
+                }
+            }
+        }
+    }
+}
+
+/// Write silence to the host's channels of the output buses the host has
+/// on and the plugin off, which the plugin does not render.
+///
+/// # Safety
+///
+/// The host's buffers in `data` must be of sample type `S` and valid for
+/// `num_samples` samples. No reference to their memory may be alive.
+unsafe fn silence_host_only_outputs<S: HostSample>(
+    data: &ProcessData,
+    buses: &BusNegotiation,
+    num_samples: usize,
+) {
+    for bus in 0..data.numOutputs.max(0) as usize {
+        if buses.output_routing(bus) != BusRouting::HostOnly {
+            continue;
+        }
+        // SAFETY: See the function's safety section.
+        for &ptr in unsafe { host_channels::<S>(data.outputs, data.numOutputs, bus) } {
+            if !ptr.is_null() {
+                // SAFETY: Valid for num_samples writes (caller).
+                unsafe { std::ptr::write_bytes(ptr, 0, num_samples) };
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Plugin State Machine
 // =============================================================================
 
@@ -402,6 +550,9 @@ fn build_setup<S: PluginSetup>(setup: &ProcessSetup, buses: &ActiveBuses) -> S {
 ///     ↓ setupProcessing() calls model.prepare(setup) with a clone of the Arc
 /// model and processor
 ///     ↓ setupProcessing() with a new setup: drops the processor, then prepare()
+/// model and a new processor
+///     ↓ activateBus(), then setActive(true): prepare() again when the
+///       buses the plugin accepts changed
 /// model and a new processor
 /// ```
 ///
@@ -480,6 +631,14 @@ where
     buffer_storage_f32: UnsafeCell<ProcessBufferStorage<f32>>,
     /// Pre-allocated channel pointer storage for f64 processing
     buffer_storage_f64: UnsafeCell<ProcessBufferStorage<f64>>,
+    /// The buses the host asked for with `activateBus()` and the buses the
+    /// plugin accepted. Host threads only.
+    bus_negotiation: Mutex<BusNegotiation>,
+    /// The buses as `process()` uses them: what the processor was prepared
+    /// with and what the host had asked for then. Copied from
+    /// `bus_negotiation` in `setupProcessing()` and `setActive()`, which
+    /// the host does not call while `process()` runs.
+    process_buses: UnsafeCell<BusNegotiation>,
     /// MIDI CC state (created from the model's midi_cc_config())
     /// Framework owns this - plugin authors don't touch it
     midi_cc_state: Option<MidiCcState>,
@@ -536,6 +695,8 @@ unsafe impl<P: Model> Send for Vst3Processor<P> {}
 //   `Arc`
 // - component_handler is used by controller calls, which the host never
 //   makes concurrently
+// - The bus negotiation of host threads is in a Mutex; process() uses its
+//   own copy, which only calls outside process() replace
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), the current preset,
 //   latency, tail and the request to reset the smoothers
@@ -581,6 +742,10 @@ impl<P: Model> Vst3Processor<P> {
         let known_state_generation =
             Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
 
+        // The buses start as the model declares them active (the flags
+        // `getBusInfo()` reports) until the host activates others.
+        let buses = BusNegotiation::new(&*model);
+
         Self {
             model,
             processor: UnsafeCell::new(None),
@@ -601,6 +766,8 @@ impl<P: Model> Vst3Processor<P> {
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
+            bus_negotiation: Mutex::new(buses),
+            process_buses: UnsafeCell::new(buses),
             midi_cc_state,
             // Default to first preset.
             current_preset_index: AtomicU32::new(0),
@@ -764,6 +931,113 @@ impl<P: Model> Vst3Processor<P> {
         );
     }
 
+    /// Turn the host's bus requests into the buses the plugin accepts and
+    /// return both (see [`BusNegotiation::negotiate`]).
+    fn negotiate_buses(&self) -> BusNegotiation {
+        let mut negotiation = self.bus_negotiation.lock().unwrap_or_else(PoisonError::into_inner);
+        negotiation.negotiate(self.model());
+        *negotiation
+    }
+
+    /// The setup of the last `setupProcessing()` call that was accepted.
+    ///
+    /// # Safety
+    ///
+    /// Only for host calls the host does not make while `process()` runs.
+    unsafe fn current_setup(&self) -> ProcessSetup {
+        // SAFETY: See the function's safety section.
+        unsafe {
+            ProcessSetup {
+                processMode: *self.process_mode.get(),
+                symbolicSampleSize: *self.symbolic_sample_size.get(),
+                maxSamplesPerBlock: *self.max_block_size.get() as int32,
+                sampleRate: *self.sample_rate.get(),
+            }
+        }
+    }
+
+    /// Create a processor for `setup` and the buses the plugin accepted in
+    /// `buses`, with the buffers `process()` needs. Returns false, changing
+    /// nothing, when the model declares more buses or channels than the
+    /// limits allow.
+    ///
+    /// # Safety
+    ///
+    /// Only for host calls the host does not make while `process()` runs
+    /// (`setupProcessing()`, `setActive()`).
+    unsafe fn prepare(&self, setup: &ProcessSetup, buses: BusNegotiation) -> bool {
+        // Validate the model's bus configuration against compile-time limits.
+        let declared_buses = CachedBusConfig::from_model(self.model());
+        if let Err(msg) = declared_buses.validate() {
+            log::error!("Plugin bus configuration exceeds limits: {}", msg);
+            return false;
+        }
+
+        // Store the setup. A setup that was refused above is not kept, so
+        // that it does not count as the current one when it comes again.
+        // SAFETY: See the function's safety section.
+        unsafe {
+            *self.sample_rate.get() = setup.sampleRate;
+            *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
+            *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
+            *self.process_mode.get() = setup.processMode;
+        }
+
+        let plugin_setup = build_setup::<P::Setup>(setup, buses.accepted());
+
+        // A processor of an earlier setup goes first, so that its buffers
+        // are free before the new ones are allocated.
+        // SAFETY: See the function's safety section.
+        let slot = unsafe { &mut *self.processor.get() };
+        *slot = None;
+
+        // The smoothers ramp at the host's rate unless the model sets
+        // another one in prepare.
+        beamer_core::Parameters::set_sample_rate(self.model(), setup.sampleRate);
+
+        // Create the processor, with its own handle to the model. A state
+        // that was loaded before is in the model already.
+        let processor = Arc::clone(&self.model).prepare(plugin_setup);
+
+        // The buffers cover every declared bus. A bus the plugin has off
+        // gets no channels in process(), one the host has off gets silence
+        // or memory that is dropped.
+        let max_frames = setup.maxSamplesPerBlock as usize;
+        // SAFETY: See the function's safety section.
+        unsafe {
+            *self.buffer_storage_f32.get() =
+                ProcessBufferStorage::allocate_from_config(&declared_buses, max_frames);
+            *self.buffer_storage_f64.get() =
+                ProcessBufferStorage::allocate_from_config(&declared_buses, max_frames);
+        }
+
+        // Pre-allocate conversion buffers for f64→f32 processing.
+        if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
+            && !processor.supports_double_precision()
+        {
+            let channels = |buses: &[beamer_core::CachedBusInfo]| -> Vec<usize> {
+                buses.iter().map(|bus| bus.channel_count).collect()
+            };
+            let inputs = channels(&declared_buses.input_buses);
+            let outputs = channels(&declared_buses.output_buses);
+            // SAFETY: See the function's safety section.
+            unsafe {
+                *self.conversion_buffers.get() = ConversionBuffers::allocate(
+                    inputs.first().copied().unwrap_or(0),
+                    outputs.first().copied().unwrap_or(0),
+                    inputs.get(1..).unwrap_or(&[]),
+                    outputs.get(1..).unwrap_or(&[]),
+                    max_frames,
+                );
+            }
+        }
+
+        *slot = Some(processor);
+        // SAFETY: See the function's safety section.
+        unsafe { *self.process_buses.get() = buses };
+        true
+    }
+
     /// Get a mutable reference to the prepared processor.
     ///
     /// # Safety
@@ -845,21 +1119,6 @@ impl<P: Model> Vst3Processor<P> {
     // =========================================================================
     // Audio Processing Helpers
     // =========================================================================
-    //
-    // NOTE: process_audio_f32() and process_audio_f64_native() have similar
-    // structure but cannot be deduplicated because:
-    //
-    // 1. VST3's ProcessData uses a C union: channelBuffers32 and channelBuffers64
-    //    are separate pointer fields, not generic over sample type
-    //
-    // 2. Rust's type system can't easily abstract over C FFI union field access
-    //    (ProcessData.__field0.channelBuffers32 vs .channelBuffers64)
-    //
-    // 3. A macro or trait-based abstraction would add complexity for just two
-    //    concrete implementations; explicit code is clearer for maintainability
-    //
-    // If adding a third sample type (e.g., i32 for fixed-point), consider
-    // refactoring to a macro-based approach.
     //
     // Null buffers: a bus without a channel array has no channels. A null
     // channel pointer in it keeps its index; prepare_in_place gives it
@@ -944,109 +1203,31 @@ impl<P: Model> Vst3Processor<P> {
         0
     }
 
-    /// Process audio at 32-bit (f32) precision.
+    /// Process audio in the host's sample type, which the processor takes
+    /// as it is: f32, or f64 when it supports double precision. `process`
+    /// is the processor's call for that type.
     ///
-    /// This is the standard processing path used when the host uses kSample32.
     /// Uses pre-allocated ProcessBufferStorage - no heap allocations.
+    ///
+    /// # Safety
+    ///
+    /// The host's buffers in `process_data` must be of sample type `S` and
+    /// valid for the call. VST3 guarantees single-threaded access to
+    /// `storage` during process().
     #[inline]
-    unsafe fn process_audio_f32(
+    unsafe fn process_audio<S: HostSample>(
         &self,
+        storage: &mut ProcessBufferStorage<S>,
         process_data: &ProcessData,
         num_samples: usize,
         processor: &mut P::Processor,
         input: BlockInput<'_>,
+        process: impl Fn(&mut P::Processor, &mut Buffer<S>, &mut AuxiliaryBuffers<S>, &CoreProcessContext),
     ) {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let storage = unsafe { &mut *self.buffer_storage_f32.get() };
-        storage.clear();
-
-        // Collect main input channel pointers (bounded by pre-allocated capacity)
-        if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
-            let bus = unsafe { &*process_data.inputs };
-            let num_channels = bus.numChannels as usize;
-            let max_channels = storage.main_inputs.capacity();
-            // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
-                let channel_ptrs = unsafe {
-                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
-                };
-                // A null channel keeps its index (see prepare_in_place).
-                for &ptr in channel_ptrs.iter().take(max_channels) {
-                    storage.main_inputs.push(ptr);
-                }
-            }
-        }
-
-        // Collect main output channel pointers (bounded by pre-allocated capacity)
-        if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
-            let bus = unsafe { &*process_data.outputs };
-            let num_channels = bus.numChannels as usize;
-            let max_channels = storage.main_outputs.capacity();
-            // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
-                let channel_ptrs = unsafe {
-                    slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
-                };
-                // A null channel keeps its index (see prepare_in_place).
-                for &ptr in channel_ptrs.iter().take(max_channels) {
-                    storage.main_outputs.push(ptr);
-                }
-            }
-        }
-
-        // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
-        if process_data.numInputs > 1 && !process_data.inputs.is_null() {
-            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
-            let input_buses = unsafe {
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize)
-            };
-            for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
-                if aux_idx < storage.aux_inputs.len() {
-                    let num_channels = bus.numChannels as usize;
-                    let max_channels = storage.aux_inputs[aux_idx].capacity();
-                    // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid.
-                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
-                        // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
-                        let channel_ptrs = unsafe {
-                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
-                        };
-                        // A null channel keeps its index (see prepare_in_place).
-                        for &ptr in channel_ptrs.iter().take(max_channels) {
-                            storage.aux_inputs[aux_idx].push(ptr);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
-        if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
-            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
-            let output_buses = unsafe {
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize)
-            };
-            for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
-                if aux_idx < storage.aux_outputs.len() {
-                    let num_channels = bus.numChannels as usize;
-                    let max_channels = storage.aux_outputs[aux_idx].capacity();
-                    // SAFETY: symbolic_sample_size == kSample32, so channelBuffers32 is valid.
-                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
-                        // SAFETY: Host guarantees channelBuffers32 valid for numChannels elements.
-                        let channel_ptrs = unsafe {
-                            slice::from_raw_parts(bus.__field0.channelBuffers32, num_channels)
-                        };
-                        // A null channel keeps its index (see prepare_in_place).
-                        for &ptr in channel_ptrs.iter().take(max_channels) {
-                            storage.aux_outputs[aux_idx].push(ptr);
-                        }
-                    }
-                }
-            }
-        }
+        let buses = unsafe { &*self.process_buses.get() };
+        // SAFETY: See the function's safety section.
+        unsafe { collect_channels(storage, process_data, buses) };
 
         // SAFETY: The host guarantees the channel pointers valid for
         // num_samples elements for the duration of process().
@@ -1056,124 +1237,11 @@ impl<P: Model> Vst3Processor<P> {
             // SAFETY: The channels were prepared for this call and the
             // sub-block lies within them.
             let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(start, len) };
-            processor.process(&mut buffer, &mut aux, context);
+            process(processor, &mut buffer, &mut aux, context);
         });
-    }
 
-    /// Process audio at 64-bit (f64) precision with native plugin support.
-    ///
-    /// Used when host uses kSample64 and processor.supports_double_precision() is true.
-    /// Uses pre-allocated ProcessBufferStorage - no heap allocations.
-    #[inline]
-    unsafe fn process_audio_f64_native(
-        &self,
-        process_data: &ProcessData,
-        num_samples: usize,
-        processor: &mut P::Processor,
-        input: BlockInput<'_>,
-    ) {
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let storage = unsafe { &mut *self.buffer_storage_f64.get() };
-        storage.clear();
-
-        // Collect main input channel pointers (bounded by pre-allocated capacity)
-        if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
-            let bus = unsafe { &*process_data.inputs };
-            let num_channels = bus.numChannels as usize;
-            let max_channels = storage.main_inputs.capacity();
-            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                let channel_ptrs = unsafe {
-                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
-                };
-                // A null channel keeps its index (see prepare_in_place).
-                for &ptr in channel_ptrs.iter().take(max_channels) {
-                    storage.main_inputs.push(ptr);
-                }
-            }
-        }
-
-        // Collect main output channel pointers (bounded by pre-allocated capacity)
-        if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
-            let bus = unsafe { &*process_data.outputs };
-            let num_channels = bus.numChannels as usize;
-            let max_channels = storage.main_outputs.capacity();
-            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                let channel_ptrs = unsafe {
-                    slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
-                };
-                // A null channel keeps its index (see prepare_in_place).
-                for &ptr in channel_ptrs.iter().take(max_channels) {
-                    storage.main_outputs.push(ptr);
-                }
-            }
-        }
-
-        // Collect auxiliary input channel pointers (bounded by pre-allocated capacity)
-        if process_data.numInputs > 1 && !process_data.inputs.is_null() {
-            // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
-            let input_buses = unsafe {
-                slice::from_raw_parts(process_data.inputs, process_data.numInputs as usize)
-            };
-            for (aux_idx, bus) in input_buses[1..].iter().enumerate() {
-                if aux_idx < storage.aux_inputs.len() {
-                    let num_channels = bus.numChannels as usize;
-                    let max_channels = storage.aux_inputs[aux_idx].capacity();
-                    // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid.
-                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                        // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                        let channel_ptrs = unsafe {
-                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
-                        };
-                        // A null channel keeps its index (see prepare_in_place).
-                        for &ptr in channel_ptrs.iter().take(max_channels) {
-                            storage.aux_inputs[aux_idx].push(ptr);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Collect auxiliary output channel pointers (bounded by pre-allocated capacity)
-        if process_data.numOutputs > 1 && !process_data.outputs.is_null() {
-            // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
-            let output_buses = unsafe {
-                slice::from_raw_parts(process_data.outputs, process_data.numOutputs as usize)
-            };
-            for (aux_idx, bus) in output_buses[1..].iter().enumerate() {
-                if aux_idx < storage.aux_outputs.len() {
-                    let num_channels = bus.numChannels as usize;
-                    let max_channels = storage.aux_outputs[aux_idx].capacity();
-                    // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid.
-                    if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                        // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                        let channel_ptrs = unsafe {
-                            slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels)
-                        };
-                        // A null channel keeps its index (see prepare_in_place).
-                        for &ptr in channel_ptrs.iter().take(max_channels) {
-                            storage.aux_outputs[aux_idx].push(ptr);
-                        }
-                    }
-                }
-            }
-        }
-
-        // SAFETY: The host guarantees the channel pointers valid for
-        // num_samples elements for the duration of process().
-        let render_samples = unsafe { self.prepare_channels(storage, num_samples) };
-        let storage = &*storage;
-        self.run_blocks(render_samples, processor, input, |processor, start, len, context| {
-            // SAFETY: The channels were prepared for this call and the
-            // sub-block lies within them.
-            let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(start, len) };
-            processor.process_f64(&mut buffer, &mut aux, context);
-        });
+        // SAFETY: See the function's safety section.
+        unsafe { silence_host_only_outputs::<S>(process_data, buses, num_samples) };
     }
 
     /// Process audio at 64-bit (f64) with conversion to/from f32.
@@ -1190,72 +1258,98 @@ impl<P: Model> Vst3Processor<P> {
     ) {
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let conv = unsafe { &mut *self.conversion_buffers.get() };
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let buses = unsafe { &*self.process_buses.get() };
+        let accepted = buses.accepted();
+
+        // A block longer than set up does not fit the conversion buffers.
+        // It is rendered as silence; the parameter changes still apply.
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        if num_samples > unsafe { *self.max_block_size.get() } {
+            for bus in 0..process_data.numOutputs.max(0) as usize {
+                // SAFETY: The host passes kSample64 buffers, valid for the call.
+                for &ptr in unsafe { host_channels::<f64>(process_data.outputs, process_data.numOutputs, bus) } {
+                    if !ptr.is_null() {
+                        // SAFETY: Valid for num_samples writes (host).
+                        unsafe { std::ptr::write_bytes(ptr, 0, num_samples) };
+                    }
+                }
+            }
+            self.process_warnings.note(ProcessWarning::BlockTooLong);
+            self.run_blocks(0, processor, input, |_, _, _, _| {});
+            return;
+        }
+
+        // The host's channels of a bus it has on and the plugin too.
+        let host_inputs = |bus: usize| -> &[*mut f64] {
+            if buses.input_routing(bus) == BusRouting::Connected {
+                // SAFETY: The host passes kSample64 buffers, valid for the call.
+                unsafe { host_channels(process_data.inputs, process_data.numInputs, bus) }
+            } else {
+                &[]
+            }
+        };
+        let host_outputs = |bus: usize| -> &[*mut f64] {
+            if buses.output_routing(bus) == BusRouting::Connected {
+                // SAFETY: The host passes kSample64 buffers, valid for the call.
+                unsafe { host_channels(process_data.outputs, process_data.numOutputs, bus) }
+            } else {
+                &[]
+            }
+        };
 
         // The plugin processes the f32 output channels in place. They start
-        // silent; a channel with a host input gets it below.
-        for channel in &mut conv.main_output_f32 {
-            channel[..num_samples].fill(0.0);
-        }
-        for channel in conv.aux_output_f32.iter_mut().flatten() {
+        // silent; a channel with a host input gets it below. So do the main
+        // input channels without an output.
+        let num_main_outputs = conv.main_output_f32.len();
+        for channel in conv
+            .main_output_f32
+            .iter_mut()
+            .chain(conv.main_input_f32.iter_mut().skip(num_main_outputs))
+            .chain(conv.aux_output_f32.iter_mut().flatten())
+        {
             channel[..num_samples].fill(0.0);
         }
 
         // Convert main input f64 → f32: into the output channel of the same
         // index, or into the input buffer for a channel without an output.
-        if process_data.numInputs > 0 && !process_data.inputs.is_null() {
-            // SAFETY: inputs is non-null and host guarantees validity.
-            let input_buses = unsafe { slice::from_raw_parts(process_data.inputs, 1) };
-            let bus = &input_buses[0];
-            let num_channels = (bus.numChannels as usize).min(conv.main_input_f32.len());
-            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
-                for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                    if !ptr.is_null() {
-                        // SAFETY: Host guarantees channel pointer valid for num_samples elements.
-                        let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
-                        let converted = match conv.main_output_f32.get_mut(ch) {
-                            Some(channel) => channel,
-                            None => &mut conv.main_input_f32[ch],
-                        };
-                        for (to, &from) in converted.iter_mut().zip(src) {
-                            *to = from as f32;
-                        }
-                    }
+        for (ch, &ptr) in host_inputs(0).iter().enumerate().take(conv.main_input_f32.len()) {
+            if !ptr.is_null() {
+                // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
+                let converted = match conv.main_output_f32.get_mut(ch) {
+                    Some(channel) => channel,
+                    None => &mut conv.main_input_f32[ch],
+                };
+                for (to, &from) in converted.iter_mut().zip(src) {
+                    *to = from as f32;
                 }
             }
         }
 
-        // Convert aux input f64 → f32
+        // Convert aux input f64 → f32, or silence for a channel the host
+        // does not pass.
         for (bus_idx, aux_bus) in conv.aux_input_f32.iter_mut().enumerate() {
-            let vst_bus_idx = bus_idx + 1; // aux buses start at index 1
-            if process_data.numInputs as usize > vst_bus_idx && !process_data.inputs.is_null() {
-                // SAFETY: inputs is non-null and host guarantees validity for numInputs elements.
-                let input_buses = unsafe {
-                    slice::from_raw_parts(
-                        process_data.inputs,
-                        process_data.numInputs as usize,
-                    )
-                };
-                let bus = &input_buses[vst_bus_idx];
-                let num_channels = (bus.numChannels as usize).min(aux_bus.len());
-                // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-                if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                    // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                    let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
-                    for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                        if !ptr.is_null() && ch < aux_bus.len() {
-                            // SAFETY: Host guarantees channel pointer valid for num_samples elements.
-                            let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
-                            for (i, &s) in src.iter().enumerate() {
-                                aux_bus[ch][i] = s as f32;
-                            }
+            // Aux buses start at index 1.
+            let host = host_inputs(bus_idx + 1);
+            for (ch, channel) in aux_bus.iter_mut().enumerate() {
+                match host.get(ch).filter(|ptr| !ptr.is_null()) {
+                    Some(&ptr) => {
+                        // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                        let src = unsafe { slice::from_raw_parts(ptr, num_samples) };
+                        for (to, &from) in channel.iter_mut().zip(src) {
+                            *to = from as f32;
                         }
                     }
+                    None => channel[..num_samples].fill(0.0),
                 }
             }
         }
+
+        // The channels of a bus as the plugin has it on: none for a bus it
+        // has off.
+        let input_channels = |bus: usize| accepted.input(bus).unwrap_or(0) as usize;
+        let output_channels = |bus: usize| accepted.output(bus).unwrap_or(0) as usize;
 
         self.run_blocks(num_samples, processor, input, |processor, start, len, context| {
             // The f32 slices of this sub-block (no allocation).
@@ -1266,14 +1360,12 @@ impl<P: Model> Vst3Processor<P> {
             let unpaired_input_iter =
                 conv.main_input_f32.iter().skip(num_channels).map(|v| &v[range.clone()]);
 
-            let aux_input_iter = conv
-                .aux_input_f32
-                .iter()
-                .map(|bus| bus.iter().map(|v| &v[range.clone()]));
-            let aux_output_iter = conv
-                .aux_output_f32
-                .iter_mut()
-                .map(|bus| bus.iter_mut().map(|v| &mut v[range.clone()]));
+            let aux_input_iter = conv.aux_input_f32.iter().enumerate().map(|(bus_idx, bus)| {
+                bus.iter().take(input_channels(bus_idx + 1)).map(|v| &v[range.clone()])
+            });
+            let aux_output_iter = conv.aux_output_f32.iter_mut().enumerate().map(|(bus_idx, bus)| {
+                bus.iter_mut().take(output_channels(bus_idx + 1)).map(|v| &mut v[range.clone()])
+            });
 
             let mut buffer = Buffer::new(channel_iter, unpaired_input_iter, num_input_channels, len);
             let mut aux = AuxiliaryBuffers::new(aux_input_iter, aux_output_iter, len);
@@ -1281,56 +1373,31 @@ impl<P: Model> Vst3Processor<P> {
         });
 
         // Convert main output f32 → f64
-        if process_data.numOutputs > 0 && !process_data.outputs.is_null() {
-            // SAFETY: outputs is non-null and host guarantees validity.
-            let output_buses = unsafe { slice::from_raw_parts(process_data.outputs, 1) };
-            let bus = &output_buses[0];
-            let num_channels = (bus.numChannels as usize).min(conv.main_output_f32.len());
-            // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-            if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
-                for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                    if !ptr.is_null() && ch < conv.main_output_f32.len() {
-                        // SAFETY: Host guarantees channel pointer valid for num_samples elements.
-                        let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
-                        for (i, sample) in conv.main_output_f32[ch][..num_samples].iter().enumerate() {
-                            dst[i] = *sample as f64;
-                        }
-                    }
+        for (ch, &ptr) in host_outputs(0).iter().enumerate().take(conv.main_output_f32.len()) {
+            if !ptr.is_null() {
+                // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
+                for (to, &from) in dst.iter_mut().zip(&conv.main_output_f32[ch][..num_samples]) {
+                    *to = from as f64;
                 }
             }
         }
 
         // Convert aux output f32 → f64
         for (bus_idx, aux_bus) in conv.aux_output_f32.iter().enumerate() {
-            let vst_bus_idx = bus_idx + 1;
-            if process_data.numOutputs as usize > vst_bus_idx && !process_data.outputs.is_null() {
-                // SAFETY: outputs is non-null and host guarantees validity for numOutputs elements.
-                let output_buses = unsafe {
-                    slice::from_raw_parts(
-                        process_data.outputs,
-                        process_data.numOutputs as usize,
-                    )
-                };
-                let bus = &output_buses[vst_bus_idx];
-                let num_channels = (bus.numChannels as usize).min(aux_bus.len());
-                // SAFETY: symbolic_sample_size == kSample64, so channelBuffers64 is valid variant.
-                if num_channels > 0 && !unsafe { bus.__field0.channelBuffers64 }.is_null() {
-                    // SAFETY: Host guarantees channelBuffers64 valid for numChannels elements.
-                    let channel_ptrs = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers64, num_channels) };
-                    for (ch, &ptr) in channel_ptrs.iter().enumerate() {
-                        if !ptr.is_null() && ch < aux_bus.len() {
-                            // SAFETY: Host guarantees channel pointer valid for num_samples elements.
-                            let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
-                            for (i, sample) in aux_bus[ch][..num_samples].iter().enumerate() {
-                                dst[i] = *sample as f64;
-                            }
-                        }
+            for (ch, &ptr) in host_outputs(bus_idx + 1).iter().enumerate().take(aux_bus.len()) {
+                if !ptr.is_null() {
+                    // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                    let dst = unsafe { slice::from_raw_parts_mut(ptr, num_samples) };
+                    for (to, &from) in dst.iter_mut().zip(&aux_bus[ch][..num_samples]) {
+                        *to = from as f64;
                     }
                 }
             }
         }
+
+        // SAFETY: The host passes kSample64 buffers, valid for the call.
+        unsafe { silence_host_only_outputs::<f64>(process_data, buses, num_samples) };
     }
 }
 
@@ -1505,16 +1572,64 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
 
     unsafe fn activateBus(
         &self,
-        _media_type: MediaType,
-        _dir: BusDirection,
-        _index: i32,
-        _state: TBool,
+        media_type: MediaType,
+        dir: BusDirection,
+        index: i32,
+        state: TBool,
     ) -> tresult {
-        kResultOk
+        // The event buses are always on.
+        if media_type as MediaTypes != MediaTypes_::kAudio {
+            return kResultOk;
+        }
+        let Ok(index) = usize::try_from(index) else {
+            return kInvalidArgument;
+        };
+
+        // The request takes effect at the next setupProcessing() or
+        // setActive(true). A bus that is switched on gets its declared
+        // channels, the only ones setBusArrangements() accepts.
+        let on = state != 0;
+        let mut negotiation = self.bus_negotiation.lock().unwrap_or_else(PoisonError::into_inner);
+        let requested = negotiation.requested_mut();
+        let recorded = match dir as BusDirections {
+            BusDirections_::kInput => {
+                let channels = self.core_input_bus_info(index).filter(|_| on).map(|info| info.channel_count);
+                requested.set_input(index, channels)
+            }
+            BusDirections_::kOutput => {
+                let channels = self.core_output_bus_info(index).filter(|_| on).map(|info| info.channel_count);
+                requested.set_output(index, channels)
+            }
+            _ => false,
+        };
+        // A request the plugin refuses is accepted as well: the wrapper
+        // bridges it (see BusNegotiation).
+        if recorded {
+            kResultTrue
+        } else {
+            kInvalidArgument
+        }
     }
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
         self.process_warnings.log();
+        if state != 0 {
+            // Buses the host switched since the setup take effect now.
+            let buses = self.negotiate_buses();
+            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+            let prepared = unsafe { (*self.processor.get()).is_some() };
+            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+            let buses_changed = unsafe { (*self.process_buses.get()).accepted() } != buses.accepted();
+            if prepared && buses_changed {
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                let setup = unsafe { self.current_setup() };
+                // SAFETY: The host does not process during setActive().
+                unsafe { self.prepare(&setup, buses) };
+            } else {
+                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
+                unsafe { *self.process_buses.get() = buses };
+            }
+        }
         // set_active is only meaningful when prepared (processor exists)
         // SAFETY: VST3 guarantees single-threaded access. No aliasing.
         if let Some(processor) = unsafe { &mut *self.processor.get() } {
@@ -1766,93 +1881,28 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 || *self.symbolic_sample_size.get() != setup.symbolicSampleSize
                 || *self.process_mode.get() != setup.processMode
         };
-
-        // Host threads keep using the model while it creates the processor
-        // below.
-        let model = self.model();
+        let buses = self.negotiate_buses();
         // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
-        let slot = unsafe { &mut *self.processor.get() };
+        let buses_changed = unsafe { (*self.process_buses.get()).accepted() } != buses.accepted();
 
         // A host may repeat a setup. Preparing again would then only throw
         // away what the processor holds. With a new sample rate, block size,
-        // sample size or process mode the model is prepared again: it
+        // sample size, process mode or buses the model is prepared again: it
         // learns those when a processor is created.
-        if slot.is_none() || setup_changed {
-            let input_bus_count = model.input_bus_count();
-            let output_bus_count = model.output_bus_count();
-            let input_buses: Vec<CoreBusInfo> = (0..input_bus_count)
-                .filter_map(|i| model.input_bus_info(i))
-                .collect();
-            let output_buses: Vec<CoreBusInfo> = (0..output_bus_count)
-                .filter_map(|i| model.output_bus_info(i))
-                .collect();
-
-            // Validate model's bus configuration against compile-time limits.
-            let declared_buses = CachedBusConfig::from_model(model);
-            if let Err(msg) = declared_buses.validate() {
-                log::error!("Plugin bus configuration exceeds limits: {}", msg);
+        // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
+        if unsafe { (*self.processor.get()).is_none() } || setup_changed || buses_changed {
+            // SAFETY: The host does not process during setupProcessing().
+            if !unsafe { self.prepare(setup, buses) } {
                 return kResultFalse;
             }
-            let active_buses = declared_buses.to_active_buses();
-
-            // Store the setup. A setup that was refused above is not kept,
-            // so that it does not count as the current one when it comes
-            // again.
+        } else {
+            // The host may have switched buses the plugin keeps as they are.
             // SAFETY: VST3 guarantees single-threaded access during setupProcessing(). No aliasing.
-            unsafe {
-                *self.sample_rate.get() = setup.sampleRate;
-                *self.max_block_size.get() = setup.maxSamplesPerBlock as usize;
-                *self.symbolic_sample_size.get() = setup.symbolicSampleSize;
-                *self.process_mode.get() = setup.processMode;
-            }
-
-            // Build the model setup.
-            let plugin_setup = build_setup::<P::Setup>(setup, &active_buses);
-
-            // A processor of an earlier setup goes first, so that its
-            // buffers are free before the new ones are allocated.
-            *slot = None;
-
-            // The smoothers ramp at the host's rate unless the model
-            // sets another one in prepare.
-            beamer_core::Parameters::set_sample_rate(self.model(), setup.sampleRate);
-
-            // Create the processor, with its own handle to the model. A state
-            // that was loaded before is in the model already.
-            let processor = Arc::clone(&self.model).prepare(plugin_setup);
-
-            // Pre-allocate buffer storage based on bus config.
-            let bus_config = CachedBusConfig::new(
-                input_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-                output_buses.iter().map(CachedBusInfo::from_bus_info).collect(),
-            );
-            let max_frames = setup.maxSamplesPerBlock as usize;
-            // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-            unsafe {
-                *self.buffer_storage_f32.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-                *self.buffer_storage_f64.get() =
-                    ProcessBufferStorage::allocate_from_config(&bus_config, max_frames);
-            }
-
-            // Pre-allocate conversion buffers for f64→f32 processing.
-            if setup.symbolicSampleSize == SymbolicSampleSizes_::kSample64 as i32
-                && !processor.supports_double_precision()
-            {
-                // SAFETY: VST3 guarantees single-threaded access. No aliasing.
-                unsafe {
-                    *self.conversion_buffers.get() =
-                        ConversionBuffers::allocate_from_buses(&input_buses, &output_buses, max_frames);
-                }
-            }
-
-            *slot = Some(processor);
+            unsafe { *self.process_buses.get() = buses };
         }
 
         // The host may ask for latency and tail before the first process() call.
-        if let Some(processor) = slot {
-            self.publish_timing(processor);
-        }
+        self.publish_timing_if_prepared();
 
         kResultOk
     }
@@ -2061,8 +2111,14 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             // 64-bit processing path
             if processor.supports_double_precision() {
                 // Native f64: extract f64 buffers and call process_f64()
-                // SAFETY: process_data is valid, processor is valid mutable reference.
-                unsafe { self.process_audio_f64_native(process_data, num_samples, processor, input) };
+                // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+                let storage = unsafe { &mut *self.buffer_storage_f64.get() };
+                // SAFETY: The host passes kSample64 buffers, valid for the call.
+                unsafe {
+                    self.process_audio(storage, process_data, num_samples, processor, input, |processor, buffer, aux, context| {
+                        processor.process_f64(buffer, aux, context)
+                    })
+                };
             } else {
                 // Conversion: f64→f32, process, f32→f64
                 // SAFETY: process_data is valid, processor is valid mutable reference.
@@ -2070,8 +2126,14 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             }
         } else {
             // 32-bit processing path (default)
-            // SAFETY: process_data is valid, processor is valid mutable reference.
-            unsafe { self.process_audio_f32(process_data, num_samples, processor, input) };
+            // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+            let storage = unsafe { &mut *self.buffer_storage_f32.get() };
+            // SAFETY: The host passes kSample32 buffers, valid for the call.
+            unsafe {
+                self.process_audio(storage, process_data, num_samples, processor, input, |processor, buffer, aux, context| {
+                    processor.process(buffer, aux, context)
+                })
+            };
         }
 
         // Write output MIDI events. A plugin without MIDI output sends none,
@@ -4847,6 +4909,15 @@ mod tests {
 
     /// Run one block of 64 frames with the parameter queues and a mod wheel
     /// change at sample 40.
+    /// Switch on aux bus 1 in both directions, as a host does.
+    fn activate_aux_buses<P: Model>(wrapper: &Vst3Processor<P>) {
+        for dir in [BusDirections_::kInput, BusDirections_::kOutput] {
+            // SAFETY: Plain values.
+            let result = unsafe { wrapper.activateBus(MediaTypes_::kAudio as MediaType, dir as BusDirection, 1, 1) };
+            assert_eq!(result, kResultTrue);
+        }
+    }
+
     fn split_run(
         config: &'static Config,
         format: SampleFormat,
@@ -4858,6 +4929,8 @@ mod tests {
 
         SPLIT_DOUBLE.with(|split_double| split_double.set(matches!(format, SampleFormat::Float64)));
         let wrapper = Vst3Processor::<SplitModel>::new(config);
+        // The host switches the aux buses on.
+        activate_aux_buses(&wrapper);
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: sample_size as int32,
@@ -5683,5 +5756,336 @@ mod tests {
         }
         assert_eq!(*model.parameters.layout.get(), LAYOUTS[1]);
         assert!((model.parameters.level.smoothed() - 0.2).abs() < 1e-9);
+    }
+
+    // =========================================================================
+    // Switching buses on and off
+    // =========================================================================
+
+    static BUS_CONFIG: Config = Config::new("Bus Test", Category::Effect, "Test", "bust");
+
+    thread_local! {
+        /// The buses each `BusModel` on this thread was prepared with.
+        static BUS_PREPARES: std::cell::RefCell<Vec<ActiveBuses>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        /// Whether the next `BusProcessor` on this thread processes 64-bit
+        /// samples itself.
+        static BUS_DOUBLE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A model with a stereo sidechain and a stereo detector output. It
+    /// refuses the detector without the sidechain.
+    #[derive(Default)]
+    struct BusModel {
+        parameters: NoParameters,
+    }
+
+    struct BusProcessor {
+        double: bool,
+    }
+
+    beamer_core::__forward_model!(BusModel, parameters);
+
+    impl Model for BusModel {
+        type Setup = ActiveBuses;
+        type Processor = BusProcessor;
+
+        fn prepare(self: Arc<Self>, buses: ActiveBuses) -> BusProcessor {
+            BUS_PREPARES.with(|prepares| prepares.borrow_mut().push(buses));
+            BusProcessor { double: BUS_DOUBLE.with(Cell::get) }
+        }
+
+        fn input_bus_count(&self) -> usize {
+            2
+        }
+
+        fn output_bus_count(&self) -> usize {
+            2
+        }
+
+        fn input_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+            match index {
+                0 => Some(CoreBusInfo::stereo("Input")),
+                1 => Some(CoreBusInfo::aux("Sidechain", 2)),
+                _ => None,
+            }
+        }
+
+        fn output_bus_info(&self, index: usize) -> Option<CoreBusInfo> {
+            match index {
+                0 => Some(CoreBusInfo::stereo("Output")),
+                1 => Some(CoreBusInfo::aux("Detector", 2)),
+                _ => None,
+            }
+        }
+
+        fn supports_buses(&self, buses: &ActiveBuses) -> bool {
+            buses.is_input_on(1) || !buses.is_output_on(1)
+        }
+    }
+
+    /// Fill the main output with the first sidechain sample (-1 without a
+    /// sidechain) and the detector output with 0.25.
+    fn bus_process<S: Sample>(buffer: &mut Buffer<S>, aux: &mut AuxiliaryBuffers<S>) {
+        let sidechain = aux.input(0).map_or(-1.0, |bus| bus.input(0)[0].to_f64());
+        for channel in buffer.channels_mut() {
+            channel.fill(S::from_f64(sidechain));
+        }
+        if let Some(mut detector) = aux.output(0) {
+            for channel in detector.iter_outputs() {
+                channel.fill(S::from_f64(0.25));
+            }
+        }
+    }
+
+    impl Processor for BusProcessor {
+        fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, _context: &CoreProcessContext) {
+            bus_process(buffer, aux);
+        }
+
+        fn supports_double_precision(&self) -> bool {
+            self.double
+        }
+
+        fn process_f64(
+            &mut self,
+            buffer: &mut Buffer<f64>,
+            aux: &mut AuxiliaryBuffers<f64>,
+            _context: &CoreProcessContext,
+        ) {
+            bus_process(buffer, aux);
+        }
+    }
+
+    /// A new `BusModel` wrapper, set up for `format` like a host does.
+    fn bus_wrapper(format: SampleFormat) -> Vst3Processor<BusModel> {
+        BUS_PREPARES.with(|prepares| prepares.borrow_mut().clear());
+        BUS_DOUBLE.with(|double| double.set(matches!(format, SampleFormat::Float64)));
+        Vst3Processor::<BusModel>::new(&BUS_CONFIG)
+    }
+
+    fn bus_setup(wrapper: &Vst3Processor<BusModel>, format: SampleFormat) {
+        bus_setup_for(wrapper, format, 64);
+    }
+
+    fn bus_setup_for(wrapper: &Vst3Processor<BusModel>, format: SampleFormat, max_frames: int32) {
+        let sample_size = match format {
+            SampleFormat::Float32 => SymbolicSampleSizes_::kSample32,
+            _ => SymbolicSampleSizes_::kSample64,
+        };
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: sample_size as int32,
+            maxSamplesPerBlock: max_frames,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+    }
+
+    fn activate_bus(wrapper: &Vst3Processor<BusModel>, dir: BusDirections, index: i32, on: bool) -> tresult {
+        // SAFETY: Plain values.
+        unsafe { wrapper.activateBus(MediaTypes_::kAudio as MediaType, dir as BusDirection, index, on as TBool) }
+    }
+
+    /// Deactivate, switch a bus and activate again, as a host does.
+    fn switch_bus(wrapper: &Vst3Processor<BusModel>, dir: BusDirections, index: i32, on: bool) {
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(0) }, kResultOk);
+        assert_eq!(activate_bus(wrapper, dir, index, on), kResultTrue);
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(1) }, kResultOk);
+    }
+
+    /// Process a block with both buses each way, the main input at 0.5,
+    /// the sidechain at 0.75 and the outputs at 9 before the call. Returns
+    /// the first sample of the main and the detector output.
+    fn bus_block(wrapper: &Vst3Processor<BusModel>, format: SampleFormat) -> [f64; 2] {
+        bus_block_with(wrapper, format, 2)
+    }
+
+    /// Like `bus_block`, with `sidechain_channels` channels of the
+    /// sidechain passed.
+    fn bus_block_with(wrapper: &Vst3Processor<BusModel>, format: SampleFormat, sidechain_channels: int32) -> [f64; 2] {
+        const FRAMES: usize = 64;
+        let double = !matches!(format, SampleFormat::Float32);
+        let mut input32 = [[[0.5f32; FRAMES]; 2], [[0.75f32; FRAMES]; 2]];
+        let mut output32 = [[[9.0f32; FRAMES]; 2]; 2];
+        let mut input64 = [[[0.5f64; FRAMES]; 2], [[0.75f64; FRAMES]; 2]];
+        let mut output64 = [[[9.0f64; FRAMES]; 2]; 2];
+        let mut input32_channels = input32.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut output32_channels = output32.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut input64_channels = input64.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let mut output64_channels = output64.each_mut().map(|bus| bus.each_mut().map(|channel| channel.as_mut_ptr()));
+        let bus_buffers = |channels32: &mut [*mut f32; 2], channels64: &mut [*mut f64; 2]| AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: if double {
+                AudioBusBuffers__type0 { channelBuffers64: channels64.as_mut_ptr() }
+            } else {
+                AudioBusBuffers__type0 { channelBuffers32: channels32.as_mut_ptr() }
+            },
+        };
+        let [main32, aux32] = &mut input32_channels;
+        let [main64, aux64] = &mut input64_channels;
+        let mut input_buses = [bus_buffers(main32, main64), bus_buffers(aux32, aux64)];
+        input_buses[1].numChannels = sidechain_channels;
+        let [main32, aux32] = &mut output32_channels;
+        let [main64, aux64] = &mut output64_channels;
+        let mut output_buses = [bus_buffers(main32, main64), bus_buffers(aux32, aux64)];
+        let sample_size = if double { SymbolicSampleSizes_::kSample64 } else { SymbolicSampleSizes_::kSample32 };
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: sample_size as int32,
+            numSamples: FRAMES as int32,
+            numInputs: 2,
+            numOutputs: 2,
+            inputs: input_buses.as_mut_ptr(),
+            outputs: output_buses.as_mut_ptr(),
+            inputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: std::ptr::null_mut(),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: std::ptr::null_mut(),
+        };
+        // SAFETY: The data and its buffers are valid for the call.
+        assert_eq!(unsafe { wrapper.process(&mut data) }, kResultOk);
+
+        [0, 1].map(|bus| if double { output64[bus][0][0] } else { f64::from(output32[bus][0][0]) })
+    }
+
+    fn bus_prepares() -> Vec<ActiveBuses> {
+        BUS_PREPARES.with(|prepares| prepares.borrow().clone())
+    }
+
+    const ALL_FORMATS: [SampleFormat; 3] =
+        [SampleFormat::Float32, SampleFormat::Float64, SampleFormat::Float64Converted];
+
+    #[test]
+    fn test_aux_buses_are_off_until_the_host_activates_them() {
+        for format in ALL_FORMATS {
+            let wrapper = bus_wrapper(format);
+            bus_setup(&wrapper, format);
+
+            let prepares = bus_prepares();
+            assert_eq!(prepares.len(), 1);
+            assert!(prepares[0].is_input_on(0) && prepares[0].is_output_on(0));
+            assert!(!prepares[0].is_input_on(1) && !prepares[0].is_output_on(1));
+            // No sidechain for the plugin. The host does not use the
+            // detector output, which keeps what it held.
+            assert_eq!(bus_block(&wrapper, format), [-1.0, 9.0]);
+        }
+    }
+
+    #[test]
+    fn test_an_activated_bus_takes_effect_at_set_active() {
+        let format = SampleFormat::Float32;
+        let wrapper = bus_wrapper(format);
+        bus_setup(&wrapper, format);
+
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(0) }, kResultOk);
+        assert_eq!(activate_bus(&wrapper, BusDirections_::kInput, 1, true), kResultTrue);
+        // Not yet.
+        assert_eq!(bus_block(&wrapper, format), [-1.0, 9.0]);
+        // SAFETY: Plain values.
+        assert_eq!(unsafe { wrapper.setActive(1) }, kResultOk);
+        let prepares = bus_prepares();
+        assert_eq!(prepares.len(), 2);
+        assert_eq!(prepares[1].input(1), Some(2));
+        assert_eq!(bus_block(&wrapper, format), [0.75, 9.0]);
+
+        // Activating again without a change keeps the processor.
+        // SAFETY: Plain values.
+        unsafe {
+            wrapper.setActive(0);
+            wrapper.setActive(1);
+        }
+        assert_eq!(bus_prepares().len(), 2);
+    }
+
+    #[test]
+    fn test_buses_activated_before_the_setup_are_prepared_with() {
+        let format = SampleFormat::Float32;
+        let wrapper = bus_wrapper(format);
+        assert_eq!(activate_bus(&wrapper, BusDirections_::kInput, 1, true), kResultTrue);
+        assert_eq!(activate_bus(&wrapper, BusDirections_::kOutput, 1, true), kResultTrue);
+        bus_setup(&wrapper, format);
+
+        let prepares = bus_prepares();
+        assert_eq!(prepares.len(), 1);
+        assert!(prepares[0].is_input_on(1) && prepares[0].is_output_on(1));
+        assert_eq!(bus_block(&wrapper, format), [0.75, 0.25]);
+    }
+
+    #[test]
+    fn test_a_refused_bus_is_bridged() {
+        for format in ALL_FORMATS {
+            let wrapper = bus_wrapper(format);
+            // The detector alone is refused: the plugin keeps it off and the
+            // host gets silence from it.
+            assert_eq!(activate_bus(&wrapper, BusDirections_::kOutput, 1, true), kResultTrue);
+            bus_setup(&wrapper, format);
+            assert!(!bus_prepares()[0].is_output_on(1));
+            assert_eq!(bus_block(&wrapper, format), [-1.0, 0.0]);
+
+            // With the sidechain, both are on.
+            switch_bus(&wrapper, BusDirections_::kInput, 1, true);
+            assert_eq!(bus_prepares().len(), 2);
+            assert_eq!(bus_block(&wrapper, format), [0.75, 0.25]);
+
+            // Without the sidechain again, the plugin keeps it and reads
+            // silence.
+            switch_bus(&wrapper, BusDirections_::kInput, 1, false);
+            assert_eq!(bus_prepares().len(), 2);
+            assert_eq!(bus_block(&wrapper, format), [0.0, 0.25]);
+        }
+    }
+
+    #[test]
+    fn test_channels_a_host_leaves_out_read_silence() {
+        for format in ALL_FORMATS {
+            let wrapper = bus_wrapper(format);
+            assert_eq!(activate_bus(&wrapper, BusDirections_::kInput, 1, true), kResultTrue);
+            bus_setup(&wrapper, format);
+
+            // The sidechain is on but comes without channels: the plugin
+            // still has it, silent.
+            assert_eq!(bus_block_with(&wrapper, format, 0), [0.0, 9.0]);
+        }
+    }
+
+    #[test]
+    fn test_a_converted_block_longer_than_set_up_is_silent() {
+        // The conversion buffers hold the samples of the setup only.
+        let format = SampleFormat::Float64Converted;
+        let wrapper = bus_wrapper(format);
+        bus_setup_for(&wrapper, format, 32);
+        assert_eq!(bus_block(&wrapper, format), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_main_buses_stay_on() {
+        let format = SampleFormat::Float32;
+        let wrapper = bus_wrapper(format);
+        bus_setup(&wrapper, format);
+
+        switch_bus(&wrapper, BusDirections_::kOutput, 0, false);
+        // The plugin keeps its main output and renders into memory that is
+        // dropped; the host's buffer keeps what it held.
+        assert_eq!(bus_prepares().len(), 1);
+        assert_eq!(bus_block(&wrapper, format), [9.0, 9.0]);
+    }
+
+    #[test]
+    fn test_activate_bus_checks_the_bus() {
+        let wrapper = bus_wrapper(SampleFormat::Float32);
+        assert_eq!(activate_bus(&wrapper, BusDirections_::kInput, 2, true), kInvalidArgument);
+        assert_eq!(activate_bus(&wrapper, BusDirections_::kOutput, -1, true), kInvalidArgument);
+        // SAFETY: Plain values.
+        let event = unsafe {
+            wrapper.activateBus(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection, 0, 1)
+        };
+        assert_eq!(event, kResultOk);
     }
 }
