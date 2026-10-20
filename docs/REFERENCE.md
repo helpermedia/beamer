@@ -286,7 +286,7 @@ let freq = FloatParameter::new("Frequency", 1000.0, 20.0..=20000.0);
 let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
 
 // In DSP code:
-// 0 dB → 1.0, -6 dB → ~0.5.
+// 0 dB is 1.0, -6 dB is about 0.5.
 let amplitude = gain.as_linear();
 // Returns dB for display.
 let db_value = gain.get();
@@ -844,6 +844,10 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
     fn output_bus_info(&self, index: usize) -> Option<BusInfo>;
 
+    /// Whether the plugin can process with these buses on (see Switching
+    /// Buses). The default accepts every combination.
+    fn supports_buses(&self, buses: &ActiveBuses) -> bool { true }
+
     /// MIDI CC configuration for CC emulation (see MIDI CC Emulation).
     fn midi_cc_config(&self) -> Option<MidiCcConfig> { None }
 
@@ -929,6 +933,55 @@ impl Model for FftModel {
     }
 }
 ```
+
+#### Switching Buses
+
+A plugin declares its buses with `input_bus_count()`, `output_bus_count()`, `input_bus_info()` and `output_bus_info()`. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). `BusInfo::stereo` and `BusInfo::mono` declare a main bus. `BusInfo::aux` declares an aux bus that is off until the host switches it on (`is_default_active` is false).
+
+A host switches aux buses on and off. The plugin is prepared with the buses that are on: it requests `ActiveBuses` in its setup. When the host switches a bus, the plugin is prepared again.
+
+```rust
+impl Model for CompressorModel {
+    type Setup = (SampleRate, ActiveBuses);
+    type Processor = CompressorProcessor;
+    fn prepare(self: Arc<Self>, (sr, buses): (SampleRate, ActiveBuses)) -> CompressorProcessor {
+        CompressorProcessor {
+            sample_rate: sr.hz(),
+            // Input bus 1 is the sidechain.
+            has_sidechain: buses.is_input_on(1),
+            model: self,
+        }
+    }
+}
+```
+
+`input(bus)` and `output(bus)` give the channel count of a bus that is on, `is_input_on(bus)` and `is_output_on(bus)` whether it is on, `input_bus_count()` and `output_bus_count()` the declared buses, on or off.
+
+A plugin that cannot process some combination refuses it in `supports_buses()`:
+
+```rust
+fn supports_buses(&self, buses: &ActiveBuses) -> bool {
+    // The detector output needs the sidechain.
+    buses.is_input_on(1) || !buses.is_output_on(1)
+}
+```
+
+It is called on a host thread before the plugin is prepared, with the main buses on. A plugin that refuses keeps the last combination it accepted. It starts with the declared default without being asked. The host is not refused. The wrapper bridges the difference instead:
+
+- A bus the host switched off but the plugin keeps on reads silence (input) or renders into memory that is dropped (output).
+- A bus the host switched on but the plugin keeps off is ignored (input) or silent (output).
+
+In `process()`, `AuxiliaryBuffers::input(n)` and `output(n)` (aux bus n, bus n + 1 of the declaration) are `None` for a bus that is off and have the prepared channel count for one that is on. In an Audio Unit an input without a source for a render call (a sidechain the host connects nothing to) has no samples and is `None` for that call, so a plugin checks the buffer as well.
+
+The main buses are always on: a host request to switch one off is bridged. How hosts switch buses in each format:
+
+| Format | A host switches a bus with | At first | Takes effect |
+|--------|----------------------------|----------|--------------|
+| VST3 | `activateBus()` | as declared (`kDefaultActive` from `is_default_active`) | at the next `setupProcessing()` or `setActive(true)` |
+| AUv2 | the element count (trailing buses) or a stream format with 0 channels | every bus on | at the next Initialize |
+| AUv3 | (not switched) | every bus on | - |
+
+An AUv3 host has no way to switch a bus for the plugin's preparation: the `enabled` flag of a bus follows the input connections (Apple's bridge for AUv2 hosts sets it from them, also while audio runs) and is not set on outputs by every host. The wrapper sets it from the declaration when it creates the buses and does not read it.
 
 ### Processor Trait
 
@@ -1103,7 +1156,7 @@ When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) 
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets pass all PC events through unchanged
 
-This mirrors VST3's `kIsProgramChange` behavior where the host handles PC→preset mapping automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block. The wrapper then reports the parameters the preset changed back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
+This mirrors VST3's `kIsProgramChange` behavior where the host maps program changes to presets automatically. In VST3 a MIDI program change reaches `process_midi()` unchanged. A VST3 host sends the program change as a change of the wrapper's program change parameter, from the edit controller or with a process call. Either way the preset is applied. In a process call it is applied before the changes of single parameters in the same block. The wrapper then reports the parameters the preset changed back to the host. No plugin code changes are required - the framework handles this based on whether factory presets are defined.
 
 A new instance holds the declared parameter defaults; no preset is applied. The AU wrappers report this as the user preset -1 "Untitled". VST3 has no value for "no program", so a host shows the first program. The VST3 wrapper saves the program a host shows with the state and takes it back when the state is loaded, without applying the preset again over the saved values.
 
@@ -1597,7 +1650,7 @@ MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<Mid
 
 **Construction Paths:**
 - **Semantic constructors** - Used by VST3 which provides already-parsed event structures
-- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and Note On velocity 0 → Note Off conversion
+- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and turning a Note On with velocity 0 into a Note Off
 
 Both formats deliver a note-on with velocity 0 as a `NoteOff`, so a plugin never receives a `NoteOn` with velocity 0.
 

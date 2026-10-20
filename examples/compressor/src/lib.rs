@@ -17,7 +17,8 @@
 //! - `set_active()` to reset DSP state on plugin activation
 //! - `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
 //! - Linear smoothing (`smoothing = "linear:50.0"`)
-//! - Sidechain input for external key signal
+//! - Sidechain input for external key signal, off until the host switches it
+//!   on, with `ActiveBuses` telling `prepare()` whether it is on
 //! - `SampleRate` setup for sample-rate-dependent initialization
 //!
 //! # DSP Overview
@@ -76,7 +77,7 @@ impl Ratio {
 
 /// Compressor plugin model.
 ///
-/// All configuration is in attributes, and the `#[beamer::model]` attribute
+/// All configuration is in attributes. The `#[beamer::model]` attribute
 /// generates everything including the `Default` implementation.
 #[beamer::export]
 #[beamer::model]
@@ -161,14 +162,20 @@ pub struct CompressorModel {
 }
 
 impl Model for CompressorModel {
-    // Compressor needs sample rate for envelope coefficients.
-    // See `beamer::setup` for all available types.
-    type Setup = (SampleRate, MaxBufferSize, MainInputChannels);
+    // Compressor needs sample rate for envelope coefficients and the
+    // active buses for its sidechain. See `beamer::setup` for all available
+    // types.
+    type Setup = (SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses);
     type Processor = CompressorProcessor;
 
     fn prepare(
         self: Arc<Self>,
-        (sample_rate, max_buffer_size, input_channels): (SampleRate, MaxBufferSize, MainInputChannels),
+        (sample_rate, max_buffer_size, input_channels, buses): (
+            SampleRate,
+            MaxBufferSize,
+            MainInputChannels,
+            ActiveBuses,
+        ),
     ) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (sample_rate.hz() * BYPASS_RAMP_MS * 0.001) as u32;
@@ -187,6 +194,9 @@ impl Model for CompressorModel {
                 average_gr_db: 0.0,
             },
             sample_rate: sample_rate.hz(),
+            // Input bus 1 is the sidechain. A host switches it on when the
+            // user routes a key signal to it.
+            has_sidechain: buses.is_input_on(1),
             model: self,
         }
     }
@@ -202,7 +212,8 @@ impl Model for CompressorModel {
     fn input_bus_info(&self, index: usize) -> Option<BusInfo> {
         match index {
             0 => Some(BusInfo::stereo("Input")),
-            1 => Some(BusInfo::aux("Sidechain", 2)), // Stereo sidechain
+            // Stereo sidechain, off until the host switches it on.
+            1 => Some(BusInfo::aux("Sidechain", 2)),
             _ => None,
         }
     }
@@ -290,6 +301,10 @@ pub struct CompressorProcessor {
 
     /// Current sample rate (real value from start!)
     sample_rate: f64,
+
+    /// Whether the plugin was prepared with the sidechain on. Without it
+    /// the detector keys on the main input.
+    has_sidechain: bool,
 }
 
 /// Compression state (envelope and gain reduction tracking).
@@ -318,6 +333,7 @@ impl CompressorProcessor {
             &self.model,
             &mut self.state,
             self.sample_rate,
+            self.has_sidechain,
         );
     }
 }
@@ -335,6 +351,7 @@ fn process_compression_inner<S: Sample>(
     model: &CompressorModel,
     state: &mut CompressionState,
     sample_rate: f64,
+    has_sidechain: bool,
 ) {
     let num_samples = buffer.num_samples();
     let num_channels = buffer.num_channels().min(2);
@@ -354,8 +371,10 @@ fn process_compression_inner<S: Sample>(
 
     let manual_makeup_db = model.makeup_gain.get();
 
-    // Only use sidechain when explicitly enabled by parameter and buffer exists
-    let use_sidechain = model.use_sidechain.get() && aux.sidechain().is_some();
+    // Only use the sidechain when the parameter asks for it and the host
+    // switched it on. An Audio Unit sidechain without a source has no
+    // samples for a call, so the buffer is checked too.
+    let use_sidechain = model.use_sidechain.get() && has_sidechain && aux.sidechain().is_some();
 
     // Pre-calculate envelope coefficients from smoothed attack/release values.
     // The times are read once per block, so the smoothers advance by a whole

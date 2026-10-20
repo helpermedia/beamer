@@ -627,8 +627,8 @@ pub trait Processor: Send + 'static {
     ///
     /// # Default Implementation
     ///
-    /// The default implementation converts f64→f32, calls `process()`, then
-    /// converts f32→f64. This allows any plugin to work in a 64-bit host
+    /// The default implementation converts f64 to f32, calls `process()`, then
+    /// converts f32 to f64. This allows any plugin to work in a 64-bit host
     /// without modification.
     ///
     /// # Example: Native f64 Plugin
@@ -658,7 +658,7 @@ pub trait Processor: Send + 'static {
         _aux: &mut AuxiliaryBuffers<f64>,
         context: &ProcessContext,
     ) {
-        // Default implementation: convert f64 → f32, process, convert back
+        // Default implementation: convert f64 to f32, process, convert back
         //
         // NOTE: This is a fallback implementation that allocates memory.
         // In practice, this method is rarely called because:
@@ -666,7 +666,7 @@ pub trait Processor: Send + 'static {
         //   (see respective processor implementations)
         //
         // If you're implementing a custom wrapper, ensure you handle
-        // f64→f32 conversion with pre-allocated buffers for real-time safety.
+        // f64 to f32 conversion with pre-allocated buffers for real-time safety.
 
         let num_samples = buffer.num_samples();
         let num_input_channels = buffer.num_input_channels();
@@ -957,8 +957,8 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// A host may switch aux buses on and off. Before the plugin is
     /// prepared with a new combination, it is asked here, on a host thread.
     /// When it refuses, it is prepared with the last combination it
-    /// accepted, at first the declared default
-    /// ([`ActiveBuses::default_for`]), which it is never asked about. The
+    /// accepted. It starts with the declared default
+    /// ([`ActiveBuses::default_for`]) without being asked. The
     /// framework bridges the difference: a bus the plugin keeps on reads
     /// silence or renders into memory that is dropped, a bus it keeps off
     /// is ignored or silent for the host.
@@ -1295,7 +1295,7 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 // MIDI Mapping Types
 // =============================================================================
 
-/// Base assignment info for MIDI controller → parameter mapping.
+/// Base assignment info for mapping a MIDI controller to a parameter.
 #[derive(Debug, Clone, Copy)]
 pub struct MidiControllerAssignment {
     /// Parameter ID this controller maps to.

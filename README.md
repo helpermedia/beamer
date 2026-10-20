@@ -74,7 +74,7 @@ log_level = "warn"
 
 ## Plugin Structure
 
-A Beamer plugin is two structs: the **Model**, which every thread shares, and the **Processor**, which the audio thread owns. The model holds the parameters, the `State` fields that are saved with them and everything else the host, the UI and the audio thread use. The framework keeps it in one `Arc` for the life of the plugin instance. When the audio setup is known, the framework calls `prepare(setup)` on the model to create the Processor, ensuring audio buffers are properly allocated before `process()` runs. When the setup changes, it drops the Processor and prepares a new one. Nested groups of parameters are structs marked with `#[beamer::group]`.
+A Beamer plugin is two structs: the **Model** that every thread shares and the **Processor** that the audio thread owns. The model holds the parameters, the `State` fields that are saved with them and everything else the host, the UI and the audio thread use. The framework keeps it in one `Arc` for the life of the plugin instance. When the audio setup is known, the framework calls `prepare(setup)` on the model to create the Processor, ensuring audio buffers are properly allocated before `process()` runs. When the setup changes, it drops the Processor and prepares a new one. Nested groups of parameters are structs marked with `#[beamer::group]`.
 
 See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
 
@@ -112,7 +112,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
 - **32-bit and 64-bit audio** - Native f64 support or automatic conversion for f32-only plugins
-- **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out)
+- **Multi-bus audio** - Main bus + auxiliary buses (sidechain, aux sends, multi-out) that hosts switch on and off
 - **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
