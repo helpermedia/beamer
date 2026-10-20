@@ -1004,6 +1004,9 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
 
         // In-place processing.
         case kAudioUnitProperty_InPlaceProcessing:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
             if (outDataSize) *outDataSize = sizeof(UInt32);
             if (outWritable) *outWritable = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input) > 0;
             return noErr;
@@ -1439,6 +1442,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
         }
 
         case kAudioUnitProperty_InPlaceProcessing: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
@@ -1889,13 +1895,19 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
         }
 
         case kAudioUnitProperty_InPlaceProcessing: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            // Without a main input it stays off.
+            // Without a main input it stays off. Listeners hear of a change
+            // only.
             bool inPlace = *(UInt32*)inData != 0 && BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input) > 0;
-            atomic_store_explicit(&inst->processesInPlace, inPlace, memory_order_relaxed);
-            NotifyPropertyListeners(inst, propID, scope, element);
+            bool before = atomic_exchange_explicit(&inst->processesInPlace, inPlace, memory_order_relaxed);
+            if (before != inPlace) {
+                NotifyPropertyListeners(inst, propID, scope, element);
+            }
             return noErr;
         }
 
