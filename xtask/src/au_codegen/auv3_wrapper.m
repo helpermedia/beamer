@@ -217,7 +217,7 @@ typedef struct {
     // The host's blocks as the render block should call them, written under
     // _hostBlocksLock from the allocation of render resources to their
     // deallocation. The render block only tries the lock and copies them
-    // into _renderHostBlocks, which only it uses: it never waits, and a copy
+    // into _renderHostBlocks, which only it uses: it never waits and a copy
     // is never half written.
     BeamerAuv3HostBlocks _hostBlocks;
     os_unfair_lock _hostBlocksLock;
@@ -548,6 +548,15 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     bus.maximumChannelCount = BEAMER_AU_MAX_CHANNELS;
+
+    // Hosts enable the buses they use: Apple's bridge for v2 hosts follows
+    // the input connections, an engine enables what it connects. The flag
+    // starts as the plugin declares its buses and decides nothing here. A
+    // bus is part of the configuration by its format; an input without a
+    // source has no samples for that render call.
+    bus.enabled = isInput
+        ? beamer_au_is_input_bus_default_active(_rustInstance, index)
+        : beamer_au_is_output_bus_default_active(_rustInstance, index);
 
     if (isInput) {
         bus.name = (index == 0) ? @"Main Input" : [NSString stringWithFormat:@"Aux Input %u", index];
@@ -943,7 +952,7 @@ static void beamer_auv3_on_loaded(void* context) {
         // render of the main bus processes it; a call for another output bus
         // copies what that render produced. With matching channel counts the
         // input goes straight into the host's output buffers when they have
-        // memory. Otherwise it goes into our own buffer, and an output buffer
+        // memory. Otherwise it goes into our own buffer; an output buffer
         // without memory (the host asks for in place) gets our input
         // buffer's, valid until the next render call. When the upstream
         // replaced our buffers with its own, the samples are copied into ours
@@ -977,7 +986,7 @@ static void beamer_auv3_on_loaded(void* context) {
         }
 
         // A bypassed unit leaves the plugin out: its main output is a copy of
-        // the main input, or silence without one, and its MIDI input is
+        // the main input (or silence without one) and its MIDI input is
         // dropped. A MIDI effect passes the channel messages on unchanged.
         // Parameter changes apply at once.
         if (atomic_load_explicit(&blockSelf->_bypassed, memory_order_relaxed)) {
@@ -1529,8 +1538,8 @@ static void beamer_auv3_on_loaded(void* context) {
     // of its superview before the WebView is built again.
     [self _fitEditorTo:container];
 
-    // The first frame sends every parameter, and events the plugin emits
-    // from now on are kept for this editor.
+    // The first frame sends every parameter. Events the plugin emits from
+    // now on are kept for this editor.
     _sync = beamer_au_editor_sync_open(_rustInstance);
 
     // Start 60 Hz parameter sync timer.
@@ -1573,7 +1582,7 @@ static void beamer_auv3_on_loaded(void* context) {
 // The view of the editor left its window or the window was hidden. Nothing
 // runs for it until it is shown again. The teardown waits for the next turn
 // of the run loop: a host that moves the view to another window takes it
-// out of one and puts it into the other right away, and the page keeps its
+// out of one and puts it into the other right away. The page keeps its
 // state then.
 - (void)_editorHidden:(NSView*)view {
     if ((__bridge const void*)view != _editorView) {

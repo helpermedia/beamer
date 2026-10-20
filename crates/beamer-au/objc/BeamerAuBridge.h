@@ -495,7 +495,7 @@ typedef struct {
  * Receives one MIDI message the plugin produced during beamer_au_render().
  *
  * The wrapper passes a function of this type when the host listens to the
- * plugin's MIDI output, and forwards the message to the host. Called on the
+ * plugin's MIDI output. It forwards the message to the host. Called on the
  * render thread, from inside beamer_au_render().
  *
  * @param context       The midi_output_context passed to beamer_au_render().
@@ -1385,6 +1385,40 @@ uint32_t beamer_au_get_input_bus_channel_count(
  * @return Default channel count (0 if bus index is invalid).
  */
 uint32_t beamer_au_get_output_bus_channel_count(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t bus_index
+);
+
+/**
+ * Check whether an input bus is on by default: the main bus, or an aux bus
+ * the plugin declares active by default.
+ *
+ * The AUv3 wrapper seeds the enabled flag of its buses with this.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance  Handle to the plugin instance.
+ * @param bus_index Index of the input bus.
+ *
+ * @return true if the bus is on by default (false if bus index is invalid).
+ */
+bool beamer_au_is_input_bus_default_active(
+    BeamerAuInstanceHandle _Nullable instance,
+    uint32_t bus_index
+);
+
+/**
+ * Check whether an output bus is on by default, as for
+ * beamer_au_is_input_bus_default_active().
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance  Handle to the plugin instance.
+ * @param bus_index Index of the output bus.
+ *
+ * @return true if the bus is on by default (false if bus index is invalid).
+ */
+bool beamer_au_is_output_bus_default_active(
     BeamerAuInstanceHandle _Nullable instance,
     uint32_t bus_index
 );

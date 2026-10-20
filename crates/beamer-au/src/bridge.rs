@@ -2075,6 +2075,43 @@ pub extern "C" fn beamer_au_get_output_bus_channel_count(
     get_bus_channel_count_impl(instance, bus_index, BusDirection::Output)
 }
 
+/// Whether an input bus is on by default: the main bus, or an aux bus
+/// active by default (`BusInfo::is_default_active`).
+///
+/// The AUv3 wrapper seeds the `enabled` flag of its buses with this. False
+/// for a bus that does not exist.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_is_input_bus_default_active(
+    instance: BeamerAuInstanceHandle,
+    bus_index: u32,
+) -> bool {
+    with_instance!(instance, false, |handle| {
+        handle.declared_buses.default_buses().is_input_on(bus_index as usize)
+    })
+}
+
+/// Whether an output bus is on by default, as for
+/// `beamer_au_is_input_bus_default_active`.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_is_output_bus_default_active(
+    instance: BeamerAuInstanceHandle,
+    bus_index: u32,
+) -> bool {
+    with_instance!(instance, false, |handle| {
+        handle.declared_buses.default_buses().is_output_on(bus_index as usize)
+    })
+}
+
 /// Declared channel counts of the main input and output bus.
 ///
 /// A plugin that declares no bus in a direction has 0 channels there. That is

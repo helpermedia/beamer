@@ -2298,6 +2298,7 @@ mod tests {
         beamer_au_get_group_info, beamer_au_get_input_bus_channel_count,
         beamer_au_get_input_bus_count, beamer_au_get_latency_samples,
         beamer_au_get_output_bus_channel_count, beamer_au_get_output_bus_count,
+        beamer_au_is_input_bus_default_active, beamer_au_is_output_bus_default_active,
         beamer_au_get_parameter_value, beamer_au_get_preset_count, beamer_au_get_preset_info,
         beamer_au_is_prepared,
         beamer_au_copy_state, beamer_au_free_state, beamer_au_get_tail_samples,
@@ -2571,6 +2572,9 @@ mod tests {
         assert_eq!(beamer_au_get_output_bus_count(instance), 1);
         assert_eq!(beamer_au_get_input_bus_channel_count(instance, 0), 2);
         assert_eq!(beamer_au_get_output_bus_channel_count(instance, 0), 2);
+        assert!(beamer_au_is_input_bus_default_active(instance, 0));
+        assert!(beamer_au_is_output_bus_default_active(instance, 0));
+        assert!(!beamer_au_is_input_bus_default_active(instance, 1));
 
         // Latency, tail and a reset.
         assert_eq!(beamer_au_get_tail_samples(instance), TEST_TAIL_SAMPLES);
