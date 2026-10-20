@@ -939,6 +939,11 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     /// The layouts the plugin supports, the default first. They give the
     /// bus count and the channels of each bus. Default: stereo in and out.
     ///
+    /// The plugin starts with the first layout. A host may ask for the
+    /// sets of another: the plugin is prepared with them when a layout
+    /// allows them (a wildcard takes the host's set) and
+    /// [`supports_buses`](Model::supports_buses) accepts them.
+    ///
     /// Every layout has the same number of input buses and of output buses
     /// (see [`Layout`]); `#[beamer::export]` checks the list when the plugin
     /// is compiled. A plugin without audio input, such as most instruments
@@ -965,8 +970,10 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     /// Whether the plugin can process with these buses on.
     ///
-    /// A host may switch aux buses on and off. Before the plugin is
-    /// prepared with a new combination, it is asked here, on a host thread.
+    /// A host may switch aux buses on and off and ask for other channel
+    /// sets. Before the plugin is prepared with a new combination that one
+    /// of its [`LAYOUTS`](Model::LAYOUTS) allows, it is asked here, on a
+    /// host thread.
     /// When it refuses, it is prepared with the last combination it
     /// accepted. It starts with the declared default
     /// ([`ActiveBuses::default_for`]) without being asked. The

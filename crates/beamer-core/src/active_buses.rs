@@ -1,14 +1,15 @@
 //! The buses a plugin is prepared with and how a host's request becomes
 //! that combination.
 //!
-//! A host may switch buses on and off. The format wrappers record its
-//! request in a [`BusNegotiation`], which asks the plugin
+//! A host may switch buses on and off and ask for other channel sets. The
+//! format wrappers record its request in a [`BusNegotiation`], which checks
+//! it against the plugin's layouts ([`Model::LAYOUTS`]), asks the plugin
 //! ([`Model::supports_buses`]) and keeps the combination it accepted. The
 //! plugin is prepared with the accepted [`ActiveBuses`]; where the host's
 //! request and the accepted combination differ, the wrapper bridges the
 //! difference per bus as its [`BusRouting`] says.
 
-use crate::channel_layouts::{ChannelSet, Layout};
+use crate::channel_layouts::{self, ChannelSet, Layout};
 use crate::plugin::{self, HostSetup, Model, PluginSetup};
 use crate::types::MAX_BUSES;
 
@@ -219,7 +220,8 @@ pub enum BusRouting {
 pub struct BusNegotiation {
     requested: ActiveBuses,
     accepted: ActiveBuses,
-    // The last combination the plugin refused, so it is not asked again.
+    // The last combination no layout allowed or the plugin refused, so it
+    // is not checked again.
     refused: Option<ActiveBuses>,
 }
 
@@ -258,32 +260,46 @@ impl BusNegotiation {
     /// Turns the host's request into the combination the plugin is
     /// prepared with.
     ///
-    /// The main buses stay on. The plugin is asked with
-    /// [`Model::supports_buses`] when the request differs from the
-    /// combination it accepted last and from the one it refused last; when
-    /// it refuses, it keeps the one it accepted. Call on a host thread.
+    /// The main buses stay on. A request that differs from the combination
+    /// the plugin accepted last and from the one it refused last is
+    /// checked against the model's [`LAYOUTS`](Model::LAYOUTS): one of them
+    /// must allow it (see [`Layout::allows`]). The plugin is then asked with
+    /// [`Model::supports_buses`]. A request no layout allows or the plugin
+    /// refuses keeps the combination it accepted. Call on a host thread.
     ///
     /// Returns whether the accepted combination changed, so the plugin
     /// needs to be prepared again.
     pub fn negotiate<M: Model>(&mut self, model: &M) -> bool {
-        self.negotiate_with(|buses| model.supports_buses(buses))
+        self.negotiate_with(M::LAYOUTS, |buses| model.supports_buses(buses))
     }
 
-    /// [`negotiate`](Self::negotiate) with the plugin's answer from
-    /// `supports_buses`, for a wrapper that holds the model behind a trait
-    /// object.
-    pub fn negotiate_with(&mut self, supports_buses: impl FnOnce(&ActiveBuses) -> bool) -> bool {
+    /// [`negotiate`](Self::negotiate) with the plugin's `layouts` and its
+    /// answer from `supports_buses`, for a wrapper that holds the model
+    /// behind a trait object.
+    pub fn negotiate_with(
+        &mut self,
+        layouts: &'static [Layout],
+        supports_buses: impl FnOnce(&ActiveBuses) -> bool,
+    ) -> bool {
         let candidate = self.requested.with_main_buses_on(&self.accepted);
         if candidate == self.accepted || self.refused == Some(candidate) {
             return false;
         }
-        if !supports_buses(&candidate) {
+        if channel_layouts::matching(layouts, &candidate).is_none() || !supports_buses(&candidate) {
             self.refused = Some(candidate);
             return false;
         }
         self.accepted = candidate;
         self.refused = None;
         true
+    }
+
+    /// The buses of the listed layout nearest to the host's request, with
+    /// the main buses on as the plugin has them (see
+    /// [`channel_layouts::nearest`]), for a format that suggests a layout
+    /// when it refuses one.
+    pub fn nearest(&self, layouts: &'static [Layout]) -> ActiveBuses {
+        channel_layouts::nearest(layouts, &self.requested.with_main_buses_on(&self.accepted))
     }
 
     /// How input bus `bus` is connected. An undeclared bus is
@@ -566,6 +582,110 @@ mod tests {
         assert_eq!(negotiation.accepted().input(0), Some(2));
         assert_eq!(negotiation.accepted().input(1), Some(2));
         assert_eq!(negotiation.accepted().output(0), Some(2));
+    }
+
+    /// Mono or stereo, the same in and out.
+    #[derive(Default)]
+    struct MonoOrStereoModel {
+        fields: NoParameters,
+    }
+
+    crate::__forward_model!(MonoOrStereoModel, fields);
+
+    impl Model for MonoOrStereoModel {
+        type Setup = ();
+        type Processor = SidechainProcessor;
+        const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO];
+
+        fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+            SidechainProcessor
+        }
+    }
+
+    #[test]
+    fn test_request_of_another_layout_is_accepted() {
+        let model = MonoOrStereoModel::default();
+        let mut negotiation = BusNegotiation::new(&model);
+        assert_eq!(negotiation.accepted().input_set(0), Some(ChannelSet::Stereo));
+
+        assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Mono)));
+        assert!(negotiation.requested_mut().set_output(0, Some(ChannelSet::Mono)));
+        assert!(negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted().input_set(0), Some(ChannelSet::Mono));
+        assert_eq!(negotiation.accepted().output_set(0), Some(ChannelSet::Mono));
+    }
+
+    #[test]
+    fn test_request_no_layout_allows_keeps_the_last_accepted_buses() {
+        let model = MonoOrStereoModel::default();
+        let mut negotiation = BusNegotiation::new(&model);
+
+        // Mono in, stereo out is not listed.
+        assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Mono)));
+        assert!(!negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted(), &ActiveBuses::default_for(&model));
+
+        // The main output decides for the nearest listed layout: stereo in
+        // and out.
+        let nearest = negotiation.nearest(MonoOrStereoModel::LAYOUTS);
+        assert_eq!(nearest.input_set(0), Some(ChannelSet::Stereo));
+        assert_eq!(nearest.output_set(0), Some(ChannelSet::Stereo));
+
+        // Nor is a set of the same count as a listed one.
+        assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Discrete(2))));
+        assert!(!negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted(), &ActiveBuses::default_for(&model));
+
+        // The sidechain model lists stereo only: a mono sidechain is
+        // refused without asking the plugin.
+        let model = SidechainModel::default();
+        let mut negotiation = BusNegotiation::new(&model);
+        assert!(negotiation.requested_mut().set_input(1, Some(ChannelSet::Mono)));
+        assert!(!negotiation.negotiate(&model));
+        assert_eq!(model.questions.load(Ordering::Relaxed), 0);
+        assert!(!negotiation.accepted().is_input_on(1));
+    }
+
+    #[test]
+    fn test_wildcard_takes_the_hosts_set() {
+        #[derive(Default)]
+        struct MatchedModel {
+            fields: NoParameters,
+        }
+
+        crate::__forward_model!(MatchedModel, fields);
+
+        impl Model for MatchedModel {
+            type Setup = ();
+            type Processor = SidechainProcessor;
+            const LAYOUTS: &'static [Layout] = &[Layout::MATCHED];
+
+            fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
+                SidechainProcessor
+            }
+        }
+
+        let model = MatchedModel::default();
+        let mut negotiation = BusNegotiation::new(&model);
+        assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Surround51)));
+        assert!(negotiation.requested_mut().set_output(0, Some(ChannelSet::Discrete(6))));
+        assert!(negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted().input_set(0), Some(ChannelSet::Surround51));
+        assert_eq!(negotiation.accepted().output_set(0), Some(ChannelSet::Discrete(6)));
+
+        // The main input off for the host: the output follows the input
+        // the plugin keeps.
+        assert!(negotiation.requested_mut().set_input(0, None));
+        assert!(negotiation.requested_mut().set_output(0, Some(ChannelSet::Surround51)));
+        assert!(negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted().input_set(0), Some(ChannelSet::Surround51));
+        assert_eq!(negotiation.accepted().output_set(0), Some(ChannelSet::Surround51));
+        assert!(negotiation.requested_mut().set_input(0, Some(ChannelSet::Surround51)));
+
+        // An output that does not follow the input's count is refused.
+        assert!(negotiation.requested_mut().set_output(0, Some(ChannelSet::Stereo)));
+        assert!(!negotiation.negotiate(&model));
+        assert_eq!(negotiation.accepted().output_set(0), Some(ChannelSet::Surround51));
     }
 
     #[test]

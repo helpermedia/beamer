@@ -20,6 +20,7 @@
 //! [`Model::LAYOUTS`]: crate::Model::LAYOUTS
 //! [`Model::input_bus_info`]: crate::Model::input_bus_info
 
+use crate::active_buses::ActiveBuses;
 use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// The speaker layout of one bus.
@@ -108,6 +109,20 @@ impl BusLayout {
     pub const MONO: BusLayout = BusLayout::Set(ChannelSet::Mono);
     /// A stereo bus.
     pub const STEREO: BusLayout = BusLayout::Set(ChannelSet::Stereo);
+
+    /// Whether a bus of this layout can have the set `set`. `main_input` is
+    /// the set of the main input, which [`SameAsMainInput`](Self::SameAsMainInput)
+    /// follows.
+    pub fn allows(&self, set: ChannelSet, main_input: Option<ChannelSet>) -> bool {
+        let count = set.channel_count();
+        match *self {
+            BusLayout::Set(own) => own == set,
+            BusLayout::Any => count > 0 && count as usize <= MAX_CHANNELS,
+            BusLayout::SameAsMainInput => {
+                main_input.is_some_and(|main| main.channel_count() == count)
+            }
+        }
+    }
 
     /// The set a bus of this layout starts with, before a host asks for
     /// another: the set itself, stereo for [`Any`](Self::Any) and the set
@@ -198,6 +213,137 @@ impl Layout {
             return None;
         }
         Some(self.outputs[bus].first_set(self.first_input_set(0)))
+    }
+}
+
+impl Layout {
+    /// Whether this layout allows `buses`: the same number of buses in each
+    /// direction and a set this layout allows on every bus that is on. A
+    /// bus that is off matches any entry. An output that follows the main
+    /// input follows the set this layout starts with when the main input is
+    /// off.
+    pub fn allows(&self, buses: &ActiveBuses) -> bool {
+        if buses.input_bus_count() != self.inputs.len() || buses.output_bus_count() != self.outputs.len() {
+            return false;
+        }
+        let main_input = self.main_input_of(buses);
+        let inputs = self.inputs.iter().enumerate().all(|(bus, layout)| {
+            buses.input_set(bus).is_none_or(|set| layout.allows(set, None))
+        });
+        let outputs = self.outputs.iter().enumerate().all(|(bus, layout)| {
+            buses.output_set(bus).is_none_or(|set| layout.allows(set, main_input))
+        });
+        inputs && outputs
+    }
+
+    /// `buses` as this layout has them: each bus on or off as in `buses`,
+    /// with its set where this layout allows it and the set this layout
+    /// starts with otherwise. A bus that follows the main input gets its
+    /// set when the counts differ.
+    ///
+    /// Buses past the bus counts of this layout are left as they are.
+    pub fn apply(&self, buses: &ActiveBuses) -> ActiveBuses {
+        let mut applied = *buses;
+        for (bus, layout) in self.inputs.iter().enumerate() {
+            if let Some(set) = buses.input_set(bus) {
+                let kept = layout.allows(set, None).then_some(set);
+                let _ = applied.set_input(bus, kept.or(Some(layout.first_set(None))));
+            }
+        }
+        // Outputs follow the main input as it is now.
+        let main_input = self.main_input_of(&applied);
+        for (bus, layout) in self.outputs.iter().enumerate() {
+            if let Some(set) = buses.output_set(bus) {
+                let kept = layout.allows(set, main_input).then_some(set);
+                let _ = applied.set_output(bus, kept.or(Some(layout.first_set(main_input))));
+            }
+        }
+        applied
+    }
+
+    /// The set of the main input that outputs following it follow: the one
+    /// in `buses`, or the one this layout starts with when it is off.
+    fn main_input_of(&self, buses: &ActiveBuses) -> Option<ChannelSet> {
+        buses.input_set(0).or(self.first_input_set(0))
+    }
+
+    /// How close this layout is to `buses`, for [`nearest`]: whether it
+    /// allows the main output, whether its main output has the same count,
+    /// the same for the main input, then the number of aux buses it allows.
+    fn closeness(&self, buses: &ActiveBuses) -> Closeness {
+        // An output that follows the main input follows the one this layout
+        // would give.
+        let main_input = self.main_input_of(&self.apply(buses));
+        let input = |bus: usize| {
+            buses.input_set(bus).is_none_or(|set| self.inputs[bus].allows(set, None))
+        };
+        let output = |bus: usize| {
+            buses.output_set(bus).is_none_or(|set| self.outputs[bus].allows(set, main_input))
+        };
+        // A main bus that is off, or that this layout does not have, counts
+        // as allowed.
+        let same_count = |requested: Option<ChannelSet>, first: Option<ChannelSet>| match (requested, first) {
+            (Some(requested), Some(first)) => requested.channel_count() == first.channel_count(),
+            _ => true,
+        };
+        let aux_inputs = (1..self.inputs.len()).filter(|&bus| input(bus)).count();
+        let aux_outputs = (1..self.outputs.len()).filter(|&bus| output(bus)).count();
+        let main_output = self.outputs.is_empty() || output(0);
+        let main_input_allowed = self.inputs.is_empty() || input(0);
+        Closeness {
+            main_output,
+            main_output_count: main_output || same_count(buses.output_set(0), self.first_output_set(0)),
+            main_input: main_input_allowed,
+            main_input_count: main_input_allowed || same_count(buses.input_set(0), self.first_input_set(0)),
+            aux_buses: aux_inputs + aux_outputs,
+        }
+    }
+}
+
+/// How close a layout is to a request, compared field by field in order.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Closeness {
+    // Whether the layout allows the main output.
+    main_output: bool,
+    // Whether its main output has the requested channel count.
+    main_output_count: bool,
+    // Whether it allows the main input.
+    main_input: bool,
+    // Whether its main input has the requested channel count.
+    main_input_count: bool,
+    // How many aux buses it allows.
+    aux_buses: usize,
+}
+
+/// The first of `layouts` that allows `buses` (see [`Layout::allows`]).
+pub fn matching(layouts: &'static [Layout], buses: &ActiveBuses) -> Option<&'static Layout> {
+    layouts.iter().find(|layout| layout.allows(buses))
+}
+
+/// The buses of the layout of `layouts` nearest to `buses`, for a host
+/// that asks for buses no layout allows: `buses` as that layout has them
+/// (see [`Layout::apply`]).
+///
+/// The nearest layout allows the main output of `buses` (by set, else by
+/// channel count), then its main input (the same way), then the most aux
+/// buses; of layouts equally near, the first. When no layout allows a main
+/// bus or the aux buses, that is the default layout. A layout that allows
+/// `buses` gives them unchanged, as does a request with other bus counts
+/// than the layouts.
+pub fn nearest(layouts: &'static [Layout], buses: &ActiveBuses) -> ActiveBuses {
+    let mut nearest: Option<(&Layout, Closeness)> = None;
+    for layout in layouts {
+        if layout.inputs.len() != buses.input_bus_count() || layout.outputs.len() != buses.output_bus_count() {
+            continue;
+        }
+        let closeness = layout.closeness(buses);
+        if nearest.is_none_or(|(_, best)| closeness > best) {
+            nearest = Some((layout, closeness));
+        }
+    }
+    match nearest {
+        Some((layout, _)) => layout.apply(buses),
+        None => *buses,
     }
 }
 
@@ -315,6 +461,187 @@ mod tests {
         assert_eq!(Layout::default_of(&[Layout::MONO, Layout::STEREO]), &Layout::MONO);
         assert_eq!(Layout::default_of(&[]).inputs.len(), 0);
         assert_eq!(Layout::default_of(&[]).outputs.len(), 0);
+    }
+
+    /// Buses on with `inputs` and `outputs`, `None` for a bus that is off.
+    fn buses(inputs: &[Option<ChannelSet>], outputs: &[Option<ChannelSet>]) -> ActiveBuses {
+        let mut buses = ActiveBuses::all_off(inputs.len(), outputs.len());
+        for (bus, &set) in inputs.iter().enumerate() {
+            assert!(buses.set_input(bus, set));
+        }
+        for (bus, &set) in outputs.iter().enumerate() {
+            assert!(buses.set_output(bus, set));
+        }
+        buses
+    }
+
+    use ChannelSet::{Mono, Quad, Stereo, Surround51};
+
+    /// Mono or stereo in and out, mono to stereo, with a sidechain of any
+    /// width.
+    const EFFECT: &[Layout] = &[
+        Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::Any],
+            outputs: &[BusLayout::STEREO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::Any],
+            outputs: &[BusLayout::MONO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::Any],
+            outputs: &[BusLayout::STEREO],
+        },
+    ];
+
+    #[test]
+    fn test_bus_layout_allows() {
+        assert!(BusLayout::MONO.allows(Mono, None));
+        assert!(!BusLayout::MONO.allows(Stereo, None));
+        // A set of the same count is another set.
+        assert!(!BusLayout::Set(Quad).allows(ChannelSet::Ambisonic(1), None));
+        assert!(BusLayout::Any.allows(Surround51, None));
+        assert!(BusLayout::Any.allows(ChannelSet::Discrete(MAX_CHANNELS as u32), None));
+        assert!(!BusLayout::Any.allows(ChannelSet::Discrete(MAX_CHANNELS as u32 + 1), None));
+        assert!(!BusLayout::Any.allows(ChannelSet::Discrete(0), None));
+        // Any set of the main input's count.
+        assert!(BusLayout::SameAsMainInput.allows(Quad, Some(ChannelSet::Ambisonic(1))));
+        assert!(!BusLayout::SameAsMainInput.allows(Stereo, Some(Mono)));
+        assert!(!BusLayout::SameAsMainInput.allows(Stereo, None));
+    }
+
+    #[test]
+    fn test_layout_allows() {
+        // Every bus as listed, the sidechain of any width.
+        assert!(EFFECT[0].allows(&buses(&[Some(Stereo), Some(Surround51)], &[Some(Stereo)])));
+        // A bus that is off matches anything.
+        assert!(EFFECT[0].allows(&buses(&[Some(Stereo), None], &[Some(Stereo)])));
+        assert!(EFFECT[0].allows(&buses(&[Some(Stereo), None], &[None])));
+        assert!(!EFFECT[0].allows(&buses(&[Some(Mono), None], &[Some(Stereo)])));
+        // Another bus count.
+        assert!(!EFFECT[0].allows(&buses(&[Some(Stereo)], &[Some(Stereo)])));
+
+        assert!(Layout::MATCHED.allows(&buses(&[Some(Surround51)], &[Some(ChannelSet::Discrete(6))])));
+        assert!(!Layout::MATCHED.allows(&buses(&[Some(Surround51)], &[Some(Stereo)])));
+    }
+
+    #[test]
+    fn test_matching_takes_the_first_layout_that_allows() {
+        let mono_to_stereo = buses(&[Some(Mono), None], &[Some(Stereo)]);
+        assert_eq!(matching(EFFECT, &mono_to_stereo), Some(&EFFECT[2]));
+        let mono = buses(&[Some(Mono), Some(Mono)], &[Some(Mono)]);
+        assert_eq!(matching(EFFECT, &mono), Some(&EFFECT[1]));
+        assert_eq!(matching(EFFECT, &buses(&[Some(Stereo), None], &[Some(Mono)])), None);
+    }
+
+    #[test]
+    fn test_apply_keeps_what_the_layout_allows() {
+        // Stereo in is not mono: it gets the layout's set; the sidechain
+        // keeps its width, a bus that is off stays off.
+        let applied = EFFECT[2].apply(&buses(&[Some(Stereo), Some(Quad)], &[Some(Stereo)]));
+        assert_eq!(applied, buses(&[Some(Mono), Some(Quad)], &[Some(Stereo)]));
+        let applied = EFFECT[2].apply(&buses(&[Some(Stereo), None], &[None]));
+        assert_eq!(applied, buses(&[Some(Mono), None], &[None]));
+
+        // An output that follows the main input takes its set when the
+        // counts differ.
+        let applied = Layout::MATCHED.apply(&buses(&[Some(Surround51)], &[Some(Stereo)]));
+        assert_eq!(applied, buses(&[Some(Surround51)], &[Some(Surround51)]));
+        let applied = Layout::MATCHED.apply(&buses(&[Some(Quad)], &[Some(ChannelSet::Ambisonic(1))]));
+        assert_eq!(applied, buses(&[Some(Quad)], &[Some(ChannelSet::Ambisonic(1))]));
+    }
+
+    #[test]
+    fn test_layout_allows_what_it_applies() {
+        let requests = [
+            buses(&[None], &[Some(Stereo)]),
+            buses(&[None], &[Some(Mono)]),
+            buses(&[Some(Surround51)], &[Some(Stereo)]),
+            buses(&[Some(ChannelSet::Discrete(MAX_CHANNELS as u32 + 8))], &[None]),
+        ];
+        let layouts = [Layout::MATCHED, Layout::STEREO, Layout::MONO_TO_STEREO];
+        for layout in layouts {
+            for request in requests {
+                assert!(layout.allows(&layout.apply(&request)), "{layout:?} {request:?}");
+            }
+        }
+        // A main input that is off matches anything, also with an output
+        // that follows it: the output follows the set it starts with.
+        assert!(Layout::MATCHED.allows(&buses(&[None], &[Some(Stereo)])));
+        assert!(!Layout::MATCHED.allows(&buses(&[None], &[Some(Mono)])));
+    }
+
+    #[test]
+    fn test_nearest() {
+        // A layout that allows the buses gives them unchanged.
+        let mono = buses(&[Some(Mono), Some(Stereo)], &[Some(Mono)]);
+        assert_eq!(nearest(EFFECT, &mono), mono);
+
+        // Stereo in, mono out: the main output decides first (mono to
+        // mono, the first layout with a mono output).
+        let nearest_layout = nearest(EFFECT, &buses(&[Some(Stereo), None], &[Some(Mono)]));
+        assert_eq!(nearest_layout, buses(&[Some(Mono), None], &[Some(Mono)]));
+
+        // 5.1 in, stereo out: stereo out, then the first such layout.
+        let nearest_layout = nearest(EFFECT, &buses(&[Some(Surround51), None], &[Some(Stereo)]));
+        assert_eq!(nearest_layout, buses(&[Some(Stereo), None], &[Some(Stereo)]));
+
+        // Mono in, stereo out: both main buses decide for the third.
+        let request = buses(&[Some(Mono), None], &[Some(Stereo)]);
+        assert_eq!(nearest(EFFECT, &request), request);
+
+        // Nothing allowed: the default layout.
+        let nearest_layout = nearest(EFFECT, &buses(&[Some(Quad), None], &[Some(Quad)]));
+        assert_eq!(nearest_layout, buses(&[Some(Stereo), None], &[Some(Stereo)]));
+
+        // The aux buses decide between layouts with the same main buses.
+        const AUX: &[Layout] = &[
+            Layout {
+                inputs: &[BusLayout::STEREO, BusLayout::MONO],
+                outputs: &[BusLayout::STEREO],
+            },
+            Layout {
+                inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+                outputs: &[BusLayout::STEREO],
+            },
+        ];
+        let request = buses(&[Some(Mono), Some(Stereo)], &[Some(Stereo)]);
+        assert_eq!(nearest(AUX, &request), buses(&[Some(Stereo), Some(Stereo)], &[Some(Stereo)]));
+
+        // Of two layouts that do not allow the main output, the one with its
+        // channel count.
+        const QUAD_OR_STEREO: &[Layout] = &[
+            Layout::STEREO,
+            Layout {
+                inputs: &[BusLayout::Set(Quad)],
+                outputs: &[BusLayout::Set(Quad)],
+            },
+        ];
+        let request = buses(&[Some(Stereo)], &[Some(ChannelSet::Ambisonic(1))]);
+        assert_eq!(nearest(QUAD_OR_STEREO, &request), buses(&[Some(Quad)], &[Some(Quad)]));
+
+        // The output follows the input as the nearest layout has it.
+        const STEREO_FOLLOWED: &[Layout] = &[Layout {
+            inputs: &[BusLayout::STEREO],
+            outputs: &[BusLayout::SameAsMainInput],
+        }];
+        let request = buses(&[Some(Mono)], &[Some(Mono)]);
+        assert_eq!(nearest(STEREO_FOLLOWED, &request), buses(&[Some(Stereo)], &[Some(Stereo)]));
+
+        // A layout whose output would follow an input it does not keep is
+        // no nearer for that output.
+        const FOLLOWED_OR_MONO: &[Layout] = &[
+            Layout {
+                inputs: &[BusLayout::STEREO],
+                outputs: &[BusLayout::SameAsMainInput],
+            },
+            Layout::MONO_TO_STEREO,
+        ];
+        assert_eq!(nearest(FOLLOWED_OR_MONO, &request), buses(&[Some(Mono)], &[Some(Stereo)]));
+
+        // Other bus counts than the layouts: unchanged.
+        let request = buses(&[Some(Quad)], &[Some(Quad)]);
+        assert_eq!(nearest(EFFECT, &request), request);
     }
 
     #[test]

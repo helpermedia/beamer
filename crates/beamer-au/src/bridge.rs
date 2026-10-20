@@ -938,7 +938,7 @@ fn prepare_instance(
         };
 
         // The plugin is prepared with the buses it accepts.
-        negotiation.negotiate_with(|buses| plugin.supports_buses(buses));
+        negotiation.negotiate_with(plugin.layouts(), |buses| plugin.supports_buses(buses));
         let prepared = plugin.allocate_render_resources(
             sample_rate,
             max_frames,

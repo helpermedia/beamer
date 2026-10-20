@@ -2162,7 +2162,7 @@ mod tests {
         // nothing is pulled.
         let mut buses = all_connected(&sidechain_bus_config());
         assert!(buses.requested_mut().set_input(1, None));
-        assert!(!buses.negotiate_with(|_| false));
+        assert!(!buses.negotiate_with(&[Layout::STEREO], |_| false));
         let block = fake_pull_block(false, false);
         assert_eq!(render_sidechain_with(&block, buses), [0.0, 0.0]);
         assert_eq!(block.seen_buffers.get(), 0);
@@ -2174,7 +2174,7 @@ mod tests {
         assert!(off.set_input(1, None));
         let mut buses = beamer_core::BusNegotiation::starting_with(off);
         assert!(buses.requested_mut().set_input(1, Some(beamer_core::ChannelSet::Stereo)));
-        assert!(!buses.negotiate_with(|_| false));
+        assert!(!buses.negotiate_with(&[Layout::STEREO], |_| false));
         let block = fake_pull_block(false, false);
         assert_eq!(render_sidechain_with(&block, buses), [-1.0, -1.0]);
         assert_eq!(block.seen_buffers.get(), 0);
@@ -2190,7 +2190,7 @@ mod tests {
         assert!(off.set_output(1, None));
         let mut buses = beamer_core::BusNegotiation::starting_with(off);
         assert!(buses.requested_mut().set_output(1, Some(beamer_core::ChannelSet::Stereo)));
-        assert!(!buses.negotiate_with(|_| false));
+        assert!(!buses.negotiate_with(&[Layout::STEREO], |_| false));
 
         let plugin = boxed(AuProcessor::<AuxOutputModel>::new());
         let bus_config = CachedBusConfig::from_active_buses(buses.accepted());
