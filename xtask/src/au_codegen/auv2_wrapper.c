@@ -120,7 +120,9 @@ typedef struct BeamerAuv2Instance {
     UInt32 maxFramesPerSlice;
     _Atomic bool initialized;
     _Atomic bool bypassed;
-    // kAudioUnitProperty_InPlaceProcessing: on unless the host turns it off.
+    // kAudioUnitProperty_InPlaceProcessing: on for a plugin with a main
+    // input unless the host turns it off. Without an input (an instrument)
+    // there is nothing to process in place, so it stays off.
     _Atomic bool processesInPlace;
     bool offlineRender;
 
@@ -469,7 +471,7 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     inst->maxFramesPerSlice = 1024;
     atomic_init(&inst->initialized, false);
     atomic_init(&inst->bypassed, false);
-    atomic_init(&inst->processesInPlace, true);
+    atomic_init(&inst->processesInPlace, false);
 
     // Initialize mutexes
     pthread_mutex_init(&inst->listenerMutex, NULL);
@@ -520,6 +522,9 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     // Every declared bus starts on.
     inst->inputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input);
     inst->outputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Output);
+
+    // In place with a main input.
+    atomic_store_explicit(&inst->processesInPlace, inst->inputElementCount > 0, memory_order_relaxed);
 
     // Prepare MIDI output for a plugin with MIDI output.
     AudioComponentDescription desc;
@@ -997,10 +1002,10 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }
             return noErr;
 
-        // In-place processing
+        // In-place processing.
         case kAudioUnitProperty_InPlaceProcessing:
             if (outDataSize) *outDataSize = sizeof(UInt32);
-            if (outWritable) *outWritable = true;
+            if (outWritable) *outWritable = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input) > 0;
             return noErr;
 
         // Offline render (Global scope only)
@@ -1887,7 +1892,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            atomic_store_explicit(&inst->processesInPlace, *(UInt32*)inData != 0, memory_order_relaxed);
+            // Without a main input it stays off.
+            bool inPlace = *(UInt32*)inData != 0 && BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input) > 0;
+            atomic_store_explicit(&inst->processesInPlace, inPlace, memory_order_relaxed);
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }

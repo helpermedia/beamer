@@ -1436,8 +1436,10 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 }
 
+// In place with a main input. Without one (an instrument) there is nothing
+// to process in place.
 - (BOOL)canProcessInPlace {
-    return YES;
+    return _inputBusArray.count > 0;
 }
 
 // =============================================================================
