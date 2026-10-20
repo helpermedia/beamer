@@ -94,8 +94,7 @@ The VST3 wrapper uses COM (Component Object Model) interfaces implemented direct
 │                                │         ┌────────▼─────────┐   │
 │                                │         │                  │   │
 │                                │         │  WebView Window  │   │
-│                                │         │  (WKWebView /    │   │
-│                                │         │   WebView2)      │   │
+│                                │         │   (WKWebView)    │   │
 │                                │         │                  │   │
 │                                │         └──────────────────┘   │
 └────────────────────────────────┴────────────────────────────────┘
@@ -133,7 +132,7 @@ Both formats share the same core traits and processing logic:
 
 | Thread | Responsibilities | Constraints |
 |--------|------------------|-------------|
-| **Audio Thread** | DSP processing, buffer handling | Real-time safe: no allocations, no locks, no syscalls |
+| **Audio Thread** | DSP processing, buffer handling, factory presets that arrive with the audio (VST3 program change) | Real-time safe: no allocations, no blocking locks (the AU render only tries its locks and skips or refuses the call when one is held), no syscalls |
 | **UI Thread** | Parameter changes, WebView, IPC | Can allocate, can block (briefly) |
 | **Host Thread** | Plugin lifecycle, state save/load | Varies by host |
 
@@ -192,7 +191,7 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 │          Model (lives as long as the plugin instance)           │
 │  • Created via Default::default(), kept in one Arc              │
 │  • Holds the parameters, State fields and the web UI events     │
-│  • Answers the host about buses and MIDI                        │
+│  • Answers the host about buses and MIDI mapping                │
 │  • No audio state                                               │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
@@ -208,7 +207,7 @@ Beamer uses type-safe initialization via `prepare()` that eliminates placeholder
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                                   │ dropped
-                                  │ [audio setup change, resources released]
+                                  │ [audio setup or accepted buses change, resources released]
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │          Model (still the same one)                             │
@@ -242,7 +241,7 @@ impl Processor for DelayProcessor {
 
 A Beamer plugin is two structs: the **Model** that every thread shares and the **Processor** that the audio thread owns.
 
-1. **`*Model`** - Marked with `#[beamer::model]` and implementing `Model`: the parameters, `State` fields and everything else the threads share, how the host sees the plugin (buses, MIDI) and how it creates the processor
+1. **`*Model`** - Marked with `#[beamer::model]` and implementing `Model`: the parameters, `State` fields and everything else the threads share, how the host sees the plugin (buses, MIDI mapping) and how it creates the processor. MIDI input and output are declared in `Config.toml`
 2. **`*Processor`** - Created by `prepare()`, implements `Processor` and shares the model
 
 Nested groups of parameters are structs marked with `#[beamer::group]`. See [Two-Struct Pattern](docs/REFERENCE.md#two-struct-pattern) for a complete example and [Parameters](docs/REFERENCE.md#parameters) for the parameter attributes.
@@ -383,39 +382,49 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations
 - [xtask/src/au_codegen/auv3_wrapper.m](xtask/src/au_codegen/auv3_wrapper.m) - AUv3 wrapper template (generated per-plugin by xtask)
 - [xtask/src/au_codegen/auv2_wrapper.c](xtask/src/au_codegen/auv2_wrapper.c) - AUv2 wrapper template (generated per-plugin by xtask)
+- [xtask/src/au_codegen/auv3_extension.m](xtask/src/au_codegen/auv3_extension.m) and [auv3_extension_gui.m](xtask/src/au_codegen/auv3_extension_gui.m) - AUv3 extension entry (without and with a GUI)
 - [build.rs](crates/beamer-au/build.rs) - Framework linking (ObjC compilation is handled by xtask)
 
 *Rust Layer:*
 - [bridge.rs](crates/beamer-au/src/bridge.rs) - C-ABI implementations
+- [instance.rs](crates/beamer-au/src/instance.rs) - The type-erased `AuPluginInstance` trait
 - [processor.rs](crates/beamer-au/src/processor.rs) - Plugin wrapper + f64 conversion
 - [render.rs](crates/beamer-au/src/render.rs) - RenderBlock + MIDI + parameter events
 - [lifecycle.rs](crates/beamer-au/src/lifecycle.rs) - Model and Processor of an instance, prepare
 - [transport.rs](crates/beamer-au/src/transport.rs) - Host transport conversion
+- [shared_state.rs](crates/beamer-au/src/shared_state.rs) - What host threads and the render call exchange without a lock
+- [buffer_storage.rs](crates/beamer-au/src/buffer_storage.rs) - Collecting the pointers of an `AudioBufferList` (`ProcessBufferStorageAuExt`)
 
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
-**MIDI**: UMP MIDI 1.0/2.0 to `beamer-core::MidiEvent`
-- Universal MIDI Packet format (32-bit packets)
-- Supports Note On/Off, CC, Pitch Bend, Channel Pressure, SysEx
-- 1024 event buffer (matches VST3)
+**MIDI**: AU MIDI events to `beamer-core::MidiEvent`
+- Input: MIDI 1.0 channel messages, from legacy MIDI events and from UMP event lists (MIDI 1.0 channel voice packets). No SysEx or MIDI 2.0 input yet
+- 1024 event buffer (`MAX_MIDI_EVENTS`, as in VST3)
 - `MidiCcState` tracking for CC/pitch bend queries
 - MIDI output (channel messages and SysEx) is handed to the host during the render call
 
-**Parameters**: Push model via KVO (Key-Value Observing)
-- `AUParameterTree` built from `ParameterStore`
-- `implementorValueObserver` - Changes from the host to the plugin
-- `implementorValueProvider` - Reads of the plugin by the host
+**Parameters**: Push model
+- AUv3: `AUParameterTree` built from `ParameterStore`, with implementor blocks
+  - `implementorValueObserver` - Changes from the host to the plugin
+  - `implementorValueProvider` - Reads of the plugin by the host
+- AUv2: `GetParameter`, `SetParameter` and `ScheduleParameters`. Changes go through a lock-free event queue into the next render call
 - Automation via `AURenderEventParameter`/`ParameterRamp` (a ramp as a change to its end value; sample-accurate with `sample_accurate_automation`, see below)
 
 **State**: NSDictionary with NSData
 - The state is the model with its parameters and `State` fields (`Saved::save_state`/`load_state`), prepared or not
 - Saved and loaded without the plugin mutex, also while audio renders
-- Compatible with VST3 format
+- The same state format as VST3
 
 **Real-time Safety**:
 - Pre-allocated f64/f32 conversion buffers (main + aux buses)
 - Pre-allocated MIDI/SysEx buffers
 - No heap allocation in render path
+
+**Render**:
+- In place: the AUv2 reports `kAudioUnitProperty_InPlaceProcessing` (global scope) and the AUv3 `canProcessInPlace` only for a plugin with a main input. With matching channel counts the main input is pulled straight into the output buffers
+- Several output buses: the host calls the render once per output bus. Bus 0 renders everything and caches the aux outputs; a call for another bus copies from the cache of the same sample time
+- Aux inputs are pulled through the pull block into memory of the wrapper's own, one buffer per host channel
+- Host threads and the render: the render holds a read lock on the render block, so allocating and deallocating wait for a running render. The AUv2 shim takes MIDI and parameter events through lock-free rings, gives the render thread its own copy of the host callbacks and refuses element count and maximum frame changes while initialized. The AUv3 hands the host's blocks to the render and keeps replaced ones alive until deallocation
 
 ### VST3 Implementation
 
@@ -441,7 +450,9 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - `setParamNormalized()` - Host sets parameter value
 - `getParamNormalized()` - Host reads parameter value
 
-**State**: Binary blob via `IBStream`, the same bytes as in the AU: the model with its parameters and `State` fields
+**State**: Binary blob via `IBStream` in the same state format as the AU: the model with its parameters and `State` fields, plus the selected program when the plugin has factory presets
+
+**Factory presets**: A program change parameter and an `IUnitInfo` program list. A program change that arrives with the audio is applied in `process()`, on the audio thread
 
 ### Comparison Table
 
@@ -450,12 +461,12 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Platform** | macOS only | macOS; Windows planned (UI backend macOS-only so far) |
 | **API Style** | Hybrid ObjC/Rust via C-ABI | COM (C++ style) |
 | **Language** | ObjC + Rust | Rust + vst3 crate |
-| **MIDI Format** | UMP MIDI 1.0/2.0 | VST3 Event union |
+| **MIDI Format** | MIDI 1.0 (legacy events and UMP) | VST3 Event union |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
-| **MIDI Output** | ✓ (instruments/MIDI effects only) | ✓ |
+| **MIDI Output** | ✓ (with `midi_output`, the default for MIDI effects) | ✓ (with `midi_output`) |
 | **SysEx Output** | ✓ | ✓ (pool) |
-| **Parameter Sync** | Push (KVO callbacks) | Pull (COM methods) |
+| **Parameter Sync** | Push (AUv3 implementor blocks, AUv2 event queue) | Pull (COM methods) |
 | **Param Automation** | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` |
 | **Bus Switching** | AUv2: element count or 0-channel format, at Initialize; AUv3: buses stay on | `activateBus()`, at `setupProcessing()` or `setActive(true)` |
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |
@@ -466,7 +477,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Registration** | ObjC factory + module init | `GetPluginFactory()` |
 | **Feature Parity** | ✓ Full parity | Reference |
 
-The format wrappers are thin translation layers: all DSP, parameter, MIDI event, buffer and transport logic lives in `beamer-core`. Only the host-facing API code differs per format.
+The format wrappers are translation layers: the shared logic (buffers and their in-place preparation, sub-blocks, bus negotiation, state, MIDI and transport types) lives in `beamer-core`. The wrappers translate host events and buffers to it.
 
 **Parameter automation.** By default both wrappers apply the parameter changes of a host block before one `process()` call for the whole block, so a change lands up to a block early and the parameter's `Smoother` hides the step. A plugin that sets `sample_accurate_automation = true` in `Config.toml` gets each change at its sample: the wrapper runs the block as sub-blocks that start at the changes, with the loop in `beamer_core::sub_blocks` that both formats share. Each sub-block gets its own `process_midi()` and `process()` call, with its MIDI relative to its start and the transport moved to its first sample. A ramp's end value applies at the start of the ramp, for the smoother to move towards: an AU ramp event, or a VST3 queue segment between two points. A VST3 segment of one sample is a jump (sent as the old value and the new value one sample later), whose new value applies at its point. A point that leaves the parameter at the value it holds is left out, so a jump splits a block once and a ramp across a block not at all. A discrete parameter has no smoother, so a VST3 ramp changes it at each sample where the line reaches the next step (`ParameterRef::is_discrete`). MIDI at or after the end of a block reaches the last sub-block at its last sample. It matters for parameters read at events (such as a setting applied per note) and costs extra `process()` calls while automation moves.
 
@@ -484,16 +495,16 @@ This section documents the invariants that Beamer enforces. These are API contra
 
 | Component | Mechanism |
 |-----------|-----------|
-| `Buffer<S>` | Stack-allocated `[Option<&[S]>; MAX_CHANNELS]` arrays |
+| `Buffer<S>` | Stack arrays: `[Option<&mut [S]>; MAX_CHANNELS]` for the main channels (in place) and `[Option<&[S]>; MAX_CHANNELS]` for unpaired inputs |
 | `AuxiliaryBuffers<S>` | Stack-allocated nested fixed arrays |
-| `MidiBuffer` | Pre-allocated fixed capacity (1024 events default) |
+| `MidiBuffer` | Fixed capacity of 1024 events (`MAX_MIDI_EVENTS`) |
 | `SysExOutputPool` | Pre-allocated slots (16 × 512 bytes default) |
 | `ProcessBufferStorage<S>` | Pre-allocated Vecs with reserved capacity; `clear()` + `push()` never allocate |
 
 **Enforcement**:
 - `setupProcessing()` pre-allocates all buffers based on plugin configuration
 - `process()` uses only stack storage and pre-allocated pools
-- Bounds checking via `.take(max)` prevents allocation even if host misbehaves
+- Channel counts are bounded by the accepted bus layout and the reserved capacity, so a misbehaving host cannot cause an allocation
 - Calls meant for host threads panic inside `process()` in debug builds: `get()`, `set()` and `reader()` of a `Handover` or `State`, `reset()`, `save()` and `load()` of a `State` and `WebViewEventQueue::emit()`. They lock, allocate or free memory. The audio thread reads through a `HandoverReader`, which does none of that. The wrappers mark the process call with a `ProcessScope`. In release builds the check compiles to nothing
 
 ### Deterministic Bus Limits
@@ -507,7 +518,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 | `MAX_AUX_BUSES` | 15 | Auxiliary buses (total minus main) |
 
 **Enforcement**:
-- `CachedBusConfig::validate()` checks the model's bus configuration against these constants before the Processor is created: VST3 `setupProcessing()` returns `kResultFalse` and logs an error, AU `allocateRenderResources` returns `kAudioUnitErr_FormatNotSupported`
+- `CachedBusConfig::validate()` checks the bus configuration against these constants before the Processor is created. VST3 checks the model's declared buses: `setupProcessing()` returns `kResultFalse` and logs an error. The AU checks the configuration the host set: `allocateRenderResources` returns `kAudioUnitErr_FormatNotSupported`
 - `validate_speaker_arrangement()` rejects invalid host arrangements in `setBusArrangements()`
 
 ### MIDI Data Fidelity
@@ -524,7 +535,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 **Overflow Handling**:
 - `MidiBuffer::has_overflowed()` flag set when capacity exceeded
 - `SysExOutputPool::has_overflowed()` flag set when pool exhausted
-- Automatic `log::warn!()` on first overflow per block
+- The audio thread does not log: it notes an overflow in `ProcessWarnings` with one atomic operation and a host thread logs it when the plugin is prepared again or released
 - Optional `sysex-heap-fallback` feature for guaranteed SysEx delivery (breaks real-time guarantee)
 
 ### Buffer Management Contracts
@@ -538,14 +549,15 @@ pub struct ProcessBufferStorage<S: Sample> {
     pub aux_outputs: Vec<Vec<*mut S>>,
     pub internal_output_buffers: Option<Vec<Vec<S>>>,
     pub max_frames: usize,
+    // Private: scratch per input and output channel and silence.
 }
 ```
 
 - Pre-allocated in `setupProcessing()` based on plugin's **actual** bus configuration (not worst-case)
 - Config-based allocation: pointer capacity, scratch and internal buffers follow the actual channel counts, not the worst case
 - Lazy aux allocation: no heap allocation for plugins without aux buses
-- Internal output buffers for every plugin with main outputs (hosts may provide null pointers)
-- Scratch memory per input and output channel, for hosts that give overlapping buffers
+- Internal output buffers that the AU wrapper points null host output buffers at
+- Scratch memory per input and output channel, for hosts that give overlapping buffers and for channels without memory: an output writes scratch whose samples are dropped, an input reads silence
 - `clear()` resets length to 0 without deallocating
 - `push()` into reserved capacity never allocates
 - `prepare_in_place()` runs once per process call, before the sub-blocks: each main output channel gets its input (or silence). A channel that would overlap another gets scratch, so the plugin processes the main bus in place and its slices never overlap
@@ -553,8 +565,11 @@ pub struct ProcessBufferStorage<S: Sample> {
 **Plugin-Declared Capacity** (configurable via Config.toml):
 ```toml
 # Config.toml
-sysex_slots = 64 # Default: 16
-sysex_buffer_size = 4096 # Default: 512 bytes
+# Default: 16.
+sysex_slots = 64
+# Payload without F0 and F7. Default: 512 bytes. Above 512 it needs a
+# sysex-* feature of the same size.
+sysex_buffer_size = 2048
 ```
 
 ### Allocation Lifecycle
@@ -575,10 +590,12 @@ Plugin Load (creates the Model)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ setupProcessing(sample_rate, max_block_size)                │
+│   • Negotiate the buses (supports_buses)                    │
 │   • CachedBusConfig::validate()                             │
 │     - Buses ≤ MAX_BUSES, channels per bus ≤ MAX_CHANNELS    │
 │     - Return kResultFalse + log if exceeded                 │
-│   • model.prepare(setup) creates the Processor              │
+│   • model.prepare(setup) creates the Processor, when there  │
+│     is none or the setup or the accepted buses changed      │
 │     - Model stays, Processor created                        │
 │     - DSP state allocated with real sample rate             │
 │   • ProcessBufferStorage::allocate_from_config()            │
@@ -592,14 +609,15 @@ Plugin Load (creates the Model)
 │ process() [audio thread, called repeatedly]                 │
 │   • storage.clear() - sets len=0, no deallocation           │
 │   • storage.push(ptr) - into reserved capacity, no alloc    │
-│   • .take(MAX_CHANNELS) - bounds check even if host lies    │
-│   • Build Buffer/AuxiliaryBuffers from pointers             │
-│   • Call Processor::process()                               │
+│   • Channels bounded by the accepted layout and capacity    │
+│   • prepare_in_place() - each output gets its input         │
+│   • Per sub-block: apply parameter changes, build           │
+│     Buffer/AuxiliaryBuffers, process_midi(), process()      │
 └─────────────────────────────────────────────────────────────┘
     │
-    ▼ (on audio setup change)
+    ▼ (on audio setup or accepted buses change)
 ┌─────────────────────────────────────────────────────────────┐
-│ setupProcessing() with new setup                            │
+│ setupProcessing() or setActive(true) with new setup         │
 │   • The Processor is dropped                                │
 │     - Parameters untouched, DSP state discarded             │
 │   • model.prepare(new_setup) creates a new Processor        │

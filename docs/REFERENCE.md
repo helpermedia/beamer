@@ -57,8 +57,8 @@ log_level = "warn"
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
 | `midi_input` | Boolean | Whether the plugin receives MIDI (default: `true` for instruments and MIDI effects, `false` otherwise). An effect with MIDI input is a music effect in AU (see [AU Component Types](#au-component-types)). A MIDI effect always has MIDI input, a generator never |
 | `midi_output` | Boolean | Whether the plugin sends MIDI (default: `true` for MIDI effects, `false` otherwise) |
-| `has_gui` | Boolean | Whether plugin has a GUI (default: `false`) |
-| `gui_size` | Array | Initial GUI size as `[width, height]` in pixels (required when `has_gui` is true) |
+| `has_gui` | Boolean | Whether plugin has a GUI (default: `false`, turned on by itself when the macro finds web assets to embed or `BEAMER_DEV_URL` is set, see [WEBVIEW.md](WEBVIEW.md#asset-embedding)) |
+| `gui_size` | Array | Initial GUI size as `[width, height]` in pixels. Set it whenever the plugin has a GUI: a missing size is a compile error only with `has_gui = true` |
 | `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 | `sample_accurate_automation` | Boolean | Apply host parameter changes within a block instead of before it, by running a block as sub-blocks (default: `false`, see [Sample-Accurate Automation](#sample-accurate-automation)) |
@@ -221,6 +221,8 @@ The generated `Default` takes every parameter from its attribute, so each one ne
 - `BoolParameter`: `name` and `default`, or only `bypass`.
 - `EnumParameter`: `name`. Its default is the variant marked `#[default]`, or else the first.
 
+A model or group needs at least one `#[parameter]`, `#[nested]` or `#[state]` field, or the attribute reports a compile error.
+
 A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is applied to the fields, so put the whole struct behind the `#[cfg]` instead.
 
 **Writing `Default` yourself:** a model with a plain field whose type has no `Default`, or with a parameter that is set up by hand, uses `#[beamer::model(no_default)]` (or `#[beamer::group(no_default)]`). Your `Default` then has to do what the generated one does after building the value: call `assign_ids("")` to give the parameters their ids and `set_group_ids()` to give them their groups.
@@ -271,6 +273,8 @@ impl Default for SamplerModel {
 
 - `db_log` - Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
 - `db_log_offset` - True logarithmic mapping for dB ranges (geometric mean at midpoint)
+
+`semitones` is for `IntParameter`, the other kinds for `FloatParameter`: a kind on the wrong type is a compile error. `BoolParameter` and `EnumParameter` take no kind. `percent` values are fractions (0.5 is 50%).
 
 Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `EnumParameter<E>` with `#[parameter]`, a `#[beamer::group]` struct with `#[nested]` and `State<T>` with `#[state]` (see [State Beyond Parameters](#state-beyond-parameters)). A field without an attribute is not a parameter and is not saved.
 
@@ -353,15 +357,17 @@ EnumParameter constructors:
 
 #### Builder Methods
 
-All parameter types support builder methods for customization. Chain these after constructors:
+Every parameter type has builder methods for customization. Chain these after constructors:
 
 **FloatParameter Builder Methods:**
 
 | Method | Description |
 |--------|-------------|
 | `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
+| `.with_string_id(id)` | Set the string ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
 | `.with_group(group_id)` | Assign to parameter group |
+| `.with_unit(unit)` | Unit type hint for AU hosts (`ParameterUnit`) |
 | `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments) |
 | `.with_precision(n)` | Display precision (decimal places) |
 | `.with_formatter(fmt)` | Replace formatter entirely |
@@ -374,12 +380,16 @@ All parameter types support builder methods for customization. Chain these after
 | Method | Description |
 |--------|-------------|
 | `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
+| `.with_string_id(id)` | Set the string ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
 | `.with_group(group_id)` | Assign to parameter group |
+| `.with_unit(unit)` | Unit type hint for AU hosts (`ParameterUnit`) |
 | `.with_precision(n)` | Display precision (for Float formatter) |
 | `.with_formatter(fmt)` | Replace formatter entirely |
 | `.readonly()` | Make parameter read-only |
 | `.non_automatable()` | Disable automation |
+
+`BoolParameter` and `EnumParameter` take `with_id`, `with_string_id`, `with_short_name`, `with_group`, `with_unit`, `readonly` and `non_automatable`.
 
 **Precision and Formatter Customization:**
 
@@ -479,7 +489,7 @@ fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context
 
 ```rust
 let mut gain_buffer = [0.0f32; 512];
-let len = buffer.len().min(512);
+let len = buffer.num_samples().min(512);
 self.model.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 // Use gain_buffer[i] per sample.
 ```
@@ -493,7 +503,8 @@ self.model.gain.fill_smoothed_f32(&mut gain_buffer[..len]);
 | `.tick_smoothed()` | Advance smoother, return value (per-sample) |
 | `.smoothed()` | Get current value without advancing |
 | `.skip_smoothing(n)` | Skip n samples (block processing) |
-| `.fill_smoothed(buf)` | Fill buffer with smoothed values |
+| `.fill_smoothed(buf)` | Fill a `&mut [f64]` with smoothed values |
+| `.smoothed_f32()` / `.tick_smoothed_f32()` / `.fill_smoothed_f32(buf)` | The f32 variants of the above |
 | `.is_smoothing()` | Check if currently ramping |
 | `.reset_smoothing()` | Reset to current value (no ramp) |
 
@@ -722,7 +733,7 @@ let path = self.sample_path.current();
 
 A web UI reaches every `State` field by its path without any code in the plugin: `__BEAMER__.state` reads and sets it and tells the UI when it changes, also behind its back (see [State Methods](WEBVIEW.md#state-methods)).
 
-**What `T` can be:** any type that derives serde's `Serialize` and `Deserialize`. The value is saved as JSON. A plugin without a serde dependency of its own derives through the re-export:
+**What `T` can be:** any `Send + Sync` type that derives serde's `Serialize` and `Deserialize`. A generated `Default` of the model needs `Default` for it too. The value is saved as JSON. A plugin without a serde dependency of its own derives through the re-export:
 
 ```rust
 use beamer::serde::{Deserialize, Serialize};
@@ -761,7 +772,7 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents` and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`.
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents` and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
 
 Every `Parameters` is also a `ParameterStore`: the parameters as the host sees them, looked up through `Parameters`. A store that keeps values without parameter objects implements `ParameterStore` directly. For a `Parameters`, `info(index)` walks the parameters and allocates. It is for listing them on host and editor threads, never per frame or on the audio thread. `info_by_id()` looks one up through `by_id()` and does not allocate. The trait and the metadata it returns:
 
@@ -836,9 +847,9 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     // Bus configuration (defaults provided). A plugin without audio input,
     // such as most instruments and generators, returns 0 from input_bus_count.
-    // An Audio Unit always has an output: one without any bus gets a stereo
-    // output in the AU formats. The answers must stay the same for the life
-    // of an instance.
+    // An Audio Unit always has an output: one without any bus gets an output
+    // in the AU formats, as wide as output_bus_info(0) says or stereo. The
+    // answers must stay the same for the life of an instance.
     fn input_bus_count(&self) -> usize { 1 }
     fn output_bus_count(&self) -> usize { 1 }
     fn input_bus_info(&self, index: usize) -> Option<BusInfo>;
@@ -936,7 +947,7 @@ impl Model for FftModel {
 
 #### Switching Buses
 
-A plugin declares its buses with `input_bus_count()`, `output_bus_count()`, `input_bus_info()` and `output_bus_info()`. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). `BusInfo::stereo` and `BusInfo::mono` declare a main bus. `BusInfo::aux` declares an aux bus that is off until the host switches it on (`is_default_active` is false).
+A plugin declares its buses with `input_bus_count()`, `output_bus_count()`, `input_bus_info()` and `output_bus_info()`. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). `BusInfo::stereo` and `BusInfo::mono` declare a main bus. `BusInfo::aux(name, channel_count)` declares an aux bus that is off until the host switches it on (`is_default_active` is false). An aux bus that starts on sets the field: `BusInfo { is_default_active: true, ..BusInfo::aux("Sidechain", 2) }`. A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). The wrappers refuse a model with more.
 
 A host switches aux buses on and off. The plugin is prepared with the buses that are on: it requests `ActiveBuses` in its setup. When the host switches a bus, the plugin is prepared again.
 
@@ -1174,7 +1185,7 @@ Beamer provides safe, ergonomic access to audio buffers using a two-buffer archi
 
 The main buffer has one channel per output channel of the main bus. When `process()` starts, a channel holds the input channel of the same index; when it returns, it holds the output. A channel without an input (mono to stereo) starts silent. An input channel without an output (stereo to mono) is read-only through `unpaired_input(channel)`, indexed by the host's input channel number.
 
-A plugin that needs the input after writing the output copies it first, as `BypassHandler` does for its dry signal. Where the host gives overlapping buffers (an input in the memory of another channel's output, or one memory for two outputs), the format wrapper gives the plugin memory of its own, so its slices never overlap.
+A plugin that needs the input after writing the output copies it first, as `BypassHandler` does for its dry signal. Where the host gives overlapping buffers (an input in the memory of another channel's output, or one memory for two outputs), the format wrapper gives the plugin memory of its own, so its slices never overlap. A channel the host gives no memory keeps its index: an output renders into memory of the wrapper's own whose samples are dropped, an input reads silence.
 
 ```rust
 /// Main audio buffer (main bus only), processed in place.
@@ -1220,6 +1231,8 @@ impl<'a, S: Sample> AuxiliaryBuffers<'a, S> {
     pub fn num_output_buses(&self) -> usize;
     pub fn iter_inputs(&self) -> impl Iterator<Item = AuxInput<'_, S>>;
     pub fn iter_outputs(&mut self) -> impl Iterator<Item = AuxOutput<'_, 'a, S>>;
+    pub fn num_samples(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
 }
 
 /// Immutable view of an auxiliary input bus.
@@ -1227,6 +1240,7 @@ pub struct AuxInput<'a, S: Sample = f32> { /* ... */ }
 
 impl<'a, S: Sample> AuxInput<'a, S> {
     pub fn num_channels(&self) -> usize;
+    pub fn num_samples(&self) -> usize;
     pub fn input(&self, index: usize) -> &[S];
     pub fn iter_inputs(&self) -> impl Iterator<Item = &[S]>;
     pub fn sample(&self, channel: usize, index: usize) -> S;
@@ -1241,6 +1255,7 @@ pub struct AuxOutput<'borrow, 'data, S: Sample = f32> { /* ... */ }
 
 impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
     pub fn num_channels(&self) -> usize;
+    pub fn num_samples(&self) -> usize;
     pub fn output(&mut self, index: usize) -> &mut [S];
     pub fn output_checked(&mut self, index: usize) -> Option<&mut [S]>;
     pub fn iter_outputs(&mut self) -> impl Iterator<Item = &mut [S]>;
@@ -1249,13 +1264,15 @@ impl<'borrow, 'data, S: Sample> AuxOutput<'borrow, 'data, S> {
 }
 ```
 
+A bus keeps its index when buses before it are off. A bus that is off for the plugin has no channels: `input(bus)` and `output(bus)` return `None` for it and `iter_inputs()` and `iter_outputs()` skip it, so the position in the iterator is not always the bus index. `num_input_buses()` and `num_output_buses()` count up to the last bus with channels. See [Switching Buses](#switching-buses) for when a bus is on.
+
 **Why Two Lifetimes for AuxOutput?**
 
 The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't allow lifetime shortening. The solution uses `'borrow` for the outer reference and `'data` for the inner data, allowing the borrow to be shorter while preserving safety.
 
 ### ProcessContext and Transport
 
-The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes sample rate, buffer size and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
+The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes the sample rate, the length of this call (a sub-block with [sample-accurate automation](#sample-accurate-automation)) and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
 
 **What you can do:**
 - Sync delays/LFOs to host tempo
@@ -1315,6 +1332,11 @@ impl Transport {
     pub fn time_signature(&self) -> Option<(i32, i32)>;
     pub fn cycle_range(&self) -> Option<(f64, f64)>;
     pub fn is_looping(&self) -> bool;
+    pub fn has_timing_info(&self) -> bool;
+    pub fn has_time_signature(&self) -> bool;
+    pub fn smpte_frames(&self) -> Option<(i32, i32)>;
+    // The transport of a sub-block that starts this many samples later.
+    pub fn advanced_by(&self, samples: usize, sample_rate: f64) -> Self;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1530,7 +1552,7 @@ impl Processor for ReverbProcessor {
 
 ## MIDI Reference
 
-The event types, `MidiBuffer` and `MidiCcConfig` are in the prelude. The helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, the `cc` and `note_expression` modules and the 14-bit functions) are not: import them from `beamer::core`.
+The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure` and `ProgramChange`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`SysEx`, `NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, `ParameterNumberMessage`, the `cc`, `rpn`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
 
 ### Event Types
 
@@ -1660,11 +1682,18 @@ Both formats deliver a note-on with velocity 0 as a `NoteOff`, so a plugin never
 pub struct MidiBuffer { /* Fixed capacity: 1024 events */ }
 
 impl MidiBuffer {
+    // Places about 80 KB on the stack. On a thread with a small stack use
+    // new_boxed().
     pub fn new() -> Self;
+    pub fn new_boxed() -> Box<Self>;
     // Returns false when the buffer is full and the event was dropped.
     pub fn push(&mut self, event: MidiEvent) -> bool;
     pub fn iter(&self) -> impl Iterator<Item = &MidiEvent>;
+    pub fn as_slice(&self) -> &[MidiEvent];
+    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent];
+    pub fn drain(&mut self) -> MidiBufferDrain<'_>;
     pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
     pub fn clear(&mut self);
     pub fn has_overflowed(&self) -> bool;
 }
@@ -1700,7 +1729,7 @@ fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
 }
 ```
 
-Whether a plugin receives and sends MIDI is set in `Config.toml`, so that every format can declare it when the plugin is built. Instruments and MIDI effects receive MIDI and MIDI effects send it, without any setting. Other plugins turn it on:
+Whether a plugin receives and sends MIDI is set in `Config.toml`, so that every format can declare it when the plugin is built. Instruments and MIDI effects receive MIDI and MIDI effects send it, without any setting. An effect turns MIDI input on with `midi_input = true` and any plugin turns MIDI output on with `midi_output = true`. A generator has no MIDI input (a generator played from MIDI is an instrument) and a MIDI effect cannot turn its input off:
 
 ```toml
 category = "effect"
@@ -1732,7 +1761,8 @@ SysEx configuration can be set via Config.toml:
 
 ```toml
 sysex_slots = 64
-sysex_buffer_size = 4096
+# Needs the sysex-2048 feature: a message holds at most its size.
+sysex_buffer_size = 2048
 ```
 
 Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
@@ -1743,7 +1773,7 @@ These settings apply to VST3, which needs a pool to keep the data alive after
 processing. The AU formats hand each message to the host during the render
 call, limited only by the buffer size of the Cargo feature above.
 
-**Heap Fallback (optional feature: `sysex-heap-fallback`):**
+**Heap Fallback (optional feature `sysex-heap-fallback` of `beamer-core` and `beamer-vst3`, used by VST3 only):**
 Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.
 
 ### Note Expression (MPE)

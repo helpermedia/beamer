@@ -17,7 +17,7 @@
 //! - GM MIDI drum note mapping (notes 36, 38, 42, 49)
 //! - 16-voice polyphony (4 voices per drum type)
 //! - Individual synthesis algorithm per drum type
-//! - Per-drum parameter groups
+//! - A level parameter per drum
 //! - Sample-accurate MIDI note triggering
 //! - Sample-accurate automation (`sample_accurate_automation` in
 //!   `Config.toml`), since the levels are read once per hit

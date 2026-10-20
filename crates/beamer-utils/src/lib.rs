@@ -1,4 +1,4 @@
-//! Internal utilities for the Beamer VST3 framework.
+//! Internal utilities for the Beamer audio plugin framework (AU and VST3).
 //!
 //! This crate provides low-level utilities shared between `beamer-core` and
 //! `beamer-macros`. All utilities are compile-time safe (`const fn` where possible)

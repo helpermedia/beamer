@@ -19,7 +19,7 @@
 //! - Both simple stereo and ping-pong modes
 //! - Proper tail length declaration for delay decay
 //! - `SampleRate` setup for sample-rate-dependent initialization
-//! - `reset()` to clear internal state on playback restart
+//! - `set_active()` to clear the delay lines when the host activates the plugin
 //! - Factory presets that set only some parameters
 
 use beamer::prelude::*;
@@ -68,7 +68,7 @@ pub enum StereoMode {
 /// Delay plugin model.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
-/// attributes, and the `#[beamer::model]` attribute generates everything
+/// attributes. The `#[beamer::model]` attribute generates everything
 /// including the `Default` implementation.
 #[beamer::export]
 #[beamer::model]

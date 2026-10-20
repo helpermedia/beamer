@@ -37,7 +37,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, the injected `beamer_runtime.js`, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
@@ -145,7 +145,7 @@ The `State` fields of the model (see [State Beyond Parameters](REFERENCE.md#stat
 | Method | Description |
 |--------|-------------|
 | `state.get(path)` | Get the value the UI knows. The same object until the value changes, so it works with React's `useSyncExternalStore`. `undefined` before `ready` and for a path the plugin does not have |
-| `state.set(path, value)` | Set the value. Listeners hear of it at once, and the plugin answers with the value in effect: a value that does not fit the Rust type leaves the field as it is, and the answer sets the UI back. A path the plugin does not have is ignored |
+| `state.set(path, value)` | Set the value. Listeners hear of it at once. The plugin answers with the value in effect: a value that does not fit the Rust type leaves the field as it is and the answer sets the UI back. A path the plugin does not have is ignored |
 | `state.on(path, callback)` | Subscribe to changes, also those behind the UI's back (a loaded project, a handler that sets the field). Returns an unsubscribe function |
 | `state.ids()` | Get the paths of all `State` fields. Empty before `ready` |
 
@@ -163,9 +163,9 @@ console.log(info.name);   // "Beamer WebView Demo"
 console.log(info.version); // The version from Cargo.toml
 ```
 
-If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")`, and an override ends its `match` the same way. Catch the rejection where a method may be missing.
+If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")` and an override ends its `match` the same way. Catch the rejection where a method may be missing.
 
-One method is built in and never reaches the model: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text, and resolves to `null` when the text cannot be parsed:
+One method is built in and never reaches the model: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
 
 ```javascript
 const info = __BEAMER__.params.info("gain");
@@ -190,7 +190,7 @@ __BEAMER__.on("sampleLoaded", (name) => {
 
 ### Ready Promise
 
-`__BEAMER__.ready` resolves once the initial parameter dump has been received and all parameter subscriptions registered before that point have been attached:
+`__BEAMER__.ready` resolves once the init dump (parameters and `State` values) has been received and all parameter and `state.on()` subscriptions registered before that point have been attached:
 
 ```javascript
 await __BEAMER__.ready;
@@ -199,7 +199,7 @@ await __BEAMER__.ready;
 
 ### Plugin Format
 
-`__BEAMER__.pluginFormat` names the plugin format the editor runs in: `"vst3"`, `"auv2"` or `"auv3"`. The two Audio Unit formats share one plugin library, so only the format wrapper knows which one runs, and it sends the value with the initial parameter dump. It is `null` until `__BEAMER__.ready` resolves:
+`__BEAMER__.pluginFormat` names the plugin format the editor runs in: `"vst3"`, `"auv2"` or `"auv3"`. The two Audio Unit formats share one plugin library, so only the format wrapper knows which one runs. It sends the value with the initial parameter dump. It is `null` until `__BEAMER__.ready` resolves:
 
 ```javascript
 await __BEAMER__.ready;
@@ -208,7 +208,7 @@ statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
 
 ## Events from Rust
 
-A `WebViewEventQueue` holds named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group, and the framework takes it when the plugin instance is created:
+A `WebViewEventQueue` holds named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group. The framework takes it when the plugin instance is created:
 
 ```rust
 #[beamer::export]
@@ -221,7 +221,7 @@ pub struct WebViewDemoModel {
 }
 ```
 
-The model's methods can then send an event, and so can every other thread that holds the model's `Arc`, except the audio thread. The data can be anything that serializes to JSON:
+The model's methods can then send an event. So can every other thread that holds the model's `Arc`, except the audio thread. The data can be anything that serializes to JSON:
 
 ```rust
 // In a method of the model, such as prepare() or on_invoke().
@@ -234,11 +234,11 @@ __BEAMER__.on("sampleRate", (rate) => showSampleRate(rate));
 
 What to know about events:
 
-- **They are for an open editor.** An event reaches JavaScript on the editor's next sync tick, about 16 ms later. While no editor is open, events are dropped, and so is an event that arrives before the page registered its listener. An editor that opens asks for what it shows with `invoke()`, as the example below does.
+- **They are for an open editor.** An event reaches JavaScript on the editor's next sync tick, about 16 ms later. While no editor is open, events are dropped. So is an event that arrives before the page registered its listener. An editor that opens asks for what it shows with `invoke()`, as the example below does.
 - **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. With a queue in the model and one in a nested group, or in two nested groups, the first in field order is the plugin's and the others are not delivered. The attribute knows the field by the name of its type, so a type alias or a renamed import hides it, and so does a wrapper such as `Option`. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
+- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. A queue of the model itself is the plugin's, also when a nested group with a queue comes before it in field order. Without one, the first nested group in field order that has a queue provides it. The other queues are not delivered. The attribute knows the field by the name of its type, so a type alias, a renamed import or a wrapper such as `Option` hides it. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
 
 ### Example (from `webview-demo`)
 
@@ -338,7 +338,7 @@ window.__BEAMER__._onInit([
 ], {"pluginFormat":"vst3","state":{"pan_law":"constant_power"}})
 ```
 
-The example is shortened for readability: real numeric IDs are hashes of the string IDs, and values carry full precision.
+The example is shortened for readability: real numeric IDs are hashes of the string IDs and values carry full precision.
 
 Each entry corresponds to a `ParamInitEntry`:
 
@@ -413,7 +413,7 @@ export function useBeamerParam(name: string): number {
 }
 ```
 
-This is a one-liner because the `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function, and `get()` returns the current value.
+This is a one-liner because the `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function and `get()` returns the current value.
 
 ### `useBeamerState`
 
@@ -488,12 +488,12 @@ The `#[beamer::export]` attribute macro handles web asset detection and embeddin
 | Condition | Behavior |
 |-----------|----------|
 | `BEAMER_DEV_URL` env var set | Load from that URL (dev server mode, see [Development Server](#development-server)) |
-| `webview/package.json` exists and `webview/dist/` exists | Embed all files from `webview/dist/` |
+| `webview/package.json` exists and `webview/dist/` exists | Embed all files from `webview/dist/` (no GUI when it is empty) |
 | `webview/package.json` exists but no `dist/` | No assets. `cargo xtask bundle` runs the web build first, so this only happens with a plain `cargo build` (run the web build in `webview/` first) |
-| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project) |
+| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project, no GUI when it is empty) |
 | No `webview/` directory | No GUI |
 
-The scan skips dotfiles, `node_modules` directories and `.map` source map files.
+The scan skips dotfiles and dot-directories, `node_modules` and `.map` source map files.
 
 Each discovered file is embedded via `include_bytes!()` into a static `EmbeddedAssets` table:
 
@@ -556,7 +556,7 @@ This is independent from any background set in HTML, CSS or JS. You can use eith
 
 Lock-free data transfer from the audio thread to the WebView for spectrum analyzers, level meters, waveform displays and other real-time visualizations.
 
-**Problem:** `WebViewEventQueue::emit()` allocates (JSON serialization) and takes a lock, and is therefore not safe to call from the audio thread.
+**Problem:** `WebViewEventQueue::emit()` allocates (JSON serialization) and takes a lock. It is therefore not safe to call from the audio thread.
 
 **Planned approach:**
 
@@ -572,4 +572,4 @@ This is a core-level feature (not webview-specific) because the ring buffer and 
 
 The Windows platform backend (`beamer-webview/src/platform/windows.rs`) is a stub that returns `WebViewError::PlatformNotSupported`. All WebView functionality currently targets macOS only.
 
-A future implementation would use Microsoft's WebView2 (Edge/Chromium) control via either the `webview2` crate or direct COM interop. The `WebViewConfig` struct and C-ABI bridge are already platform-agnostic, so the main work is implementing `WindowsWebView::attach_to_parent()` and the corresponding scheme handler.
+A future implementation would use Microsoft's WebView2 (Edge/Chromium) control via either the `webview2` crate or direct COM interop. The `WebViewConfig` struct is platform-agnostic. A Windows backend needs `WindowsWebView::attach_to_parent()` with a scheme handler and a message handler, `evaluate_js()` and a 60 Hz sync timer in the VST3 editor in place of the NSTimer. The C-ABI bridge in `ffi.rs` serves only the Audio Unit wrappers, which Windows does not have.

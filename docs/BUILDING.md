@@ -32,7 +32,7 @@ AUv2 and AUv3 the minor and the patch version can be at most 255.
   xtask sets that minimum for every binary in a bundle, whatever macOS
   version the build machine runs.
 - The Xcode Command Line Tools (`xcode-select --install`). Rust needs them
-  to link, and xtask uses clang, ar, install_name_tool and codesign for the
+  to link. xtask uses clang, ar, install_name_tool and codesign for the
   Audio Unit formats and lipo for universal binaries.
 - A Rust toolchain whose LLVM is version 23 or later (`rustc -vV` shows
   it; Rust 1.99.1 has LLVM 23.1). The strip step of older toolchains can
@@ -77,7 +77,7 @@ folder with the plugin's web UI is optional.
 cargo xtask bundle <package> <formats> [options]
 ```
 
-At least one format flag is required, and formats can be combined:
+At least one format flag is required. Formats can be combined:
 
 ```bash
 cargo xtask bundle gain --auv2 --release
@@ -108,9 +108,10 @@ For AUv2 and AUv3, xtask generates Objective-C wrapper code for the plugin,
 compiles it with clang and signs the bundles ad hoc. An AUv3 is an app that
 contains the Audio Unit as an app extension. The component's `Info.plist`
 (for an AUv3, the app extension's) registers the Audio Unit under the type,
-plugin code and manufacturer code from `Config.toml`. VST3 bundles need no
-wrapper and xtask does not sign them (on Apple Silicon the linker already
-signs the binary ad hoc).
+plugin code and manufacturer code from `Config.toml`, with a tag for the
+type and one for each subcategory that has an Audio Unit tag. DAWs sort
+plugins by these tags. VST3 bundles need no wrapper and xtask does not
+sign them (on Apple Silicon the linker already signs the binary ad hoc).
 
 The generated Objective-C classes are named after the package and these
 three codes, so the Audio Units of several plugins can be loaded in one
@@ -134,9 +135,9 @@ step. For a dev server with live reload, see
 ### Compiler flags
 
 Release builds do not carry the source paths of the machine that built
-them. The compiler keeps source paths for panic messages, and xtask
-replaces their local prefixes with `--remap-path-prefix`: the workspace
-becomes `.`, the Cargo home `/cargo`, the standard library sources
+them. The compiler keeps source paths for panic messages. xtask replaces
+their local prefixes with `--remap-path-prefix`: the workspace becomes
+`.`, the Cargo home `/cargo`, the standard library sources
 `/rustc/<commit>` and other paths in the home directory `~`. Debug builds
 keep the full paths. The code xtask compiles with clang for the AU formats
 gets the same rules for the workspace and the home directory, in every
@@ -147,17 +148,18 @@ crate on top of it) gets the same rules in release builds, as
 `-ffile-prefix-map` flags in `CFLAGS_<target>` and `CXXFLAGS_<target>`,
 after any value you set for those two variables. The cc crate splits these
 variables at whitespace, so a path that contains whitespace keeps its
-prefix there, and xtask warns about it. The flag needs GCC 8 or clang 10.
+prefix there. xtask warns about it. The flag needs GCC 8 or clang 10.
 With these variables set, the cc crate leaves out its default warning
 flags, so release builds compile C code with fewer warnings than debug
 builds. MSVC targets get no such flags.
 
-The remap flags are the only flags xtask sets for every crate, and only for
-release builds. It keeps the flags from `CARGO_ENCODED_RUSTFLAGS`, or else
-`RUSTFLAGS`, in front of them. `rustflags` from Cargo configuration,
-whether from config files or from `CARGO_BUILD_RUSTFLAGS` and
-`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, do not apply to release builds. A change
-of your own flags rebuilds all dependencies of a release build.
+The remap flags are the only flags xtask sets for every crate. It sets
+them only for release builds and keeps the flags from
+`CARGO_ENCODED_RUSTFLAGS`, or else `RUSTFLAGS`, in front of them.
+`rustflags` from Cargo configuration, whether from config files or from
+`CARGO_BUILD_RUSTFLAGS` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, do not
+apply to release builds. A change of your own flags rebuilds all
+dependencies of a release build.
 
 ### What xtask produces
 
@@ -249,8 +251,9 @@ manufacturer codes from `Config.toml`:
 auval -v aufx gain Bmer
 ```
 
-The type is `aufx` for effects, `aumu` for instruments, `aumi` for MIDI
-effects and `augn` for generators.
+The type is `aufx` for effects, `aumf` for effects with `midi_input = true`
+(music effects), `aumu` for instruments, `aumi` for MIDI effects and `augn`
+for generators.
 
 The app extension of an AUv3 names a framework with its code
 (`AudioComponentBundle` in its `Info.plist`), so `auval` loads the AUv3
@@ -304,8 +307,8 @@ cargo xtask log gain
 ### AUv2 and AUv3 side by side
 
 macOS treats an AUv2 and an AUv3 with the same type, plugin code and
-manufacturer code as one plugin, and hosts show only one of them, usually
-the AUv3. This is intended: an AUv3 can replace its AUv2 without breaking
+manufacturer code as one plugin. Hosts show only one of them, usually the
+AUv3. This is intended: an AUv3 can replace its AUv2 without breaking
 existing projects. To test both formats of one plugin, build one format
 with a different `plugin_code` in `Config.toml`, or uninstall one format:
 

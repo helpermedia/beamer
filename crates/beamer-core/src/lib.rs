@@ -3,14 +3,16 @@
 //! Core abstractions for the Beamer audio plugin framework.
 //!
 //! This crate provides platform-agnostic and format-agnostic traits that define
-//! the interface for audio plugins. It has no external dependencies, making it
-//! suitable for use in any context.
+//! the interface for audio plugins. Its only external runtime dependencies are
+//! `log`, `serde` and `serde_json`.
 //!
 //! ## Main Traits
 //!
 //! - [`Model`] - What every thread shares and the plugin as the host sees it (lives as long as the instance)
 //! - [`Processor`] - Core DSP processing trait (created for an audio configuration)
 //! - [`Parameters`] - Parameter collection trait
+//! - [`Saved`] - Saving and loading the parameters and `State` fields
+//! - [`WebViewEvents`] - Where the model's queue of events for the web UI is
 //! - [`GuiDelegate`] - GUI configuration and callbacks
 //!
 //! ## Types

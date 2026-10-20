@@ -9,9 +9,12 @@ This crate provides **both AUv2 and AUv3** support through a shared C-ABI bridge
 - **Dual format**: AUv2 (`.component`) and AUv3 (`.appex`) from the same codebase
 - **Full AU lifecycle**: Allocate/deallocate render resources, parameter tree, state persistence
 - **Parameter automation**: Complete integration with host callbacks
-- **MIDI support**: MIDI 1.0 and MIDI 2.0 UMP event processing
+- **MIDI support**: MIDI 1.0 input from legacy events and UMP event lists, MIDI output with SysEx
 - **Real-time safe**: Zero-allocation render path
-- **Auxiliary buses**: Sidechain and multi-bus support
+- **Auxiliary buses**: Sidechain and multi-bus support, with buses the host switches on and off
+- **In-place processing**: The main bus is processed in place and reported to the host as such
+- **Factory presets**: The presets of `Model::PRESETS` as the factory presets of the Audio Unit
+- **Sample-accurate automation**: Opt-in sub-blocks at scheduled parameter changes
 - **WebView GUI**: Web-based plugin interfaces via `beamer-webview`
 
 ## Platform Requirements

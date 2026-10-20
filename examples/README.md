@@ -26,10 +26,10 @@ Simple stereo gain effect with minimal complexity.
 
 | Parameter | Description |
 |-----------|-------------|
-| **Gain** | Volume adjustment from -60 dB (silent) to +12 dB (boost). 0 dB = no change. |
+| **Gain** | Volume adjustment from -60 dB to +12 dB (boost). 0 dB = no change. |
 
 **Demonstrates:**
-- `Model` → `Processor` lifecycle via `prepare()`
+- `Model` and `Processor` lifecycle via `prepare()`
 - `#[beamer::model]` with declarative attributes
 - `()` setup for plugins without sample-rate-dependent state
 - `FloatParameter` with dB scaling
@@ -52,7 +52,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 | **Soft Knee** | Toggle between soft knee (gradual onset) and hard knee (abrupt). |
 | **Auto Makeup** | Automatically compensate for volume reduction from compression. |
 | **Makeup Gain** | Manual output boost (0-24 dB). Only active when Auto Makeup is off. |
-| **Sidechain** | Use external sidechain input for detection instead of main input. |
+| **Sidechain** | Use external sidechain input for detection instead of main input, once the host has switched the sidechain bus on. |
 
 **Typical Settings:**
 - **Transparent leveling**: Low ratio (2:1), slow attack (50ms), medium release (200ms), soft knee
@@ -61,13 +61,13 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - **Sidechain ducking**: Enable sidechain, route kick to sidechain input, high ratio, fast attack/release
 
 **Demonstrates:**
-- `SampleRate` setup for sample-rate-dependent envelope coefficients
+- A tuple setup `(SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses)`: the sample rate for the envelope coefficients, the channels and block size for the bypass handler and the active buses
 - `BypassHandler` with `CrossfadeCurve::EqualPower` for click-free bypass
 - `set_active()` for resetting envelope state on activation
 - `kind = "db_log"` for logarithmic-feel threshold control
 - Linear parameter smoothing (`smoothing = "linear:50.0"`)
 - `EnumParameter` for discrete ratio values
-- Multi-bus audio (main + sidechain input)
+- A sidechain input (`BusInfo::aux()`) that stays off until the host switches it on, read from `ActiveBuses` in `prepare()`
 - dB-domain envelope processing
 
 ---
@@ -208,7 +208,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 |-----------|-------------|
 | **Kick** | Kick output level (-60 to +6 dB) |
 | **Snare** | Snare output level (-60 to +6 dB) |
-| **Hi-Hat** | Hi-hat output level (-60 to +6 dB) |
+| **HiHat** | Hi-hat output level (-60 to +6 dB) |
 | **Crash** | Crash cymbal output level (-60 to +6 dB) |
 
 **MIDI Note Mapping (GM Standard):**
@@ -224,6 +224,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 - Multi-output auxiliary buses (`output_bus_count()`, `output_bus_info()`, `AuxiliaryBuffers`)
 - Mono bus configuration via `BusInfo::mono()` and `BusInfo::aux()`
 - MIDI input from the `instrument` category, without any setting
+- Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the levels are read once per hit
 - `process_midi()` with sample-accurate note triggering
 - 16-voice polyphony (4 per drum type) with oldest-note stealing
 - Per-drum synthesis algorithms (sine, triangle, noise, metallic oscillators)
@@ -234,7 +235,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 
 ### [MIDI Transform](midi-transform/)
 
-MIDI instrument that transforms notes and CC messages.
+MIDI effect that transforms notes and CC messages.
 
 **Note Transform Parameters:**
 
@@ -245,13 +246,13 @@ MIDI instrument that transforms notes and CC messages.
 | **Transpose** | Semitones to shift (-24 to +24), only for Transpose mode |
 | **Input Note** | Source note for Remap mode (0-127) |
 | **Output Note** | Target note for Remap mode (0-127) |
-| **Velocity** | Velocity scaling (0-200%). 100% = no change |
+| **Velocity** | Velocity scaling (0.0-2.0). 1.0 = no change |
 
 **Note Modes:**
 - **Through** - Pass notes unchanged (with optional velocity scaling)
 - **Transpose** - Shift all notes by semitones
 - **Octave Up/Down** - Shift all notes by one octave
-- **Remap Note** - Change one specific note to another (e.g., kick on C1 → D1)
+- **Remap Note** - Change one specific note to another (e.g., kick on C1 to D1)
 - **Invert** - Mirror pitches around middle C (C4)
 
 **CC Transform Parameters:**
@@ -262,22 +263,28 @@ MIDI instrument that transforms notes and CC messages.
 | **Mode** | How CC messages are transformed (see below) |
 | **Input CC** | Source CC number for Remap modes (0-127) |
 | **Output CC** | Target CC number for Remap modes (0-127) |
-| **Scale** | Value scaling (0-200%). 100% = no change |
+| **Scale** | Value scaling (0.0-2.0). 1.0 = no change |
+
+A **Bypass** parameter passes all MIDI through unchanged.
 
 **CC Modes:**
 - **Through** - Pass CC messages unchanged
-- **Remap CC** - Change CC number (e.g., Mod Wheel → Expression)
+- **Remap CC** - Change CC number (e.g., Mod Wheel to Expression)
 - **Scale** - Multiply all CC values
-- **Invert** - Flip CC values (0→127, 127→0)
+- **Invert** - Flip CC values (0 becomes 127, 127 becomes 0)
 - **Remap + Scale** - Remap CC number AND scale value
 
 **Demonstrates:**
-- `SampleRate` setup for parameter smoothing
+- `()` setup: a MIDI transformer needs nothing from the audio setup
 - Nested groups with `#[beamer::group]` and `#[nested(group = "...")]`
 - `EnumParameter` for discrete choices
 - `IntParameter` for note/CC selection
 - `BoolParameter` for enable toggles
+- `FloatParameter` for velocity and value scaling
 - `process_midi()` for MIDI processing
+- MIDI event modification with the `with()` method
+- Held-note tracking, so a note-off ends the note its note-on started when the settings change while the note is held
+- Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the settings apply to each note
 
 ---
 
@@ -299,7 +306,7 @@ Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
 | **Pan law** | Constant power or linear, set in the web UI and saved with the project |
 
 **Demonstrates:**
-- `on_invoke()` and `on_event()` on the model for bidirectional IPC between Rust and JavaScript
+- `on_invoke()` on the model for request/response calls from JavaScript
 - `WebViewEventQueue` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI through `__BEAMER__.state`, read on the audio thread with a `HandoverReader`, saved with the plugin state

@@ -350,11 +350,12 @@ pub struct Config {
     /// combined component pattern (processor + controller in one object).
     pub vst3_controller_id: Option<[u32; 4]>,
 
-    /// Number of SysEx output slots per process block (AU and VST3).
+    /// Number of SysEx output slots per process block (VST3 only: the AU
+    /// formats hand SysEx output to the host directly).
     pub sysex_slots: usize,
 
-    /// Maximum size of the payload of each SysEx message in bytes, without
-    /// its F0 and F7 (AU and VST3).
+    /// Maximum size of the payload of each SysEx output message in bytes,
+    /// without its F0 and F7 (VST3 only).
     pub sysex_buffer_size: usize,
 
     /// Apply host automation at the sample it is meant for, by running a
@@ -651,7 +652,7 @@ impl Config {
         self
     }
 
-    /// Set the number of SysEx output slots per process block (AU and VST3).
+    /// Set the number of SysEx output slots per process block (VST3 only).
     ///
     /// Higher values allow more concurrent SysEx messages but use more memory.
     /// Default is 16 slots.
@@ -661,8 +662,8 @@ impl Config {
         self
     }
 
-    /// Set the maximum size of the payload of each SysEx message in bytes,
-    /// without its F0 and F7 (AU and VST3).
+    /// Set the maximum size of the payload of each SysEx output message in
+    /// bytes, without its F0 and F7 (VST3 only).
     ///
     /// Messages larger than this will be truncated. Default is 512 bytes.
     #[doc(hidden)]

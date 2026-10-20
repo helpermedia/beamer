@@ -13,7 +13,7 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 
 **Macros do the heavy lifting.** `#[beamer::model]` generates host integration, state persistence, DAW automation and parameter access traits automatically. `#[beamer::export]` reads Config.toml at compile time to generate plugin metadata and entry points.
 
-**Clean separation of concerns.** DSP code stays in safe Rust while the WebView architecture enables modern interfaces with HTML, CSS and JavaScript. Plugin configuration lives in TOML files. Beamer bridges them together and handles plugin format complexity.
+**Clean separation of concerns.** DSP code stays in safe Rust while the WebView architecture enables modern interfaces with HTML, CSS and JavaScript. Plugin configuration lives in Config.toml. Beamer bridges them together and handles plugin format complexity.
 
 ## Quick Start
 
@@ -50,6 +50,7 @@ struct GainProcessor {
 impl Processor for GainProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let gain = self.model.gain.as_linear() as f32;
+        // The buffer is processed in place: each channel holds its input.
         for channel in buffer.channels_mut() {
             for sample in channel {
                 *sample *= gain;
@@ -116,6 +117,8 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **Complete MIDI support** - Full MIDI 1.0/2.0, MPE, Note Expression, SysEx
 - **Real-time safe** - No heap allocations in the audio path
 - **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
+- **Factory presets in code** - `Model::PRESETS` of typed `Preset::new(name, |m| ...)` closures, checked by the compiler
+- **Sample-accurate automation** - Opt in with `sample_accurate_automation = true` in Config.toml
 - **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC and built-in React/Vite tooling (macOS)
 
 ## Documentation
