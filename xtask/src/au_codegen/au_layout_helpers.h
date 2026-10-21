@@ -1,6 +1,6 @@
-// Channel layout helpers for the AUv2 wrapper.
+// Channel layout helpers for the AU wrappers.
 //
-// Included by auv2_wrapper.c. A host describes the channels of a bus with
+// Included by auv2_wrapper.c and auv3_wrapper.m. A host describes the channels of a bus with
 // an AudioChannelLayout: a layout tag, a channel bitmap or one description
 // per channel. These functions expand it into the channel label of each
 // channel, which the bridge matches against the plugin's channel sets. They

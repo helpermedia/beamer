@@ -11,6 +11,7 @@
 
 #include "BeamerAuBridge.h"
 #include "au_ipc_helpers.h"
+#include "au_layout_helpers.h"
 
 // =============================================================================
 // MARK: - Constants
@@ -182,6 +183,104 @@ static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBl
 }
 
 // =============================================================================
+// MARK: - Channel Layouts
+// =============================================================================
+
+// Bytes of `layout`: a tag alone, or one description per channel for a
+// layout of descriptions.
+static UInt32 BeamerAuv3LayoutBytes(const AudioChannelLayout* layout) {
+    bool described = layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions;
+    return beamer_au_layout_bytes(described ? layout->mNumberChannelDescriptions : 0);
+}
+
+// Expand the channel layout of `format` into `out`. Returns false for a
+// format whose layout names no channels: none, unknown channels or discrete
+// channels in order. The system's bridge for v2 hosts gives a stream format
+// of more than two channels the latter, for a host that only set a channel
+// count.
+static BOOL BeamerAuv3ReadLayout(AVAudioFormat* format, BeamerAuLayout* out) {
+    AVAudioChannelLayout* channelLayout = format.channelLayout;
+    if (channelLayout == nil
+        || (channelLayout.layoutTag & 0xFFFF0000) == kAudioChannelLayoutTag_DiscreteInOrder) {
+        return NO;
+    }
+    const AudioChannelLayout* layout = channelLayout.layout;
+    return layout != NULL && beamer_au_layout_read(layout, BeamerAuv3LayoutBytes(layout), out)
+        && out->count == format.channelCount;
+}
+
+// A standard format with `channels` channels in the layout `tag`, or
+// without a layout when there is no tag.
+static AVAudioFormat* BeamerAuv3StandardFormat(double sampleRate, AVAudioChannelCount channels,
+                                               AudioChannelLayoutTag tag) {
+    if (tag != 0) {
+        AVAudioChannelLayout* layout = [[AVAudioChannelLayout alloc] initWithLayoutTag:tag];
+        if (layout != nil && layout.channelCount == channels) {
+            AVAudioFormat* format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:sampleRate
+                                                                              channelLayout:layout];
+            if (format != nil) {
+                return format;
+            }
+        }
+    }
+    return [[AVAudioFormat alloc] initStandardFormatWithSampleRate:sampleRate channels:channels];
+}
+
+// Describe a bus with `format` for the plugin: its channel count and, when
+// the format names them, its channels.
+static void BeamerAuv3DescribeBus(AVAudioFormat* format, BOOL main, BeamerAuBusInfo* info) {
+    info->channel_count = (uint32_t)format.channelCount;
+    info->bus_type = main ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+    BeamerAuLayout layout;
+    if (BeamerAuv3ReadLayout(format, &layout)) {
+        beamer_au_layout_to_bus(&layout, info);
+    }
+}
+
+// Whether one of the plugin's layouts takes `format` on a bus: its channel
+// count and, when the format names its channels, those channels in any
+// order. A format that names none goes by its count. The whole
+// combination of buses is checked when render resources are allocated.
+static BOOL BeamerAuv3BusTakesFormat(BeamerAuInstanceHandle instance, BOOL isInput, uint32_t index,
+                                     AVAudioFormat* format) {
+    uint32_t channels = (uint32_t)format.channelCount;
+    if (!beamer_au_bus_supports_channel_count(instance, isInput, index, channels)) {
+        return NO;
+    }
+    BeamerAuLayout layout;
+    if (!BeamerAuv3ReadLayout(format, &layout)) {
+        return YES;
+    }
+    return beamer_au_bus_supports_layout(instance, isInput, index, layout.labels, layout.count);
+}
+
+// Whether `format` gives a bus the same stream and the same channels in the
+// same order as `current`, however each names them. A format that names no
+// channels has the plugin's set in its own order, so it only matches
+// another that names none.
+static BOOL BeamerAuv3SameFormat(AVAudioFormat* format, AVAudioFormat* current) {
+    if (format == nil || current == nil) {
+        return NO;
+    }
+    if ([format isEqual:current]) {
+        return YES;
+    }
+    if (format.sampleRate != current.sampleRate || format.commonFormat != current.commonFormat
+        || format.interleaved != current.interleaved || format.channelCount != current.channelCount) {
+        return NO;
+    }
+    BeamerAuLayout proposed;
+    BeamerAuLayout now;
+    BOOL proposedNamed = BeamerAuv3ReadLayout(format, &proposed);
+    BOOL nowNamed = BeamerAuv3ReadLayout(current, &now);
+    if (!proposedNamed || !nowNamed) {
+        return !proposedNamed && !nowNamed;
+    }
+    return proposed.count == now.count
+        && memcmp(proposed.labels, now.labels, proposed.count * sizeof(UInt32)) == 0;
+}
+
+// =============================================================================
 // MARK: - Host Blocks
 // =============================================================================
 
@@ -269,6 +368,41 @@ typedef struct {
 - (void)_editorHidden:(NSView*)view;
 - (void)_editorResized:(NSView*)view;
 - (void)_editorGone:(const void*)view;
+@end
+
+// =============================================================================
+// MARK: - Bus
+// =============================================================================
+
+// A bus of the unit, which reports the channel layouts the plugin's layouts
+// take on it.
+@interface {{WRAPPER_CLASS}}Bus : AUAudioUnitBus
+@end
+
+@implementation {{WRAPPER_CLASS}}Bus
+
+- (NSArray<NSNumber*>*)supportedChannelLayoutTags {
+    {{WRAPPER_CLASS}}* owner = ({{WRAPPER_CLASS}}*)self.ownerAudioUnit;
+    BeamerAuInstanceHandle instance = [owner rustInstance];
+    BOOL isInput = (self.busType == AUAudioUnitBusTypeInput);
+    uint32_t index = (uint32_t)self.index;
+    uint32_t count = beamer_au_get_supported_layout_tags(instance, isInput, index, NULL, 0);
+    if (count == 0) {
+        return nil;
+    }
+    uint32_t* tags = calloc(count, sizeof(uint32_t));
+    if (tags == NULL) {
+        return nil;
+    }
+    count = beamer_au_get_supported_layout_tags(instance, isInput, index, tags, count);
+    NSMutableArray<NSNumber*>* result = [[NSMutableArray alloc] initWithCapacity:count];
+    for (uint32_t i = 0; i < count; i++) {
+        [result addObject:@(tags[i])];
+    }
+    free(tags);
+    return result;
+}
+
 @end
 
 // =============================================================================
@@ -531,15 +665,17 @@ static void beamer_auv3_on_loaded(void* context) {
     if (channelCount == 0) channelCount = 2;
     if (channelCount > BEAMER_AU_MAX_CHANNELS) channelCount = BEAMER_AU_MAX_CHANNELS;
 
-    AVAudioFormat* format = [[AVAudioFormat alloc]
-        initStandardFormatWithSampleRate:kDefaultSampleRate
-                                channels:(AVAudioChannelCount)channelCount];
+    // The bus starts with the set of the plugin's first layout, its channels
+    // named by the set's layout tag.
+    uint32_t tag = beamer_au_get_layout_tag(_rustInstance, isInput, index, channelCount);
+    AVAudioFormat* format = BeamerAuv3StandardFormat(kDefaultSampleRate,
+                                                     (AVAudioChannelCount)channelCount, tag);
     if (format == nil) {
         format = defaultFormat;
     }
 
     NSError* busError = nil;
-    AUAudioUnitBus* bus = [[AUAudioUnitBus alloc] initWithFormat:format error:&busError];
+    {{WRAPPER_CLASS}}Bus* bus = [[{{WRAPPER_CLASS}}Bus alloc] initWithFormat:format error:&busError];
     if (bus == nil) {
         if (outError != NULL) {
             *outError = busError;
@@ -621,19 +757,20 @@ static void beamer_auv3_on_loaded(void* context) {
     return YES;
 }
 
+// The bus configuration the plugin is prepared with: the channel count of
+// each bus and, where its format names them, its channels, whose order the
+// plugin then takes.
 - (void)buildBusConfig {
     memset(&_busConfig, 0, sizeof(_busConfig));
 
-    _busConfig.input_bus_count = (uint32_t)_inputBusArray.count;
-    for (uint32_t i = 0; i < _busConfig.input_bus_count && i < BEAMER_AU_MAX_BUSES; i++) {
-        _busConfig.input_buses[i].channel_count = (uint32_t)_inputBusArray[i].format.channelCount;
-        _busConfig.input_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+    _busConfig.input_bus_count = (uint32_t)MIN(_inputBusArray.count, (NSUInteger)BEAMER_AU_MAX_BUSES);
+    for (uint32_t i = 0; i < _busConfig.input_bus_count; i++) {
+        BeamerAuv3DescribeBus(_inputBusArray[i].format, i == 0, &_busConfig.input_buses[i]);
     }
 
-    _busConfig.output_bus_count = (uint32_t)_outputBusArray.count;
-    for (uint32_t i = 0; i < _busConfig.output_bus_count && i < BEAMER_AU_MAX_BUSES; i++) {
-        _busConfig.output_buses[i].channel_count = (uint32_t)_outputBusArray[i].format.channelCount;
-        _busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
+    _busConfig.output_bus_count = (uint32_t)MIN(_outputBusArray.count, (NSUInteger)BEAMER_AU_MAX_BUSES);
+    for (uint32_t i = 0; i < _busConfig.output_bus_count; i++) {
+        BeamerAuv3DescribeBus(_outputBusArray[i].format, i == 0, &_busConfig.output_buses[i]);
     }
 }
 
@@ -645,62 +782,20 @@ static void beamer_auv3_on_loaded(void* context) {
     return _outputBusArray;
 }
 
+// A host changes the format of one bus at a time, so each bus is checked on
+// its own: a layout has to take the format on that bus. The combination is
+// checked when render resources are allocated. The plugin is prepared for
+// the current formats, so while render resources are allocated a bus only
+// takes the same channels in the same order again.
 - (BOOL)shouldChangeToFormat:(AVAudioFormat*)format forBus:(AUAudioUnitBus*)bus {
-    BeamerAuChannelCapabilities caps;
-    if (!beamer_au_get_channel_capabilities(_rustInstance, &caps)) {
-        return [super shouldChangeToFormat:format forBus:bus];
+    if (self.renderResourcesAllocated) {
+        return BeamerAuv3SameFormat(format, bus.format);
     }
-
-    if (caps.count == 0) {
-        return [super shouldChangeToFormat:format forBus:bus];
+    BOOL isInput = (bus.busType == AUAudioUnitBusTypeInput);
+    if (!BeamerAuv3BusTakesFormat(_rustInstance, isInput, (uint32_t)bus.index, format)) {
+        return NO;
     }
-
-    BOOL isInput = NO;
-    NSUInteger busIndex = NSNotFound;
-
-    for (NSUInteger i = 0; i < _inputBusArray.count; i++) {
-        if (_inputBusArray[i] == bus) {
-            isInput = YES;
-            busIndex = i;
-            break;
-        }
-    }
-
-    if (busIndex == NSNotFound) {
-        for (NSUInteger i = 0; i < _outputBusArray.count; i++) {
-            if (_outputBusArray[i] == bus) {
-                isInput = NO;
-                busIndex = i;
-                break;
-            }
-        }
-    }
-
-    if (busIndex != 0) {
-        return [super shouldChangeToFormat:format forBus:bus];
-    }
-
-    uint32_t newChannelCount = (uint32_t)format.channelCount;
-    uint32_t inputChannels = isInput ? newChannelCount : (uint32_t)(_inputBusArray.count > 0 ? _inputBusArray[0].format.channelCount : 0);
-    uint32_t outputChannels = isInput ? (uint32_t)(_outputBusArray.count > 0 ? _outputBusArray[0].format.channelCount : 0) : newChannelCount;
-
-    for (uint32_t i = 0; i < caps.count; i++) {
-        int32_t capInput = caps.capabilities[i].input_channels;
-        int32_t capOutput = caps.capabilities[i].output_channels;
-
-        BOOL inputMatches = (capInput == -1) || (capInput == (int32_t)inputChannels);
-        BOOL outputMatches = (capOutput == -1) || (capOutput == (int32_t)outputChannels);
-
-        if (capInput == -1 && capOutput == -1) {
-            if (inputChannels == outputChannels) {
-                return [super shouldChangeToFormat:format forBus:bus];
-            }
-        } else if (inputMatches && outputMatches) {
-            return [super shouldChangeToFormat:format forBus:bus];
-        }
-    }
-
-    return NO;
+    return [super shouldChangeToFormat:format forBus:bus];
 }
 
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError**)outError {
@@ -1436,10 +1531,11 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 }
 
-// In place with a main input. Without one (an instrument) there is nothing
-// to process in place.
+// In place with a main input of as many channels as the main output.
+// Without one (an instrument) there is nothing to process in place.
 - (BOOL)canProcessInPlace {
-    return _inputBusArray.count > 0;
+    return _inputBusArray.count > 0 && _outputBusArray.count > 0
+        && _inputBusArray[0].format.channelCount == _outputBusArray[0].format.channelCount;
 }
 
 // =============================================================================
