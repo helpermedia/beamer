@@ -246,6 +246,15 @@ fn lead(m: &SynthesizerModel) {
 // Voice
 // =============================================================================
 
+/// The level below which the filter state is set to zero (-300 dB).
+const FILTER_FLOOR: f64 = 1e-15;
+
+/// The envelope level at which a release ends (-80 dB).
+const RELEASE_END_LEVEL: f64 = 1e-4;
+
+/// The level of the filter below which a released voice ends (-100 dB).
+const VOICE_END_LEVEL: f64 = 1e-5;
+
 /// A single synthesizer voice.
 ///
 /// Each voice contains oscillator, envelope and filter state, plus
@@ -321,9 +330,14 @@ impl Voice {
         self.poly_pressure = 0.0;
     }
 
-    /// Release the note (enter release stage).
+    /// Release the note (enter release stage). A voice whose envelope has
+    /// ended already fades out its filter.
     fn release(&mut self) {
-        if self.active && self.envelope_stage != EnvelopeStage::Release {
+        let held = matches!(
+            self.envelope_stage,
+            EnvelopeStage::Attack | EnvelopeStage::Decay | EnvelopeStage::Sustain
+        );
+        if self.active && held {
             self.envelope_stage = EnvelopeStage::Release;
         }
     }
@@ -438,12 +452,13 @@ impl Voice {
                 self.envelope_level = sustain_level;
             }
             EnvelopeStage::Release => {
-                // Exponential decay to zero
-                // Faster than linear, sounds more natural
-                self.envelope_level -= self.envelope_level / release_samples;
-                if self.envelope_level < 0.0001 {
+                // Exponential decay to zero, which sounds more natural than
+                // linear. From full level it reaches the end level in the
+                // release time, from a lower sustain level sooner.
+                self.envelope_level *= RELEASE_END_LEVEL.powf(1.0 / release_samples);
+                // The voice ends once its filter has faded out as well.
+                if self.envelope_level < RELEASE_END_LEVEL {
                     self.envelope_level = 0.0;
-                    self.active = false;
                     self.envelope_stage = EnvelopeStage::Idle;
                 }
             }
@@ -469,6 +484,20 @@ impl Voice {
 
         // Clamp filter state to prevent instability at high resonance
         self.filter_state = self.filter_state.clamp(-4.0, 4.0);
+        // Fed silence (sustain at 0), the state decays towards zero without
+        // end. As f32 output it turns subnormal within seconds, as f64
+        // state much later; subnormals are slow on many CPUs. Far below
+        // hearing the state is set to zero.
+        if self.filter_state.abs() < FILTER_FLOOR {
+            self.filter_state = 0.0;
+        }
+        // After the envelope the filter still holds part of the signal,
+        // most at a low cutoff. The voice ends once that is inaudible, so
+        // that its output does not step to silence.
+        if self.envelope_stage == EnvelopeStage::Idle && self.filter_state.abs() < VOICE_END_LEVEL {
+            self.filter_state = 0.0;
+            self.active = false;
+        }
         sample = self.filter_state;
 
         S::from_f64(sample)
@@ -732,7 +761,87 @@ impl Processor for SynthesizerProcessor {
     }
 
     fn tail_samples(&self) -> u32 {
-        // Return max release time in samples (5 seconds)
-        (5.0 * self.sample_rate) as u32
+        // The longest release (5 seconds) and the filter fading out after
+        // it: at most about 2 seconds at the lowest cutoff with the most
+        // resonance.
+        (7.5 * self.sample_rate) as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_a_release_lasts_its_time() {
+        // From full level.
+        let model = SynthesizerModel::default();
+        model.sustain.set(1.0);
+        model.release.set(100.0);
+        let mut voice = Voice::new();
+        voice.trigger(0, 60, 1.0, 0);
+        for _ in 0..44100 {
+            voice.process_sample::<f32>(&model, Waveform::Saw, 800.0, 0.0, 0.0, 0, 44100.0);
+        }
+        voice.release();
+        let mut samples = 0;
+        while voice.envelope_stage == EnvelopeStage::Release {
+            voice.process_sample::<f32>(&model, Waveform::Saw, 800.0, 0.0, 0.0, 0, 44100.0);
+            samples += 1;
+        }
+        // 100 ms at 44.1 kHz, within a millisecond.
+        assert!(
+            (4366..=4454).contains(&samples),
+            "the release took {samples} samples"
+        );
+    }
+
+    #[test]
+    fn test_a_released_voice_fades_out_without_a_step() {
+        // At the lowest cutoff the filter still holds part of the signal
+        // when a short release ends.
+        let model = SynthesizerModel::default();
+        model.release.set(1.0);
+        let mut voice = Voice::new();
+        voice.trigger(0, 60, 1.0, 0);
+        let render = |voice: &mut Voice| -> f32 {
+            voice.process_sample(&model, Waveform::Saw, 20.0, 0.0, 0.0, 0, 44100.0)
+        };
+        for _ in 0..44100 {
+            render(&mut voice);
+        }
+        voice.release();
+        let mut samples = Vec::new();
+        while voice.active && samples.len() < 60 * 44100 {
+            samples.push(render(&mut voice));
+        }
+        assert!(!voice.active, "the voice never ends");
+        // An ended voice is silent: the step is from its last sound.
+        let last = samples
+            .iter()
+            .rev()
+            .find(|sample| **sample != 0.0)
+            .copied()
+            .unwrap_or(0.0);
+        assert!(last.abs() < 1e-4, "steps from {last:e} to silence");
+    }
+
+    #[test]
+    fn test_a_silent_voice_gives_no_subnormal_samples() {
+        // With sustain at 0 a held note feeds the filter silence. Its state
+        // then decays towards zero, slowest at the lowest cutoff with the
+        // most resonance.
+        let model = SynthesizerModel::default();
+        model.sustain.set(0.0);
+        for resonance in [0.0, 0.95] {
+            let mut voice = Voice::new();
+            voice.trigger(0, 60, 1.0, 0);
+            for _ in 0..10 * 44100 {
+                let sample: f32 =
+                    voice.process_sample(&model, Waveform::Saw, 20.0, resonance, 0.0, 0, 44100.0);
+                assert!(!sample.is_subnormal(), "subnormal sample {sample:e}");
+                assert!(!voice.filter_state.is_subnormal());
+            }
+        }
     }
 }
