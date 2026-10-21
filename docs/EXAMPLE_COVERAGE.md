@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-10-17
+**Last Updated:** 2026-10-21
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -38,7 +38,10 @@
 | | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
 | **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drums uses mono |
-| | Mono bus | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 4 mono outputs (drums) |
+| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Mono layouts, 4 mono outputs (drums) |
+| | Several layouts (`LAYOUTS`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono and stereo, mono to stereo (delay), mono sidechain (compressor) |
+| | Wildcard layouts (`Any`, `MATCHED`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
+| | Surround and ambisonic sets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
 | | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
 | | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 mono aux buses (drums) |
 | **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |

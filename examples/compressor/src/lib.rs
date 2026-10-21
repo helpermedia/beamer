@@ -19,6 +19,7 @@
 //! - Linear smoothing (`smoothing = "linear:50.0"`)
 //! - Sidechain input for external key signal, off until the host switches it
 //!   on, with `ActiveBuses` telling `prepare()` whether it is on
+//! - `Model::LAYOUTS` with mono and stereo main buses and sidechains
 //! - `SampleRate` setup for sample-rate-dependent initialization
 //!
 //! # DSP Overview
@@ -167,11 +168,27 @@ impl Model for CompressorModel {
     // types.
     type Setup = (SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses);
     type Processor = CompressorProcessor;
-    // Stereo in and out with a stereo sidechain as input bus 1.
-    const LAYOUTS: &'static [Layout] = &[Layout {
-        inputs: &[BusLayout::STEREO, BusLayout::STEREO],
-        outputs: &[BusLayout::STEREO],
-    }];
+    // Stereo in and out with a stereo sidechain as input bus 1 by default.
+    // The main buses and the sidechain can each be mono as well; the
+    // detector links the channels it gets.
+    const LAYOUTS: &'static [Layout] = &[
+        Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::STEREO],
+            outputs: &[BusLayout::STEREO],
+        },
+        Layout {
+            inputs: &[BusLayout::STEREO, BusLayout::MONO],
+            outputs: &[BusLayout::STEREO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::MONO],
+            outputs: &[BusLayout::MONO],
+        },
+        Layout {
+            inputs: &[BusLayout::MONO, BusLayout::STEREO],
+            outputs: &[BusLayout::MONO],
+        },
+    ];
 
     fn prepare(
         self: Arc<Self>,

@@ -949,6 +949,79 @@ impl Model for FftModel {
 }
 ```
 
+#### Channel Layouts
+
+`LAYOUTS` lists the combinations of buses and channels the plugin supports, the default first. A host picks one of them, for example a mono layout on a mono track:
+
+```rust
+impl Model for DelayModel {
+    // Stereo by default. On a mono track the delay runs mono or, as a
+    // mono to stereo insert, spreads the mono input over both channels.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO, Layout::MONO_TO_STEREO];
+    // ...
+}
+```
+
+A `Layout` has one `BusLayout` per bus, the main bus first:
+
+- `BusLayout::Set(set)`: exactly that `ChannelSet`. `BusLayout::MONO` and `BusLayout::STEREO` are the common ones.
+- `BusLayout::Any`: any set of 1 to 32 channels. The bus starts stereo.
+- `BusLayout::SameAsMainInput`: an output bus with as many channels as the main input, in any set of that count.
+
+| Constant | Inputs | Outputs |
+|----------|--------|---------|
+| `Layout::STEREO` (the default) | stereo | stereo |
+| `Layout::MONO` | mono | mono |
+| `Layout::MONO_TO_STEREO` | mono | stereo |
+| `Layout::MATCHED` | any | as many as the input |
+| `Layout::INSTRUMENT_STEREO` | none | stereo |
+| `Layout::INSTRUMENT_MONO` | none | mono |
+
+A layout with aux buses spells them out: `Layout { inputs: &[BusLayout::MONO, BusLayout::STEREO], outputs: &[BusLayout::MONO] }` is a mono effect with a stereo sidechain.
+
+The sets name their channels in the order the plugin gets them, the same in every format:
+
+| `ChannelSet` | Channels |
+|--------------|----------|
+| `Mono` | 1 |
+| `Stereo` | L R |
+| `Lcr` | L R C |
+| `Quad` | L R Ls Rs |
+| `Surround50` | L R C Ls Rs |
+| `Surround51` | L R C LFE Ls Rs |
+| `Surround70` | L R C Lrs Rrs Lss Rss |
+| `Surround71` | L R C LFE Lrs Rrs Lss Rss |
+| `Surround714` | 7.1 and Ltf Rtf Ltr Rtr |
+| `Ambisonic(order)` | (order + 1)² channels in ACN order (SN3D), orders 1 to 4 |
+| `Discrete(n)` | n channels without speaker positions |
+
+In 7.0 and 7.1 the rear pair (Lrs Rrs) comes before the side pair (Lss Rss). Where a host orders the channels otherwise (Apple's 7.x layouts have the side pair first), the Audio Unit wrappers reorder them for the plugin.
+
+How a host picks a layout:
+
+- VST3: the host proposes a speaker arrangement per bus (`setBusArrangements()`). When a listed layout allows the arrangements and `supports_buses()` accepts them, they apply. Otherwise the plugin takes the nearest listed layout it supports and the host reads it back.
+- Audio Unit: the plugin reports one channel capability per layout (the main input and output) and the channel layouts each bus takes. The host sets a stream format and optionally a channel layout per bus. Each is checked against the layouts when it is set, the combination of all buses when the host initializes the unit (AUv2) or allocates its render resources (AUv3). A combination no layout allows fails with `kAudioUnitErr_FormatNotSupported`.
+
+The plugin is prepared again when the layout changes. It learns the channels from its setup: `MainInputChannels` and `MainOutputChannels` give the main channel counts, `ActiveBuses` the set of every bus (`input_set(bus)`, `output_set(bus)`). A plugin with state per channel sizes it there:
+
+```rust
+impl Model for EqualizerModel {
+    type Setup = (SampleRate, MainOutputChannels);
+    type Processor = EqualizerProcessor;
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO];
+
+    fn prepare(self: Arc<Self>, (sr, channels): (SampleRate, MainOutputChannels)) -> EqualizerProcessor {
+        EqualizerProcessor {
+            sample_rate: sr.hz(),
+            states: vec![ChannelState::default(); channels.0 as usize],
+            model: self,
+        }
+    }
+}
+```
+
+With more outputs than inputs (mono to stereo) the extra main channels start silent; `Buffer::num_input_channels()` gives the input's channel count (see [Main Buffer](#main-buffer)).
+
 #### Switching Buses
 
 A plugin declares its buses with `LAYOUTS`, `input_bus_info()` and `output_bus_info()`. The layouts give the bus count and the channels of each bus, one `BusLayout` per bus. Bus 0 of each direction is the main bus, the others are aux buses (a sidechain, extra outputs). The bus info gives the name, the type and the default state: `BusInfo::main(name)` declares a main bus, `BusInfo::aux(name)` an aux bus that is off until the host switches it on (`is_default_active` is false). An aux bus that starts on sets the field: `BusInfo { is_default_active: true, ..BusInfo::aux("Sidechain") }`.
@@ -972,7 +1045,7 @@ impl Model for CompressorModel {
 }
 ```
 
-A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). Every layout has the same number of buses. `#[beamer::export]` checks the layouts when the plugin is compiled; the wrappers refuse a model with more buses or channels. The plugin runs with the first layout.
+A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). Every layout has the same number of buses. `#[beamer::export]` checks the layouts when the plugin is compiled; the wrappers refuse a model with more buses or channels. The plugin starts with the first layout; a host can pick another (see [Channel Layouts](#channel-layouts)).
 
 A host switches aux buses on and off. The plugin is prepared with the buses that are on: it requests `ActiveBuses` in its setup. When the host switches a bus, the plugin is prepared again.
 

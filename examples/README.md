@@ -20,7 +20,7 @@ See [docs/BUILDING.md](../docs/BUILDING.md) for prerequisites, all options and t
 
 ### [Gain](gain/)
 
-Simple stereo gain effect with minimal complexity.
+Simple gain effect for stereo and mono tracks with minimal complexity.
 
 **Parameters:**
 
@@ -32,6 +32,7 @@ Simple stereo gain effect with minimal complexity.
 - `Model` and `Processor` lifecycle via `prepare()`
 - `#[beamer::model]` with declarative attributes
 - `()` setup for plugins without sample-rate-dependent state
+- `Model::LAYOUTS` with a stereo and a mono layout
 - `FloatParameter` with dB scaling
 - Generic f32/f64 processing via `Sample` trait
 
@@ -68,6 +69,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - Linear parameter smoothing (`smoothing = "linear:50.0"`)
 - `EnumParameter` for discrete ratio values
 - A sidechain input (`BusInfo::aux()`) that stays off until the host switches it on, read from `ActiveBuses` in `prepare()`
+- `Model::LAYOUTS` with mono and stereo main buses and sidechains
 - dB-domain envelope processing
 
 ---
@@ -100,7 +102,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 - `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
 - `FloatParameter` with dB scaling via `kind = "db"`
 - Flat parameter groups via `group = "..."` attribute
-- Stereo bus configuration via `input_bus_info()` / `output_bus_info()` overrides
+- `Model::LAYOUTS` with a stereo and a mono layout, the filter state sized from `MainOutputChannels`
 - Biquad peak filters using standard bilinear transform
 - Width parameter (inverted Q: higher = wider = more audible)
 - Generic f32/f64 processing via `Sample` trait
@@ -109,7 +111,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 
 ### [Delay](delay/)
 
-Tempo-synced stereo delay with ping-pong mode and factory presets.
+Tempo-synced delay for stereo and mono tracks with ping-pong mode and factory presets.
 
 **Parameters:**
 
@@ -136,6 +138,7 @@ Tempo-synced stereo delay with ping-pong mode and factory presets.
 - Ring buffer delay line implementation
 - Proper tail length via `tail_samples()`
 - Factory presets in code that set only some parameters
+- `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
 
 ---
 

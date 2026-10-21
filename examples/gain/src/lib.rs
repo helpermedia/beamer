@@ -14,6 +14,7 @@
 //!
 //! - `FloatParameter` with dB scaling via `kind = "db"`
 //! - `()` setup for plugins without sample-rate-dependent state
+//! - `Model::LAYOUTS` with a stereo and a mono layout
 //! - Generic f32/f64 processing via `Sample` trait
 
 use beamer::prelude::*;
@@ -54,6 +55,9 @@ impl GainModel {
 impl Model for GainModel {
     type Setup = ();
     type Processor = GainProcessor;
+    // Stereo by default, mono on a mono track. The gain works on any
+    // number of channels.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO];
 
     fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
         GainProcessor { model: self }

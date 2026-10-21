@@ -15,7 +15,8 @@
 //! - `FloatParameter` with Hz scaling via `kind = "hz"` (LogMapper + frequency formatter)
 //! - `FloatParameter` with dB scaling via `kind = "db"`
 //! - Flat parameter groups via `group = "..."` attribute
-//! - The default layout of `Model::LAYOUTS`, stereo in and out
+//! - `Model::LAYOUTS` with a stereo and a mono layout, the filter state
+//!   sized from `MainOutputChannels`
 //! - Biquad filters using standard bilinear transform mathematics
 //! - Generic f32/f64 processing via `Sample` trait
 
@@ -53,6 +54,14 @@ impl BiquadState {
         self.z2 = coeffs.b2 * input - coeffs.a2 * output;
         output
     }
+}
+
+/// The filter state of one channel, one per band.
+#[derive(Default, Clone, Copy)]
+struct ChannelState {
+    low: BiquadState,
+    mid: BiquadState,
+    high: BiquadState,
 }
 
 /// Biquad filter coefficients.
@@ -248,15 +257,19 @@ pub struct EqualizerModel {
 }
 
 impl Model for EqualizerModel {
-    type Setup = SampleRate;
+    // The filters need the sample rate and one state per channel.
+    type Setup = (SampleRate, MainOutputChannels);
     type Processor = EqualizerProcessor;
+    // Stereo by default, mono on a mono track.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO];
 
-    fn prepare(self: Arc<Self>, sample_rate: SampleRate) -> EqualizerProcessor {
+    fn prepare(
+        self: Arc<Self>,
+        (sample_rate, channels): (SampleRate, MainOutputChannels),
+    ) -> EqualizerProcessor {
         EqualizerProcessor {
             sample_rate: sample_rate.hz(),
-            low_state: [BiquadState::default(); 2],
-            mid_state: [BiquadState::default(); 2],
-            high_state: [BiquadState::default(); 2],
+            states: vec![ChannelState::default(); channels.0 as usize],
             low_coeffs: BiquadCoeffs::default(),
             mid_coeffs: BiquadCoeffs::default(),
             high_coeffs: BiquadCoeffs::default(),
@@ -278,10 +291,8 @@ pub struct EqualizerProcessor {
     /// Sample rate in Hz
     sample_rate: f64,
 
-    /// Filter states (stereo, one per band per channel)
-    low_state: [BiquadState; 2],
-    mid_state: [BiquadState; 2],
-    high_state: [BiquadState; 2],
+    /// Filter states, one per channel.
+    states: Vec<ChannelState>,
 
     /// Filter coefficients (recalculated when parameters change)
     low_coeffs: BiquadCoeffs,
@@ -321,15 +332,14 @@ impl EqualizerProcessor {
         // Update coefficients at the start of each block
         self.update_coefficients();
 
-        // Process stereo buffer: chain filters low -> mid -> high per channel
-        for (ch, channel) in buffer.channels_mut().enumerate() {
+        // Chain the filters low, mid and high on each channel.
+        for (channel, state) in buffer.channels_mut().zip(&mut self.states) {
             for value in channel {
                 let sample = value.to_f64();
 
-                // Chain the three EQ bands (using per-channel state)
-                let sample = self.low_state[ch].process(sample, &self.low_coeffs);
-                let sample = self.mid_state[ch].process(sample, &self.mid_coeffs);
-                let sample = self.high_state[ch].process(sample, &self.high_coeffs);
+                let sample = state.low.process(sample, &self.low_coeffs);
+                let sample = state.mid.process(sample, &self.mid_coeffs);
+                let sample = state.high.process(sample, &self.high_coeffs);
 
                 *value = S::from_f64(sample);
             }

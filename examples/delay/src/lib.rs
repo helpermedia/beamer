@@ -17,6 +17,7 @@
 //! - Ring buffer delay line implementation
 //! - Parameter smoothing to avoid zipper noise
 //! - Both simple stereo and ping-pong modes
+//! - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts
 //! - Proper tail length declaration for delay decay
 //! - `SampleRate` setup for sample-rate-dependent initialization
 //! - `set_active()` to clear the delay lines when the host activates the plugin
@@ -101,6 +102,9 @@ impl Model for DelayModel {
     type Processor = DelayProcessor;
     // The factory presets, in the Factory Presets section below.
     const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;
+    // Stereo by default. On a mono track the delay runs mono or, as a
+    // mono to stereo insert, spreads the mono input over both channels.
+    const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO, Layout::MONO_TO_STEREO];
 
     fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor {
         DelayProcessor {
@@ -318,6 +322,8 @@ impl DelayProcessor {
 
         let num_samples = buffer.num_samples();
         let num_channels = buffer.num_channels().min(2);
+        // A mono input (also with a stereo output) feeds both delay lines.
+        let stereo_input = buffer.num_input_channels() > 1;
 
         if num_channels == 0 {
             return;
@@ -332,7 +338,7 @@ impl DelayProcessor {
             // Read input samples. The buffer is processed in place, so they
             // are read before the output is written over them.
             let in_l = buffer.channel(0)[sample_idx].to_f64();
-            let in_r = if num_channels > 1 {
+            let in_r = if stereo_input {
                 buffer.channel(1)[sample_idx].to_f64()
             } else {
                 in_l
@@ -341,6 +347,13 @@ impl DelayProcessor {
             // Read from delay lines (the "wet" signal)
             let wet_l = self.delay_l.read(delay_samples);
             let wet_r = self.delay_r.read(delay_samples);
+            // Ping-pong echoes alternate between the lines. A single
+            // channel plays both, so that no echo is lost.
+            let wet_out_l = if num_channels == 1 && stereo_mode == StereoMode::PingPong {
+                wet_l + wet_r
+            } else {
+                wet_l
+            };
 
             // Wet/dry mix formula:
             //   output = dry * (1 - mix) + wet * mix
@@ -348,7 +361,7 @@ impl DelayProcessor {
             // mix=0.0 → 100% dry (no delay)
             // mix=0.5 → 50% dry + 50% wet
             // mix=1.0 → 100% wet (delay only)
-            let out_l = in_l * (1.0 - mix) + wet_l * mix;
+            let out_l = in_l * (1.0 - mix) + wet_out_l * mix;
             let out_r = in_r * (1.0 - mix) + wet_r * mix;
 
             // Write to delay lines based on stereo mode

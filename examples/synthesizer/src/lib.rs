@@ -572,6 +572,8 @@ impl SynthesizerProcessor {
         _context: &ProcessContext,
     ) {
         let num_samples = buffer.num_samples();
+        // Stereo as listed; a single channel gets the left side.
+        let num_channels = buffer.num_channels().min(2);
         let waveform = self.model.waveform.get();
         let gain = S::from_f64(self.model.gain.as_linear());
 
@@ -690,9 +692,11 @@ impl SynthesizerProcessor {
                 }
             }
 
-            // Apply master gain and write to output
-            buffer.channel(0)[sample_idx] = out_l * gain;
-            buffer.channel(1)[sample_idx] = out_r * gain;
+            // Apply master gain and write to output.
+            let out = [out_l * gain, out_r * gain];
+            for (ch, &value) in out.iter().enumerate().take(num_channels) {
+                buffer.channel(ch)[sample_idx] = value;
+            }
         }
 
         self.pending_events.clear();
