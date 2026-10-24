@@ -35,7 +35,7 @@
 | | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reset state on activation |
 | **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
-| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | EqualPower curve |
+| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
 | **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drums uses mono |
 | | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Mono layouts, 4 mono outputs (drums) |

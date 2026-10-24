@@ -12,7 +12,7 @@
 //!
 //! # Features Demonstrated
 //!
-//! - `BypassHandler` with `CrossfadeCurve::EqualPower` for smooth bypass
+//! - `BypassHandler` with `CrossfadeCurve::Linear` for smooth bypass
 //! - `bypass_ramp_samples()` to report ramp duration to host
 //! - `set_active()` to reset DSP state on plugin activation
 //! - `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
@@ -208,7 +208,7 @@ impl Model for CompressorModel {
             // the channel count and the longest block.
             bypass_handler: BypassHandler::new(
                 ramp_samples,
-                CrossfadeCurve::EqualPower,
+                CrossfadeCurve::Linear,
                 input_channels.0 as usize,
                 max_buffer_size.0,
             ),

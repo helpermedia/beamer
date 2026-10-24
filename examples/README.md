@@ -63,7 +63,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 
 **Demonstrates:**
 - A tuple setup `(SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses)`: the sample rate for the envelope coefficients, the channels and block size for the bypass handler and the active buses
-- `BypassHandler` with `CrossfadeCurve::EqualPower` for click-free bypass
+- `BypassHandler` with `CrossfadeCurve::Linear` for click-free bypass
 - `set_active()` for resetting envelope state on activation
 - `kind = "db_log"` for logarithmic-feel threshold control
 - Linear parameter smoothing (`smoothing = "linear:50.0"`)

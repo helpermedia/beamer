@@ -17,7 +17,7 @@
 //! use beamer_core::{BypassHandler, BypassAction, CrossfadeCurve, Buffer};
 //!
 //! // In prepare(), with (SampleRate, MaxBufferSize, MainInputChannels) as Setup:
-//! // BypassHandler::new(ramp_samples, CrossfadeCurve::EqualPower, channels, max_buffer_size)
+//! // BypassHandler::new(ramp_samples, CrossfadeCurve::Linear, channels, max_buffer_size)
 //!
 //! struct MyPlugin {
 //!     bypass_handler: BypassHandler,
@@ -93,19 +93,28 @@ pub enum BypassAction {
 // =============================================================================
 
 /// Crossfade curve shape for bypass transitions.
+///
+/// A bypass crossfades the processed and the dry version of the same
+/// signal. For such related signals the gains have to add up to 1 to keep
+/// the level: `Linear` and `SCurve` do. `EqualPower` keeps the power of two
+/// unrelated signals instead (a fully wet reverb against its input) and
+/// raises related ones by up to 3 dB in the middle of the crossfade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CrossfadeCurve {
-    /// Linear crossfade. Simple but may have slight loudness dip at center.
-    /// gain = position (0.0 to 1.0)
+    /// Linear crossfade: wet = 1 - position, dry = position. Keeps the level
+    /// of related signals: the right curve for a bypass whose output follows
+    /// its input. Unrelated signals dip by up to 3 dB in the middle.
     #[default]
     Linear,
 
-    /// Equal-power crossfade. Maintains constant loudness during transition.
-    /// gain = sin(position * PI/2) for fade-in, cos(position * PI/2) for fade-out
+    /// Equal-power crossfade: wet = cos(position * PI/2), dry =
+    /// sin(position * PI/2). Keeps the level of unrelated signals only;
+    /// related ones rise by up to 3 dB in the middle.
     EqualPower,
 
-    /// S-curve crossfade. Faster start/end, smoother middle.
-    /// gain = 3x^2 - 2x^3 (smoothstep)
+    /// S-curve crossfade: dry = 3x^2 - 2x^3 (smoothstep), wet = 1 - dry.
+    /// Keeps the level of related signals like `Linear`, with a gentler
+    /// start and end.
     SCurve,
 }
 
@@ -126,7 +135,8 @@ impl CrossfadeCurve {
                 (angle.cos(), angle.sin())
             }
             CrossfadeCurve::SCurve => {
-                let smooth = t * t * (3.0 - 2.0 * t); // smoothstep
+                // Smoothstep.
+                let smooth = t * t * (3.0 - 2.0 * t);
                 (1.0 - smooth, smooth)
             }
         };
@@ -457,5 +467,20 @@ mod tests {
         assert_eq!(left, [0.5, 0.625, 0.75, 0.875]);
         assert_eq!(right, [0.5, 0.375, 0.25, 0.125]);
         assert_eq!(handler.state(), BypassState::Bypassed);
+    }
+
+    #[test]
+    fn test_linear_and_s_curve_keep_the_level_of_related_signals() {
+        // Crossfading a signal with itself: the gains add up to 1 for the
+        // curves meant for a bypass.
+        for curve in [CrossfadeCurve::Linear, CrossfadeCurve::SCurve] {
+            for step in 0..=10 {
+                let (wet, dry): (f64, f64) = curve.gains(f64::from(step) / 10.0);
+                assert!((wet + dry - 1.0).abs() < 1e-12, "{curve:?} at {step}");
+            }
+        }
+        // Equal power raises a related signal by 3 dB in the middle.
+        let (wet, dry): (f64, f64) = CrossfadeCurve::EqualPower.gains(0.5);
+        assert!((wet + dry - std::f64::consts::SQRT_2).abs() < 1e-12);
     }
 }

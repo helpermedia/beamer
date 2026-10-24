@@ -1578,11 +1578,14 @@ pub enum BypassAction {
 }
 
 pub enum CrossfadeCurve {
-    /// Slight loudness dip at center.
+    /// Keeps the level of related signals: the right curve for a bypass
+    /// whose output follows its input (default). Unrelated signals dip by
+    /// up to 3 dB in the middle.
     Linear,
-    /// Constant loudness (recommended).
+    /// Keeps the level of unrelated signals only; related ones rise by up
+    /// to 3 dB in the middle.
     EqualPower,
-    /// Faster start and end, smoother middle.
+    /// Keeps the level like Linear, with a gentler start and end.
     SCurve,
 }
 
