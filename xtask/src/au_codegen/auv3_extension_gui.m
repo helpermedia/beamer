@@ -184,8 +184,8 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
     // The editor sync opens with the first init dump of a WebView or of a
     // new audio unit, so that the values the page receives and the ones the
-    // sync counts as sent match. The first frame sends every parameter, and
-    // events the plugin emits from now on are kept for this editor.
+    // sync counts as sent match. The first frame sends every parameter.
+    // Events the plugin emits from now on are kept for this editor.
     if (!_sync || _syncWrapper != (__bridge const void*)_wrapper) {
         beamer_au_ipc_close_sync(&_sync);
         _sync = beamer_au_editor_sync_open([_wrapper rustInstance]);

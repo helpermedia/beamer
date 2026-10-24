@@ -172,7 +172,7 @@ pub fn parameter_path(prefix: &str, id: &'static str) -> Cow<'static, str> {
 /// Check that no two parameters share the id that hosts see.
 ///
 /// That id is a 32-bit hash of the parameter's path, so two different
-/// paths can hash to the same value. It is unlikely, and when it happens a
+/// paths can hash to the same value. It is unlikely. When it happens a
 /// host would treat the two parameters as one. The same error shows when
 /// ids were never set, for example by a hand-written `Default` that does
 /// not call [`Parameters::assign_ids`].
@@ -775,7 +775,7 @@ impl FloatParameter {
     /// Create a percentage parameter.
     ///
     /// The value is a fraction, displayed as a percentage: 0.0-1.0 shows as
-    /// 0%-100%, and a range of 0.0..=0.95 ends at 95%.
+    /// 0%-100%. A range of 0.0..=0.95 ends at 95%.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
     /// or by `#[beamer::model]` and `#[beamer::group]`.

@@ -15,8 +15,8 @@
 //! whether the web UI has its latest value, the sync reads the generation
 //! of the field first and the value second: the value it sends is then at
 //! least as new as the generation it notes. A change in between is sent
-//! again in the next frame with the same value, which the runtime ignores,
-//! and is never lost.
+//! again in the next frame with the same value (which the runtime
+//! ignores) and is never lost.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -41,7 +41,7 @@ pub struct EditorSync {
     /// The id of each parameter, in the order of `ParameterStore::info`,
     /// with the bits of the normalized value the web UI knows. `None` until
     /// it was sent. The ids are taken once: listing the parameters by index
-    /// is slow, and they stay the same for the life of the plugin.
+    /// is slow. They stay the same for the life of the plugin.
     last_values: Vec<(ParameterId, Option<u64>)>,
     /// The generation of the value of each `State` field the web UI got
     /// last, by path.
@@ -177,8 +177,8 @@ impl EditorSync {
 }
 
 impl EditorSync {
-    /// Set a `State` field to a value the web UI sent, and answer with the
-    /// value in effect.
+    /// Set a `State` field to a value the web UI sent, then answer with
+    /// the value in effect.
     ///
     /// A value that does not fit the type of the field leaves the field as
     /// it is and is logged; the answer then corrects the web UI. Returns
@@ -213,7 +213,7 @@ impl EditorSync {
     }
 
     /// Call `send` with the path and JSON of each `State` field whose value
-    /// the web UI does not have yet, or of every field with `all`, and note
+    /// the web UI does not have yet, or of every field with `all`, then note
     /// them as sent.
     fn for_each_new_state(&mut self, all: bool, send: &mut dyn FnMut(&str, &[u8])) {
         let generations = &mut self.state_generations;
@@ -535,7 +535,7 @@ mod tests {
         );
     }
 
-    /// Two `State` fields, one of them in a nested group, and no
+    /// Two `State` fields (one of them in a nested group) and no
     /// parameters.
     #[derive(Default)]
     struct TwoStates {
@@ -631,7 +631,7 @@ mod tests {
         states.zoom.set(120);
         sync.frame_script();
 
-        // The field stays as it is, and the answer tells the web UI.
+        // The field stays as it is. The answer tells the web UI.
         assert_eq!(
             sync.state_script("zoom", &serde_json::json!("big")).as_deref(),
             Some("window.__BEAMER__._onState({\"zoom\":120});")

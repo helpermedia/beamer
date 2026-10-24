@@ -12,7 +12,7 @@ use serde::Deserialize;
 /// Oldest macOS version the bundles run on.
 ///
 /// Every binary of a bundle is built for it: the Rust library through
-/// `MACOSX_DEPLOYMENT_TARGET`, and what clang compiles through
+/// `MACOSX_DEPLOYMENT_TARGET` and what clang compiles through
 /// [`MACOS_MIN_VERSION_FLAG`]. Without them clang targets the macOS version of
 /// the build machine and the bundle does not load on anything older.
 pub const MACOS_DEPLOYMENT_TARGET: &str = "11.0";
@@ -220,7 +220,7 @@ impl AuCodes {
 ///
 /// A process has one namespace for Objective-C classes. When two loaded
 /// binaries define a class of the same name, the runtime uses one of them
-/// for both, and a host looks classes up by name. The names therefore carry
+/// for both. A host looks classes up by name. The names therefore carry
 /// the codes of the Audio Unit, which no other Audio Unit on the system has,
 /// besides the package name for readability. The codes are written in hex,
 /// since they may hold any ASCII character. Each code has four characters,

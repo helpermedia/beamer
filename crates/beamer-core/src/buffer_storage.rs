@@ -440,7 +440,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// before the sub-blocks. Afterwards:
     ///
     /// - No output channel (main or aux) overlaps another. One that overlaps
-    ///   an earlier output gets scratch memory, and what the plugin writes
+    ///   an earlier output gets scratch memory. What the plugin writes
     ///   there is discarded.
     /// - No input channel the plugin reads overlaps an output channel. One
     ///   that does is copied into scratch memory first, unless it is exactly
@@ -449,19 +449,19 @@ impl<S: Sample> ProcessBufferStorage<S> {
     ///   or silence when the input has fewer channels. Aux outputs are
     ///   silent.
     /// - A null pointer (a channel the host gave no memory for) keeps its
-    ///   index: an output gets scratch memory, whose samples are discarded,
-    ///   and an input reads silence.
+    ///   index: an output gets scratch memory, whose samples are discarded.
+    ///   An input reads silence.
     ///
     /// Returns false when memory of its own is needed for a block longer
     /// than the storage was allocated for. The channels are then not
-    /// prepared, and the caller must not process them (see
+    /// prepared. The caller must not process them (see
     /// [`silence_outputs()`](Self::silence_outputs)).
     ///
     /// # Safety
     ///
     /// Every collected input pointer must be null or valid for reads and
     /// every output pointer null or valid for writes of `num_samples`
-    /// samples, and no reference to that memory may be alive.
+    /// samples. No reference to that memory may be alive.
     pub unsafe fn prepare_in_place(&mut self, num_samples: usize) -> bool {
         let fits = num_samples <= self.max_frames;
 
@@ -552,7 +552,7 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// # Safety
     ///
     /// Every collected output pointer must be null or valid for writes of
-    /// `num_samples` samples, and no reference to that memory may be alive.
+    /// `num_samples` samples. No reference to that memory may be alive.
     pub unsafe fn silence_outputs(&self, num_samples: usize) {
         for &output in self.main_outputs.iter().chain(self.aux_outputs.iter().flatten()) {
             if !output.is_null() {
@@ -568,14 +568,14 @@ impl<S: Sample> ProcessBufferStorage<S> {
     /// # Safety
     ///
     /// [`prepare_in_place()`](Self::prepare_in_place) returned true for this
-    /// process call, `start + len` is at most its `num_samples`, and no other
+    /// process call, `start + len` is at most its `num_samples` and no other
     /// reference to the channels' memory is alive while the buffers are.
     pub unsafe fn sub_block_buffers(
         &self,
         start: usize,
         len: usize,
     ) -> (Buffer<'_, S>, AuxiliaryBuffers<'_, S>) {
-        // After prepare_in_place no two output slices overlap, and no input
+        // After prepare_in_place no two output slices overlap. No input
         // slice (unpaired main inputs, aux inputs) overlaps an output. Inputs
         // without memory share one silent slice, which is only read.
         let channels = self.main_outputs.iter().map(|&ptr| {
@@ -918,7 +918,7 @@ mod tests {
         )
     }
 
-    /// Whether no two of the plugin's slices share memory, and no input
+    /// Whether no two of the plugin's slices share memory and no input
     /// slice overlaps an output.
     fn no_overlaps(storage: &ProcessBufferStorage<f32>) -> bool {
         let outputs: Vec<*const f32> = storage
@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_prepare_copies_an_unpaired_input_over_an_output() {
-        // Stereo to mono, and the host gives the output the right input's
+        // Stereo to mono: the host gives the output the right input's
         // memory. The right input is copied before the output is written.
         let mut storage = storage_for(2, 1, &[], &[]);
         let left = ramp(10.0);

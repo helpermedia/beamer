@@ -478,7 +478,7 @@ impl DeclaredBuses {
         Some((set, ChannelOrder::default()))
     }
 
-    /// The layout tags of the sets a bus takes: the sets the layouts name,
+    /// The layout tags of the sets a bus takes: the sets the layouts name
     /// and every named set for a bus that takes any set.
     fn layout_tags(&self, direction: BusDirection, index: usize) -> Vec<u32> {
         let any = self
@@ -606,6 +606,16 @@ pub struct BeamerInstanceHandle {
     plugin_locks: std::sync::atomic::AtomicUsize,
 }
 
+/// The state a new instance shares with its render blocks, with diagnostics
+/// in a diagnostics build.
+fn new_shared_state() -> SharedState {
+    #[cfg(feature = "diagnostics")]
+    if let Some(config) = factory::plugin_config() {
+        return SharedState::with_diagnostics(beamer_core::diagnostics::Diagnostics::start(config, "au"));
+    }
+    SharedState::default()
+}
+
 impl BeamerInstanceHandle {
     /// Create the handle for a new plugin instance.
     pub(crate) fn new(plugin: Box<dyn AuPluginInstance>) -> Self {
@@ -628,7 +638,7 @@ impl BeamerInstanceHandle {
             model,
             presets,
             declared_buses,
-            shared: Arc::new(SharedState::default()),
+            shared: Arc::new(new_shared_state()),
             #[cfg(test)]
             plugin_locks: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -984,6 +994,10 @@ pub extern "C" fn beamer_au_allocate_render_resources(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
         let _ = catch_unwind(AssertUnwindSafe(|| leave_unprepared(handle)));
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            diagnostics.note(format_args!("prepare failed with status {status}"));
+        }
     }
 
     status
@@ -1180,6 +1194,19 @@ fn prepare_instance(
     }
     *handle.lock_bus_config() = Some(rust_bus_config);
 
+    #[cfg(feature = "diagnostics")]
+    if let Some(diagnostics) = handle.shared.diagnostics() {
+        let sample_type = match sample_format {
+            BeamerAuSampleFormat::Float32 => "f32",
+            BeamerAuSampleFormat::Float64 => "f64",
+        };
+        diagnostics.note(format_args!(
+            "prepared: {sample_rate} Hz, {sample_type}, max {max_frames} frames{}, buses {}",
+            if rendering_offline { ", offline" } else { "" },
+            beamer_core::diagnostics::describe_buses(&buses),
+        ));
+    }
+
     os_status::NO_ERR
 }
 
@@ -1240,7 +1267,72 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
         handle.shared.log_render_warnings();
 
         leave_unprepared(handle);
+
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            diagnostics.note(format_args!("released"));
+        }
     }));
+}
+
+/// Note that the host turned its bypass on or off (diagnostics builds).
+///
+/// # Safety
+///
+/// - `instance` must be null or a valid pointer returned by
+///   `beamer_au_create_instance` that was not destroyed
+#[cfg(feature = "diagnostics")]
+#[no_mangle]
+pub extern "C" fn beamer_au_diagnostics_host_bypass(instance: BeamerAuInstanceHandle, bypassed: bool) {
+    with_instance_void!(instance, |handle| handle.shared.note_host_bypass(bypassed));
+}
+
+/// Note whether the host's main output buffers have memory of their own
+/// (diagnostics builds). For the render thread.
+///
+/// # Safety
+///
+/// As for `beamer_au_diagnostics_host_bypass`.
+#[cfg(feature = "diagnostics")]
+#[no_mangle]
+pub extern "C" fn beamer_au_diagnostics_host_output_memory(instance: BeamerAuInstanceHandle, has_memory: bool) {
+    with_instance_void!(instance, |handle| {
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            diagnostics.state().note_host_output_memory(has_memory);
+        }
+    });
+}
+
+/// Measure the output of a render call of the main bus that the host
+/// bypassed (diagnostics builds). For the render thread.
+///
+/// # Safety
+///
+/// As for `beamer_au_diagnostics_host_bypass`. `output_data` must be null or
+/// valid for the call, its buffers valid for `frame_count` samples where
+/// they have memory.
+#[cfg(feature = "diagnostics")]
+#[no_mangle]
+pub extern "C" fn beamer_au_diagnostics_bypassed_render(
+    instance: BeamerAuInstanceHandle,
+    output_data: *const AudioBufferList,
+    frame_count: u32,
+) {
+    if output_data.is_null() {
+        return;
+    }
+    with_instance_void!(instance, |handle| {
+        // The render thread does not wait: while a host thread prepares the
+        // instance, the call is not measured.
+        if let Ok(guard) = handle.render_block.try_read() {
+            if let Some(render_block) = guard.as_ref() {
+                // SAFETY: The shim passes the output list of its render call,
+                // valid for frame_count samples (see the function's safety
+                // section).
+                unsafe { render_block.measure_host_bypassed(output_data, frame_count) };
+            }
+        }
+    });
 }
 
 /// Check if render resources are currently allocated.

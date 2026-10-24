@@ -12,6 +12,9 @@ categories = ["multimedia::audio"]
 default = ["webview"]
 ## WebView GUI support.
 webview = ["beamer-webview"]
+## Measure what the host does and write it to the system log. For test
+## builds only (`cargo xtask bundle <plugin> --diagnostics`).
+diagnostics = ["beamer-core/diagnostics"]
 
 [lints]
 workspace = true

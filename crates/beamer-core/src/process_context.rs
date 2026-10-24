@@ -320,7 +320,7 @@ impl Transport {
     /// The transport `samples` samples later within the same host block,
     /// for a sub-block that starts there.
     ///
-    /// The positions in samples move on, and the position in quarter notes
+    /// The positions in samples move on. The position in quarter notes
     /// moves on at the current tempo. The bar start, the cycle and the
     /// state stay as the host gave them for the block. The samples to the
     /// next MIDI clock count from the later position, which needs the tempo
@@ -415,6 +415,10 @@ pub struct ProcessContext<'a> {
     /// Only present if the plugin returned `Some(MidiCcConfig)` from
     /// `midi_cc_config()`. Use [`ProcessContext::midi_cc()`] to access.
     midi_cc_state: Option<&'a MidiCcState>,
+
+    /// Where `report_value` notes values, in a diagnostics build.
+    #[cfg(feature = "diagnostics")]
+    diagnostics: Option<&'a crate::diagnostics::DiagnosticsState>,
 }
 
 impl<'a> ProcessContext<'a> {
@@ -428,6 +432,8 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport,
             midi_cc_state: None,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         }
     }
 
@@ -446,6 +452,8 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport,
             midi_cc_state: Some(midi_cc_state),
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         }
     }
 
@@ -459,6 +467,8 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport: Transport::default(),
             midi_cc_state: None,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         }
     }
 
@@ -481,6 +491,41 @@ impl<'a> ProcessContext<'a> {
     #[inline]
     pub fn midi_cc(&self) -> Option<&MidiCcState> {
         self.midi_cc_state
+    }
+
+    /// The same context with the diagnostics state that
+    /// [`report_value`](Self::report_value) writes into.
+    ///
+    /// This is called by the format wrappers, not by plugin code.
+    #[cfg(feature = "diagnostics")]
+    #[inline]
+    pub fn with_diagnostics(mut self, state: &'a crate::diagnostics::DiagnosticsState) -> Self {
+        self.diagnostics = Some(state);
+        self
+    }
+
+    /// Report a value of the plugin for the diagnostics log, such as a
+    /// compressor's gain reduction.
+    ///
+    /// A diagnostics build (`cargo xtask bundle <plugin> --diagnostics`)
+    /// logs the smallest, largest and last value of each name twice per
+    /// second, for up to 8 names. In other builds the call does nothing, so
+    /// it can stay in the code. It is safe on the audio thread: no
+    /// allocation, no lock.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// context.report_value("gain reduction dB", gain_reduction_db);
+    /// ```
+    #[inline]
+    pub fn report_value(&self, name: &'static str, value: f32) {
+        #[cfg(feature = "diagnostics")]
+        if let Some(state) = self.diagnostics {
+            state.report_value(name, value);
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = (name, value);
     }
 
     /// Calculates the duration of this buffer in seconds.
@@ -515,6 +560,8 @@ impl Default for ProcessContext<'_> {
             num_samples: 0,
             transport: Transport::default(),
             midi_cc_state: None,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         }
     }
 }

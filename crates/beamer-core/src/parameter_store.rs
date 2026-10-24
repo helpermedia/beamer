@@ -12,7 +12,7 @@
 //!   `FloatParameter`, `IntParameter` and `BoolParameter`.
 //!
 //! - **[`Saved`](crate::model::Saved)**: the `State` fields beside the
-//!   parameters, and saving and loading the parameters and `State` fields
+//!   parameters. It saves and loads the parameters and `State` fields
 //!   together.
 //!
 //! - **[`WebViewEvents`](crate::model::WebViewEvents)**: where the event

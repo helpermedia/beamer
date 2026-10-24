@@ -24,9 +24,38 @@ pub(crate) struct SharedState {
     /// The audio thread does not log: a host thread logs them when the
     /// plugin is prepared again or released.
     render_warnings: ProcessWarnings,
+    /// The diagnostics of the instance, in a diagnostics build.
+    #[cfg(feature = "diagnostics")]
+    diagnostics: Option<beamer_core::diagnostics::Diagnostics>,
+    /// The host's bypass as last noted: 0 not yet, 1 off, 2 on.
+    #[cfg(feature = "diagnostics")]
+    host_bypass: std::sync::atomic::AtomicU8,
 }
 
 impl SharedState {
+    /// State for an instance with diagnostics.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn with_diagnostics(diagnostics: beamer_core::diagnostics::Diagnostics) -> Self {
+        Self { diagnostics: Some(diagnostics), ..Self::default() }
+    }
+
+    /// The diagnostics of the instance, if it has them.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn diagnostics(&self) -> Option<&beamer_core::diagnostics::Diagnostics> {
+        self.diagnostics.as_ref()
+    }
+
+    /// Note the host's bypass. Only a change is logged: a host may set the
+    /// same value again.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn note_host_bypass(&self, bypassed: bool) {
+        let now = if bypassed { 2 } else { 1 };
+        let before = self.host_bypass.swap(now, Ordering::Relaxed);
+        if let (Some(diagnostics), true) = (self.diagnostics(), before != now) {
+            diagnostics.note(format_args!("host bypass {}", if bypassed { "on" } else { "off" }));
+        }
+    }
+
     /// Latency in samples of the most recent block, 0 while unprepared.
     pub(crate) fn latency_samples(&self) -> u32 {
         self.latency_samples.load(Ordering::Relaxed)

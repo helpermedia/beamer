@@ -15,6 +15,10 @@ derive = ["beamer-macros"]
 au = ["dep:beamer-au"]
 vst3 = ["dep:beamer-vst3", "dep:vst3"]
 
+# Measure what the host does and write it to the system log, for test
+# builds: `cargo xtask bundle <plugin> --diagnostics` sets it.
+diagnostics = ["beamer-core/diagnostics", "beamer-au?/diagnostics", "beamer-vst3?/diagnostics"]
+
 [lints]
 workspace = true
 

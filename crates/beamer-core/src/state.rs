@@ -6,7 +6,7 @@
 //! which every thread of a plugin instance shares.
 //!
 //! A `State` is a [`Handover`] that is also saved: host and UI threads set
-//! it as a whole, and the audio thread reads it through a
+//! it as a whole while the audio thread reads it through a
 //! [`HandoverReader`] without waiting.
 //!
 //! `#[beamer::model]` and `#[beamer::group]` save and load the fields that are marked with
@@ -41,7 +41,7 @@
 //! dependency of its own derives through the re-export:
 //! `#[serde(crate = "beamer::serde")]`.
 //!
-//! A few things JSON cannot hold, and a value that contains them does not
+//! A few things JSON cannot hold. A value that contains them does not
 //! come back from a saved state:
 //!
 //! - Floats that are not finite. NaN and the infinities are written as

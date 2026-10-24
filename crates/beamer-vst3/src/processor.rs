@@ -850,6 +850,15 @@ where
     /// audio thread does not log: `setupProcessing()`, `setActive()` and
     /// `terminate()` log them.
     process_warnings: ProcessWarnings,
+    /// The diagnostics of the instance, in a diagnostics build.
+    #[cfg(feature = "diagnostics")]
+    diagnostics: beamer_core::diagnostics::Diagnostics,
+    /// The diagnostics meter of the audio thread, made by `prepare`.
+    #[cfg(feature = "diagnostics")]
+    meter: UnsafeCell<Option<beamer_core::diagnostics::BlockMeter>>,
+    /// The plugin's bypass parameter, for the diagnostics.
+    #[cfg(feature = "diagnostics")]
+    bypass_parameter: Option<ParameterId>,
     /// The `state_generation()` of the model that the host knows
     /// about: at creation and after a load. Shared with the editor, which
     /// tells the host when it changed.
@@ -884,6 +893,8 @@ impl<P: Model> Vst3Processor<P> {
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static Config) -> Self {
         let model = Arc::new(P::default());
+        #[cfg(feature = "diagnostics")]
+        let bypass_parameter = beamer_core::diagnostics::bypass_parameter(&*model);
 
         // The ids for the comparison around a factory preset in `process()`.
         let parameter_ids: Box<[ParameterId]> = if !P::PRESETS.is_empty() {
@@ -955,6 +966,12 @@ impl<P: Model> Vst3Processor<P> {
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
             process_warnings: ProcessWarnings::default(),
+            #[cfg(feature = "diagnostics")]
+            diagnostics: beamer_core::diagnostics::Diagnostics::start(config, "vst3"),
+            #[cfg(feature = "diagnostics")]
+            meter: UnsafeCell::new(None),
+            #[cfg(feature = "diagnostics")]
+            bypass_parameter,
             #[cfg(feature = "webview")]
             known_state_generation,
             _marker: PhantomData,
@@ -1216,10 +1233,56 @@ impl<P: Model> Vst3Processor<P> {
             }
         }
 
+        #[cfg(feature = "diagnostics")]
+        {
+            let sample_type = if setup.symbolicSampleSize != SymbolicSampleSizes_::kSample64 as i32 {
+                "f32"
+            } else if processor.supports_double_precision() {
+                "f64"
+            } else {
+                "f64 converted to f32"
+            };
+            let mode = match setup.processMode as ProcessModes {
+                ProcessModes_::kOffline => ", offline",
+                ProcessModes_::kPrefetch => ", prefetch",
+                _ => "",
+            };
+            self.diagnostics.note(format_args!(
+                "prepared: {} Hz, {sample_type}, max {max_frames} frames{mode}, buses {}",
+                setup.sampleRate,
+                beamer_core::diagnostics::describe_buses(&buses),
+            ));
+            // SAFETY: See the function's safety section.
+            unsafe {
+                *self.meter.get() = Some(beamer_core::diagnostics::BlockMeter::new(
+                    Arc::clone(self.diagnostics.state()),
+                    setup.sampleRate,
+                ));
+            }
+        }
+
         *slot = Some(processor);
         // SAFETY: See the function's safety section.
         unsafe { *self.process_buses.get() = buses };
         true
+    }
+
+    /// Whether the bypass parameter is on, for the diagnostics.
+    #[cfg(feature = "diagnostics")]
+    fn bypass_on(&self) -> Option<bool> {
+        beamer_core::diagnostics::bypass_on(&*self.model, self.bypass_parameter)
+    }
+
+    /// The diagnostics meter, once the plugin was prepared.
+    ///
+    /// # Safety
+    ///
+    /// Only `process()` may call it, with one reference alive at a time.
+    #[cfg(feature = "diagnostics")]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn meter(&self) -> Option<&mut beamer_core::diagnostics::BlockMeter> {
+        // SAFETY: See the function's safety section.
+        unsafe { (*self.meter.get()).as_mut() }
     }
 
     /// Get a mutable reference to the prepared processor.
@@ -1359,6 +1422,8 @@ impl<P: Model> Vst3Processor<P> {
                 } else {
                     CoreProcessContext::new(sample_rate, block.len, block_transport)
                 };
+                #[cfg(feature = "diagnostics")]
+                let context = context.with_diagnostics(self.diagnostics.state());
                 process_range(processor, block.start, block.len, &context);
                 true
             },
@@ -1419,16 +1484,55 @@ impl<P: Model> Vst3Processor<P> {
         // SAFETY: See the function's safety section.
         unsafe { collect_channels(storage, process_data, buses) };
 
+        // How the host passed the channels, before any is replaced.
+        // SAFETY: Only process() calls it.
+        #[cfg(feature = "diagnostics")]
+        if let Some(meter) = unsafe { self.meter() } {
+            meter.note_host_channels(&storage.main_inputs, &storage.main_outputs);
+            for (index, channels) in storage.aux_inputs.iter().enumerate() {
+                let bus = index + 1;
+                if buses.input_routing(bus) == BusRouting::Connected {
+                    if !channels.is_empty() && channels.iter().all(|ptr| !ptr.is_null()) {
+                        meter.state().note_aux_input_present(bus);
+                    } else {
+                        meter.state().note_aux_input_missing(bus, 0);
+                    }
+                }
+            }
+        }
+
         // SAFETY: The host guarantees the channel pointers valid for
         // num_samples elements for the duration of process().
         let render_samples = unsafe { self.prepare_channels(storage, num_samples) };
         let storage = &*storage;
+
+        #[cfg(feature = "diagnostics")]
+        if render_samples > 0 {
+            // SAFETY: Only process() calls it.
+            if let Some(meter) = unsafe { self.meter() } {
+                meter.begin_block(num_samples, self.bypass_on());
+                // SAFETY: The channels were prepared for num_samples samples
+                // and no reference to them is alive.
+                unsafe { meter.measure_inputs(storage, num_samples) };
+            }
+        }
+
         self.run_blocks(render_samples, processor, input, |processor, start, len, context| {
             // SAFETY: The channels were prepared for this call and the
             // sub-block lies within them.
             let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(start, len) };
             process(processor, &mut buffer, &mut aux, context);
         });
+
+        #[cfg(feature = "diagnostics")]
+        if render_samples > 0 {
+            // SAFETY: Only process() calls it.
+            if let Some(meter) = unsafe { self.meter() } {
+                // SAFETY: The processor is done with the channels, which
+                // stay valid for num_samples samples during process().
+                unsafe { meter.measure_outputs(storage, num_samples) };
+            }
+        }
 
         // SAFETY: See the function's safety section.
         unsafe { silence_unrendered_outputs::<S>(process_data, buses, num_samples) };
@@ -1487,6 +1591,43 @@ impl<P: Model> Vst3Processor<P> {
                 &[]
             }
         };
+
+        // The host's channels, measured as it passed them: the plugin works
+        // on converted copies.
+        #[cfg(feature = "diagnostics")]
+        // SAFETY: Only process() calls it.
+        let mut meter = unsafe { self.meter() };
+        #[cfg(feature = "diagnostics")]
+        if let Some(meter) = meter.as_deref_mut() {
+            let mut inputs = [std::ptr::null::<f64>(); beamer_core::MAX_CHANNELS];
+            for (to, &from) in inputs.iter_mut().zip(host_inputs(0)) {
+                *to = from.cast_const();
+            }
+            let input_count = host_inputs(0).len().min(beamer_core::MAX_CHANNELS);
+            meter.note_host_channels(&inputs[..input_count], host_outputs(0));
+            meter.begin_block(num_samples, self.bypass_on());
+            for (channel, &ptr) in host_inputs(0).iter().enumerate() {
+                if !ptr.is_null() {
+                    // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                    meter.main_input(channel, unsafe { slice::from_raw_parts(ptr, num_samples) });
+                }
+            }
+            for bus in 1..accepted.input_bus_count() {
+                if buses.input_routing(bus) != BusRouting::Connected {
+                    continue;
+                }
+                let channels = host_inputs(bus);
+                if channels.is_empty() || channels.iter().any(|ptr| ptr.is_null()) {
+                    meter.state().note_aux_input_missing(bus, 0);
+                    continue;
+                }
+                meter.state().note_aux_input_present(bus);
+                for &ptr in channels {
+                    // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                    meter.aux_input(bus, unsafe { slice::from_raw_parts(ptr, num_samples) });
+                }
+            }
+        }
 
         // The plugin processes the f32 output channels in place. They start
         // silent; a channel with a host input gets it below. So do the main
@@ -1588,6 +1729,23 @@ impl<P: Model> Vst3Processor<P> {
 
         // SAFETY: The host passes kSample64 buffers, valid for the call.
         unsafe { silence_unrendered_outputs::<f64>(process_data, buses, num_samples) };
+
+        #[cfg(feature = "diagnostics")]
+        if let Some(meter) = meter {
+            for (channel, &ptr) in host_outputs(0).iter().enumerate() {
+                if !ptr.is_null() {
+                    // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                    meter.main_output(channel, unsafe { slice::from_raw_parts(ptr, num_samples) });
+                }
+            }
+            for bus in 1..accepted.output_bus_count() {
+                for &ptr in host_outputs(bus).iter().filter(|ptr| !ptr.is_null()) {
+                    // SAFETY: Host guarantees channel pointer valid for num_samples elements.
+                    meter.aux_output(bus, unsafe { slice::from_raw_parts(ptr, num_samples) });
+                }
+            }
+            meter.end_block();
+        }
     }
 }
 
@@ -1780,6 +1938,12 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
         // setActive(true). A bus that is switched on gets the set of its
         // arrangement.
         let on = state != 0;
+        #[cfg(feature = "diagnostics")]
+        self.diagnostics.note(format_args!(
+            "host turns {} bus {index} {}",
+            if dir as BusDirections == BusDirections_::kInput { "input" } else { "output" },
+            if on { "on" } else { "off" },
+        ));
         let mut buses = self.lock_host_buses();
         let recorded = match dir as BusDirections {
             BusDirections_::kInput => buses.activate(true, index, on),
@@ -1797,6 +1961,8 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
 
     unsafe fn setActive(&self, state: TBool) -> tresult {
         self.process_warnings.log();
+        #[cfg(feature = "diagnostics")]
+        self.diagnostics.note(format_args!("host sets active {}", if state != 0 { "on" } else { "off" }));
         if state != 0 {
             // Buses the host switched since the setup take effect now.
             let buses = self.negotiate_buses();
@@ -1988,7 +2154,21 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // refused; the buses get the nearest listed layout the plugin
         // supports, which the host reads back.
         let model = self.model();
-        if self.lock_host_buses().arrange(P::LAYOUTS, inputs, outputs, |buses| model.supports_buses(buses)) {
+        let accepted = self.lock_host_buses().arrange(P::LAYOUTS, inputs, outputs, |buses| model.supports_buses(buses));
+        #[cfg(feature = "diagnostics")]
+        {
+            let channels = |arrangements: &[SpeakerArrangement]| -> String {
+                let counts: Vec<String> = arrangements.iter().map(|a| a.count_ones().to_string()).collect();
+                counts.join(", ")
+            };
+            self.diagnostics.note(format_args!(
+                "host asks for arrangements in {}; out {}: {}",
+                channels(inputs),
+                channels(outputs),
+                if accepted { "accepted" } else { "refused" },
+            ));
+        }
+        if accepted {
             kResultTrue
         } else {
             kResultFalse
@@ -2071,6 +2251,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        #[cfg(feature = "diagnostics")]
+        self.diagnostics.note(format_args!("host sets processing {}", if _state != 0 { "on" } else { "off" }));
         kResultOk
     }
 
@@ -2132,6 +2314,17 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                 let mut event: Event = unsafe { std::mem::zeroed() };
                 // SAFETY: event_list is valid, event is valid mutable pointer.
                 if unsafe { event_list.getEvent(i, &mut event) } == kResultOk {
+                    // The SysEx bytes as the host sent them, framing and all.
+                    #[cfg(feature = "diagnostics")]
+                    if event.r#type == K_DATA_EVENT {
+                        // SAFETY: The type says data is the active variant.
+                        let data = unsafe { &event.__field0.data };
+                        if data.r#type == DATA_TYPE_MIDI_SYSEX && !data.bytes.is_null() {
+                            // SAFETY: The host guarantees size bytes at bytes.
+                            let bytes = unsafe { slice::from_raw_parts(data.bytes, data.size as usize) };
+                            self.diagnostics.state().note_sysex_input(bytes);
+                        }
+                    }
                     // SAFETY: event is valid Event populated by getEvent.
                     if let Some(midi_event) = unsafe { convert_vst3_to_midi(&event) } {
                         push_midi_input(midi_input, midi_event, num_samples == 0);
@@ -2206,6 +2399,11 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             *carried = true;
             return kResultOk;
         }
+
+        // The MIDI this block processes, including what calls without
+        // samples left in the buffer.
+        #[cfg(feature = "diagnostics")]
+        self.diagnostics.state().note_midi_input(midi_input.as_slice());
 
         // Clear and prepare MIDI output buffer and SysEx pool
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
@@ -2316,6 +2514,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         if midi_output.has_overflowed() {
             self.process_warnings.note(ProcessWarning::MidiOutputOverflow);
         }
+        #[cfg(feature = "diagnostics")]
+        self.diagnostics.state().note_midi_output(midi_output.len());
 
         // Check for SysEx pool overflow (once per block)
         if sysex_pool.has_overflowed() {

@@ -58,6 +58,8 @@ struct BundleConfig {
     build_auv3: bool,
     arch: Arch,
     verbose: bool,
+    /// Build with the diagnostics feature (see `beamer_core::diagnostics`).
+    diagnostics: bool,
 }
 
 /// Configuration for the uninstall command.
@@ -132,9 +134,12 @@ fn main() {
     let build_vst3 = args.iter().any(|a| a == "--vst3");
     let build_auv2 = args.iter().any(|a| a == "--auv2");
     let build_auv3 = args.iter().any(|a| a == "--auv3");
+    let diagnostics = args.iter().any(|a| a == "--diagnostics");
 
     // Check for unknown flags. Flags that take a value consume the next arg.
-    let known_flags = ["--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv3", "--arch"];
+    let known_flags = [
+        "--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv3", "--arch", "--diagnostics",
+    ];
     let value_flags = ["--arch"];
     let mut rest = args.iter().skip(3);
     while let Some(arg) = rest.next() {
@@ -187,6 +192,7 @@ fn main() {
         build_auv2,
         build_auv3,
         arch,
+        diagnostics,
     };
 
     if let Err(e) = bundle(&config) {
@@ -249,11 +255,21 @@ fn log_command(args: &[String]) {
             std::process::exit(1);
         }
     };
-    if let Some(arg) = args.get(3) {
-        print_error(&format!("unexpected argument '{}'", arg));
-        print_usage();
-        std::process::exit(1);
-    }
+    // `--last <time>` shows what was logged in that time instead of
+    // following the log.
+    let last = match &args[3..] {
+        [] => None,
+        [flag, time] if flag == "--last" && is_log_time(time) => Some(time.as_str()),
+        [flag, ..] if flag == "--last" => {
+            print_error("'--last' requires a time such as 30s, 10m or 2h");
+            std::process::exit(1);
+        }
+        [arg, ..] => {
+            print_error(&format!("unexpected argument '{}'", arg));
+            print_usage();
+            std::process::exit(1);
+        }
+    };
     // The name goes into the predicate of the log command.
     if !util::is_package_name(package) {
         print_error(&format!("'{}' is not a package name", package));
@@ -266,10 +282,20 @@ fn log_command(args: &[String]) {
 
     // The subsystem a plugin with `log_level` in its Config.toml logs under.
     let subsystem = format!("com.beamer.{}", package);
-    eprintln!("Showing the log messages of {} as they come (Ctrl+C to stop).", subsystem);
-    eprintln!("The plugin logs only with log_level set in its Config.toml.");
-    let status = std::process::Command::new("/usr/bin/log")
-        .args(["stream", "--level", "debug", "--style", "compact", "--predicate"])
+    let mut command = std::process::Command::new("/usr/bin/log");
+    match last {
+        Some(time) => {
+            eprintln!("Showing the log messages of {} of the last {}.", subsystem, time);
+            command.args(["show", "--last", time, "--info", "--debug"]);
+        }
+        None => {
+            eprintln!("Showing the log messages of {} as they come (Ctrl+C to stop).", subsystem);
+            command.args(["stream", "--level", "debug"]);
+        }
+    }
+    eprintln!("The plugin logs only with log_level set in its Config.toml or in a diagnostics build.");
+    let status = command
+        .args(["--style", "compact", "--predicate"])
         .arg(format!("subsystem == \"{}\"", subsystem))
         .status();
     match status {
@@ -282,6 +308,17 @@ fn log_command(args: &[String]) {
     }
 }
 
+/// Whether `time` is a time for `log show --last`: a number with s, m, h
+/// or d.
+fn is_log_time(time: &str) -> bool {
+    match time.char_indices().last() {
+        Some((index, unit)) if "smhd".contains(unit) => {
+            index > 0 && time[..index].chars().all(|c| c.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
 fn print_usage() {
     eprintln!("Usage: cargo xtask <command> [options]");
     eprintln!();
@@ -289,7 +326,8 @@ fn print_usage() {
     eprintln!("  generate-uuid                 Generate a new UUID for plugin identification");
     eprintln!("  bundle <package> [options]    Build and bundle a plugin");
     eprintln!("  uninstall <package> [formats] Remove an installed plugin");
-    eprintln!("  log <package>                 Show the log messages of a plugin as they come (macOS)");
+    eprintln!("  log <package> [--last <time>] Show the log messages of a plugin as they come (macOS),");
+    eprintln!("                                or those of the last 30s, 10m, 2h or 1d");
     eprintln!();
     eprintln!("Formats (bundle requires at least one):");
     eprintln!("  --auv2    Build AUv2 .component bundle (simple distribution, works with all DAWs)");
@@ -313,6 +351,11 @@ fn print_usage() {
     eprintln!("               Removes its build artifacts, generated AU ObjC code and previous bundles.");
     eprintln!("               Normally not needed: use it when a change isn't being picked up.");
     eprintln!("  --verbose    Show detailed build output (default: quiet). Short form: -v");
+    eprintln!("  --diagnostics");
+    eprintln!("               Build for testing in a host: the plugin measures what the host");
+    eprintln!("               does (levels, in place, clicks, buses, MIDI) and writes it to");
+    eprintln!("               the system log. Read it with cargo xtask log <package>.");
+    eprintln!("               Bundle again without the flag for a normal build.");
     eprintln!();
     eprintln!("Uninstall:");
     eprintln!("  Removes what --install copied to the plugin directories. After removing");
@@ -328,7 +371,9 @@ fn print_usage() {
     eprintln!("  cargo xtask bundle gain --auv2 --vst3 --arch universal    # AUv2 + VST3");
     eprintln!("  cargo xtask uninstall gain                                # Every format");
     eprintln!("  cargo xtask uninstall gain --auv3                         # AUv3 only");
+    eprintln!("  cargo xtask bundle compressor --auv2 --install --diagnostics");
     eprintln!("  cargo xtask log gain                                      # Its log messages");
+    eprintln!("  cargo xtask log compressor --last 10m                     # Those of the last 10 minutes");
 }
 
 // =============================================================================
@@ -343,7 +388,8 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
         Arch::X86_64 => "x86_64",
     };
     let profile_str = if config.release { "release" } else { "debug" };
-    status!("Bundling {} ({}, {})...", config.package, profile_str, arch_str);
+    let diagnostics_str = if config.diagnostics { ", diagnostics" } else { "" };
+    status!("Bundling {} ({}, {}{})...", config.package, profile_str, arch_str, diagnostics_str);
 
     // Get workspace root
     let workspace_root = get_workspace_root()?;
@@ -367,16 +413,33 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     // next build replaces it.
     let build_library = |format: build::Format| {
         if config.arch == Arch::Universal {
-            build::build_universal(&config.package, config.release, &workspace_root, format, config.verbose)
+            build::build_universal(&config.package, config.release, config.diagnostics, &workspace_root, format, config.verbose)
         } else {
-            build::build_native(&config.package, config.release, &workspace_root, format, config.arch, config.verbose)
+            build::build_native(
+                &config.package,
+                config.release,
+                config.diagnostics,
+                &workspace_root,
+                format,
+                config.arch,
+                config.verbose,
+            )
         }
     };
 
     // Build and bundle AU (macOS only).
     if config.build_auv2 && cfg!(target_os = "macos") {
         let dylib_path = build_library(build::Format::Auv2)?;
-        auv2::bundle_auv2(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.arch, config.verbose)?;
+        auv2::bundle_auv2(
+            &config.package,
+            &target_dir,
+            &dylib_path,
+            config.install,
+            config.diagnostics,
+            &workspace_root,
+            config.arch,
+            config.verbose,
+        )?;
     }
     if config.build_auv3 && cfg!(target_os = "macos") {
         let dylib_path = build_library(build::Format::Auv3)?;
@@ -387,6 +450,13 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     if config.build_vst3 {
         let dylib_path = build_library(build::Format::Vst3)?;
         vst3::bundle_vst3(&config.package, &target_dir, &dylib_path, config.install, &workspace_root, config.verbose)?;
+    }
+
+    if config.diagnostics {
+        status!(
+            "Diagnostics build: read what it measures with cargo xtask log {}. Bundle again without --diagnostics for a normal build.",
+            config.package
+        );
     }
 
     Ok(())
@@ -444,4 +514,19 @@ fn get_workspace_root() -> Result<PathBuf, String> {
     path.parent()
         .map(|p| p.to_path_buf())
         .ok_or_else(|| "Invalid workspace path".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_times() {
+        for time in ["30s", "10m", "2h", "1d", "120m"] {
+            assert!(is_log_time(time), "{time}");
+        }
+        for time in ["", "m", "10", "10x", "-10m", "1.5h", "10 m"] {
+            assert!(!is_log_time(time), "{time}");
+        }
+    }
 }

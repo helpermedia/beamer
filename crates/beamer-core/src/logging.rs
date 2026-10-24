@@ -4,7 +4,7 @@
 //! saved state it had to skip, events the audio thread had to drop, a
 //! WebView that could not load. Nobody sees them unless a logger is
 //! installed. A plugin opts in with `log_level` in its `Config.toml`
-//! ([`Config::with_logging`]), and the format wrapper then calls [`init`]
+//! ([`Config::with_logging`]). The format wrapper then calls [`init`]
 //! when it starts.
 //!
 //! On macOS the messages go to the unified system log, under the subsystem
@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use crate::config::Config;
 
 /// How much a plugin logs. Each level includes the ones before it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     /// Only errors.
     Error,
@@ -58,7 +58,13 @@ static LOGGER: OnceLock<SystemLogger> = OnceLock::new();
 /// logs. `format` names the plugin format ("vst3", "au") and becomes the
 /// category of the messages. Only the first call does something.
 pub fn init(config: &Config, format: &'static str) {
-    let Some(level) = config.log_level else {
+    // A diagnostics build logs its lines at info, also without a level in
+    // the configuration.
+    #[cfg(feature = "diagnostics")]
+    let level = Some(config.log_level.map_or(LogLevel::Info, |level| level.max(LogLevel::Info)));
+    #[cfg(not(feature = "diagnostics"))]
+    let level = config.log_level;
+    let Some(level) = level else {
         return;
     };
     let mut created = false;
@@ -103,8 +109,8 @@ mod system_log {
         log: *mut c_void,
     }
 
-    // SAFETY: An os_log_t may be used from any thread at the same time, and
-    // the pointer is never changed.
+    // SAFETY: An os_log_t may be used from any thread at the same time.
+    // The pointer is never changed.
     unsafe impl Send for SystemLogger {}
     // SAFETY: See above.
     unsafe impl Sync for SystemLogger {}

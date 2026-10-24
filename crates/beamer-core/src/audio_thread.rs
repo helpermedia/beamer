@@ -3,13 +3,13 @@
 //!
 //! Some calls of the framework take a lock, allocate or free memory:
 //! [`Handover::get`](crate::Handover::get) and the rest of the setting side
-//! of a [`Handover`](crate::Handover) or [`State`](crate::State), and
+//! of a [`Handover`](crate::Handover) or [`State`](crate::State) and
 //! [`WebViewEventQueue::emit`](crate::WebViewEventQueue::emit). On the audio thread
 //! that can make the audio drop out. A call from `process()` still compiles
 //! and mostly works, so the mistake is easy to miss.
 //!
 //! The format wrappers mark the time a plugin processes with a
-//! [`ProcessScope`], and those calls check in debug builds that they do not
+//! [`ProcessScope`]. Those calls check in debug builds that they do not
 //! run inside one. A call that does is logged (see `log_level` in
 //! `Config.toml`) and panics, which in a host ends the plugin: a VST3 host
 //! aborts, an Audio Unit stops rendering. In release builds all of this

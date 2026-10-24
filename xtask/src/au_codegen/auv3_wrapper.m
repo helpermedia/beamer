@@ -1007,6 +1007,9 @@ static void beamer_auv3_on_loaded(void* context) {
 
 - (void)setShouldBypassEffect:(BOOL)shouldBypassEffect {
     atomic_store_explicit(&_bypassed, shouldBypassEffect, memory_order_relaxed);
+#ifdef BEAMER_DIAGNOSTICS
+    beamer_au_diagnostics_host_bypass(_rustInstance, shouldBypassEffect);
+#endif
 }
 
 - (AUInternalRenderBlock)internalRenderBlock {
@@ -1037,6 +1040,14 @@ static void beamer_auv3_on_loaded(void* context) {
             os_unfair_lock_unlock(&blockSelf->_hostBlocksLock);
         }
         BeamerAuv3HostBlocks hostBlocks = blockSelf->_renderHostBlocks;
+
+#ifdef BEAMER_DIAGNOSTICS
+        // Whether the host gave output memory, before the pull points any
+        // output at ours.
+        if (outputBusNumber == 0) {
+            beamer_au_diagnostics_host_output_memory(rustInstance, beamer_au_diagnostics_has_memory(outputData));
+        }
+#endif
 
         AVAudioPCMBuffer* inputPCMBuffer = blockSelf->_inputPCMBuffer;
         AudioBufferList* inputMutableABL = blockSelf->_inputMutableABL;
@@ -1091,6 +1102,11 @@ static void beamer_auv3_on_loaded(void* context) {
             }
             BeamerAuv3FillBypassedOutput(outputData, (outputBusNumber == 0) ? inputData : NULL,
                                          frameCount * blockSelf->_outputSampleBytes, silence);
+#ifdef BEAMER_DIAGNOSTICS
+            if (outputBusNumber == 0) {
+                beamer_au_diagnostics_bypassed_render(rustInstance, outputData, frameCount);
+            }
+#endif
             if (outputBusNumber == 0) {
                 BeamerAuv3ApplyParameterEvents(rustInstance, realtimeEventListHead);
                 if (blockSelf->_isMidiEffect && hostBlocks.midiOutput != nil) {

@@ -276,7 +276,7 @@ impl Formatter {
             Formatter::Frequency => {
                 // The unit is optional and its case does not matter. A "k"
                 // multiplies by 1000, with or without "Hz" after it: `text`
-                // writes "1.50k", and a host may append the unit.
+                // writes "1.50k" and a host may append the unit.
                 let lower = s.to_ascii_lowercase();
                 let number = lower.strip_suffix("hz").unwrap_or(&lower).trim_end();
 
@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(formatter.parse("440 Hz"), Some(440.0));
         assert_eq!(formatter.parse("2e3"), Some(2000.0));
 
-        // The text with the unit after it, and the unit in any case.
+        // The text with the unit after it, the unit in any case.
         assert_eq!(formatter.parse("1.50k Hz"), Some(1500.0));
         assert_eq!(formatter.parse("1.5 Khz"), Some(1500.0));
         assert_eq!(formatter.parse("1.5KHZ"), Some(1500.0));

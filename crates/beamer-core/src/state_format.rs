@@ -31,7 +31,7 @@
 //! the name of the nested field in front: `filter/cutoff`.
 //!
 //! An entry of kind 3 is not a field. It holds the factory preset that the
-//! plugin format shows as selected, and its path is empty. The VST3
+//! plugin format shows as selected. Its path is empty. The VST3
 //! wrapper writes it for a plugin with factory presets: a VST3 host shows
 //! the selected preset as the value of a parameter, which the model does
 //! not hold.
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_factory_preset_is_not_a_field() {
-        // A field with an empty id does not take it, and it is not logged
+        // A field with an empty id does not take it. It is not logged
         // as an entry that no field asked for.
         let data = state(&[entry(KIND_FACTORY_PRESET, "", &1u32.to_le_bytes())]);
         let entries = parse(&data);
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_empty_payload_resets_every_field() {
-        // A header with no entries, and bytes after it that do not count.
+        // A header with no entries, with bytes after it that do not count.
         let mut data = state(&[]);
         data.extend_from_slice(&[0xFF; 3]);
         let entries = parse(&data);

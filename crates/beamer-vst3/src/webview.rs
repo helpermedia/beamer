@@ -369,7 +369,7 @@ impl IPlugViewTrait for WebViewPlugView {
                 // Point the IPC context to the webview for evaluate_js calls.
                 ipc.webview = platform.as_ref().unwrap() as *const PlatformWebView;
 
-                // The first frame sends every parameter, and events the
+                // The first frame sends every parameter. Events the
                 // plugin emits from now on reach this editor.
                 ipc.open_sync();
 
@@ -623,7 +623,7 @@ impl Drop for WebViewPlugView {
         // Close the event queue if removed() did not.
         ipc.sync = None;
 
-        // Detach the WebView while the IPC context it calls into is still alive,
+        // Detach the WebView while the IPC context it calls into is still alive
         // and tell the delegate, which removed() would have done.
         if self.platform.get_mut().take().is_some() {
             self.delegate.get_mut().gui_closed();
@@ -889,8 +889,8 @@ mod tests {
         assert_eq!(dirty(), 0);
 
         // The host sets its handler after the view was created: the view
-        // uses it, and the change is reported now.
-        // SAFETY: handler is a valid COM pointer, and the test is one thread.
+        // uses it. The change is reported now.
+        // SAFETY: handler is a valid COM pointer and the test is one thread.
         unsafe { slot.set(handler) };
         ipc.report_state_change();
         assert_eq!(dirty(), 1);

@@ -96,9 +96,11 @@ On macOS the messages go to the unified system log, under the subsystem `com.bea
 cargo xtask log <package>
 ```
 
-or later with `/usr/bin/log show --last 1h --predicate 'subsystem == "com.beamer.<package>"'` (the full path, because `log` is a different command in the zsh shell), or in Console.app. Warnings and errors stay in the system log, debug messages only show up while you watch. Other platforms do not log yet.
+or later with `cargo xtask log <package> --last 1h` (or `/usr/bin/log show --last 1h --info --predicate 'subsystem == "com.beamer.<package>"'`, with the full path because `log` is a different command in the zsh shell), or in Console.app. Warnings and errors stay in the system log, debug messages only show up while you watch. Other platforms do not log yet.
 
 Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread. A plugin's `process()` should not log either.
+
+A diagnostics build (`cargo xtask bundle <package> <formats> --diagnostics`) installs the logger at level `info` or above, also without `log_level`. It logs what the host does with the plugin under the target `diagnostics`. See [Testing in a DAW](BUILDING.md#in-a-daw).
 
 ### Two-Struct Pattern
 
@@ -1393,6 +1395,8 @@ impl<'a> ProcessContext<'a> {
     pub fn midi_cc(&self) -> Option<&MidiCcState>;
     pub fn samples_per_beat(&self) -> Option<f64>;
     pub fn buffer_duration(&self) -> f64;
+    // A value for the log of a diagnostics build. Does nothing otherwise.
+    pub fn report_value(&self, name: &'static str, value: f32);
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -1445,6 +1449,12 @@ pub enum FrameRate {
     Fps50, Fps5994, Fps60,
     Fps5994Drop, Fps60Drop,
 }
+```
+
+`report_value` hands a value of the plugin to a diagnostics build (`--diagnostics`, see [Testing in a DAW](BUILDING.md#in-a-daw)), which logs the smallest, largest and last value of each name twice per second, for up to 8 names. In other builds the call does nothing, so it can stay in the code. It is safe in `process()`: no allocation, no lock.
+
+```rust
+context.report_value("gain reduction dB", gain_reduction_db);
 ```
 
 ### Sample Trait (f32/f64)

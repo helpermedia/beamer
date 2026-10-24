@@ -18,7 +18,7 @@
 //! The main bus is processed in place: [`Buffer`] has one channel per output
 //! channel, which holds the input channel of the same index when `process()`
 //! starts and the output when it returns. Hosts often give the same memory
-//! for input and output, and one buffer per channel lets the plugin work in
+//! for input and output; one buffer per channel lets the plugin work in
 //! it directly. Input channels without an output channel (stereo to mono)
 //! are read-only, through [`Buffer::unpaired_input()`].
 //!
@@ -149,7 +149,7 @@ impl<'a, S: Sample> Buffer<'a, S> {
     /// This is called by the format wrappers, not by plugin code. The
     /// wrapper fills `channels` with the input before `process()` (see the
     /// type's documentation). `unpaired_inputs` are the input channels from
-    /// index `channels.len()` on, and `num_input_channels` counts all input
+    /// index `channels.len()` on. `num_input_channels` counts all input
     /// channels, paired and unpaired. Channels beyond [`MAX_CHANNELS`] are
     /// silently ignored.
     #[inline]

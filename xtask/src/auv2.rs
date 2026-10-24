@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::{clang_arches, clang_path_flags, get_version_info};
+use crate::build::{clang_arches, clang_path_flags, diagnostics_flags, get_version_info};
 use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
@@ -14,11 +14,13 @@ const INSTALL_DIR: &[&str] = &["Library", "Audio", "Plug-Ins", "Components"];
 // AUv2 C code generation template (large embedded C implementation)
 include!("au_codegen/auv2_c.rs");
 
+#[allow(clippy::too_many_arguments)]
 pub fn bundle_auv2(
     package: &str,
     target_dir: &Path,
     dylib_path: &Path,
     install: bool,
+    diagnostics: bool,
     workspace_root: &Path,
     arch: Arch,
     verbose: bool,
@@ -101,7 +103,7 @@ pub fn bundle_auv2(
     //
     // The name has to be @loader_path based. dyld compares a requested name
     // with the install names of the images that are already loaded before it
-    // looks on disk, and it expands @loader_path to the directory of the
+    // looks on disk. It expands @loader_path to the directory of the
     // requesting binary first. An @rpath name can therefore be satisfied by a
     // library with the same name that another bundle loaded earlier. The
     // absolute build path was satisfied by the VST3 build of the same plugin,
@@ -128,6 +130,7 @@ pub fn bundle_auv2(
         // Compile the AUv2 wrapper and link it with the Rust dylib as a bundle.
         let clang_status = Command::new("clang")
             .args(&path_flags)
+            .args(diagnostics_flags(diagnostics))
             .args([
                 "-arch", target_arch,
                 MACOS_MIN_VERSION_FLAG,

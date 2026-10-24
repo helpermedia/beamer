@@ -992,6 +992,17 @@ pub trait RenderBlockTrait: Send + Sync {
 
     /// Get the sample rate.
     fn sample_rate(&self) -> f64;
+
+    /// Measure the output of a render call of the main bus that the host
+    /// bypassed, which the shim filled without the plugin. For the render
+    /// thread.
+    ///
+    /// # Safety
+    ///
+    /// `output_data` must be null or valid for the call, its buffers valid
+    /// for `frame_count` samples where they have memory.
+    #[cfg(feature = "diagnostics")]
+    unsafe fn measure_host_bypassed(&self, output_data: *const AudioBufferList, frame_count: u32);
 }
 
 /// Generic render block implementation.
@@ -1055,6 +1066,13 @@ pub struct RenderBlock<S: Sample> {
     /// Sample time of the last full render (bus 0), used to detect new render cycles.
     /// Initialized to NaN so it never matches on the first call.
     last_render_sample_time: UnsafeCell<f64>,
+    /// The diagnostics meter of the render thread, when the instance has
+    /// diagnostics.
+    #[cfg(feature = "diagnostics")]
+    meter: UnsafeCell<Option<beamer_core::diagnostics::BlockMeter>>,
+    /// The plugin's bypass parameter, for the diagnostics.
+    #[cfg(feature = "diagnostics")]
+    bypass_parameter: Option<beamer_core::ParameterId>,
 }
 
 // SAFETY: The raw pointers are only used within a single render call
@@ -1166,7 +1184,18 @@ impl<S: RenderSample> RenderBlock<S> {
             }
             aux_output_cache.push(bus_cache);
         }
+        #[cfg(feature = "diagnostics")]
+        let meter = shared
+            .diagnostics()
+            .map(|diagnostics| beamer_core::diagnostics::BlockMeter::new(Arc::clone(diagnostics.state()), sample_rate));
+        #[cfg(feature = "diagnostics")]
+        let bypass_parameter = beamer_core::diagnostics::bypass_parameter(model.parameters());
+
         Self {
+            #[cfg(feature = "diagnostics")]
+            meter: UnsafeCell::new(meter),
+            #[cfg(feature = "diagnostics")]
+            bypass_parameter,
             shared,
             plugin,
             model,
@@ -1274,6 +1303,19 @@ impl<S: RenderSample> RenderBlock<S> {
         }
     }
 
+    /// The diagnostics meter, when the instance has diagnostics.
+    ///
+    /// # Safety
+    ///
+    /// Only the render thread may call it, with one reference alive at a
+    /// time. AU hosts render one call at a time per instance.
+    #[cfg(feature = "diagnostics")]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn meter(&self) -> Option<&mut beamer_core::diagnostics::BlockMeter> {
+        // SAFETY: See the function's safety section.
+        unsafe { (*self.meter.get()).as_mut() }
+    }
+
     /// Extract the sample time from an AudioTimeStamp pointer.
     ///
     /// # Safety
@@ -1310,6 +1352,11 @@ impl<S: RenderSample> RenderBlock<S> {
         // In debug builds, calls for host threads panic from here on.
         let _process = beamer_core::ProcessScope::enter();
         let num_samples = frame_count as usize;
+
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = self.shared.diagnostics() {
+            diagnostics.state().note_output_bus_call(output_bus_number.max(0) as usize);
+        }
 
         // AU multi-output bus handling: the host calls render once per output bus.
         // Bus 0 triggers a full render; bus N>0 copies cached aux output data.
@@ -1416,6 +1463,10 @@ impl<S: RenderSample> RenderBlock<S> {
         if midi_buffer.has_overflowed() {
             self.shared.note_render_warning(ProcessWarning::MidiInputOverflow);
         }
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = self.shared.diagnostics() {
+            diagnostics.state().note_midi_input(midi_buffer.as_slice());
+        }
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
         // during sub-block processing (sample-accurate automation).
@@ -1471,6 +1522,14 @@ impl<S: RenderSample> RenderBlock<S> {
             // an internal buffer here.
             storage.collect_inputs(input_data, num_samples, self.orders.input(0));
             storage.collect_outputs(output_data, num_samples, self.orders.output(0));
+
+            // How the main channels reach the plugin, after the shim pulled
+            // the input (the host's own output memory is noted by the shim).
+            // SAFETY: The render thread, one call at a time.
+            #[cfg(feature = "diagnostics")]
+            if let Some(meter) = self.meter() {
+                meter.note_host_channels(&storage.main_inputs, &storage.main_outputs);
+            }
 
             // Collect auxiliary output pointers from pre-allocated cache buffers.
             // AU calls render per-bus, so we render aux outputs into our cache on
@@ -1602,6 +1661,24 @@ impl<S: RenderSample> RenderBlock<S> {
                     if status == os_status::NO_ERR {
                         buffer_list_ptrs[aux_idx] = &**buffer_list as *const AudioBufferList;
                     }
+                    #[cfg(feature = "diagnostics")]
+                    if let Some(diagnostics) = self.shared.diagnostics() {
+                        if status == os_status::NO_ERR {
+                            diagnostics.state().note_aux_input_present(bus);
+                        } else {
+                            diagnostics.state().note_aux_input_missing(bus, status);
+                        }
+                    }
+                }
+            }
+
+            // Without a pull block no connected aux input has input.
+            #[cfg(feature = "diagnostics")]
+            if let (true, Some(diagnostics)) = (pull_input_block.is_null(), self.shared.diagnostics()) {
+                for bus in 1..=aux_input_count {
+                    if self.buses.input_routing(bus) == BusRouting::Connected {
+                        diagnostics.state().note_aux_input_missing(bus, 0);
+                    }
                 }
             }
 
@@ -1647,6 +1724,18 @@ impl<S: RenderSample> RenderBlock<S> {
         let has_channels = storage.output_channel_count() > 0 || !storage.main_inputs.is_empty();
         let render_samples = if has_channels && prepared { num_samples } else { 0 };
 
+        #[cfg(feature = "diagnostics")]
+        if render_samples > 0 {
+            // SAFETY: The render thread, one call at a time.
+            if let Some(meter) = unsafe { self.meter() } {
+                let bypass = beamer_core::diagnostics::bypass_on(self.model.parameters(), self.bypass_parameter);
+                meter.begin_block(num_samples, bypass);
+                // SAFETY: The channels were prepared for num_samples samples
+                // and no reference to them is alive.
+                unsafe { meter.measure_inputs(storage, num_samples) };
+            }
+        }
+
         // SAFETY: We use a raw pointer to work around borrow checker limitations.
         // MidiCcState uses atomics internally and we only read it.
         let cc_state_ptr: Option<*const beamer_core::MidiCcState> =
@@ -1683,6 +1772,11 @@ impl<S: RenderSample> RenderBlock<S> {
                 } else {
                     ProcessContext::new(self.sample_rate, block.len, block_transport)
                 };
+                #[cfg(feature = "diagnostics")]
+                let context = match self.shared.diagnostics() {
+                    Some(diagnostics) => context.with_diagnostics(diagnostics.state()),
+                    None => context,
+                };
 
                 // The channels of this sub-block. The buffers keep the slices in
                 // arrays of a fixed size, so building them does not allocate.
@@ -1714,6 +1808,16 @@ impl<S: RenderSample> RenderBlock<S> {
         }
         self.send_midi_output(midi_output, midi_output_sink);
 
+        #[cfg(feature = "diagnostics")]
+        if render_samples > 0 {
+            // SAFETY: The render thread, one call at a time.
+            if let Some(meter) = unsafe { self.meter() } {
+                // SAFETY: The plugin is done with the channels, which stay
+                // valid for num_samples samples during this call.
+                unsafe { meter.measure_outputs(storage, num_samples) };
+            }
+        }
+
         // Record the sample time for this render cycle so that subsequent
         // aux bus calls (output_bus_number > 0) can detect they belong to
         // the same cycle and copy cached data instead of re-rendering.
@@ -1733,6 +1837,10 @@ impl<S: RenderSample> RenderBlock<S> {
     /// MIDI output the plugin has none to send. Either way the events are
     /// discarded.
     fn send_midi_output(&self, midi_output: &MidiBuffer, sink: Option<MidiOutputSink>) {
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = self.shared.diagnostics() {
+            diagnostics.state().note_midi_output(midi_output.len());
+        }
         if let Some(sink) = sink.filter(|_| self.settings.midi_output) {
             send_midi_output(midi_output.as_slice(), sink);
         }
@@ -1783,6 +1891,55 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
 
     fn sample_rate(&self) -> f64 {
         self.sample_rate
+    }
+
+    #[cfg(feature = "diagnostics")]
+    unsafe fn measure_host_bypassed(&self, output_data: *const AudioBufferList, frame_count: u32) {
+        let frames = frame_count as usize;
+        if output_data.is_null() || frames > self.max_frames as usize {
+            return;
+        }
+        // SAFETY: The render thread, one call at a time.
+        let Some(meter) = (unsafe { self.meter() }) else {
+            return;
+        };
+        meter.begin_host_bypassed_block(frames);
+        // SAFETY: Valid for the call (see the function's safety section).
+        let list = unsafe { &*output_data };
+        // The samples of the host's buffer `host`, if it has usable memory.
+        let samples_of = |host: usize| -> Option<&[S]> {
+            if host >= list.number_buffers as usize {
+                return None;
+            }
+            // SAFETY: host is within number_buffers.
+            let buffer = unsafe { list.buffer_at(host as u32) };
+            let long_enough = buffer.data_byte_size as usize >= frames * std::mem::size_of::<S>();
+            if buffer.number_channels != 1 || buffer.data.is_null() || !long_enough {
+                return None;
+            }
+            // SAFETY: A buffer with memory holds frames samples of S
+            // (checked above) for the call.
+            Some(unsafe { std::slice::from_raw_parts(buffer.data as *const S, frames) })
+        };
+
+        // The meter counts channels in the plugin's order, as in processed
+        // blocks; the host's buffers may have another. The bypassed output
+        // is the main input where the plugin has one (the shims copy input
+        // buffer i to output buffer i): measuring it as input too keeps the
+        // input's click detection going, so that the first processed block
+        // after the bypass does not compare with samples from before it.
+        let accepted = self.buses.accepted();
+        for channel in 0..accepted.input(0).unwrap_or(0) as usize {
+            if let Some(samples) = samples_of(self.orders.input(0).host_channel(channel)) {
+                meter.main_input(channel, samples);
+            }
+        }
+        for channel in 0..accepted.output(0).unwrap_or(0) as usize {
+            if let Some(samples) = samples_of(self.orders.output(0).host_channel(channel)) {
+                meter.main_output(channel, samples);
+            }
+        }
+        meter.end_block();
     }
 }
 

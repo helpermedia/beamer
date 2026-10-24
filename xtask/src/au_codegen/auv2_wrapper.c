@@ -1950,6 +1950,9 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
             atomic_store_explicit(&inst->bypassed, *(UInt32*)inData != 0, memory_order_relaxed);
+#ifdef BEAMER_DIAGNOSTICS
+            beamer_au_diagnostics_host_bypass(inst->rustInstance, *(UInt32*)inData != 0);
+#endif
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }
@@ -2603,6 +2606,14 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         pthread_mutex_unlock(&inst->callbacksMutex);
     }
 
+#ifdef BEAMER_DIAGNOSTICS
+    // Whether the host gave output memory, before the pull points any
+    // output at ours.
+    if (inOutputBusNumber == 0) {
+        beamer_au_diagnostics_host_output_memory(inst->rustInstance, beamer_au_diagnostics_has_memory(ioData));
+    }
+#endif
+
     // Bypass: the input goes to the output unchanged.
     if (atomic_load_explicit(&inst->bypassed, memory_order_relaxed)) {
         // Only the main bus passes its input on; another output bus is
@@ -2663,6 +2674,12 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 ioData->mBuffers[i].mDataByteSize = silenceBytes;
             }
         }
+
+#ifdef BEAMER_DIAGNOSTICS
+        if (inOutputBusNumber == 0) {
+            beamer_au_diagnostics_bypassed_render(inst->rustInstance, ioData, inNumberFrames);
+        }
+#endif
 
         // Consume the pending MIDI input, so that it does not play when bypass
         // ends. A bypassed MIDI effect passes it on unchanged. When a reset

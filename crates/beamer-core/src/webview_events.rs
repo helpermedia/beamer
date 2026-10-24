@@ -1,12 +1,12 @@
 //! Events from Rust to the web UI.
 //!
 //! A [`WebViewEventQueue`] holds named events for the plugin's editor.
-//! Rust code puts events in with [`emit()`](WebViewEventQueue::emit), and
+//! Rust code puts events in with [`emit()`](WebViewEventQueue::emit).
 //! JavaScript receives them with `__BEAMER__.on("name", callback)`.
 //!
 //! The queue lives in the model, which every thread of a plugin
 //! instance shares, as a field without an attribute. `#[beamer::model]`
-//! finds it by its type, also in a nested group, and the format wrappers
+//! finds it by its type, also in a nested group. The format wrappers
 //! take it from there:
 //!
 //! ```ignore

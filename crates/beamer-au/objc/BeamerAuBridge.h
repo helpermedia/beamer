@@ -1687,6 +1687,56 @@ bool beamer_au_apply_preset(
  */
 bool beamer_au_produces_midi(BeamerAuInstanceHandle _Nullable instance);
 
+// =============================================================================
+// MARK: - Diagnostics
+// =============================================================================
+
+#ifdef BEAMER_DIAGNOSTICS
+
+/**
+ * Note that the host turned its bypass on or off. Only a change is logged.
+ *
+ * Thread Safety: Host threads.
+ */
+void beamer_au_diagnostics_host_bypass(BeamerAuInstanceHandle _Nullable instance, bool bypassed);
+
+/**
+ * Note whether the host's main output buffers have memory of their own
+ * in a render call of the main bus, before the shim points any at its own.
+ *
+ * Thread Safety: Render thread.
+ */
+void beamer_au_diagnostics_host_output_memory(BeamerAuInstanceHandle _Nullable instance, bool has_memory);
+
+/**
+ * Measure the output of a render call of the main bus that the host
+ * bypassed: the plugin was left out and the shim filled the output.
+ *
+ * Thread Safety: Render thread.
+ */
+void beamer_au_diagnostics_bypassed_render(
+    BeamerAuInstanceHandle _Nullable instance,
+    const AudioBufferList* output_data,
+    AUAudioFrameCount frame_count
+);
+
+/**
+ * Whether every buffer of a list has memory, for the diagnostics.
+ */
+static inline bool beamer_au_diagnostics_has_memory(const AudioBufferList* _Nullable list) {
+    if (list == NULL || list->mNumberBuffers == 0) {
+        return false;
+    }
+    for (UInt32 i = 0; i < list->mNumberBuffers; i++) {
+        if (list->mBuffers[i].mData == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#endif /* BEAMER_DIAGNOSTICS */
+
 NS_ASSUME_NONNULL_END
 
 #ifdef __cplusplus

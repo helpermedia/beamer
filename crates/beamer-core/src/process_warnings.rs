@@ -1,9 +1,9 @@
 //! Problems of the audio thread, reported later on a host thread.
 //!
-//! The audio thread must not log: formatting a message allocates, and a
+//! The audio thread must not log: formatting a message allocates and a
 //! logger may take a lock or write to the system. A format wrapper notes
-//! what went wrong in a [`ProcessWarnings`] with one atomic operation, and
-//! a host thread logs it later, for example when the plugin is prepared
+//! what went wrong in a [`ProcessWarnings`] with one atomic operation.
+//! A host thread logs it later, for example when the plugin is prepared
 //! again or released.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -53,7 +53,7 @@ impl ProcessWarning {
                 "MIDI output events were dropped: more than one block holds"
             }
             ProcessWarning::ParameterEventOverflow => {
-                "parameter changes did not all fit into one block, and some were dropped or applied at its start"
+                "parameter changes did not all fit into one block: some were dropped or applied at its start"
             }
             ProcessWarning::EventListTooLong => {
                 "an event list exceeded the maximum length and was cut, possibly a damaged one"

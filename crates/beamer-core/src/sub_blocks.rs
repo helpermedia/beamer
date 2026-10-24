@@ -24,8 +24,8 @@ pub struct SubBlock<'a, C> {
 }
 
 /// What no sub-block reached: everything when `num_samples` is 0, or what
-/// comes after a sub-block that stopped the run, and the changes at or after
-/// the end of the block. The MIDI keeps the offsets of the host block.
+/// comes after a sub-block that stopped the run, with the changes at or
+/// after the end of the block. The MIDI keeps the offsets of the host block.
 pub struct Unreached<'a, C> {
     /// Changes still to apply.
     pub changes: &'a [C],
@@ -36,7 +36,7 @@ pub struct Unreached<'a, C> {
 /// Run a host block of `num_samples` samples as sub-blocks that start at the
 /// offsets of `changes`.
 ///
-/// `changes` are sorted by `change_offset`, and `midi` by sample offset
+/// `changes` are sorted by `change_offset` and `midi` by sample offset
 /// (see [`sort_by_offset`]). Changes at the same offset start one sub-block
 /// together; a change at or before the start of the block is applied
 /// before the first one. There is no smallest sub-block size: changes one
@@ -117,7 +117,7 @@ pub fn offset_from_sub_block(events: &mut [MidiEvent], start: usize) {
 /// Sort by a sample offset on the audio thread: stable and without
 /// allocating.
 ///
-/// The standard library's stable sort allocates a scratch buffer, and an
+/// The standard library's stable sort allocates a scratch buffer. An
 /// unstable sort would reorder events at the same offset, of which the last
 /// has to win. Event lists arrive sorted or nearly sorted, where an
 /// insertion sort takes one pass. A list in reverse order takes quadratic

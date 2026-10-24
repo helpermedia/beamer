@@ -21,6 +21,9 @@ webview = ["beamer-webview"]
 ## Only enable this if your plugin requires reliable SysEx delivery and you
 ## accept occasional allocations in the audio thread.
 sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
+## Measure what the host does and write it to the system log. For test
+## builds only (`cargo xtask bundle <plugin> --diagnostics`).
+diagnostics = ["beamer-core/diagnostics"]
 
 [lints]
 workspace = true

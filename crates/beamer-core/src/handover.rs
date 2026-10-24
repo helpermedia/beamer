@@ -12,7 +12,7 @@
 //! that sets a value or by the thread that drops the reader.
 //!
 //! Dropping a reader does free memory and may drop values. That is fine
-//! where it normally happens: a reader lives in the processor, and the
+//! where it normally happens: a reader lives in the processor. The
 //! framework drops a processor on a host thread. Do not create or drop a
 //! reader inside `process()`.
 //!
@@ -148,9 +148,9 @@ impl<T: Send + Sync> Handover<T> {
             crate::audio_thread::READ_THROUGH_A_READER,
         );
         let value: Arc<T> = value.into();
-        // What the readers and this hand-over no longer use, and the links
+        // What the readers and this hand-over no longer use, with the links
         // this call holds on to. Both are dropped after the lock is
-        // released: a value may do anything when it is dropped, and a link
+        // released: a value may do anything when it is dropped. A link
         // whose reader went away meanwhile takes its values with it.
         let mut unused: Vec<Arc<T>> = Vec::new();
         let mut links: Vec<Arc<Link<T>>> = Vec::new();
@@ -163,7 +163,7 @@ impl<T: Send + Sync> Handover<T> {
                 return false;
             };
 
-            // SAFETY: The back slot belongs to the setters, and this is the
+            // SAFETY: The back slot belongs to the setters. This is the
             // only setter: it holds the lock.
             let slot = unsafe { &mut *link.slots[usize::from(end.back)].get() };
             unused.extend(slot.replace(Arc::clone(&value)));
@@ -252,8 +252,8 @@ impl<T: Send + Sync> HandoverReader<T> {
         // it while it is the front slot.
         match unsafe { &*self.link.slots[usize::from(self.front)].get() } {
             Some(value) => value,
-            // The front slot is filled when the reader is created, and
-            // every slot the reader takes over was filled by a setter.
+            // The front slot is filled when the reader is created. Every
+            // slot the reader takes over was filled by a setter.
             None => unreachable!("the front slot of a hand-over is never empty"),
         }
     }
@@ -274,7 +274,7 @@ impl<T: Send + Sync> HandoverReader<T> {
         Some(self.current())
     }
 
-    /// Take over a value that was set since the last call, if any, and
+    /// Take over a value that was set since the last call, if any, then
     /// return the current one.
     ///
     /// This is the call for the start of a block when the processor only
@@ -402,7 +402,7 @@ mod tests {
         handover.set(tracked());
 
         // The audio thread takes the new value over and moves on. The
-        // first value is given up, and nothing is dropped.
+        // first value is given up without being dropped.
         let reader = std::thread::spawn(move || {
             assert!(reader.changed().is_some());
             assert!(reader.changed().is_none());

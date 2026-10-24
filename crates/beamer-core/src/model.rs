@@ -19,7 +19,7 @@ use crate::state_format::{join_path, SavedState, StateEntries, StateWriter};
 use crate::webview_events::WebViewEventQueue;
 
 /// A struct whose fields are saved with the plugin: its parameters and
-/// `State` fields, nested groups included, and saving and loading them.
+/// `State` fields, nested groups included. It saves and loads them.
 ///
 /// `#[beamer::model]` and `#[beamer::group]` generate this for a model and
 /// each of its nested groups. A hand-written model or group adds an empty

@@ -40,6 +40,8 @@ pub mod bypass;
 pub mod channel_layouts;
 pub mod conversion_buffers;
 pub mod config;
+#[cfg(feature = "diagnostics")]
+pub mod diagnostics;
 pub mod editor_sync;
 pub mod gui;
 pub mod handover;

@@ -93,6 +93,7 @@ cargo xtask bundle gain --auv2 --auv3 --vst3 --release
 | `--install` | Install the bundles after building (see [Installing](#installing)) |
 | `--clean` | Force a rebuild of the plugin and remove its previous bundles first. Normally not needed |
 | `--verbose`, `-v` | Show detailed build output |
+| `--diagnostics` | Build for testing in a host: the plugin logs what the host does (see [In a DAW](#in-a-daw)). Bundle again without it for a normal build |
 
 Bundles land in `target/release` (or `target/debug`) and are named after
 the package: `BeamerGain.component` (AUv2), `BeamerGain.app` (AUv3) and
@@ -302,7 +303,46 @@ macOS system log while the DAW runs it (see
 
 ```bash
 cargo xtask log gain
+cargo xtask log gain --last 10m
 ```
+
+The second form shows what was logged in the last 10 minutes instead of
+following the log.
+
+A diagnostics build (`--diagnostics`) logs what the host does with the
+plugin, also without `log_level`. Host calls such as prepare, bus
+changes and bypass are logged when they happen. Twice per second while
+the host renders, a summary line gives the block sizes, the peak level of
+each bus, whether the host processed in place, the MIDI it sent and the
+values the plugin reports with `context.report_value()` (see
+[ProcessContext](REFERENCE.md#processcontext-and-transport)). Separate
+lines report clicks, dropouts, samples that are not finite, aux inputs
+without input and the last SysEx message as the host sent it:
+
+```bash
+cargo xtask bundle compressor --auv2 --vst3 --install --diagnostics
+cargo xtask log compressor
+```
+
+```
+compressor#1 au prepared: 48000 Hz, f32, max 512 frames, buses in 2, 2; out 2
+compressor#1 au 94 blocks of 256, in -12.0 dB, out -19.6 dB, aux in 1 -3.0 dB, in place 2 of 2, host output memory in 94 of 94 blocks, gain reduction dB 6.80 to 7.60 (last 7.20), keyed on sidechain 1.00 to 1.00 (last 1.00)
+compressor#1 au host bypass on
+```
+
+Clicks are found as sudden steps in the signal, which suits a low test
+tone (a sine up to about 500 Hz). Music has steps of its own and shows
+false clicks. A click in the output with none in the input comes from the
+plugin or from switching it. The first block after a pause in the
+render calls can show one click in both. The measurements run on the
+audio thread, so use a diagnostics build for testing only.
+
+For an Audio Unit, "in place" in the summary describes how the wrapper
+passed the channels to the plugin: when the channel counts match it
+pulls the input into the host's output buffers, or hands an output
+buffer without memory the input's buffer. What the host did shows in
+"host output memory in N of M blocks": an output buffer without memory
+is the host's request to process in place.
 
 ### AUv2 and AUv3 side by side
 

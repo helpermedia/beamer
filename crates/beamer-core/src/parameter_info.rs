@@ -184,7 +184,7 @@ impl ParameterInfo {
 
     /// Set both ids from the path of the parameter in its model.
     ///
-    /// The path becomes the string id, and its FNV-1a hash the id that
+    /// The path becomes the string id; its FNV-1a hash becomes the id that
     /// hosts see. `#[beamer::model]` and `#[beamer::group]` call this for every parameter.
     pub fn set_path(&mut self, path: Cow<'static, str>) {
         self.id = fnv1a_32(&path);

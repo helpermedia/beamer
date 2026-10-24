@@ -1,6 +1,6 @@
 //! Parameter smoothing for avoiding zipper noise during automation.
 //!
-//! This module provides [`Smoother`] for interpolating parameter values over time,
+//! This module provides [`Smoother`] for interpolating parameter values over time
 //! and [`SmoothingStyle`] for selecting the interpolation algorithm.
 //!
 //! # Usage

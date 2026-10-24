@@ -179,8 +179,8 @@ fn rustc_remap_flags(rules: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
-/// The remap rules as C and C++ compiler flags, for the code that build
-/// scripts compile, and the paths that had to be left out.
+/// The remap rules as C and C++ compiler flags for the code that build
+/// scripts compile, with the paths that had to be left out.
 ///
 /// The cc crate splits its flag variables at whitespace, so a rule for a path
 /// with whitespace in it cannot be passed and is left out. Quoting would only
@@ -228,7 +228,7 @@ pub fn clang_path_flags(workspace_root: &Path) -> Result<Vec<String>, String> {
 /// The remap rules that keep the paths of the build machine out of a release
 /// binary.
 ///
-/// rustc embeds source paths for panic messages, and C code that build
+/// rustc embeds source paths for panic messages. C code that build
 /// scripts compile embeds them through `__FILE__`, for example in `assert`.
 /// They are absolute, so they contain the home directory of whoever built
 /// the plugin.
@@ -353,6 +353,7 @@ fn plugin_rustc_args(
     workspace_root: &Path,
     format: Format,
     target: &str,
+    diagnostics: bool,
     verbose: bool,
 ) -> Result<Vec<String>, String> {
     match format {
@@ -360,7 +361,7 @@ fn plugin_rustc_args(
         Format::Auv3 => {
             crate::verbose!(verbose, "    Generating plugin-specific ObjC for {} ({})...", package, target);
             let names = AuNames::detect(package, &crate::util::find_package(package, workspace_root)?.dir);
-            let objc_lib_dir = compile_plugin_objc(package, &names, workspace_root, target)?;
+            let objc_lib_dir = compile_plugin_objc(package, &names, workspace_root, target, diagnostics)?;
             auv3_rustc_args(package, &names, &objc_lib_dir)
         }
         Format::Vst3 => Ok(vst3_rustc_args(package, target)),
@@ -398,9 +399,17 @@ fn plugin_build_command(
     target: &str,
     format: Format,
     release: bool,
+    diagnostics: bool,
     workspace_root: &Path,
     plugin_args: &[String],
 ) -> Result<Command, String> {
+    // A diagnostics build turns on the feature of the framework crate, which
+    // every plugin depends on.
+    let features = if diagnostics {
+        format!("{},beamer/diagnostics", format.feature())
+    } else {
+        format.feature().to_string()
+    };
     let mut cmd = Command::new("cargo");
     cmd.arg(if plugin_args.is_empty() { "build" } else { "rustc" })
         .arg("-p")
@@ -408,7 +417,7 @@ fn plugin_build_command(
         .arg("--target")
         .arg(target)
         .arg("--features")
-        .arg(format.feature())
+        .arg(features)
         .current_dir(workspace_root);
 
     if release {
@@ -473,6 +482,7 @@ fn plugin_build_command(
 pub fn build_native(
     package: &str,
     release: bool,
+    diagnostics: bool,
     workspace_root: &Path,
     format: Format,
     arch: Arch,
@@ -490,9 +500,9 @@ pub fn build_native(
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    let plugin_args = plugin_rustc_args(package, workspace_root, format, target, verbose)?;
+    let plugin_args = plugin_rustc_args(package, workspace_root, format, target, diagnostics, verbose)?;
 
-    let mut cmd = plugin_build_command(package, target, format, release, workspace_root, &plugin_args)?;
+    let mut cmd = plugin_build_command(package, target, format, release, diagnostics, workspace_root, &plugin_args)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
     if !status.success() {
@@ -518,6 +528,7 @@ pub fn build_native(
 pub fn build_universal(
     package: &str,
     release: bool,
+    diagnostics: bool,
     workspace_root: &Path,
     format: Format,
     verbose: bool,
@@ -528,12 +539,22 @@ pub fn build_universal(
     let lib_name = package.replace('-', "_");
     let dylib_name = format!("lib{}.dylib", lib_name);
 
-    let plugin_args_x86 = plugin_rustc_args(package, workspace_root, format, "x86_64-apple-darwin", verbose)?;
-    let plugin_args_arm = plugin_rustc_args(package, workspace_root, format, "aarch64-apple-darwin", verbose)?;
+    let plugin_args_x86 =
+        plugin_rustc_args(package, workspace_root, format, "x86_64-apple-darwin", diagnostics, verbose)?;
+    let plugin_args_arm =
+        plugin_rustc_args(package, workspace_root, format, "aarch64-apple-darwin", diagnostics, verbose)?;
 
     // Build for x86_64
     crate::verbose!(verbose, "    Building for x86_64...");
-    let mut cmd = plugin_build_command(package, "x86_64-apple-darwin", format, release, workspace_root, &plugin_args_x86)?;
+    let mut cmd = plugin_build_command(
+        package,
+        "x86_64-apple-darwin",
+        format,
+        release,
+        diagnostics,
+        workspace_root,
+        &plugin_args_x86,
+    )?;
 
     let status = cmd.status().map_err(|e| format!("Failed to build for x86_64: {}", e))?;
     if !status.success() {
@@ -542,7 +563,15 @@ pub fn build_universal(
 
     // Build for arm64
     crate::verbose!(verbose, "    Building for arm64...");
-    let mut cmd = plugin_build_command(package, "aarch64-apple-darwin", format, release, workspace_root, &plugin_args_arm)?;
+    let mut cmd = plugin_build_command(
+        package,
+        "aarch64-apple-darwin",
+        format,
+        release,
+        diagnostics,
+        workspace_root,
+        &plugin_args_arm,
+    )?;
 
     let status = cmd.status().map_err(|e| format!("Failed to build for arm64: {}", e))?;
     if !status.success() {
@@ -588,7 +617,7 @@ pub fn build_universal(
 ///
 /// The strip step of Rust toolchains whose LLVM is older than version 23 can
 /// leave the string table 4 bytes off. Apple's linker refuses to link against
-/// such a library, which the AU bundles do, and according to the LLVM fix
+/// such a library, which the AU bundles do. According to the LLVM fix,
 /// dyld of macOS 27 refuses to load it, whatever the format.
 fn check_string_table_alignment(library: &Path) -> Result<(), String> {
     let data = fs::read(library).map_err(|e| format!("Failed to read {}: {}", library.display(), e))?;
@@ -810,6 +839,18 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
 /// Flags for compiling the generated ObjC sources.
 const OBJC_FLAGS: [&str; 3] = ["-fobjc-arc", "-fmodules", MACOS_MIN_VERSION_FLAG];
 
+/// The clang define of a diagnostics build, for the AU shims.
+pub const DIAGNOSTICS_DEFINE: &str = "-DBEAMER_DIAGNOSTICS=1";
+
+/// The clang flags a build adds for diagnostics: the define, or none.
+pub fn diagnostics_flags(diagnostics: bool) -> &'static [&'static str] {
+    if diagnostics {
+        &[DIAGNOSTICS_DEFINE]
+    } else {
+        &[]
+    }
+}
+
 /// Hash the inputs of a compile step into a directory name.
 fn hash_inputs(inputs: &[&[u8]]) -> String {
     let mut hasher = DefaultHasher::new();
@@ -855,6 +896,7 @@ fn compile_plugin_objc(
     names: &AuNames,
     workspace_root: &Path,
     target: &str,
+    diagnostics: bool,
 ) -> Result<PathBuf, String> {
     let lib_name = plugin_name.replace('-', "_");
 
@@ -875,7 +917,12 @@ fn compile_plugin_objc(
         .map_err(|e| format!("Failed to run clang: {}", e))?
         .stdout;
     let path_flags = clang_path_flags(workspace_root)?;
-    let flags: Vec<&str> = OBJC_FLAGS.iter().copied().chain(path_flags.iter().map(String::as_str)).collect();
+    let flags: Vec<&str> = OBJC_FLAGS
+        .iter()
+        .chain(diagnostics_flags(diagnostics))
+        .copied()
+        .chain(path_flags.iter().map(String::as_str))
+        .collect();
     let flags = flags.join(" ");
 
     let headers = read_headers(&[&bridge_header_dir, &ipc_header_dir])?;
@@ -928,6 +975,7 @@ fn compile_plugin_objc(
     let status = Command::new("clang")
         .args(["-c", "-arch", arch])
         .args(OBJC_FLAGS)
+        .args(diagnostics_flags(diagnostics))
         .args(&path_flags)
         .args([
             "-I", bridge_header_dir.to_str_safe()?,
@@ -959,6 +1007,7 @@ fn compile_plugin_objc(
     let status = Command::new("clang")
         .args(["-c", "-arch", arch])
         .args(OBJC_FLAGS)
+        .args(diagnostics_flags(diagnostics))
         .args(&path_flags)
         .args([
             "-I", bridge_header_dir.to_str_safe()?,
@@ -1211,9 +1260,24 @@ mod tests {
     }
 
     #[test]
+    fn test_diagnostics_build_turns_on_the_framework_feature() {
+        let features = |diagnostics: bool| {
+            let cmd = plugin_build_command("gain", "aarch64-apple-darwin", Format::Auv2, false, diagnostics, Path::new("."), &[])
+                .expect("command");
+            let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+            let index = args.iter().position(|arg| arg == "--features").expect("--features");
+            args[index + 1].clone()
+        };
+        assert_eq!(features(false), "au");
+        assert_eq!(features(true), "au,beamer/diagnostics");
+        assert_eq!(diagnostics_flags(true), [DIAGNOSTICS_DEFINE]);
+        assert!(diagnostics_flags(false).is_empty());
+    }
+
+    #[test]
     fn test_deployment_target_is_set_for_apple_targets() {
         let target_of = |target: &str| {
-            let cmd = plugin_build_command("gain", target, Format::Vst3, false, Path::new("."), &[])
+            let cmd = plugin_build_command("gain", target, Format::Vst3, false, false, Path::new("."), &[])
                 .expect("command");
             cmd.get_envs()
                 .find(|(key, _)| *key == "MACOSX_DEPLOYMENT_TARGET")
@@ -1258,7 +1322,7 @@ mod tests {
         let names = names("aumi", "midi", "Bmer");
         let args = auv3_rustc_args("midi-transform", &names, Path::new("/tmp/My Projects/au-gen")).unwrap();
 
-        // Every flag is followed by its value, and a space in the path does
+        // Every flag is followed by its value. A space in the path does
         // not split an argument.
         assert_eq!(args.len() % 2, 0);
         assert_eq!(
@@ -1327,7 +1391,7 @@ mod tests {
         // The AUv2 compiles its classes into the component binary. Linking
         // the AUv3 classes into its library as well would define them twice
         // in a process that loads both formats.
-        let args = plugin_rustc_args("midi-transform", Path::new("."), Format::Auv2, "aarch64-apple-darwin", false)
+        let args = plugin_rustc_args("midi-transform", Path::new("."), Format::Auv2, "aarch64-apple-darwin", false, false)
             .unwrap();
         assert_eq!(args, ["-C".to_string(), deployment_target_link_arg()]);
     }

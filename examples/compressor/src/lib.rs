@@ -21,6 +21,7 @@
 //!   on, with `ActiveBuses` telling `prepare()` whether it is on
 //! - `Model::LAYOUTS` with mono and stereo main buses and sidechains
 //! - `SampleRate` setup for sample-rate-dependent initialization
+//! - `context.report_value()` for the gain reduction in a diagnostics build
 //!
 //! # DSP Overview
 //!
@@ -338,14 +339,25 @@ struct CompressionState {
     average_gr_db: f64,
 }
 
+/// What a block of compression did, for the diagnostics log.
+struct CompressionReport {
+    /// The largest gain reduction of the block in dB, as a positive number.
+    largest_reduction_db: f64,
+    /// Whether the detector keyed on the sidechain.
+    keyed_on_sidechain: bool,
+}
+
 impl CompressorProcessor {
-    /// Process compression on a buffer.
+    /// Process compression on a buffer and report what it did to a
+    /// diagnostics build (`cargo xtask bundle compressor --diagnostics`).
+    /// Other builds ignore the reports.
     fn process_compression<S: Sample>(
         &mut self,
         buffer: &mut Buffer<S>,
         aux: &mut AuxiliaryBuffers<S>,
+        context: &ProcessContext,
     ) {
-        process_compression_inner(
+        let report = process_compression_inner(
             buffer,
             aux,
             &self.model,
@@ -353,6 +365,8 @@ impl CompressorProcessor {
             self.sample_rate,
             self.has_sidechain,
         );
+        context.report_value("gain reduction dB", report.largest_reduction_db as f32);
+        context.report_value("keyed on sidechain", if report.keyed_on_sidechain { 1.0 } else { 0.0 });
     }
 }
 
@@ -370,12 +384,13 @@ fn process_compression_inner<S: Sample>(
     state: &mut CompressionState,
     sample_rate: f64,
     has_sidechain: bool,
-) {
+) -> CompressionReport {
     let num_samples = buffer.num_samples();
     let num_channels = buffer.num_channels().min(2);
+    let mut report = CompressionReport { largest_reduction_db: 0.0, keyed_on_sidechain: false };
 
     if num_channels == 0 || num_samples == 0 {
-        return;
+        return report;
     }
 
     // Get parameter values
@@ -393,6 +408,7 @@ fn process_compression_inner<S: Sample>(
     // switched it on. An Audio Unit sidechain without a source has no
     // samples for a call, so the buffer is checked too.
     let use_sidechain = model.use_sidechain.get() && has_sidechain && aux.sidechain().is_some();
+    report.keyed_on_sidechain = use_sidechain;
 
     // Pre-calculate envelope coefficients from smoothed attack/release values.
     // The times are read once per block, so the smoothers advance by a whole
@@ -476,6 +492,7 @@ fn process_compression_inner<S: Sample>(
         // =====================================================================
         // Update smoothed average gain reduction
         state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
+        report.largest_reduction_db = report.largest_reduction_db.max(-gain_reduction_db);
 
         let auto_makeup_db = if model.auto_makeup.get() {
             -state.average_gr_db
@@ -496,6 +513,8 @@ fn process_compression_inner<S: Sample>(
             *right = *right * gain;
         }
     }
+
+    report
 }
 
 impl Processor for CompressorProcessor {
@@ -516,7 +535,7 @@ impl Processor for CompressorProcessor {
         &mut self,
         buffer: &mut Buffer,
         aux: &mut AuxiliaryBuffers,
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
 
@@ -527,11 +546,11 @@ impl Processor for CompressorProcessor {
             }
             BypassAction::Process => {
                 // Normal processing - no crossfade needed
-                self.process_compression(buffer, aux);
+                self.process_compression(buffer, aux, context);
             }
             BypassAction::ProcessAndCrossfade => {
                 // Process first, then apply crossfade
-                self.process_compression(buffer, aux);
+                self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
         }
@@ -549,7 +568,7 @@ impl Processor for CompressorProcessor {
         &mut self,
         buffer: &mut Buffer<f64>,
         aux: &mut AuxiliaryBuffers<f64>,
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
 
@@ -557,10 +576,10 @@ impl Processor for CompressorProcessor {
         match self.bypass_handler.begin(is_bypassed, buffer) {
             BypassAction::Passthrough => {}
             BypassAction::Process => {
-                self.process_compression(buffer, aux);
+                self.process_compression(buffer, aux, context);
             }
             BypassAction::ProcessAndCrossfade => {
-                self.process_compression(buffer, aux);
+                self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
         }

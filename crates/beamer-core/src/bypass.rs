@@ -166,7 +166,7 @@ impl CrossfadeCurve {
 ///
 /// The buffer is processed in place, so the input is gone once the DSP
 /// wrote the output. While it crossfades, `begin()` copies the input (the
-/// dry signal) into the handler's own buffer, and `finish()` mixes it back
+/// dry signal) into the handler's own buffer. `finish()` mixes it back
 /// in.
 ///
 /// # Real-Time Safety

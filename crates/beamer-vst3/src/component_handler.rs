@@ -11,7 +11,7 @@ use vst3::Steinberg::Vst::IComponentHandler;
 /// The edit controller and every editor it created hold the same slot, so
 /// that a handler the host sets after an editor opened reaches that editor
 /// too. The reference is released when the host sets another handler or
-/// none, and when the last holder goes away.
+/// none, or when the last holder goes away.
 ///
 /// The slot is used by controller calls and by the editors, which the host
 /// makes on its UI thread and never concurrently.
@@ -34,12 +34,12 @@ impl ComponentHandler {
         }
     }
 
-    /// Keep `handler`, or no handler for null, and release the one kept
+    /// Keep `handler` (no handler for null) and release the one kept
     /// before.
     ///
     /// # Safety
     ///
-    /// `handler` must be a valid COM pointer or null, and no other use of
+    /// `handler` must be a valid COM pointer or null. No other use of
     /// the slot may run at the same time.
     pub unsafe fn set(&self, handler: *mut IComponentHandler) {
         // SAFETY: handler is a valid COM pointer or null per the contract.
@@ -153,7 +153,7 @@ mod tests {
 
         let slot = Arc::new(ComponentHandler::new());
         let editor = Arc::clone(&slot);
-        // SAFETY: pointer is a valid COM pointer, and the test is one thread.
+        // SAFETY: pointer is a valid COM pointer and the test is one thread.
         unsafe { slot.set(pointer) };
         assert_eq!(editor.get(), pointer);
 
@@ -181,7 +181,7 @@ mod tests {
 
         let slot = Arc::new(ComponentHandler::new());
         let editor = Arc::clone(&slot);
-        // SAFETY: pointer is a valid COM pointer, and the test is one thread.
+        // SAFETY: pointer is a valid COM pointer and the test is one thread.
         unsafe { slot.set(pointer) };
         drop(host);
 
