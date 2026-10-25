@@ -41,102 +41,10 @@ use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample,
-    SharedModel, MAX_BUSES, MAX_CHANNELS, MAX_SYSEX_SIZE,
+    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, MidiBuffer, MidiEvent, MidiEventKind, ProcessContext,
+    ProcessWarning, Sample, SharedModel, MAX_BUSES, MAX_CHANNELS,
 };
 
-// =============================================================================
-// MIDI Buffer
-// =============================================================================
-
-/// Pre-allocated MIDI buffer for real-time safe event collection.
-///
-/// Uses a `Vec` with pre-allocated capacity to avoid heap allocations during
-/// audio processing. Events are collected during the render callback and
-/// processed sample-accurately.
-pub struct MidiBuffer {
-    events: Vec<MidiEvent>,
-    capacity: usize,
-}
-
-impl MidiBuffer {
-    /// Create a new buffer with the specified capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            events: Vec::with_capacity(capacity),
-            capacity,
-        }
-    }
-
-    /// Clear the buffer without deallocating.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.events.clear();
-    }
-
-    /// Push an event if there's capacity.
-    #[inline]
-    pub fn push(&mut self, event: MidiEvent) -> bool {
-        if self.events.len() < self.capacity {
-            self.events.push(event);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Get the events as a slice.
-    #[inline]
-    pub fn as_slice(&self) -> &[MidiEvent] {
-        &self.events
-    }
-
-    /// Get the events as a mutable slice.
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent] {
-        &mut self.events
-    }
-
-    /// Get the event count.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.events.len()
-    }
-
-    /// Check if empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
-    /// Get an iterator over the events.
-    #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, MidiEvent> {
-        self.events.iter()
-    }
-
-    /// Sort events by sample offset (ascending), keeping the order of
-    /// events at the same offset.
-    ///
-    /// AU render event lists are typically ordered by `event_sample_time`, but
-    /// the bridge does not rely on that invariant.
-    #[inline]
-    pub fn sort_by_sample_offset(&mut self) {
-        sort_by_offset(&mut self.events, |event| event.sample_offset);
-    }
-
-    /// Check if the buffer overflowed (reached capacity).
-    #[inline]
-    pub fn has_overflowed(&self) -> bool {
-        self.events.len() >= self.capacity
-    }
-}
-
-impl Default for MidiBuffer {
-    fn default() -> Self {
-        Self::with_capacity(256)
-    }
-}
 
 // =============================================================================
 // Parameter Events
@@ -864,14 +772,15 @@ fn encode_midi_event(event: &MidiEventKind) -> Option<([u8; 3], usize)> {
 ///
 /// Every event becomes one complete MIDI 1.0 message. Events without a MIDI 1.0
 /// encoding are skipped.
-fn send_midi_output(events: &[MidiEvent], sink: MidiOutputSink) {
-    for event in events {
+fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) {
+    for (index, event) in output.as_slice().iter().enumerate() {
         match &event.event {
-            MidiEventKind::SysEx(sysex) => {
-                // The event holds the payload. On the wire the message is framed
-                // by F0 and F7.
-                let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
-                sink.send(event.sample_offset, sysex.write_framed(&mut buffer[..]));
+            MidiEventKind::SysEx(_) => {
+                // The event holds the payload. On the wire the message is
+                // framed by F0 and F7, as the buffer keeps it.
+                if let Some(message) = output.framed_sysex(index) {
+                    sink.send(event.sample_offset, message);
+                }
             }
             other => {
                 if let Some((bytes, len)) = encode_midi_event(other) {
@@ -1024,8 +933,9 @@ pub struct RenderBlock<S: Sample> {
     max_frames: u32,
     /// Pre-allocated buffer storage for zero-allocation rendering
     storage: UnsafeCell<ProcessBufferStorage<S>>,
-    /// Pre-allocated MIDI buffer for zero-allocation MIDI processing
-    midi_buffer: UnsafeCell<MidiBuffer>,
+    /// The MIDI input of a render call, with a SysEx pool for a plugin with
+    /// MIDI input.
+    midi_buffer: UnsafeCell<Box<MidiBuffer>>,
     /// Pre-allocated parameter event buffer for zero-allocation parameter automation
     parameter_events: UnsafeCell<ParameterEventBuffer>,
     /// Current sample rate for ProcessContext
@@ -1053,8 +963,9 @@ pub struct RenderBlock<S: Sample> {
     /// pull: `[aux_bus_index][channel_index][sample_data]`, `max_frames`
     /// samples per channel.
     aux_input_memory: UnsafeCell<Vec<Vec<Vec<S>>>>,
-    /// Pre-allocated MIDI output buffer for zero-allocation MIDI output processing
-    midi_output: UnsafeCell<MidiBuffer>,
+    /// The plugin's MIDI output of a render call, with a SysEx pool for a
+    /// plugin with MIDI output.
+    midi_output: UnsafeCell<Box<MidiBuffer>>,
     /// Pre-allocated cache for auxiliary output bus data.
     ///
     /// AU hosts call the render block once per output bus. On bus 0, the plugin
@@ -1201,7 +1112,7 @@ impl<S: RenderSample> RenderBlock<S> {
             model,
             max_frames,
             storage: UnsafeCell::new(storage),
-            midi_buffer: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
+            midi_buffer: UnsafeCell::new(MidiBuffer::new_boxed(settings.midi_input_sysex_bytes())),
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
             sample_rate,
             settings,
@@ -1209,7 +1120,7 @@ impl<S: RenderSample> RenderBlock<S> {
             orders,
             aux_input_buffer_lists: UnsafeCell::new(aux_input_buffer_lists),
             aux_input_memory: UnsafeCell::new(aux_input_memory),
-            midi_output: UnsafeCell::new(MidiBuffer::with_capacity(1024)),
+            midi_output: UnsafeCell::new(MidiBuffer::new_boxed(settings.midi_output_sysex_bytes())),
             aux_output_cache: UnsafeCell::new(aux_output_cache),
             last_render_sample_time: UnsafeCell::new(f64::NAN),
         }
@@ -1463,6 +1374,9 @@ impl<S: RenderSample> RenderBlock<S> {
         if midi_buffer.has_overflowed() {
             self.shared.note_render_warning(ProcessWarning::MidiInputOverflow);
         }
+        if midi_buffer.has_sysex_overflowed() {
+            self.shared.note_render_warning(ProcessWarning::SysExInputDropped);
+        }
         #[cfg(feature = "diagnostics")]
         if let Some(diagnostics) = self.shared.diagnostics() {
             diagnostics.state().note_midi_input(midi_buffer.as_slice());
@@ -1470,7 +1384,7 @@ impl<S: RenderSample> RenderBlock<S> {
 
         // Ensure events are ordered by sample offset so we can slice them efficiently
         // during sub-block processing (sample-accurate automation).
-        midi_buffer.sort_by_sample_offset();
+        midi_buffer.events_mut().sort_by_offset();
 
         // Update MIDI CC state from incoming events
         // This allows plugins to query current CC values via context.midi_cc()
@@ -1751,7 +1665,7 @@ impl<S: RenderSample> RenderBlock<S> {
             render_samples,
             &parameter_events.events,
             |event| if split { event.sample_offset } else { 0 },
-            midi_buffer.as_mut_slice(),
+            midi_buffer.events_mut(),
             |block| {
                 // If application fails, continue processing (parameters may already be correct).
                 let _ = plugin_guard.apply_parameter_events(block.changes);
@@ -1761,7 +1675,7 @@ impl<S: RenderSample> RenderBlock<S> {
                 // buffer.
                 let output_start = midi_output.len();
                 plugin_guard.process_midi(block.midi, midi_output);
-                offset_from_sub_block(&mut midi_output.as_mut_slice()[output_start..], block.start);
+                offset_from_sub_block(midi_output.events_mut().split_at(output_start).1, block.start);
 
                 let block_transport = transport.advanced_by(block.start, self.sample_rate);
                 let context = if let Some(cc_ptr) = cc_state_ptr {
@@ -1842,10 +1756,14 @@ impl<S: RenderSample> RenderBlock<S> {
             diagnostics.state().note_midi_output(midi_output.len());
         }
         if let Some(sink) = sink.filter(|_| self.settings.midi_output) {
-            send_midi_output(midi_output.as_slice(), sink);
+            send_midi_output(midi_output, sink);
         }
         if midi_output.has_overflowed() {
             self.shared.note_render_warning(ProcessWarning::MidiOutputOverflow);
+        }
+        // The output of a plugin without MIDI output goes nowhere anyway.
+        if midi_output.has_sysex_overflowed() && self.settings.midi_output {
+            self.shared.note_render_warning(ProcessWarning::SysExOutputOverflow);
         }
     }
 }
@@ -1953,6 +1871,9 @@ pub(crate) struct RenderSettings {
     pub(crate) midi_input: bool,
     /// Hand the plugin's MIDI to the host (see `Config::midi_output`).
     pub(crate) midi_output: bool,
+    /// SysEx bytes one render call holds in each direction (see
+    /// `Config::sysex_bytes_per_block`).
+    pub(crate) sysex_bytes_per_block: usize,
 }
 
 impl RenderSettings {
@@ -1962,7 +1883,18 @@ impl RenderSettings {
             sample_accurate_automation: config.sample_accurate_automation,
             midi_input: config.midi_input,
             midi_output: config.midi_output,
+            sysex_bytes_per_block: config.sysex_bytes_per_block,
         }
+    }
+
+    /// The SysEx pool of the MIDI input: none without MIDI input.
+    pub(crate) fn midi_input_sysex_bytes(&self) -> usize {
+        if self.midi_input { self.sysex_bytes_per_block } else { 0 }
+    }
+
+    /// The SysEx pool of the MIDI output: none without MIDI output.
+    pub(crate) fn midi_output_sysex_bytes(&self) -> usize {
+        if self.midi_output { self.sysex_bytes_per_block } else { 0 }
     }
 }
 
@@ -2164,7 +2096,7 @@ mod tests {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), storage.as_mut_ptr().cast::<u8>(), 48);
         }
 
-        let mut buffer = MidiBuffer::with_capacity(16);
+        let mut buffer = MidiBuffer::new_boxed(0);
         // SAFETY: The storage holds one complete event with a null `next`.
         unsafe { extract_midi_events(storage.as_ptr().cast(), &mut buffer, START, 512) };
 
@@ -2220,7 +2152,7 @@ mod tests {
         ];
         let list = link(&mut events);
 
-        let mut buffer = MidiBuffer::with_capacity(16);
+        let mut buffer = MidiBuffer::new_boxed(0);
         // SAFETY: The list is valid and ends with a null `next`.
         unsafe { extract_midi_events(list, &mut buffer, START, 512) };
 
@@ -2252,11 +2184,15 @@ mod tests {
 
     /// Send the events through a sink and return the messages it received.
     fn sent(events: &[MidiEvent]) -> Vec<(u32, Vec<u8>)> {
+        let mut output = MidiBuffer::new_boxed(4096);
+        for event in events {
+            assert!(output.push(*event));
+        }
         let mut received: Vec<(u32, Vec<u8>)> = Vec::new();
         let context: *mut Vec<(u32, Vec<u8>)> = &mut received;
         // SAFETY: `record` only uses the context while `received` is alive.
         let sink = unsafe { MidiOutputSink::new(record, context.cast()) };
-        send_midi_output(events, sink);
+        send_midi_output(&output, sink);
         received
     }
 
@@ -2314,9 +2250,9 @@ mod tests {
             vec![(7, expected.clone()), (9, expected)]
         );
 
-        // A payload of the maximum size still fits with its framing.
-        let largest = MidiEvent::sysex(0, &[0x01; MAX_SYSEX_SIZE]);
-        assert_eq!(sent(&[largest])[0].1.len(), MAX_SYSEX_SIZE + 2);
+        // A long payload goes out whole with its framing.
+        let long = MidiEvent::sysex(0, &[0x01; 2000]);
+        assert_eq!(sent(&[long])[0].1.len(), 2002);
     }
 
     #[test]

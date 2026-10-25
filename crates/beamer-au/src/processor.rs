@@ -36,7 +36,7 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, Model,
-    MidiEvent, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
+    MidiBuffer, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEventQueue, MAX_AUX_BUSES,
 };
 
@@ -357,33 +357,20 @@ where
         self.state.midi_cc_state()
     }
 
-    fn process_midi(&mut self, input: &mut [MidiEvent], output: &mut crate::render::MidiBuffer) {
+    fn process_midi(&mut self, mut input: MidiEventsMut<'_>, output: &mut MidiBuffer) {
         use beamer_core::MidiEventKind;
 
         // Check if we have factory presets for automatic MIDI PC mapping
         let preset_count = P::PRESETS.len();
 
-        // Borrow processor and midi_output_buffer simultaneously from the
-        // prepared state. This avoids mem::take, which would construct a new
-        // default MidiBuffer on the stack - a ~80KB [MidiEvent; 1024] that
-        // overflows the audio IO thread's small stack in debug builds.
-        let Some(Prepared {
-            processor,
-            midi_output_buffer,
-            ..
-        }) = &mut self.state.prepared
-        else {
+        let Some(Prepared { processor, .. }) = &mut self.state.prepared else {
             // Not prepared - pass through events unchanged
-            for event in input {
-                let _ = output.push(std::mem::take(event));
+            for event in input.as_slice() {
+                let _ = output.push(*event);
             }
             return;
         };
-        let core_output = midi_output_buffer.as_mut();
         let model: &P = &self.state.model;
-
-        // Clear for reuse.
-        core_output.clear();
 
         // =========================================================================
         // MIDI Program Change to Factory Preset Mapping
@@ -401,7 +388,7 @@ where
 
         if preset_count > 0 {
             // Check if any PC events map to valid factory presets
-            let has_preset_pc = input.iter().any(|e| {
+            let has_preset_pc = input.as_slice().iter().any(|e| {
                 matches!(&e.event, MidiEventKind::ProgramChange(pc) if (pc.program as usize) < preset_count)
             });
 
@@ -411,7 +398,7 @@ where
                 // in the render call's own buffer, without allocating.
                 let mut kept = 0;
                 for index in 0..input.len() {
-                    if let MidiEventKind::ProgramChange(pc) = &input[index].event {
+                    if let MidiEventKind::ProgramChange(pc) = &input.as_slice()[index].event {
                         if (pc.program as usize) < preset_count {
                             P::PRESETS[pc.program as usize].apply(model);
                             continue;
@@ -422,23 +409,13 @@ where
                 }
 
                 // Process remaining events through the plugin
-                processor.process_midi(&input[..kept], core_output);
-
-                // Move events to AU's MidiBuffer (avoids cloning Box<SysEx>).
-                for event in core_output.drain() {
-                    let _ = output.push(event);
-                }
+                processor.process_midi(input.split_at(kept).0.into_slice(), output);
                 return;
             }
         }
 
         // No PC filtering needed - process all events directly
-        processor.process_midi(input, core_output);
-
-        // Move events to AU's MidiBuffer (avoids cloning Box<SysEx>).
-        for event in core_output.drain() {
-            let _ = output.push(event);
-        }
+        processor.process_midi(input.as_slice(), output);
     }
 
     fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch> {
@@ -500,7 +477,7 @@ where
 mod tests {
     use super::*;
     use beamer_core::{CachedBusConfig, CachedBusInfo};
-    use crate::render::MidiBuffer;
+    use beamer_core::MidiEvent;
     use beamer_core::parameter_groups::{GroupInfo, ParameterGroups};
     use beamer_core::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
     use beamer_core::parameter_types::{ParameterRef, Parameters};
@@ -845,6 +822,15 @@ mod tests {
     // MIDI Program Change to Factory Preset Tests
     // =========================================================================
 
+    /// A MIDI buffer that holds `events`.
+    fn midi(events: &[MidiEvent]) -> Box<MidiBuffer> {
+        let mut buffer = MidiBuffer::new_boxed(64);
+        for event in events {
+            assert!(buffer.push(*event));
+        }
+        buffer
+    }
+
     #[test]
     fn midi_pc_applies_preset_and_filters() {
         let mut processor = create_prepared_processor();
@@ -853,10 +839,10 @@ mod tests {
         set_gain_normalized(&mut processor, 1.0);
 
         // Send PC 1 (Quiet preset: gain = 0.25)
-        let mut input = vec![MidiEvent::program_change(0, 0, 1)];
-        let mut output = MidiBuffer::with_capacity(16);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 1)]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // PC event should be filtered out (preset was applied)
         assert_eq!(output.len(), 0, "PC event should be filtered out");
@@ -879,10 +865,10 @@ mod tests {
         let initial_norm = get_gain_normalized(&processor);
 
         // Send PC 10 (out of range - only 3 presets)
-        let mut input = vec![MidiEvent::program_change(0, 0, 10)];
-        let mut output = MidiBuffer::with_capacity(16);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 10)]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // Out-of-range PC should pass through
         assert_eq!(output.len(), 1, "Out-of-range PC should pass through");
@@ -907,14 +893,14 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Send control change events
-        let mut input = vec![
+        let mut input = midi(&[
             MidiEvent::control_change(0, 0, 1, 0.5),
             MidiEvent::control_change(10, 0, 7, 0.8),
             MidiEvent::control_change(20, 0, 10, 0.5),
-        ];
-        let mut output = MidiBuffer::with_capacity(16);
+        ]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // All events should pass through
         assert_eq!(output.len(), 3, "Non-PC events should pass through");
@@ -925,16 +911,16 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Mix of events: CC, valid PC, CC, invalid PC, CC
-        let mut input = vec![
+        let mut input = midi(&[
             MidiEvent::control_change(0, 0, 1, 0.5),
             MidiEvent::program_change(0, 0, 2), // Boost preset (valid)
             MidiEvent::control_change(10, 0, 7, 0.8),
             MidiEvent::program_change(20, 0, 50), // Invalid (out of range)
             MidiEvent::control_change(30, 0, 10, 0.5),
-        ];
-        let mut output = MidiBuffer::with_capacity(16);
+        ]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // 5 input events, but valid PC (program 2) should be filtered
         // Remaining: CC, CC, PC(50), CC = 4 events
@@ -961,10 +947,10 @@ mod tests {
         set_gain_normalized(&mut processor, 0.3);
 
         // Send PC 0 (Unity preset: gain = 0.5)
-        let mut input = vec![MidiEvent::program_change(0, 0, 0)];
-        let mut output = MidiBuffer::with_capacity(16);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 0)]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // PC should be filtered
         assert_eq!(output.len(), 0);
@@ -983,14 +969,14 @@ mod tests {
         let mut processor = create_prepared_processor();
 
         // Send multiple PC events - last valid one should win
-        let mut input = vec![
+        let mut input = midi(&[
             MidiEvent::program_change(0, 0, 0),  // Unity (0.5)
             MidiEvent::program_change(10, 0, 1), // Quiet (0.25)
             MidiEvent::program_change(20, 0, 2), // Boost (0.75) - last, should win
-        ];
-        let mut output = MidiBuffer::with_capacity(16);
+        ]);
+        let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(&mut input, &mut output);
+        processor.process_midi(input.events_mut(), &mut output);
 
         // All PC events should be filtered
         assert_eq!(output.len(), 0);
@@ -1117,6 +1103,7 @@ mod tests {
         sample_accurate_automation: true,
         midi_input: true,
         midi_output: true,
+        sysex_bytes_per_block: beamer_core::config::DEFAULT_SYSEX_BYTES_PER_BLOCK,
     };
 
     /// Prepare the plugin and create its render block, like the bridge does,
@@ -1452,7 +1439,7 @@ mod tests {
         fn process_midi(&mut self, input: &[MidiEvent], output: &mut beamer_core::MidiBuffer) {
             for event in input {
                 self.midi_offsets.push(event.sample_offset);
-                output.push(event.clone());
+                output.push(*event);
             }
         }
     }

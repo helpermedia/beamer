@@ -9,12 +9,6 @@ repository.workspace = true
 
 [features]
 default = []
-# SysEx buffer size options (default is 512 bytes)
-sysex-256 = []
-sysex-1024 = []
-sysex-2048 = []
-# Enable heap-backed fallback for SysEx output pool overflow
-sysex-heap-fallback = []
 # Measure what the host does and write it to the system log (see the
 # diagnostics module). For test builds only.
 diagnostics = []

@@ -9,7 +9,7 @@
 //!
 //! Everything here runs on the audio thread and does not allocate.
 
-use crate::midi::MidiEvent;
+use crate::midi::MidiEventsMut;
 
 /// One sub-block of a host block.
 pub struct SubBlock<'a, C> {
@@ -20,7 +20,7 @@ pub struct SubBlock<'a, C> {
     /// The parameter changes to apply before processing it.
     pub changes: &'a [C],
     /// Its MIDI events, with offsets relative to `start`.
-    pub midi: &'a mut [MidiEvent],
+    pub midi: MidiEventsMut<'a>,
 }
 
 /// What no sub-block reached: everything when `num_samples` is 0, or what
@@ -30,7 +30,7 @@ pub struct Unreached<'a, C> {
     /// Changes still to apply.
     pub changes: &'a [C],
     /// MIDI events still to process.
-    pub midi: &'a mut [MidiEvent],
+    pub midi: MidiEventsMut<'a>,
 }
 
 /// Run a host block of `num_samples` samples as sub-blocks that start at the
@@ -51,7 +51,7 @@ pub fn run_sub_blocks<'a, C>(
     num_samples: usize,
     changes: &'a [C],
     change_offset: impl Fn(&C) -> u32,
-    midi: &'a mut [MidiEvent],
+    midi: MidiEventsMut<'a>,
     mut run: impl FnMut(SubBlock<'_, C>) -> bool,
 ) -> Unreached<'a, C> {
     let mut changes = changes;
@@ -78,14 +78,15 @@ pub fn run_sub_blocks<'a, C>(
         let in_block = if end == num_samples {
             midi.len()
         } else {
-            midi.iter()
+            midi.as_slice()
+                .iter()
                 .take_while(|event| (event.sample_offset as usize) < end)
                 .count()
         };
         let last_offset = (end - start - 1) as u32;
-        let (block_midi, later_midi) = std::mem::take(&mut midi).split_at_mut(in_block);
-        for event in block_midi.iter_mut() {
-            event.sample_offset = event.sample_offset.saturating_sub(start as u32).min(last_offset);
+        let (mut block_midi, later_midi) = midi.split_at(in_block);
+        for offset in block_midi.sample_offsets_mut() {
+            *offset = offset.saturating_sub(start as u32).min(last_offset);
         }
 
         let go_on = run(SubBlock {
@@ -108,9 +109,9 @@ pub fn run_sub_blocks<'a, C>(
 
 /// Move MIDI events from the offsets of a sub-block to the offsets of its
 /// host block, for MIDI the plugin sent while processing the sub-block.
-pub fn offset_from_sub_block(events: &mut [MidiEvent], start: usize) {
-    for event in events {
-        event.sample_offset = event.sample_offset.saturating_add(start as u32);
+pub fn offset_from_sub_block(mut events: MidiEventsMut<'_>, start: usize) {
+    for offset in events.sample_offsets_mut() {
+        *offset = offset.saturating_add(start as u32);
     }
 }
 
@@ -135,12 +136,21 @@ pub fn sort_by_offset<T>(items: &mut [T], offset: impl Fn(&T) -> u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::midi::{MidiBuffer, MidiEvent};
 
     /// A change: its offset and a tag to recognize it.
     type Change = (u32, char);
 
-    fn note(offset: u32, pitch: u8) -> MidiEvent {
+    fn note(offset: u32, pitch: u8) -> MidiEvent<'static> {
         MidiEvent::note_on(offset, 0, pitch, 1.0, -1, 0.0, 0)
+    }
+
+    fn buffer(events: &[MidiEvent]) -> Box<MidiBuffer> {
+        let mut buffer = MidiBuffer::new_boxed(64);
+        for event in events {
+            assert!(buffer.push(*event));
+        }
+        buffer
     }
 
     fn pitch(event: &MidiEvent) -> u8 {
@@ -153,29 +163,30 @@ mod tests {
     /// Each sub-block as (start, len, change tags, MIDI as (offset, pitch)).
     type Run = Vec<(usize, usize, String, Vec<(u32, u8)>)>;
 
-    fn run(num_samples: usize, changes: &[Change], midi: &mut [MidiEvent]) -> (Run, Vec<char>, Vec<u32>) {
+    fn run(num_samples: usize, changes: &[Change], midi: &[MidiEvent]) -> (Run, Vec<char>, Vec<u32>) {
+        let mut midi = buffer(midi);
         let mut blocks = Vec::new();
-        let unreached = run_sub_blocks(num_samples, changes, |change| change.0, midi, |block| {
+        let unreached = run_sub_blocks(num_samples, changes, |change| change.0, midi.events_mut(), |block| {
             let tags = block.changes.iter().map(|change| change.1).collect();
-            let events = block.midi.iter().map(|event| (event.sample_offset, pitch(event))).collect();
+            let events = block.midi.as_slice().iter().map(|event| (event.sample_offset, pitch(event))).collect();
             blocks.push((block.start, block.len, tags, events));
             true
         });
         let changes = unreached.changes.iter().map(|change| change.1).collect();
-        let midi = unreached.midi.iter().map(|event| event.sample_offset).collect();
+        let midi = unreached.midi.as_slice().iter().map(|event| event.sample_offset).collect();
         (blocks, changes, midi)
     }
 
     #[test]
     fn test_without_changes_the_block_is_one_sub_block() {
-        let (blocks, _, _) = run(64, &[], &mut []);
+        let (blocks, _, _) = run(64, &[], &[]);
         assert_eq!(blocks, [(0, 64, String::new(), vec![])]);
     }
 
     #[test]
     fn test_changes_split_the_block_at_their_offsets() {
         let changes = [(0, 'a'), (32, 'b'), (32, 'c'), (33, 'd')];
-        let (blocks, unreached, _) = run(64, &changes, &mut []);
+        let (blocks, unreached, _) = run(64, &changes, &[]);
         assert_eq!(
             blocks,
             [
@@ -189,8 +200,8 @@ mod tests {
 
     #[test]
     fn test_midi_is_relative_to_its_sub_block() {
-        let mut midi = [note(0, 60), note(31, 61), note(32, 62), note(63, 63)];
-        let (blocks, _, _) = run(64, &[(32, 'a')], &mut midi);
+        let midi = [note(0, 60), note(31, 61), note(32, 62), note(63, 63)];
+        let (blocks, _, _) = run(64, &[(32, 'a')], &midi);
         assert_eq!(
             blocks,
             [
@@ -204,8 +215,8 @@ mod tests {
     fn test_what_no_sub_block_reached_is_returned() {
         // A change at or after the end of the block. The MIDI there goes
         // to the last sub-block at its last sample.
-        let mut midi = [note(10, 60), note(64, 61), note(70, 62)];
-        let (blocks, unreached, unreached_midi) = run(64, &[(32, 'a'), (64, 'b')], &mut midi);
+        let midi = [note(10, 60), note(64, 61), note(70, 62)];
+        let (blocks, unreached, unreached_midi) = run(64, &[(32, 'a'), (64, 'b')], &midi);
         assert_eq!(
             blocks,
             [
@@ -217,8 +228,8 @@ mod tests {
         assert!(unreached_midi.is_empty());
 
         // A block without samples runs no sub-block.
-        let mut midi = [note(0, 60)];
-        let (blocks, unreached, unreached_midi) = run(0, &[(0, 'a')], &mut midi);
+        let midi = [note(0, 60)];
+        let (blocks, unreached, unreached_midi) = run(0, &[(0, 'a')], &midi);
         assert!(blocks.is_empty());
         assert_eq!(unreached, ['a']);
         assert_eq!(unreached_midi, [0]);
@@ -226,10 +237,10 @@ mod tests {
 
     #[test]
     fn test_a_stopped_run_returns_the_rest_with_block_offsets() {
-        let mut midi = [note(5, 60), note(40, 61)];
+        let mut midi = buffer(&[note(5, 60), note(40, 61)]);
         let changes = [(16, 'a'), (32, 'b')];
         let mut starts = Vec::new();
-        let unreached = run_sub_blocks(64, &changes, |change| change.0, &mut midi, |block| {
+        let unreached = run_sub_blocks(64, &changes, |change| change.0, midi.events_mut(), |block| {
             starts.push(block.start);
             block.start < 16
         });
@@ -237,23 +248,42 @@ mod tests {
         assert_eq!(starts, [0, 16]);
         assert_eq!(unreached.changes, [(32, 'b')]);
         assert_eq!(unreached.midi.len(), 1);
-        assert_eq!(unreached.midi[0].sample_offset, 40);
+        assert_eq!(unreached.midi.as_slice()[0].sample_offset, 40);
+    }
+
+    #[test]
+    fn test_sysex_reaches_its_sub_block() {
+        let mut midi = buffer(&[note(0, 60), MidiEvent::sysex(40, &[0x41, 0x10])]);
+        let mut seen = Vec::new();
+        run_sub_blocks(64, &[(32, 'a')], |change| change.0, midi.events_mut(), |block| {
+            for event in block.midi.as_slice() {
+                if let crate::midi::MidiEventKind::SysEx(payload) = event.event {
+                    seen.push((block.start, event.sample_offset, payload.to_vec()));
+                }
+            }
+            true
+        });
+        assert_eq!(seen, [(32, 8, vec![0x41, 0x10])]);
+        assert_eq!(midi.framed_sysex(1), Some(&[0xF0, 0x41, 0x10, 0xF7][..]));
     }
 
     #[test]
     fn test_an_unsorted_list_still_ends() {
         // A change out of order is applied with the change before it.
         let changes = [(32, 'a'), (16, 'b')];
-        let (blocks, unreached, _) = run(64, &changes, &mut []);
+        let (blocks, unreached, _) = run(64, &changes, &[]);
         assert_eq!(blocks, [(0, 32, String::new(), vec![]), (32, 32, "ab".into(), vec![])]);
         assert!(unreached.is_empty());
     }
 
     #[test]
     fn test_output_moves_to_block_offsets() {
-        let mut events = [note(0, 60), note(3, 61)];
-        offset_from_sub_block(&mut events, 32);
-        assert_eq!(events.map(|event| event.sample_offset), [32, 35]);
+        // The events of an earlier sub-block keep their offsets.
+        let mut events = buffer(&[note(1, 59), note(0, 60), MidiEvent::sysex(3, &[0x41])]);
+        offset_from_sub_block(events.events_mut().split_at(1).1, 32);
+        let offsets: Vec<u32> = events.iter().map(|event| event.sample_offset).collect();
+        assert_eq!(offsets, [1, 32, 35]);
+        assert_eq!(events.framed_sysex(2), Some(&[0xF0, 0x41, 0xF7][..]));
     }
 
     #[test]

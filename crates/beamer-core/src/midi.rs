@@ -1,48 +1,17 @@
 //! MIDI event types for audio plugins.
 //!
 //! This module provides format-agnostic MIDI event types designed for
-//! real-time audio processing. Most basic types (notes, CC, pitch bend)
-//! are `Copy` and can be passed without heap allocation.
+//! real-time audio processing. The event types are `Copy` and pass
+//! without heap allocation.
 //!
 //! ## SysEx Handling
 //!
-//! The [`MidiEventKind::SysEx`] variant uses `Box<SysEx>` to avoid stack
-//! overflow from the large 512-byte SysEx buffer. As a result, [`MidiEvent`]
-//! and [`MidiEventKind`] are `Clone` but not `Copy`.
-//!
-//! **Note:** Cloning a SysEx event allocates. For pass-through of SysEx in
-//! `process_midi()`, consider whether allocation is acceptable for your use case.
-//!
-//! ## Buffer Sizes
-//!
-//! SysEx buffer size can be configured via Cargo features:
-//! - Default: 512 bytes (a common default for audio plugins)
-//! - `sysex-256`: 256 bytes (smaller memory footprint)
-//! - `sysex-1024`: 1024 bytes
-//! - `sysex-2048`: 2048 bytes
-
-// =============================================================================
-// Buffer Size Configuration
-// =============================================================================
-
-/// Maximum SysEx payload size in bytes.
-///
-/// Configurable via Cargo features: `sysex-256`, `sysex-1024`, `sysex-2048`.
-/// Default is 512 bytes (a common default for audio plugins).
-#[cfg(feature = "sysex-2048")]
-pub const MAX_SYSEX_SIZE: usize = 2048;
-
-/// Maximum SysEx payload size in bytes.
-#[cfg(all(feature = "sysex-1024", not(feature = "sysex-2048")))]
-pub const MAX_SYSEX_SIZE: usize = 1024;
-
-/// Maximum SysEx payload size in bytes.
-#[cfg(all(feature = "sysex-256", not(feature = "sysex-1024"), not(feature = "sysex-2048")))]
-pub const MAX_SYSEX_SIZE: usize = 256;
-
-/// Maximum SysEx payload size in bytes.
-#[cfg(not(any(feature = "sysex-256", feature = "sysex-1024", feature = "sysex-2048")))]
-pub const MAX_SYSEX_SIZE: usize = 512;
+//! A [`MidiEventKind::SysEx`] event borrows its payload from the
+//! [`MidiBuffer`] it is in: each buffer keeps the SysEx bytes of a block in
+//! a pool that is allocated once (see `Config::sysex_bytes_per_block`). So
+//! [`MidiEvent`] is `Copy` and passing events on does not allocate.
+//! [`MidiBuffer::push`] copies the bytes of a SysEx event into the buffer's
+//! pool.
 
 /// Maximum text size for Note Expression text events.
 pub const MAX_EXPRESSION_TEXT_SIZE: usize = 64;
@@ -340,90 +309,6 @@ pub struct ProgramChange {
 // =============================================================================
 // Advanced VST3 Events
 // =============================================================================
-
-/// System Exclusive (SysEx) message.
-///
-/// Uses a fixed-size buffer for efficient storage. When used in [`MidiEventKind`],
-/// it is boxed (`Box<SysEx>`) to prevent the large buffer from bloating the enum
-/// size and causing stack overflow.
-///
-/// The buffer size is configurable via Cargo features (default 512 bytes).
-#[derive(Clone, Copy)]
-pub struct SysEx {
-    /// Raw SysEx data (excluding F0/F7 framing bytes).
-    pub data: [u8; MAX_SYSEX_SIZE],
-    /// Actual length of valid data in the buffer.
-    pub len: u16,
-}
-
-impl SysEx {
-    /// Create a new empty SysEx message.
-    pub const fn new() -> Self {
-        Self {
-            data: [0u8; MAX_SYSEX_SIZE],
-            len: 0,
-        }
-    }
-
-    /// Get the valid data slice.
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.data[..self.len as usize]
-    }
-
-    /// The SysEx of a message as it comes from a host. The data holds the
-    /// payload only, so a leading F0 and a trailing F7 are taken off. Data
-    /// beyond [`MAX_SYSEX_SIZE`] bytes is cut off.
-    pub fn from_message(message: &[u8]) -> Self {
-        let payload = message.strip_prefix(&[0xF0]).unwrap_or(message);
-        let payload = payload.strip_suffix(&[0xF7]).unwrap_or(payload);
-        let mut sysex = Self::new();
-        let len = payload.len().min(MAX_SYSEX_SIZE);
-        sysex.data[..len].copy_from_slice(&payload[..len]);
-        sysex.len = len as u16;
-        sysex
-    }
-
-    /// Write the message as it goes to a host: the payload framed by F0 and
-    /// F7. Data that has the framing already is framed once. A payload that
-    /// does not fit the buffer is cut off before the F7, so the message stays
-    /// complete. Returns the message, which is empty for a buffer of fewer
-    /// than 2 bytes.
-    pub fn write_framed<'a>(&self, buffer: &'a mut [u8]) -> &'a [u8] {
-        if buffer.len() < 2 {
-            return &buffer[..0];
-        }
-        let data = self.as_slice();
-        let payload = data.strip_prefix(&[0xF0]).unwrap_or(data);
-        let payload = payload.strip_suffix(&[0xF7]).unwrap_or(payload);
-        let payload = &payload[..payload.len().min(buffer.len() - 2)];
-        buffer[0] = 0xF0;
-        buffer[1..=payload.len()].copy_from_slice(payload);
-        buffer[payload.len() + 1] = 0xF7;
-        &buffer[..payload.len() + 2]
-    }
-}
-
-impl Default for SysEx {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl core::fmt::Debug for SysEx {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SysEx")
-            .field("len", &self.len)
-            .field("data", &self.as_slice())
-            .finish()
-    }
-}
-
-impl PartialEq for SysEx {
-    fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.as_slice() == other.as_slice()
-    }
-}
 
 /// Note Expression value event (f64 precision).
 ///
@@ -1331,10 +1216,9 @@ pub mod note_expression {
 
 /// MIDI event types.
 ///
-/// Most variants are small (8-32 bytes). The `SysEx` variant uses `Box<SysEx>`
-/// to avoid bloating the enum size and prevent stack overflow.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MidiEventKind {
+/// The lifetime is that of the bytes a SysEx event borrows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MidiEventKind<'a> {
     // =========================================================================
     // Note-related events (have note_id for tracking)
     // =========================================================================
@@ -1363,11 +1247,10 @@ pub enum MidiEventKind {
     // Advanced VST3 events
     // =========================================================================
 
-    /// System Exclusive (SysEx) message.
-    ///
-    /// Uses `Box<SysEx>` to avoid bloating the enum size. SysEx messages are
-    /// relatively rare compared to notes and CCs, so the heap allocation is acceptable.
-    SysEx(Box<SysEx>),
+    /// System Exclusive (SysEx) message: its payload, without the F0 and F7
+    /// that frame it on the wire. The wrappers take them off incoming
+    /// messages and add them to outgoing ones.
+    SysEx(&'a [u8]),
     /// Per-note expression value (MPE, f64 precision).
     NoteExpressionValue(NoteExpressionValue),
     /// Per-note expression integer value.
@@ -1384,18 +1267,19 @@ pub enum MidiEventKind {
 ///
 /// The `sample_offset` field specifies when within the current audio buffer
 /// this event should be processed, enabling sample-accurate MIDI timing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MidiEvent {
+/// The lifetime is that of the bytes a SysEx event borrows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidiEvent<'a> {
     /// Sample offset within the current buffer (0 = start of buffer).
     pub sample_offset: u32,
     /// The MIDI event data.
-    pub event: MidiEventKind,
+    pub event: MidiEventKind<'a>,
 }
 
-impl Default for MidiEvent {
+impl Default for MidiEvent<'_> {
     /// Creates a default MidiEvent (NoteOff with all fields zeroed).
     ///
-    /// Used for buffer initialization. Does not allocate.
+    /// Used for buffer initialization.
     fn default() -> Self {
         Self {
             sample_offset: 0,
@@ -1410,7 +1294,7 @@ impl Default for MidiEvent {
     }
 }
 
-impl MidiEvent {
+impl<'a> MidiEvent<'a> {
     /// Create a new note-on event.
     pub const fn note_on(
         sample_offset: u32,
@@ -1646,18 +1530,12 @@ impl MidiEvent {
     // =========================================================================
 
     /// Create a SysEx event from its payload, without the F0 and F7 that frame
-    /// it on the wire (see [`SysEx`]).
-    ///
-    /// Note: This allocates the SysEx data on the heap. SysEx messages are
-    /// relatively rare, so the allocation is acceptable.
-    pub fn sysex(sample_offset: u32, data: &[u8]) -> Self {
-        let mut sysex = SysEx::new();
-        let copy_len = data.len().min(MAX_SYSEX_SIZE);
-        sysex.data[..copy_len].copy_from_slice(&data[..copy_len]);
-        sysex.len = copy_len as u16;
+    /// it on the wire. The event borrows the payload; pushing it into a
+    /// [`MidiBuffer`] copies it.
+    pub const fn sysex(sample_offset: u32, payload: &'a [u8]) -> Self {
         Self {
             sample_offset,
-            event: MidiEventKind::SysEx(Box::new(sysex)),
+            event: MidiEventKind::SysEx(payload),
         }
     }
 
@@ -1786,18 +1664,25 @@ impl MidiEvent {
     /// # Example
     /// ```ignore
     /// MidiEventKind::NoteOn(note_on) => {
-    ///     output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+    ///     output.push(event.with(MidiEventKind::NoteOn(NoteOn {
     ///         pitch: new_pitch,
     ///         velocity: new_velocity,
     ///         ..*note_on  // Copy channel, note_id, tuning, length
     ///     })));
     /// }
     /// ```
-    pub fn with(self, kind: MidiEventKind) -> Self {
+    pub fn with<'b>(self, kind: MidiEventKind<'b>) -> MidiEvent<'b> {
         MidiEvent {
             sample_offset: self.sample_offset,
             event: kind,
         }
+    }
+
+    /// The event without a borrow, to keep it past the call it came with.
+    /// `None` for a SysEx event, whose payload is borrowed: copy the payload
+    /// to keep it.
+    pub fn to_static(&self) -> Option<MidiEvent<'static>> {
+        kind_or_payload(self.event).ok().map(|kind| self.with(kind))
     }
 }
 
@@ -1805,69 +1690,110 @@ impl MidiEvent {
 /// This is a reasonable limit for real-time processing.
 pub const MAX_MIDI_EVENTS: usize = 1024;
 
-/// A buffer for collecting MIDI events during processing.
+/// An event in a [`MidiBuffer`]. The payload of a SysEx event points into
+/// the pool of that buffer: the `'static` is only a placeholder, the
+/// buffer narrows it to its own borrow wherever events leave it. The type
+/// is private and nothing outside this module gets one by value or by
+/// `&mut`, so an event cannot move into another buffer (see
+/// [`MidiEventsMut`]).
+#[derive(Clone, Copy, Default)]
+#[repr(transparent)]
+struct BufferedEvent(MidiEvent<'static>);
+
+/// View `events` as the events they wrap, with payloads borrowed for `'a`.
 ///
-/// Uses a fixed-size array to avoid heap allocation during processing.
-/// Events should be added in chronological order (by sample_offset).
-#[derive(Debug)]
-pub struct MidiBuffer {
-    events: [MidiEvent; MAX_MIDI_EVENTS],
-    len: usize,
-    /// Set to true when a push fails due to buffer exhaustion
-    overflowed: bool,
+/// # Safety
+///
+/// The payloads of `events` must stay valid and unchanged for `'a`.
+unsafe fn unwrap_events<'a>(events: &'a [BufferedEvent]) -> &'a [MidiEvent<'a>] {
+    // SAFETY: `BufferedEvent` is a transparent wrapper of a `MidiEvent`, so
+    // the slices have one layout. The caller guarantees the payloads for
+    // `'a`.
+    unsafe { std::slice::from_raw_parts(events.as_ptr().cast::<MidiEvent<'a>>(), events.len()) }
 }
 
-impl Default for MidiBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
+/// The kind of an event that borrows nothing, with any lifetime, or the
+/// payload of a SysEx event.
+fn kind_or_payload<'a, 'b>(kind: MidiEventKind<'a>) -> Result<MidiEventKind<'b>, &'a [u8]> {
+    Ok(match kind {
+        MidiEventKind::NoteOn(event) => MidiEventKind::NoteOn(event),
+        MidiEventKind::NoteOff(event) => MidiEventKind::NoteOff(event),
+        MidiEventKind::PolyPressure(event) => MidiEventKind::PolyPressure(event),
+        MidiEventKind::ControlChange(event) => MidiEventKind::ControlChange(event),
+        MidiEventKind::PitchBend(event) => MidiEventKind::PitchBend(event),
+        MidiEventKind::ChannelPressure(event) => MidiEventKind::ChannelPressure(event),
+        MidiEventKind::ProgramChange(event) => MidiEventKind::ProgramChange(event),
+        MidiEventKind::NoteExpressionValue(event) => MidiEventKind::NoteExpressionValue(event),
+        MidiEventKind::NoteExpressionInt(event) => MidiEventKind::NoteExpressionInt(event),
+        MidiEventKind::NoteExpressionText(event) => MidiEventKind::NoteExpressionText(event),
+        MidiEventKind::ChordInfo(event) => MidiEventKind::ChordInfo(event),
+        MidiEventKind::ScaleInfo(event) => MidiEventKind::ScaleInfo(event),
+        MidiEventKind::SysEx(payload) => return Err(payload),
+    })
+}
+
+/// A buffer for collecting MIDI events during processing.
+///
+/// The events live in an array of a fixed size and the SysEx bytes in a
+/// pool that is allocated with the buffer, so pushing, reading and clearing
+/// never allocate. Each SysEx message takes its payload plus two bytes (the
+/// F0 and F7 it is stored with) of the pool until the buffer is cleared.
+/// Events should be added in chronological order (by sample_offset).
+pub struct MidiBuffer {
+    /// The events, of which the first `len` are in the buffer. Those past
+    /// `len` may point at pool bytes that were written again after a clear:
+    /// read only the first `len`.
+    events: [BufferedEvent; MAX_MIDI_EVENTS],
+    len: usize,
+    /// The SysEx bytes of the events, each message framed by F0 and F7.
+    /// Its length is set at creation and never changes, so the bytes do not
+    /// move while the buffer lives. It is written and read only through
+    /// `as_mut_ptr` and `as_ptr`, which do not claim the whole allocation,
+    /// so writing a new message leaves the payloads already handed out
+    /// intact.
+    sysex: Vec<u8>,
+    /// Bytes of `sysex` in use.
+    sysex_len: usize,
+    /// Set when a push failed because the events were full.
+    overflowed: bool,
+    /// Set when a SysEx push failed because the pool was full.
+    sysex_overflowed: bool,
 }
 
 impl MidiBuffer {
-    /// Create a new empty MIDI buffer.
+    /// Create an empty buffer on the heap, with a pool of `sysex_bytes` bytes
+    /// for the SysEx messages of a block. Allocates; not for the audio
+    /// thread.
     ///
-    /// Uses `std::array::from_fn` with `MidiEvent::default()` since
-    /// `MidiEvent` is no longer `Copy` (due to `Box<SysEx>`).
-    ///
-    /// **Warning**: This places ~80KB on the stack. Avoid calling from
-    /// threads with small stacks (e.g. audio IO threads). Use
-    /// [`new_boxed`](Self::new_boxed) instead for heap allocation.
-    pub fn new() -> Self {
-        Self {
-            events: std::array::from_fn(|_| MidiEvent::default()),
-            len: 0,
-            overflowed: false,
-        }
-    }
-
-    /// Create a new empty MIDI buffer directly on the heap.
-    ///
-    /// Unlike `Box::new(MidiBuffer::new())`, this never creates the
-    /// `[MidiEvent; 1024]` array as a stack temporary. Safe to call from
-    /// any thread, including audio IO threads with small stacks (~544KB)
-    /// where debug builds don't optimize away the temporary.
-    pub fn new_boxed() -> Box<Self> {
+    /// The `[MidiEvent; MAX_MIDI_EVENTS]` array (about 80 KB) is written
+    /// straight to the heap, never as a temporary on the stack, which an
+    /// audio thread's small stack could not hold in a debug build.
+    pub fn new_boxed(sysex_bytes: usize) -> Box<Self> {
         let mut boxed = Box::<Self>::new_uninit();
         let ptr = boxed.as_mut_ptr();
-        // SAFETY: We fully initialize all three fields before calling
-        // assume_init. Each MidiEvent::default() is a small stack value
-        // (~80 bytes) written directly to the heap through the pointer.
+        // SAFETY: Every field is written before `assume_init`. Each event is
+        // a small value written to the heap through the pointer.
         unsafe {
             std::ptr::addr_of_mut!((*ptr).len).write(0);
+            std::ptr::addr_of_mut!((*ptr).sysex).write(vec![0; sysex_bytes]);
+            std::ptr::addr_of_mut!((*ptr).sysex_len).write(0);
             std::ptr::addr_of_mut!((*ptr).overflowed).write(false);
-            let events_ptr = std::ptr::addr_of_mut!((*ptr).events) as *mut MidiEvent;
+            std::ptr::addr_of_mut!((*ptr).sysex_overflowed).write(false);
+            let events_ptr = std::ptr::addr_of_mut!((*ptr).events) as *mut BufferedEvent;
             for i in 0..MAX_MIDI_EVENTS {
-                events_ptr.add(i).write(MidiEvent::default());
+                events_ptr.add(i).write(BufferedEvent::default());
             }
             boxed.assume_init()
         }
     }
 
-    /// Clear all events from the buffer.
+    /// Clear all events and SysEx bytes from the buffer.
     #[inline]
     pub fn clear(&mut self) {
         self.len = 0;
+        self.sysex_len = 0;
         self.overflowed = false;
+        self.sysex_overflowed = false;
     }
 
     /// Returns the number of events in the buffer.
@@ -1882,98 +1808,231 @@ impl MidiBuffer {
         self.len == 0
     }
 
-    /// Returns true if any push failed since the last clear.
+    /// Returns true if a push failed since the last clear because the
+    /// events were full.
     #[inline]
     pub fn has_overflowed(&self) -> bool {
         self.overflowed
     }
 
-    /// Push an event to the buffer.
-    ///
-    /// Returns `true` if the event was added, `false` if the buffer is full.
-    /// Sets the overflow flag when the buffer is exhausted.
+    /// Returns true if a SysEx push failed since the last clear because the
+    /// pool was full.
     #[inline]
-    pub fn push(&mut self, event: MidiEvent) -> bool {
-        if self.len < MAX_MIDI_EVENTS {
-            self.events[self.len] = event;
-            self.len += 1;
-            true
-        } else {
+    pub fn has_sysex_overflowed(&self) -> bool {
+        self.sysex_overflowed
+    }
+
+    /// Push an event to the buffer. The payload of a SysEx event is copied
+    /// into the buffer's pool; a payload that still has its F0 or F7 is
+    /// stored framed once (no data byte of a SysEx message is 0x80 or
+    /// above).
+    ///
+    /// Returns `false` and drops the event if the events or the pool are
+    /// full; a SysEx message is never cut.
+    pub fn push(&mut self, event: MidiEvent<'_>) -> bool {
+        if self.len == MAX_MIDI_EVENTS {
             self.overflowed = true;
-            false
+            return false;
         }
+        let kind = match kind_or_payload(event.event) {
+            Ok(kind) => kind,
+            Err(payload) => match self.store_sysex(payload) {
+                Some(stored) => MidiEventKind::SysEx(stored),
+                None => {
+                    self.sysex_overflowed = true;
+                    return false;
+                }
+            },
+        };
+        self.events[self.len] = BufferedEvent(MidiEvent {
+            sample_offset: event.sample_offset,
+            event: kind,
+        });
+        self.len += 1;
+        true
+    }
+
+    /// Copy a payload into the pool, framed by F0 and F7. Returns the
+    /// stored payload, or `None` when it does not fit.
+    fn store_sysex(&mut self, payload: &[u8]) -> Option<&'static [u8]> {
+        let payload = payload.strip_prefix(&[0xF0]).unwrap_or(payload);
+        let payload = payload.strip_suffix(&[0xF7]).unwrap_or(payload);
+        let start = self.sysex_len;
+        let needed = payload.len().checked_add(2)?;
+        if needed > self.sysex.len() - start {
+            return None;
+        }
+        let base = self.sysex.as_mut_ptr();
+        // SAFETY: `start + needed` is within the pool. The range lies past
+        // every stored message, so no handed-out payload covers it. Nor is
+        // `payload` in it: the borrow checker keeps this buffer's own
+        // payloads from reaching `push`, which takes `&mut self`.
+        unsafe {
+            base.add(start).write(0xF0);
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), base.add(start + 1), payload.len());
+            base.add(start + 1 + payload.len()).write(0xF7);
+        }
+        self.sysex_len = start + needed;
+        // SAFETY: The bytes were just written and do not change until
+        // `clear`, which takes `&mut self`; the pool never moves. Events
+        // leave the buffer only with the lifetime of its borrow.
+        Some(unsafe { std::slice::from_raw_parts(self.sysex.as_ptr().add(start + 1), payload.len()) })
+    }
+
+    /// Remove the event at `index`, keeping the order of the others. Its
+    /// SysEx bytes stay in the pool until the buffer is cleared.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is not less than [`len`](Self::len).
+    pub fn remove(&mut self, index: usize) {
+        assert!(index < self.len, "index {index} out of {} events", self.len);
+        self.events[index..self.len].rotate_left(1);
+        self.len -= 1;
     }
 
     /// Iterate over events in the buffer.
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = &MidiEvent> {
-        self.events[..self.len].iter()
+    pub fn iter(&self) -> impl Iterator<Item = &MidiEvent<'_>> {
+        self.as_slice().iter()
     }
 
-    /// Get the events as a slice.
-    ///
-    /// This is useful for passing to functions that expect `&[MidiEvent]`.
+    /// Get the events as a slice, with SysEx payloads borrowed from the
+    /// buffer.
     #[inline]
-    pub fn as_slice(&self) -> &[MidiEvent] {
-        &self.events[..self.len]
+    pub fn as_slice(&self) -> &[MidiEvent<'_>] {
+        // SAFETY: The payloads point into the pool, which does not change
+        // while `self` is borrowed.
+        unsafe { unwrap_events(&self.events[..self.len]) }
     }
 
-    /// Get the events as a mutable slice, to change or reorder them.
+    /// Reorder the events or change their offsets (see [`MidiEventsMut`]).
     #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent] {
-        &mut self.events[..self.len]
+    pub fn events_mut(&mut self) -> MidiEventsMut<'_> {
+        MidiEventsMut {
+            events: &mut self.events[..self.len],
+        }
     }
 
-    /// Move all events out of the buffer, leaving it empty.
-    ///
-    /// Returns an iterator that yields owned `MidiEvent` values by moving them
-    /// out of the buffer. This avoids cloning (and heap allocation for SysEx
-    /// events). The buffer is empty after iteration completes.
-    pub fn drain(&mut self) -> MidiBufferDrain<'_> {
-        let len = self.len;
-        self.len = 0;
-        MidiBufferDrain {
-            events: &mut self.events[..len],
-            index: 0,
+    /// The message of the SysEx event at `index` as it goes to a host: the
+    /// payload framed by F0 and F7. `None` if that event is not a SysEx
+    /// event or `index` is out of range.
+    pub fn framed_sysex(&self, index: usize) -> Option<&[u8]> {
+        match self.as_slice().get(index)?.event {
+            MidiEventKind::SysEx(payload) => {
+                // Every payload in the buffer was stored by `store_sysex`,
+                // with an F0 right before it and an F7 right after it in the
+                // pool. The message is taken from the pool itself, not from
+                // the payload's pointer, which covers the payload only.
+                let start = payload.as_ptr() as usize - self.sysex.as_ptr() as usize;
+                Some(&self.sysex[start - 1..start + payload.len() + 1])
+            }
+            _ => None,
         }
     }
 }
 
-/// Iterator that moves events out of a [`MidiBuffer`].
-///
-/// Created by [`MidiBuffer::drain`]. Each event is moved out via
-/// `std::mem::take`, replacing it with a default (non-allocating) event.
-pub struct MidiBufferDrain<'a> {
-    events: &'a mut [MidiEvent],
-    index: usize,
-}
-
-impl Iterator for MidiBufferDrain<'_> {
-    type Item = MidiEvent;
-
-    #[inline]
-    fn next(&mut self) -> Option<MidiEvent> {
-        if self.index < self.events.len() {
-            let event = std::mem::take(&mut self.events[self.index]);
-            self.index += 1;
-            Some(event)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.events.len() - self.index;
-        (remaining, Some(remaining))
+impl core::fmt::Debug for MidiBuffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MidiBuffer")
+            .field("events", &self.as_slice())
+            .field("sysex_capacity", &self.sysex.len())
+            .field("sysex_len", &self.sysex_len)
+            .field("overflowed", &self.overflowed)
+            .field("sysex_overflowed", &self.sysex_overflowed)
+            .finish()
     }
 }
-
-impl ExactSizeIterator for MidiBufferDrain<'_> {}
 
 // No Default impl: MidiBuffer is ~80KB and must not be stack-allocated
-// accidentally via mem::take, Box::default(), etc. Use new_boxed() for
-// heap allocation or new() only when you know the stack can handle it.
+// accidentally via mem::take, Box::default(), etc. Use new_boxed().
+
+/// The events of a [`MidiBuffer`] with access to reorder them and change
+/// their offsets, for the format wrappers. It cannot put an event into the
+/// buffer, so every SysEx payload stays in the buffer's own pool: events go
+/// in through [`MidiBuffer::push`] only.
+pub struct MidiEventsMut<'a> {
+    events: &'a mut [BufferedEvent],
+}
+
+impl<'a> MidiEventsMut<'a> {
+    /// The number of events.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Returns true if there are no events.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// The events, with SysEx payloads borrowed from the buffer.
+    #[inline]
+    pub fn as_slice(&self) -> &[MidiEvent<'_>] {
+        // SAFETY: The payloads point into the pool of the buffer, which
+        // stays borrowed for `'a`.
+        unsafe { unwrap_events(self.events) }
+    }
+
+    /// The events for the rest of the borrow of the buffer.
+    #[inline]
+    pub fn into_slice(self) -> &'a [MidiEvent<'a>] {
+        // SAFETY: As in `as_slice`.
+        unsafe { unwrap_events(self.events) }
+    }
+
+    /// A shorter borrow of the same events.
+    #[inline]
+    pub fn reborrow(&mut self) -> MidiEventsMut<'_> {
+        MidiEventsMut { events: self.events }
+    }
+
+    /// The sample offset of the event at `index`, to change it.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is out of range.
+    #[inline]
+    pub fn sample_offset_mut(&mut self, index: usize) -> &mut u32 {
+        &mut self.events[index].0.sample_offset
+    }
+
+    /// The sample offsets of all events, to change them.
+    #[inline]
+    pub fn sample_offsets_mut(&mut self) -> impl Iterator<Item = &mut u32> {
+        self.events.iter_mut().map(|event| &mut event.0.sample_offset)
+    }
+
+    /// Swap two events.
+    ///
+    /// # Panics
+    ///
+    /// If `a` or `b` is out of range.
+    #[inline]
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.events.swap(a, b);
+    }
+
+    /// Split into the events before `mid` and those from `mid` on.
+    ///
+    /// # Panics
+    ///
+    /// If `mid` is greater than [`len`](Self::len).
+    #[inline]
+    pub fn split_at(self, mid: usize) -> (MidiEventsMut<'a>, MidiEventsMut<'a>) {
+        let (first, rest) = self.events.split_at_mut(mid);
+        (MidiEventsMut { events: first }, MidiEventsMut { events: rest })
+    }
+
+    /// Sort by sample offset, keeping the order of events at one offset,
+    /// without allocating (see [`crate::sub_blocks::sort_by_offset`]).
+    #[inline]
+    pub fn sort_by_offset(&mut self) {
+        crate::sub_blocks::sort_by_offset(self.events, |event| event.0.sample_offset);
+    }
+}
 
 // =============================================================================
 // Note Expression Controller Types (VST3 SDK 3.5.0)
@@ -2436,53 +2495,34 @@ impl MpeInputDeviceSettings {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_sysex_from_a_message_holds_the_payload() {
-        let payload = [0x7E, 0x00, 0x06, 0x01];
-        assert_eq!(SysEx::from_message(&[0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7]).as_slice(), payload);
-        assert_eq!(SysEx::from_message(&payload).as_slice(), payload);
-        assert_eq!(SysEx::from_message(&[0xF0, 0xF7]).as_slice(), [] as [u8; 0]);
-
-        // A framed message of the maximum payload size keeps all of it.
-        let mut message = vec![0xF0];
-        message.extend([0x01; MAX_SYSEX_SIZE]);
-        message.push(0xF7);
-        assert_eq!(SysEx::from_message(&message).as_slice(), [0x01; MAX_SYSEX_SIZE]);
+    fn note(offset: u32, pitch: u8) -> MidiEvent<'static> {
+        MidiEvent::note_on(offset, 0, pitch, 0.8, pitch as NoteId, 0.0, 0)
     }
 
-    #[test]
-    fn test_sysex_is_framed_once() {
-        let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
-        let message = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7];
-        assert_eq!(SysEx::from_message(&message).write_framed(&mut buffer), message);
-
-        let mut framed = SysEx::new();
-        framed.data[..message.len()].copy_from_slice(&message);
-        framed.len = message.len() as u16;
-        assert_eq!(framed.write_framed(&mut buffer), message);
-
-        let largest = SysEx::from_message(&[0x01; MAX_SYSEX_SIZE]);
-        assert_eq!(largest.write_framed(&mut buffer).len(), MAX_SYSEX_SIZE + 2);
-
-        // A smaller buffer cuts the payload, not the F7.
-        assert_eq!(largest.write_framed(&mut buffer[..4]), [0xF0, 0x01, 0x01, 0xF7]);
-        assert_eq!(largest.write_framed(&mut buffer[..1]), [] as [u8; 0]);
+    fn payloads<'a>(events: &[MidiEvent<'a>]) -> Vec<&'a [u8]> {
+        events
+            .iter()
+            .filter_map(|event| match event.event {
+                MidiEventKind::SysEx(payload) => Some(payload),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
     fn midi_buffer_new_boxed_is_empty() {
-        let buf = MidiBuffer::new_boxed();
+        let buf = MidiBuffer::new_boxed(0);
         assert_eq!(buf.len(), 0);
         assert!(buf.is_empty());
         assert!(!buf.has_overflowed());
+        assert!(!buf.has_sysex_overflowed());
     }
 
     #[test]
     fn midi_buffer_new_boxed_push_and_iterate() {
-        let mut buf = MidiBuffer::new_boxed();
+        let mut buf = MidiBuffer::new_boxed(0);
 
-        let event = MidiEvent::note_on(0, 0, 60, 0.8, 60, 0.0, 0);
-        assert!(buf.push(event.clone()));
+        assert!(buf.push(note(0, 60)));
         assert_eq!(buf.len(), 1);
 
         let first = buf.iter().next().unwrap();
@@ -2496,10 +2536,159 @@ mod tests {
 
     #[test]
     fn midi_buffer_new_boxed_clear() {
-        let mut buf = MidiBuffer::new_boxed();
-        buf.push(MidiEvent::note_on(0, 0, 60, 0.8, 60, 0.0, 0));
+        let mut buf = MidiBuffer::new_boxed(16);
+        buf.push(note(0, 60));
+        buf.push(MidiEvent::sysex(0, &[0x7E; 20]));
+        assert!(buf.has_sysex_overflowed());
         buf.clear();
         assert!(buf.is_empty());
         assert!(!buf.has_overflowed());
+        assert!(!buf.has_sysex_overflowed());
+        // The pool is empty again: a message that fills it fits.
+        assert!(buf.push(MidiEvent::sysex(0, &[0x7E; 14])));
+    }
+
+    #[test]
+    fn test_sysex_payload_is_copied_into_the_buffer() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        {
+            let message = vec![0x7E, 0x00, 0x06, 0x01];
+            assert!(buf.push(MidiEvent::sysex(3, &message)));
+        }
+        // The message the event was made from is gone; the buffer has its own copy.
+        assert_eq!(payloads(buf.as_slice()), [[0x7E, 0x00, 0x06, 0x01]]);
+        assert_eq!(buf.as_slice()[0].sample_offset, 3);
+        assert_eq!(buf.framed_sysex(0), Some(&[0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_a_framed_payload_is_framed_once() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        buf.push(MidiEvent::sysex(0, &[0xF0, 0x7E, 0x01, 0xF7]));
+        assert_eq!(payloads(buf.as_slice()), [[0x7E, 0x01]]);
+        assert_eq!(buf.framed_sysex(0), Some(&[0xF0, 0x7E, 0x01, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_framed_sysex_of_other_events_is_none() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        buf.push(note(0, 60));
+        buf.push(MidiEvent::sysex(0, &[]));
+        assert_eq!(buf.framed_sysex(0), None);
+        assert_eq!(buf.framed_sysex(1), Some(&[0xF0, 0xF7][..]));
+        assert_eq!(buf.framed_sysex(2), None);
+    }
+
+    #[test]
+    fn test_sysex_that_does_not_fit_is_dropped_whole() {
+        // Room for one message of 4 bytes with its F0 and F7 plus one of 2.
+        let mut buf = MidiBuffer::new_boxed(10);
+        assert!(buf.push(MidiEvent::sysex(0, &[1, 2, 3, 4])));
+        assert!(!buf.push(MidiEvent::sysex(1, &[5, 6, 7])));
+        assert!(buf.has_sysex_overflowed());
+        assert!(!buf.has_overflowed());
+        // Other events and a smaller message still fit.
+        assert!(buf.push(note(2, 60)));
+        assert!(buf.push(MidiEvent::sysex(3, &[8, 9])));
+        assert_eq!(payloads(buf.as_slice()), [&[1, 2, 3, 4][..], &[8, 9][..]]);
+        assert_eq!(buf.len(), 3);
+    }
+
+    #[test]
+    fn test_a_buffer_without_a_pool_drops_sysex_only() {
+        let mut buf = MidiBuffer::new_boxed(0);
+        assert!(!buf.push(MidiEvent::sysex(0, &[])));
+        assert!(buf.push(note(0, 60)));
+        assert_eq!(buf.len(), 1);
+        assert!(buf.has_sysex_overflowed());
+    }
+
+    #[test]
+    fn test_events_beyond_the_maximum_are_dropped() {
+        let mut buf = MidiBuffer::new_boxed(16);
+        for _ in 0..MAX_MIDI_EVENTS {
+            assert!(buf.push(note(0, 60)));
+        }
+        assert!(!buf.push(note(0, 61)));
+        assert!(!buf.push(MidiEvent::sysex(0, &[1])));
+        assert!(buf.has_overflowed());
+        assert!(!buf.has_sysex_overflowed());
+        assert_eq!(buf.len(), MAX_MIDI_EVENTS);
+    }
+
+    #[test]
+    fn test_events_pass_from_buffer_to_buffer() {
+        let mut input = MidiBuffer::new_boxed(64);
+        let mut output = MidiBuffer::new_boxed(64);
+        input.push(note(0, 60));
+        input.push(MidiEvent::sysex(5, &[0x41, 0x10]));
+        for event in input.as_slice() {
+            assert!(output.push(*event));
+        }
+        input.clear();
+        input.push(MidiEvent::sysex(0, &[0x7F, 0x7F, 0x7F]));
+        // The output holds copies of its own.
+        assert_eq!(payloads(output.as_slice()), [[0x41, 0x10]]);
+        assert_eq!(output.framed_sysex(1), Some(&[0xF0, 0x41, 0x10, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_reordering_keeps_the_payloads() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        buf.push(MidiEvent::sysex(30, &[3]));
+        buf.push(note(10, 60));
+        buf.push(MidiEvent::sysex(10, &[1]));
+        buf.push(MidiEvent::sysex(20, &[2]));
+        buf.events_mut().sort_by_offset();
+        let offsets: Vec<u32> = buf.iter().map(|event| event.sample_offset).collect();
+        assert_eq!(offsets, [10, 10, 20, 30]);
+        assert_eq!(payloads(buf.as_slice()), [[1], [2], [3]]);
+        assert_eq!(buf.framed_sysex(3), Some(&[0xF0, 3, 0xF7][..]));
+
+        let mut events = buf.events_mut();
+        events.swap(0, 3);
+        *events.sample_offset_mut(1) = 7;
+        let (first, rest) = events.split_at(2);
+        assert_eq!(first.len(), 2);
+        assert_eq!(payloads(rest.into_slice()), [[2]]);
+        assert_eq!(buf.as_slice()[1].sample_offset, 7);
+        assert_eq!(payloads(buf.as_slice()), [[3], [1], [2]]);
+    }
+
+    #[test]
+    fn test_only_events_without_a_payload_become_static() {
+        let kept: MidiEvent<'static> = {
+            let event = note(4, 60);
+            event.to_static().expect("a note borrows nothing")
+        };
+        assert_eq!(kept, note(4, 60));
+        assert_eq!(MidiEvent::sysex(0, &[1]).to_static(), None);
+    }
+
+    #[test]
+    fn test_offsets_change_through_a_view() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        buf.push(note(1, 60));
+        buf.push(MidiEvent::sysex(2, &[7]));
+        let mut events = buf.events_mut();
+        for offset in events.reborrow().sample_offsets_mut() {
+            *offset += 10;
+        }
+        assert_eq!(events.len(), 2);
+        let offsets: Vec<u32> = buf.iter().map(|event| event.sample_offset).collect();
+        assert_eq!(offsets, [11, 12]);
+        assert_eq!(buf.framed_sysex(1), Some(&[0xF0, 7, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_remove_keeps_the_order() {
+        let mut buf = MidiBuffer::new_boxed(64);
+        buf.push(note(0, 60));
+        buf.push(MidiEvent::sysex(1, &[1, 2]));
+        buf.push(note(2, 62));
+        buf.remove(0);
+        assert_eq!(buf.len(), 2);
+        assert_eq!(payloads(buf.as_slice()), [[1, 2]]);
+        assert_eq!(buf.as_slice()[1].sample_offset, 2);
     }
 }

@@ -29,7 +29,7 @@
 //! The `with()` method transforms events while preserving timing:
 //!
 //! ```ignore
-//! output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+//! output.push(event.with(MidiEventKind::NoteOn(NoteOn {
 //!     pitch: new_pitch,
 //!     velocity: new_velocity,
 //!     ..*note_on
@@ -416,7 +416,7 @@ impl Processor for MidiTransformProcessor {
                         };
 
                         // Use with() to preserve sample_offset, struct update for the rest
-                        output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+                        output.push(event.with(MidiEventKind::NoteOn(NoteOn {
                             pitch: new_pitch,
                             velocity: new_velocity,
                             ..*note_on
@@ -434,7 +434,7 @@ impl Processor for MidiTransformProcessor {
                         } else {
                             self.transform_velocity(note_off.velocity)
                         };
-                        output.push(event.clone().with(MidiEventKind::NoteOff(NoteOff {
+                        output.push(event.with(MidiEventKind::NoteOff(NoteOff {
                             pitch: new_pitch,
                             velocity: new_velocity,
                             ..*note_off
@@ -447,7 +447,7 @@ impl Processor for MidiTransformProcessor {
                     // for a note that is not sounding.
                     let held = *self.held_note(poly.channel, poly.pitch);
                     if let Some(new_pitch) = held {
-                        output.push(event.clone().with(MidiEventKind::PolyPressure(
+                        output.push(event.with(MidiEventKind::PolyPressure(
                             PolyPressure {
                                 pitch: new_pitch,
                                 ..*poly
@@ -457,13 +457,13 @@ impl Processor for MidiTransformProcessor {
                 }
 
                 MidiEventKind::ControlChange(_) if bypassed => {
-                    output.push(event.clone());
+                    output.push(*event);
                 }
 
                 MidiEventKind::ControlChange(cc) => {
                     if let Some(new_cc) = self.transform_cc_number(cc.controller) {
                         let new_value = self.transform_cc_value(cc.controller, cc.value);
-                        output.push(event.clone().with(MidiEventKind::ControlChange(
+                        output.push(event.with(MidiEventKind::ControlChange(
                             ControlChange {
                                 controller: new_cc,
                                 value: new_value,
@@ -475,7 +475,7 @@ impl Processor for MidiTransformProcessor {
 
                 // Pass through other events unchanged
                 _ => {
-                    output.push(event.clone());
+                    output.push(*event);
                 }
             }
         }
@@ -486,17 +486,17 @@ impl Processor for MidiTransformProcessor {
 mod tests {
     use super::*;
 
-    fn note_on(pitch: MidiNote) -> MidiEvent {
+    fn note_on(pitch: MidiNote) -> MidiEvent<'static> {
         MidiEvent::note_on(0, 0, pitch, 0.8, -1, 0.0, 0)
     }
 
-    fn note_off(pitch: MidiNote) -> MidiEvent {
+    fn note_off(pitch: MidiNote) -> MidiEvent<'static> {
         MidiEvent::note_off(0, 0, pitch, 0.0, -1, 0.0)
     }
 
     /// The events the processor sends out for `input`, as (is note-on, pitch).
     fn run(processor: &mut MidiTransformProcessor, input: &[MidiEvent]) -> Vec<(bool, MidiNote)> {
-        let mut output = MidiBuffer::new_boxed();
+        let mut output = MidiBuffer::new_boxed(0);
         processor.process_midi(input, &mut output);
         output
             .iter()

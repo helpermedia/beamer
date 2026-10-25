@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::error::PluginResult;
 use beamer_core::{
-    ActiveBuses, AuxiliaryBuffers, Buffer, MidiEvent, ProcessContext, ProcessMode,
+    ActiveBuses, AuxiliaryBuffers, Buffer, MidiBuffer, MidiEventsMut, ProcessContext, ProcessMode,
     SharedModel, WebViewDispatch, WebViewEventQueue,
 };
 
@@ -202,17 +202,18 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// # Arguments
     /// * `input` - The MIDI events of one `process()` call, timed from its
-    ///   first sample
-    /// * `output` - Output MIDI buffer to write events to
+    ///   first sample, which the instance may reorder
+    /// * `output` - Output MIDI buffer to write events to, with the events of
+    ///   the earlier calls of the render call before them
     ///
     /// # Examples
     /// - MIDI effects: Transpose notes, change velocities, add effects
     /// - Instruments: Generate note-off events for voice management
     /// - Arpeggiators: Transform held notes into patterns
-    fn process_midi(&mut self, input: &mut [MidiEvent], output: &mut crate::render::MidiBuffer) {
+    fn process_midi(&mut self, input: MidiEventsMut<'_>, output: &mut MidiBuffer) {
         // Default: pass through all events
-        for event in input {
-            output.push(std::mem::take(event));
+        for event in input.as_slice() {
+            output.push(*event);
         }
     }
 

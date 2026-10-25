@@ -60,9 +60,6 @@ pub(crate) struct Prepared<P: Model> {
     /// MIDI CC state for tracking controller values.
     /// Accessed via `midi_cc_state()` method by render block for CC event processing.
     pub(crate) midi_cc_state: Option<Box<beamer_core::MidiCcState>>,
-    /// Pre-allocated MIDI output buffer for process_midi(). It is boxed
-    /// because it is too large for the stack of the audio thread.
-    pub(crate) midi_output_buffer: Box<beamer_core::MidiBuffer>,
 }
 
 impl<P: Model> AuState<P> {
@@ -137,11 +134,7 @@ fn allocate_processing_resources(
     midi_cc_config: Option<MidiCcConfig>,
     max_frames: u32,
     buses: &ActiveBuses,
-) -> (
-    Option<ConversionBuffers>,
-    Option<Box<beamer_core::MidiCcState>>,
-    Box<beamer_core::MidiBuffer>,
-) {
+) -> (Option<ConversionBuffers>, Option<Box<beamer_core::MidiCcState>>) {
     // Pre-allocate conversion buffers if processor doesn't support f64.
     let conversion_buffers = if !supports_f64 {
         let bus_config = CachedBusConfig::from_active_buses(buses);
@@ -178,12 +171,7 @@ fn allocate_processing_resources(
     let midi_cc_state =
         midi_cc_config.map(|cfg| Box::new(beamer_core::MidiCcState::from_config(&cfg)));
 
-    // Pre-allocate MIDI output buffer for process_midi().
-    // Uses new_boxed() to construct directly on the heap, avoiding a ~80KB
-    // stack temporary that could overflow in debug builds.
-    let midi_output_buffer = beamer_core::MidiBuffer::new_boxed();
-
-    (conversion_buffers, midi_cc_state, midi_output_buffer)
+    (conversion_buffers, midi_cc_state)
 }
 
 impl<P: Model> AuState<P> {
@@ -212,7 +200,7 @@ impl<P: Model> AuState<P> {
         self.model.set_sample_rate(sample_rate);
         let processor = Arc::clone(&self.model).prepare(plugin_setup);
 
-        let (conversion_buffers, midi_cc_state, midi_output_buffer) =
+        let (conversion_buffers, midi_cc_state) =
             allocate_processing_resources(
                 processor.supports_double_precision(),
                 self.model.midi_cc_config(),
@@ -226,7 +214,6 @@ impl<P: Model> AuState<P> {
             max_frames,
             conversion_buffers,
             midi_cc_state,
-            midi_output_buffer,
         });
     }
 }

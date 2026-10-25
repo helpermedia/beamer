@@ -33,9 +33,8 @@ url = "https://example.com"
 email = "support@example.com"
 log_level = "warn"
 
-# Optional: Advanced SysEx configuration
-# sysex_slots = 64
-# sysex_buffer_size = 4096
+# Optional: SysEx bytes one block holds in each direction
+# sysex_bytes_per_block = 65536
 ```
 
 **Required Fields:**
@@ -69,14 +68,7 @@ log_level = "warn"
 | Field | Type | Description |
 |-------|------|-------------|
 | `vst3_controller_id` | String | VST3 controller UUID for split component/controller architecture (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
-| `sysex_slots` | Integer | Number of pre-allocated SysEx output slots for VST3 (default: 16) |
-| `sysex_buffer_size` | Integer | Maximum payload of a SysEx output message in bytes for VST3, without F0 and F7 (default: 512) |
-
-**SysEx Configuration:**
-- Advanced settings for plugins that send SysEx messages
-- Defaults (16 slots, 512 bytes) cover most use cases
-- Higher values use more memory but allow more concurrent/larger SysEx messages
-- The settings size the VST3 output pool. The AU formats pass SysEx output to the host directly, without a pool
+| `sysex_bytes_per_block` | Integer | SysEx bytes one block (one process or render call) holds in each direction, counting the F0 and F7 of each message (default: 16384, see [SysEx Handling](#sysex-handling)) |
 
 **Notes:**
 
@@ -1663,21 +1655,21 @@ impl Processor for ReverbProcessor {
 
 ## MIDI Reference
 
-The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure` and `ProgramChange`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`SysEx`, `NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, `ParameterNumberMessage`, the `cc`, `rpn`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
+The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure` and `ProgramChange`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, `ParameterNumberMessage`, the `cc`, `rpn`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
 
 ### Event Types
 
-The structs of the single messages (`NoteOn`, `ControlChange` and so on) are `Copy`. `MidiEvent` and `MidiEventKind` are `Clone` only, because a SysEx message is boxed to keep the enum small. Cloning an event copies it without allocating, except for a SysEx event, whose clone allocates.
+The event types are `Copy`: passing an event on copies it without allocating. The lifetime of `MidiEvent` and `MidiEventKind` is that of the payload a SysEx event borrows (see [SysEx Handling](#sysex-handling)).
 
 ```rust
-#[derive(Debug, Clone, PartialEq)]
-pub struct MidiEvent {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidiEvent<'a> {
     pub sample_offset: u32,
-    pub event: MidiEventKind,
+    pub event: MidiEventKind<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum MidiEventKind {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MidiEventKind<'a> {
     // Note events.
     NoteOn(NoteOn),
     NoteOff(NoteOff),
@@ -1689,8 +1681,8 @@ pub enum MidiEventKind {
     ChannelPressure(ChannelPressure),
     ProgramChange(ProgramChange),
 
-    // Advanced VST3 events.
-    SysEx(Box<SysEx>),
+    // Advanced events. A SysEx event holds its payload, without F0 and F7.
+    SysEx(&'a [u8]),
     NoteExpressionValue(NoteExpressionValue),
     NoteExpressionInt(NoteExpressionInt),
     NoteExpressionText(NoteExpressionText),
@@ -1772,7 +1764,7 @@ MidiEvent::control_change(offset, channel, controller, value)
 MidiEvent::pitch_bend(offset, channel, value)
 MidiEvent::channel_pressure(offset, channel, pressure)
 MidiEvent::program_change(offset, channel, program)
-MidiEvent::sysex(offset, &data)
+MidiEvent::sysex(offset, &payload)
 MidiEvent::note_expression_value(offset, note_id, type_id, value)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
@@ -1790,50 +1782,56 @@ Both formats deliver a note-on with velocity 0 as a `NoteOff`, so a plugin never
 ### MidiBuffer
 
 ```rust
-pub struct MidiBuffer { /* Fixed capacity: 1024 events */ }
+pub struct MidiBuffer { /* 1024 events and a SysEx byte pool */ }
 
 impl MidiBuffer {
-    // Places about 80 KB on the stack. On a thread with a small stack use
-    // new_boxed().
-    pub fn new() -> Self;
-    pub fn new_boxed() -> Box<Self>;
-    // Returns false when the buffer is full and the event was dropped.
-    pub fn push(&mut self, event: MidiEvent) -> bool;
-    pub fn iter(&self) -> impl Iterator<Item = &MidiEvent>;
-    pub fn as_slice(&self) -> &[MidiEvent];
-    pub fn as_mut_slice(&mut self) -> &mut [MidiEvent];
-    pub fn drain(&mut self) -> MidiBufferDrain<'_>;
+    // Allocates the buffer with a pool of `sysex_bytes` bytes.
+    pub fn new_boxed(sysex_bytes: usize) -> Box<Self>;
+    // Copies a SysEx payload into the pool. Returns false when the events
+    // or the pool are full and the event was dropped.
+    pub fn push(&mut self, event: MidiEvent<'_>) -> bool;
+    pub fn iter(&self) -> impl Iterator<Item = &MidiEvent<'_>>;
+    pub fn as_slice(&self) -> &[MidiEvent<'_>];
     pub fn len(&self) -> usize;
     pub fn is_empty(&self) -> bool;
     pub fn clear(&mut self);
     pub fn has_overflowed(&self) -> bool;
+    pub fn has_sysex_overflowed(&self) -> bool;
+}
+
+impl<'a> MidiEvent<'a> {
+    // The event without a borrow, to keep it past the call. None for a
+    // SysEx event: copy its payload to keep it.
+    pub fn to_static(&self) -> Option<MidiEvent<'static>>;
 }
 ```
 
+The format wrappers also use `remove()`, `framed_sysex()` and `events_mut()`, a view that reorders events and changes their offsets.
+
 ### Event Modification
 
-Use `event.clone().with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
+Use `event.with()` to create modified events while preserving the sample offset. Combine with Rust's struct update syntax (`..`) to copy unchanged fields:
 
 ```rust
 fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
     for event in input {
         match &event.event {
             MidiEventKind::NoteOn(note) => {
-                output.push(event.clone().with(MidiEventKind::NoteOn(NoteOn {
+                output.push(event.with(MidiEventKind::NoteOn(NoteOn {
                     pitch: note.pitch.saturating_add(2).min(127),
                     // Copies channel, velocity, note_id, tuning and length.
                     ..*note
                 })));
             }
             MidiEventKind::NoteOff(note) => {
-                output.push(event.clone().with(MidiEventKind::NoteOff(NoteOff {
+                output.push(event.with(MidiEventKind::NoteOff(NoteOff {
                     pitch: note.pitch.saturating_add(2).min(127),
                     // Copies channel, velocity, note_id and tuning.
                     ..*note
                 })));
             }
             _ => {
-                output.push(event.clone());
+                output.push(*event);
             }
         }
     }
@@ -1852,40 +1850,30 @@ A plugin without MIDI input gets no events in `process_midi()`. The MIDI a plugi
 
 ### SysEx Handling
 
-A `SysEx` holds the payload of a message, without the F0 and F7 that frame
-it on the wire. The wrappers add them to outgoing messages in AU and VST3.
-The VST3 wrapper takes them off incoming ones. The AU formats do not pass
-SysEx input to the plugin yet.
+A SysEx event holds the payload of a message, without the F0 and F7 that
+frame it on the wire. The wrappers add them to outgoing messages in AU and
+VST3. The VST3 wrapper takes them off incoming ones. The AU formats do not
+pass SysEx input to the plugin yet.
 
-**Buffer Size (Cargo features of `beamer-core`, which a plugin adds as a dependency to enable one):**
+The payload is borrowed from the `MidiBuffer` the event is in. Each buffer
+keeps the SysEx bytes of a block in a pool that is allocated with it, so
+reading, passing on and sending SysEx never allocates:
 
-| Feature | Size |
-|---------|------|
-| (default) | 512 bytes |
-| `sysex-256` | 256 bytes |
-| `sysex-1024` | 1024 bytes |
-| `sysex-2048` | 2048 bytes |
+- A plugin reads `MidiEventKind::SysEx(payload)` in `process_midi()` and gets
+  a `&[u8]`, valid during that call. To keep a message longer, copy it.
+- `output.push(event)` copies the payload into the output buffer's pool, so
+  a plugin can send bytes from its own memory: `MidiEvent::sysex(offset,
+  &payload)`. A payload that still has its F0 or F7 is framed once.
 
-**Plugin-Declared Capacity:**
-
-SysEx configuration can be set via Config.toml:
+The pool holds `sysex_bytes_per_block` bytes in each direction (16 KiB by
+default), counting the F0 and F7 of each message. A message that does not
+fit into what is left of it is dropped whole, never cut; the drop is
+logged as a warning. A plugin that receives or sends large messages, such as
+sample dumps, raises it in `Config.toml`:
 
 ```toml
-sysex_slots = 64
-# Needs the sysex-2048 feature: a message holds at most its size.
-sysex_buffer_size = 2048
+sysex_bytes_per_block = 262144
 ```
-
-Defaults (16 slots, 512 bytes) work for most plugins. Increase only if:
-- Your plugin sends many SysEx messages per buffer (increase slots)
-- Your plugin sends large SysEx messages like sample dumps (increase buffer size, together with the buffer size feature above: a message holds at most that many bytes)
-
-These settings apply to VST3, which needs a pool to keep the data alive after
-processing. The AU formats hand each message to the host during the render
-call, limited only by the buffer size of the Cargo feature above.
-
-**Heap Fallback (optional feature `sysex-heap-fallback` of `beamer-core` and `beamer-vst3`, used by VST3 only):**
-Overflow messages stored in heap, emitted next block. Breaks real-time guarantee.
 
 ### Note Expression (MPE)
 

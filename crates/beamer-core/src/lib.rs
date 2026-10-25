@@ -67,7 +67,6 @@ pub mod smoothing;
 pub mod state;
 pub mod state_format;
 pub mod sub_blocks;
-pub mod sysex_pool;
 pub mod types;
 pub mod webview_events;
 pub mod webview_dispatch;
@@ -90,10 +89,10 @@ pub use logging::LogLevel;
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types
-    cc, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,
+    cc, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind, MidiEventsMut,
     MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
     // Advanced VST3 events
-    ChordInfo, NoteExpressionInt, NoteExpressionText, NoteExpressionValue, ScaleInfo, SysEx,
+    ChordInfo, NoteExpressionInt, NoteExpressionText, NoteExpressionValue, ScaleInfo,
     // MIDI 2.0 types
     Midi2Controller,
     // RPN/NRPN types
@@ -112,7 +111,7 @@ pub use midi::{
     combine_14bit_cc, combine_14bit_raw, split_14bit_cc, split_14bit_raw,
     // Buffer size constants
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_KEYSWITCH_TITLE_SIZE,
-    MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
+    MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE,
 };
 pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
@@ -133,7 +132,6 @@ pub use plugin::{
 pub use preset::Preset;
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
-pub use sysex_pool::SysExOutputPool;
 pub use types::{fnv1a_hash, ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
 pub use webview_events::WebViewEventQueue;
 #[doc(hidden)]

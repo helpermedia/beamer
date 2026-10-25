@@ -268,7 +268,7 @@ pub struct DrumsProcessor {
     voices: [[DrumVoice; VOICES_PER_DRUM]; 4], // [drum_type][voice_index]
     sample_rate: f64,
     time_counter: u64,
-    pending_events: Vec<MidiEvent>,
+    pending_events: Vec<MidiEvent<'static>>,
     render_buffers: [Vec<f64>; 4], // [kick, snare, hihat, crash]
 }
 
@@ -442,7 +442,9 @@ impl Processor for DrumsProcessor {
     }
 
     fn process_midi(&mut self, input: &[MidiEvent], _output: &mut MidiBuffer) {
-        self.pending_events.extend_from_slice(input);
+        // Kept until process(). SysEx, which borrows its bytes for this call
+        // only, is left out: the drums do not use it.
+        self.pending_events.extend(input.iter().filter_map(MidiEvent::to_static));
     }
 }
 

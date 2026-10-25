@@ -279,11 +279,8 @@ impl Category {
     }
 }
 
-/// Default number of SysEx output slots per process block.
-pub const DEFAULT_SYSEX_SLOTS: usize = 16;
-
-/// Default SysEx buffer size in bytes per slot.
-pub const DEFAULT_SYSEX_BUFFER_SIZE: usize = 512;
+/// Default SysEx bytes one block holds in each direction.
+pub const DEFAULT_SYSEX_BYTES_PER_BLOCK: usize = 16 * 1024;
 
 /// Unified plugin configuration.
 ///
@@ -350,13 +347,11 @@ pub struct Config {
     /// combined component pattern (processor + controller in one object).
     pub vst3_controller_id: Option<[u32; 4]>,
 
-    /// Number of SysEx output slots per process block (VST3 only: the AU
-    /// formats hand SysEx output to the host directly).
-    pub sysex_slots: usize,
-
-    /// Maximum size of the payload of each SysEx output message in bytes,
-    /// without its F0 and F7 (VST3 only).
-    pub sysex_buffer_size: usize,
+    /// SysEx bytes one block (one process or render call) holds in each
+    /// direction, counting the F0 and F7 of each message. It sizes the pool
+    /// of the MIDI input and that of the MIDI output; a message that does
+    /// not fit in what is left of it is dropped, never cut.
+    pub sysex_bytes_per_block: usize,
 
     /// Apply host automation at the sample it is meant for, by running a
     /// host block as sub-blocks that start at the parameter changes (AU
@@ -533,8 +528,7 @@ impl Config {
             subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
             vst3_id: None,
             vst3_controller_id: None,
-            sysex_slots: DEFAULT_SYSEX_SLOTS,
-            sysex_buffer_size: DEFAULT_SYSEX_BUFFER_SIZE,
+            sysex_bytes_per_block: DEFAULT_SYSEX_BYTES_PER_BLOCK,
             sample_accurate_automation: false,
             log_level: None,
             log_subsystem: "",
@@ -652,23 +646,12 @@ impl Config {
         self
     }
 
-    /// Set the number of SysEx output slots per process block (VST3 only).
-    ///
-    /// Higher values allow more concurrent SysEx messages but use more memory.
-    /// Default is 16 slots.
+    /// Set the SysEx bytes one block holds in each direction (see
+    /// [`sysex_bytes_per_block`](Self::sysex_bytes_per_block)). Default is
+    /// 16 KiB.
     #[doc(hidden)]
-    pub const fn with_sysex_slots(mut self, slots: usize) -> Self {
-        self.sysex_slots = slots;
-        self
-    }
-
-    /// Set the maximum size of the payload of each SysEx output message in
-    /// bytes, without its F0 and F7 (VST3 only).
-    ///
-    /// Messages larger than this will be truncated. Default is 512 bytes.
-    #[doc(hidden)]
-    pub const fn with_sysex_buffer_size(mut self, size: usize) -> Self {
-        self.sysex_buffer_size = size;
+    pub const fn with_sysex_bytes_per_block(mut self, bytes: usize) -> Self {
+        self.sysex_bytes_per_block = bytes;
         self
     }
 

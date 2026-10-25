@@ -759,16 +759,16 @@ pub trait Processor: Send + 'static {
     /// This method must be real-time safe. Do not allocate, lock mutexes,
     /// or perform any operation with unbounded execution time.
     ///
-    /// **Note:** Cloning a `SysEx` event allocates due to `Box<SysEx>`. SysEx
-    /// events are rare in typical use cases. If strict real-time safety is
-    /// required, override this method to handle SysEx specially.
+    /// A SysEx event borrows its payload from the input for this call only;
+    /// a plugin that keeps a message copies it. Pushing an event into
+    /// `output` copies its payload and does not allocate.
     ///
     /// # Default Implementation
     ///
     /// The default implementation passes all events through unchanged.
-    fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
+    fn process_midi(&mut self, input: &[MidiEvent<'_>], output: &mut MidiBuffer) {
         for event in input {
-            output.push(event.clone());
+            output.push(*event);
         }
     }
 

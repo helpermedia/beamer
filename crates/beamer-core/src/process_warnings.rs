@@ -22,10 +22,10 @@ pub enum ProcessWarning {
     ParameterEventOverflow = 4,
     /// An event list that did not end, possibly a damaged one.
     EventListTooLong = 8,
-    /// More SysEx output in one block than the pool holds.
+    /// More SysEx output in one block than its pool holds.
     SysExOutputOverflow = 16,
-    /// SysEx output that did not fit was sent with the next block.
-    SysExOutputDelayed = 32,
+    /// SysEx input that was dropped: more in one block than its pool holds.
+    SysExInputDropped = 32,
     /// A block longer than the host announced needed memory of its own
     /// (the host gave overlapping input and output buffers) and was
     /// rendered as silence.
@@ -39,7 +39,7 @@ impl ProcessWarning {
         ProcessWarning::ParameterEventOverflow,
         ProcessWarning::EventListTooLong,
         ProcessWarning::SysExOutputOverflow,
-        ProcessWarning::SysExOutputDelayed,
+        ProcessWarning::SysExInputDropped,
         ProcessWarning::BlockTooLong,
     ];
 
@@ -59,10 +59,10 @@ impl ProcessWarning {
                 "an event list exceeded the maximum length and was cut, possibly a damaged one"
             }
             ProcessWarning::SysExOutputOverflow => {
-                "SysEx output messages were dropped: more than the SysEx pool holds"
+                "SysEx output messages were dropped: more bytes than one block holds (sysex_bytes_per_block)"
             }
-            ProcessWarning::SysExOutputDelayed => {
-                "SysEx output messages that did not fit into a block were sent with the next one"
+            ProcessWarning::SysExInputDropped => {
+                "SysEx input messages were dropped: more bytes than one block holds (sysex_bytes_per_block)"
             }
             ProcessWarning::BlockTooLong => {
                 "a block longer than the host announced had overlapping buffers and was rendered as silence"
@@ -112,11 +112,11 @@ mod tests {
         assert_eq!(warnings.take().count(), 0);
 
         warnings.note(ProcessWarning::MidiOutputOverflow);
-        warnings.note(ProcessWarning::SysExOutputDelayed);
+        warnings.note(ProcessWarning::SysExInputDropped);
         warnings.note(ProcessWarning::MidiOutputOverflow);
         assert_eq!(
             warnings.take().collect::<Vec<_>>(),
-            [ProcessWarning::MidiOutputOverflow, ProcessWarning::SysExOutputDelayed]
+            [ProcessWarning::MidiOutputOverflow, ProcessWarning::SysExInputDropped]
         );
         assert_eq!(warnings.take().count(), 0);
     }

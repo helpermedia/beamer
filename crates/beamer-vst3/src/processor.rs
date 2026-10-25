@@ -32,13 +32,13 @@ use beamer_core::{
     ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusNegotiation, BusRouting,
     BusLayout, BusType as CoreBusType, CachedBusConfig, ChannelSet, ChordInfo, ConversionBuffers,
     FrameRate as CoreFrameRate, Layout, MidiBuffer, MidiCcState, Model,
-    MidiEvent, MidiEventKind, NoteExpressionInt, NoteExpressionText, Preset,
+    MidiEvent, MidiEventKind, MidiEventsMut, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
-    ProcessWarnings, Processor, Sample, ScaleInfo, SysEx,
-    SharedModel, SysExOutputPool, Transport, MAX_BUSES,
+    ProcessWarnings, Processor, Sample, ScaleInfo,
+    SharedModel, Transport, MAX_BUSES,
     MAX_CHORD_NAME_SIZE,
-    MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE, MAX_SYSEX_SIZE,
+    MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
 };
 
 use beamer_core::channel_layouts;
@@ -138,7 +138,7 @@ struct BlockInput<'a> {
     /// The parameter points, sorted by offset.
     points: &'a [ParameterPoint],
     /// The MIDI input, sorted by offset.
-    midi_input: &'a mut [MidiEvent],
+    midi_input: MidiEventsMut<'a>,
     /// Where `process_midi` writes, with the offsets of the whole block.
     midi_output: &'a mut MidiBuffer,
     /// The host's transport at the start of the block.
@@ -788,18 +788,20 @@ where
     symbolic_sample_size: UnsafeCell<i32>,
     /// Process mode of the current setup (a `ProcessModes` value)
     process_mode: UnsafeCell<int32>,
-    /// MIDI input buffer (reused each process call to avoid stack overflow)
-    midi_input: UnsafeCell<MidiBuffer>,
+    /// MIDI input buffer (reused each process call), with a SysEx pool for
+    /// a plugin with MIDI input.
+    midi_input: UnsafeCell<Box<MidiBuffer>>,
     /// Whether the MIDI input buffer holds the events of calls without
     /// samples, which wait for the next call with samples.
     midi_input_carried: UnsafeCell<bool>,
-    /// MIDI output buffer (reused each process call)
-    midi_output: UnsafeCell<MidiBuffer>,
+    /// MIDI output buffer (reused each process call), with a SysEx pool for
+    /// a plugin with MIDI output. A SysEx event the host gets points into
+    /// the pool, which stays unchanged until the next process call clears
+    /// the buffer.
+    midi_output: UnsafeCell<Box<MidiBuffer>>,
     /// The parameter points of a process call, for the sub-block loop
     /// (pre-allocated, never grows in `process()`).
     parameter_points: UnsafeCell<Vec<ParameterPoint>>,
-    /// SysEx output buffer pool (for VST3 DataEvent pointer stability)
-    sysex_output_pool: UnsafeCell<SysExOutputPool>,
     /// Conversion buffers for f64→f32 processing
     conversion_buffers: UnsafeCell<ConversionBuffers>,
     /// Pre-allocated channel pointer storage for f32 processing
@@ -940,15 +942,10 @@ impl<P: Model> Vst3Processor<P> {
             max_block_size: UnsafeCell::new(1024),
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
             process_mode: UnsafeCell::new(ProcessModes_::kRealtime as int32),
-            midi_input: UnsafeCell::new(MidiBuffer::new()),
+            midi_input: UnsafeCell::new(MidiBuffer::new_boxed(if config.midi_input { config.sysex_bytes_per_block } else { 0 })),
             midi_input_carried: UnsafeCell::new(false),
-            midi_output: UnsafeCell::new(MidiBuffer::new()),
+            midi_output: UnsafeCell::new(MidiBuffer::new_boxed(if config.midi_output { config.sysex_bytes_per_block } else { 0 })),
             parameter_points: UnsafeCell::new(Vec::with_capacity(MAX_PARAMETER_POINTS)),
-            // Each slot holds a message with its F0 and F7.
-            sysex_output_pool: UnsafeCell::new(SysExOutputPool::with_capacity(
-                config.sysex_slots,
-                config.sysex_buffer_size + 2,
-            )),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
             buffer_storage_f64: UnsafeCell::new(ProcessBufferStorage::new()),
@@ -1413,8 +1410,8 @@ impl<P: Model> Vst3Processor<P> {
 
                 // The plugin's MIDI output gets the offsets of the whole block.
                 let output_start = midi_output.len();
-                processor.process_midi(block.midi, midi_output);
-                offset_from_sub_block(&mut midi_output.as_mut_slice()[output_start..], block.start);
+                processor.process_midi(block.midi.as_slice(), midi_output);
+                offset_from_sub_block(midi_output.events_mut().split_at(output_start).1, block.start);
 
                 let block_transport = transport.advanced_by(block.start, sample_rate);
                 let context = if let Some(cc_state) = self.midi_cc_state.as_ref() {
@@ -2381,6 +2378,9 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         if midi_input.has_overflowed() {
             self.process_warnings.note(ProcessWarning::MidiInputOverflow);
         }
+        if midi_input.has_sysex_overflowed() {
+            self.process_warnings.note(ProcessWarning::SysExInputDropped);
+        }
 
         // A host sends a block without samples to flush parameter changes
         // while it does not process audio. The parameter values are applied
@@ -2405,43 +2405,11 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         #[cfg(feature = "diagnostics")]
         self.diagnostics.state().note_midi_input(midi_input.as_slice());
 
-        // Clear and prepare MIDI output buffer and SysEx pool
+        // The plugin's MIDI output of this block. Clearing it also ends the
+        // SysEx the host got with the previous block.
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
         let midi_output = unsafe { &mut *self.midi_output.get() };
         midi_output.clear();
-        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
-        let sysex_pool = unsafe { &mut *self.sysex_output_pool.get() };
-
-        // Clear pool FIRST so next_slot is reset to 0 before draining fallback
-        sysex_pool.clear();
-
-        // With heap fallback enabled, emit any overflow messages from previous block first.
-        // These allocate slots starting from 0; new plugin output will append after them.
-        #[cfg(feature = "sysex-heap-fallback")]
-        if sysex_pool.has_fallback() {
-            // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
-            if let Some(event_list) = unsafe { ComRef::from_raw(process_data.outputEvents) } {
-                for sysex_data in sysex_pool.take_fallback() {
-                    // Allocate from pool (succeeds since we just cleared it)
-                    if let Some((ptr, len)) = sysex_pool.allocate(&sysex_data) {
-                        // SAFETY: zeroed Event is valid for VST3 Event union type.
-                        let mut event: Event = unsafe { std::mem::zeroed() };
-                        event.busIndex = 0;
-                        event.sampleOffset = 0; // Delayed message, emit at start of block
-                        event.ppqPosition = 0.0;
-                        event.flags = 0;
-                        event.r#type = K_DATA_EVENT;
-                        event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
-                        event.__field0.data.size = len as u32;
-                        event.__field0.data.bytes = ptr;
-                        // SAFETY: event_list is valid ComRef, event is valid mutable pointer.
-                        let _ = unsafe { event_list.addEvent(&mut event) };
-                    }
-                }
-            }
-            self.process_warnings.note(ProcessWarning::SysExOutputDelayed);
-        }
-        // NOTE: Don't clear again - fallback events occupy slots 0..N, new events append after
 
         // 3. Extract transport info from VST3 ProcessContext
         // SAFETY: processContext may be null; extract_transport handles this.
@@ -2452,11 +2420,11 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // The sub-blocks take the MIDI in order of its offsets. The
         // controller changes that came as parameter changes follow the
         // host's events in the buffer.
-        sort_by_offset(midi_input.as_mut_slice(), |event| event.sample_offset);
+        midi_input.events_mut().sort_by_offset();
         let input = BlockInput {
             points,
-            midi_input: midi_input.as_mut_slice(),
-            midi_output: &mut *midi_output,
+            midi_input: midi_input.events_mut(),
+            midi_output,
             transport,
             sample_rate,
         };
@@ -2502,8 +2470,8 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
         let output_events = unsafe { ComRef::from_raw(process_data.outputEvents) };
         if let Some(event_list) = output_events.filter(|_| self.config.midi_output) {
-            for midi_event in midi_output.iter() {
-                if let Some(mut vst3_event) = convert_midi_to_vst3(midi_event, sysex_pool) {
+            for index in 0..midi_output.len() {
+                if let Some(mut vst3_event) = convert_midi_to_vst3(midi_output, index) {
                     // SAFETY: event_list is valid ComRef, vst3_event is valid mutable pointer.
                     let _ = unsafe { event_list.addEvent(&mut vst3_event) };
                 }
@@ -2517,8 +2485,9 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         #[cfg(feature = "diagnostics")]
         self.diagnostics.state().note_midi_output(midi_output.len());
 
-        // Check for SysEx pool overflow (once per block)
-        if sysex_pool.has_overflowed() {
+        // SysEx output that did not fit into the pool (once per block). The
+        // output of a plugin without MIDI output goes nowhere anyway.
+        if midi_output.has_sysex_overflowed() && self.config.midi_output {
             self.process_warnings.note(ProcessWarning::SysExOutputOverflow);
         }
 
@@ -3528,7 +3497,7 @@ fn utf16_to_utf8(utf16: &[u16], utf8_buf: &mut [u8]) -> usize {
 /// - 0-127: Standard MIDI CC (ControlChange)
 /// - 128: Channel Aftertouch (ChannelPressure)
 /// - 129: Pitch Bend (PitchBend)
-fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent {
+fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent<'static> {
     match controller {
         LEGACY_CC_PITCH_BEND => {
             // Pitch bend: 0.0-1.0 normalized → -1.0 to 1.0
@@ -3553,17 +3522,13 @@ fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_of
 /// example while a controller moves on a suspended track. A controller event
 /// then replaces the waiting one of the same controller and moves to the
 /// end, so that only the latest value waits and the buffer does not fill up.
-fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent, waiting: bool) {
+fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent<'_>, waiting: bool) {
     if waiting {
         event.sample_offset = 0;
         if let Some(key) = controller_key(&event) {
-            let events = input.as_mut_slice();
-            if let Some(index) = events.iter().position(|old| controller_key(old) == Some(key)) {
-                events[index..].rotate_left(1);
-                if let Some(last) = events.last_mut() {
-                    *last = event;
-                }
-                return;
+            let waiting_index = input.iter().position(|old| controller_key(old) == Some(key));
+            if let Some(index) = waiting_index {
+                input.remove(index);
             }
         }
     }
@@ -3587,8 +3552,14 @@ fn controller_key(event: &MidiEvent) -> Option<(u8, u8, u8)> {
 
 /// Convert a VST3 Event to a MIDI event.
 ///
-/// Returns None for unsupported event types.
-unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
+/// Returns None for unsupported event types. A SysEx event borrows the
+/// host's bytes.
+///
+/// # Safety
+///
+/// The event must be one the host passed to this process call, so that the
+/// bytes of a data event stay valid while it is borrowed.
+unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
     let sample_offset = event.sampleOffset as u32;
 
     match event.r#type {
@@ -3662,24 +3633,17 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
             // SAFETY: event.type == K_DATA_EVENT, so data is active variant.
             let data_event = unsafe { &event.__field0.data };
             // Only handle SysEx data type.
-            // NOTE: Box::new() allocates here. This runs once per SysEx event per
-            // process block (not per clone). SysEx input from hosts is rare.
-            // A Box recycling pool could eliminate this, but the complexity is not
-            // justified given the low frequency.
             if data_event.r#type == DATA_TYPE_MIDI_SYSEX {
-                // Hosts send the message framed by F0 and F7; the event holds
-                // the payload.
-                let sysex = if data_event.size > 0 && !data_event.bytes.is_null() {
+                // Hosts send the message framed by F0 and F7. The event
+                // borrows the host's bytes until it is pushed into the input
+                // buffer, which copies them and takes the framing off.
+                let message: &[u8] = if data_event.size > 0 && !data_event.bytes.is_null() {
                     // SAFETY: bytes is non-null and host guarantees validity for size bytes.
-                    let message = unsafe { std::slice::from_raw_parts(data_event.bytes, data_event.size as usize) };
-                    SysEx::from_message(message)
+                    unsafe { std::slice::from_raw_parts(data_event.bytes, data_event.size as usize) }
                 } else {
-                    SysEx::new()
+                    &[]
                 };
-                Some(MidiEvent {
-                    sample_offset,
-                    event: MidiEventKind::SysEx(Box::new(sysex)),
-                })
+                Some(MidiEvent::sysex(sample_offset, message))
             } else {
                 None
             }
@@ -3816,14 +3780,15 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent> {
     }
 }
 
-/// Convert a MIDI event to a VST3 Event.
+/// Convert the MIDI event at `index` of the plugin's output to a VST3 Event.
 ///
-/// The `sysex_pool` parameter provides stable storage for SysEx data during the
-/// process() call, ensuring the pointers remain valid until the host processes them.
+/// A SysEx event points at the framed message in the output buffer's pool,
+/// which stays valid until the next process call clears the buffer.
 ///
 /// Note: ChordInfo, ScaleInfo and NoteExpressionText are primarily input events
 /// (DAW → plugin) and are not output.
-fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> Option<Event> {
+fn convert_midi_to_vst3(output: &MidiBuffer, index: usize) -> Option<Event> {
+    let midi = output.as_slice().get(index)?;
     // SAFETY: Event is a C struct with no invalid bit patterns; zeroed is a valid state.
     let mut event: Event = unsafe { std::mem::zeroed() };
     event.busIndex = 0;
@@ -3899,21 +3864,13 @@ fn convert_midi_to_vst3(midi: &MidiEvent, sysex_pool: &mut SysExOutputPool) -> O
             event.__field0.noteExpressionIntValue.typeId = expr.expression_type;
             event.__field0.noteExpressionIntValue.value = expr.value;
         }
-        MidiEventKind::SysEx(sysex) => {
-            // Hosts expect the message framed by F0 and F7. It goes into a
-            // slot of the pool for stable pointer storage, so it is framed to
-            // fit one.
-            let mut buffer = [0u8; MAX_SYSEX_SIZE + 2];
-            let slot = sysex_pool.buffer_size().min(buffer.len());
-            if let Some((ptr, len)) = sysex_pool.allocate(sysex.write_framed(&mut buffer[..slot])) {
-                event.r#type = K_DATA_EVENT;
-                event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
-                event.__field0.data.size = len as u32;
-                event.__field0.data.bytes = ptr;
-            } else {
-                // Pool is full, drop this SysEx
-                return None;
-            }
+        MidiEventKind::SysEx(_) => {
+            // Hosts expect the message framed by F0 and F7.
+            let message = output.framed_sysex(index)?;
+            event.r#type = K_DATA_EVENT;
+            event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+            event.__field0.data.size = message.len() as u32;
+            event.__field0.data.bytes = message.as_ptr();
         }
         // ChordInfo/ScaleInfo are DAW → plugin only (chord track metadata).
         // Plugins receive these from the DAW but don't generate them.
@@ -4260,7 +4217,7 @@ mod tests {
     thread_local! {
         /// The input of each `process_midi` call of a `CcProcessor` on this
         /// thread.
-        static CC_PROCESSOR_MIDI: std::cell::RefCell<Vec<Vec<beamer_core::MidiEvent>>> =
+        static CC_PROCESSOR_MIDI: std::cell::RefCell<Vec<Vec<beamer_core::MidiEvent<'static>>>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
@@ -4298,9 +4255,11 @@ mod tests {
         }
 
         fn process_midi(&mut self, input: &[beamer_core::MidiEvent], output: &mut beamer_core::MidiBuffer) {
-            CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().push(input.to_vec()));
+            // SysEx borrows its bytes for this call only and is not recorded.
+            let kept = input.iter().filter_map(MidiEvent::to_static).collect();
+            CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().push(kept));
             for event in input {
-                output.push(event.clone());
+                output.push(*event);
             }
         }
     }
@@ -4367,9 +4326,9 @@ mod tests {
             assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
             CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
 
-            let mut pool = SysExOutputPool::with_capacity(1, 16);
-            let note = convert_midi_to_vst3(&beamer_core::MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0), &mut pool)
-                .expect("a note-on converts");
+            let mut notes = MidiBuffer::new_boxed(0);
+            notes.push(beamer_core::MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0));
+            let note = convert_midi_to_vst3(&notes, 0).expect("a note-on converts");
             let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(vec![note]) });
             let output = vst3::ComWrapper::new(Events::default());
             let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
@@ -4385,6 +4344,83 @@ mod tests {
         assert_eq!(run(&WITH_BOTH), (1, 1));
         assert_eq!(run(&WITHOUT_INPUT), (0, 0));
         assert_eq!(run(&WITHOUT_OUTPUT), (1, 0));
+    }
+
+    #[test]
+    fn test_sysex_passes_through_a_process_call() {
+        static PASS_THROUGH: Config = Config::new("Sysex", Category::Instrument, "Test", "sysx")
+            .with_midi_output(true)
+            .with_sysex_bytes_per_block(64);
+        let wrapper = Vst3Processor::<CcModel>::new(&PASS_THROUGH);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+
+        // A message that fits and one that does not fit into what is left.
+        let fits = [0xF0u8, 0x7E, 0x7F, 0x06, 0x01, 0xF7];
+        let too_long = [[0xF0u8].as_slice(), &[0x01; 60], &[0xF7]].concat();
+        let data_event = |offset: i32, message: &[u8]| {
+            // SAFETY: zeroed Event is valid for VST3 Event union type.
+            let mut event: Event = unsafe { std::mem::zeroed() };
+            event.sampleOffset = offset;
+            event.r#type = K_DATA_EVENT;
+            event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+            event.__field0.data.size = message.len() as u32;
+            event.__field0.data.bytes = message.as_ptr();
+            event
+        };
+        let events = vec![data_event(5, &fits), data_event(9, &too_long)];
+        let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(events) });
+        let output = vst3::ComWrapper::new(Events::default());
+        let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let output_list = output.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let no_changes = std::ptr::null_mut();
+        process_with_events(&wrapper, 64, no_changes, no_changes, input_list.as_ptr(), output_list.as_ptr());
+
+        // The host gets the message that fit back, framed, at its offset.
+        let sent = output.events.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].sampleOffset, 5);
+        // SAFETY: The event is a data event whose bytes stay valid until the next process call.
+        let bytes = unsafe { std::slice::from_raw_parts(sent[0].__field0.data.bytes, sent[0].__field0.data.size as usize) };
+        assert_eq!(bytes, fits);
+        let warnings: Vec<_> = wrapper.process_warnings.take().collect();
+        assert_eq!(warnings, [ProcessWarning::SysExInputDropped]);
+    }
+
+    #[test]
+    fn test_sysex_output_of_a_plugin_without_midi_output_is_not_a_warning() {
+        // An instrument without MIDI output has no output pool, so the
+        // pass-through of a SysEx message does not fit, but goes nowhere.
+        static NO_OUTPUT: Config = Config::new("No Output", Category::Instrument, "Test", "noso");
+        let wrapper = Vst3Processor::<CcModel>::new(&NO_OUTPUT);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+
+        let message = [0xF0u8, 0x7E, 0x7F, 0x06, 0x01, 0xF7];
+        // SAFETY: zeroed Event is valid for VST3 Event union type.
+        let mut event: Event = unsafe { std::mem::zeroed() };
+        event.r#type = K_DATA_EVENT;
+        event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+        event.__field0.data.size = message.len() as u32;
+        event.__field0.data.bytes = message.as_ptr();
+        let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(vec![event]) });
+        let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let no_changes = std::ptr::null_mut();
+        process_with_events(&wrapper, 64, no_changes, no_changes, input_list.as_ptr(), std::ptr::null_mut());
+
+        assert_eq!(wrapper.process_warnings.take().count(), 0);
     }
 
     #[test]
@@ -4477,38 +4513,64 @@ mod tests {
     fn test_sysex_is_framed_for_the_host_and_not_for_the_plugin() {
         let message = [0xF0u8, 0x7E, 0x00, 0x06, 0x01, 0xF7];
 
-        // From the host: the event holds the payload.
+        // From the host: the plugin gets the payload.
         // SAFETY: zeroed Event is valid for VST3 Event union type.
         let mut event: Event = unsafe { std::mem::zeroed() };
         event.r#type = K_DATA_EVENT;
         event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
         event.__field0.data.size = message.len() as u32;
         event.__field0.data.bytes = message.as_ptr();
-        // SAFETY: The event and its bytes are valid for the call.
-        let received = unsafe { convert_vst3_to_midi(&event) }.expect("a SysEx event");
-        let MidiEventKind::SysEx(sysex) = &received.event else {
-            panic!("a SysEx event");
-        };
-        assert_eq!(sysex.as_slice(), &message[1..5]);
+        // A host that sends the payload alone gives the plugin the same.
+        let mut unframed_event = event;
+        unframed_event.__field0.data.size = 4;
+        unframed_event.__field0.data.bytes = message[1..5].as_ptr();
+        let mut input = MidiBuffer::new_boxed(64);
+        for host_event in [&event, &unframed_event] {
+            // SAFETY: The event and its bytes are valid for the call.
+            let received = unsafe { convert_vst3_to_midi(host_event) }.expect("a SysEx event");
+            push_midi_input(&mut input, received, false);
+        }
+        for received in input.as_slice() {
+            assert_eq!(received.event, MidiEventKind::SysEx(&message[1..5]));
+        }
 
-        // To the host: framed, also at the largest payload, which is cut to
-        // the slot size before its F7.
-        let slot_payload = beamer_core::config::DEFAULT_SYSEX_BUFFER_SIZE;
-        let mut pool = SysExOutputPool::with_capacity(2, slot_payload + 2);
-        let largest = MidiEvent::sysex(0, &[0x01; MAX_SYSEX_SIZE]);
-        let largest_len = MAX_SYSEX_SIZE.min(slot_payload) + 2;
-        for (event, expected_len) in [(received, message.len()), (largest, largest_len)] {
-            let sent = convert_midi_to_vst3(&event, &mut pool).expect("a data event");
+        // To the host: framed, from the output buffer's pool.
+        let mut output = MidiBuffer::new_boxed(64);
+        output.push(input.as_slice()[0]);
+        output.push(MidiEvent::sysex(3, &[0x01; 40]));
+        for (index, expected) in [(0, message.to_vec()), (1, [&[0xF0][..], &[0x01; 40], &[0xF7]].concat())] {
+            let sent = convert_midi_to_vst3(&output, index).expect("a data event");
             // SAFETY: The event is a data event with bytes in the pool.
             let bytes = unsafe { std::slice::from_raw_parts(sent.__field0.data.bytes, sent.__field0.data.size as usize) };
-            assert_eq!(bytes.len(), expected_len);
-            assert_eq!((bytes[0], bytes[bytes.len() - 1]), (0xF0, 0xF7));
+            assert_eq!(bytes, expected);
         }
     }
 
     #[test]
+    fn test_sysex_input_that_does_not_fit_is_dropped() {
+        let message = [0xF0u8, 0x01, 0x02, 0x03, 0xF7];
+        // SAFETY: zeroed Event is valid for VST3 Event union type.
+        let mut event: Event = unsafe { std::mem::zeroed() };
+        event.r#type = K_DATA_EVENT;
+        event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+        event.__field0.data.size = message.len() as u32;
+        event.__field0.data.bytes = message.as_ptr();
+
+        // Room for one message: the second is dropped whole, never cut.
+        let mut input = MidiBuffer::new_boxed(7);
+        for _ in 0..2 {
+            // SAFETY: The event and its bytes are valid for the call.
+            let received = unsafe { convert_vst3_to_midi(&event) }.expect("a SysEx event");
+            push_midi_input(&mut input, received, false);
+        }
+        assert_eq!(input.len(), 1);
+        assert!(input.has_sysex_overflowed());
+        assert_eq!(input.framed_sysex(0), Some(&message[..]));
+    }
+
+    #[test]
     fn test_a_waiting_controller_event_moves_behind_later_events() {
-        let mut input = MidiBuffer::new();
+        let mut input = MidiBuffer::new_boxed(0);
         push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 1.0), true);
         push_midi_input(&mut input, MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0), true);
         push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 0.0), true);
@@ -4525,6 +4587,21 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, [(0, 0, -1.0), (0, 64, 0.0), (0, 1, 0.5), (5, 1, 0.7)]);
+    }
+
+    #[test]
+    fn test_a_waiting_controller_event_keeps_the_sysex_of_others() {
+        let mut input = MidiBuffer::new_boxed(64);
+        push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 1.0), true);
+        push_midi_input(&mut input, MidiEvent::sysex(0, &[0x41, 0x10]), true);
+        push_midi_input(&mut input, MidiEvent::control_change(0, 0, 64, 0.0), true);
+        push_midi_input(&mut input, MidiEvent::sysex(0, &[0x42]), true);
+
+        assert_eq!(input.len(), 3);
+        assert_eq!(input.as_slice()[0].event, MidiEventKind::SysEx(&[0x41, 0x10]));
+        assert!(matches!(input.as_slice()[1].event, MidiEventKind::ControlChange(cc) if cc.value == 0.0));
+        assert_eq!(input.framed_sysex(0), Some(&[0xF0, 0x41, 0x10, 0xF7][..]));
+        assert_eq!(input.framed_sysex(2), Some(&[0xF0, 0x42, 0xF7][..]));
     }
 
     /// The bus counts a host sees: audio in, audio out, event in, event out.

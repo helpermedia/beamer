@@ -523,7 +523,7 @@ pub struct SynthesizerProcessor {
     /// Voice allocation time counter
     time_counter: u64,
     /// Pending MIDI events for sample-accurate processing
-    pending_events: Vec<MidiEvent>,
+    pending_events: Vec<MidiEvent<'static>>,
     /// Current pitch bend value (-1.0 to +1.0)
     pitch_bend: f64,
     /// Current mod wheel value (0.0 to 1.0)
@@ -756,8 +756,10 @@ impl Processor for SynthesizerProcessor {
     }
 
     fn process_midi(&mut self, input: &[MidiEvent], _output: &mut MidiBuffer) {
-        // Store events for sample-accurate processing in process()
-        self.pending_events.extend_from_slice(input);
+        // Store events for sample-accurate processing in process(). SysEx,
+        // which borrows its bytes for this call only, is left out: the
+        // synthesizer does not use it.
+        self.pending_events.extend(input.iter().filter_map(MidiEvent::to_static));
     }
 
     fn tail_samples(&self) -> u32 {

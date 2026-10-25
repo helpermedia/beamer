@@ -40,13 +40,10 @@ pub struct ConfigFile {
     /// Whether the plugin sends MIDI (default: true for MIDI effects).
     #[serde(default)]
     pub midi_output: Option<bool>,
-    /// Number of SysEx output slots per process block (default: 16).
+    /// SysEx bytes one block holds in each direction, counting the F0 and
+    /// F7 of each message (default: 16384).
     #[serde(default)]
-    pub sysex_slots: Option<usize>,
-    /// Maximum size of the payload of each SysEx message in bytes, without
-    /// its F0 and F7 (default: 512).
-    #[serde(default)]
-    pub sysex_buffer_size: Option<usize>,
+    pub sysex_bytes_per_block: Option<usize>,
     /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
     #[serde(default)]
     pub gui_background_color: Option<String>,

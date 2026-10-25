@@ -11,16 +11,6 @@ repository.workspace = true
 default = ["webview"]
 ## WebView GUI support.
 webview = ["beamer-webview"]
-## Enable heap-backed fallback for SysEx overflow.
-##
-## When the fixed-size SysEx output pool is exhausted, overflow messages are
-## stored in a heap-allocated buffer and emitted at the start of the next
-## audio block. This guarantees no SysEx data is lost, but may cause heap
-## allocations during audio processing, breaking strict real-time guarantees.
-##
-## Only enable this if your plugin requires reliable SysEx delivery and you
-## accept occasional allocations in the audio thread.
-sysex-heap-fallback = ["beamer-core/sysex-heap-fallback"]
 ## Measure what the host does and write it to the system log. For test
 ## builds only (`cargo xtask bundle <plugin> --diagnostics`).
 diagnostics = ["beamer-core/diagnostics"]

@@ -222,12 +222,8 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_vst3_controller_id(#id) }
     });
 
-    let sysex_slots = config.sysex_slots.map(|slots| {
-        quote! { .with_sysex_slots(#slots) }
-    });
-
-    let sysex_buffer_size = config.sysex_buffer_size.map(|size| {
-        quote! { .with_sysex_buffer_size(#size) }
+    let sysex_bytes_per_block = config.sysex_bytes_per_block.map(|bytes| {
+        quote! { .with_sysex_bytes_per_block(#bytes) }
     });
 
     let midi_input = config.midi_input.map(|enabled| {
@@ -306,8 +302,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #vst3_controller_id
         #midi_input
         #midi_output
-        #sysex_slots
-        #sysex_buffer_size
+        #sysex_bytes_per_block
         #sample_accurate_automation
         #subcategories
         #gui_background_color

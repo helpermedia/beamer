@@ -497,8 +497,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 |-----------|-----------|
 | `Buffer<S>` | Stack arrays: `[Option<&mut [S]>; MAX_CHANNELS]` for the main channels (in place) and `[Option<&[S]>; MAX_CHANNELS]` for unpaired inputs |
 | `AuxiliaryBuffers<S>` | Stack-allocated nested fixed arrays |
-| `MidiBuffer` | Fixed capacity of 1024 events (`MAX_MIDI_EVENTS`) |
-| `SysExOutputPool` | Pre-allocated slots (16 × 512 bytes default) |
+| `MidiBuffer` | Fixed capacity of 1024 events (`MAX_MIDI_EVENTS`) and a SysEx byte pool allocated with it (`sysex_bytes_per_block`, 16 KiB by default) |
 | `ProcessBufferStorage<S>` | Pre-allocated Vecs with reserved capacity; `clear()` + `push()` never allocate |
 
 **Enforcement**:
@@ -534,9 +533,8 @@ This section documents the invariants that Beamer enforces. These are API contra
 
 **Overflow Handling**:
 - `MidiBuffer::has_overflowed()` flag set when capacity exceeded
-- `SysExOutputPool::has_overflowed()` flag set when pool exhausted
+- `MidiBuffer::has_sysex_overflowed()` flag set when a SysEx message did not fit into the pool: it is dropped whole, never cut
 - The audio thread does not log: it notes an overflow in `ProcessWarnings` with one atomic operation and a host thread logs it when the plugin is prepared again or released
-- Optional `sysex-heap-fallback` feature for guaranteed SysEx delivery (breaks real-time guarantee)
 
 ### Buffer Management Contracts
 
@@ -565,11 +563,9 @@ pub struct ProcessBufferStorage<S: Sample> {
 **Plugin-Declared Capacity** (configurable via Config.toml):
 ```toml
 # Config.toml
-# Default: 16.
-sysex_slots = 64
-# Payload without F0 and F7. Default: 512 bytes. Above 512 it needs a
-# sysex-* feature of the same size.
-sysex_buffer_size = 2048
+# SysEx bytes one block holds in each direction, counting the F0 and F7
+# of each message. Default: 16384.
+sysex_bytes_per_block = 65536
 ```
 
 ### Allocation Lifecycle
