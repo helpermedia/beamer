@@ -2245,6 +2245,8 @@ The `category` field in `Config.toml` determines the AU component type, together
 | `"instrument"` | `aumu` | Synths, samplers, drum machines |
 | `"generator"` | `augn` | Test tones, noise generators |
 
+Logic lists an `aumf` in the instrument slot of a software instrument track, under AU MIDI-controlled Effects. The track's MIDI plays it and the Side Chain menu in the plugin header feeds its main input. In an audio effect slot it runs as a plain effect, without MIDI.
+
 #### FourCC Codes
 
 The `manufacturer_code` and `plugin_code` fields in `Config.toml` are the 4-character FourCC identifiers of the Audio Unit:
