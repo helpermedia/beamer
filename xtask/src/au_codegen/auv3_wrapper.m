@@ -354,10 +354,14 @@ typedef struct {
     // Zero bytes for the output buffers of a bypassed render without input
     // that the host gives without memory, room for `_maxFrames` samples.
     void* _bypassSilence;
+    // Whether the unit is an instrument or a generator: a source of audio
+    // without an audio input of its own.
+    BOOL _isSource;
 }
 
 + (NSUInteger)nextInstanceId;
 - (BeamerAuInstanceHandle)rustInstance;
+- (BOOL)isMultiOutputSource;
 
 @end
 
@@ -383,6 +387,11 @@ typedef struct {
 
 - (NSArray<NSNumber*>*)supportedChannelLayoutTags {
     {{WRAPPER_CLASS}}* owner = ({{WRAPPER_CLASS}}*)self.ownerAudioUnit;
+    // A multi-output instrument or generator supports its initial buses
+    // only (see isMultiOutputSource), so its buses list no other layouts.
+    if ([owner isMultiOutputSource]) {
+        return nil;
+    }
     BeamerAuInstanceHandle instance = [owner rustInstance];
     BOOL isInput = (self.busType == AUAudioUnitBusTypeInput);
     uint32_t index = (uint32_t)self.index;
@@ -529,6 +538,8 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
     memset(&_busConfig, 0, sizeof(_busConfig));
     atomic_store_explicit(&_bypassed, NO, memory_order_relaxed);
     _isMidiEffect = (componentDescription.componentType == kAudioUnitType_MIDIProcessor);
+    _isSource = (componentDescription.componentType == kAudioUnitType_MusicDevice
+        || componentDescription.componentType == kAudioUnitType_Generator);
     _outputSampleBytes = sizeof(float);
     _bypassSilence = NULL;
 
@@ -1523,7 +1534,19 @@ static void beamer_auv3_on_loaded(void* context) {
     return YES;
 }
 
+// Whether the unit is an instrument or a generator with several output
+// buses. It reports no channel capabilities: such a unit without them
+// supports only its initial buses. Logic then offers exactly those as its
+// multi-output variant; with capabilities it offers 25 outputs for any
+// AUv3 with several, then fails to load it with another count.
+- (BOOL)isMultiOutputSource {
+    return _isSource && _outputBusArray.count > 1;
+}
+
 - (NSArray<NSNumber*>*)channelCapabilities {
+    if ([self isMultiOutputSource]) {
+        return nil;
+    }
     BeamerAuChannelCapabilities caps;
     if (!beamer_au_get_channel_capabilities(_rustInstance, &caps)) {
         return nil;

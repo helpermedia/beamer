@@ -2254,6 +2254,10 @@ The `manufacturer_code` and `plugin_code` fields in `Config.toml` are the 4-char
 - Avoid conflicts: Check [Apple's registry](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/AudioUnit.html)
 - Use lowercase for effects, MixedCase for instruments (convention)
 
+#### Multi-Output Instruments
+
+An instrument with several output buses (like the drums example) shows up in Logic's instrument menu with a multi-output variant of its own bus count ("Multi-Output (4xMono)"); the **+** of the instrument's channel strip adds a strip for each further output. Such an instrument or generator reports no channel capabilities in AU and its buses list no channel layouts: hosts see the buses of its default layout, the first in `LAYOUTS`. Other entries of `LAYOUTS` are not announced to hosts; a host reaches them only by setting a bus format itself. With channel capabilities Logic offers 25 outputs for an AUv3 with several and fails to load it.
+
 ### VST3
 
 VST3 plugins are built through the `beamer-vst3` crate. With the `vst3` feature enabled, the macro generates the platform entry points: `GetPluginFactory`, plus `bundleEntry`/`bundleExit` on macOS and `InitDll`/`ExitDll` on Windows.

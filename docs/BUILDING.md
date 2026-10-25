@@ -11,7 +11,7 @@ the bundle each plugin format expects and optionally installs it.
 | VST3 | `--vst3` | macOS (Windows in progress) |
 
 xtask is the build tool of this workspace. It finds the plugin package by
-its name among the members of the workspace, wherever its folder is, and
+its name among the members of the workspace, wherever its folder is. It
 reads `Config.toml` and the optional `webview/` folder from that folder.
 The version of the package becomes the version of the bundle, without a
 pre-release or build suffix. An Audio Unit stores it as one number, so for
@@ -308,6 +308,28 @@ cargo xtask log gain --last 10m
 
 The second form shows what was logged in the last 10 minutes instead of
 following the log.
+
+Logic keeps a record of each Audio Unit (its buses and channel
+configurations) and reads it again only when the plugin's version
+changes. After a change to a plugin's buses or layouts without a new
+version, quit Logic and remove the record from Logic's preferences: the
+key is the component type, plugin code and manufacturer code, such as
+`aumu-drum-Bmer`.
+
+```bash
+defaults delete com.apple.logic10 aumu-drum-Bmer
+```
+
+The system keeps such a record too, per plugin code and version, shared
+by the AUv2 and the AUv3: remove it the same way and restart the
+registrar.
+
+```bash
+defaults delete com.apple.audio.AudioComponentCache "7-'aumu'-'drum'-'Bmer'-0x204"
+killall -9 AudioComponentRegistrar
+```
+
+The number at the end is the version (0x204 for 0.2.4).
 
 A diagnostics build (`--diagnostics`) logs what the host does with the
 plugin, also without `log_level`. Host calls such as prepare, bus

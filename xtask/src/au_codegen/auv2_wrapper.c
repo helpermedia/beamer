@@ -199,6 +199,10 @@ typedef struct BeamerAuv2Instance {
     // MIDI output. The list is only allocated for a plugin with MIDI
     // output. The host sets the callback when it listens.
     bool isMidiEffect;
+    // An instrument or generator with several output buses: it reports no
+    // channel counts and its buses list no layouts (see
+    // kAudioUnitProperty_SupportedNumChannels).
+    bool isMultiOutputSource;
     MIDIPacketList* midiOutputList;
 #ifdef BEAMER_DIAGNOSTICS
     // The failing property queries logged so far, so that each is logged
@@ -648,6 +652,8 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     AudioComponentDescription desc;
     beamer_au_get_component_description(&desc);
     inst->isMidiEffect = (desc.componentType == kAudioUnitType_MIDIProcessor);
+    inst->isMultiOutputSource = (desc.componentType == kAudioUnitType_MusicDevice
+        || desc.componentType == kAudioUnitType_Generator) && inst->outputElementCount > 1;
     if (beamer_au_produces_midi(inst->rustInstance)) {
         inst->midiOutputList = (MIDIPacketList*)calloc(1, MIDI_OUTPUT_LIST_BYTES);
     }
@@ -1103,8 +1109,12 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             return noErr;
 
         // Supported channel layouts
+        // An instrument or generator with several output buses reports no
+        // channel counts: without them it supports its initial buses only,
+        // which hosts then offer as they are. The AUv3 does the same: hosts keep one record
+        // for both formats.
         case kAudioUnitProperty_SupportedNumChannels:
-            if (scope == kAudioUnitScope_Global) {
+            if (scope == kAudioUnitScope_Global && !inst->isMultiOutputSource) {
                 BeamerAuChannelCapabilities caps;
                 if (beamer_au_get_channel_capabilities(inst->rustInstance, &caps)) {
                     if (outDataSize) *outDataSize = caps.count * sizeof(AUChannelInfo);
@@ -1135,6 +1145,11 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }
             if (element >= BeamerAuv2ElementCount(inst, scope)) {
                 return kAudioUnitErr_InvalidElement;
+            }
+            // The buses of a multi-output instrument or generator list no
+            // other layouts.
+            if (inst->isMultiOutputSource) {
+                return kAudioUnitErr_InvalidProperty;
             }
             uint32_t count = beamer_au_get_supported_layout_tags(inst->rustInstance,
                 scope == kAudioUnitScope_Input, element, NULL, 0);
@@ -1533,6 +1548,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (element >= BeamerAuv2ElementCount(inst, scope)) {
                 return kAudioUnitErr_InvalidElement;
             }
+            if (inst->isMultiOutputSource) {
+                return kAudioUnitErr_InvalidProperty;
+            }
             bool isInput = (scope == kAudioUnitScope_Input);
             uint32_t count = beamer_au_get_supported_layout_tags(inst->rustInstance, isInput, element, NULL, 0);
             if (count == 0) {
@@ -1551,6 +1569,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
         case kAudioUnitProperty_SupportedNumChannels: {
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
+            }
+            if (inst->isMultiOutputSource) {
+                return kAudioUnitErr_InvalidProperty;
             }
             BeamerAuChannelCapabilities caps;
             if (!beamer_au_get_channel_capabilities(inst->rustInstance, &caps)) {
