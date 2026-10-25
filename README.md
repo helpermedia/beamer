@@ -2,7 +2,7 @@
 
 A Rust framework for building Audio Unit (AU) and VST3 audio plugins.
 
-Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS; Windows in progress) through modern web UI from a single codebase.
+Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS; Windows planned) through modern web UI from a single codebase.
 
 > [!NOTE]
 > Beamer is pre-1.0 and under active development. Expect breaking changes between minor versions.
@@ -108,7 +108,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 ## Features
 
-- **Multi-format** - AU (macOS) and VST3 (macOS; Windows in progress)
+- **Multi-format** - AU (macOS) and VST3 (macOS; Windows planned)
 - **Declarative parameters** - `#[beamer::model]` with attributes for units, smoothing and more
 - **Type-safe initialization** - `prepare()` lifecycle eliminates placeholder values and sample-rate bugs
 - **Format-agnostic core** - Plugin logic is independent of format specifics
@@ -134,7 +134,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 | Platform | Status |
 |----------|--------|
 | macOS | Tested (arm64) |
-| Windows | In progress - VST3 host scaffolding present, WebView UI not yet implemented |
+| Windows | Planned - VST3 host scaffolding present, WebView UI not yet implemented |
 
 Contributions for testing and fixes on Windows are welcome.
 
