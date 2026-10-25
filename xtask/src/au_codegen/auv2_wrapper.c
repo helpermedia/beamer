@@ -138,8 +138,9 @@ typedef struct BeamerAuv2Instance {
     BeamerAuLayout inputLayouts[BEAMER_AU_MAX_BUSES];
     BeamerAuLayout outputLayouts[BEAMER_AU_MAX_BUSES];
 
-    // Elements per scope as the host set them (kAudioUnitProperty_ElementCount):
-    // the declared buses, or fewer. The trailing buses past the count are off.
+    // Elements per scope (kAudioUnitProperty_ElementCount): the declared
+    // buses. The count is not writable; a host switches an aux bus off with
+    // a stream format without channels.
     UInt32 inputElementCount;
     UInt32 outputElementCount;
 
@@ -199,6 +200,18 @@ typedef struct BeamerAuv2Instance {
     // output. The host sets the callback when it listens.
     bool isMidiEffect;
     MIDIPacketList* midiOutputList;
+#ifdef BEAMER_DIAGNOSTICS
+    // The failing property queries logged so far, so that each is logged
+    // once: a host may repeat a query, also on its render thread. Written
+    // without a lock; a race only logs a line twice.
+    struct {
+        AudioUnitPropertyID propID;
+        AudioUnitScope scope;
+        AudioUnitElement element;
+        OSStatus status;
+    } loggedQueries[32];
+    _Atomic UInt32 loggedQueryCount;
+#endif
 } BeamerAuv2Instance;
 
 // MIDI output of one render call.
@@ -227,6 +240,15 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
     AudioUnitScope scope, AudioUnitElement element, void* outData, UInt32* ioDataSize);
 static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
     AudioUnitScope scope, AudioUnitElement element, const void* inData, UInt32 inDataSize);
+#ifdef BEAMER_DIAGNOSTICS
+static OSStatus BeamerAuv2GetPropertyInfoNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, UInt32* outDataSize, Boolean* outWritable);
+static OSStatus BeamerAuv2GetPropertyNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, void* outData, UInt32* ioDataSize);
+static OSStatus BeamerAuv2InitializeNoted(void* self);
+static OSStatus BeamerAuv2SetPropertyNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, const void* inData, UInt32 inDataSize);
+#endif
 static OSStatus BeamerAuv2AddPropertyListener(void* self, AudioUnitPropertyID propID,
     AudioUnitPropertyListenerProc proc, void* userData);
 static OSStatus BeamerAuv2RemovePropertyListener(void* self, AudioUnitPropertyID propID,
@@ -280,8 +302,7 @@ static bool BeamerAuv2IsInputElement(BeamerAuv2Instance* inst, AudioUnitElement 
     return element < inst->inputElementCount;
 }
 
-// The elements of an input or output scope as the host set them, 0 for
-// another scope.
+// The elements of an input or output scope, 0 for another scope.
 static UInt32 BeamerAuv2ElementCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
     switch (scope) {
         case kAudioUnitScope_Input: return inst->inputElementCount;
@@ -300,11 +321,6 @@ static UInt32 BeamerAuv2DeclaredCount(BeamerAuv2Instance* inst, AudioUnitScope s
         default: break;
     }
     return (count < BEAMER_AU_MAX_BUSES) ? count : BEAMER_AU_MAX_BUSES;
-}
-
-// The fewest elements a host may set in a scope: the main bus stays.
-static UInt32 BeamerAuv2MinimumElementCount(BeamerAuv2Instance* inst, AudioUnitScope scope) {
-    return (BeamerAuv2DeclaredCount(inst, scope) > 0) ? 1 : 0;
 }
 
 // Whether the unit processes in place as the host sees it: when it is on
@@ -621,7 +637,7 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         InitDefaultFormat(&inst->outputFormats[i], inst->sampleRate, ch);
     }
 
-    // Every declared bus starts on.
+    // Every declared bus is an element and starts on.
     inst->inputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input);
     inst->outputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Output);
 
@@ -736,15 +752,30 @@ static OSStatus BeamerAuv2Close(void* self) {
 static AudioComponentMethod BeamerAuv2Lookup(SInt16 selector) {
     switch (selector) {
         case kAudioUnitInitializeSelect:
+#ifdef BEAMER_DIAGNOSTICS
+            return (AudioComponentMethod)BeamerAuv2InitializeNoted;
+#else
             return (AudioComponentMethod)BeamerAuv2Initialize;
+#endif
         case kAudioUnitUninitializeSelect:
             return (AudioComponentMethod)BeamerAuv2Uninitialize;
+#ifdef BEAMER_DIAGNOSTICS
+        case kAudioUnitGetPropertyInfoSelect:
+            return (AudioComponentMethod)BeamerAuv2GetPropertyInfoNoted;
+        case kAudioUnitGetPropertySelect:
+            return (AudioComponentMethod)BeamerAuv2GetPropertyNoted;
+#else
         case kAudioUnitGetPropertyInfoSelect:
             return (AudioComponentMethod)BeamerAuv2GetPropertyInfo;
         case kAudioUnitGetPropertySelect:
             return (AudioComponentMethod)BeamerAuv2GetProperty;
+#endif
         case kAudioUnitSetPropertySelect:
+#ifdef BEAMER_DIAGNOSTICS
+            return (AudioComponentMethod)BeamerAuv2SetPropertyNoted;
+#else
             return (AudioComponentMethod)BeamerAuv2SetProperty;
+#endif
         case kAudioUnitAddPropertyListenerSelect:
             return (AudioComponentMethod)BeamerAuv2AddPropertyListener;
         case kAudioUnitRemovePropertyListenerSelect:
@@ -792,11 +823,10 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     uint32_t inputChannels = 0;
     uint32_t outputChannels = 0;
 
-    // Every declared bus, with 0 channels for one the host switched off:
-    // past the element count or with a format without channels.
+    // Every declared bus with the channels of its format: 0 for one the
+    // host switched off.
     for (uint32_t i = 0; i < inputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        busConfig.input_buses[i].channel_count =
-            (i < inst->inputElementCount) ? inst->inputFormats[i].mChannelsPerFrame : 0;
+        busConfig.input_buses[i].channel_count = inst->inputFormats[i].mChannelsPerFrame;
         busConfig.input_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
         BeamerAuv2LayoutToBus(inst, kAudioUnitScope_Input, i, &busConfig.input_buses[i]);
     }
@@ -805,8 +835,7 @@ static OSStatus BeamerAuv2AllocateRenderResources(BeamerAuv2Instance* inst) {
     }
 
     for (uint32_t i = 0; i < outputBusCount && i < BEAMER_AU_MAX_BUSES; i++) {
-        busConfig.output_buses[i].channel_count =
-            (i < inst->outputElementCount) ? inst->outputFormats[i].mChannelsPerFrame : 0;
+        busConfig.output_buses[i].channel_count = inst->outputFormats[i].mChannelsPerFrame;
         busConfig.output_buses[i].bus_type = (i == 0) ? BeamerAuBusTypeMain : BeamerAuBusTypeAuxiliary;
         BeamerAuv2LayoutToBus(inst, kAudioUnitScope_Output, i, &busConfig.output_buses[i]);
     }
@@ -1129,13 +1158,13 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = true;
             return noErr;
 
-        // Element count. A host may remove trailing aux buses (and add them
-        // back) while uninitialized.
+        // Element count: the declared buses. It is not writable, so that a
+        // host does not offer bus counts of its own (Logic lists them as
+        // multi-output variants); an aux bus goes off with a format without
+        // channels.
         case kAudioUnitProperty_ElementCount:
             if (outDataSize) *outDataSize = sizeof(UInt32);
-            if (outWritable) {
-                *outWritable = BeamerAuv2DeclaredCount(inst, scope) > BeamerAuv2MinimumElementCount(inst, scope);
-            }
+            if (outWritable) *outWritable = false;
             return noErr;
 
         // In-place processing.
@@ -1874,8 +1903,8 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
 
             // The plugin is prepared for the current rate: an initialized
             // unit only accepts it again.
-            // A bus that is off (past the element count or without channels)
-            // has no rate the plugin uses.
+            // A bus that is off (without channels) has no rate the plugin
+            // uses.
             if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
                 bool changes = (inst->sampleRate != sampleRate);
                 for (uint32_t i = 0; i < inst->inputElementCount; i++) {
@@ -1907,25 +1936,10 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            // Trailing aux buses go off and come back; the main bus stays and
-            // there are no more buses than declared.
+            // The count stays at the declared buses; setting it to that is
+            // accepted.
             UInt32 count = *(const UInt32*)inData;
-            if (count < BeamerAuv2MinimumElementCount(inst, scope)
-                || count > BeamerAuv2DeclaredCount(inst, scope)) {
-                return kAudioUnitErr_InvalidPropertyValue;
-            }
-            UInt32* current = (scope == kAudioUnitScope_Input)
-                ? &inst->inputElementCount : &inst->outputElementCount;
-            if (count == *current) {
-                return noErr;
-            }
-            // The plugin is prepared for the current buses.
-            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
-                return kAudioUnitErr_Initialized;
-            }
-            *current = count;
-            NotifyPropertyListeners(inst, propID, scope, element);
-            return noErr;
+            return (count == BeamerAuv2ElementCount(inst, scope)) ? noErr : kAudioUnitErr_PropertyNotWritable;
         }
 
         case kAudioUnitProperty_MaximumFramesPerSlice: {
@@ -2153,6 +2167,131 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
 // =============================================================================
 // MARK: - Property Listeners
 // =============================================================================
+
+#ifdef BEAMER_DIAGNOSTICS
+// The name of a scope for the diagnostics lines, written into `name`.
+static const char* BeamerAuv2ScopeName(AudioUnitScope scope, char name[16]) {
+    switch (scope) {
+        case kAudioUnitScope_Global: return "global";
+        case kAudioUnitScope_Input: return "input";
+        case kAudioUnitScope_Output: return "output";
+        default:
+            snprintf(name, 16, "scope %u", (unsigned)scope);
+            return name;
+    }
+}
+
+// Whether a failing query is new for the instance, which then remembers
+// it. Once the list is full, nothing more is new.
+static bool BeamerAuv2NewFailingQuery(BeamerAuv2Instance* inst, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, OSStatus status) {
+    UInt32 count = atomic_load_explicit(&inst->loggedQueryCount, memory_order_acquire);
+    UInt32 capacity = sizeof(inst->loggedQueries) / sizeof(inst->loggedQueries[0]);
+    for (UInt32 i = 0; i < count && i < capacity; i++) {
+        if (inst->loggedQueries[i].propID == propID && inst->loggedQueries[i].scope == scope
+            && inst->loggedQueries[i].element == element && inst->loggedQueries[i].status == status) {
+            return false;
+        }
+    }
+    if (count >= capacity) {
+        return false;
+    }
+    inst->loggedQueries[count].propID = propID;
+    inst->loggedQueries[count].scope = scope;
+    inst->loggedQueries[count].element = element;
+    inst->loggedQueries[count].status = status;
+    atomic_store_explicit(&inst->loggedQueryCount, count + 1, memory_order_release);
+    return true;
+}
+
+// Diagnostics builds log each property query that fails once, with the
+// property id: a host may give up on a unit over one of them.
+static OSStatus BeamerAuv2GetPropertyInfoNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, UInt32* outDataSize, Boolean* outWritable) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    OSStatus status = BeamerAuv2GetPropertyInfo(self, propID, scope, element, outDataSize, outWritable);
+    if (status != noErr && BeamerAuv2NewFailingQuery(inst, propID, scope, element, status)) {
+        char text[128];
+        char scopeText[16];
+        snprintf(text, sizeof(text), "host asks for property %u on %s %u: status %d",
+            (unsigned)propID, BeamerAuv2ScopeName(scope, scopeText), (unsigned)element, (int)status);
+        beamer_au_diagnostics_note(inst->rustInstance, text);
+    }
+    return status;
+}
+
+static OSStatus BeamerAuv2GetPropertyNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, void* outData, UInt32* ioDataSize) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    OSStatus status = BeamerAuv2GetProperty(self, propID, scope, element, outData, ioDataSize);
+    if (status != noErr && BeamerAuv2NewFailingQuery(inst, propID, scope, element, status)) {
+        char text[128];
+        char scopeText[16];
+        snprintf(text, sizeof(text), "host asks for property %u on %s %u: status %d",
+            (unsigned)propID, BeamerAuv2ScopeName(scope, scopeText), (unsigned)element, (int)status);
+        beamer_au_diagnostics_note(inst->rustInstance, text);
+    }
+    return status;
+}
+
+// Diagnostics builds log Initialize and the host's bus setup calls with
+// their results.
+static OSStatus BeamerAuv2InitializeNoted(void* self) {
+    OSStatus status = BeamerAuv2Initialize(self);
+    char text[64];
+    snprintf(text, sizeof(text), "host initializes (status %d)", (int)status);
+    beamer_au_diagnostics_note(((BeamerAuv2Instance*)self)->rustInstance, text);
+    return status;
+}
+
+static OSStatus BeamerAuv2SetPropertyNoted(void* self, AudioUnitPropertyID propID,
+    AudioUnitScope scope, AudioUnitElement element, const void* inData, UInt32 inDataSize) {
+    OSStatus status = BeamerAuv2SetProperty(self, propID, scope, element, inData, inDataSize);
+    char scopeText[16];
+    const char* scopeName = BeamerAuv2ScopeName(scope, scopeText);
+    bool hasCount = (inData != NULL && inDataSize >= sizeof(UInt32));
+    char text[192];
+    switch (propID) {
+        case kAudioUnitProperty_StreamFormat: {
+            if (inData == NULL || inDataSize < sizeof(AudioStreamBasicDescription)) {
+                return status;
+            }
+            const AudioStreamBasicDescription* format = (const AudioStreamBasicDescription*)inData;
+            snprintf(text, sizeof(text), "host sets the format of %s %u: %u ch, %.0f Hz (status %d)",
+                scopeName, (unsigned)element, (unsigned)format->mChannelsPerFrame, format->mSampleRate, (int)status);
+            break;
+        }
+        case kAudioUnitProperty_ElementCount:
+            snprintf(text, sizeof(text), "host sets the %s element count to %u (status %d)",
+                scopeName, hasCount ? (unsigned)*(const UInt32*)inData : 0, (int)status);
+            break;
+        case kAudioUnitProperty_AudioChannelLayout:
+            snprintf(text, sizeof(text), "host sets the channel layout of %s %u (status %d)",
+                scopeName, (unsigned)element, (int)status);
+            break;
+        case kAudioUnitProperty_InPlaceProcessing:
+            snprintf(text, sizeof(text), "host sets in-place processing %s (status %d)",
+                (hasCount && *(const UInt32*)inData != 0) ? "on" : "off", (int)status);
+            break;
+        case kAudioUnitProperty_MakeConnection:
+            snprintf(text, sizeof(text), "host sets a connection on %s %u (status %d)",
+                scopeName, (unsigned)element, (int)status);
+            break;
+        case kAudioUnitProperty_SetRenderCallback:
+            snprintf(text, sizeof(text), "host sets the render callback of %s %u (status %d)",
+                scopeName, (unsigned)element, (int)status);
+            break;
+        case kAudioUnitProperty_MaximumFramesPerSlice:
+            snprintf(text, sizeof(text), "host sets max frames to %u (status %d)",
+                hasCount ? (unsigned)*(const UInt32*)inData : 0, (int)status);
+            break;
+        default:
+            return status;
+    }
+    beamer_au_diagnostics_note(((BeamerAuv2Instance*)self)->rustInstance, text);
+    return status;
+}
+#endif
 
 static OSStatus BeamerAuv2AddPropertyListener(void* self, AudioUnitPropertyID propID,
     AudioUnitPropertyListenerProc proc, void* userData) {

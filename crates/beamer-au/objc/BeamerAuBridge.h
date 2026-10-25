@@ -1701,6 +1701,13 @@ bool beamer_au_produces_midi(BeamerAuInstanceHandle _Nullable instance);
 void beamer_au_diagnostics_host_bypass(BeamerAuInstanceHandle _Nullable instance, bool bypassed);
 
 /**
+ * Log a line about a host call, such as a stream format the host set.
+ *
+ * Thread Safety: Host threads.
+ */
+void beamer_au_diagnostics_note(BeamerAuInstanceHandle _Nullable instance, const char* _Nullable text);
+
+/**
  * Note whether the host's main output buffers have memory of their own
  * in a render call of the main bus, before the shim points any at its own.
  *

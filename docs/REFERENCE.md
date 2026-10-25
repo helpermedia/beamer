@@ -1089,7 +1089,7 @@ The main buses are always on: a host request to switch one off is bridged. How h
 | Format | A host switches a bus with | At first | Takes effect |
 |--------|----------------------------|----------|--------------|
 | VST3 | `activateBus()` | as declared (`kDefaultActive` from `is_default_active`) | at the next `setupProcessing()` or `setActive(true)` |
-| AUv2 | the element count (trailing buses) or a stream format with 0 channels | every bus on | at the next Initialize |
+| AUv2 | a stream format with 0 channels on an aux bus (the element count is fixed) | every bus on | at the next Initialize |
 | AUv3 | (not switched) | every bus on | - |
 
 An AUv3 host has no way to switch a bus for the plugin's preparation: the `enabled` flag of a bus follows the input connections (Apple's bridge for AUv2 hosts sets it from them, also while audio runs) and is not set on outputs by every host. The wrapper sets it from the declaration when it creates the buses and does not read it.

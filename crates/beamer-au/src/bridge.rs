@@ -1287,6 +1287,28 @@ pub extern "C" fn beamer_au_diagnostics_host_bypass(instance: BeamerAuInstanceHa
     with_instance_void!(instance, |handle| handle.shared.note_host_bypass(bypassed));
 }
 
+/// Log a line about a host call (diagnostics builds). For host threads.
+///
+/// # Safety
+///
+/// As for `beamer_au_diagnostics_host_bypass`. `text` must be null or a
+/// valid C string for the call.
+#[cfg(feature = "diagnostics")]
+#[no_mangle]
+pub extern "C" fn beamer_au_diagnostics_note(instance: BeamerAuInstanceHandle, text: *const c_char) {
+    if text.is_null() {
+        return;
+    }
+    with_instance_void!(instance, |handle| {
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            // SAFETY: A valid C string for the call (see the function's
+            // safety section).
+            let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+            diagnostics.note(format_args!("{text}"));
+        }
+    });
+}
+
 /// Note whether the host's main output buffers have memory of their own
 /// (diagnostics builds). For the render thread.
 ///
