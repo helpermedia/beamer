@@ -39,7 +39,7 @@ use crate::buffers::AudioBufferList;
 use crate::channel_labels::{self, ChannelOrder, ChannelOrders};
 use crate::error::os_status;
 use beamer_core::{
-    ActiveBuses, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, EditorSync,
+    ActiveBuses, BusInfo, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, EditorSync,
     Layout, ParameterInfo, ParameterUnit, ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue,
     MAX_BUSES, MAX_CHANNELS,
 };
@@ -367,16 +367,30 @@ pub(crate) struct DeclaredBuses {
     /// macro checks them when the plugin is compiled, a model used without
     /// it is not.
     validation: Result<(), &'static str>,
+    /// The name of each input bus: as the plugin gives it, else the default
+    /// name of its index (see `BusInfo::default_input`).
+    input_names: [&'static str; MAX_BUSES],
+    /// The name of each output bus, as `input_names`.
+    output_names: [&'static str; MAX_BUSES],
 }
 
 impl DeclaredBuses {
     /// Capture the bus declaration of a plugin.
     pub(crate) fn capture(plugin: &dyn AuPluginInstance) -> Self {
         let layouts = plugin.layouts();
-        Self {
+        let mut buses = Self {
             validation: beamer_core::validate_layouts(layouts),
             ..Self::new(layouts, plugin.default_buses())
+        };
+        for index in 0..MAX_BUSES {
+            if let Some(name) = plugin.input_bus_name(index) {
+                buses.input_names[index] = name;
+            }
+            if let Some(name) = plugin.output_bus_name(index) {
+                buses.output_names[index] = name;
+            }
         }
+        buses
     }
 
     /// The buses an Audio Unit has for a declaration: `layouts` with the
@@ -387,11 +401,33 @@ impl DeclaredBuses {
     /// these.
     fn new(layouts: &'static [Layout], default: ActiveBuses) -> Self {
         let first = Layout::default_of(layouts);
-        if first.inputs.is_empty() && first.outputs.is_empty() {
+        let (layouts, all_on, default) = if first.inputs.is_empty() && first.outputs.is_empty() {
             let output = ActiveBuses::all_on(&NO_BUS_LAYOUTS[0]);
-            return Self { layouts: NO_BUS_LAYOUTS, all_on: output, default: output, validation: Ok(()) };
+            (NO_BUS_LAYOUTS, output, output)
+        } else {
+            (layouts, ActiveBuses::all_on(first), default)
+        };
+        Self {
+            layouts,
+            all_on,
+            default,
+            validation: Ok(()),
+            input_names: std::array::from_fn(|index| BusInfo::default_input(index).name),
+            output_names: std::array::from_fn(|index| BusInfo::default_output(index).name),
         }
-        Self { layouts, all_on: ActiveBuses::all_on(first), default, validation: Ok(()) }
+    }
+
+    /// The name of the bus at an index in a direction, `None` for a bus
+    /// that does not exist.
+    fn name(&self, direction: BusDirection, index: usize) -> Option<&'static str> {
+        if index >= self.count(direction) {
+            return None;
+        }
+        let names = match direction {
+            BusDirection::Input => &self.input_names,
+            BusDirection::Output => &self.output_names,
+        };
+        names.get(index).copied()
     }
 
     /// Number of buses in a direction.
@@ -748,7 +784,11 @@ fn with_param_store<R>(
 /// Copy a Rust string into a fixed-size C char array.
 fn copy_str_to_char_array(s: &str, dest: &mut [c_char]) {
     let bytes = s.as_bytes();
-    let copy_len = bytes.len().min(dest.len() - 1);
+    // Cut at a character, so that what is copied stays valid UTF-8.
+    let mut copy_len = bytes.len().min(dest.len() - 1);
+    while !s.is_char_boundary(copy_len) {
+        copy_len -= 1;
+    }
     for (i, &b) in bytes[..copy_len].iter().enumerate() {
         dest[i] = b as c_char;
     }
@@ -2381,6 +2421,39 @@ pub extern "C" fn beamer_au_is_output_bus_default_active(
     })
 }
 
+/// Copy the name the plugin gives a bus into `out_name`: UTF-8 with a
+/// terminating null, at most `capacity` bytes, cut at a character.
+///
+/// The wrappers name their buses with it. False for a bus that does not
+/// exist, a null `out_name` or a `capacity` of 0.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`, or null
+/// - `out_name` must be null or valid for `capacity` bytes
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_bus_name(
+    instance: BeamerAuInstanceHandle,
+    is_input: bool,
+    bus_index: u32,
+    out_name: *mut c_char,
+    capacity: u32,
+) -> bool {
+    if out_name.is_null() || capacity == 0 {
+        return false;
+    }
+    with_instance!(instance, false, |handle| {
+        let Some(name) = handle.declared_buses.name(direction_of(is_input), bus_index as usize) else {
+            return false;
+        };
+        // SAFETY: Valid for capacity bytes (caller), checked non-null above.
+        let dest = unsafe { std::slice::from_raw_parts_mut(out_name, capacity as usize) };
+        copy_str_to_char_array(name, dest);
+        true
+    })
+}
+
 /// Channel counts to assume when the plugin cannot be asked.
 ///
 /// Stereo out, stereo in only for the categories that normally have an input.
@@ -3709,6 +3782,32 @@ mod tests {
         assert_eq!(dest[0], b'h' as i8);
         assert_eq!(dest[2], b'l' as i8);
         assert_eq!(dest[3], 0); // Null terminator
+    }
+
+    #[test]
+    fn test_copy_str_to_char_array_cuts_at_a_character() {
+        // The cut falls inside the two bytes of the é, which is left out.
+        let mut dest = [0i8; 5];
+        copy_str_to_char_array("Café", &mut dest);
+        assert_eq!(dest[2], b'f' as i8);
+        assert_eq!(dest[3], 0);
+    }
+
+    #[test]
+    fn test_bus_names_default_to_the_names_of_their_index() {
+        const LAYOUTS: &[Layout] = &[Layout { inputs: &[BusLayout::STEREO, BusLayout::STEREO], outputs: &[BusLayout::STEREO] }];
+        let buses = declared(LAYOUTS);
+        assert_eq!(buses.name(BusDirection::Input, 0), Some("Input"));
+        assert_eq!(buses.name(BusDirection::Input, 1), Some("Aux 1"));
+        assert_eq!(buses.name(BusDirection::Input, 2), None);
+        assert_eq!(buses.name(BusDirection::Output, 0), Some("Output"));
+        assert_eq!(buses.name(BusDirection::Output, 1), None);
+
+        // A plugin without buses gets an output bus with the default name.
+        const NO_BUSES: &[Layout] = &[Layout { inputs: &[], outputs: &[] }];
+        let buses = declared(NO_BUSES);
+        assert_eq!(buses.name(BusDirection::Input, 0), None);
+        assert_eq!(buses.name(BusDirection::Output, 0), Some("Output"));
     }
 
     #[test]

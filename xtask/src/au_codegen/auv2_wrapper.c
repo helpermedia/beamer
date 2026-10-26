@@ -187,6 +187,16 @@ typedef struct BeamerAuv2Instance {
     UInt32 inputElementCount;
     UInt32 outputElementCount;
 
+    // Element names (kAudioUnitProperty_ElementName): the name the plugin
+    // gives each bus and the current one, which a host may change. The
+    // state saves the names that differ. Host threads read and set the
+    // current names under namesMutex.
+    CFStringRef declaredInputNames[BEAMER_AU_MAX_BUSES];
+    CFStringRef declaredOutputNames[BEAMER_AU_MAX_BUSES];
+    CFStringRef inputNames[BEAMER_AU_MAX_BUSES];
+    CFStringRef outputNames[BEAMER_AU_MAX_BUSES];
+    pthread_mutex_t namesMutex;
+
     // Memory for the output buffers without memory of a bypassed render
     // call, bypassSilenceFrames samples of 64 bits. Zeroed before each use,
     // since the host may write into a buffer it got.
@@ -485,6 +495,109 @@ static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyI
         }
     }
     pthread_mutex_unlock(&inst->listenerMutex);
+}
+
+// The current name of an element, as the slot that holds it, as for
+// BeamerAuv2Format. Read and written under namesMutex.
+static CFStringRef* BeamerAuv2NameSlot(BeamerAuv2Instance* inst,
+    AudioUnitScope scope, AudioUnitElement element) {
+    if (element >= BeamerAuv2ElementCount(inst, scope)) {
+        return NULL;
+    }
+    return (scope == kAudioUnitScope_Input) ? &inst->inputNames[element] : &inst->outputNames[element];
+}
+
+// The name the plugin gives an element, for an element that exists.
+static CFStringRef BeamerAuv2DeclaredName(BeamerAuv2Instance* inst,
+    AudioUnitScope scope, AudioUnitElement element) {
+    return (scope == kAudioUnitScope_Input) ? inst->declaredInputNames[element] : inst->declaredOutputNames[element];
+}
+
+// Give an element a name (the declared one for NULL or an empty name). The
+// listeners hear of it when it changes. Hosts restoring a state may set
+// every name again; notifying only on a change keeps them from reacting to
+// names that stay the same.
+static void BeamerAuv2SetElementName(BeamerAuv2Instance* inst,
+    AudioUnitScope scope, AudioUnitElement element, CFStringRef name) {
+    CFStringRef* slot = BeamerAuv2NameSlot(inst, scope, element);
+    if (slot == NULL) {
+        return;
+    }
+    CFStringRef next = (name != NULL && CFStringGetLength(name) > 0)
+        ? CFStringCreateCopy(kCFAllocatorDefault, name)
+        : (CFStringRef)CFRetain(BeamerAuv2DeclaredName(inst, scope, element));
+    pthread_mutex_lock(&inst->namesMutex);
+    CFStringRef previous = *slot;
+    *slot = next;
+    pthread_mutex_unlock(&inst->namesMutex);
+    bool changed = CFStringCompare(previous, next, 0) != kCFCompareEqualTo;
+    CFRelease(previous);
+    if (changed) {
+        NotifyPropertyListeners(inst, kAudioUnitProperty_ElementName, scope, element);
+    }
+}
+
+// The names a host changed, for the state: under "element-name", as the
+// AU SDK saves them, a dictionary of scope numbers to dictionaries of
+// element numbers to names. NULL when every element has its declared name.
+static CFDictionaryRef BeamerAuv2CopyChangedNames(BeamerAuv2Instance* inst) {
+    static const AudioUnitScope scopes[] = { kAudioUnitScope_Input, kAudioUnitScope_Output };
+    CFMutableDictionaryRef names = NULL;
+    pthread_mutex_lock(&inst->namesMutex);
+    for (size_t s = 0; s < sizeof(scopes) / sizeof(scopes[0]); s++) {
+        CFMutableDictionaryRef elements = NULL;
+        for (UInt32 element = 0; element < BeamerAuv2ElementCount(inst, scopes[s]); element++) {
+            CFStringRef name = *BeamerAuv2NameSlot(inst, scopes[s], element);
+            if (CFStringCompare(name, BeamerAuv2DeclaredName(inst, scopes[s], element), 0) == kCFCompareEqualTo) {
+                continue;
+            }
+            if (elements == NULL) {
+                elements = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            }
+            CFStringRef key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%u"), (unsigned)element);
+            CFDictionarySetValue(elements, key, name);
+            CFRelease(key);
+        }
+        if (elements != NULL) {
+            if (names == NULL) {
+                names = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            }
+            CFStringRef key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%u"), (unsigned)scopes[s]);
+            CFDictionarySetValue(names, key, elements);
+            CFRelease(key);
+            CFRelease(elements);
+        }
+    }
+    pthread_mutex_unlock(&inst->namesMutex);
+    return names;
+}
+
+// The value under a number key of a state dictionary, if it has the type
+// typeID.
+static CFTypeRef BeamerAuv2NumberedValue(CFDictionaryRef dict, UInt32 number, CFTypeID typeID) {
+    if (dict == NULL) {
+        return NULL;
+    }
+    CFStringRef key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%u"), (unsigned)number);
+    CFTypeRef value = CFDictionaryGetValue(dict, key);
+    CFRelease(key);
+    return (value != NULL && CFGetTypeID(value) == typeID) ? value : NULL;
+}
+
+// Give each element the name a state saved for it (see
+// BeamerAuv2CopyChangedNames), the declared name where it saved none.
+static void BeamerAuv2RestoreNames(BeamerAuv2Instance* inst, CFDictionaryRef names) {
+    static const AudioUnitScope scopes[] = { kAudioUnitScope_Input, kAudioUnitScope_Output };
+    for (size_t s = 0; s < sizeof(scopes) / sizeof(scopes[0]); s++) {
+        CFDictionaryRef elements = (CFDictionaryRef)BeamerAuv2NumberedValue(names, scopes[s],
+            CFDictionaryGetTypeID());
+        for (UInt32 element = 0; element < BeamerAuv2ElementCount(inst, scopes[s]); element++) {
+            CFStringRef name = (CFStringRef)BeamerAuv2NumberedValue(elements, element, CFStringGetTypeID());
+            BeamerAuv2SetElementName(inst, scopes[s], element, name);
+        }
+    }
 }
 
 // Bytes per sample of a float format: 4 or 8.
@@ -802,6 +915,7 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     pthread_mutex_init(&inst->renderNotifyMutex, NULL);
     pthread_mutex_init(&inst->callbacksMutex, NULL);
     pthread_mutex_init(&inst->queueReaderMutex, NULL);
+    pthread_mutex_init(&inst->namesMutex, NULL);
 
     EventQueueInit(&inst->midiQueue, inst->midiSlots, BEAMER_AU_MAX_MIDI_EVENTS);
     EventQueueInit(&inst->parameterQueue, inst->parameterSlots, PARAMETER_QUEUE_SIZE);
@@ -812,6 +926,17 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
 // =============================================================================
 // MARK: - Open/Close/Lookup
 // =============================================================================
+
+// The name the plugin gives a bus, as a new string. An empty name if the
+// bridge has none, so that every element has a name.
+static CFStringRef BeamerAuv2CopyDeclaredName(BeamerAuv2Instance* inst, bool isInput, UInt32 index) {
+    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    CFStringRef string = NULL;
+    if (beamer_au_get_bus_name(inst->rustInstance, isInput, index, name, sizeof(name))) {
+        string = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
+    }
+    return string ? string : (CFStringRef)CFRetain(CFSTR(""));
+}
 
 static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
@@ -846,6 +971,16 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     // Every declared bus is an element and starts on.
     inst->inputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Input);
     inst->outputElementCount = BeamerAuv2DeclaredCount(inst, kAudioUnitScope_Output);
+
+    // Each element starts with the name the plugin gives its bus.
+    for (UInt32 i = 0; i < inst->inputElementCount; i++) {
+        inst->declaredInputNames[i] = BeamerAuv2CopyDeclaredName(inst, true, i);
+        inst->inputNames[i] = (CFStringRef)CFRetain(inst->declaredInputNames[i]);
+    }
+    for (UInt32 i = 0; i < inst->outputElementCount; i++) {
+        inst->declaredOutputNames[i] = BeamerAuv2CopyDeclaredName(inst, false, i);
+        inst->outputNames[i] = (CFStringRef)CFRetain(inst->declaredOutputNames[i]);
+    }
 
     // In place with a main input.
     atomic_store_explicit(&inst->processesInPlace, inst->inputElementCount > 0, memory_order_relaxed);
@@ -937,6 +1072,13 @@ static OSStatus BeamerAuv2Close(void* self) {
 
     SysExQueueFree(&inst->sysexQueue);
 
+    for (UInt32 i = 0; i < BEAMER_AU_MAX_BUSES; i++) {
+        if (inst->declaredInputNames[i]) CFRelease(inst->declaredInputNames[i]);
+        if (inst->declaredOutputNames[i]) CFRelease(inst->declaredOutputNames[i]);
+        if (inst->inputNames[i]) CFRelease(inst->inputNames[i]);
+        if (inst->outputNames[i]) CFRelease(inst->outputNames[i]);
+    }
+
     // Release current preset name
     if (inst->currentPresetName) {
         CFRelease(inst->currentPresetName);
@@ -964,6 +1106,7 @@ static OSStatus BeamerAuv2Close(void* self) {
     pthread_mutex_destroy(&inst->renderNotifyMutex);
     pthread_mutex_destroy(&inst->callbacksMutex);
     pthread_mutex_destroy(&inst->queueReaderMutex);
+    pthread_mutex_destroy(&inst->namesMutex);
 
     free(inst);
     return noErr;
@@ -1394,6 +1537,18 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
         case kAudioUnitProperty_ElementCount:
             if (outDataSize) *outDataSize = sizeof(UInt32);
             if (outWritable) *outWritable = false;
+            return noErr;
+
+        // The name of a bus. A host may rename it; the state keeps the name.
+        case kAudioUnitProperty_ElementName:
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (element >= BeamerAuv2ElementCount(inst, scope)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            if (outDataSize) *outDataSize = sizeof(CFStringRef);
+            if (outWritable) *outWritable = true;
             return noErr;
 
         // In-place processing.
@@ -1843,6 +1998,13 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 CFDictionarySetValue(dict, CFSTR("name"), CFSTR("Untitled"));
             }
 
+            // The bus names a host changed.
+            CFDictionaryRef elementNames = BeamerAuv2CopyChangedNames(inst);
+            if (elementNames) {
+                CFDictionarySetValue(dict, CFSTR(kAUPresetElementNameKey), elementNames);
+                CFRelease(elementNames);
+            }
+
             // Store format version
             SInt32 version = 0;
             CFNumberRef versionNum = CFNumberCreate(NULL, kCFNumberSInt32Type, &version);
@@ -1861,6 +2023,26 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
 
             *(CFPropertyListRef*)outData = dict;
             *ioDataSize = sizeof(CFPropertyListRef);
+            return noErr;
+        }
+
+        // The host owns the string it gets.
+        case kAudioUnitProperty_ElementName: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            CFStringRef* slot = BeamerAuv2NameSlot(inst, scope, element);
+            if (slot == NULL) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(CFStringRef)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            pthread_mutex_lock(&inst->namesMutex);
+            CFStringRef name = (CFStringRef)CFRetain(*slot);
+            pthread_mutex_unlock(&inst->namesMutex);
+            *(CFStringRef*)outData = name;
+            *ioDataSize = sizeof(CFStringRef);
             return noErr;
         }
 
@@ -2177,6 +2359,29 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             return (count == BeamerAuv2ElementCount(inst, scope)) ? noErr : kAudioUnitErr_PropertyNotWritable;
         }
 
+        // A host renames a bus, also while initialized. No data or an empty
+        // name gives the bus its declared name again.
+        case kAudioUnitProperty_ElementName: {
+            if (scope != kAudioUnitScope_Input && scope != kAudioUnitScope_Output) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (element >= BeamerAuv2ElementCount(inst, scope)) {
+                return kAudioUnitErr_InvalidElement;
+            }
+            CFStringRef name = NULL;
+            if (inData != NULL) {
+                if (inDataSize < sizeof(CFStringRef)) {
+                    return kAudioUnitErr_InvalidPropertyValue;
+                }
+                name = *(const CFStringRef*)inData;
+                if (name != NULL && CFGetTypeID(name) != CFStringGetTypeID()) {
+                    return kAudioUnitErr_InvalidPropertyValue;
+                }
+            }
+            BeamerAuv2SetElementName(inst, scope, element, name);
+            return noErr;
+        }
+
         case kAudioUnitProperty_MaximumFramesPerSlice: {
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
@@ -2305,6 +2510,14 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 CFIndex length = CFDataGetLength(stateData);
                 beamer_au_set_state(inst->rustInstance, bytes, (uint32_t)length);
             }
+
+            // The bus names it saved, the declared ones for the others.
+            CFDictionaryRef elementNames = (CFDictionaryRef)CFDictionaryGetValue(dict,
+                CFSTR(kAUPresetElementNameKey));
+            if (elementNames && CFGetTypeID(elementNames) != CFDictionaryGetTypeID()) {
+                elementNames = NULL;
+            }
+            BeamerAuv2RestoreNames(inst, elementNames);
 
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
@@ -2520,6 +2733,17 @@ static OSStatus BeamerAuv2SetPropertyNoted(void* self, AudioUnitPropertyID propI
             snprintf(text, sizeof(text), "host sets max frames to %u (status %d)",
                 hasCount ? (unsigned)*(const UInt32*)inData : 0, (int)status);
             break;
+        case kAudioUnitProperty_ElementName: {
+            char name[64] = "";
+            CFStringRef string = (inData != NULL && inDataSize >= sizeof(CFStringRef))
+                ? *(const CFStringRef*)inData : NULL;
+            if (string != NULL && CFGetTypeID(string) == CFStringGetTypeID()) {
+                CFStringGetCString(string, name, sizeof(name), kCFStringEncodingUTF8);
+            }
+            snprintf(text, sizeof(text), "host names %s %u \"%s\" (status %d)",
+                scopeName, (unsigned)element, name, (int)status);
+            break;
+        }
         default:
             return status;
     }

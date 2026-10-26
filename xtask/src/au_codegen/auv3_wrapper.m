@@ -388,11 +388,19 @@ typedef struct {
 // =============================================================================
 
 // A bus of the unit, which reports the channel layouts the plugin's layouts
-// take on it.
+// take on it and keeps the name the plugin gives it.
 @interface {{WRAPPER_CLASS}}Bus : AUAudioUnitBus
+// The name the plugin gives the bus. A host may rename the bus (also
+// through ElementName of Apple's bridge for v2 hosts); no name or an empty
+// one gives it this name again.
+@property (nonatomic, copy) NSString* declaredName;
 @end
 
 @implementation {{WRAPPER_CLASS}}Bus
+
+- (void)setName:(NSString*)name {
+    [super setName:(name.length > 0) ? name : self.declaredName];
+}
 
 - (NSArray<NSNumber*>*)supportedChannelLayoutTags {
     {{WRAPPER_CLASS}}* owner = ({{WRAPPER_CLASS}}*)self.ownerAudioUnit;
@@ -422,6 +430,47 @@ typedef struct {
 }
 
 @end
+
+// The value if it is a dictionary, else nil.
+static NSDictionary* BeamerAuv3Dictionary(id value) {
+    return [value isKindOfClass:[NSDictionary class]] ? value : nil;
+}
+
+// The names a host gave the buses of an array, other than their declared
+// names, by element number. Nil when every bus has its declared name.
+static NSDictionary* BeamerAuv3ChangedNames(AUAudioUnitBusArray* buses) {
+    NSMutableDictionary* names = nil;
+    for (NSUInteger i = 0; i < buses.count; i++) {
+        {{WRAPPER_CLASS}}Bus* bus = ({{WRAPPER_CLASS}}Bus*)buses[i];
+        if (![bus isKindOfClass:[{{WRAPPER_CLASS}}Bus class]] || bus.name == nil
+            || [bus.name isEqualToString:bus.declaredName]) {
+            continue;
+        }
+        if (names == nil) {
+            names = [[NSMutableDictionary alloc] init];
+        }
+        names[[@(i) stringValue]] = bus.name;
+    }
+    return names;
+}
+
+// Give each bus of an array the name saved for it in names (see
+// BeamerAuv3ChangedNames), its declared name where none is saved. A name
+// that stays the same is not set again, so that observers only hear of
+// changes.
+static void BeamerAuv3RestoreNames(AUAudioUnitBusArray* buses, NSDictionary* names) {
+    for (NSUInteger i = 0; i < buses.count; i++) {
+        {{WRAPPER_CLASS}}Bus* bus = ({{WRAPPER_CLASS}}Bus*)buses[i];
+        if (![bus isKindOfClass:[{{WRAPPER_CLASS}}Bus class]]) {
+            continue;
+        }
+        id saved = names[[@(i) stringValue]];
+        NSString* name = ([saved isKindOfClass:[NSString class]] && [saved length] > 0) ? saved : bus.declaredName;
+        if (![bus.name isEqualToString:name]) {
+            bus.name = name;
+        }
+    }
+}
 
 // =============================================================================
 // MARK: - Editor View and View Controller
@@ -714,11 +763,13 @@ static void beamer_auv3_on_loaded(void* context) {
         ? beamer_au_is_input_bus_default_active(_rustInstance, index)
         : beamer_au_is_output_bus_default_active(_rustInstance, index);
 
-    if (isInput) {
-        bus.name = (index == 0) ? @"Main Input" : [NSString stringWithFormat:@"Aux Input %u", index];
-    } else {
-        bus.name = (index == 0) ? @"Main Output" : [NSString stringWithFormat:@"Aux Output %u", index];
+    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    NSString* declaredName = nil;
+    if (beamer_au_get_bus_name(_rustInstance, isInput, index, name, sizeof(name))) {
+        declaredName = [NSString stringWithUTF8String:name];
     }
+    bus.declaredName = declaredName ?: @"";
+    bus.name = bus.declaredName;
 
     return bus;
 }
@@ -1424,11 +1475,31 @@ static void beamer_auv3_on_loaded(void* context) {
         }
     }
 
+    // The bus names a host changed, under "element-name" as the AUv2 saves
+    // them: scope numbers to element numbers to names.
+    NSMutableDictionary* names = [[NSMutableDictionary alloc] init];
+    NSDictionary* inputNames = BeamerAuv3ChangedNames(self.inputBusses);
+    NSDictionary* outputNames = BeamerAuv3ChangedNames(self.outputBusses);
+    if (inputNames != nil) {
+        names[[@(kAudioUnitScope_Input) stringValue]] = inputNames;
+    }
+    if (outputNames != nil) {
+        names[[@(kAudioUnitScope_Output) stringValue]] = outputNames;
+    }
+    if (names.count > 0) {
+        state[@kAUPresetElementNameKey] = names;
+    }
+
     return state;
 }
 
 - (void)setFullState:(NSDictionary<NSString*, id>*)fullState {
     [super setFullState:fullState];
+
+    // The bus names it saved, the declared ones for the others.
+    NSDictionary* names = BeamerAuv3Dictionary(fullState[@kAUPresetElementNameKey]);
+    BeamerAuv3RestoreNames(self.inputBusses, BeamerAuv3Dictionary(names[[@(kAudioUnitScope_Input) stringValue]]));
+    BeamerAuv3RestoreNames(self.outputBusses, BeamerAuv3Dictionary(names[[@(kAudioUnitScope_Output) stringValue]]));
 
     if (_rustInstance != NULL && fullState != nil) {
         NSData* stateData = fullState[@"beamerState"];

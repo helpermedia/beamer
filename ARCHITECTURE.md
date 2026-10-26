@@ -415,6 +415,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - The state is the model with its parameters and `State` fields (`Saved::save_state`/`load_state`), prepared or not
 - Saved and loaded without the plugin mutex, also while audio renders
 - The same state format as VST3
+- Bus names a host changed (AUv2 `kAudioUnitProperty_ElementName`, AUv3 `AUAudioUnitBus.name`) are saved next to it under `element-name`, in the layout of Apple's AU SDK. A state without a name for a bus gives the bus its declared name
 
 **Real-time Safety**:
 - Pre-allocated f64/f32 conversion buffers (main + aux buses)

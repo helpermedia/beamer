@@ -1039,6 +1039,8 @@ impl Model for CompressorModel {
 }
 ```
 
+Hosts show the name with the bus: VST3 reports it in the bus info, an Audio Unit as the name of its element. An Audio Unit host may rename a bus; the plugin state keeps the new name.
+
 A plugin declares at most 16 buses per direction (`MAX_BUSES`) with at most 32 channels each (`MAX_CHANNELS`). Every layout has the same number of buses. `#[beamer::export]` checks the layouts when the plugin is compiled; the wrappers refuse a model with more buses or channels. The plugin starts with the first layout; a host can pick another (see [Channel Layouts](#channel-layouts)).
 
 A host switches aux buses on and off. The plugin is prepared with the buses that are on: it requests `ActiveBuses` in its setup. When the host switches a bus, the plugin is prepared again.

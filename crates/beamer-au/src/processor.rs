@@ -166,6 +166,14 @@ where
         beamer_core::ActiveBuses::default_for(&*self.state.model)
     }
 
+    fn input_bus_name(&self, index: usize) -> Option<&'static str> {
+        beamer_core::plugin::input_bus_info(&*self.state.model, index).map(|info| info.name)
+    }
+
+    fn output_bus_name(&self, index: usize) -> Option<&'static str> {
+        beamer_core::plugin::output_bus_info(&*self.state.model, index).map(|info| info.name)
+    }
+
     fn supports_buses(&self, buses: &beamer_core::ActiveBuses) -> bool {
         self.state.model.supports_buses(buses)
     }
@@ -807,6 +815,39 @@ mod tests {
         let processor = AuProcessor::<TestModel>::new();
         let declared = crate::bridge::DeclaredBuses::capture(&processor);
         assert_eq!(declared.main_channels(), (2, 2));
+    }
+
+    /// The name the bridge gives a bus of `handle`, `None` for a bus that
+    /// does not exist.
+    fn bus_name(handle: &mut crate::bridge::BeamerInstanceHandle, is_input: bool, index: u32) -> Option<String> {
+        let mut name = [0 as std::ffi::c_char; 64];
+        crate::bridge::beamer_au_get_bus_name(handle, is_input, index, name.as_mut_ptr(), name.len() as u32)
+            .then(|| {
+                // SAFETY: The bridge wrote a null-terminated string into name.
+                unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap().to_owned()
+            })
+    }
+
+    #[test]
+    fn test_buses_have_the_names_the_model_gives() {
+        let mut handle = crate::bridge::BeamerInstanceHandle::new(Box::new(AuProcessor::<SecondSidechainModel>::new()));
+        assert_eq!(bus_name(&mut handle, true, 0).as_deref(), Some("Input"));
+        assert_eq!(bus_name(&mut handle, true, 1).as_deref(), Some("First"));
+        assert_eq!(bus_name(&mut handle, true, 2).as_deref(), Some("Second"));
+        assert_eq!(bus_name(&mut handle, true, 3), None);
+        // The model gives no output bus info: the default name.
+        assert_eq!(bus_name(&mut handle, false, 0).as_deref(), Some("Output"));
+        assert_eq!(bus_name(&mut handle, false, 1), None);
+
+        let mut handle = crate::bridge::BeamerInstanceHandle::new(Box::new(AuProcessor::<AuxOutputModel>::new()));
+        assert_eq!(bus_name(&mut handle, false, 1).as_deref(), Some("Aux"));
+
+        // No instance, no buffer or a buffer of 0 bytes: no name.
+        let mut name = [0 as std::ffi::c_char; 8];
+        let get = crate::bridge::beamer_au_get_bus_name;
+        assert!(!get(std::ptr::null_mut(), false, 0, name.as_mut_ptr(), 8));
+        assert!(!get(&mut handle, false, 0, std::ptr::null_mut(), 8));
+        assert!(!get(&mut handle, false, 0, name.as_mut_ptr(), 0));
     }
 
     // =========================================================================

@@ -141,6 +141,13 @@ pub trait AuPluginInstance: Send + 'static {
     /// `ActiveBuses::default_for`).
     fn default_buses(&self) -> ActiveBuses;
 
+    /// The name the plugin gives an input bus of its default layout (see
+    /// `Model::input_bus_info`), `None` past its input buses.
+    fn input_bus_name(&self, index: usize) -> Option<&'static str>;
+
+    /// The name the plugin gives an output bus, as `input_bus_name`.
+    fn output_bus_name(&self, index: usize) -> Option<&'static str>;
+
     /// Whether the plugin can process with these buses on (see
     /// `Model::supports_buses`).
     fn supports_buses(&self, buses: &ActiveBuses) -> bool;

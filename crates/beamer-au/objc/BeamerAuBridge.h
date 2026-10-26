@@ -1430,6 +1430,30 @@ bool beamer_au_is_output_bus_default_active(
 );
 
 /**
+ * Copy the name the plugin gives a bus into out_name.
+ *
+ * The wrappers name their buses with it. The name is UTF-8 with a
+ * terminating null, at most capacity bytes, cut at a character.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance  Handle to the plugin instance.
+ * @param is_input  true for an input bus, false for an output bus.
+ * @param bus_index Index of the bus.
+ * @param out_name  Buffer for the name.
+ * @param capacity  Size of out_name in bytes.
+ *
+ * @return true if the bus exists and its name was copied.
+ */
+bool beamer_au_get_bus_name(
+    BeamerAuInstanceHandle _Nullable instance,
+    bool is_input,
+    uint32_t bus_index,
+    char* _Nullable out_name,
+    uint32_t capacity
+);
+
+/**
  * Check if a proposed channel configuration is valid.
  *
  * Called when render resources are allocated (AUv3) and on Initialize (AUv2)
