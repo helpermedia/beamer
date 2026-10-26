@@ -90,7 +90,7 @@ cargo xtask log <package>
 
 or later with `cargo xtask log <package> --last 1h` (or `/usr/bin/log show --last 1h --info --predicate 'subsystem == "com.beamer.<package>"'`, with the full path because `log` is a different command in the zsh shell), or in Console.app. Warnings and errors stay in the system log, debug messages only show up while you watch. Other platforms do not log yet.
 
-Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread. A plugin's `process()` should not log either.
+Every plugin binary has its own logger, so a plugin cannot get in the way of the host or of other plugins. A plugin that installs a logger of its own does not set `log_level`. Nothing logs on the audio thread: the wrappers note dropped events there and log them later on a host thread. A plugin's `process()` should not log either. The one exception is the report of the [allocation check](#allocation-check) in debug builds.
 
 A diagnostics build (`cargo xtask bundle <package> <formats> --diagnostics`) installs the logger at level `info` or above, also without `log_level`. It logs what the host does with the plugin under the target `diagnostics`. See [Testing in a DAW](BUILDING.md#in-a-daw).
 
@@ -1181,6 +1181,61 @@ The model lives as long as the plugin instance. A Processor exists while the hos
 ```
 
 A `Processor` can only come from `prepare()`, so it is always fully initialized and `process()` never needs `Option<T>` unwrapping or placeholder checks. A Processor is dropped on a host thread, never on the audio thread. See [ARCHITECTURE.md](../ARCHITECTURE.md#design-rationale) for detailed rationale.
+
+#### Allocation Check
+
+Allocating or freeing memory in `process()` can take a lock or wait for the system, so the audio may drop out. On a fast machine that is seldom audible, so the mistake is easy to miss: a `Vec` that grows, a `format!`, a `Box`, a `collect()` or dropping the last `Arc` of a value. The `allocation-check` feature of `beamer` catches it in debug builds:
+
+```toml
+[dependencies]
+beamer = { version = "0.2", features = ["allocation-check"] }
+```
+
+`#[beamer::export]` then installs a global allocator that counts the allocations and frees made while the plugin processes. A call that made any is logged with the stack of its first one, each place once. The report goes to the plugin's log (see [Logging](#logging)), at level `error`; with the check on, the logger is installed also without `log_level`. Release builds are not changed. The examples have the feature on.
+
+```
+process() made 1 allocation and 1 free in one call. On the audio thread that can make the audio drop out. The first allocation was at:
+    <gain::GainProcessor>::process_generic::<f32> (gain/src/lib.rs:81)
+    <gain::GainProcessor as beamer_core::plugin::Processor>::process (gain/src/lib.rs:99)
+    ...
+```
+
+`beamer::allocation_check` changes what happens and helps in tests:
+
+| Function | Purpose |
+|----------|---------|
+| `set_reaction(Reaction::Log)` | Log and keep running (default) |
+| `set_reaction(Reaction::Panic)` | Log, then panic when the call returns. For tests: in a host an Audio Unit stops rendering, a VST3 host aborts |
+| `set_reaction(Reaction::Abort)` | Abort at the allocation, so that a debugger stops with the stack of the audio thread |
+| `set_check_frees(false)` | Leave frees out (default: checked). A value made on another thread and dropped in `process()` frees its memory there |
+| `permit_allocations(\|\| ...)` | Run code that may allocate on purpose, such as a measurement in a debug build |
+| `count_in_process(\|\| ...)` | Run code as `process()` runs and return its `AllocationCounts`, without the reaction |
+| `is_active()` | Whether the check runs: a debug build with the feature |
+
+A test of the processor (the gain example has it):
+
+```rust
+use beamer::allocation_check;
+
+#[test]
+fn test_process_neither_allocates_nor_frees() {
+    let mut processor = Arc::new(GainModel::default()).prepare(());
+    let mut left = [0.5f32; 64];
+    let mut right = [0.5f32; 64];
+    let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 2, 64);
+    let mut aux = AuxiliaryBuffers::empty();
+    let context = ProcessContext::with_empty_transport(48_000.0, 64);
+
+    let (_, counts) = allocation_check::count_in_process(|| {
+        processor.process(&mut buffer, &mut aux, &context);
+    });
+    if allocation_check::is_active() {
+        assert!(counts.is_empty(), "{counts:?}");
+    }
+}
+```
+
+The check sees what goes through the plugin's Rust allocator. Memory that the host or system libraries allocate, locks and other waits are not seen. A plugin that installs a global allocator of its own cannot use the feature: a binary has one. With the feature the wrappers install Beamer's logger when the plugin is loaded, so a plugin with a logger of its own that it installs later loses it in debug builds (as in a diagnostics build).
 
 ### Factory Presets
 

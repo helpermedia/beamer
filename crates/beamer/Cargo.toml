@@ -19,6 +19,11 @@ vst3 = ["dep:beamer-vst3", "dep:vst3"]
 # builds: `cargo xtask bundle <plugin> --diagnostics` sets it.
 diagnostics = ["beamer-core/diagnostics", "beamer-au?/diagnostics", "beamer-vst3?/diagnostics"]
 
+# Check in debug builds that process() neither allocates nor frees memory:
+# `#[beamer::export]` installs a checking global allocator (see
+# `beamer::allocation_check`). Not for a plugin with its own allocator.
+allocation-check = ["beamer-core/allocation-check"]
+
 [lints]
 workspace = true
 

@@ -75,7 +75,7 @@ mod validate;
 ///   the web UI is)
 /// - the `ParameterGroups` trait implementation
 /// - `Default`
-/// - the ids of every parameter (`assign_ids`), and a compile error for two
+/// - the ids of every parameter (`assign_ids`), with a compile error for two
 ///   ids in a struct that are equal or hash to the same value
 ///
 /// The plugin then implements `Model` for the struct: how it creates its
@@ -123,7 +123,7 @@ mod validate;
 /// - `#[beamer::model(no_default)]`: generate no `Default`, for a model
 ///   with a plain field that has none or a parameter set up by hand. Write
 ///   `Default` yourself and call `assign_ids("")` on the value before
-///   returning it, and `set_group_ids()` when it has nested or flat groups.
+///   returning it, also `set_group_ids()` when it has nested or flat groups.
 ///
 /// # Example
 ///

@@ -302,8 +302,8 @@ impl ModelIR {
 
     /// Check if all parameter fields have complete declarative attributes.
     ///
-    /// When true, and unless the struct asked for no `Default`, the macro
-    /// generates a `Default` implementation.
+    /// When true the macro generates a `Default` implementation, unless the
+    /// struct asked for no `Default`.
     pub fn can_generate_default(&self) -> bool {
         self.generate_default && self.parameter_fields().all(|p| p.has_declarative_attributes())
     }

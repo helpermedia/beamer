@@ -55,7 +55,14 @@ impl Drop for ProcessScope {
     #[inline]
     fn drop(&mut self) {
         #[cfg(debug_assertions)]
-        IN_PROCESS.with(|flag| flag.set(self.previous));
+        {
+            IN_PROCESS.with(|flag| flag.set(self.previous));
+            // What the allocation check counted is reported when the
+            // outermost scope ends.
+            if !self.previous {
+                crate::allocation_check::process_ended();
+            }
+        }
     }
 }
 
@@ -84,14 +91,18 @@ pub(crate) const READ_THROUGH_A_READER: &str =
 pub(crate) fn assert_not_in_process(call: &str, instead: &str) {
     #[cfg(debug_assertions)]
     if in_process() {
-        let message = format!(
-            "{call} was called in process(). It takes a lock and may allocate or free \
-             memory, so it is for host and UI threads only. {instead}"
-        );
-        // The panic message goes to standard error, which a host seldom
-        // shows, so it goes to the plugin's log first.
-        log::error!("{message} ({})", std::panic::Location::caller());
-        panic!("{message}");
+        let location = std::panic::Location::caller();
+        // The message itself allocates; the allocation check leaves it out.
+        crate::allocation_check::permit_allocations(|| {
+            let message = format!(
+                "{call} was called in process(). It takes a lock and may allocate or free \
+                 memory, so it is for host and UI threads only. {instead}"
+            );
+            // The panic message goes to standard error, which a host seldom
+            // shows, so it goes to the plugin's log first.
+            log::error!("{message} ({location})");
+            panic!("{message}");
+        })
     }
     #[cfg(not(debug_assertions))]
     let _ = (call, instead);

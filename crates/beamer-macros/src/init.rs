@@ -257,20 +257,23 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         })
         .transpose()?;
 
-    // The subsystem is the base of the bundle ids that xtask writes.
-    let logging = config
-        .log_level
-        .as_ref()
-        .map(|level| {
+    // The subsystem is the base of the bundle ids that xtask writes. A
+    // plugin without a level still gets it: a diagnostics build and the
+    // allocation check log without one.
+    let logging = match config.log_level.as_ref() {
+        Some(level) => {
             let variant = format_ident!("{}", crate::config_file::log_level_variant(level)?);
-            Ok::<_, String>(quote! {
+            quote! {
                 .with_logging(
                     ::beamer::core::LogLevel::#variant,
                     concat!("com.beamer.", env!("CARGO_PKG_NAME")),
                 )
-            })
-        })
-        .transpose()?;
+            }
+        }
+        None => quote! {
+            .with_log_subsystem(concat!("com.beamer.", env!("CARGO_PKG_NAME")))
+        },
+    };
 
     let subcategories = if let Some(subs) = &config.subcategories {
         let sub_tokens: Vec<TokenStream> = subs
@@ -364,8 +367,8 @@ mod tests {
 
     #[test]
     fn test_categories_match_core() {
-        // Every variant has exactly one name in Config.toml, and the table
-        // has no entry for a variant that does not exist.
+        // Every variant has exactly one name in Config.toml. The table has
+        // no entry for a variant that does not exist.
         let variants = [
             Category::Effect,
             Category::Instrument,

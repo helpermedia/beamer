@@ -16,4 +16,4 @@ vst3 = ["beamer/vst3"]
 workspace = true
 
 [dependencies]
-beamer = { workspace = true }
+beamer = { workspace = true, features = ["allocation-check"] }

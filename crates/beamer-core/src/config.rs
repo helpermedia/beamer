@@ -709,6 +709,15 @@ impl Config {
         self
     }
 
+    /// The subsystem of the plugin's messages in the system log, for a
+    /// plugin that logs without a level of its own: a diagnostics build or
+    /// one with the allocation check. `#[beamer::export]` sets it to
+    /// `com.beamer.<package>`.
+    pub const fn with_log_subsystem(mut self, subsystem: &'static str) -> Self {
+        self.log_subsystem = subsystem;
+        self
+    }
+
     /// Get VST3 component UID as [u32; 4].
     ///
     /// Returns the explicit override if set via `with_vst3_id()`, otherwise

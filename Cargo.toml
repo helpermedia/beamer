@@ -30,6 +30,7 @@ vst3 = "0.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+backtrace = "0.3"
 
 # Proc-macro dependencies
 syn = { version = "3", features = ["full", "parsing", "printing", "extra-traits"] }

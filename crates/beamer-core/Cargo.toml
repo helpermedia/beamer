@@ -12,6 +12,10 @@ default = []
 # Measure what the host does and write it to the system log (see the
 # diagnostics module). For test builds only.
 diagnostics = []
+# Check in debug builds that process() neither allocates nor frees memory
+# (see the allocation_check module). A plugin turns it on through the
+# feature of the same name of `beamer`.
+allocation-check = ["dep:backtrace"]
 
 [lints]
 workspace = true
@@ -20,8 +24,14 @@ workspace = true
 # Internal utilities crate (zero external deps)
 beamer-utils = { workspace = true }
 log = { workspace = true }
+backtrace = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Installs the checking allocator, so it needs the feature.
+[[test]]
+name = "allocation_check"
+required-features = ["allocation-check"]
 
 [build-dependencies]
 cc = "1"

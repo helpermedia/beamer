@@ -62,7 +62,11 @@ pub fn init(config: &Config, format: &'static str) {
     // the configuration.
     #[cfg(feature = "diagnostics")]
     let level = Some(config.log_level.map_or(LogLevel::Info, |level| level.max(LogLevel::Info)));
-    #[cfg(not(feature = "diagnostics"))]
+    // A debug build with the allocation check logs its reports (errors),
+    // also without a level in the configuration.
+    #[cfg(all(not(feature = "diagnostics"), feature = "allocation-check", debug_assertions))]
+    let level = Some(config.log_level.map_or(LogLevel::Warn, |level| level.max(LogLevel::Warn)));
+    #[cfg(all(not(feature = "diagnostics"), not(all(feature = "allocation-check", debug_assertions))))]
     let level = config.log_level;
     let Some(level) = level else {
         return;

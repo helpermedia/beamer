@@ -111,3 +111,27 @@ impl Processor for GainProcessor {
         self.process_generic(buffer);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beamer::allocation_check;
+
+    #[test]
+    fn test_process_neither_allocates_nor_frees() {
+        let mut processor = Arc::new(GainModel::default()).prepare(());
+        let mut left = [0.5f32; 64];
+        let mut right = [0.5f32; 64];
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 2, 64);
+        let mut aux = AuxiliaryBuffers::empty();
+        let context = ProcessContext::with_empty_transport(48_000.0, 64);
+
+        let (_, counts) = allocation_check::count_in_process(|| {
+            processor.process(&mut buffer, &mut aux, &context);
+        });
+        // The check runs in debug builds with the `allocation-check` feature.
+        if allocation_check::is_active() {
+            assert!(counts.is_empty(), "{counts:?}");
+        }
+    }
+}

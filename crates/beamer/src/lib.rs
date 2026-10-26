@@ -96,6 +96,12 @@
 // Re-export sub-crates
 pub use beamer_core as core;
 
+/// A check in debug builds that `process()` neither allocates nor frees
+/// memory, with the `allocation-check` feature.
+///
+/// See [`beamer_core::allocation_check`] for documentation.
+pub use beamer_core::allocation_check;
+
 /// Plugin setup types for declaring host information requirements.
 ///
 /// See [`beamer_core::setup`] for documentation and examples.
@@ -168,12 +174,36 @@ macro_rules! export_plugin {
             ::core::panic!("{}", message);
         };
 
+        $crate::__allocation_check_allocator!();
+
         #[cfg(feature = "au")]
         $crate::au_impl::export_au!($config, $plugin);
 
         #[cfg(feature = "vst3")]
         $crate::vst3_impl::export_vst3!($config, $plugin);
     };
+}
+
+/// Install the checking allocator of the allocation check in the plugin, with
+/// the `allocation-check` feature in a debug build. A library cannot set the
+/// global allocator of the binary that uses it, so `export_plugin!` does.
+#[cfg(all(feature = "allocation-check", debug_assertions))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __allocation_check_allocator {
+    () => {
+        #[global_allocator]
+        static BEAMER_ALLOCATION_CHECK: $crate::core::allocation_check::CheckingAllocator =
+            $crate::core::allocation_check::CheckingAllocator;
+    };
+}
+
+/// Without the allocation check the plugin keeps the default allocator.
+#[cfg(not(all(feature = "allocation-check", debug_assertions)))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __allocation_check_allocator {
+    () => {};
 }
 
 /// Prelude module for convenient imports.

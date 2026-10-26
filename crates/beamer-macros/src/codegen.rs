@@ -666,7 +666,7 @@ fn generate_load_state(ir: &ModelIR) -> TokenStream {
 }
 
 /// Generate the `Saved` trait implementation: the `State` fields of the
-/// struct, and saving and loading them with the parameters.
+/// struct, saved and loaded with the parameters.
 fn generate_saved_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();

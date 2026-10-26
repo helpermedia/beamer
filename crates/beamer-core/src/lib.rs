@@ -31,6 +31,7 @@
 //! - [`ProcessContext`] - Processing context with sample rate and transport
 
 pub mod active_buses;
+pub mod allocation_check;
 pub mod assets;
 pub mod audio_thread;
 pub mod buffer;
@@ -73,6 +74,7 @@ pub mod webview_dispatch;
 
 // Re-exports for convenience
 pub use active_buses::{ActiveBuses, BusNegotiation, BusRouting};
+pub use allocation_check::{AllocationCounts, Reaction};
 pub use audio_thread::ProcessScope;
 pub use buffer::{AuxiliaryBuffers, AuxInput, AuxOutput, Buffer};
 pub use buffer_storage::ProcessBufferStorage;

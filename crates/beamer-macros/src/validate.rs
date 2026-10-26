@@ -72,8 +72,8 @@ fn check_one_event_queue(ir: &ModelIR) -> syn::Result<()> {
 
 /// Check that no two parameter IDs of this struct hash to the same value.
 ///
-/// The id that hosts see is the hash of the whole path of a parameter, and
-/// only the root struct knows all paths. This check compares the ids as
+/// The id that hosts see is the hash of the whole path of a parameter. Only
+/// the root struct knows all paths. This check compares the ids as
 /// they are when the struct is the root, which is the common case. The
 /// format wrappers check the ids that are really in use, across nested
 /// structs, when a plugin instance is created (`check_unique_ids()`).

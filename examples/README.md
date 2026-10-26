@@ -16,6 +16,8 @@ cargo xtask bundle <example> --auv2 --vst3 --release    # Multiple formats at on
 
 See [docs/BUILDING.md](../docs/BUILDING.md) for prerequisites, all options and testing.
 
+The examples turn on the `allocation-check` feature: a debug build logs any memory that `process()` allocates or frees (see [Allocation Check](../docs/REFERENCE.md#allocation-check)). The gain example has a test of it.
+
 ## Available Examples
 
 ### [Gain](gain/)
