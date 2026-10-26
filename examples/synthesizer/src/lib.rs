@@ -165,7 +165,6 @@ impl Model for SynthesizerModel {
             voices: [Voice::new(); NUM_VOICES],
             sample_rate: setup.hz(),
             time_counter: 0,
-            pending_events: Vec::with_capacity(64),
             pitch_bend: 0.0,
             mod_wheel: 0.0,
             vibrato_phase: 0.0,
@@ -522,8 +521,6 @@ pub struct SynthesizerProcessor {
     sample_rate: f64,
     /// Voice allocation time counter
     time_counter: u64,
-    /// Pending MIDI events for sample-accurate processing
-    pending_events: Vec<MidiEvent<'static>>,
     /// Current pitch bend value (-1.0 to +1.0)
     pitch_bend: f64,
     /// Current mod wheel value (0.0 to 1.0)
@@ -598,9 +595,11 @@ impl SynthesizerProcessor {
         &mut self,
         buffer: &mut Buffer<S>,
         _aux: &mut AuxiliaryBuffers<S>,
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
         let num_samples = buffer.num_samples();
+        // The MIDI of this call, sorted by sample offset.
+        let events = context.midi_input();
         // Stereo as listed; a single channel gets the left side.
         let num_channels = buffer.num_channels().min(2);
         let waveform = self.model.waveform.get();
@@ -610,8 +609,8 @@ impl SynthesizerProcessor {
 
         for sample_idx in 0..num_samples {
             // Process MIDI events at this sample offset (sample-accurate)
-            while event_idx < self.pending_events.len() {
-                let event = &self.pending_events[event_idx];
+            while event_idx < events.len() {
+                let event = &events[event_idx];
                 if event.sample_offset as usize <= sample_idx {
                     match &event.event {
                         // A note-on with velocity 0 arrives as a note-off.
@@ -727,8 +726,6 @@ impl SynthesizerProcessor {
                 buffer.channel(ch)[sample_idx] = value;
             }
         }
-
-        self.pending_events.clear();
     }
 }
 
@@ -755,13 +752,6 @@ impl Processor for SynthesizerProcessor {
         self.process_generic(buffer, aux, context);
     }
 
-    fn process_midi(&mut self, input: &[MidiEvent], _output: &mut MidiBuffer) {
-        // Store events for sample-accurate processing in process(). SysEx,
-        // which borrows its bytes for this call only, is left out: the
-        // synthesizer does not use it.
-        self.pending_events.extend(input.iter().filter_map(MidiEvent::to_static));
-    }
-
     fn tail_samples(&self) -> u32 {
         // The longest release (5 seconds) and the filter fading out after
         // it: at most about 2 seconds at the lowest cutoff with the most
@@ -773,6 +763,19 @@ impl Processor for SynthesizerProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_a_note_in_the_context_starts_at_its_offset() {
+        let mut processor = Arc::new(SynthesizerModel::default()).prepare(SampleRate(44100.0));
+        let events = [MidiEvent::note_on(32, 0, 60, 1.0, 60, 0.0, 0)];
+        let (mut left, mut right) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 0, 64);
+        let mut aux = AuxiliaryBuffers::empty();
+        let context = ProcessContext::new(44100.0, 64, Transport::default()).with_midi_input(&events);
+        processor.process(&mut buffer, &mut aux, &context);
+        assert!(left[..32].iter().all(|sample| *sample == 0.0), "silent before the note");
+        assert!(left[32..].iter().any(|sample| *sample != 0.0), "the note sounds");
+    }
 
     #[test]
     fn test_a_release_lasts_its_time() {

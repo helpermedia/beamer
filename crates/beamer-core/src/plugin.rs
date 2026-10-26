@@ -750,6 +750,11 @@ pub trait Processor: Send + 'static {
     /// Plugins can transform events and add them to the output buffer, pass
     /// them through unchanged or consume them entirely.
     ///
+    /// This is for MIDI effects and for plugins that send MIDI. An
+    /// instrument plays the same events in `process()`, where
+    /// [`ProcessContext::midi_input()`] holds them, without keeping them in
+    /// between.
+    ///
     /// # Arguments
     /// * `input` - Slice of incoming MIDI events (sorted by sample_offset)
     /// * `output` - Buffer to write output MIDI events to

@@ -1408,9 +1408,12 @@ impl<P: Model> Vst3Processor<P> {
                     model.set_normalized(point.id, point.value);
                 }
 
-                // The plugin's MIDI output gets the offsets of the whole block.
+                // The MIDI of this sub-block goes to process_midi() and is in
+                // the context of the process() call that follows. The
+                // plugin's MIDI output gets the offsets of the whole block.
+                let midi = block.midi.into_slice();
                 let output_start = midi_output.len();
-                processor.process_midi(block.midi.as_slice(), midi_output);
+                processor.process_midi(midi, midi_output);
                 offset_from_sub_block(midi_output.events_mut().split_at(output_start).1, block.start);
 
                 let block_transport = transport.advanced_by(block.start, sample_rate);
@@ -1419,6 +1422,7 @@ impl<P: Model> Vst3Processor<P> {
                 } else {
                     CoreProcessContext::new(sample_rate, block.len, block_transport)
                 };
+                let context = context.with_midi_input(midi);
                 #[cfg(feature = "diagnostics")]
                 let context = context.with_diagnostics(self.diagnostics.state());
                 process_range(processor, block.start, block.len, &context);
@@ -4219,6 +4223,10 @@ mod tests {
         /// thread.
         static CC_PROCESSOR_MIDI: std::cell::RefCell<Vec<Vec<beamer_core::MidiEvent<'static>>>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        /// The SysEx payloads a `CcProcessor` read from the context of its
+        /// `process` calls on this thread.
+        static CC_PROCESSOR_SYSEX: std::cell::RefCell<Vec<Vec<u8>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     /// A plugin that gets the mod wheel as a parameter change and sends
@@ -4228,7 +4236,12 @@ mod tests {
         parameters: NoParameters,
     }
 
-    struct CcProcessor;
+    #[derive(Default)]
+    struct CcProcessor {
+        /// The offsets of the MIDI the last `process_midi` call got, for
+        /// the `process` call that follows.
+        midi_offsets: Vec<u32>,
+    }
 
     beamer_core::__forward_model!(CcModel, parameters);
 
@@ -4237,7 +4250,7 @@ mod tests {
         type Processor = CcProcessor;
 
         fn prepare(self: Arc<Self>, _setup: ()) -> CcProcessor {
-            CcProcessor
+            CcProcessor::default()
         }
 
         fn midi_cc_config(&self) -> Option<beamer_core::MidiCcConfig> {
@@ -4250,11 +4263,19 @@ mod tests {
             &mut self,
             _buffer: &mut beamer_core::Buffer,
             _aux: &mut beamer_core::AuxiliaryBuffers,
-            _context: &CoreProcessContext,
+            context: &CoreProcessContext,
         ) {
+            let in_context: Vec<u32> = context.midi_input().iter().map(|event| event.sample_offset).collect();
+            assert_eq!(in_context, std::mem::take(&mut self.midi_offsets), "the context holds the MIDI process_midi() got");
+            for event in context.midi_input() {
+                if let MidiEventKind::SysEx(payload) = event.event {
+                    CC_PROCESSOR_SYSEX.with(|payloads| payloads.borrow_mut().push(payload.to_vec()));
+                }
+            }
         }
 
         fn process_midi(&mut self, input: &[beamer_core::MidiEvent], output: &mut beamer_core::MidiBuffer) {
+            self.midi_offsets = input.iter().map(|event| event.sample_offset).collect();
             // SysEx borrows its bytes for this call only and is not recorded.
             let kept = input.iter().filter_map(MidiEvent::to_static).collect();
             CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().push(kept));
@@ -4375,6 +4396,7 @@ mod tests {
             event
         };
         let events = vec![data_event(5, &fits), data_event(9, &too_long)];
+        CC_PROCESSOR_SYSEX.with(|payloads| payloads.borrow_mut().clear());
         let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(events) });
         let output = vst3::ComWrapper::new(Events::default());
         let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
@@ -4389,6 +4411,9 @@ mod tests {
         // SAFETY: The event is a data event whose bytes stay valid until the next process call.
         let bytes = unsafe { std::slice::from_raw_parts(sent[0].__field0.data.bytes, sent[0].__field0.data.size as usize) };
         assert_eq!(bytes, fits);
+        // The plugin read the payload from the context of its process() call.
+        let read = CC_PROCESSOR_SYSEX.with(|payloads| payloads.borrow().clone());
+        assert_eq!(read, [fits[1..5].to_vec()]);
         let warnings: Vec<_> = wrapper.process_warnings.take().collect();
         assert_eq!(warnings, [ProcessWarning::SysExInputDropped]);
     }

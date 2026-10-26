@@ -1101,11 +1101,13 @@ pub trait Processor: Send + 'static {
     );
 
     /// Process MIDI events. Called right before every process() call,
-    /// with the events of that call, timed from its first sample.
+    /// with the events of that call, timed from its first sample. For MIDI
+    /// effects and MIDI output: an instrument plays the same events in
+    /// process() from context.midi_input().
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         // Default: pass through.
         for event in input {
-            output.push(event.clone());
+            output.push(*event);
         }
     }
 
@@ -1254,7 +1256,7 @@ When a plugin has factory presets, the AU wrappers map MIDI Program Change (PC) 
 | ≥N | Pass through to plugin (out of range) |
 
 **Behavior:**
-- PC events within the preset range are applied and **filtered out** (not passed to `process_midi()`)
+- PC events within the preset range are applied and **filtered out** (not passed to `process_midi()` and not in `context.midi_input()`)
 - PC events outside the preset range pass through unchanged
 - When multiple PC events arrive in the same buffer, they are processed in order (last one wins)
 - Plugins without factory presets pass all PC events through unchanged
@@ -1364,7 +1366,7 @@ The type `&'a mut [&'a mut T]` is **invariant** because mutable references don't
 
 ### ProcessContext and Transport
 
-The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes the sample rate, the length of this call (a sub-block with [sample-accurate automation](#sample-accurate-automation)) and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
+The `ProcessContext` provides essential timing and transport information for each audio processing call. This includes the sample rate, the length of this call (a sub-block with [sample-accurate automation](#sample-accurate-automation)), the MIDI input of this call and detailed DAW transport state for tempo-synced effects, sequencers and time-based processing.
 
 **What you can do:**
 - Sync delays/LFOs to host tempo
@@ -1381,10 +1383,15 @@ pub struct ProcessContext<'a> {
     pub transport: Transport,
     // The MIDI CC state, when the plugin asks for it (see MIDI CC Emulation).
     midi_cc_state: Option<&'a MidiCcState>,
+    // The MIDI input of this call.
+    midi_input: &'a [MidiEvent<'a>],
 }
 
 impl<'a> ProcessContext<'a> {
     pub fn midi_cc(&self) -> Option<&MidiCcState>;
+    // The events process_midi() got right before this call, sorted by
+    // sample offset. Empty for a plugin without MIDI input.
+    pub fn midi_input(&self) -> &'a [MidiEvent<'a>];
     pub fn samples_per_beat(&self) -> Option<f64>;
     pub fn buffer_duration(&self) -> f64;
     // A value for the log of a diagnostics build. Does nothing otherwise.
@@ -1846,7 +1853,27 @@ category = "effect"
 midi_input = true
 ```
 
-A plugin without MIDI input gets no events in `process_midi()`. The MIDI a plugin without MIDI output writes is dropped.
+A plugin without MIDI input gets no events in `process_midi()` or in `context.midi_input()`. The MIDI a plugin without MIDI output writes is dropped.
+
+An instrument plays its notes in `process()`, from the same events in `context.midi_input()`, so it does not keep them in between:
+
+```rust
+fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    let events = context.midi_input();
+    let mut next = 0;
+    for sample in 0..buffer.num_samples() {
+        while next < events.len() && events[next].sample_offset as usize <= sample {
+            if let MidiEventKind::NoteOn(note) = events[next].event {
+                self.start_voice(note.pitch, note.velocity);
+            }
+            next += 1;
+        }
+        // Render one sample.
+    }
+}
+```
+
+A plugin that keeps events across calls (an arpeggiator, a MIDI delay) stores `event.to_static()`, which is `None` for a SysEx event: copy its payload to keep it.
 
 ### SysEx Handling
 

@@ -1670,11 +1670,15 @@ impl<S: RenderSample> RenderBlock<S> {
                 // If application fails, continue processing (parameters may already be correct).
                 let _ = plugin_guard.apply_parameter_events(block.changes);
 
-                // The MIDI of this sub-block, for the process() call that
-                // follows. Its MIDI output gets the offsets of the whole
-                // buffer.
+                // The MIDI of this sub-block, without the program changes
+                // that select a preset, goes to process_midi() and is in the
+                // context of the process() call that follows. Its MIDI output
+                // gets the offsets of the whole buffer.
+                let mut events = block.midi;
+                let kept = plugin_guard.apply_preset_program_changes(events.reborrow());
+                let midi = events.split_at(kept).0.into_slice();
                 let output_start = midi_output.len();
-                plugin_guard.process_midi(block.midi, midi_output);
+                plugin_guard.process_midi(midi, midi_output);
                 offset_from_sub_block(midi_output.events_mut().split_at(output_start).1, block.start);
 
                 let block_transport = transport.advanced_by(block.start, self.sample_rate);
@@ -1686,6 +1690,7 @@ impl<S: RenderSample> RenderBlock<S> {
                 } else {
                     ProcessContext::new(self.sample_rate, block.len, block_transport)
                 };
+                let context = context.with_midi_input(midi);
                 #[cfg(feature = "diagnostics")]
                 let context = match self.shared.diagnostics() {
                     Some(diagnostics) => context.with_diagnostics(diagnostics.state()),
@@ -1717,8 +1722,10 @@ impl<S: RenderSample> RenderBlock<S> {
         // lost. No process() call follows, so the MIDI keeps the offsets of
         // the whole buffer.
         let _ = plugin_guard.apply_parameter_events(unreached.changes);
-        if render_samples == 0 || !unreached.midi.is_empty() {
-            plugin_guard.process_midi(unreached.midi, midi_output);
+        let mut unreached_midi = unreached.midi;
+        if render_samples == 0 || !unreached_midi.is_empty() {
+            let kept = plugin_guard.apply_preset_program_changes(unreached_midi.reborrow());
+            plugin_guard.process_midi(unreached_midi.split_at(kept).0.into_slice(), midi_output);
         }
         self.send_midi_output(midi_output, midi_output_sink);
 

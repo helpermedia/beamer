@@ -31,6 +31,7 @@
 //! }
 //! ```
 
+use crate::midi::MidiEvent;
 use crate::midi_cc_state::MidiCcState;
 
 // =============================================================================
@@ -416,6 +417,10 @@ pub struct ProcessContext<'a> {
     /// `midi_cc_config()`. Use [`ProcessContext::midi_cc()`] to access.
     midi_cc_state: Option<&'a MidiCcState>,
 
+    /// The MIDI input of this call. Use [`ProcessContext::midi_input()`] to
+    /// access.
+    midi_input: &'a [MidiEvent<'a>],
+
     /// Where `report_value` notes values, in a diagnostics build.
     #[cfg(feature = "diagnostics")]
     diagnostics: Option<&'a crate::diagnostics::DiagnosticsState>,
@@ -432,6 +437,7 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport,
             midi_cc_state: None,
+            midi_input: &[],
             #[cfg(feature = "diagnostics")]
             diagnostics: None,
         }
@@ -452,6 +458,7 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport,
             midi_cc_state: Some(midi_cc_state),
+            midi_input: &[],
             #[cfg(feature = "diagnostics")]
             diagnostics: None,
         }
@@ -467,6 +474,7 @@ impl<'a> ProcessContext<'a> {
             num_samples,
             transport: Transport::default(),
             midi_cc_state: None,
+            midi_input: &[],
             #[cfg(feature = "diagnostics")]
             diagnostics: None,
         }
@@ -491,6 +499,42 @@ impl<'a> ProcessContext<'a> {
     #[inline]
     pub fn midi_cc(&self) -> Option<&MidiCcState> {
         self.midi_cc_state
+    }
+
+    /// The MIDI input of this call: the events `process_midi()` got right
+    /// before it, sorted by sample offset, with offsets from the first
+    /// sample of this call. Empty for a plugin without MIDI input.
+    ///
+    /// An instrument plays its notes from here, at their offsets. A SysEx
+    /// payload is borrowed for this call only.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
+    ///     let mut events = context.midi_input().iter().peekable();
+    ///     for sample in 0..buffer.num_samples() {
+    ///         while let Some(event) = events.next_if(|event| event.sample_offset as usize <= sample) {
+    ///             if let MidiEventKind::NoteOn(note) = event.event {
+    ///                 self.start_voice(note.pitch, note.velocity);
+    ///             }
+    ///         }
+    ///         // Render one sample.
+    ///     }
+    /// }
+    /// ```
+    #[inline]
+    pub fn midi_input(&self) -> &'a [MidiEvent<'a>] {
+        self.midi_input
+    }
+
+    /// The same context with the MIDI input of this call.
+    ///
+    /// This is called by the format wrappers, not by plugin code.
+    #[inline]
+    pub fn with_midi_input(mut self, events: &'a [MidiEvent<'a>]) -> Self {
+        self.midi_input = events;
+        self
     }
 
     /// The same context with the diagnostics state that
@@ -560,6 +604,7 @@ impl Default for ProcessContext<'_> {
             num_samples: 0,
             transport: Transport::default(),
             midi_cc_state: None,
+            midi_input: &[],
             #[cfg(feature = "diagnostics")]
             diagnostics: None,
         }

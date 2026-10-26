@@ -36,7 +36,7 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, Model,
-    MidiBuffer, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
+    MidiBuffer, MidiEvent, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
     WebViewEventQueue, MAX_AUX_BUSES,
 };
 
@@ -357,20 +357,8 @@ where
         self.state.midi_cc_state()
     }
 
-    fn process_midi(&mut self, mut input: MidiEventsMut<'_>, output: &mut MidiBuffer) {
+    fn apply_preset_program_changes(&mut self, mut events: MidiEventsMut<'_>) -> usize {
         use beamer_core::MidiEventKind;
-
-        // Check if we have factory presets for automatic MIDI PC mapping
-        let preset_count = P::PRESETS.len();
-
-        let Some(Prepared { processor, .. }) = &mut self.state.prepared else {
-            // Not prepared - pass through events unchanged
-            for event in input.as_slice() {
-                let _ = output.push(*event);
-            }
-            return;
-        };
-        let model: &P = &self.state.model;
 
         // =========================================================================
         // MIDI Program Change to Factory Preset Mapping
@@ -386,36 +374,39 @@ where
         // the mapping of program changes to presets automatically.
         // =========================================================================
 
-        if preset_count > 0 {
-            // Check if any PC events map to valid factory presets
-            let has_preset_pc = input.as_slice().iter().any(|e| {
-                matches!(&e.event, MidiEventKind::ProgramChange(pc) if (pc.program as usize) < preset_count)
-            });
+        let preset_count = P::PRESETS.len();
+        if preset_count == 0 || self.state.prepared.is_none() {
+            return events.len();
+        }
+        let model: &P = &self.state.model;
 
-            if has_preset_pc {
-                // Apply the presets of the matching program changes and move
-                // the other events to the front, in their order. This works
-                // in the render call's own buffer, without allocating.
-                let mut kept = 0;
-                for index in 0..input.len() {
-                    if let MidiEventKind::ProgramChange(pc) = &input.as_slice()[index].event {
-                        if (pc.program as usize) < preset_count {
-                            P::PRESETS[pc.program as usize].apply(model);
-                            continue;
-                        }
-                    }
-                    input.swap(kept, index);
-                    kept += 1;
+        // Apply the presets of the matching program changes and move the
+        // other events to the front, in their order. This works in the
+        // render call's own buffer, without allocating.
+        let mut kept = 0;
+        for index in 0..events.len() {
+            if let MidiEventKind::ProgramChange(pc) = &events.as_slice()[index].event {
+                if (pc.program as usize) < preset_count {
+                    P::PRESETS[pc.program as usize].apply(model);
+                    continue;
                 }
+            }
+            events.swap(kept, index);
+            kept += 1;
+        }
+        kept
+    }
 
-                // Process remaining events through the plugin
-                processor.process_midi(input.split_at(kept).0.into_slice(), output);
-                return;
+    fn process_midi(&mut self, input: &[MidiEvent<'_>], output: &mut MidiBuffer) {
+        match &mut self.state.prepared {
+            Some(Prepared { processor, .. }) => processor.process_midi(input, output),
+            // Not prepared: pass the events through unchanged.
+            None => {
+                for event in input {
+                    let _ = output.push(*event);
+                }
             }
         }
-
-        // No PC filtering needed - process all events directly
-        processor.process_midi(input.as_slice(), output);
     }
 
     fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch> {
@@ -822,6 +813,14 @@ mod tests {
     // MIDI Program Change to Factory Preset Tests
     // =========================================================================
 
+    /// Run `input` through the program change filter and process_midi(), as
+    /// the render block does for one sub-block.
+    fn run_midi(processor: &mut impl AuPluginInstance, input: &mut MidiBuffer, output: &mut MidiBuffer) {
+        let mut events = input.events_mut();
+        let kept = processor.apply_preset_program_changes(events.reborrow());
+        processor.process_midi(events.split_at(kept).0.into_slice(), output);
+    }
+
     /// A MIDI buffer that holds `events`.
     fn midi(events: &[MidiEvent]) -> Box<MidiBuffer> {
         let mut buffer = MidiBuffer::new_boxed(64);
@@ -842,7 +841,7 @@ mod tests {
         let mut input = midi(&[MidiEvent::program_change(0, 0, 1)]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // PC event should be filtered out (preset was applied)
         assert_eq!(output.len(), 0, "PC event should be filtered out");
@@ -868,7 +867,7 @@ mod tests {
         let mut input = midi(&[MidiEvent::program_change(0, 0, 10)]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // Out-of-range PC should pass through
         assert_eq!(output.len(), 1, "Out-of-range PC should pass through");
@@ -900,7 +899,7 @@ mod tests {
         ]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // All events should pass through
         assert_eq!(output.len(), 3, "Non-PC events should pass through");
@@ -920,7 +919,7 @@ mod tests {
         ]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // 5 input events, but valid PC (program 2) should be filtered
         // Remaining: CC, CC, PC(50), CC = 4 events
@@ -950,7 +949,7 @@ mod tests {
         let mut input = midi(&[MidiEvent::program_change(0, 0, 0)]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // PC should be filtered
         assert_eq!(output.len(), 0);
@@ -976,7 +975,7 @@ mod tests {
         ]);
         let mut output = MidiBuffer::new_boxed(0);
 
-        processor.process_midi(input.events_mut(), &mut output);
+        run_midi(&mut processor, &mut input, &mut output);
 
         // All PC events should be filtered
         assert_eq!(output.len(), 0);
@@ -1398,7 +1397,8 @@ mod tests {
 
     thread_local! {
         /// What the `RecordingProcessor` saw on this thread: per process()
-        /// call its length and the offsets of the MIDI events it got.
+        /// call its length and the offsets of the MIDI events it got, which
+        /// its context holds too.
         static RECORDED: std::cell::RefCell<Vec<(usize, Vec<u32>)>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
@@ -1420,6 +1420,8 @@ mod tests {
         type Setup = ();
         type Processor = RecordingProcessor;
 
+        const PRESETS: &'static [Preset<Self>] = &[Preset::new("Quiet", |m| m.fields.gain.set_normalized(0.25))];
+
         fn prepare(self: Arc<Self>, _: ()) -> Self::Processor {
             RecordingProcessor::default()
         }
@@ -1430,9 +1432,11 @@ mod tests {
             &mut self,
             buffer: &mut Buffer,
             _aux: &mut AuxiliaryBuffers,
-            _context: &ProcessContext,
+            context: &ProcessContext,
         ) {
             let offsets = std::mem::take(&mut self.midi_offsets);
+            let in_context: Vec<u32> = context.midi_input().iter().map(|event| event.sample_offset).collect();
+            assert_eq!(in_context, offsets, "the context holds the MIDI process_midi() got");
             RECORDED.with(|recorded| recorded.borrow_mut().push((buffer.num_samples(), offsets)));
         }
 
@@ -1459,20 +1463,33 @@ mod tests {
     /// and a note at sample 40. Returns what each process() call got (its
     /// length and its MIDI offsets) and the MIDI offsets the host got back.
     fn render_change_between_notes(settings: RenderSettings) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
-        use crate::render::test_events::{link, midi_event, parameter_event_at};
-        use crate::render::{AURenderEventType, MidiOutputSink};
-
-        let plugin = boxed(AuProcessor::<RecordingModel>::new());
-        let block = render_block_with(&plugin, ProcessMode::Realtime, settings);
-        let mut input = StereoList::filled(0.5);
-        let mut output = StereoList::filled(0.0);
+        use crate::render::test_events::{midi_event, parameter_event_at};
+        use crate::render::AURenderEventType;
 
         let gain = u64::from(gain_id());
-        let mut events = vec![
+        let events = vec![
             midi_event(10, [0x90, 60, 100]),
             parameter_event_at(AURenderEventType::Parameter as u8, 32, gain, -6.0, 0),
             midi_event(40, [0x90, 64, 100]),
         ];
+        let plugin = boxed(AuProcessor::<RecordingModel>::new());
+        render_recording(&plugin, settings, events)
+    }
+
+    /// Render a buffer with `events` through the recording plugin. Returns
+    /// what each process() call got (its length and its MIDI offsets) and
+    /// the MIDI offsets the host got back.
+    fn render_recording(
+        plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
+        settings: RenderSettings,
+        mut events: Vec<crate::render::AURenderEvent>,
+    ) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
+        use crate::render::test_events::link;
+        use crate::render::MidiOutputSink;
+
+        let block = render_block_with(plugin, ProcessMode::Realtime, settings);
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
         let list = link(&mut events);
 
         let mut sent: Vec<u32> = Vec::new();
@@ -1512,6 +1529,24 @@ mod tests {
 
         // The host gets the output at the offsets of the whole buffer.
         assert_eq!(sent, [10, 40]);
+    }
+
+    #[test]
+    fn test_a_preset_program_change_reaches_neither_call() {
+        use crate::render::test_events::midi_event;
+
+        // Program 0 selects the preset; program 5 is out of range and stays.
+        let events = vec![
+            midi_event(10, [0x90, 60, 100]),
+            midi_event(20, [0xC0, 0, 0]),
+            midi_event(30, [0xC0, 5, 0]),
+        ];
+        let plugin = boxed(AuProcessor::<RecordingModel>::new());
+        let (recorded, sent) = render_recording(&plugin, ALL_SETTINGS, events);
+        assert_eq!(recorded, [(FRAMES, vec![10, 30])]);
+        assert_eq!(sent, [10, 30]);
+        let model = plugin.lock().unwrap().shared_model();
+        assert_eq!(model.parameter_store().get_normalized(gain_id()), 0.25);
     }
 
     #[test]

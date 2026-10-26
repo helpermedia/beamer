@@ -168,7 +168,6 @@ impl Model for DrumsModel {
             voices,
             sample_rate: setup.hz(),
             time_counter: 0,
-            pending_events: Vec::with_capacity(64),
             render_buffers: std::array::from_fn(|_| vec![0.0; MAX_BUFFER_SIZE]),
             model: self,
         }
@@ -268,7 +267,6 @@ pub struct DrumsProcessor {
     voices: [[DrumVoice; VOICES_PER_DRUM]; 4], // [drum_type][voice_index]
     sample_rate: f64,
     time_counter: u64,
-    pending_events: Vec<MidiEvent<'static>>,
     render_buffers: [Vec<f64>; 4], // [kick, snare, hihat, crash]
 }
 
@@ -359,9 +357,11 @@ impl DrumsProcessor {
         &mut self,
         buffer: &mut Buffer<S>,
         aux: &mut AuxiliaryBuffers<S>,
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
         let num_samples = buffer.num_samples();
+        // The MIDI of this call, sorted by sample offset.
+        let events = context.midi_input();
 
         // Clear pre-allocated render buffers (no heap allocation)
         for buf in &mut self.render_buffers {
@@ -374,8 +374,8 @@ impl DrumsProcessor {
         // Sample-accurate processing loop
         for sample_idx in 0..num_samples {
             // Process MIDI events at this sample offset
-            while event_idx < self.pending_events.len() {
-                let event = &self.pending_events[event_idx];
+            while event_idx < events.len() {
+                let event = &events[event_idx];
                 if event.sample_offset as usize <= sample_idx {
                     if let MidiEventKind::NoteOn(note_on) = &event.event {
                         self.handle_note_on(note_on.note_id, note_on.pitch, note_on.velocity);
@@ -427,8 +427,6 @@ impl DrumsProcessor {
                 crash_out[i] = S::from_f64(*sample);
             }
         }
-
-        self.pending_events.clear();
     }
 }
 
@@ -439,12 +437,6 @@ impl Processor for DrumsProcessor {
 
     fn process_f64(&mut self, buffer: &mut Buffer<f64>, aux: &mut AuxiliaryBuffers<f64>, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
-    }
-
-    fn process_midi(&mut self, input: &[MidiEvent], _output: &mut MidiBuffer) {
-        // Kept until process(). SysEx, which borrows its bytes for this call
-        // only, is left out: the drums do not use it.
-        self.pending_events.extend(input.iter().filter_map(MidiEvent::to_static));
     }
 }
 
@@ -630,4 +622,23 @@ fn one_pole_lowpass(input: f64, state: &mut f64, cutoff: f64, sample_rate: f64) 
     let alpha = omega / (1.0 + omega);
     *state += alpha * (input - *state);
     *state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_a_note_in_the_context_starts_at_its_offset() {
+        let mut processor = Arc::new(DrumsModel::default()).prepare(SampleRate(44100.0));
+        // The kick, on the main bus.
+        let events = [MidiEvent::note_on(32, 9, 36, 1.0, 36, 0.0, 0)];
+        let mut kick = vec![0.0f32; 64];
+        let mut buffer = Buffer::new([&mut kick[..]], std::iter::empty(), 0, 64);
+        let mut aux = AuxiliaryBuffers::empty();
+        let context = ProcessContext::new(44100.0, 64, Transport::default()).with_midi_input(&events);
+        processor.process(&mut buffer, &mut aux, &context);
+        assert!(kick[..32].iter().all(|sample| *sample == 0.0), "silent before the note");
+        assert!(kick[32..].iter().any(|sample| *sample != 0.0), "the kick sounds");
+    }
 }

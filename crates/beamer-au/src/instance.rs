@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::error::PluginResult;
 use beamer_core::{
-    ActiveBuses, AuxiliaryBuffers, Buffer, MidiBuffer, MidiEventsMut, ProcessContext, ProcessMode,
+    ActiveBuses, AuxiliaryBuffers, Buffer, MidiBuffer, MidiEvent, MidiEventsMut, ProcessContext, ProcessMode,
     SharedModel, WebViewDispatch, WebViewEventQueue,
 };
 
@@ -195,6 +195,16 @@ pub trait AuPluginInstance: Send + 'static {
         None // Default implementation
     }
 
+    /// Apply the factory presets that MIDI program changes select and move
+    /// the other events to the front, in their order. Returns how many
+    /// events are left; those go to `process_midi()` and into the context of
+    /// the `process()` call that follows.
+    ///
+    /// The default implementation keeps every event.
+    fn apply_preset_program_changes(&mut self, events: MidiEventsMut<'_>) -> usize {
+        events.len()
+    }
+
     /// Process MIDI events (transform input into output).
     ///
     /// This method allows plugins to process, transform or generate MIDI events.
@@ -202,7 +212,8 @@ pub trait AuPluginInstance: Send + 'static {
     ///
     /// # Arguments
     /// * `input` - The MIDI events of one `process()` call, timed from its
-    ///   first sample, which the instance may reorder
+    ///   first sample, or the events no `process()` call reached, timed from
+    ///   the start of the render call
     /// * `output` - Output MIDI buffer to write events to, with the events of
     ///   the earlier calls of the render call before them
     ///
@@ -210,9 +221,9 @@ pub trait AuPluginInstance: Send + 'static {
     /// - MIDI effects: Transpose notes, change velocities, add effects
     /// - Instruments: Generate note-off events for voice management
     /// - Arpeggiators: Transform held notes into patterns
-    fn process_midi(&mut self, input: MidiEventsMut<'_>, output: &mut MidiBuffer) {
+    fn process_midi(&mut self, input: &[MidiEvent<'_>], output: &mut MidiBuffer) {
         // Default: pass through all events
-        for event in input.as_slice() {
+        for event in input {
             output.push(*event);
         }
     }

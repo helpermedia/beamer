@@ -228,7 +228,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 - Mono buses via `BusLayout::MONO`, named with `BusInfo::main()` and `BusInfo::aux()`
 - MIDI input from the `instrument` category, without any setting
 - Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the levels are read once per hit
-- `process_midi()` with sample-accurate note triggering
+- Sample-accurate note triggering from `context.midi_input()` in `process()`
 - 16-voice polyphony (4 per drum type) with oldest-note stealing
 - Per-drum synthesis algorithms (sine, triangle, noise, metallic oscillators)
 - Velocity-sensitive response
