@@ -1687,6 +1687,39 @@ bool beamer_au_apply_preset(
  */
 bool beamer_au_produces_midi(BeamerAuInstanceHandle _Nullable instance);
 
+/**
+ * The SysEx bytes one render call holds in each direction for a plugin with
+ * MIDI input (sysex_bytes_per_block in Config.toml), 0 without MIDI input.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return Bytes, counting the F0 and F7 of each message.
+ */
+uint32_t beamer_au_get_sysex_input_bytes(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * The SysEx bytes one render call holds in each direction for a plugin with
+ * MIDI output (sysex_bytes_per_block in Config.toml), 0 without MIDI output.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return Bytes, counting the F0 and F7 of each message.
+ */
+uint32_t beamer_au_get_sysex_output_bytes(BeamerAuInstanceHandle _Nullable instance);
+
+/**
+ * Note SysEx messages from the host that were dropped before a render call:
+ * the queue was full or a message was larger than a render call holds.
+ *
+ * Thread Safety: Safe on the render thread (no lock, no allocation).
+ *
+ * @param instance Handle to the plugin instance.
+ * @param count Messages dropped.
+ */
+void beamer_au_note_sysex_input_dropped(BeamerAuInstanceHandle _Nullable instance, uint32_t count);
+
 // =============================================================================
 // MARK: - Diagnostics
 // =============================================================================

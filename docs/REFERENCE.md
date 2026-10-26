@@ -1878,9 +1878,8 @@ A plugin that keeps events across calls (an arpeggiator, a MIDI delay) stores `e
 ### SysEx Handling
 
 A SysEx event holds the payload of a message, without the F0 and F7 that
-frame it on the wire. The wrappers add them to outgoing messages in AU and
-VST3. The VST3 wrapper takes them off incoming ones. The AU formats do not
-pass SysEx input to the plugin yet.
+frame it on the wire. The wrappers take them off incoming messages and add
+them to outgoing ones, in AU and VST3.
 
 The payload is borrowed from the `MidiBuffer` the event is in. Each buffer
 keeps the SysEx bytes of a block in a pool that is allocated with it, so
@@ -1901,6 +1900,34 @@ sample dumps, raises it in `Config.toml`:
 ```toml
 sysex_bytes_per_block = 262144
 ```
+
+**SysEx input in each format:**
+
+- VST3: a data event of type SysEx, at its sample offset.
+- AUv2: the host calls `MusicDeviceSysEx` with a complete message and no
+  sample offset, from the render thread or another thread. The message
+  arrives at offset 0 of the next render call, before the other MIDI of that
+  call. A full queue or a message larger than `sysex_bytes_per_block` or
+  65,535 bytes drops it; the call still succeeds.
+- AUv3: one SysEx render event is one complete message, at its sample
+  offset. A message must start with F0; one without its F7 is taken as it
+  is. Anything else is dropped.
+
+Measured on macOS 26 with an AUv3 MIDI effect that passes SysEx on. The
+limits are in the system's AUv3 code, not in Beamer; they apply to any
+AUv3:
+
+- Out of process, a message longer than about 2,040 bytes does not arrive.
+- A message of 16,000 bytes sent through the AUv3's schedule block hangs the
+  host's thread in the system's event allocator (15,000 bytes still pass).
+- Opened through the v2 API, the system's bridge damages SysEx output after
+  its first 256 bytes.
+
+The AUv2 has none of these limits. In both AU formats a message holds at
+most 65,535 bytes, since the length fields of their MIDI structures have
+16 bits: longer SysEx output is dropped and logged as a warning. The AUv2
+takes messages up to that size (and `sysex_bytes_per_block`) in both
+directions.
 
 ### Note Expression (MPE)
 

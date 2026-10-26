@@ -339,7 +339,8 @@ each bus, whether the host processed in place, the MIDI it sent and the
 values the plugin reports with `context.report_value()` (see
 [ProcessContext](REFERENCE.md#processcontext-and-transport)). Separate
 lines report clicks, dropouts, samples that are not finite, aux inputs
-without input and the last SysEx message as the host sent it:
+without input and the last SysEx message as the host sent it, with the
+number of messages that were dropped:
 
 ```bash
 cargo xtask bundle compressor --auv2 --vst3 --install --diagnostics

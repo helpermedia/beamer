@@ -9,7 +9,7 @@ This crate provides **both AUv2 and AUv3** support through a shared C-ABI bridge
 - **Dual format**: AUv2 (`.component`) and AUv3 (`.appex`) from the same codebase
 - **Full AU lifecycle**: Allocate/deallocate render resources, parameter tree, state persistence
 - **Parameter automation**: Complete integration with host callbacks
-- **MIDI support**: MIDI 1.0 input from legacy events and UMP event lists, MIDI output with SysEx
+- **MIDI support**: MIDI 1.0 input from legacy events and UMP event lists, SysEx input and output
 - **Real-time safe**: Zero-allocation render path
 - **Auxiliary buses**: Sidechain and multi-bus support, with buses the host switches on and off
 - **In-place processing**: The main bus is processed in place and reported to the host as such

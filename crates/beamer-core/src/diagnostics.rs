@@ -285,6 +285,9 @@ pub struct DiagnosticsState {
     midi_output: AtomicU32,
     /// The last SysEx message as the host sent it.
     sysex: SysExCapture,
+    /// SysEx messages from the host that were dropped: larger than what was
+    /// left of the block's pool, or malformed.
+    sysex_dropped: AtomicU32,
     /// Clicks in the main output.
     output_clicks: AtomicU32,
     /// Clicks in the main input.
@@ -375,6 +378,11 @@ impl DiagnosticsState {
     /// if it sent any.
     pub fn note_sysex_input(&self, message: &[u8]) {
         self.sysex.note(message);
+    }
+
+    /// Note SysEx messages from the host that were dropped.
+    pub fn note_sysex_dropped(&self, count: u32) {
+        self.sysex_dropped.fetch_add(count, Ordering::Relaxed);
     }
 
     /// Note a value the plugin reports under `name`. See
@@ -884,6 +892,8 @@ fn report_lines(state: &DiagnosticsState, memory: &mut ReportMemory) -> Vec<Stri
             _ => format!("aux in {bus} has input"),
         });
     }
+    let dropped = state.sysex_dropped.swap(0, Ordering::Relaxed);
+    let dropped_text = if dropped > 0 { format!(" ({dropped} dropped)") } else { String::new() };
     if let Some((count, len, bytes)) = state.sysex.take() {
         let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let shown = if len > SYSEX_HEAD + SYSEX_TAIL {
@@ -891,7 +901,10 @@ fn report_lines(state: &DiagnosticsState, memory: &mut ReportMemory) -> Vec<Stri
         } else {
             hex.join(" ")
         };
-        lines.push(format!("SysEx in: {count} messages, last {len} bytes: {shown}"));
+        lines.push(format!("SysEx in: {count} messages{dropped_text}, last {len} bytes: {shown}"));
+    } else if dropped > 0 {
+        // Messages the wrapper dropped before it could note their bytes.
+        lines.push(format!("SysEx in: {dropped} dropped"));
     }
 
     lines
@@ -1244,6 +1257,26 @@ mod tests {
         assert_eq!(&bytes[..SYSEX_HEAD], &message[..SYSEX_HEAD]);
         assert_eq!(&bytes[SYSEX_HEAD..], &message[40 - SYSEX_TAIL..]);
         assert!(state.sysex.take().is_none());
+    }
+
+    #[test]
+    fn test_report_counts_dropped_sysex() {
+        let mut meter = meter();
+        let mut memory = ReportMemory::default();
+        meter.begin_block(64, None);
+        meter.end_block();
+        meter.state().note_sysex_input(&[0xf0, 0x7e, 0xf7]);
+        meter.state().note_sysex_input(&[0x41]);
+        meter.state().note_sysex_dropped(1);
+        let lines = report_lines(meter.state(), &mut memory);
+        assert_eq!(lines.last().map(String::as_str), Some("SysEx in: 2 messages (1 dropped), last 1 bytes: 41"));
+
+        // Messages dropped before their bytes were noted.
+        meter.begin_block(64, None);
+        meter.end_block();
+        meter.state().note_sysex_dropped(2);
+        let lines = report_lines(meter.state(), &mut memory);
+        assert_eq!(lines.last().map(String::as_str), Some("SysEx in: 2 dropped"));
     }
 
     #[test]

@@ -24,7 +24,8 @@ pub enum ProcessWarning {
     EventListTooLong = 8,
     /// More SysEx output in one block than its pool holds.
     SysExOutputOverflow = 16,
-    /// SysEx input that was dropped: more in one block than its pool holds.
+    /// SysEx input that was dropped: more in one block than its pool holds,
+    /// or a malformed message.
     SysExInputDropped = 32,
     /// A block longer than the host announced needed memory of its own
     /// (the host gave overlapping input and output buffers) and was
@@ -62,7 +63,7 @@ impl ProcessWarning {
                 "SysEx output messages were dropped: more bytes than one block holds (sysex_bytes_per_block)"
             }
             ProcessWarning::SysExInputDropped => {
-                "SysEx input messages were dropped: more bytes than one block holds (sysex_bytes_per_block)"
+                "SysEx input messages were dropped: more bytes than one block holds (sysex_bytes_per_block) or malformed"
             }
             ProcessWarning::BlockTooLong => {
                 "a block longer than the host announced had overlapping buffers and was rendered as silence"

@@ -483,21 +483,35 @@ fn buffer_offset(event_sample_time: i64, buffer_start: i64, num_samples: usize) 
     offset.clamp(0, last) as u32
 }
 
+/// What the extraction of a render call's MIDI found besides the events.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MidiExtraction {
+    /// The list did not end within the bound, possibly a damaged one.
+    pub list_too_long: bool,
+    /// SysEx messages that were dropped: malformed, or larger than what was
+    /// left of the buffer's pool.
+    pub sysex_dropped: u32,
+}
+
 /// Extract MIDI events from AU render event linked list.
 ///
 /// Iterates through the event list and converts MIDI events to beamer format.
-/// Handles both legacy MIDI 1.0 events and MIDI 2.0 UMP events. The sample
-/// offsets of the extracted events are relative to `buffer_start`, the sample
-/// time of the render timestamp.
+/// Handles legacy MIDI 1.0 events, SysEx events and MIDI 2.0 UMP events. The
+/// sample offsets of the extracted events are relative to `buffer_start`, the
+/// sample time of the render timestamp. `note_sysex` gets the bytes of each
+/// SysEx event as the host sent them.
 ///
 /// # Safety
-/// The `event_list` pointer must be valid or null.
+/// The `event_list` pointer must be valid or null. A SysEx event must be
+/// followed by its `length` bytes, from its `data` field on.
 pub unsafe fn extract_midi_events(
     event_list: *const AURenderEvent,
     buffer: &mut MidiBuffer,
     buffer_start: i64,
     num_samples: usize,
-) -> bool {
+    mut note_sysex: impl FnMut(&[u8]),
+) -> MidiExtraction {
+    let mut extraction = MidiExtraction::default();
     let mut event_ptr = event_list;
     let mut iterations = 0;
 
@@ -536,6 +550,26 @@ pub unsafe fn extract_midi_events(
                     {
                         buffer.push(beamer_event);
                     }
+                }
+            }
+            // SysEx: one event is one complete message, which starts with
+            // F0. Its bytes follow the event's `data` field, past the end of
+            // the struct.
+            9 => {
+                // SAFETY: event_type == 9 (MidiSysEx) uses the MIDI variant.
+                let midi_event = unsafe { &event.midi };
+                // SAFETY: The host places `length` bytes from `data` on, in
+                // the same allocation as the event (see the safety section).
+                let message = unsafe {
+                    std::slice::from_raw_parts(
+                        event_ptr.cast::<u8>().add(std::mem::offset_of!(AUMIDIEvent, data)),
+                        midi_event.length as usize,
+                    )
+                };
+                note_sysex(message);
+                let sample_offset = buffer_offset(midi_event.event_sample_time, buffer_start, num_samples);
+                if message.first() != Some(&0xF0) || !buffer.push(MidiEvent::sysex(sample_offset, message)) {
+                    extraction.sysex_dropped += 1;
                 }
             }
             // MIDI 2.0 UMP event list
@@ -603,8 +637,8 @@ pub unsafe fn extract_midi_events(
         event_ptr = unsafe { event.head.next };
     }
 
-    // The list did not end within the bound, possibly a damaged one.
-    !event_ptr.is_null()
+    extraction.list_too_long = !event_ptr.is_null();
+    extraction
 }
 
 /// Update MidiCcState from incoming MIDI events.
@@ -768,18 +802,27 @@ fn encode_midi_event(event: &MidiEventKind) -> Option<([u8; 3], usize)> {
     }
 }
 
+/// The longest SysEx message an Audio Unit passes in one event or packet:
+/// their length fields have 16 bits.
+const MAX_AU_SYSEX_BYTES: usize = u16::MAX as usize;
+
 /// Send the MIDI events a plugin produced to the host.
 ///
 /// Every event becomes one complete MIDI 1.0 message. Events without a MIDI 1.0
-/// encoding are skipped.
-fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) {
+/// encoding are skipped. Returns how many SysEx messages were dropped because
+/// they are longer than an Audio Unit passes.
+fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) -> u32 {
+    let mut dropped = 0;
     for (index, event) in output.as_slice().iter().enumerate() {
         match &event.event {
             MidiEventKind::SysEx(_) => {
                 // The event holds the payload. On the wire the message is
                 // framed by F0 and F7, as the buffer keeps it.
-                if let Some(message) = output.framed_sysex(index) {
-                    sink.send(event.sample_offset, message);
+                match output.framed_sysex(index) {
+                    Some(message) if message.len() <= MAX_AU_SYSEX_BYTES => {
+                        sink.send(event.sample_offset, message);
+                    }
+                    _ => dropped += 1,
                 }
             }
             other => {
@@ -789,6 +832,7 @@ fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) {
             }
         }
     }
+    dropped
 }
 
 // =============================================================================
@@ -1365,17 +1409,33 @@ impl<S: RenderSample> RenderBlock<S> {
         // Extract MIDI events from the AU render event linked list. A plugin
         // without MIDI input gets none, also from a host that sends them
         // anyway (an instrument's type takes MIDI).
-        // SAFETY: event_list is valid for this render call (provided by AU host)
-        let midi_list_too_long = self.settings.midi_input
-            && unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples) };
-        if midi_list_too_long {
+        let extraction = if self.settings.midi_input {
+            // The SysEx bytes as the host sent them, for the diagnostics log.
+            let note_sysex = |_message: &[u8]| {
+                #[cfg(feature = "diagnostics")]
+                if let Some(diagnostics) = self.shared.diagnostics() {
+                    diagnostics.state().note_sysex_input(_message);
+                }
+            };
+            // SAFETY: event_list is valid for this render call, from the AU
+            // host or the AUv2 shim, which places a SysEx message right after
+            // its event.
+            unsafe { extract_midi_events(event_list, midi_buffer, buffer_start_sample, num_samples, note_sysex) }
+        } else {
+            MidiExtraction::default()
+        };
+        if extraction.list_too_long {
             self.shared.note_render_warning(ProcessWarning::EventListTooLong);
         }
         if midi_buffer.has_overflowed() {
             self.shared.note_render_warning(ProcessWarning::MidiInputOverflow);
         }
-        if midi_buffer.has_sysex_overflowed() {
+        if extraction.sysex_dropped > 0 {
             self.shared.note_render_warning(ProcessWarning::SysExInputDropped);
+            #[cfg(feature = "diagnostics")]
+            if let Some(diagnostics) = self.shared.diagnostics() {
+                diagnostics.state().note_sysex_dropped(extraction.sysex_dropped);
+            }
         }
         #[cfg(feature = "diagnostics")]
         if let Some(diagnostics) = self.shared.diagnostics() {
@@ -1762,14 +1822,15 @@ impl<S: RenderSample> RenderBlock<S> {
         if let Some(diagnostics) = self.shared.diagnostics() {
             diagnostics.state().note_midi_output(midi_output.len());
         }
+        let mut sysex_dropped = false;
         if let Some(sink) = sink.filter(|_| self.settings.midi_output) {
-            send_midi_output(midi_output, sink);
+            sysex_dropped = send_midi_output(midi_output, sink) > 0;
         }
         if midi_output.has_overflowed() {
             self.shared.note_render_warning(ProcessWarning::MidiOutputOverflow);
         }
         // The output of a plugin without MIDI output goes nowhere anyway.
-        if midi_output.has_sysex_overflowed() && self.settings.midi_output {
+        if (midi_output.has_sysex_overflowed() && self.settings.midi_output) || sysex_dropped {
             self.shared.note_render_warning(ProcessWarning::SysExOutputOverflow);
         }
     }
@@ -2034,6 +2095,47 @@ pub(crate) mod test_events {
         }
     }
 
+    /// An event in memory of its own, followed by `trailing` bytes, as a
+    /// host lays out a SysEx event. The words keep it aligned.
+    pub(crate) fn stored(event: AURenderEvent, size: usize, trailing: &[u8]) -> Vec<u64> {
+        let mut words = vec![0u64; (size + trailing.len()).max(size_of::<AURenderEvent>()).div_ceil(8)];
+        let base = words.as_mut_ptr().cast::<u8>();
+        // SAFETY: The words hold the event and the bytes after it.
+        unsafe {
+            base.cast::<AURenderEvent>().write(event);
+            std::ptr::copy_nonoverlapping(trailing.as_ptr(), base.add(size), trailing.len());
+        }
+        words
+    }
+
+    /// A SysEx event at `time` with its message after the start of its
+    /// `data` field.
+    pub(crate) fn sysex_event(time: i64, message: &[u8]) -> Vec<u64> {
+        let event = AURenderEvent {
+            midi: AUMIDIEvent {
+                next: std::ptr::null(),
+                event_sample_time: time,
+                event_type: AURenderEventType::MidiSysEx as u8,
+                reserved: 0,
+                length: message.len() as u16,
+                cable: 0,
+                data: [0; 3],
+            },
+        };
+        stored(event, std::mem::offset_of!(AUMIDIEvent, data), message)
+    }
+
+    /// Link events in memory of their own into the list form the host
+    /// passes to render.
+    pub(crate) fn link_stored(events: &mut [Vec<u64>]) -> *const AURenderEvent {
+        for i in 1..events.len() {
+            let next: *const AURenderEvent = events[i].as_ptr().cast();
+            // SAFETY: Each entry starts with an event.
+            unsafe { (*events[i - 1].as_mut_ptr().cast::<AURenderEventHeader>()).next = next };
+        }
+        events[0].as_ptr().cast()
+    }
+
     /// Link the events into the list form the host passes to render.
     pub(crate) fn link(events: &mut [AURenderEvent]) -> *const AURenderEvent {
         for i in 1..events.len() {
@@ -2081,6 +2183,9 @@ mod tests {
         assert_eq!(offset_of!(MIDIEventPacket, word_count), 8);
 
         assert_eq!(std::mem::align_of::<AURenderEvent>(), 4);
+        // The AUv2 shim makes each SysEx record at least a parameter event
+        // long, so that a reference to the union stays in the record.
+        assert_eq!(size_of::<AURenderEvent>(), size_of::<AUParameterEvent>());
     }
 
     #[test]
@@ -2105,7 +2210,7 @@ mod tests {
 
         let mut buffer = MidiBuffer::new_boxed(0);
         // SAFETY: The storage holds one complete event with a null `next`.
-        unsafe { extract_midi_events(storage.as_ptr().cast(), &mut buffer, START, 512) };
+        unsafe { extract_midi_events(storage.as_ptr().cast(), &mut buffer, START, 512, |_| {}) };
 
         let events = buffer.as_slice();
         assert_eq!(events.len(), 1);
@@ -2161,7 +2266,7 @@ mod tests {
 
         let mut buffer = MidiBuffer::new_boxed(0);
         // SAFETY: The list is valid and ends with a null `next`.
-        unsafe { extract_midi_events(list, &mut buffer, START, 512) };
+        unsafe { extract_midi_events(list, &mut buffer, START, 512, |_| {}) };
 
         let events = buffer.as_slice();
         assert_eq!(events.len(), 2);
@@ -2169,6 +2274,86 @@ mod tests {
         assert!(matches!(events[0].event, MidiEventKind::NoteOn(_)));
         assert_eq!(events[1].sample_offset, 511);
         assert!(matches!(events[1].event, MidiEventKind::NoteOff(_)));
+    }
+
+    /// Extract a list of stored events into a buffer with a SysEx pool of
+    /// `pool` bytes. Returns the extraction and the messages noted.
+    fn extract_stored(events: &mut [Vec<u64>], buffer: &mut MidiBuffer) -> (MidiExtraction, Vec<Vec<u8>>) {
+        let list = link_stored(events);
+        let mut noted = Vec::new();
+        // SAFETY: The list is valid, ends with a null `next` and each SysEx
+        // event is followed by its bytes.
+        let extraction = unsafe { extract_midi_events(list, buffer, START, 512, |message| noted.push(message.to_vec())) };
+        (extraction, noted)
+    }
+
+    fn sysex_payloads(buffer: &MidiBuffer) -> Vec<(u32, Vec<u8>)> {
+        buffer
+            .iter()
+            .filter_map(|event| match event.event {
+                MidiEventKind::SysEx(payload) => Some((event.sample_offset, payload.to_vec())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_sysex_events_hold_their_payload() {
+        let framed = [0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7];
+        let unended = [0xF0, 0x41, 0x10];
+        let mut events = vec![
+            sysex_event(START + 5, &framed),
+            stored(midi_event(START + 6, [0x90, 60, 100]), size_of::<AUMIDIEvent>(), &[]),
+            sysex_event(START + 7, &unended),
+        ];
+        let mut buffer = MidiBuffer::new_boxed(64);
+        let (extraction, noted) = extract_stored(&mut events, &mut buffer);
+
+        assert_eq!(extraction, MidiExtraction::default());
+        assert_eq!(noted, [framed.to_vec(), unended.to_vec()]);
+        assert_eq!(sysex_payloads(&buffer), [(5, vec![0x7E, 0x7F, 0x06, 0x01]), (7, vec![0x41, 0x10])]);
+        assert!(matches!(buffer.as_slice()[1].event, MidiEventKind::NoteOn(_)));
+        assert_eq!(buffer.framed_sysex(2), Some(&[0xF0, 0x41, 0x10, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_an_empty_sysex_message_is_kept() {
+        let mut events = vec![sysex_event(START, &[0xF0, 0xF7])];
+        let mut buffer = MidiBuffer::new_boxed(64);
+        let (extraction, _) = extract_stored(&mut events, &mut buffer);
+
+        assert_eq!(extraction.sysex_dropped, 0);
+        assert_eq!(sysex_payloads(&buffer), [(0, vec![])]);
+        assert_eq!(buffer.framed_sysex(0), Some(&[0xF0, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_malformed_sysex_is_dropped() {
+        // A piece without F0 and an empty event.
+        let mut events = vec![sysex_event(START, &[0x7E, 0x01, 0xF7]), sysex_event(START, &[])];
+        let mut buffer = MidiBuffer::new_boxed(64);
+        let (extraction, noted) = extract_stored(&mut events, &mut buffer);
+
+        assert_eq!(extraction.sysex_dropped, 2);
+        assert_eq!(noted, [vec![0x7E, 0x01, 0xF7], vec![]]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_sysex_that_does_not_fit_is_dropped_whole() {
+        // Room for the two short messages only; the long one between them
+        // is dropped, never cut.
+        let long: Vec<u8> = [0xF0].into_iter().chain(0..60).chain([0xF7]).collect();
+        let mut events = vec![
+            sysex_event(START, &[0xF0, 0x01, 0x02, 0xF7]),
+            sysex_event(START + 1, &long),
+            sysex_event(START + 2, &[0xF0, 0x03, 0xF7]),
+        ];
+        let mut buffer = MidiBuffer::new_boxed(8);
+        let (extraction, _) = extract_stored(&mut events, &mut buffer);
+
+        assert_eq!(extraction.sysex_dropped, 1);
+        assert_eq!(sysex_payloads(&buffer), [(0, vec![0x01, 0x02]), (2, vec![0x03])]);
     }
 
     /// A sink function that records what it receives.
@@ -2260,6 +2445,22 @@ mod tests {
         // A long payload goes out whole with its framing.
         let long = MidiEvent::sysex(0, &[0x01; 2000]);
         assert_eq!(sent(&[long])[0].1.len(), 2002);
+    }
+
+    #[test]
+    fn test_midi_output_drops_sysex_longer_than_an_au_passes() {
+        let mut output = MidiBuffer::new_boxed(200_000);
+        output.push(MidiEvent::sysex(0, &vec![0x01; MAX_AU_SYSEX_BYTES - 2]));
+        output.push(MidiEvent::sysex(1, &vec![0x02; MAX_AU_SYSEX_BYTES - 1]));
+        let mut received: Vec<(u32, Vec<u8>)> = Vec::new();
+        let context: *mut Vec<(u32, Vec<u8>)> = &mut received;
+        // SAFETY: `record` only uses the context while `received` is alive.
+        let sink = unsafe { MidiOutputSink::new(record, context.cast()) };
+
+        // The first is 65,535 bytes framed; the second one more and is dropped.
+        assert_eq!(send_midi_output(&output, sink), 1);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].1.len(), MAX_AU_SYSEX_BYTES);
     }
 
     #[test]

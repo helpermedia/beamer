@@ -165,11 +165,20 @@ static void BeamerAuv3FillBypassedOutput(AudioBufferList* output, const AudioBuf
     }
 }
 
-// Pass the channel messages of a render's MIDI input on to the host, for a
-// bypassed MIDI effect. MIDI 1.0 events only: the unit does not ask for
-// MIDI 2.0, so hosts send no event lists.
+// Pass the channel messages and SysEx of a render's MIDI input on to the
+// host, for a bypassed MIDI effect. MIDI 1.0 events only: the unit does not
+// ask for MIDI 2.0, so hosts send no event lists.
 static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBlock __unsafe_unretained block) {
     for (; event != NULL; event = event->head.next) {
+        // A SysEx message is one event with its bytes from the data field
+        // on. It goes out alone.
+        if (event->head.eventType == AURenderEventMIDISysEx) {
+            const AUMIDIEvent* sysex = &event->MIDI;
+            if (sysex->length > 0 && sysex->data[0] == 0xF0) {
+                block(sysex->eventSampleTime, sysex->cable, sysex->length, sysex->data);
+            }
+            continue;
+        }
         if (event->head.eventType != AURenderEventMIDI) {
             continue;
         }

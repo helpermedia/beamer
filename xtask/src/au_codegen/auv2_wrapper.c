@@ -8,6 +8,7 @@
 #include <AudioUnit/AudioUnit.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMIDI/CoreMIDI.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -50,9 +51,10 @@
 // two, like the size of every event queue.
 #define PARAMETER_QUEUE_SIZE 512
 
-// Size of the packet list that collects the MIDI output of one render call.
-// Enough for a full buffer of channel messages. When more is produced, the
-// list goes to the host in parts.
+// Size of the packet list that collects the channel messages of one render
+// call. Enough for a full buffer of them. The list also gets room for the
+// SysEx output of a render call (sysex_bytes_per_block). When more is
+// produced, the list goes to the host in parts.
 #define MIDI_OUTPUT_LIST_BYTES 32768
 
 // Private property for view factory to retrieve the Rust instance handle.
@@ -109,6 +111,47 @@ typedef struct {
     // Next position to take. Only the consumer uses it.
     UInt32 readPosition;
 } EventQueue;
+
+// The header of a record in a SysEx queue. A message record continues with
+// a SysEx render event: an AUMIDIEvent whose message runs from its data
+// field on, past the end of the struct.
+typedef struct {
+    // The low 32 bits of the record's position plus one once its producer
+    // is done with it. Released records are zeroed, so a record still being
+    // written reads 0 (a position is a multiple of 16, so the value is
+    // never 0).
+    _Atomic UInt32 sequence;
+    // Bytes of the record, header included, a multiple of 16.
+    UInt32 size;
+    // Padding up to the end of the ring instead of a message.
+    UInt32 isPadding;
+    UInt32 unused;
+} SysExRecordHeader;
+
+// SysEx messages for the next render call, in a ring of bytes that several
+// threads may add to at once and one thread at a time takes from, without
+// locks. Producers claim a range with compare-and-swap; the consumer is
+// whoever holds queueReaderMutex. Render links the message records into the
+// event list as they are, so a record never wraps around the end of the
+// ring: one that would is preceded by a padding record up to the end.
+// Positions only grow (64 bits, they never wrap); their remainder by the
+// capacity is the offset.
+typedef struct {
+    // NULL for a plugin without MIDI input.
+    uint8_t* bytes;
+    // A multiple of 16, room for two of the largest records.
+    UInt32 capacity;
+    // The largest message accepted, in bytes.
+    UInt32 largestMessage;
+    // Next position to fill, shared by the producers.
+    _Atomic uint64_t writePosition;
+    // Next position to take. The consumer moves it after zeroing what it
+    // took; producers read it to see the free room.
+    _Atomic uint64_t readPosition;
+    // Messages dropped since the last render call: the ring was full or
+    // the message too large.
+    _Atomic UInt32 dropped;
+} SysExQueue;
 
 typedef struct BeamerAuv2Instance {
     // AudioComponentPlugInInterface MUST be first (ABI requirement)
@@ -186,6 +229,10 @@ typedef struct BeamerAuv2Instance {
     EventSlot midiSlots[BEAMER_AU_MAX_MIDI_EVENTS];
     EventQueue midiQueue;
 
+    // SysEx input for the next render call. MusicDeviceSysEx adds to it,
+    // from the render thread or from another thread.
+    SysExQueue sysexQueue;
+
     // Parameter changes with a sample offset, as render events.
     // ScheduleParameters and SetParameter add to it.
     EventSlot parameterSlots[PARAMETER_QUEUE_SIZE];
@@ -204,6 +251,7 @@ typedef struct BeamerAuv2Instance {
     // kAudioUnitProperty_SupportedNumChannels).
     bool isMultiOutputSource;
     MIDIPacketList* midiOutputList;
+    UInt32 midiOutputListBytes;
 #ifdef BEAMER_DIAGNOSTICS
     // The failing property queries logged so far, so that each is logged
     // once: a host may repeat a query, also on its render thread. Written
@@ -223,6 +271,8 @@ typedef struct {
     AUMIDIOutputCallbackStruct callback;
     const AudioTimeStamp* timeStamp;
     MIDIPacketList* list;
+    // Size of the list in bytes.
+    UInt32 listBytes;
     // Write position in the list.
     MIDIPacket* packet;
 } BeamerAuv2MidiOutput;
@@ -270,6 +320,7 @@ static OSStatus BeamerAuv2Reset(void* self, AudioUnitScope scope, AudioUnitEleme
 static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame);
+static OSStatus BeamerAuv2SysEx(void* self, const UInt8* inData, UInt32 inLength);
 static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst);
 static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst);
 
@@ -571,6 +622,157 @@ static void EventQueueRelease(EventQueue* queue, UInt32 count) {
     queue->readPosition += count;
 }
 
+static UInt32 SysExRoundUp(UInt32 bytes) {
+    return (bytes + 15) & ~(UInt32)15;
+}
+
+// Bytes of the record of a message of `length` bytes.
+static UInt32 SysExRecordSize(UInt32 length) {
+    UInt32 eventBytes = (UInt32)offsetof(AUMIDIEvent, data) + length;
+    // At least a parameter event, the largest member of the render event
+    // union as Rust reads it.
+    if (eventBytes < sizeof(AUParameterEvent)) {
+        eventBytes = sizeof(AUParameterEvent);
+    }
+    return SysExRoundUp((UInt32)sizeof(SysExRecordHeader) + eventBytes);
+}
+
+// Allocate the ring for messages of up to `largestMessage` bytes, at most
+// 65,535 (the length of a render event has 16 bits). Not for the render
+// thread. Without memory the queue stays off.
+static void SysExQueueInit(SysExQueue* queue, UInt32 largestMessage) {
+    queue->bytes = NULL;
+    queue->capacity = 0;
+    queue->largestMessage = 0;
+    atomic_init(&queue->writePosition, 0);
+    atomic_init(&queue->readPosition, 0);
+    atomic_init(&queue->dropped, 0);
+    if (largestMessage == 0) {
+        return;
+    }
+    // The length of a SysEx render event has 16 bits.
+    if (largestMessage > UINT16_MAX) {
+        largestMessage = UINT16_MAX;
+    }
+    UInt32 capacity = 2 * SysExRecordSize(largestMessage);
+    queue->bytes = (uint8_t*)calloc(1, capacity);
+    if (queue->bytes) {
+        queue->capacity = capacity;
+        queue->largestMessage = largestMessage;
+    }
+}
+
+static void SysExQueueFree(SysExQueue* queue) {
+    free(queue->bytes);
+    queue->bytes = NULL;
+    queue->capacity = 0;
+    queue->largestMessage = 0;
+}
+
+static SysExRecordHeader* SysExRecordAt(SysExQueue* queue, uint64_t position) {
+    return (SysExRecordHeader*)(queue->bytes + position % queue->capacity);
+}
+
+// The render event of a message record.
+static AUMIDIEvent* SysExRecordEvent(SysExRecordHeader* record) {
+    return (AUMIDIEvent*)((uint8_t*)record + sizeof(SysExRecordHeader));
+}
+
+// Add a message. Any thread may call it, also several at once. Returns
+// false when the queue is off or full, or the message empty or too large.
+static bool SysExQueuePush(SysExQueue* queue, const UInt8* message, UInt32 length) {
+    if (!queue->bytes || length == 0 || length > queue->largestMessage) {
+        return false;
+    }
+    UInt32 recordSize = SysExRecordSize(length);
+    uint64_t position = atomic_load_explicit(&queue->writePosition, memory_order_relaxed);
+    UInt32 padding;
+    for (;;) {
+        // The consumer may have taken records past a position that is out
+        // of date by now: load it again.
+        uint64_t read = atomic_load_explicit(&queue->readPosition, memory_order_acquire);
+        if (position < read) {
+            position = atomic_load_explicit(&queue->writePosition, memory_order_relaxed);
+            continue;
+        }
+        // A read position older than the one that made this position
+        // possible gives more than the capacity: load it again.
+        uint64_t used = position - read;
+        if (used > queue->capacity) {
+            continue;
+        }
+        UInt32 offset = (UInt32)(position % queue->capacity);
+        padding = (offset + recordSize > queue->capacity) ? queue->capacity - offset : 0;
+        if (used + padding + recordSize > queue->capacity) {
+            return false;
+        }
+        // On failure position holds the one another producer moved on to.
+        if (atomic_compare_exchange_weak_explicit(&queue->writePosition, &position,
+                position + padding + recordSize, memory_order_relaxed, memory_order_relaxed)) {
+            break;
+        }
+    }
+
+    if (padding > 0) {
+        SysExRecordHeader* pad = SysExRecordAt(queue, position);
+        pad->size = padding;
+        pad->isPadding = 1;
+        atomic_store_explicit(&pad->sequence, (UInt32)(position + 1), memory_order_release);
+        position += padding;
+    }
+
+    SysExRecordHeader* record = SysExRecordAt(queue, position);
+    record->size = recordSize;
+    record->isPadding = 0;
+    AUMIDIEvent* event = SysExRecordEvent(record);
+    event->next = NULL;
+    // Offset 0 of the next buffer: the call has no sample offset.
+    event->eventSampleTime = 0;
+    event->eventType = AURenderEventMIDISysEx;
+    event->reserved = 0;
+    event->length = (uint16_t)length;
+    event->cable = 0;
+    memcpy((uint8_t*)event + offsetof(AUMIDIEvent, data), message, length);
+    atomic_store_explicit(&record->sequence, (UInt32)(position + 1), memory_order_release);
+    return true;
+}
+
+// The position after the records ready for the consumer, in order from
+// the read position. A record whose producer is still writing it ends them.
+// For each message record `visit` gets its event, if it is not NULL.
+static uint64_t SysExQueueReadyEnd(SysExQueue* queue, void (*visit)(void* context, AUMIDIEvent* event), void* context) {
+    uint64_t position = atomic_load_explicit(&queue->readPosition, memory_order_relaxed);
+    if (!queue->bytes) {
+        return position;
+    }
+    uint64_t end = atomic_load_explicit(&queue->writePosition, memory_order_acquire);
+    while (position != end) {
+        SysExRecordHeader* record = SysExRecordAt(queue, position);
+        if (atomic_load_explicit(&record->sequence, memory_order_acquire) != (UInt32)(position + 1)) {
+            break;
+        }
+        if (!record->isPadding && visit) {
+            visit(context, SysExRecordEvent(record));
+        }
+        position += record->size;
+    }
+    return position;
+}
+
+// Give the records before `end` back to the producers, zeroed.
+static void SysExQueueRelease(SysExQueue* queue, uint64_t end) {
+    uint64_t position = atomic_load_explicit(&queue->readPosition, memory_order_relaxed);
+    if (!queue->bytes || position == end) {
+        return;
+    }
+    UInt32 start = (UInt32)(position % queue->capacity);
+    UInt32 count = (UInt32)(end - position);
+    UInt32 first = (start + count <= queue->capacity) ? count : queue->capacity - start;
+    memset(queue->bytes + start, 0, first);
+    memset(queue->bytes, 0, count - first);
+    atomic_store_explicit(&queue->readPosition, end, memory_order_release);
+}
+
 // =============================================================================
 // MARK: - Factory Function
 // =============================================================================
@@ -655,8 +857,17 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     inst->isMultiOutputSource = (desc.componentType == kAudioUnitType_MusicDevice
         || desc.componentType == kAudioUnitType_Generator) && inst->outputElementCount > 1;
     if (beamer_au_produces_midi(inst->rustInstance)) {
-        inst->midiOutputList = (MIDIPacketList*)calloc(1, MIDI_OUTPUT_LIST_BYTES);
+        // Room for the channel messages and the SysEx output of a render call.
+        UInt32 sysexBytes = beamer_au_get_sysex_output_bytes(inst->rustInstance);
+        UInt32 listBytes = (sysexBytes > UINT32_MAX - MIDI_OUTPUT_LIST_BYTES)
+            ? UINT32_MAX : MIDI_OUTPUT_LIST_BYTES + sysexBytes;
+        inst->midiOutputList = (MIDIPacketList*)calloc(1, listBytes);
+        inst->midiOutputListBytes = inst->midiOutputList ? listBytes : 0;
     }
+
+    // SysEx input for a plugin with MIDI input: a message may be as large
+    // as what a render call holds.
+    SysExQueueInit(&inst->sysexQueue, beamer_au_get_sysex_input_bytes(inst->rustInstance));
 
     // Build factory presets cache
     uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
@@ -722,6 +933,9 @@ static OSStatus BeamerAuv2Close(void* self) {
 
     free(inst->midiOutputList);
     inst->midiOutputList = NULL;
+    inst->midiOutputListBytes = 0;
+
+    SysExQueueFree(&inst->sysexQueue);
 
     // Release current preset name
     if (inst->currentPresetName) {
@@ -2446,9 +2660,11 @@ static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst) {
     EventQueueRelease(&inst->parameterQueue, count);
 }
 
-// Drop the queued MIDI input. The caller holds queueReaderMutex.
+// Drop the queued MIDI input, SysEx included. The caller holds
+// queueReaderMutex.
 static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst) {
     EventQueueRelease(&inst->midiQueue, EventQueueReadyCount(&inst->midiQueue));
+    SysExQueueRelease(&inst->sysexQueue, SysExQueueReadyEnd(&inst->sysexQueue, NULL, NULL));
 }
 
 static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
@@ -2525,6 +2741,7 @@ static bool BeamerAuv2BeginMidiOutput(BeamerAuv2Instance* inst, const AudioTimeS
     }
     output->timeStamp = timeStamp;
     output->list = inst->midiOutputList;
+    output->listBytes = inst->midiOutputListBytes;
     output->packet = MIDIPacketListInit(output->list);
     return true;
 }
@@ -2545,19 +2762,52 @@ static void BeamerAuv2FlushMidiOutput(BeamerAuv2MidiOutput* output) {
 static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length) {
     BeamerAuv2MidiOutput* output = (BeamerAuv2MidiOutput*)context;
 
-    MIDIPacket* next = MIDIPacketListAdd(output->list, MIDI_OUTPUT_LIST_BYTES,
+    MIDIPacket* next = MIDIPacketListAdd(output->list, output->listBytes,
         output->packet, sampleOffset, length, bytes);
     if (next == NULL) {
         // The list is full: pass it on and retry in an empty one. A message
         // that does not fit there either is dropped.
         BeamerAuv2FlushMidiOutput(output);
-        next = MIDIPacketListAdd(output->list, MIDI_OUTPUT_LIST_BYTES,
+        next = MIDIPacketListAdd(output->list, output->listBytes,
             output->packet, sampleOffset, length, bytes);
         if (next == NULL) {
             return;
         }
     }
     output->packet = next;
+}
+
+// Pass a queued SysEx message on as MIDI output, for a bypassed MIDI effect,
+// if it starts with F0 as in normal processing. `context` is the
+// BeamerAuv2MidiOutput of the render call.
+static void BeamerAuv2PassSysEx(void* context, AUMIDIEvent* event) {
+    const uint8_t* message = (const uint8_t*)event + offsetof(AUMIDIEvent, data);
+    if (message[0] == 0xF0) {
+        BeamerAuv2SendMidi(context, 0, message, event->length);
+    }
+}
+
+// The SysEx events of a render call, linked in order.
+typedef struct {
+    // Sample time of the start of the buffer, where the messages play.
+    AUEventSampleTime start;
+    AURenderEvent* first;
+    AURenderEvent* last;
+} BeamerAuv2SysExLink;
+
+// Link a queued SysEx message into the event list of a render call.
+// `context` is a BeamerAuv2SysExLink.
+static void BeamerAuv2LinkSysEx(void* context, AUMIDIEvent* event) {
+    BeamerAuv2SysExLink* link = (BeamerAuv2SysExLink*)context;
+    AURenderEvent* renderEvent = (AURenderEvent*)event;
+    event->next = NULL;
+    event->eventSampleTime = link->start;
+    if (link->last) {
+        link->last->head.next = renderEvent;
+    } else {
+        link->first = renderEvent;
+    }
+    link->last = renderEvent;
 }
 
 // Number of bytes of a channel message, from its status byte.
@@ -2845,10 +3095,13 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         // ends. A bypassed MIDI effect passes it on unchanged. When a reset
         // holds the queues right now, the events wait for the next call.
         if (inOutputBusNumber == 0 && pthread_mutex_trylock(&inst->queueReaderMutex) == 0) {
-            UInt32 midiCount = EventQueueReadyCount(&inst->midiQueue);
             BeamerAuv2MidiOutput thru;
-            bool passesMidi = midiCount > 0 && inst->isMidiEffect
-                && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru);
+            bool passesMidi = inst->isMidiEffect && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru);
+            // SysEx first, as in normal processing. One walk passes on and
+            // releases the same messages.
+            uint64_t sysexEnd = SysExQueueReadyEnd(&inst->sysexQueue,
+                passesMidi ? BeamerAuv2PassSysEx : NULL, &thru);
+            UInt32 midiCount = EventQueueReadyCount(&inst->midiQueue);
             if (passesMidi) {
                 for (UInt32 i = 0; i < midiCount; i++) {
                     const AURenderEvent* ev = EventQueueAt(&inst->midiQueue, i);
@@ -2862,6 +3115,9 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 }
             }
             EventQueueRelease(&inst->midiQueue, midiCount);
+            SysExQueueRelease(&inst->sysexQueue, sysexEnd);
+            beamer_au_note_sysex_input_dropped(inst->rustInstance,
+                atomic_exchange_explicit(&inst->sysexQueue.dropped, 0, memory_order_relaxed));
 
             // The plugin does not process now, so the queued parameter
             // changes apply at once.
@@ -2902,23 +3158,28 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         BeamerAuv2ReadTransport(&inst->renderCallbacks.host, &transport);
     }
 
-    // Take the queued events and link them into one list: the MIDI events,
-    // then the parameter changes the host scheduled for this buffer. The
-    // queues hold offsets into this buffer. Render events carry a sample time
-    // on the timeline of the render timestamp, so add the buffer start. Only
-    // the render of the main bus takes events: a call for another output bus
-    // leaves them for it, so that none are lost. When a reset holds the
-    // queues right now, the events wait for the next call.
+    // Take the queued events and link them into one list: the SysEx
+    // messages, the MIDI events, then the parameter changes the host
+    // scheduled for this buffer. The queues hold offsets into this buffer
+    // (a SysEx message plays at its start). Render events carry a sample
+    // time on the timeline of the render timestamp, so add the buffer start.
+    // Only the render of the main bus takes events: a call for another
+    // output bus leaves them for it, so that none are lost. When a reset
+    // holds the queues right now, the events wait for the next call.
     const AURenderEvent* eventList = NULL;
     AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
     UInt32 midiCount = 0;
     UInt32 parameterCount = 0;
+    uint64_t sysexEnd = 0;
     bool readsQueues = (inOutputBusNumber == 0)
         && pthread_mutex_trylock(&inst->queueReaderMutex) == 0;
     if (readsQueues) {
+        BeamerAuv2SysExLink sysexLink = { .start = bufferStart, .last = NULL, .first = NULL };
+        sysexEnd = SysExQueueReadyEnd(&inst->sysexQueue, BeamerAuv2LinkSysEx, &sysexLink);
         midiCount = EventQueueReadyCount(&inst->midiQueue);
         parameterCount = EventQueueReadyCount(&inst->parameterQueue);
-        AURenderEvent* prev = NULL;
+        eventList = sysexLink.first;
+        AURenderEvent* prev = sysexLink.last;
         for (UInt32 i = 0; i < midiCount + parameterCount; i++) {
             AURenderEvent* ev = (i < midiCount)
                 ? EventQueueAt(&inst->midiQueue, i)
@@ -2984,8 +3245,11 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         } else {
             EventQueueRelease(&inst->midiQueue, midiCount);
             EventQueueRelease(&inst->parameterQueue, parameterCount);
+            SysExQueueRelease(&inst->sysexQueue, sysexEnd);
         }
         pthread_mutex_unlock(&inst->queueReaderMutex);
+        beamer_au_note_sysex_input_dropped(inst->rustInstance,
+            atomic_exchange_explicit(&inst->sysexQueue.dropped, 0, memory_order_relaxed));
     }
 
     // Pass the collected MIDI output to the host.
@@ -3030,6 +3294,26 @@ static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1,
 
     // A full queue drops the event.
     EventQueuePush(&inst->midiQueue, &event);
+    return noErr;
+}
+
+// A SysEx message, F0 to F7, for the start of the next render call: the
+// call has no sample offset. Any thread may call it, the render thread
+// included. A message that does not fit (also one of more than 65,535
+// bytes) or an empty one is dropped and counted; the call still succeeds,
+// so that the host keeps sending. A plugin without MIDI input has no queue
+// and ignores the call, as Rust ignores its other MIDI.
+static OSStatus BeamerAuv2SysEx(void* self, const UInt8* inData, UInt32 inLength) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    if (inData == NULL && inLength > 0) {
+        return kAudio_ParamError;
+    }
+    if (!inst->sysexQueue.bytes) {
+        return noErr;
+    }
+    if (!SysExQueuePush(&inst->sysexQueue, inData, inLength)) {
+        atomic_fetch_add_explicit(&inst->sysexQueue.dropped, 1, memory_order_relaxed);
+    }
     return noErr;
 }
 

@@ -2,10 +2,11 @@
 // This file is included by auv2.rs via include!()
 
 fn generate_auv2_wrapper_source(plugin_name: &str, codes: &AuCodes, names: &AuNames) -> String {
-    // Only expose MusicDeviceMIDIEvent for types that accept MIDI
+    // Only expose MusicDeviceMIDIEvent and MusicDeviceSysEx for types that
+    // accept MIDI.
     let midi_event_case = match codes.component_type.as_str() {
         "aumu" | "aumf" | "aumi" => {
-            "        case kMusicDeviceMIDIEventSelect:\n            return (AudioComponentMethod)BeamerAuv2MIDIEvent;"
+            "        case kMusicDeviceMIDIEventSelect:\n            return (AudioComponentMethod)BeamerAuv2MIDIEvent;\n        case kMusicDeviceSysExSelect:\n            return (AudioComponentMethod)BeamerAuv2SysEx;"
         }
         _ => "        // MIDI not exposed for this component type",
     };

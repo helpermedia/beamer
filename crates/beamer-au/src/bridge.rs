@@ -2642,6 +2642,62 @@ pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> 
     result.unwrap_or(false)
 }
 
+/// The SysEx bytes one render call holds in each direction for a plugin with
+/// MIDI input (`sysex_bytes_per_block`), 0 without MIDI input. The AUv2 shim
+/// sizes its SysEx input queue with it.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_sysex_input_bytes(_instance: BeamerAuInstanceHandle) -> u32 {
+    let result = catch_unwind(|| match factory::plugin_config() {
+        Some(config) if config.midi_input => u32::try_from(config.sysex_bytes_per_block).unwrap_or(u32::MAX),
+        _ => 0,
+    });
+    result.unwrap_or(0)
+}
+
+/// The SysEx bytes one render call holds in each direction for a plugin with
+/// MIDI output (`sysex_bytes_per_block`), 0 without MIDI output. The AUv2
+/// shim sizes its MIDI output list with it.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_sysex_output_bytes(_instance: BeamerAuInstanceHandle) -> u32 {
+    let result = catch_unwind(|| match factory::plugin_config() {
+        Some(config) if config.midi_output => u32::try_from(config.sysex_bytes_per_block).unwrap_or(u32::MAX),
+        _ => 0,
+    });
+    result.unwrap_or(0)
+}
+
+/// Note SysEx messages from the host that the AUv2 shim dropped before a
+/// render call: its queue was full or a message was larger than a render
+/// call holds. A warning for the log, plus a count in a diagnostics build.
+///
+/// # Safety
+///
+/// - `instance` must be null or a valid handle
+/// - Thread safety: Safe on the render thread: no lock, no allocation
+#[no_mangle]
+pub extern "C" fn beamer_au_note_sysex_input_dropped(instance: BeamerAuInstanceHandle, count: u32) {
+    if count == 0 {
+        return;
+    }
+    with_instance_void!(instance, |handle| {
+        handle.shared.note_render_warning(beamer_core::ProcessWarning::SysExInputDropped);
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            diagnostics.state().note_sysex_dropped(count);
+        }
+    });
+}
+
 // =============================================================================
 // GUI / WebView
 // =============================================================================

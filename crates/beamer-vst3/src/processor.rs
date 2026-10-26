@@ -2328,7 +2328,15 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                     }
                     // SAFETY: event is valid Event populated by getEvent.
                     if let Some(midi_event) = unsafe { convert_vst3_to_midi(&event) } {
+                        #[cfg(not(feature = "diagnostics"))]
                         push_midi_input(midi_input, midi_event, num_samples == 0);
+                        // A SysEx message that did not fit is counted.
+                        #[cfg(feature = "diagnostics")]
+                        if !push_midi_input(midi_input, midi_event, num_samples == 0)
+                            && matches!(midi_event.event, MidiEventKind::SysEx(_))
+                        {
+                            self.diagnostics.state().note_sysex_dropped(1);
+                        }
                     }
                 }
             }
@@ -3526,7 +3534,10 @@ fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_of
 /// example while a controller moves on a suspended track. A controller event
 /// then replaces the waiting one of the same controller and moves to the
 /// end, so that only the latest value waits and the buffer does not fill up.
-fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent<'_>, waiting: bool) {
+///
+/// Returns false when the event was dropped: the buffer or its SysEx pool
+/// was full.
+fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent<'_>, waiting: bool) -> bool {
     if waiting {
         event.sample_offset = 0;
         if let Some(key) = controller_key(&event) {
@@ -3536,7 +3547,7 @@ fn push_midi_input(input: &mut MidiBuffer, mut event: MidiEvent<'_>, waiting: bo
             }
         }
     }
-    input.push(event);
+    input.push(event)
 }
 
 /// The controller an event sets the value of, if it is a controller event:

@@ -398,7 +398,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
 **MIDI**: AU MIDI events to `beamer-core::MidiEvent`
-- Input: MIDI 1.0 channel messages, from legacy MIDI events and from UMP event lists (MIDI 1.0 channel voice packets). No SysEx or MIDI 2.0 input yet
+- Input: MIDI 1.0 channel messages, from legacy MIDI events and from UMP event lists (MIDI 1.0 channel voice packets). No MIDI 2.0 input yet
+- SysEx input: AUv3 SysEx render events; AUv2 `MusicDeviceSysEx` calls go through a lock-free byte ring in the shim, which render links into the event list as the same events
 - 1024 event buffer (`MAX_MIDI_EVENTS`, as in VST3)
 - `MidiCcState` tracking for CC/pitch bend queries
 - MIDI output (channel messages and SysEx) is handed to the host during the render call
@@ -465,7 +466,8 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
 | **MIDI Output** | ✓ (with `midi_output`, the default for MIDI effects) | ✓ (with `midi_output`) |
-| **SysEx Output** | ✓ | ✓ (pool) |
+| **SysEx Input** | ✓ (AUv2 at the start of the next render call) | ✓ |
+| **SysEx Output** | ✓ | ✓ |
 | **Parameter Sync** | Push (AUv3 implementor blocks, AUv2 event queue) | Pull (COM methods) |
 | **Param Automation** | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` |
 | **Bus Switching** | AUv2: element count or 0-channel format, at Initialize; AUv3: buses stay on | `activateBus()`, at `setupProcessing()` or `setActive(true)` |
