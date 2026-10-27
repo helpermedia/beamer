@@ -805,7 +805,8 @@ pub struct ParameterInfo {
 pub struct ParameterFlags {
     pub can_automate: bool,
     pub is_readonly: bool,
-    // Maps to VST3 kIsBypass (see Soft Bypass).
+    // Maps to VST3 kIsBypass; an Audio Unit host's bypass sets it too
+    // (see Soft Bypass).
     pub is_bypass: bool,
     // Display as dropdown list (for enums).
     pub is_list: bool,
@@ -1740,6 +1741,8 @@ impl Processor for ReverbProcessor {
 ```
 
 **Why Split API?** The split pattern (begin/finish) avoids Rust borrow checker conflicts that occur with closure-based APIs when your DSP code needs to access `&mut self`.
+
+**Host bypass:** A host's own bypass button sets the parameter with the `bypass` flag: a VST3 host through the flag, an Audio Unit host through its bypass property (`kAudioUnitProperty_BypassEffect`, `shouldBypassEffect`). The plugin keeps processing while bypassed, so the handler ramps and delays the host's bypass too. A change from the plugin side (its editor, automation, a loaded state) reaches an Audio Unit host's bypass after the block that made it; a host that does not render while stopped hears of it with the first block of playback. The plugin also keeps receiving MIDI: a MIDI effect or instrument passes it on or ends its notes itself. An Audio Unit without a bypass parameter is bypassed by the wrapper, which passes the input on and leaves the plugin out.
 
 **Latency:** A plugin with latency passes `latency_samples()` to `begin()` and the largest latency it will report to `new()`. The handler delays the dry signal by it, in the crossfade and while bypassed: the two signals do not comb-filter and the bypassed track stays aligned with the host's delay compensation.
 

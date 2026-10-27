@@ -223,6 +223,14 @@ impl CrossfadeCurve {
 /// `begin()` writes it into the buffer while bypassed, both delayed by the
 /// latency of the block.
 ///
+/// # Host Bypass
+///
+/// A host's own bypass button sets the plugin's bypass parameter (VST3
+/// hosts and Audio Unit hosts alike), so this handler serves both. The
+/// handler covers audio only: the plugin still receives MIDI while
+/// bypassed, so a MIDI effect or instrument passes it on or ends its notes
+/// itself.
+///
 /// # Real-Time Safety
 ///
 /// The rings are allocated in [`new()`](Self::new). `begin()` and

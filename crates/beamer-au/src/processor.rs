@@ -2913,6 +2913,108 @@ mod tests {
         assert_eq!(beamer_au_get_tail_samples(instance), 0);
     }
 
+    /// The parameters of a plugin with only a bypass parameter.
+    struct BypassFields {
+        bypass: beamer_core::parameter_types::BoolParameter,
+    }
+
+    const BYPASS_ID: u32 = 7;
+
+    impl Default for BypassFields {
+        fn default() -> Self {
+            Self { bypass: beamer_core::parameter_types::BoolParameter::bypass().with_id(BYPASS_ID) }
+        }
+    }
+
+    impl ParameterGroups for BypassFields {}
+
+    impl Parameters for BypassFields {
+        fn count(&self) -> usize {
+            1
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &dyn ParameterRef> + '_> {
+            Box::new(std::iter::once(&self.bypass as &dyn ParameterRef))
+        }
+        fn by_id(&self, id: u32) -> Option<&dyn ParameterRef> {
+            (id == BYPASS_ID).then_some(&self.bypass as &dyn ParameterRef)
+        }
+        fn set_sample_rate(&self, _sample_rate: f64) {}
+        fn reset_smoothing(&self) {}
+    }
+
+    impl beamer_core::Saved for BypassFields {}
+
+    impl beamer_core::WebViewEvents for BypassFields {}
+
+    #[derive(Default)]
+    struct BypassModel {
+        fields: BypassFields,
+    }
+
+    beamer_core::__forward_model!(BypassModel, fields);
+
+    struct BypassProcessor;
+
+    impl Model for BypassModel {
+        type Setup = ();
+        type Processor = BypassProcessor;
+
+        fn prepare(self: Arc<Self>, _setup: ()) -> BypassProcessor {
+            BypassProcessor
+        }
+    }
+
+    impl Processor for BypassProcessor {
+        fn process(&mut self, _buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {}
+    }
+
+    #[test]
+    fn test_host_bypass_goes_to_the_bypass_parameter_and_comes_back() {
+        use crate::bridge::{beamer_au_get_bypass_parameter, beamer_au_note_host_bypass, beamer_au_set_host_change_callback};
+        use beamer_core::HostChanges;
+
+        let mut handle = Box::new(BeamerInstanceHandle::new(Box::new(AuProcessor::<BypassModel>::new())));
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let mut id = 0;
+        assert!(beamer_au_get_bypass_parameter(instance, &mut id));
+        assert_eq!(id, BYPASS_ID);
+
+        let received = std::sync::Mutex::new(Vec::new());
+        let context = &received as *const std::sync::Mutex<Vec<u32>> as *mut std::ffi::c_void;
+        beamer_au_set_host_change_callback(instance, Some(record_host_changes), context);
+        // SAFETY: The handle is alive.
+        let deliver = || unsafe { (*instance).deliver_host_changes() };
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+
+        // The host bypasses: the shim notes it and sets the parameter. The
+        // host knows, nothing comes back.
+        beamer_au_note_host_bypass(instance, true);
+        beamer_au_set_parameter_value(instance, BYPASS_ID, 1.0);
+        assert_eq!(render_instance(instance), 0);
+        deliver();
+        assert!(received.lock().unwrap().is_empty());
+
+        // The plugin's editor or automation turns it off: the host hears.
+        beamer_au_set_parameter_value(instance, BYPASS_ID, 0.0);
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(render_instance(instance), 0);
+        deliver();
+        assert_eq!(*received.lock().unwrap(), [HostChanges::BYPASS.bits()]);
+        beamer_au_deallocate_render_resources(instance);
+    }
+
+    #[test]
+    fn test_plugin_without_a_bypass_parameter_has_none() {
+        use crate::bridge::beamer_au_get_bypass_parameter;
+
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let mut id = 99;
+        assert!(!beamer_au_get_bypass_parameter(instance, &mut id));
+        assert_eq!(id, 99);
+    }
+
     /// A shim's callback for host changes: records the bits in the
     /// `Mutex<Vec<u32>>` its context points to.
     unsafe extern "C" fn record_host_changes(context: *mut std::ffi::c_void, changes: u32) {

@@ -163,7 +163,13 @@ typedef struct BeamerAuv2Instance {
     Float64 sampleRate;
     UInt32 maxFramesPerSlice;
     _Atomic bool initialized;
+    // The host's bypass for a plugin without a bypass parameter: the
+    // render call passes the input on.
     _Atomic bool bypassed;
+    // The plugin's bypass parameter, which kAudioUnitProperty_BypassEffect
+    // sets and reads instead of `bypassed`.
+    bool hasBypassParameter;
+    uint32_t bypassParameterId;
     // kAudioUnitProperty_InPlaceProcessing: on for a plugin with a main
     // input unless the host turns it off. Without an input (an instrument)
     // there is nothing to process in place, so it stays off.
@@ -497,9 +503,9 @@ static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyI
     pthread_mutex_unlock(&inst->listenerMutex);
 }
 
-// Tell the host on the main thread that the latency or the tail changed
-// after a render call (BeamerAuHostChangeFn): its property listeners ask
-// for the new values.
+// Tell the host on the main thread that the latency, the tail or the
+// bypass parameter changed after a render call (BeamerAuHostChangeFn): its
+// property listeners ask for the new values.
 static void BeamerAuv2HostChanged(void* context, uint32_t changes) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)context;
     if (changes & BEAMER_AU_HOST_CHANGE_LATENCY) {
@@ -508,6 +514,23 @@ static void BeamerAuv2HostChanged(void* context, uint32_t changes) {
     if (changes & BEAMER_AU_HOST_CHANGE_TAIL) {
         NotifyPropertyListeners(inst, kAudioUnitProperty_TailTime, kAudioUnitScope_Global, 0);
     }
+    if (changes & BEAMER_AU_HOST_CHANGE_BYPASS) {
+        NotifyPropertyListeners(inst, kAudioUnitProperty_BypassEffect, kAudioUnitScope_Global, 0);
+    }
+}
+
+// Tell parameter listeners (a generic view, an automation lane) that a
+// parameter changed, for a change that did not come through
+// AudioUnitSetParameter.
+static void BeamerAuv2NotifyParameterChange(BeamerAuv2Instance* inst, AudioUnitParameterID paramID) {
+    AudioUnitEvent event;
+    memset(&event, 0, sizeof(event));
+    event.mEventType = kAudioUnitEvent_ParameterValueChange;
+    event.mArgument.mParameter.mAudioUnit = inst->componentInstance;
+    event.mArgument.mParameter.mParameterID = paramID;
+    event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
+    event.mArgument.mParameter.mElement = 0;
+    AUEventListenerNotify(NULL, NULL, &event);
 }
 
 // The current name of an element, as the slot that holds it, as for
@@ -974,6 +997,7 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     // Destroying the Rust instance in Close clears the callback before the
     // instance goes.
     beamer_au_set_host_change_callback(inst->rustInstance, BeamerAuv2HostChanged, inst);
+    inst->hasBypassParameter = beamer_au_get_bypass_parameter(inst->rustInstance, &inst->bypassParameterId);
 
     // Query bus configuration from Rust and set up default formats per bus
     uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);
@@ -1911,7 +1935,11 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             if (!outData || !ioDataSize || *ioDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            *(UInt32*)outData = atomic_load_explicit(&inst->bypassed, memory_order_relaxed) ? 1 : 0;
+            if (inst->hasBypassParameter) {
+                *(UInt32*)outData = beamer_au_get_parameter_value(inst->rustInstance, inst->bypassParameterId) >= 0.5f ? 1 : 0;
+            } else {
+                *(UInt32*)outData = atomic_load_explicit(&inst->bypassed, memory_order_relaxed) ? 1 : 0;
+            }
             *ioDataSize = sizeof(UInt32);
             return noErr;
         }
@@ -2425,10 +2453,26 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             if (!inData || inDataSize < sizeof(UInt32)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            atomic_store_explicit(&inst->bypassed, *(UInt32*)inData != 0, memory_order_relaxed);
-#ifdef BEAMER_DIAGNOSTICS
-            beamer_au_diagnostics_host_bypass(inst->rustInstance, *(UInt32*)inData != 0);
-#endif
+            bool bypassed = *(UInt32*)inData != 0;
+            if (inst->hasBypassParameter) {
+                // A host that answers a change with the same value sets
+                // nothing, so that no notification goes back and forth.
+                bool current = beamer_au_get_parameter_value(inst->rustInstance, inst->bypassParameterId) >= 0.5f;
+                if (current == bypassed) {
+                    return noErr;
+                }
+                // The plugin bypasses itself: it keeps processing and ramps
+                // (and delays) its bypass. Its parameter listeners follow.
+                // No reset: it would clear the plugin's bypass mid-ramp. A
+                // render call between the note and the write reports the
+                // bypass once more, which the host reads back unchanged.
+                beamer_au_note_host_bypass(inst->rustInstance, bypassed);
+                beamer_au_set_parameter_value(inst->rustInstance, inst->bypassParameterId, bypassed ? 1.0f : 0.0f);
+                BeamerAuv2NotifyParameterChange(inst, inst->bypassParameterId);
+            } else {
+                beamer_au_note_host_bypass(inst->rustInstance, bypassed);
+                atomic_store_explicit(&inst->bypassed, bypassed, memory_order_relaxed);
+            }
             NotifyPropertyListeners(inst, propID, scope, element);
             return noErr;
         }

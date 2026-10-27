@@ -30,9 +30,8 @@ use crate::active_buses::{BusNegotiation, BusRouting};
 use crate::buffer_storage::ProcessBufferStorage;
 use crate::config::Config;
 use crate::midi::{MidiEvent, MidiEventKind};
-use crate::parameter_types::Parameters;
 use crate::sample::Sample;
-use crate::types::{ParameterId, MAX_BUSES, MAX_CHANNELS};
+use crate::types::{MAX_BUSES, MAX_CHANNELS};
 
 /// The log target of the diagnostics lines.
 pub const TARGET: &str = "diagnostics";
@@ -1005,17 +1004,6 @@ fn package_name(config: &Config) -> String {
         Some(package) if !package.is_empty() => package.to_string(),
         _ => config.name.to_lowercase().replace(' ', "-"),
     }
-}
-
-/// The id of the plugin's bypass parameter, if it has one. Iterating the
-/// parameters allocates: call it while preparing, not on the audio thread.
-pub fn bypass_parameter(parameters: &dyn Parameters) -> Option<ParameterId> {
-    parameters.iter().find(|p| p.flags().is_bypass).map(|p| p.id())
-}
-
-/// Whether the bypass parameter `id` is on, none without one.
-pub fn bypass_on(parameters: &dyn Parameters, id: Option<ParameterId>) -> Option<bool> {
-    id.and_then(|id| parameters.by_id(id)).map(|p| p.get_normalized() >= 0.5)
 }
 
 /// The buses of a negotiation as the host and the plugin have them:

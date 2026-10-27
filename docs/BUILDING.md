@@ -350,7 +350,7 @@ cargo xtask log compressor
 ```
 compressor#1 au prepared: 48000 Hz, f32, max 512 frames, buses in 2, 2; out 2
 compressor#1 au 94 blocks of 256, in -12.0 dB, out -19.6 dB, aux in 1 -3.0 dB, in place 2 of 2, host output memory in 94 of 94 blocks, gain reduction dB 6.80 to 7.60 (last 7.20), keyed on sidechain 1.00 to 1.00 (last 1.00)
-compressor#1 au host bypass on
+compressor#1 au host bypass on (bypass parameter)
 ```
 
 Clicks are found as sudden steps in the signal, which suits a low test

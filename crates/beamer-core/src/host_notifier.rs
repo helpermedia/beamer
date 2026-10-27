@@ -27,6 +27,9 @@ impl HostChanges {
     pub const TAIL: Self = Self(1 << 1);
     /// Parameter values changed together, for example by a preset.
     pub const PARAMETER_VALUES: Self = Self(1 << 2);
+    /// The bypass parameter changed from the plugin side (its editor,
+    /// automation, a loaded state), for a host whose own bypass follows it.
+    pub const BYPASS: Self = Self(1 << 3);
 
     /// The changes as bits, for a C caller.
     #[inline]

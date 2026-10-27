@@ -930,6 +930,13 @@ uint32_t beamer_au_get_tail_samples(BeamerAuInstanceHandle _Nullable instance);
 #define BEAMER_AU_HOST_CHANGE_LATENCY (1u << 0)
 /** The tail changed (BeamerAuHostChangeFn). */
 #define BEAMER_AU_HOST_CHANGE_TAIL (1u << 1)
+/* Bit 2 is a VST3 change (parameter values), never passed to the shim. */
+/**
+ * The bypass parameter changed from the plugin side (its editor,
+ * automation, a loaded state), so the host's bypass did
+ * (BeamerAuHostChangeFn).
+ */
+#define BEAMER_AU_HOST_CHANGE_BYPASS (1u << 3)
 
 /**
  * Function that tells the host about changes, on the main thread.
@@ -943,10 +950,11 @@ typedef void (*BeamerAuHostChangeFn)(void* _Nullable context, uint32_t changes);
 /**
  * Set the function that tells the host about changes, or none (NULL).
  *
- * It runs on the main thread when a render call ended with another latency
- * or tail than before: the shim notifies the property listeners (AUv2) or
- * key-value observers (AUv3). Preparing and releasing render resources is
- * no change: the host asks for the values then anyway.
+ * It runs on the main thread when a render call ended with another latency,
+ * tail or bypass parameter than the host knows: the shim notifies the
+ * property listeners (AUv2) or key-value observers (AUv3). Preparing and
+ * releasing render resources is no change: the host asks for the values
+ * then anyway.
  *
  * Clearing it waits for a call in progress, so that the context may go
  * afterwards. beamer_au_destroy_instance clears it as well. Do not call
@@ -963,6 +971,30 @@ void beamer_au_set_host_change_callback(
     BeamerAuHostChangeFn _Nullable callback,
     void* _Nullable context
 );
+
+/**
+ * The plugin's bypass parameter, which the host's bypass goes to.
+ *
+ * With one, kAudioUnitProperty_BypassEffect (AUv2) and shouldBypassEffect
+ * (AUv3) set and read that parameter: the plugin keeps processing and
+ * ramps (and delays) its bypass itself. Without one, the shim passes the
+ * input on.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param out_id   Receives the parameter id.
+ * @return true if the plugin has a bypass parameter.
+ */
+bool beamer_au_get_bypass_parameter(BeamerAuInstanceHandle _Nullable instance, uint32_t* _Nullable out_id);
+
+/**
+ * Note the bypass the host set, before the shim applies it, so that the
+ * host is not told about it again. A diagnostics build logs it.
+ *
+ * Thread Safety: Host threads.
+ */
+void beamer_au_note_host_bypass(BeamerAuInstanceHandle _Nullable instance, bool bypassed);
 
 /**
  * Float64 processing support level.
@@ -1787,13 +1819,6 @@ void beamer_au_note_sysex_input_dropped(BeamerAuInstanceHandle _Nullable instanc
 // =============================================================================
 
 #ifdef BEAMER_DIAGNOSTICS
-
-/**
- * Note that the host turned its bypass on or off. Only a change is logged.
- *
- * Thread Safety: Host threads.
- */
-void beamer_au_diagnostics_host_bypass(BeamerAuInstanceHandle _Nullable instance, bool bypassed);
 
 /**
  * Log a line about a host call, such as a stream format the host set.

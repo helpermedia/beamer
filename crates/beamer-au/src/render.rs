@@ -1025,8 +1025,8 @@ pub struct RenderBlock<S: Sample> {
     /// diagnostics.
     #[cfg(feature = "diagnostics")]
     meter: UnsafeCell<Option<beamer_core::diagnostics::BlockMeter>>,
-    /// The plugin's bypass parameter, for the diagnostics.
-    #[cfg(feature = "diagnostics")]
+    /// The plugin's bypass parameter: a change from the plugin side is
+    /// told to the host, whose own bypass follows it.
     bypass_parameter: Option<beamer_core::ParameterId>,
 }
 
@@ -1143,13 +1143,11 @@ impl<S: RenderSample> RenderBlock<S> {
         let meter = shared
             .diagnostics()
             .map(|diagnostics| beamer_core::diagnostics::BlockMeter::new(Arc::clone(diagnostics.state()), sample_rate));
-        #[cfg(feature = "diagnostics")]
-        let bypass_parameter = beamer_core::diagnostics::bypass_parameter(model.parameters());
+        let bypass_parameter = beamer_core::parameter_types::bypass_parameter(model.parameters());
 
         Self {
             #[cfg(feature = "diagnostics")]
             meter: UnsafeCell::new(meter),
-            #[cfg(feature = "diagnostics")]
             bypass_parameter,
             shared,
             plugin,
@@ -1701,7 +1699,7 @@ impl<S: RenderSample> RenderBlock<S> {
         if render_samples > 0 {
             // SAFETY: The render thread, one call at a time.
             if let Some(meter) = unsafe { self.meter() } {
-                let bypass = beamer_core::diagnostics::bypass_on(self.model.parameters(), self.bypass_parameter);
+                let bypass = beamer_core::parameter_types::bypass_on(self.model.parameters(), self.bypass_parameter);
                 meter.begin_block(num_samples, bypass);
                 // SAFETY: The channels were prepared for num_samples samples
                 // and no reference to them is alive.
@@ -1809,10 +1807,13 @@ impl<S: RenderSample> RenderBlock<S> {
             *self.last_render_sample_time.get() = Self::sample_time_from(timestamp);
         }
 
-        // The latency and tail after this block's parameter changes, for the
-        // host threads; a change is told to the host.
-        self.shared
-            .publish_block_timing(plugin_guard.latency_samples(), plugin_guard.tail_samples());
+        // The latency, tail and bypass after this block's parameter changes,
+        // for the host threads; a change is told to the host.
+        self.shared.publish_block(
+            plugin_guard.latency_samples(),
+            plugin_guard.tail_samples(),
+            beamer_core::parameter_types::bypass_on(self.model.parameters(), self.bypass_parameter),
+        );
 
         result
     }

@@ -364,9 +364,13 @@ typedef struct {
     // for the next turn of the run loop knows whether it is still due.
     NSUInteger _editorHideCount;
     _Atomic BOOL _settingFromWebView;
-    // Whether the host bypasses the unit (shouldBypassEffect). The render
-    // thread reads it.
+    // Whether the host bypasses the unit (shouldBypassEffect) for a plugin
+    // without a bypass parameter. The render thread reads it.
     _Atomic BOOL _bypassed;
+    // The plugin's bypass parameter, which shouldBypassEffect sets and
+    // reads instead of `_bypassed`.
+    BOOL _hasBypassParameter;
+    uint32_t _bypassParameterId;
     // Whether the unit is a MIDI effect, which passes MIDI on when bypassed.
     BOOL _isMidiEffect;
     // Bytes of one output sample: 4 for Float32, 8 for Float64.
@@ -638,9 +642,11 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
         return nil;
     }
 
-    // Tell observers of the latency and the tail when a render call ended
-    // with other values. The block holds the unit weakly: a change that
-    // arrives while the unit goes away finds no unit.
+    _hasBypassParameter = beamer_au_get_bypass_parameter(_rustInstance, &_bypassParameterId);
+
+    // Tell observers of the latency, the tail and the bypass when a render
+    // call ended with other values. The block holds the unit weakly: a
+    // change that arrives while the unit goes away finds no unit.
     __weak typeof(self) weakSelf = self;
     void (^hostChanged)(uint32_t) = ^(uint32_t changes) {
         typeof(self) strongSelf = weakSelf;
@@ -654,6 +660,10 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
         if (changes & BEAMER_AU_HOST_CHANGE_TAIL) {
             [strongSelf willChangeValueForKey:@"tailTime"];
             [strongSelf didChangeValueForKey:@"tailTime"];
+        }
+        if (changes & BEAMER_AU_HOST_CHANGE_BYPASS) {
+            [strongSelf willChangeValueForKey:@"shouldBypassEffect"];
+            [strongSelf didChangeValueForKey:@"shouldBypassEffect"];
         }
     };
     _hostChangeHandler = (__bridge_retained void*)[hostChanged copy];
@@ -1109,16 +1119,36 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 }
 
-// The render block reads the bypass from an ivar, not through the property.
+// With a bypass parameter the host's bypass is that parameter. Without one
+// the render block reads the bypass from an ivar, not through the property.
 - (BOOL)shouldBypassEffect {
+    if (_hasBypassParameter) {
+        return beamer_au_get_parameter_value(_rustInstance, _bypassParameterId) >= 0.5f;
+    }
     return atomic_load_explicit(&_bypassed, memory_order_relaxed);
 }
 
 - (void)setShouldBypassEffect:(BOOL)shouldBypassEffect {
+    if (_hasBypassParameter) {
+        // A host that answers the change with the same value sets nothing.
+        if (self.shouldBypassEffect == shouldBypassEffect) {
+            return;
+        }
+        // The plugin bypasses itself: it keeps processing and ramps (and
+        // delays) its bypass. Setting the AUParameter writes the value to
+        // the plugin through the value observer and tells the host's
+        // parameter observers. A render call between the note and the
+        // write reports the bypass once more, which the host reads back
+        // unchanged.
+        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)_bypassParameterId];
+        if (param != nil) {
+            beamer_au_note_host_bypass(_rustInstance, shouldBypassEffect);
+            param.value = shouldBypassEffect ? param.maxValue : param.minValue;
+        }
+        return;
+    }
+    beamer_au_note_host_bypass(_rustInstance, shouldBypassEffect);
     atomic_store_explicit(&_bypassed, shouldBypassEffect, memory_order_relaxed);
-#ifdef BEAMER_DIAGNOSTICS
-    beamer_au_diagnostics_host_bypass(_rustInstance, shouldBypassEffect);
-#endif
 }
 
 - (AUInternalRenderBlock)internalRenderBlock {

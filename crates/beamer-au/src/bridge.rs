@@ -637,6 +637,9 @@ pub struct BeamerInstanceHandle {
     declared_buses: DeclaredBuses,
     /// What the host threads and the render call exchange without a lock.
     shared: Arc<SharedState>,
+    /// The plugin's bypass parameter, which the host's bypass goes to,
+    /// captured at instance creation.
+    bypass_parameter: Option<beamer_core::ParameterId>,
     /// How often `lock_plugin` took the plugin mutex.
     #[cfg(test)]
     plugin_locks: std::sync::atomic::AtomicUsize,
@@ -663,6 +666,7 @@ impl BeamerInstanceHandle {
         let presets = plugin.factory_presets();
         let declared_buses = DeclaredBuses::capture(plugin.as_ref());
         let bus_negotiation = BusNegotiation::starting_with(declared_buses.default_buses());
+        let bypass_parameter = beamer_core::parameter_types::bypass_parameter(model.parameters());
 
         Self {
             plugin: Arc::new(Mutex::new(plugin)),
@@ -675,6 +679,7 @@ impl BeamerInstanceHandle {
             presets,
             declared_buses,
             shared: Arc::new(new_shared_state()),
+            bypass_parameter,
             #[cfg(test)]
             plugin_locks: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -982,6 +987,7 @@ pub extern "C" fn beamer_au_destroy_instance(instance: BeamerAuInstanceHandle) {
 // BeamerAuBridge.h).
 const _: () = assert!(beamer_core::HostChanges::LATENCY.bits() == 1 << 0);
 const _: () = assert!(beamer_core::HostChanges::TAIL.bits() == 1 << 1);
+const _: () = assert!(beamer_core::HostChanges::BYPASS.bits() == 1 << 3);
 
 /// Function that tells the host about changes on the main thread
 /// (matches BeamerAuHostChangeFn in header). `changes` holds the
@@ -1383,23 +1389,48 @@ pub extern "C" fn beamer_au_deallocate_render_resources(instance: BeamerAuInstan
     }));
 }
 
-/// Note that the host turned its bypass on or off (diagnostics builds).
+/// Note the bypass the host set, before the shim applies it, so that the
+/// host is not told about it again. A diagnostics build logs it.
 ///
 /// # Safety
 ///
 /// - `instance` must be null or a valid pointer returned by
 ///   `beamer_au_create_instance` that was not destroyed
-#[cfg(feature = "diagnostics")]
 #[no_mangle]
-pub extern "C" fn beamer_au_diagnostics_host_bypass(instance: BeamerAuInstanceHandle, bypassed: bool) {
-    with_instance_void!(instance, |handle| handle.shared.note_host_bypass(bypassed));
+pub extern "C" fn beamer_au_note_host_bypass(instance: BeamerAuInstanceHandle, bypassed: bool) {
+    with_instance_void!(instance, |handle| {
+        handle.shared.note_host_bypass(bypassed, handle.bypass_parameter.is_some());
+    });
+}
+
+/// The id of the plugin's bypass parameter, which the host's bypass goes
+/// to. Returns false, leaving `out_id` alone, for a plugin without one.
+///
+/// # Safety
+///
+/// - `instance` must be null or a valid pointer returned by
+///   `beamer_au_create_instance` that was not destroyed
+/// - `out_id` must be null or valid for a write
+#[no_mangle]
+pub extern "C" fn beamer_au_get_bypass_parameter(instance: BeamerAuInstanceHandle, out_id: *mut u32) -> bool {
+    with_instance!(instance, false, |handle| {
+        match handle.bypass_parameter {
+            Some(id) if !out_id.is_null() => {
+                // SAFETY: out_id is non-null and valid for a write per the
+                // contract.
+                unsafe { *out_id = id };
+                true
+            }
+            _ => false,
+        }
+    })
 }
 
 /// Log a line about a host call (diagnostics builds). For host threads.
 ///
 /// # Safety
 ///
-/// As for `beamer_au_diagnostics_host_bypass`. `text` must be null or a
+/// As for `beamer_au_note_host_bypass`. `text` must be null or a
 /// valid C string for the call.
 #[cfg(feature = "diagnostics")]
 #[no_mangle]
@@ -1422,7 +1453,7 @@ pub extern "C" fn beamer_au_diagnostics_note(instance: BeamerAuInstanceHandle, t
 ///
 /// # Safety
 ///
-/// As for `beamer_au_diagnostics_host_bypass`.
+/// As for `beamer_au_note_host_bypass`.
 #[cfg(feature = "diagnostics")]
 #[no_mangle]
 pub extern "C" fn beamer_au_diagnostics_host_output_memory(instance: BeamerAuInstanceHandle, has_memory: bool) {
@@ -1438,7 +1469,7 @@ pub extern "C" fn beamer_au_diagnostics_host_output_memory(instance: BeamerAuIns
 ///
 /// # Safety
 ///
-/// As for `beamer_au_diagnostics_host_bypass`. `output_data` must be null or
+/// As for `beamer_au_note_host_bypass`. `output_data` must be null or
 /// valid for the call, its buffers valid for `frame_count` samples where
 /// they have memory.
 #[cfg(feature = "diagnostics")]

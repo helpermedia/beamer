@@ -219,6 +219,18 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
     Ok(())
 }
 
+/// The id of the plugin's bypass parameter (the one with the `bypass`
+/// flag), if it has one. Iterating the parameters allocates: call it while
+/// preparing, not on the audio thread.
+pub fn bypass_parameter(parameters: &dyn Parameters) -> Option<ParameterId> {
+    parameters.iter().find(|p| p.flags().is_bypass).map(|p| p.id())
+}
+
+/// Whether the bypass parameter `id` is on, none without one. Realtime-safe.
+pub fn bypass_on(parameters: &dyn Parameters, id: Option<ParameterId>) -> Option<bool> {
+    id.and_then(|id| parameters.by_id(id)).map(|p| p.get_normalized() >= 0.5)
+}
+
 /// Trait for parameter collections.
 ///
 /// Implement this trait to declare your plugin's parameters. It covers the
@@ -1695,13 +1707,20 @@ impl BoolParameter {
         }
     }
 
-    /// Create a bypass parameter with proper VST3 flags.
+    /// Create the plugin's bypass parameter, which a host's own bypass
+    /// button sets.
     ///
     /// This creates a parameter pre-configured as a bypass switch:
     /// - Name: "Bypass"
     /// - Short name: "Byp"
     /// - Default: false (not bypassed)
-    /// - Marked with `is_bypass = true` flag for VST3
+    /// - Marked with `is_bypass = true`: VST3 hosts find it through the
+    ///   flag, Audio Unit hosts through their bypass property
+    ///
+    /// The plugin keeps processing while bypassed, so it ramps (and delays)
+    /// the bypass itself, for example with a
+    /// [`BypassHandler`](crate::BypassHandler). It also receives MIDI: a
+    /// MIDI effect or instrument passes MIDI on or ends its notes itself.
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
     /// or by `#[beamer::model]` and `#[beamer::group]`.

@@ -925,7 +925,7 @@ impl<P: Model> Vst3Processor<P> {
     pub fn new(config: &'static Config) -> Self {
         let model = Arc::new(P::default());
         #[cfg(feature = "diagnostics")]
-        let bypass_parameter = beamer_core::diagnostics::bypass_parameter(&*model);
+        let bypass_parameter = beamer_core::parameter_types::bypass_parameter(&*model);
 
         // The ids for the comparison around a factory preset in `process()`.
         let parameter_ids: Box<[ParameterId]> = if !P::PRESETS.is_empty() {
@@ -1308,7 +1308,7 @@ impl<P: Model> Vst3Processor<P> {
     /// Whether the bypass parameter is on, for the diagnostics.
     #[cfg(feature = "diagnostics")]
     fn bypass_on(&self) -> Option<bool> {
-        beamer_core::diagnostics::bypass_on(&*self.model, self.bypass_parameter)
+        beamer_core::parameter_types::bypass_on(&*self.model, self.bypass_parameter)
     }
 
     /// The diagnostics meter, once the plugin was prepared.

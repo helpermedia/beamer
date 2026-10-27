@@ -94,7 +94,9 @@ mod validate;
 ///   percent, pan, ratio, linear, semitones
 /// - `short_name = "..."`: short name for constrained UIs
 /// - `smoothing = "exp:5.0"`: parameter smoothing (exp or linear)
-/// - `bypass`: mark as the bypass parameter (BoolParameter only)
+/// - `bypass`: mark as the bypass parameter (BoolParameter only). A host's
+///   own bypass button sets it, so the plugin keeps processing (and
+///   receiving MIDI) while bypassed; see `BoolParameter::bypass()`
 /// - `group = "..."`: visual grouping in the DAW without a nested group
 ///
 /// The generated `Default` takes each parameter from these: every parameter
