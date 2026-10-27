@@ -18,6 +18,10 @@ pub(crate) struct SharedState {
     tail_samples: AtomicU32,
     /// The host asked for a reset of the DSP state.
     reset_requested: AtomicBool,
+    /// The same request for the delay of the host's bypass, which a
+    /// bypassed render call takes too (the plugin's reset waits for the
+    /// next processed block).
+    host_bypass_reset_requested: AtomicBool,
     /// A state was loaded: the smoothers have to jump to the new values.
     smoothing_reset_requested: AtomicBool,
     /// What went wrong in render calls since a host thread last looked.
@@ -110,6 +114,13 @@ impl SharedState {
     /// Ask the audio thread to reset the DSP state before its next block.
     pub(crate) fn request_reset(&self) {
         self.reset_requested.store(true, Ordering::Release);
+        self.host_bypass_reset_requested.store(true, Ordering::Release);
+    }
+
+    /// Take the reset request for the delay of the host's bypass, if
+    /// there is one.
+    pub(crate) fn take_host_bypass_reset_request(&self) -> bool {
+        self.host_bypass_reset_requested.swap(false, Ordering::AcqRel)
     }
 
     /// Ask the audio thread to reset the smoothers before its next block.
@@ -133,6 +144,7 @@ impl SharedState {
     /// Drop a reset request that a new processor makes pointless.
     pub(crate) fn clear_reset_request(&self) {
         self.reset_requested.store(false, Ordering::Release);
+        self.host_bypass_reset_requested.store(false, Ordering::Release);
     }
 
     /// Note a warning of a render call. For the audio thread: one atomic

@@ -1230,9 +1230,10 @@ static void beamer_auv3_on_loaded(void* context) {
             }
         }
 
-        // A bypassed unit leaves the plugin out: its main output is a copy of
-        // the main input (or silence without one) and its MIDI input is
-        // dropped. A MIDI effect passes the channel messages on unchanged.
+        // A bypassed unit (a plugin without a bypass parameter) leaves the
+        // plugin out: its main output is a copy of the main input, delayed
+        // by the plugin's latency (or silence without one). Its MIDI input
+        // is dropped. A MIDI effect passes the channel messages on unchanged.
         // Parameter changes apply at once.
         if (atomic_load_explicit(&blockSelf->_bypassed, memory_order_relaxed)) {
             void* silence = blockSelf->_bypassSilence;
@@ -1241,6 +1242,10 @@ static void beamer_auv3_on_loaded(void* context) {
             }
             BeamerAuv3FillBypassedOutput(outputData, (outputBusNumber == 0) ? inputData : NULL,
                                          frameCount * blockSelf->_outputSampleBytes, silence);
+            // The input comes out as late as the plugin's output would.
+            if (outputBusNumber == 0) {
+                beamer_au_delay_bypassed_output(rustInstance, inputData, outputData, frameCount);
+            }
 #ifdef BEAMER_DIAGNOSTICS
             if (outputBusNumber == 0) {
                 beamer_au_diagnostics_bypassed_render(rustInstance, outputData, frameCount);

@@ -359,6 +359,13 @@ impl BypassHandler {
         self.curve = curve;
     }
 
+    /// Get the largest latency the handler delays by, as given to
+    /// [`new()`](Self::new).
+    #[inline]
+    pub fn max_latency(&self) -> u32 {
+        self.max_latency as u32
+    }
+
     /// Set the shortest warm-up in samples: how long the DSP runs after a
     /// bypass before the handler crossfades to it. The warm-up is the
     /// latency of the block or this value, whichever is longer. Set it for

@@ -596,8 +596,9 @@ pub trait Processor: Send + 'static {
     ///
     /// Called on the audio thread for every block, so it must be
     /// realtime-safe. A host that asks for the latency gets the value of the
-    /// most recent block. A change reaches the host after the block that
-    /// made it: the wrapper tells it on its main thread (a VST3 host
+    /// most recent block. A change (see also
+    /// [`max_latency_samples()`](Self::max_latency_samples)) reaches the
+    /// host after the block that made it: the wrapper tells it on its main thread (a VST3 host
     /// restarts the plugin for it, an Audio Unit host reads the new value).
     /// A host that does not call `process()` while stopped hears of a
     /// change made then with the first block of playback.
@@ -605,6 +606,24 @@ pub trait Processor: Send + 'static {
     /// Default returns 0 (no latency).
     fn latency_samples(&self) -> u32 {
         0
+    }
+
+    /// Get the largest latency in samples the plugin will report with this
+    /// setup.
+    ///
+    /// A plugin whose latency changes at runtime (a lookahead parameter)
+    /// returns the largest value [`latency_samples()`](Self::latency_samples)
+    /// can take. An Audio Unit host that bypasses a plugin without a bypass
+    /// parameter gets the input delayed by the latency: the wrapper sizes
+    /// that delay for this value. When that bypass ends, the delayed input
+    /// holds for the latency while the plugin processes again, but the
+    /// plugin is not told: DSP whose memory reaches further back than its
+    /// latency should have a bypass parameter (and a `BypassHandler`).
+    /// Read on a host thread after `prepare()`.
+    ///
+    /// Default returns `latency_samples()`: a latency that does not change.
+    fn max_latency_samples(&self) -> u32 {
+        self.latency_samples()
     }
 
     /// Get the bypass ramp length in samples.

@@ -3314,7 +3314,8 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
     }
 #endif
 
-    // Bypass: the input goes to the output unchanged.
+    // Bypass (a plugin without a bypass parameter): the input goes to the
+    // output, delayed by the plugin's latency.
     if (atomic_load_explicit(&inst->bypassed, memory_order_relaxed)) {
         // Only the main bus passes its input on; another output bus is
         // silent. In place the input may already be in the output buffers.
@@ -3373,6 +3374,11 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
                 ioData->mBuffers[i].mData = inst->bypassSilence;
                 ioData->mBuffers[i].mDataByteSize = silenceBytes;
             }
+        }
+
+        // The input comes out as late as the plugin's output would.
+        if (inOutputBusNumber == 0) {
+            beamer_au_delay_bypassed_output(inst->rustInstance, inputData, ioData, inNumberFrames);
         }
 
 #ifdef BEAMER_DIAGNOSTICS

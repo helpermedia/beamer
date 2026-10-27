@@ -1496,6 +1496,39 @@ pub extern "C" fn beamer_au_diagnostics_bypassed_render(
     });
 }
 
+/// Delay the output of a render call of the main bus that the host
+/// bypassed by the plugin's latency, after the shim filled it with the main
+/// input. Does nothing for a plugin with a bypass parameter or without
+/// latency. For the render thread.
+///
+/// # Safety
+///
+/// - `instance` must be null or a valid pointer returned by
+///   `beamer_au_create_instance` that was not destroyed
+/// - `input_data` must be null or the input list the shim copied from and
+///   `output_data` null or the output list of the render call, their
+///   buffers valid for `frame_count` samples where they have memory
+#[no_mangle]
+pub extern "C" fn beamer_au_delay_bypassed_output(
+    instance: BeamerAuInstanceHandle,
+    input_data: *const AudioBufferList,
+    output_data: *mut AudioBufferList,
+    frame_count: u32,
+) {
+    with_instance_void!(instance, |handle| {
+        // The render thread does not wait: while a host thread prepares the
+        // instance, the output stays undelayed and the delay is not fed. The
+        // new render block starts with an empty delay anyway.
+        if let Ok(guard) = handle.render_block.try_read() {
+            if let Some(render_block) = guard.as_ref() {
+                // SAFETY: The shim passes the lists of its render call, valid
+                // for frame_count samples (see the function's safety section).
+                unsafe { render_block.delay_host_bypassed(input_data, output_data, frame_count) };
+            }
+        }
+    });
+}
+
 /// Check if render resources are currently allocated.
 ///
 /// # Safety

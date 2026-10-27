@@ -433,6 +433,34 @@ OSStatus beamer_au_allocate_render_resources(
 void beamer_au_deallocate_render_resources(BeamerAuInstanceHandle _Nullable instance);
 
 /**
+ * Delay the output of a bypassed render call of the main bus by the
+ * plugin's latency, after the shim filled it with the main input (input
+ * buffer i in output buffer i).
+ *
+ * A host that bypasses a plugin without a bypass parameter leaves the
+ * plugin out: the input passes on, delayed like the plugin's output, so
+ * that the track stays aligned with the host's delay compensation. Does
+ * nothing for a plugin with a bypass parameter (which bypasses itself) or
+ * without latency.
+ *
+ * An output buffer that shares memory with another or with the input
+ * stays undelayed.
+ *
+ * Thread Safety: The render thread.
+ *
+ * @param instance    Handle to the plugin instance.
+ * @param input_data  The input list the shim copied from, NULL without one.
+ * @param output_data The output list of the render call.
+ * @param frame_count Frames of the render call.
+ */
+void beamer_au_delay_bypassed_output(
+    BeamerAuInstanceHandle _Nullable instance,
+    const AudioBufferList* _Nullable input_data,
+    AudioBufferList* _Nullable output_data,
+    uint32_t frame_count
+);
+
+/**
  * Check if render resources are currently allocated.
  *
  * Thread Safety: Can be called from any thread.

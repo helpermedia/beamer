@@ -647,6 +647,11 @@ impl Processor for CompressorProcessor {
         self.lookahead_samples as u32
     }
 
+    /// The longest lookahead.
+    fn max_latency_samples(&self) -> u32 {
+        self.max_lookahead_samples as u32
+    }
+
     /// Report bypass ramp duration to host.
     fn bypass_ramp_samples(&self) -> u32 {
         self.bypass_handler.ramp_samples()

@@ -151,6 +151,13 @@ where
             .unwrap_or(0)
     }
 
+    fn max_latency_samples(&self) -> u32 {
+        self.state
+            .processor()
+            .map(|p| p.max_latency_samples())
+            .unwrap_or(0)
+    }
+
     fn supports_native_double_precision(&self) -> bool {
         self.state
             .processor()
@@ -3013,6 +3020,117 @@ mod tests {
         let mut id = 99;
         assert!(!beamer_au_get_bypass_parameter(instance, &mut id));
         assert_eq!(id, 99);
+    }
+
+    /// Render one call of the main bus with `input` into `output`, as a host
+    /// that gives both.
+    fn render_lists(instance: *mut BeamerInstanceHandle, input: &mut StereoList, output: &mut StereoList) -> i32 {
+        let timestamp = timestamp();
+        let mut action_flags = 0u32;
+        beamer_au_render(
+            instance,
+            &mut action_flags,
+            &timestamp,
+            FRAMES as u32,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            input.as_list().cast_const(),
+            std::ptr::null(),
+            None,
+            std::ptr::null_mut(),
+        )
+    }
+
+    /// A bypassed render call of the shim: it copies `input` to the output,
+    /// then has the bridge delay it. Returns the output.
+    fn render_bypassed(instance: *mut BeamerInstanceHandle, input: f32) -> Box<StereoList> {
+        use crate::bridge::beamer_au_delay_bypassed_output;
+
+        let mut input = StereoList::filled(input);
+        let mut output = StereoList::filled(0.0);
+        output.samples = input.samples;
+        beamer_au_delay_bypassed_output(instance, input.as_list().cast_const(), output.as_list(), FRAMES as u32);
+        output
+    }
+
+    /// Whether every channel of `list` holds `before` for its first
+    /// `latency` samples and `after` for the rest.
+    fn holds(list: &StereoList, latency: usize, before: f32, after: f32) -> bool {
+        list.samples.iter().all(|channel| {
+            channel[..latency].iter().all(|&sample| sample == before)
+                && channel[latency..].iter().all(|&sample| sample == after)
+        })
+    }
+
+    #[test]
+    fn test_host_bypass_without_a_bypass_parameter_delays_the_input() {
+        // A plugin without a bypass parameter and with a latency of 25. Its
+        // processing leaves the input as it is.
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(allocate(instance, false), 0);
+        // Render calls feed the delay with their input, 0.5.
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(render_instance(instance), 0);
+
+        // Bypassed: the input (1.0, then 2.0) comes out 25 samples later.
+        assert!(holds(&render_bypassed(instance, 1.0), 25, 0.5, 1.0));
+        assert!(holds(&render_bypassed(instance, 2.0), 25, 1.0, 2.0));
+
+        // Back from the bypass: the delayed input holds for the latency,
+        // then the plugin's output follows.
+        let mut input = StereoList::filled(3.0);
+        let mut output = StereoList::filled(0.0);
+        assert_eq!(render_lists(instance, &mut input, &mut output), 0);
+        assert!(holds(&output, 25, 2.0, 3.0), "{:?}", output.samples);
+        beamer_au_deallocate_render_resources(instance);
+    }
+
+    #[test]
+    fn test_reset_while_bypassed_starts_the_delay_over() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        assert!(holds(&render_bypassed(instance, 1.0), 25, 0.5, 1.0));
+
+        // A transport jump while bypassed: no audio from before it.
+        beamer_au_reset(instance);
+        assert!(holds(&render_bypassed(instance, 4.0), 25, 0.0, 4.0));
+        beamer_au_deallocate_render_resources(instance);
+    }
+
+    #[test]
+    fn test_host_bypass_without_latency_leaves_the_input() {
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.0);
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        assert!(holds(&render_bypassed(instance, 1.0), 0, 0.0, 1.0));
+        beamer_au_deallocate_render_resources(instance);
+    }
+
+    #[test]
+    fn test_host_bypass_output_in_the_input_memory_stays_undelayed() {
+        use crate::bridge::beamer_au_delay_bypassed_output;
+
+        // A shim that pointed the output at the input's memory: the delay
+        // must not write into what the host gave as input.
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        let mut list = StereoList::filled(1.0);
+        let pointer = list.as_list();
+        beamer_au_delay_bypassed_output(instance, pointer.cast_const(), pointer, FRAMES as u32);
+        assert!(holds(&list, 0, 0.0, 1.0));
+        beamer_au_deallocate_render_resources(instance);
     }
 
     /// A shim's callback for host changes: records the bits in the

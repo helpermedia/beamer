@@ -122,6 +122,10 @@ pub trait AuPluginInstance: Send + 'static {
     /// Used by the host for delay compensation.
     fn latency_samples(&self) -> u32;
 
+    /// Get the largest latency in samples the processor will report, 0
+    /// while unprepared.
+    fn max_latency_samples(&self) -> u32;
+
     /// Returns whether the processor can process f64 audio natively.
     ///
     /// Note: The AU wrapper may still accept float64 stream formats and convert

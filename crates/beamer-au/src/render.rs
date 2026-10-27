@@ -41,8 +41,8 @@ use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, MidiBuffer, MidiEvent, MidiEventKind, ProcessContext,
-    ProcessWarning, Sample, SharedModel, MAX_BUSES, MAX_CHANNELS,
+    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, BypassAction, BypassHandler, CrossfadeCurve, MidiBuffer,
+    MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel, MAX_BUSES, MAX_CHANNELS,
 };
 
 
@@ -956,6 +956,23 @@ pub trait RenderBlockTrait: Send + Sync {
     /// for `frame_count` samples where they have memory.
     #[cfg(feature = "diagnostics")]
     unsafe fn measure_host_bypassed(&self, output_data: *const AudioBufferList, frame_count: u32);
+
+    /// Delay the output of a render call of the main bus that the host
+    /// bypassed by the plugin's latency. The shim filled it with the main
+    /// input `input_data` (input buffer i in output buffer i). Does nothing
+    /// for a plugin with a bypass parameter or without latency. For the
+    /// render thread.
+    ///
+    /// # Safety
+    ///
+    /// `input_data` and `output_data` must be null or valid for the call,
+    /// their buffers valid for `frame_count` samples where they have memory.
+    unsafe fn delay_host_bypassed(
+        &self,
+        input_data: *const AudioBufferList,
+        output_data: *mut AudioBufferList,
+        frame_count: u32,
+    );
 }
 
 /// Generic render block implementation.
@@ -967,6 +984,12 @@ pub trait RenderBlockTrait: Send + Sync {
 pub struct RenderBlock<S: Sample> {
     /// What this render block exchanges with host threads without a lock.
     shared: Arc<SharedState>,
+    /// The bypass of a host that bypasses a plugin without a bypass
+    /// parameter, for a plugin with latency: every block feeds its delay,
+    /// so that the bypassed output is the input delayed by the latency.
+    /// When the bypass ends it holds that output until the plugin's
+    /// latency has passed. The render thread uses it.
+    host_bypass: UnsafeCell<Option<BypassHandler>>,
     /// Reference to the plugin for audio processing
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
     /// The model of the plugin, for resetting the smoothers of its
@@ -1144,12 +1167,27 @@ impl<S: RenderSample> RenderBlock<S> {
             .diagnostics()
             .map(|diagnostics| beamer_core::diagnostics::BlockMeter::new(Arc::clone(diagnostics.state()), sample_rate));
         let bypass_parameter = beamer_core::parameter_types::bypass_parameter(model.parameters());
+        // A plugin with a bypass parameter bypasses itself; one without
+        // latency needs no delay.
+        let main_input_channels = buses.accepted().input(0).unwrap_or(0) as usize;
+        let host_bypass = if bypass_parameter.is_none() && main_input_channels > 0 {
+            let max_latency = plugin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .max_latency_samples();
+            (max_latency > 0).then(|| {
+                BypassHandler::new(0, CrossfadeCurve::Linear, main_input_channels, max_frames as usize, max_latency)
+            })
+        } else {
+            None
+        };
 
         Self {
             #[cfg(feature = "diagnostics")]
             meter: UnsafeCell::new(meter),
             bypass_parameter,
             shared,
+            host_bypass: UnsafeCell::new(host_bypass),
             plugin,
             model,
             max_frames,
@@ -1371,8 +1409,15 @@ impl<S: RenderSample> RenderBlock<S> {
         // asked for since the last block happens here, before this block is
         // processed. What they want to know is published for them at the
         // end of the call.
+        // SAFETY: The render thread, one call at a time.
+        let host_bypass = unsafe { &mut *self.host_bypass.get() };
         if self.shared.take_reset_request() {
             plugin_guard.reset();
+        }
+        if self.shared.take_host_bypass_reset_request() {
+            if let Some(host_bypass) = host_bypass.as_mut() {
+                host_bypass.reset();
+            }
         }
         if self.shared.take_smoothing_reset_request() {
             self.model.parameters().reset_smoothing();
@@ -1762,8 +1807,29 @@ impl<S: RenderSample> RenderBlock<S> {
                 // exists while the plugin processes.
                 let (mut buffer, mut aux) = unsafe { storage.sub_block_buffers(block.start, block.len) };
 
+                // The input feeds the delay of the host's bypass. Right
+                // after a bypass the delayed input holds until the plugin's
+                // latency has passed. A plugin whose latency changes says
+                // how large it gets (`max_latency_samples()`); a latency
+                // above that is delayed by the largest. The latency is the
+                // one before this block; a bypassed call uses the one
+                // published after the last block: they differ only in the
+                // block of a change.
+                let latency = plugin_guard.latency_samples();
+                let host_bypass_action = host_bypass.as_mut().map(|host_bypass| {
+                    let latency = latency.min(host_bypass.max_latency());
+                    host_bypass.begin(false, latency, &mut buffer)
+                });
+
                 match S::process_block(&mut **plugin_guard, &mut buffer, &mut aux, &context) {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        if let (Some(host_bypass), Some(BypassAction::Resume | BypassAction::ProcessAndCrossfade)) =
+                            (host_bypass.as_mut(), host_bypass_action)
+                        {
+                            host_bypass.finish(&mut buffer);
+                        }
+                        true
+                    }
                     Err(_) => {
                         result = os_status::K_AUDIO_UNIT_ERR_RENDER;
                         false
@@ -1882,6 +1948,77 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
 
     fn sample_rate(&self) -> f64 {
         self.sample_rate
+    }
+
+    unsafe fn delay_host_bypassed(
+        &self,
+        input_data: *const AudioBufferList,
+        output_data: *mut AudioBufferList,
+        frame_count: u32,
+    ) {
+        // SAFETY: The render thread, one call at a time.
+        let Some(host_bypass) = (unsafe { &mut *self.host_bypass.get() }).as_mut() else {
+            return;
+        };
+        // A reset waits for no processed block here: the delay starts
+        // over at once.
+        if self.shared.take_host_bypass_reset_request() {
+            host_bypass.reset();
+        }
+        let frames = frame_count as usize;
+        // Without an input the output is silence and the delay is not fed.
+        if input_data.is_null() || output_data.is_null() || frames > self.max_frames as usize {
+            return;
+        }
+        // SAFETY: Valid for the call (see the function's safety section).
+        let (input, output) = unsafe { (&*input_data, &*output_data) };
+        // The channels with an input and an output, as in a processed block.
+        let accepted = self.buses.accepted();
+        let channels = (accepted.input(0).unwrap_or(0).min(accepted.output(0).unwrap_or(0)) as usize).min(MAX_CHANNELS);
+        // The host's buffer of each input channel, in the plugin's order.
+        let host_buffer = |channel: usize| self.orders.input(0).host_channel(channel);
+        // The memory of output buffer `host`, if it can take the delayed
+        // input: its own memory (not the input's, which the host gave and
+        // the shim may have pointed it at) for frames samples.
+        let memory = |host: usize| -> Option<*mut c_void> {
+            if host >= output.number_buffers as usize {
+                return None;
+            }
+            // SAFETY: host is within number_buffers.
+            let buffer = unsafe { output.buffer_at(host as u32) };
+            let long_enough = buffer.data_byte_size as usize >= frames * std::mem::size_of::<S>();
+            if buffer.number_channels != 1 || buffer.data.is_null() || !long_enough {
+                return None;
+            }
+            let input_memory = if host < input.number_buffers as usize {
+                // SAFETY: host is within the input's number_buffers.
+                unsafe { input.buffer_at(host as u32) }.data
+            } else {
+                std::ptr::null_mut()
+            };
+            (buffer.data != input_memory).then_some(buffer.data)
+        };
+        // Every channel needs memory of its own: shared memory (the shims'
+        // silence for outputs without memory) or the input's stays as the
+        // shim made it, undelayed.
+        let mut seen = [std::ptr::null_mut::<c_void>(); MAX_CHANNELS];
+        for channel in 0..channels {
+            let Some(data) = memory(host_buffer(channel)) else {
+                return;
+            };
+            if seen[..channel].contains(&data) {
+                return;
+            }
+            seen[channel] = data;
+        }
+        let slices = seen[..channels].iter().map(|&data| {
+            // SAFETY: Different memory of frames samples of S for each
+            // channel (checked above), valid for the call.
+            unsafe { std::slice::from_raw_parts_mut(data as *mut S, frames) }
+        });
+        let mut buffer = Buffer::new(slices, std::iter::empty(), channels, frames);
+        let latency = self.shared.latency_samples().min(host_bypass.max_latency());
+        host_bypass.begin(true, latency, &mut buffer);
     }
 
     #[cfg(feature = "diagnostics")]
