@@ -42,7 +42,7 @@ Simple gain effect for stereo and mono tracks with minimal complexity.
 
 ### [Compressor](compressor/)
 
-Feed-forward compressor with soft/hard knee and sidechain input.
+Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 
 **Parameters:**
 
@@ -53,6 +53,7 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 | **Attack** | How fast compression engages (0.1-200 ms). Slower preserves transients. |
 | **Release** | How fast compression releases (10-2000 ms). Faster = punchier, slower = smoother. |
 | **Soft Knee** | Toggle between soft knee (gradual onset) and hard knee (abrupt). |
+| **Lookahead** | Delays the audio (0-10 ms) so that compression starts before a peak arrives. It is the plugin's latency, which the host compensates. |
 | **Auto Makeup** | Automatically compensate for volume reduction from compression. |
 | **Makeup Gain** | Manual output boost (0-24 dB). Only active when Auto Makeup is off. |
 | **Sidechain** | Use external sidechain input for detection instead of main input, once the host has switched the sidechain bus on. |
@@ -65,8 +66,9 @@ Feed-forward compressor with soft/hard knee and sidechain input.
 
 **Demonstrates:**
 - A tuple setup `(SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses)`: the sample rate for the envelope coefficients, the channels and block size for the bypass handler and the active buses
-- `BypassHandler` with `CrossfadeCurve::Linear` for click-free bypass
-- `set_active()` for resetting envelope state on activation
+- `BypassHandler` with `CrossfadeCurve::Linear` for click-free bypass, its dry signal delayed by the lookahead and a warm-up (lookahead plus three attack times) after a bypass
+- `latency_samples()` that follows a parameter at runtime
+- `set_active()` for resetting envelope and lookahead on activation
 - `kind = "db_log"` for logarithmic-feel threshold control
 - Linear parameter smoothing (`smoothing = "linear:50.0"`)
 - `EnumParameter` for discrete ratio values

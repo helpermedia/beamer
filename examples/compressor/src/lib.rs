@@ -12,7 +12,9 @@
 //!
 //! # Features Demonstrated
 //!
-//! - `BypassHandler` with `CrossfadeCurve::Linear` for smooth bypass
+//! - `BypassHandler` with `CrossfadeCurve::Linear` for smooth bypass, its
+//!   dry signal delayed by the lookahead and a warm-up after a bypass
+//! - A lookahead parameter: `latency_samples()` follows it at runtime
 //! - `bypass_ramp_samples()` to report ramp duration to host
 //! - `set_active()` to reset DSP state on plugin activation
 //! - `PowerMapper` via `kind = "db_log"` for logarithmic-feel dB mapping
@@ -30,6 +32,7 @@
 //! - Stereo-linked peak detection
 //! - Soft/hard knee selection
 //! - Dynamic auto makeup gain
+//! - Optional lookahead: the audio is delayed, the detector is not
 
 use beamer::prelude::*;
 
@@ -128,6 +131,18 @@ pub struct CompressorModel {
     #[parameter(id = "knee", name = "Soft Knee", default = true)]
     pub soft_knee: BoolParameter,
 
+    /// Lookahead in milliseconds: the audio is delayed by it, so that the
+    /// envelope reacts before a peak reaches the output. It is the
+    /// plugin's latency.
+    #[parameter(
+        id = "lookahead",
+        name = "Lookahead",
+        default = 0.0,
+        range = 0.0..=10.0,
+        kind = "ms"
+    )]
+    pub lookahead: FloatParameter,
+
     // =========================================================================
     // Gain Controls
     // =========================================================================
@@ -202,28 +217,35 @@ impl Model for CompressorModel {
     ) -> CompressorProcessor {
         // Calculate bypass ramp samples based on sample rate
         let ramp_samples = (sample_rate.hz() * BYPASS_RAMP_MS * 0.001) as u32;
+        // The longest lookahead is the largest latency.
+        let max_lookahead_samples = ms_to_samples(MAX_LOOKAHEAD_MS, sample_rate.hz());
 
-        CompressorProcessor {
-            // The handler keeps the dry signal of a crossfade, so it needs
-            // the channel count and the longest block. The compressor has
-            // no latency, so the dry signal needs no delay.
+        let mut processor = CompressorProcessor {
+            // The handler keeps the dry signal, so it needs the channel
+            // count, the longest block and the largest latency.
             bypass_handler: BypassHandler::new(
                 ramp_samples,
                 CrossfadeCurve::Linear,
                 input_channels.0 as usize,
                 max_buffer_size.0,
-                0,
+                max_lookahead_samples as u32,
             ),
             state: CompressionState {
                 env_db: DC_OFFSET,
                 average_gr_db: 0.0,
             },
+            lookahead: Lookahead::new(max_lookahead_samples),
+            lookahead_samples: 0,
+            max_lookahead_samples,
             sample_rate: sample_rate.hz(),
             // Input bus 1 is the sidechain. A host switches it on when the
             // user routes a key signal to it.
             has_sidechain: buses.is_input_on(1),
             model: self,
-        }
+        };
+        // The latency a host asks for before the first block.
+        processor.update_timing();
+        processor
     }
 
     // =========================================================================
@@ -273,6 +295,12 @@ fn update_envelope(current: f64, input_level: f64, attack_coeff: f64, release_co
     current + coeff * (input_level - current)
 }
 
+/// Convert a time in milliseconds to samples.
+#[inline]
+fn ms_to_samples(time_ms: f64, sample_rate: f64) -> usize {
+    (time_ms * 0.001 * sample_rate).round() as usize
+}
+
 /// Convert linear amplitude to dB with floor.
 #[inline]
 fn linear_to_db(linear: f64) -> f64 {
@@ -295,6 +323,14 @@ fn db_to_linear(db: f64) -> f64 {
 
 /// Bypass crossfade duration in milliseconds.
 const BYPASS_RAMP_MS: f64 = 10.0;
+
+/// The longest lookahead in milliseconds, the top of the parameter's
+/// range.
+const MAX_LOOKAHEAD_MS: f64 = 10.0;
+
+/// The warm-up after a bypass in attack times: three bring the envelope
+/// within 5 percent of where it settles.
+const WARMUP_ATTACK_TIMES: f64 = 3.0;
 
 /// Fixed soft knee width in dB.
 const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
@@ -320,6 +356,15 @@ pub struct CompressorProcessor {
     /// Compression state
     state: CompressionState,
 
+    /// The delay of the audio for the lookahead.
+    lookahead: Lookahead,
+
+    /// The lookahead of the current block in samples: the latency.
+    lookahead_samples: usize,
+
+    /// The longest lookahead in samples, which the delay holds.
+    max_lookahead_samples: usize,
+
     /// Current sample rate (real value from start!)
     sample_rate: f64,
 
@@ -341,6 +386,49 @@ struct CompressionState {
     average_gr_db: f64,
 }
 
+/// The delay of the audio for the lookahead: one line per processed
+/// channel (at most two), long enough for the longest lookahead.
+struct Lookahead {
+    /// The recent input of each channel, as a ring.
+    lines: [Vec<f64>; 2],
+    /// Where the next sample goes.
+    write: usize,
+}
+
+impl Lookahead {
+    fn new(max_samples: usize) -> Self {
+        Self {
+            lines: [vec![0.0; max_samples + 1], vec![0.0; max_samples + 1]],
+            write: 0,
+        }
+    }
+
+    /// Clear the delay, as on activation.
+    fn clear(&mut self) {
+        for line in &mut self.lines {
+            line.fill(0.0);
+        }
+        self.write = 0;
+    }
+
+    /// Put `input` into the line of `channel` and return the sample
+    /// `delay` samples before it. Call [`advance()`](Self::advance) once
+    /// all channels of a sample are done.
+    #[inline]
+    fn delay(&mut self, channel: usize, input: f64, delay: usize) -> f64 {
+        let line = &mut self.lines[channel];
+        let len = line.len();
+        line[self.write] = input;
+        line[(self.write + len - delay) % len]
+    }
+
+    /// Move on to the next sample.
+    #[inline]
+    fn advance(&mut self) {
+        self.write = (self.write + 1) % self.lines[0].len();
+    }
+}
+
 /// What a block of compression did, for the diagnostics log.
 struct CompressionReport {
     /// The largest gain reduction of the block in dB, as a positive number.
@@ -350,10 +438,24 @@ struct CompressionReport {
 }
 
 impl CompressorProcessor {
-    /// Start the envelope from silence, as on activation.
-    fn clear_envelope(&mut self) {
+    /// Start the envelope and the lookahead from silence, as on
+    /// activation.
+    fn clear_dsp(&mut self) {
         self.state.env_db = DC_OFFSET;
         self.state.average_gr_db = 0.0;
+        self.lookahead.clear();
+    }
+
+    /// Take the lookahead of this block (the latency) and set the
+    /// warm-up after a bypass: the lookahead plus three times the attack
+    /// (its target value), so that the cleared envelope settles while the
+    /// dry signal plays.
+    fn update_timing(&mut self) {
+        self.lookahead_samples = ms_to_samples(self.model.lookahead.get(), self.sample_rate)
+            .min(self.max_lookahead_samples);
+        let attack_samples = ms_to_samples(self.model.attack.get() * WARMUP_ATTACK_TIMES, self.sample_rate);
+        self.bypass_handler
+            .set_warmup_samples((self.lookahead_samples + attack_samples) as u32);
     }
 
     /// Process compression on a buffer and report what it did to a
@@ -370,6 +472,8 @@ impl CompressorProcessor {
             aux,
             &self.model,
             &mut self.state,
+            &mut self.lookahead,
+            self.lookahead_samples,
             self.sample_rate,
             self.has_sidechain,
         );
@@ -385,11 +489,15 @@ impl CompressorProcessor {
 /// 2. Convert to dB and compute overshoot above threshold
 /// 3. Run attack/release envelope on the overshoot
 /// 4. Compute gain reduction from smoothed overshoot
+/// 5. Apply it to the audio delayed by the lookahead
+#[allow(clippy::too_many_arguments)]
 fn process_compression_inner<S: Sample>(
     buffer: &mut Buffer<S>,
     aux: &mut AuxiliaryBuffers<S>,
     model: &CompressorModel,
     state: &mut CompressionState,
+    lookahead: &mut Lookahead,
+    lookahead_samples: usize,
     sample_rate: f64,
     has_sidechain: bool,
 ) -> CompressionReport {
@@ -510,16 +618,14 @@ fn process_compression_inner<S: Sample>(
 
         let total_gain_linear = db_to_linear(gain_reduction_db + auto_makeup_db + manual_makeup_db);
 
-        // Apply gain to output
-        let gain = S::from_f64(total_gain_linear);
-
-        // The buffer is processed in place: this sample still holds the input.
-        let left = &mut buffer.channel(0)[sample_idx];
-        *left = *left * gain;
-        if num_channels > 1 {
-            let right = &mut buffer.channel(1)[sample_idx];
-            *right = *right * gain;
+        // Apply the gain to the audio delayed by the lookahead. The buffer
+        // is processed in place: this sample still holds the input.
+        for channel in 0..num_channels {
+            let sample = &mut buffer.channel(channel)[sample_idx];
+            let delayed = lookahead.delay(channel, sample.to_f64(), lookahead_samples);
+            *sample = S::from_f64(delayed * total_gain_linear);
         }
+        lookahead.advance();
     }
 
     report
@@ -529,9 +635,16 @@ impl Processor for CompressorProcessor {
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
         if active {
-            self.clear_envelope();
+            self.clear_dsp();
             self.bypass_handler.reset();
+            // The latency a host asks for after activating.
+            self.update_timing();
         }
+    }
+
+    /// The lookahead is the latency.
+    fn latency_samples(&self) -> u32 {
+        self.lookahead_samples as u32
     }
 
     /// Report bypass ramp duration to host.
@@ -546,6 +659,7 @@ impl Processor for CompressorProcessor {
         context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
+        self.update_timing();
         let latency = self.latency_samples();
 
         // Split API: begin() returns what action to take
@@ -563,9 +677,10 @@ impl Processor for CompressorProcessor {
                 self.bypass_handler.finish(buffer);
             }
             BypassAction::Resume => {
-                // The envelope did not follow the input while bypassed:
-                // start it clean, then process and crossfade.
-                self.clear_envelope();
+                // The envelope and the lookahead did not follow the input
+                // while bypassed: start them clean, then process. The
+                // handler holds the dry signal for the warm-up.
+                self.clear_dsp();
                 self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
@@ -587,6 +702,7 @@ impl Processor for CompressorProcessor {
         context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
+        self.update_timing();
         let latency = self.latency_samples();
 
         // Split API: same pattern for f64 processing
@@ -600,10 +716,140 @@ impl Processor for CompressorProcessor {
                 self.bypass_handler.finish(buffer);
             }
             BypassAction::Resume => {
-                self.clear_envelope();
+                self.clear_dsp();
                 self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beamer::allocation_check;
+
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const BLOCK: usize = 64;
+
+    fn prepare(model: &Arc<CompressorModel>) -> CompressorProcessor {
+        let buses = ActiveBuses::default_for(&**model);
+        Arc::clone(model).prepare((SampleRate(SAMPLE_RATE), MaxBufferSize(BLOCK), MainInputChannels(2), buses))
+    }
+
+    /// Process one stereo block of `input` in place.
+    fn process(processor: &mut CompressorProcessor, left: &mut [f32], right: &mut [f32]) {
+        let mut buffer = Buffer::new([left, right], std::iter::empty(), 2, BLOCK);
+        let mut aux = AuxiliaryBuffers::empty();
+        let context = ProcessContext::with_empty_transport(SAMPLE_RATE, BLOCK);
+        processor.process(&mut buffer, &mut aux, &context);
+    }
+
+    #[test]
+    fn test_bypass_keeps_the_audio_delayed_by_the_lookahead() {
+        // A quiet input below the threshold: the compressor is a delay of
+        // its lookahead, active and bypassed. Bypassed for blocks 10 to 19,
+        // then back through the warm-up and the ramp.
+        let model = Arc::new(CompressorModel::default());
+        model.lookahead.set(5.0);
+        let mut processor = prepare(&model);
+        let latency = processor.latency_samples() as usize;
+        assert_eq!(latency, 240);
+
+        // Long enough for the warm-up (240 + 3 x 480) and the ramp (480).
+        let input: Vec<f32> = (0..BLOCK * 64).map(|n| 0.001 * (n % 50) as f32).collect();
+        let mut output = Vec::new();
+        for (index, block) in input.chunks(BLOCK).enumerate() {
+            model.bypass.set((10..20).contains(&index));
+            let mut left = block.to_vec();
+            let mut right = block.to_vec();
+            process(&mut processor, &mut left, &mut right);
+            assert_eq!(left, right);
+            output.extend_from_slice(&left);
+        }
+        for (index, sample) in output.iter().enumerate() {
+            let expected = if index < latency { 0.0 } else { input[index - latency] };
+            assert!((sample - expected).abs() < 1e-6, "sample {index}: {sample} is not {expected}");
+        }
+        assert_eq!(processor.bypass_handler.state(), BypassState::Active);
+    }
+
+    #[test]
+    fn test_warmup_lets_the_envelope_settle_before_the_ramp() {
+        // A steady input 14 dB above the threshold. After a bypass the
+        // dry signal holds while the cleared envelope attacks again, so
+        // the output after the ramp is as compressed as before the bypass.
+        let model = Arc::new(CompressorModel::default());
+        model.threshold.set(-20.0);
+        model.lookahead.set(5.0);
+        let mut processor = prepare(&model);
+        let mut output = Vec::new();
+        for index in 0..140 {
+            model.bypass.set((60..70).contains(&index));
+            let mut left = [0.5f32; BLOCK];
+            let mut right = [0.5f32; BLOCK];
+            process(&mut processor, &mut left, &mut right);
+            output.extend_from_slice(&left);
+        }
+        let compressed = output[60 * BLOCK - 1];
+        assert!(compressed < 0.2, "{compressed}");
+        // Lookahead 240, warm-up 240 + 3 x 480, ramp 480 from block 70 on.
+        let settled = 70 * BLOCK + 240 + 1440 + 480 + 1;
+        for (index, sample) in output.iter().enumerate().skip(settled) {
+            assert!((sample / compressed - 1.0).abs() < 0.02, "sample {index}: {sample}, compressed {compressed}");
+        }
+    }
+
+    #[test]
+    fn test_lookahead_change_while_playing_moves_the_delay() {
+        // A quiet input: no compression, so the output is the input
+        // delayed by the lookahead, 0 for 10 blocks, then the full 10 ms.
+        let model = Arc::new(CompressorModel::default());
+        let mut processor = prepare(&model);
+        let input: Vec<f32> = (0..BLOCK * 30).map(|n| 0.001 * (n % 50) as f32).collect();
+        let mut output = Vec::new();
+        for (index, block) in input.chunks(BLOCK).enumerate() {
+            model.lookahead.set(if index < 10 { 0.0 } else { 10.0 });
+            let mut left = block.to_vec();
+            let mut right = block.to_vec();
+            process(&mut processor, &mut left, &mut right);
+            output.extend_from_slice(&left);
+        }
+        assert_eq!(processor.latency_samples(), 480);
+        assert_eq!(output[..10 * BLOCK], input[..10 * BLOCK]);
+        for index in 10 * BLOCK..output.len() {
+            let expected = if index < 480 { 0.0 } else { input[index - 480] };
+            assert!((output[index] - expected).abs() < 1e-6, "sample {index}: {} is not {expected}", output[index]);
+        }
+    }
+
+    #[test]
+    fn test_latency_follows_the_lookahead() {
+        let model = Arc::new(CompressorModel::default());
+        let mut processor = prepare(&model);
+        assert_eq!(processor.latency_samples(), 0);
+        model.lookahead.set(2.0);
+        process(&mut processor, &mut [0.0; BLOCK], &mut [0.0; BLOCK]);
+        assert_eq!(processor.latency_samples(), 96);
+        // Above the range the parameter keeps its top, 10 ms.
+        model.lookahead.set(20.0);
+        process(&mut processor, &mut [0.0; BLOCK], &mut [0.0; BLOCK]);
+        assert_eq!(processor.latency_samples(), 480);
+    }
+
+    #[test]
+    fn test_process_neither_allocates_nor_frees() {
+        let model = Arc::new(CompressorModel::default());
+        model.lookahead.set(5.0);
+        let mut processor = prepare(&model);
+        let mut left = [0.5f32; BLOCK];
+        let mut right = [0.5f32; BLOCK];
+        let (_, counts) = allocation_check::count_in_process(|| {
+            process(&mut processor, &mut left, &mut right);
+        });
+        // The check runs in debug builds with the `allocation-check` feature.
+        if allocation_check::is_active() {
+            assert!(counts.is_empty(), "{counts:?}");
         }
     }
 }

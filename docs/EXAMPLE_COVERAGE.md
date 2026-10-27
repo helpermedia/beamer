@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-10-21
+**Last Updated:** 2026-10-27
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -32,9 +32,9 @@
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
 | | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | latency_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Lookahead that follows a parameter |
 | | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reset state on activation |
-| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish) |
+| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish), delayed by the latency, warm-up |
 | | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
 | **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drums uses mono |
