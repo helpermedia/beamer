@@ -205,12 +205,14 @@ impl Model for CompressorModel {
 
         CompressorProcessor {
             // The handler keeps the dry signal of a crossfade, so it needs
-            // the channel count and the longest block.
+            // the channel count and the longest block. The compressor has
+            // no latency, so the dry signal needs no delay.
             bypass_handler: BypassHandler::new(
                 ramp_samples,
                 CrossfadeCurve::Linear,
                 input_channels.0 as usize,
                 max_buffer_size.0,
+                0,
             ),
             state: CompressionState {
                 env_db: DC_OFFSET,
@@ -538,11 +540,12 @@ impl Processor for CompressorProcessor {
         context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
+        let latency = self.latency_samples();
 
         // Split API: begin() returns what action to take
-        match self.bypass_handler.begin(is_bypassed, buffer) {
+        match self.bypass_handler.begin(is_bypassed, latency, buffer) {
             BypassAction::Passthrough => {
-                // Fully bypassed - the buffer already holds the input
+                // Fully bypassed: the buffer holds the input, delayed by the latency.
             }
             BypassAction::Process => {
                 // Normal processing - no crossfade needed
@@ -571,9 +574,10 @@ impl Processor for CompressorProcessor {
         context: &ProcessContext,
     ) {
         let is_bypassed = self.model.bypass.get();
+        let latency = self.latency_samples();
 
         // Split API: same pattern for f64 processing
-        match self.bypass_handler.begin(is_bypassed, buffer) {
+        match self.bypass_handler.begin(is_bypassed, latency, buffer) {
             BypassAction::Passthrough => {}
             BypassAction::Process => {
                 self.process_compression(buffer, aux, context);

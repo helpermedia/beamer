@@ -1625,7 +1625,8 @@ pub enum BypassState {
 
 /// What action the plugin should take for this buffer.
 pub enum BypassAction {
-    /// Fully bypassed: nothing to do, the buffer already holds the input.
+    /// Fully bypassed: nothing to do, the buffer holds the input,
+    /// delayed by the latency given to begin().
     Passthrough,
     /// Fully active: run DSP normally.
     Process,
@@ -1648,14 +1649,16 @@ pub enum CrossfadeCurve {
 pub struct BypassHandler { /* ... */ }
 
 impl BypassHandler {
-    /// Allocates the dry buffer: call in prepare(), with MainInputChannels
-    /// and MaxBufferSize.
-    pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize) -> Self;
+    /// Allocates the rings for the dry signal: call in prepare(), with
+    /// MainInputChannels, MaxBufferSize and the largest latency the plugin
+    /// will report (0 without latency).
+    pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize, max_latency: u32) -> Self;
 
-    /// Begin bypass processing, before anything writes to the buffer.
-    /// Returns what action to take. Copies the dry signal when it is
-    /// ProcessAndCrossfade.
-    pub fn begin<S: Sample>(&mut self, bypassed: bool, buffer: &Buffer<S>) -> BypassAction;
+    /// Begin bypass processing, before anything writes to the buffer, with
+    /// the latency of this block. Returns what action to take. Copies the
+    /// dry signal; while bypassed it writes it into the buffer, delayed by
+    /// the latency.
+    pub fn begin<S: Sample>(&mut self, bypassed: bool, latency: u32, buffer: &mut Buffer<S>) -> BypassAction;
 
     /// Finish bypass processing by applying crossfade.
     /// Call after DSP when begin() returned ProcessAndCrossfade.
@@ -1687,10 +1690,11 @@ struct ReverbProcessor {
 impl Processor for ReverbProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         let is_bypassed = self.model.bypass.get();
+        let latency = self.latency_samples();
 
-        match self.bypass_handler.begin(is_bypassed, buffer) {
+        match self.bypass_handler.begin(is_bypassed, latency, buffer) {
             BypassAction::Passthrough => {
-                // The buffer already holds the input.
+                // The buffer holds the input, delayed by the latency.
             }
             BypassAction::Process => {
                 self.process_reverb(buffer);
@@ -1710,6 +1714,8 @@ impl Processor for ReverbProcessor {
 ```
 
 **Why Split API?** The split pattern (begin/finish) avoids Rust borrow checker conflicts that occur with closure-based APIs when your DSP code needs to access `&mut self`.
+
+**Latency:** A plugin with latency passes `latency_samples()` to `begin()` and the largest latency it will report to `new()`. The handler delays the dry signal by it, in the crossfade and while bypassed: the two signals do not comb-filter and the bypassed track stays aligned with the host's delay compensation.
 
 ---
 

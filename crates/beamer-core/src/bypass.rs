@@ -11,13 +11,22 @@
 //! - [`CrossfadeCurve`] - Crossfade curve shape (Linear, EqualPower, SCurve)
 //! - [`BypassHandler`] - Main utility for handling bypass with automatic crossfading
 //!
+//! # Latency
+//!
+//! A plugin with latency outputs its input `latency_samples()` later. The
+//! dry signal has to come out just as late, in the crossfade and while
+//! bypassed. Otherwise the two signals comb-filter while they are mixed
+//! and the bypassed track plays early against the host's delay
+//! compensation. The handler delays the dry signal by the latency given to
+//! `begin()`, up to the largest latency given to `new()`.
+//!
 //! # Example
 //!
 //! ```ignore
 //! use beamer_core::{BypassHandler, BypassAction, CrossfadeCurve, Buffer};
 //!
 //! // In prepare(), with (SampleRate, MaxBufferSize, MainInputChannels) as Setup:
-//! // BypassHandler::new(ramp_samples, CrossfadeCurve::Linear, channels, max_buffer_size)
+//! // BypassHandler::new(ramp_samples, CrossfadeCurve::Linear, channels, max_buffer_size, max_latency)
 //!
 //! struct MyPlugin {
 //!     bypass_handler: BypassHandler,
@@ -27,10 +36,11 @@
 //! impl Processor for MyPlugin {
 //!     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
 //!         let is_bypassed = self.model.bypass.get();
+//!         let latency = self.latency_samples();
 //!
-//!         match self.bypass_handler.begin(is_bypassed, buffer) {
+//!         match self.bypass_handler.begin(is_bypassed, latency, buffer) {
 //!             BypassAction::Passthrough => {
-//!                 // Fully bypassed - the buffer already holds the input
+//!                 // Fully bypassed - the buffer holds the input, delayed by the latency
 //!             }
 //!             BypassAction::Process => {
 //!                 // Normal processing
@@ -75,8 +85,9 @@ pub enum BypassState {
 /// Returned by [`BypassHandler::begin()`] to tell you what to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BypassAction {
-    /// Plugin is fully bypassed. The buffer already holds the input, so there
-    /// is nothing to do. No DSP processing needed.
+    /// Plugin is fully bypassed. The buffer holds the input, delayed by the
+    /// latency given to `begin()`, so there is nothing to do. No DSP
+    /// processing needed.
     Passthrough,
 
     /// Plugin is fully active. Run your DSP normally.
@@ -156,7 +167,8 @@ impl CrossfadeCurve {
 /// # Usage Pattern
 ///
 /// ```ignore
-/// match self.bypass_handler.begin(is_bypassed, buffer) {
+/// let latency = self.latency_samples();
+/// match self.bypass_handler.begin(is_bypassed, latency, buffer) {
 ///     BypassAction::Passthrough => {}
 ///     BypassAction::Process => self.process_dsp(buffer),
 ///     BypassAction::ProcessAndCrossfade => {
@@ -175,13 +187,15 @@ impl CrossfadeCurve {
 /// # Dry Signal
 ///
 /// The buffer is processed in place, so the input is gone once the DSP
-/// wrote the output. While it crossfades, `begin()` copies the input (the
-/// dry signal) into the handler's own buffer. `finish()` mixes it back
-/// in.
+/// wrote the output. `begin()` copies the input (the dry signal) into a
+/// ring per channel: every block when the handler has a largest latency,
+/// otherwise only while it crossfades. `finish()` mixes it back in and
+/// `begin()` writes it into the buffer while bypassed, both delayed by the
+/// latency of the block.
 ///
 /// # Real-Time Safety
 ///
-/// The dry buffer is allocated in [`new()`](Self::new). `begin()` and
+/// The rings are allocated in [`new()`](Self::new). `begin()` and
 /// `finish()` perform no heap allocations and are safe to use in audio
 /// processing callbacks.
 pub struct BypassHandler {
@@ -193,21 +207,31 @@ pub struct BypassHandler {
     ramp_samples: u32,
     /// Crossfade curve to use
     curve: CrossfadeCurve,
-    /// The dry signal of the block being crossfaded: one buffer per
-    /// crossfaded channel, `max_buffer_size` samples each.
+    /// The dry signal of the recent blocks: one ring per main input
+    /// channel, `ring_len` samples each.
     dry: Vec<Vec<f64>>,
-    /// Number of channels `dry` holds for the current block.
+    /// Length of each ring: the largest latency plus the longest block.
+    ring_len: usize,
+    /// Where the next block goes in the rings.
+    write_position: usize,
+    /// Where the current block starts in the rings.
+    block_start: usize,
+    /// The latency of the current block, at most `max_latency`.
+    latency: usize,
+    /// Number of channels the rings hold for the current block.
     dry_channels: usize,
-    /// Number of samples `dry` holds for the current block.
+    /// Number of samples the rings hold for the current block.
     dry_samples: usize,
-    /// Length of each dry buffer, the longest block `new()` was given.
+    /// The longest block `new()` was given.
     max_buffer_size: usize,
+    /// The largest latency `new()` was given.
+    max_latency: usize,
 }
 
 impl BypassHandler {
     /// Create a new bypass handler.
     ///
-    /// Call this in `prepare()`: it allocates the buffer for the dry signal.
+    /// Call this in `prepare()`: it allocates the rings for the dry signal.
     ///
     /// # Arguments
     /// * `ramp_samples` - Number of samples for crossfade (0 = instant bypass)
@@ -215,16 +239,32 @@ impl BypassHandler {
     /// * `channels` - Number of main input channels (`MainInputChannels`),
     ///   the channels whose dry signal is kept; the others fade to silence
     /// * `max_buffer_size` - Maximum block length (`MaxBufferSize`)
-    pub fn new(ramp_samples: u32, curve: CrossfadeCurve, channels: usize, max_buffer_size: usize) -> Self {
+    /// * `max_latency` - The largest latency the plugin will report with
+    ///   this setup, 0 for a plugin without latency. Each ring holds
+    ///   `max_latency + max_buffer_size` samples.
+    pub fn new(
+        ramp_samples: u32,
+        curve: CrossfadeCurve,
+        channels: usize,
+        max_buffer_size: usize,
+        max_latency: u32,
+    ) -> Self {
+        let max_latency = max_latency as usize;
+        let ring_len = max_latency + max_buffer_size;
         Self {
             state: BypassState::Active,
             ramp_position: 0,
             ramp_samples,
             curve,
-            dry: vec![vec![0.0; max_buffer_size]; channels],
+            dry: vec![vec![0.0; ring_len]; channels],
+            ring_len,
+            write_position: 0,
+            block_start: 0,
+            latency: 0,
             dry_channels: 0,
             dry_samples: 0,
             max_buffer_size,
+            max_latency,
         }
     }
 
@@ -275,23 +315,30 @@ impl BypassHandler {
     ///
     /// Call this at the start of your `process()` method, before anything
     /// writes to the buffer. It updates the internal state and returns what
-    /// action you should take. When it returns `ProcessAndCrossfade`, it has
-    /// copied the input (the dry signal) for `finish()`.
+    /// action you should take. It copies the input (the dry signal) for
+    /// `finish()` and for the blocks to come.
     ///
     /// # Arguments
     /// * `bypassed` - Current bypass parameter state (true = bypassed)
+    /// * `latency` - The latency of this block (`latency_samples()`). A
+    ///   value above the `max_latency` given to `new()` is clamped, which
+    ///   misaligns the dry signal against the latency the host was told
+    ///   (debug builds assert). A latency that changes while the handler
+    ///   crossfades or is bypassed moves the dry signal in time once: a
+    ///   click, at the moment the host aligns the track again.
     /// * `buffer` - The buffer of this block, still holding the input
     ///
     /// # Returns
     /// A [`BypassAction`] telling you what to do:
-    /// - `Passthrough`: Nothing, the buffer already holds the input
+    /// - `Passthrough`: Nothing, the buffer holds the delayed input
     /// - `Process`: Run your DSP normally
     /// - `ProcessAndCrossfade`: Run your DSP, then call `finish()`
     ///
     /// # Example
     ///
     /// ```ignore
-    /// match self.bypass_handler.begin(is_bypassed, buffer) {
+    /// let latency = self.latency_samples();
+    /// match self.bypass_handler.begin(is_bypassed, latency, buffer) {
     ///     BypassAction::Passthrough => {}
     ///     BypassAction::Process => self.process_dsp(buffer),
     ///     BypassAction::ProcessAndCrossfade => {
@@ -300,16 +347,35 @@ impl BypassHandler {
     ///     }
     /// }
     /// ```
-    pub fn begin<S: Sample>(&mut self, bypassed: bool, buffer: &Buffer<S>) -> BypassAction {
+    pub fn begin<S: Sample>(
+        &mut self,
+        bypassed: bool,
+        latency: u32,
+        buffer: &mut Buffer<S>,
+    ) -> BypassAction {
         self.set_bypass(bypassed);
+        debug_assert!(
+            latency as usize <= self.max_latency,
+            "latency {latency} is above the largest latency the BypassHandler was made for ({})",
+            self.max_latency
+        );
+        self.latency = (latency as usize).min(self.max_latency);
+
+        // Without a latency only a crossfade needs the input. With one,
+        // every block feeds the delay.
+        if self.max_latency > 0 || self.is_ramping() {
+            self.push_dry(buffer);
+        }
 
         match self.state {
-            BypassState::Bypassed => BypassAction::Passthrough,
-            BypassState::Active => BypassAction::Process,
-            BypassState::RampingToBypassed | BypassState::RampingToActive => {
-                self.capture_dry(buffer);
-                BypassAction::ProcessAndCrossfade
+            BypassState::Bypassed => {
+                if self.latency > 0 {
+                    self.write_delayed_dry(buffer);
+                }
+                BypassAction::Passthrough
             }
+            BypassState::Active => BypassAction::Process,
+            BypassState::RampingToBypassed | BypassState::RampingToActive => BypassAction::ProcessAndCrossfade,
         }
     }
 
@@ -319,7 +385,8 @@ impl BypassHandler {
     /// `BypassAction::ProcessAndCrossfade`.
     ///
     /// This blends the wet signal (in the buffer) with the dry signal (copied
-    /// by `begin()`) according to the current ramp position.
+    /// by `begin()` and delayed by the latency) according to the current
+    /// ramp position.
     ///
     /// # Arguments
     /// * `buffer` - The buffer containing the processed (wet) signal
@@ -327,24 +394,57 @@ impl BypassHandler {
         self.apply_crossfade(buffer);
     }
 
-    /// Copy the channels that hold an input into the dry buffer. A block
-    /// longer than the dry buffer is crossfaded up to its length; the rest
-    /// keeps the wet signal and the ramp continues in the next block. A
-    /// block without input channels still has samples to crossfade (to
-    /// silence).
-    fn capture_dry<S: Sample>(&mut self, buffer: &Buffer<S>) {
+    /// Copy the channels that hold an input into the rings, after the
+    /// blocks before. A block longer than the longest block `new()` was
+    /// given does not come from Beamer's wrappers: it is copied up to that
+    /// length and the rest keeps what the buffer held. A block without input
+    /// channels still has samples to crossfade (to silence).
+    fn push_dry<S: Sample>(&mut self, buffer: &Buffer<S>) {
+        debug_assert!(
+            buffer.num_samples() <= self.max_buffer_size,
+            "block of {} samples is longer than the BypassHandler was made for ({})",
+            buffer.num_samples(),
+            self.max_buffer_size
+        );
         let channels = buffer
             .num_input_channels()
             .min(buffer.num_channels())
             .min(self.dry.len());
         let samples = buffer.num_samples().min(self.max_buffer_size);
-        for (dry, channel) in self.dry.iter_mut().zip(buffer.channels()).take(channels) {
-            for (to, from) in dry[..samples].iter_mut().zip(channel) {
-                *to = from.to_f64();
+        for (ring, channel) in self.dry.iter_mut().zip(buffer.channels()).take(channels) {
+            let mut position = self.write_position;
+            for sample in &channel[..samples] {
+                ring[position] = sample.to_f64();
+                position += 1;
+                if position == self.ring_len {
+                    position = 0;
+                }
             }
+        }
+        self.block_start = self.write_position;
+        if self.ring_len > 0 {
+            self.write_position = (self.write_position + samples) % self.ring_len;
         }
         self.dry_channels = channels;
         self.dry_samples = samples;
+    }
+
+    /// Where the dry signal of sample `index` of the current block is in
+    /// the rings: `latency` samples before the input of that sample.
+    #[inline]
+    fn dry_position(&self, index: usize) -> usize {
+        (self.block_start + index + self.ring_len - self.latency) % self.ring_len
+    }
+
+    /// Write the delayed dry signal into the channels that hold an input.
+    /// The other channels are silent already.
+    fn write_delayed_dry<S: Sample>(&self, buffer: &mut Buffer<S>) {
+        for ch in 0..self.dry_channels {
+            let channel = buffer.channel(ch);
+            for (index, sample) in channel[..self.dry_samples].iter_mut().enumerate() {
+                *sample = S::from_f64(self.dry[ch][self.dry_position(index)]);
+            }
+        }
     }
 
     /// Update bypass target state (internal).
@@ -414,9 +514,10 @@ impl BypassHandler {
             let (wet_gain, dry_gain): (S, S) = self.curve.gains(t);
 
             // Apply crossfade to all channels for this sample
+            let dry_position = self.dry_position(sample_idx);
             for ch in 0..num_channels {
                 let dry = if ch < self.dry_channels {
-                    S::from_f64(self.dry[ch][sample_idx])
+                    S::from_f64(self.dry[ch][dry_position])
                 } else {
                     S::ZERO
                 };
@@ -445,17 +546,18 @@ impl BypassHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     #[test]
     fn test_crossfade_mixes_the_dry_signal_copied_before_processing() {
         // Mono in, stereo out: channel 0 holds the input, channel 1 starts
         // silent. A linear ramp of 4 samples to bypassed.
-        let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 8);
+        let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 8, 0);
         let mut left = [1.0f32; 4];
         let mut right = [0.0f32; 4];
         let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 1, 4);
 
-        assert_eq!(handler.begin(true, &buffer), BypassAction::ProcessAndCrossfade);
+        assert_eq!(handler.begin(true, 0, &mut buffer), BypassAction::ProcessAndCrossfade);
         // The DSP writes the wet signal over the input, in place.
         for channel in buffer.channels_mut() {
             channel.fill(0.5);
@@ -467,6 +569,103 @@ mod tests {
         assert_eq!(left, [0.5, 0.625, 0.75, 0.875]);
         assert_eq!(right, [0.5, 0.375, 0.25, 0.125]);
         assert_eq!(handler.state(), BypassState::Bypassed);
+    }
+
+    /// A plugin with latency: its wet signal is its input `latency`
+    /// samples later. Its delay is fed only while it processes.
+    struct DelayPlugin {
+        lines: Vec<VecDeque<f32>>,
+    }
+
+    impl DelayPlugin {
+        fn new(channels: usize, latency: usize) -> Self {
+            Self {
+                lines: vec![VecDeque::from(vec![0.0; latency]); channels],
+            }
+        }
+
+        fn process(&mut self, buffer: &mut Buffer<f32>) {
+            for (line, channel) in self.lines.iter_mut().zip(buffer.channels_mut()) {
+                for sample in channel {
+                    line.push_back(*sample);
+                    *sample = line.pop_front().unwrap();
+                }
+            }
+        }
+    }
+
+    /// Run a mono `input` through the handler and the plugin in blocks of
+    /// `block` samples, bypassed from block `bypass_from` on. Returns the
+    /// output.
+    fn run(
+        handler: &mut BypassHandler,
+        plugin: &mut DelayPlugin,
+        input: &[f32],
+        block: usize,
+        latency: u32,
+        bypass_from: usize,
+    ) -> Vec<f32> {
+        let mut output = Vec::new();
+        for (index, chunk) in input.chunks(block).enumerate() {
+            let mut samples = chunk.to_vec();
+            let len = samples.len();
+            let mut buffer = Buffer::new([&mut samples[..]], std::iter::empty(), 1, len);
+            match handler.begin(index >= bypass_from, latency, &mut buffer) {
+                BypassAction::Passthrough => {}
+                BypassAction::Process => plugin.process(&mut buffer),
+                BypassAction::ProcessAndCrossfade => {
+                    plugin.process(&mut buffer);
+                    handler.finish(&mut buffer);
+                }
+            }
+            output.extend_from_slice(&samples);
+        }
+        output
+    }
+
+    #[test]
+    fn test_dry_signal_is_delayed_by_the_latency_through_the_ramp_and_bypassed() {
+        // The wet and the dry signal are the input 3 samples later, so the
+        // output is that through the ramp and once bypassed. Blocks that
+        // do and do not divide the ramp; a largest latency above the
+        // latency.
+        let input: Vec<f32> = (1..=48).map(|n| n as f32).collect();
+        for block in [4, 5] {
+            for max_latency in [3, 8] {
+                let mut handler = BypassHandler::new(8, CrossfadeCurve::Linear, 1, 8, max_latency);
+                let mut plugin = DelayPlugin::new(1, 3);
+                let output = run(&mut handler, &mut plugin, &input, block, 3, 2);
+                for (index, sample) in output.iter().enumerate() {
+                    let expected = if index < 3 { 0.0 } else { input[index - 3] };
+                    assert!(
+                        (sample - expected).abs() < 1e-4,
+                        "block {block}, largest latency {max_latency}, sample {index}: {sample} is not {expected}"
+                    );
+                }
+                assert_eq!(handler.state(), BypassState::Bypassed);
+            }
+        }
+    }
+
+    #[test]
+    fn test_bypassed_mono_to_stereo_delays_the_input_channel_only() {
+        // Bypass at once (no ramp) with a latency of 2: channel 0 gets the
+        // input 2 samples later, also across blocks; channel 1 has no input
+        // and stays silent.
+        let mut handler = BypassHandler::new(0, CrossfadeCurve::Linear, 1, 4, 2);
+        let mut left = [1.0f32, 2.0, 3.0, 4.0];
+        let mut right = [0.0f32; 4];
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 1, 4);
+        assert_eq!(handler.begin(true, 2, &mut buffer), BypassAction::Passthrough);
+        assert_eq!(left, [0.0, 0.0, 1.0, 2.0]);
+        assert_eq!(right, [0.0; 4]);
+
+        let mut left = [5.0f32, 6.0, 7.0, 8.0];
+        let mut right = [0.0f32; 4];
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 1, 4);
+        assert_eq!(handler.begin(true, 2, &mut buffer), BypassAction::Passthrough);
+        assert_eq!(left, [3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(right, [0.0; 4]);
     }
 
     #[test]

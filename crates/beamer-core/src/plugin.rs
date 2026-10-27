@@ -584,6 +584,15 @@ pub trait Processor: Send + 'static {
     /// return the latency in samples here. The host can use this for delay
     /// compensation.
     ///
+    /// Hosts handle a fixed latency best: they set their delays up before
+    /// playback. Where the algorithm allows it, report the
+    /// largest latency all the time (and delay inside the plugin) instead
+    /// of one that changes with a parameter.
+    ///
+    /// A plugin with a [`BypassHandler`](crate::BypassHandler) passes this
+    /// value to its `begin()` for every block, so that the bypassed signal
+    /// comes out just as late.
+    ///
     /// Called on the audio thread for every block, so it must be
     /// realtime-safe. A host that asks for the latency gets the value of the
     /// most recent block.
