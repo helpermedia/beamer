@@ -571,7 +571,8 @@ pub trait Processor: Send + 'static {
     ///
     /// Called on the audio thread for every block, so it must be
     /// realtime-safe. A host that asks for the tail gets the value of the
-    /// most recent block.
+    /// most recent block. An Audio Unit host hears of a change after the
+    /// block that made it; a VST3 host asks for the tail when it needs it.
     ///
     /// Default returns 0 (no tail).
     fn tail_samples(&self) -> u32 {
@@ -585,9 +586,9 @@ pub trait Processor: Send + 'static {
     /// compensation.
     ///
     /// Hosts handle a fixed latency best: they set their delays up before
-    /// playback. Where the algorithm allows it, report the
-    /// largest latency all the time (and delay inside the plugin) instead
-    /// of one that changes with a parameter.
+    /// playback and a change interrupts it. Where the algorithm allows it,
+    /// report the largest latency all the time (and delay inside the
+    /// plugin) instead of one that changes with a parameter.
     ///
     /// A plugin with a [`BypassHandler`](crate::BypassHandler) passes this
     /// value to its `begin()` for every block, so that the bypassed signal
@@ -595,7 +596,11 @@ pub trait Processor: Send + 'static {
     ///
     /// Called on the audio thread for every block, so it must be
     /// realtime-safe. A host that asks for the latency gets the value of the
-    /// most recent block.
+    /// most recent block. A change reaches the host after the block that
+    /// made it: the wrapper tells it on its main thread (a VST3 host
+    /// restarts the plugin for it, an Audio Unit host reads the new value).
+    /// A host that does not call `process()` while stopped hears of a
+    /// change made then with the first block of playback.
     ///
     /// Default returns 0 (no latency).
     fn latency_samples(&self) -> u32 {

@@ -680,6 +680,13 @@ impl BeamerInstanceHandle {
         }
     }
 
+    /// Deliver the pending host changes on this thread, as the main thread
+    /// does by itself.
+    #[cfg(test)]
+    pub(crate) fn deliver_host_changes(&self) {
+        self.shared.host_notifier().deliver();
+    }
+
     /// Lock the negotiated bus configuration.
     fn lock_bus_config(&self) -> std::sync::MutexGuard<'_, Option<CachedBusConfig>> {
         // A poisoned lock only means a panic elsewhere: the configuration is
@@ -963,8 +970,69 @@ pub extern "C" fn beamer_au_destroy_instance(instance: BeamerAuInstanceHandle) {
         // SAFETY: instance validated non-null above. Caller guarantees it was
         // returned by beamer_au_create_instance and not previously destroyed.
         // Box::from_raw takes ownership and will drop the instance.
-        let _ = unsafe { Box::from_raw(instance) };
+        let handle = unsafe { Box::from_raw(instance) };
+        // A render block may keep the shared state: the shim's callback
+        // goes now, after a delivery in progress.
+        handle.shared.host_notifier().set_target(None);
+        drop(handle);
     }));
+}
+
+// The bits of the host changes (must match BEAMER_AU_HOST_CHANGE_* in
+// BeamerAuBridge.h).
+const _: () = assert!(beamer_core::HostChanges::LATENCY.bits() == 1 << 0);
+const _: () = assert!(beamer_core::HostChanges::TAIL.bits() == 1 << 1);
+
+/// Function that tells the host about changes on the main thread
+/// (matches BeamerAuHostChangeFn in header). `changes` holds the
+/// `BEAMER_AU_HOST_CHANGE_*` bits.
+pub type BeamerAuHostChangeFn = unsafe extern "C" fn(context: *mut c_void, changes: u32);
+
+/// The shim's callback with its context, which the shim keeps valid while
+/// the callback is set.
+struct HostChangeCallback {
+    callback: BeamerAuHostChangeFn,
+    context: *mut c_void,
+}
+
+// SAFETY: The callback runs on the main thread only and the shim keeps the
+// context valid until it clears the callback.
+unsafe impl Send for HostChangeCallback {}
+
+impl HostChangeCallback {
+    fn call(&self, changes: beamer_core::HostChanges) {
+        // SAFETY: The shim keeps the context valid while the callback is
+        // set (see `beamer_au_set_host_change_callback`).
+        unsafe { (self.callback)(self.context, changes.bits()) };
+    }
+}
+
+/// Set the function that tells the host about changes, or none.
+///
+/// The function runs on the main thread, with the changes noted since its
+/// last run: a latency or tail that changed after a render call. Clearing
+/// it (a null callback) waits for a run in progress, so that the context
+/// may go afterwards. `beamer_au_destroy_instance` clears it too. Do not
+/// call this from within the callback.
+///
+/// # Safety
+///
+/// `context` must stay valid for the callback until the callback is
+/// cleared or the instance is destroyed.
+#[no_mangle]
+pub extern "C" fn beamer_au_set_host_change_callback(
+    instance: BeamerAuInstanceHandle,
+    callback: Option<BeamerAuHostChangeFn>,
+    context: *mut c_void,
+) {
+    with_instance_void!(instance, |handle| {
+        let target = callback.map(|callback| {
+            let callback = HostChangeCallback { callback, context };
+            Box::new(move |changes: beamer_core::HostChanges| callback.call(changes))
+                as beamer_core::HostChangeTarget
+        });
+        handle.shared.host_notifier().set_target(target);
+    });
 }
 
 // =============================================================================

@@ -1371,15 +1371,14 @@ impl<S: RenderSample> RenderBlock<S> {
 
         // Host threads do not touch the processor while audio runs. What they
         // asked for since the last block happens here, before this block is
-        // processed. What they want to know is published for them.
+        // processed. What they want to know is published for them at the
+        // end of the call.
         if self.shared.take_reset_request() {
             plugin_guard.reset();
         }
         if self.shared.take_smoothing_reset_request() {
             self.model.parameters().reset_smoothing();
         }
-        self.shared
-            .publish_timing(plugin_guard.latency_samples(), plugin_guard.tail_samples());
 
         // Use pre-allocated storage instead of Vec allocations
         // SAFETY: We have exclusive access via &self and AU guarantees
@@ -1809,6 +1808,11 @@ impl<S: RenderSample> RenderBlock<S> {
         unsafe {
             *self.last_render_sample_time.get() = Self::sample_time_from(timestamp);
         }
+
+        // The latency and tail after this block's parameter changes, for the
+        // host threads; a change is told to the host.
+        self.shared
+            .publish_block_timing(plugin_guard.latency_samples(), plugin_guard.tail_samples());
 
         result
     }

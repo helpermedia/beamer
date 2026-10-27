@@ -497,6 +497,19 @@ static void NotifyPropertyListeners(BeamerAuv2Instance* inst, AudioUnitPropertyI
     pthread_mutex_unlock(&inst->listenerMutex);
 }
 
+// Tell the host on the main thread that the latency or the tail changed
+// after a render call (BeamerAuHostChangeFn): its property listeners ask
+// for the new values.
+static void BeamerAuv2HostChanged(void* context, uint32_t changes) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)context;
+    if (changes & BEAMER_AU_HOST_CHANGE_LATENCY) {
+        NotifyPropertyListeners(inst, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
+    }
+    if (changes & BEAMER_AU_HOST_CHANGE_TAIL) {
+        NotifyPropertyListeners(inst, kAudioUnitProperty_TailTime, kAudioUnitScope_Global, 0);
+    }
+}
+
 // The current name of an element, as the slot that holds it, as for
 // BeamerAuv2Format. Read and written under namesMutex.
 static CFStringRef* BeamerAuv2NameSlot(BeamerAuv2Instance* inst,
@@ -911,7 +924,13 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     atomic_init(&inst->processesInPlace, false);
 
     // Initialize mutexes
-    pthread_mutex_init(&inst->listenerMutex, NULL);
+    // Recursive: a listener may add or remove listeners while it is told
+    // about a change.
+    pthread_mutexattr_t listenerMutexAttributes;
+    pthread_mutexattr_init(&listenerMutexAttributes);
+    pthread_mutexattr_settype(&listenerMutexAttributes, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&inst->listenerMutex, &listenerMutexAttributes);
+    pthread_mutexattr_destroy(&listenerMutexAttributes);
     pthread_mutex_init(&inst->renderNotifyMutex, NULL);
     pthread_mutex_init(&inst->callbacksMutex, NULL);
     pthread_mutex_init(&inst->queueReaderMutex, NULL);
@@ -952,6 +971,9 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     if (!inst->rustInstance) {
         return kAudioUnitErr_FailedInitialization;
     }
+    // Destroying the Rust instance in Close clears the callback before the
+    // instance goes.
+    beamer_au_set_host_change_callback(inst->rustInstance, BeamerAuv2HostChanged, inst);
 
     // Query bus configuration from Rust and set up default formats per bus
     uint32_t inputBusCount = beamer_au_get_input_bus_count(inst->rustInstance);

@@ -31,7 +31,7 @@ use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
 use beamer_core::{
     ActiveBuses, AuxiliaryBuffers, Buffer, BusInfo as CoreBusInfo, BusNegotiation, BusRouting,
     BusLayout, BusType as CoreBusType, CachedBusConfig, ChannelSet, ChordInfo, ConversionBuffers,
-    FrameRate as CoreFrameRate, Layout, MidiBuffer, MidiCcState, Model,
+    FrameRate as CoreFrameRate, HostChanges, HostNotifier, Layout, MidiBuffer, MidiCcState, Model,
     MidiEvent, MidiEventKind, MidiEventsMut, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
@@ -836,6 +836,9 @@ where
     parameter_ids: Box<[ParameterId]>,
     /// The component handler the host set, shared with the editors.
     component_handler: Arc<ComponentHandler>,
+    /// Asks the host for a restart on its UI thread when the latency or
+    /// the parameter values changed (see `restart_notifier`).
+    host_notifier: HostNotifier,
     /// The plugin's queue of events for the web UI, if it has one.
     #[cfg(feature = "webview")]
     webview_events: Option<WebViewEventQueue>,
@@ -879,14 +882,40 @@ unsafe impl<P: Model> Send for Vst3Processor<P> {}
 // - VST3 guarantees process() is called from one thread at a time
 // - The model is Sync; process() reaches it through the processor's own
 //   `Arc`
-// - component_handler is used by controller calls, which the host never
-//   makes concurrently
+// - component_handler is used by controller calls and by the restart
+//   notifier, all on the host's UI thread (the main thread on macOS),
+//   never concurrently
 // - The bus negotiation of host threads is in a Mutex; process() uses its
 //   own copy, which only calls outside process() replace
 // - What a host thread uses while process() runs is atomic: the parameter
 //   values (also for saving and loading the state), the current preset,
 //   latency, tail and the request to reset the smoothers
 unsafe impl<P: Model> Sync for Vst3Processor<P> {}
+
+/// A notifier that asks the host for a restart on its UI thread (the main
+/// thread on macOS), which `restartComponent()` requires: the changes
+/// become the restart flags. It keeps the handler slot, which is empty
+/// once the host terminated the plugin.
+fn restart_notifier(component_handler: Arc<ComponentHandler>) -> HostNotifier {
+    let notifier = HostNotifier::new();
+    notifier.set_target(Some(Box::new(move |changes: HostChanges| {
+        let mut flags = 0;
+        if changes.contains(HostChanges::LATENCY) {
+            flags |= RestartFlags_::kLatencyChanged;
+        }
+        if changes.contains(HostChanges::PARAMETER_VALUES) {
+            flags |= RestartFlags_::kParamValuesChanged;
+        }
+        let handler = component_handler.get();
+        if flags != 0 && !handler.is_null() {
+            // SAFETY: The handler is a valid COM pointer the slot keeps a
+            // reference to. This runs on the UI thread, where the slot is
+            // used.
+            unsafe { ((*(*handler).vtbl).restartComponent)(handler, flags) };
+        }
+    })));
+    notifier
+}
 
 impl<P: Model> Vst3Processor<P> {
     /// Create a new VST3 processor wrapping the given plugin configuration.
@@ -934,6 +963,9 @@ impl<P: Model> Vst3Processor<P> {
         // `getBusInfo()` reports) until the host activates others.
         let buses = HostBuses::new(&*model);
 
+        let component_handler = Arc::new(ComponentHandler::new());
+        let host_notifier = restart_notifier(Arc::clone(&component_handler));
+
         Self {
             model,
             processor: UnsafeCell::new(None),
@@ -956,7 +988,8 @@ impl<P: Model> Vst3Processor<P> {
             current_preset_index: AtomicU32::new(0),
             preset_changes: UnsafeCell::new(Vec::with_capacity(parameter_ids.len())),
             parameter_ids,
-            component_handler: Arc::new(ComponentHandler::new()),
+            component_handler,
+            host_notifier,
             #[cfg(feature = "webview")]
             webview_events,
             latency_samples: AtomicU32::new(0),
@@ -1093,31 +1126,39 @@ impl<P: Model> Vst3Processor<P> {
 
     /// Publish the timing of the processor, if there is one, at the end of
     /// a process call, after the parameter changes that may have changed it.
+    /// A latency other than the one published before is a change the host
+    /// hears of: the notifier asks it for a restart on the main thread,
+    /// which is its UI thread on macOS.
     ///
     /// Host threads do not touch the processor while audio runs. What they
     /// want to know about it is published for them with each call.
-    fn publish_timing_if_prepared(&self) {
+    fn publish_block_timing(&self) {
         // SAFETY: process() has the processor to itself.
         if let Some(processor) = unsafe { &*self.processor.get() } {
-            self.publish_timing(processor);
+            if self.publish_timing(processor) {
+                self.host_notifier.notify(HostChanges::LATENCY);
+            }
         }
     }
 
-    /// Publish the latency and tail of the processor for the host.
+    /// Publish the latency and tail of the processor for the host. Returns
+    /// whether the latency changed.
     ///
     /// The host calls `getLatencySamples()` and `getTailSamples()` from its
     /// own threads while `process()` runs. Whoever has the processor to
     /// itself stores the values here: `setupProcessing()`, `setActive()` and
-    /// each `process()` call.
-    fn publish_timing(&self, processor: &P::Processor) {
-        self.latency_samples
-            .store(processor.latency_samples(), Ordering::Relaxed);
+    /// each `process()` call. Only a change after a block is reported: the
+    /// host asks for the latency after setting up and activating anyway.
+    fn publish_timing(&self, processor: &P::Processor) -> bool {
+        let latency = processor.latency_samples();
+        let before = self.latency_samples.swap(latency, Ordering::Relaxed);
         self.tail_samples.store(
             processor
                 .tail_samples()
                 .saturating_add(processor.bypass_ramp_samples()),
             Ordering::Relaxed,
         );
+        before != latency
     }
 
     /// Turn the host's bus requests into the buses the plugin accepts and
@@ -2246,7 +2287,10 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         }
 
         // The host may ask for latency and tail before the first process() call.
-        self.publish_timing_if_prepared();
+        // SAFETY: VST3 guarantees single-threaded access during setupProcessing().
+        if let Some(processor) = unsafe { &*self.processor.get() } {
+            self.publish_timing(processor);
+        }
 
         kResultOk
     }
@@ -2407,7 +2451,7 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
             if preset_applied {
                 self.report_preset_changes(process_data.outputParameterChanges);
             }
-            self.publish_timing_if_prepared();
+            self.publish_block_timing();
             *carried = true;
             return kResultOk;
         }
@@ -2506,7 +2550,7 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         if preset_applied {
             self.report_preset_changes(process_data.outputParameterChanges);
         }
-        self.publish_timing_if_prepared();
+        self.publish_block_timing();
         kResultOk
     }
 
@@ -2818,17 +2862,9 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
                 P::PRESETS[preset_index].apply(self.model());
                 self.current_preset_index.store(preset_index as u32, Ordering::Relaxed);
 
-                // Notify host that parameter values changed so UI refreshes.
-                let handler = self.component_handler.get();
-                if !handler.is_null() {
-                    // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-                    unsafe {
-                        ((*(*handler).vtbl).restartComponent)(
-                            handler,
-                            RestartFlags_::kParamValuesChanged,
-                        );
-                    }
-                }
+                // Tell the host that parameter values changed, so that its
+                // UI follows.
+                self.host_notifier.notify(HostChanges::PARAMETER_VALUES);
 
                 return kResultOk;
             }
@@ -5960,6 +5996,115 @@ mod tests {
             assert_eq!(wrapper.getLatencySamples(), latency_for(0.75));
             assert_eq!(wrapper.getTailSamples(), tail);
         }
+    }
+
+    /// A host's component handler that records the restart flags it gets.
+    struct RestartRecorder {
+        flags: Arc<Mutex<Vec<int32>>>,
+    }
+
+    impl Class for RestartRecorder {
+        type Interfaces = (IComponentHandler,);
+    }
+
+    impl IComponentHandlerTrait for RestartRecorder {
+        unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn performEdit(&self, _id: ParamID, _value: ParamValue) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn restartComponent(&self, flags: int32) -> tresult {
+            self.flags.lock().unwrap().push(flags);
+            kResultOk
+        }
+    }
+
+    /// Give `wrapper` a handler that records restarts. Returns the handler
+    /// (it must outlive the test) with its records.
+    fn record_restarts<M: Model>(
+        wrapper: &Vst3Processor<M>,
+    ) -> (vst3::ComWrapper<RestartRecorder>, Arc<Mutex<Vec<int32>>>) {
+        let flags = Arc::new(Mutex::new(Vec::new()));
+        let host = vst3::ComWrapper::new(RestartRecorder { flags: Arc::clone(&flags) });
+        let pointer = host
+            .as_com_ref::<IComponentHandler>()
+            .expect("the handler is an IComponentHandler")
+            .as_ptr();
+        // SAFETY: The pointer is a valid COM pointer.
+        assert_eq!(unsafe { wrapper.setComponentHandler(pointer) }, kResultOk);
+        (host, flags)
+    }
+
+    #[test]
+    fn test_latency_change_after_a_block_asks_the_host_for_a_restart() {
+        let wrapper = Vst3Processor::<StateModel>::new(&STATE_CONFIG);
+        let (_host, flags) = record_restarts(&wrapper);
+
+        // Setting up and activating with a latency is no change: the host
+        // asks for the latency then anyway.
+        prepare_state_wrapper(&wrapper);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.setActive(1) }, kResultOk);
+        process_block(&wrapper);
+        wrapper.host_notifier.deliver();
+        assert!(flags.lock().unwrap().is_empty());
+
+        // Setting up again with another latency is no change either: the
+        // host asks after activating.
+        set_gain(&wrapper, 0.3);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 96000.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.getLatencySamples() }, latency_for(0.3));
+        process_block(&wrapper);
+        wrapper.host_notifier.deliver();
+        assert!(flags.lock().unwrap().is_empty());
+
+        // A block with another latency is, once, also for a call without
+        // samples.
+        set_gain(&wrapper, 0.25);
+        process_block(&wrapper);
+        process_block(&wrapper);
+        wrapper.host_notifier.deliver();
+        process_change(&wrapper, 0, GAIN_ID, 0.75);
+        wrapper.host_notifier.deliver();
+        assert_eq!(
+            *flags.lock().unwrap(),
+            [RestartFlags_::kLatencyChanged, RestartFlags_::kLatencyChanged]
+        );
+
+        // After terminate the handler is gone: nothing reaches it.
+        set_gain(&wrapper, 0.5);
+        process_block(&wrapper);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.terminate() }, kResultOk);
+        wrapper.host_notifier.deliver();
+        assert_eq!(flags.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_preset_from_the_host_tells_it_the_values_changed() {
+        let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
+        let (_host, flags) = record_restarts(&wrapper);
+        // SAFETY: The wrapper is alive.
+        assert_eq!(unsafe { wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0) }, kResultOk);
+        // The restart comes on the UI thread, not within the call.
+        assert!(flags.lock().unwrap().is_empty());
+        wrapper.host_notifier.deliver();
+        assert_eq!(*flags.lock().unwrap(), [RestartFlags_::kParamValuesChanged]);
     }
 
     // =========================================================================

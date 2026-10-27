@@ -13,8 +13,9 @@ use vst3::Steinberg::Vst::IComponentHandler;
 /// too. The reference is released when the host sets another handler or
 /// none, or when the last holder goes away.
 ///
-/// The slot is used by controller calls and by the editors, which the host
-/// makes on its UI thread and never concurrently.
+/// The slot is used by controller calls, by the editors and by the restart
+/// notifier of the processor, which run on the host's UI thread and never
+/// concurrently.
 pub struct ComponentHandler {
     handler: UnsafeCell<*mut IComponentHandler>,
 }

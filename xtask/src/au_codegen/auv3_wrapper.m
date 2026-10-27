@@ -81,6 +81,14 @@ static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8
     output->block(output->bufferStart + sampleOffset, 0, (NSInteger)length, bytes);
 }
 
+// Tell the host on the main thread that the latency or the tail changed
+// after a render call (BeamerAuHostChangeFn). The context is the unit's
+// handler block.
+static void BeamerAuv3HostChanged(void* context, uint32_t changes) {
+    void (^handler)(uint32_t) = (__bridge void (^)(uint32_t))context;
+    handler(changes);
+}
+
 // Apply the parameter changes of a render's events at once, for a bypassed
 // render, so that the plugin has the host's values when the bypass ends. A
 // ramp goes to its end value.
@@ -339,6 +347,9 @@ typedef struct {
     NSMutableSet* _hostBlocksKeptAlive;
     NSArray<AUAudioUnitPreset*>* _factoryPresets;
     void* _webviewHandle;
+    // The block that tells the host about changes (BeamerAuv3HostChanged),
+    // retained while the Rust instance may call it.
+    void* _hostChangeHandler;
     NSTimer* _syncTimer;
     BeamerAuEditorSyncHandle _sync;
     // The view of the current editor, as an identity only: it is neither
@@ -627,6 +638,27 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
         return nil;
     }
 
+    // Tell observers of the latency and the tail when a render call ended
+    // with other values. The block holds the unit weakly: a change that
+    // arrives while the unit goes away finds no unit.
+    __weak typeof(self) weakSelf = self;
+    void (^hostChanged)(uint32_t) = ^(uint32_t changes) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (changes & BEAMER_AU_HOST_CHANGE_LATENCY) {
+            [strongSelf willChangeValueForKey:@"latency"];
+            [strongSelf didChangeValueForKey:@"latency"];
+        }
+        if (changes & BEAMER_AU_HOST_CHANGE_TAIL) {
+            [strongSelf willChangeValueForKey:@"tailTime"];
+            [strongSelf didChangeValueForKey:@"tailTime"];
+        }
+    };
+    _hostChangeHandler = (__bridge_retained void*)[hostChanged copy];
+    beamer_au_set_host_change_callback(_rustInstance, BeamerAuv3HostChanged, _hostChangeHandler);
+
     (void)[self internalRenderBlock];
 
     return self;
@@ -709,11 +741,17 @@ static void beamer_auv3_on_loaded(void* context) {
             beamer_au_deallocate_render_resources(_rustInstance);
             _resourcesAllocated = NO;
         }
+        // Clears the host change callback, after a call in progress.
         beamer_au_destroy_instance(_rustInstance);
         _rustInstance = NULL;
     }
 
     [_instanceLock unlock];
+
+    if (_hostChangeHandler != NULL) {
+        CFRelease(_hostChangeHandler);
+        _hostChangeHandler = NULL;
+    }
 
     free(_bypassSilence);
     _bypassSilence = NULL;

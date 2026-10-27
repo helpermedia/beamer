@@ -2913,6 +2913,52 @@ mod tests {
         assert_eq!(beamer_au_get_tail_samples(instance), 0);
     }
 
+    /// A shim's callback for host changes: records the bits in the
+    /// `Mutex<Vec<u32>>` its context points to.
+    unsafe extern "C" fn record_host_changes(context: *mut std::ffi::c_void, changes: u32) {
+        // SAFETY: The test passes a pointer to its Mutex as the context.
+        let received = unsafe { &*(context as *const std::sync::Mutex<Vec<u32>>) };
+        received.lock().unwrap().push(changes);
+    }
+
+    #[test]
+    fn test_latency_change_after_a_render_call_reaches_the_shim() {
+        use crate::bridge::beamer_au_set_host_change_callback;
+        use beamer_core::HostChanges;
+
+        let mut handle = test_handle();
+        let instance: *mut BeamerInstanceHandle = &mut *handle;
+        let received = std::sync::Mutex::new(Vec::new());
+        let context = &received as *const std::sync::Mutex<Vec<u32>> as *mut std::ffi::c_void;
+        beamer_au_set_host_change_callback(instance, Some(record_host_changes), context);
+        // SAFETY: The handle is alive.
+        let deliver = || unsafe { (*instance).deliver_host_changes() };
+
+        // Preparing and the first render call with the same latency: no
+        // change.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.5);
+        assert_eq!(allocate(instance, false), 0);
+        assert_eq!(render_instance(instance), 0);
+        deliver();
+        assert!(received.lock().unwrap().is_empty());
+
+        // Another latency: one change, delivered once.
+        beamer_au_set_parameter_value(instance, gain_id(), 0.25);
+        assert_eq!(render_instance(instance), 0);
+        assert_eq!(render_instance(instance), 0);
+        deliver();
+        deliver();
+        assert_eq!(*received.lock().unwrap(), [HostChanges::LATENCY.bits()]);
+
+        // A cleared callback receives nothing.
+        beamer_au_set_host_change_callback(instance, None, std::ptr::null_mut());
+        beamer_au_set_parameter_value(instance, gain_id(), 0.75);
+        assert_eq!(render_instance(instance), 0);
+        deliver();
+        assert_eq!(received.lock().unwrap().len(), 1);
+        beamer_au_deallocate_render_resources(instance);
+    }
+
     #[test]
     fn test_deallocate_waits_for_a_render_call_in_progress() {
         use crate::error::os_status::K_AUDIO_UNIT_ERR_UNINITIALIZED;

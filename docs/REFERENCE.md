@@ -1154,7 +1154,7 @@ pub trait Processor: Send + 'static {
 **What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail or requests a reset from its own threads at the same time. None of that touches the processor:
 
 - The state is read from and written to the model, whose parameter values are atomic and whose `State` fields are shared.
-- `latency_samples()`, `tail_samples()` and `bypass_ramp_samples()` are called on the audio thread for every block. The host gets the values of the most recent block, so they must be realtime-safe.
+- `latency_samples()`, `tail_samples()` and `bypass_ramp_samples()` are called on the audio thread for every block. The host gets the values of the most recent block, so they must be realtime-safe. A latency that changes reaches the host after the block that changed it: the wrapper tells it on its main thread (a VST3 host restarts the plugin, an Audio Unit host reads the new latency and tail).
 - An Audio Unit host's reset runs as `set_active(false)` then `set_active(true)` on the audio thread, at the start of the next block. `set_active()` must therefore be realtime-safe: no allocation, no locks.
 
 #### Plugin Lifecycle

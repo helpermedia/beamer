@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use beamer_core::{ProcessWarning, ProcessWarnings};
+use beamer_core::{HostChanges, HostNotifier, ProcessWarning, ProcessWarnings};
 
 /// State shared by an instance handle and its render blocks.
 #[derive(Default)]
@@ -30,6 +30,9 @@ pub(crate) struct SharedState {
     /// The host's bypass as last noted: 0 not yet, 1 off, 2 on.
     #[cfg(feature = "diagnostics")]
     host_bypass: std::sync::atomic::AtomicU8,
+    /// Tells the shim on the main thread that the latency or the tail
+    /// changed, so that it notifies the host.
+    host_notifier: HostNotifier,
 }
 
 impl SharedState {
@@ -66,10 +69,31 @@ impl SharedState {
         self.tail_samples.load(Ordering::Relaxed)
     }
 
-    /// Publish what the processor reports. Called by whoever holds it.
+    /// Publish what the processor reports. Called by whoever holds it,
+    /// when it is prepared or released: the host asks for the values then
+    /// anyway, so they are no change to tell it about.
     pub(crate) fn publish_timing(&self, latency_samples: u32, tail_samples: u32) {
         self.latency_samples.store(latency_samples, Ordering::Relaxed);
         self.tail_samples.store(tail_samples, Ordering::Relaxed);
+    }
+
+    /// Publish what the processor reports around a render call and tell
+    /// the host about a latency or tail other than the one before. For the
+    /// audio thread: atomic operations, no lock, no allocation.
+    pub(crate) fn publish_block_timing(&self, latency_samples: u32, tail_samples: u32) {
+        let mut changes = HostChanges::NONE;
+        if self.latency_samples.swap(latency_samples, Ordering::Relaxed) != latency_samples {
+            changes |= HostChanges::LATENCY;
+        }
+        if self.tail_samples.swap(tail_samples, Ordering::Relaxed) != tail_samples {
+            changes |= HostChanges::TAIL;
+        }
+        self.host_notifier.notify(changes);
+    }
+
+    /// The notifier that tells the shim about changes for the host.
+    pub(crate) fn host_notifier(&self) -> &HostNotifier {
+        &self.host_notifier
     }
 
     /// Ask the audio thread to reset the DSP state before its next block.
@@ -129,6 +153,34 @@ mod tests {
         assert!(!shared.take_reset_request());
         assert!(shared.take_smoothing_reset_request());
         assert!(!shared.take_smoothing_reset_request());
+    }
+
+    #[test]
+    fn test_only_a_changed_block_timing_is_told() {
+        use std::sync::{Arc, Mutex};
+
+        let shared = SharedState::default();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&received);
+        shared
+            .host_notifier()
+            .set_target(Some(Box::new(move |changes| sink.lock().unwrap().push(changes))));
+
+        // Prepared: no change to tell.
+        shared.publish_timing(64, 1000);
+        shared.publish_block_timing(64, 1000);
+        shared.host_notifier().deliver();
+        assert!(received.lock().unwrap().is_empty());
+
+        // The latency, then both.
+        shared.publish_block_timing(128, 1000);
+        shared.host_notifier().deliver();
+        shared.publish_block_timing(0, 0);
+        shared.host_notifier().deliver();
+        assert_eq!(
+            *received.lock().unwrap(),
+            [HostChanges::LATENCY, HostChanges::LATENCY | HostChanges::TAIL]
+        );
     }
 
     #[test]

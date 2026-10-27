@@ -926,6 +926,44 @@ uint32_t beamer_au_get_latency_samples(BeamerAuInstanceHandle _Nullable instance
  */
 uint32_t beamer_au_get_tail_samples(BeamerAuInstanceHandle _Nullable instance);
 
+/** The latency changed (BeamerAuHostChangeFn). */
+#define BEAMER_AU_HOST_CHANGE_LATENCY (1u << 0)
+/** The tail changed (BeamerAuHostChangeFn). */
+#define BEAMER_AU_HOST_CHANGE_TAIL (1u << 1)
+
+/**
+ * Function that tells the host about changes, on the main thread.
+ *
+ * @param context The context given to beamer_au_set_host_change_callback.
+ * @param changes BEAMER_AU_HOST_CHANGE_* bits: what changed since the last
+ *                call.
+ */
+typedef void (*BeamerAuHostChangeFn)(void* _Nullable context, uint32_t changes);
+
+/**
+ * Set the function that tells the host about changes, or none (NULL).
+ *
+ * It runs on the main thread when a render call ended with another latency
+ * or tail than before: the shim notifies the property listeners (AUv2) or
+ * key-value observers (AUv3). Preparing and releasing render resources is
+ * no change: the host asks for the values then anyway.
+ *
+ * Clearing it waits for a call in progress, so that the context may go
+ * afterwards. beamer_au_destroy_instance clears it as well. Do not call
+ * this from within the callback.
+ *
+ * Thread Safety: Any thread except from within the callback.
+ *
+ * @param instance Handle to the plugin instance.
+ * @param callback The function, or NULL for none.
+ * @param context  Passed to the function; must stay valid while it is set.
+ */
+void beamer_au_set_host_change_callback(
+    BeamerAuInstanceHandle _Nullable instance,
+    BeamerAuHostChangeFn _Nullable callback,
+    void* _Nullable context
+);
+
 /**
  * Float64 processing support level.
  *
