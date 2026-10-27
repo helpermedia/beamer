@@ -1149,7 +1149,7 @@ pub trait Processor: Send + 'static {
 
 **State:** The state a host saves and restores is the state of the model: its parameters and its `State` fields (see [State Beyond Parameters](#state-beyond-parameters)). `#[beamer::model]` generates saving and loading; the wrappers call it directly: a `Processor` has no state methods.
 
-**When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation.
+**When to implement `set_active()`:** Plugins with internal DSP state (delay lines, filter histories, envelopes, oscillator phases) should override `set_active()` and reset that state when `active == true`. Hosts call `setActive(false)` followed by `setActive(true)` to request a full state reset. Plugins without internal state (simple gain, pan) can use the default empty implementation. A plugin with a `BypassHandler` calls its `reset()` there too.
 
 **What runs where:** While audio runs, the processor belongs to the audio thread. A host saves and loads the state, asks for latency and tail or requests a reset from its own threads at the same time. None of that touches the processor:
 
@@ -1632,6 +1632,9 @@ pub enum BypassAction {
     Process,
     /// Transitioning: run DSP, then call finish().
     ProcessAndCrossfade,
+    /// Processing starts again after a bypass: clear the DSP's memory
+    /// (lookahead, envelopes), run DSP, then call finish().
+    Resume,
 }
 
 pub enum CrossfadeCurve {
@@ -1661,8 +1664,18 @@ impl BypassHandler {
     pub fn begin<S: Sample>(&mut self, bypassed: bool, latency: u32, buffer: &mut Buffer<S>) -> BypassAction;
 
     /// Finish bypass processing by applying crossfade.
-    /// Call after DSP when begin() returned ProcessAndCrossfade.
+    /// Call after DSP when begin() returned ProcessAndCrossfade or Resume.
     pub fn finish<S: Sample>(&mut self, buffer: &mut Buffer<S>);
+
+    /// The shortest warm-up after a bypass, for DSP whose memory reaches
+    /// further back than its latency. The warm-up is this or the latency,
+    /// whichever is longer.
+    pub fn set_warmup_samples(&mut self, samples: u32);
+    pub fn warmup_samples(&self) -> u32;
+
+    /// Clear the dry signal and finish any transition: call where the DSP
+    /// is reset, in set_active(). Realtime-safe.
+    pub fn reset(&mut self);
 
     pub fn state(&self) -> BypassState;
     pub fn ramp_samples(&self) -> u32;
@@ -1703,6 +1716,19 @@ impl Processor for ReverbProcessor {
                 self.process_reverb(buffer);
                 self.bypass_handler.finish(buffer);
             }
+            BypassAction::Resume => {
+                // The reverb did not run while bypassed: start it clean.
+                self.clear_reverb();
+                self.process_reverb(buffer);
+                self.bypass_handler.finish(buffer);
+            }
+        }
+    }
+
+    fn set_active(&mut self, active: bool) {
+        if active {
+            self.clear_reverb();
+            self.bypass_handler.reset();
         }
     }
 
@@ -1716,6 +1742,8 @@ impl Processor for ReverbProcessor {
 **Why Split API?** The split pattern (begin/finish) avoids Rust borrow checker conflicts that occur with closure-based APIs when your DSP code needs to access `&mut self`.
 
 **Latency:** A plugin with latency passes `latency_samples()` to `begin()` and the largest latency it will report to `new()`. The handler delays the dry signal by it, in the crossfade and while bypassed: the two signals do not comb-filter and the bypassed track stays aligned with the host's delay compensation.
+
+**Warm-up:** The DSP does not run while bypassed, so what it holds is from before the bypass. When bypass ends, `begin()` returns `Resume`: clear that memory, then process. The handler keeps the delayed dry signal until the DSP has run for the latency (or the longer warm-up of `set_warmup_samples()`), then crossfades. Without latency or warm-up the crossfade starts at once.
 
 ---
 

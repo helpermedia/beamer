@@ -20,6 +20,16 @@
 //! compensation. The handler delays the dry signal by the latency given to
 //! `begin()`, up to the largest latency given to `new()`.
 //!
+//! # Warm-up
+//!
+//! The DSP does not run while bypassed, so what it holds (a lookahead, an
+//! envelope) is from before the bypass. When bypass ends, `begin()`
+//! returns [`BypassAction::Resume`]: the plugin clears that memory and
+//! processes. The handler keeps the delayed dry signal until the DSP has
+//! run for the warm-up (the latency, or longer with
+//! [`set_warmup_samples()`](BypassHandler::set_warmup_samples)), then
+//! crossfades to it.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -51,6 +61,12 @@
 //!                 self.apply_gain(buffer);
 //!                 self.bypass_handler.finish(buffer);
 //!             }
+//!             BypassAction::Resume => {
+//!                 // Processing starts again: clear the DSP's memory first.
+//!                 self.clear_dsp();
+//!                 self.apply_gain(buffer);
+//!                 self.bypass_handler.finish(buffer);
+//!             }
 //!         }
 //!     }
 //! }
@@ -72,7 +88,8 @@ pub enum BypassState {
     RampingToBypassed,
     /// Plugin is fully bypassed (passthrough only).
     Bypassed,
-    /// Transitioning from bypassed to active (crossfading to wet).
+    /// Transitioning from bypassed to active: the dry signal during the
+    /// warm-up, then crossfading to wet.
     RampingToActive,
 }
 
@@ -97,6 +114,14 @@ pub enum BypassAction {
     /// Plugin is transitioning. Run your DSP, then call `bypass_handler.finish(buffer)`
     /// to apply the crossfade.
     ProcessAndCrossfade,
+
+    /// Processing starts again after a bypass. The DSP did not run while
+    /// bypassed, so its memory (lookahead, delay lines, envelopes) is from
+    /// before the bypass: clear it, run your DSP, then call
+    /// `bypass_handler.finish(buffer)`. The handler keeps the dry signal
+    /// until the DSP has run for the warm-up, then crossfades. Memory no
+    /// longer than the warm-up (a lookahead) is flushed by then anyway.
+    Resume,
 }
 
 // =============================================================================
@@ -175,6 +200,11 @@ impl CrossfadeCurve {
 ///         self.process_dsp(buffer);
 ///         self.bypass_handler.finish(buffer);
 ///     }
+///     BypassAction::Resume => {
+///         self.clear_dsp();
+///         self.process_dsp(buffer);
+///         self.bypass_handler.finish(buffer);
+///     }
 /// }
 /// ```
 ///
@@ -226,6 +256,12 @@ pub struct BypassHandler {
     max_buffer_size: usize,
     /// The largest latency `new()` was given.
     max_latency: usize,
+    /// The shortest warm-up the plugin asked for, used when it is longer
+    /// than the latency.
+    warmup_samples: usize,
+    /// How many samples the DSP has run since processing started again
+    /// after a bypass. `usize::MAX` when it has run all along.
+    processed_since_resume: usize,
 }
 
 impl BypassHandler {
@@ -265,6 +301,8 @@ impl BypassHandler {
             dry_samples: 0,
             max_buffer_size,
             max_latency,
+            warmup_samples: 0,
+            processed_since_resume: usize::MAX,
         }
     }
 
@@ -301,14 +339,61 @@ impl BypassHandler {
         self.ramp_samples
     }
 
-    /// Set the ramp length. Takes effect on next state transition.
+    /// Set the ramp length. Takes effect at once: a ramp in progress
+    /// continues from where it is, cut to the new length.
     pub fn set_ramp_samples(&mut self, samples: u32) {
         self.ramp_samples = samples;
+        self.ramp_position = self.ramp_position.min(samples);
     }
 
     /// Set the crossfade curve. Takes effect on next state transition.
     pub fn set_curve(&mut self, curve: CrossfadeCurve) {
         self.curve = curve;
+    }
+
+    /// Set the shortest warm-up in samples: how long the DSP runs after a
+    /// bypass before the handler crossfades to it. The warm-up is the
+    /// latency of the block or this value, whichever is longer. Set it for
+    /// DSP whose memory reaches further back than its latency (overlapping
+    /// FFT windows, a long envelope). Default 0: the latency.
+    pub fn set_warmup_samples(&mut self, samples: u32) {
+        self.warmup_samples = samples as usize;
+    }
+
+    /// Get the shortest warm-up in samples (see
+    /// [`set_warmup_samples()`](Self::set_warmup_samples)).
+    #[inline]
+    pub fn warmup_samples(&self) -> u32 {
+        self.warmup_samples as u32
+    }
+
+    /// Clear the dry signal and finish any transition at once.
+    ///
+    /// Call this where the plugin resets its DSP, in
+    /// [`Processor::set_active()`](crate::Processor::set_active). It does
+    /// not allocate, so it is safe on the audio thread (where an Audio
+    /// Unit host's reset runs). The handler goes to the state it was
+    /// heading for: bypassed or active. After a reset while bypassed the
+    /// output is silent for the latency, until the delayed input arrives.
+    pub fn reset(&mut self) {
+        for ring in &mut self.dry {
+            ring.fill(0.0);
+        }
+        self.write_position = 0;
+        self.block_start = 0;
+        self.dry_channels = 0;
+        self.dry_samples = 0;
+        self.processed_since_resume = usize::MAX;
+        match self.state {
+            BypassState::Bypassed | BypassState::RampingToBypassed => {
+                self.state = BypassState::Bypassed;
+                self.ramp_position = self.ramp_samples;
+            }
+            BypassState::Active | BypassState::RampingToActive => {
+                self.state = BypassState::Active;
+                self.ramp_position = 0;
+            }
+        }
     }
 
     /// Begin bypass processing for this buffer.
@@ -333,6 +418,7 @@ impl BypassHandler {
     /// - `Passthrough`: Nothing, the buffer holds the delayed input
     /// - `Process`: Run your DSP normally
     /// - `ProcessAndCrossfade`: Run your DSP, then call `finish()`
+    /// - `Resume`: Clear your DSP's memory, run it, then call `finish()`
     ///
     /// # Example
     ///
@@ -345,6 +431,11 @@ impl BypassHandler {
     ///         self.process_dsp(buffer);
     ///         self.bypass_handler.finish(buffer);
     ///     }
+    ///     BypassAction::Resume => {
+    ///         self.clear_dsp();
+    ///         self.process_dsp(buffer);
+    ///         self.bypass_handler.finish(buffer);
+    ///     }
     /// }
     /// ```
     pub fn begin<S: Sample>(
@@ -353,13 +444,14 @@ impl BypassHandler {
         latency: u32,
         buffer: &mut Buffer<S>,
     ) -> BypassAction {
-        self.set_bypass(bypassed);
         debug_assert!(
             latency as usize <= self.max_latency,
             "latency {latency} is above the largest latency the BypassHandler was made for ({})",
             self.max_latency
         );
         self.latency = (latency as usize).min(self.max_latency);
+        // The warm-up depends on the latency of this block.
+        let resuming = self.set_bypass(bypassed);
 
         // Without a latency only a crossfade needs the input. With one,
         // every block feeds the delay.
@@ -374,6 +466,7 @@ impl BypassHandler {
                 }
                 BypassAction::Passthrough
             }
+            _ if resuming => BypassAction::Resume,
             BypassState::Active => BypassAction::Process,
             BypassState::RampingToBypassed | BypassState::RampingToActive => BypassAction::ProcessAndCrossfade,
         }
@@ -382,7 +475,7 @@ impl BypassHandler {
     /// Finish bypass processing by applying the crossfade.
     ///
     /// Call this AFTER your DSP processing when `begin()` returned
-    /// `BypassAction::ProcessAndCrossfade`.
+    /// `BypassAction::ProcessAndCrossfade` or `BypassAction::Resume`.
     ///
     /// This blends the wet signal (in the buffer) with the dry signal (copied
     /// by `begin()` and delayed by the latency) according to the current
@@ -447,51 +540,65 @@ impl BypassHandler {
         }
     }
 
-    /// Update bypass target state (internal).
-    fn set_bypass(&mut self, bypassed: bool) {
-        // Handle instant bypass (zero ramp) - snap directly to final state
-        if self.ramp_samples == 0 {
-            let target = if bypassed {
-                BypassState::Bypassed
-            } else {
-                BypassState::Active
-            };
-            if self.state != target {
-                self.state = target;
-                self.ramp_position = 0;
-            }
-            return;
-        }
+    /// The warm-up of the current block: the latency or the plugin's
+    /// shortest warm-up, whichever is longer.
+    #[inline]
+    fn warmup(&self) -> usize {
+        self.latency.max(self.warmup_samples)
+    }
 
+    /// Update the state for the bypass parameter of this block. Returns
+    /// true when processing starts again after a bypass.
+    fn set_bypass(&mut self, bypassed: bool) -> bool {
         match (self.state, bypassed) {
-            // Start ramping to bypassed
+            // Start ramping to bypassed, or bypass at once without a ramp.
             (BypassState::Active, true) => {
-                self.state = BypassState::RampingToBypassed;
+                if self.ramp_samples == 0 {
+                    self.state = BypassState::Bypassed;
+                } else {
+                    self.state = BypassState::RampingToBypassed;
+                }
                 self.ramp_position = 0;
+                false
             }
-            // Reverse: was ramping to bypass, now going back to active
+            // Reverse: was ramping to bypass, now going back to active. The
+            // DSP ran all along, so the ramp goes back from where it is.
             (BypassState::RampingToBypassed, false) => {
                 self.state = BypassState::RampingToActive;
-                // Keep current ramp_position for smooth reversal
+                false
             }
-            // Start ramping to active
+            // Processing starts again: the dry signal holds for the
+            // warm-up, then the ramp (if any) starts.
             (BypassState::Bypassed, false) => {
-                self.state = BypassState::RampingToActive;
-                self.ramp_position = self.ramp_samples;
+                self.processed_since_resume = 0;
+                if self.ramp_samples > 0 || self.warmup() > 0 {
+                    self.state = BypassState::RampingToActive;
+                    self.ramp_position = self.ramp_samples;
+                } else {
+                    self.state = BypassState::Active;
+                    self.ramp_position = 0;
+                }
+                true
             }
-            // Reverse: was ramping to active, now going back to bypass
+            // Reverse: was ramping to active (or warming up), now going
+            // back to bypass from where the ramp is.
             (BypassState::RampingToActive, true) => {
-                self.state = BypassState::RampingToBypassed;
-                // Keep current ramp_position for smooth reversal
+                if self.ramp_samples == 0 {
+                    self.state = BypassState::Bypassed;
+                } else {
+                    self.state = BypassState::RampingToBypassed;
+                }
+                false
             }
             // Already in correct stable state, or continuing ramp
-            _ => {}
+            _ => false,
         }
     }
 
     fn apply_crossfade<S: Sample>(&mut self, buffer: &mut Buffer<S>) {
-        // Guard: instant bypass when ramp_samples is 0
-        if self.ramp_samples == 0 {
+        // Nothing to mix once a transition is over (a resume without
+        // warm-up or ramp goes straight to active).
+        if !self.is_ramping() {
             return;
         }
 
@@ -504,13 +611,24 @@ impl BypassHandler {
             return;
         }
 
-        let ramp_samples_f = self.ramp_samples as f64;
         let ramping_to_bypass = self.state == BypassState::RampingToBypassed;
+        let warmup = self.warmup();
 
         // Process sample by sample
         for sample_idx in 0..num_samples {
-            // Calculate normalized position (0.0 = wet, 1.0 = dry)
-            let t = (self.ramp_position as f64) / ramp_samples_f;
+            // On the way back the dry signal holds until the DSP has run
+            // for the warm-up.
+            let warming_up = !ramping_to_bypass && self.processed_since_resume < warmup;
+
+            // Calculate normalized position (0.0 = wet, 1.0 = dry). The
+            // warm-up is all dry; without a ramp it is all dry or all wet.
+            let t = if warming_up {
+                1.0
+            } else if self.ramp_samples == 0 {
+                if ramping_to_bypass { 1.0 } else { 0.0 }
+            } else {
+                (self.ramp_position as f64) / (self.ramp_samples as f64)
+            };
             let (wet_gain, dry_gain): (S, S) = self.curve.gains(t);
 
             // Apply crossfade to all channels for this sample
@@ -526,9 +644,10 @@ impl BypassHandler {
             }
 
             // Advance ramp position (once per sample)
+            self.processed_since_resume = self.processed_since_resume.saturating_add(1);
             if ramping_to_bypass {
                 self.ramp_position = (self.ramp_position + 1).min(self.ramp_samples);
-            } else {
+            } else if !warming_up {
                 self.ramp_position = self.ramp_position.saturating_sub(1);
             }
         }
@@ -536,12 +655,11 @@ impl BypassHandler {
         // Check if ramp complete
         if ramping_to_bypass && self.ramp_position >= self.ramp_samples {
             self.state = BypassState::Bypassed;
-        } else if !ramping_to_bypass && self.ramp_position == 0 {
+        } else if !ramping_to_bypass && self.ramp_position == 0 && self.processed_since_resume >= warmup {
             self.state = BypassState::Active;
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -572,22 +690,37 @@ mod tests {
     }
 
     /// A plugin with latency: its wet signal is its input `latency`
-    /// samples later. Its delay is fed only while it processes.
+    /// samples later. Its delay is fed only while it processes. A silent
+    /// one outputs silence after its latency, to show where the handler
+    /// holds the dry signal.
     struct DelayPlugin {
         lines: Vec<VecDeque<f32>>,
+        silent: bool,
     }
 
     impl DelayPlugin {
         fn new(channels: usize, latency: usize) -> Self {
             Self {
                 lines: vec![VecDeque::from(vec![0.0; latency]); channels],
+                silent: false,
+            }
+        }
+
+        fn silent(channels: usize, latency: usize) -> Self {
+            Self { silent: true, ..Self::new(channels, latency) }
+        }
+
+        /// Clear the delay, as a plugin does on `Resume`.
+        fn clear(&mut self) {
+            for line in &mut self.lines {
+                line.iter_mut().for_each(|sample| *sample = 0.0);
             }
         }
 
         fn process(&mut self, buffer: &mut Buffer<f32>) {
             for (line, channel) in self.lines.iter_mut().zip(buffer.channels_mut()) {
                 for sample in channel {
-                    line.push_back(*sample);
+                    line.push_back(if self.silent { 0.0 } else { *sample });
                     *sample = line.pop_front().unwrap();
                 }
             }
@@ -595,32 +728,56 @@ mod tests {
     }
 
     /// Run a mono `input` through the handler and the plugin in blocks of
-    /// `block` samples, bypassed from block `bypass_from` on. Returns the
-    /// output.
+    /// `block` samples, with the bypass and the latency of each block.
+    /// Returns the output and the action of each block.
     fn run(
         handler: &mut BypassHandler,
         plugin: &mut DelayPlugin,
         input: &[f32],
         block: usize,
-        latency: u32,
-        bypass_from: usize,
-    ) -> Vec<f32> {
+        latency: impl Fn(usize) -> u32,
+        bypassed: impl Fn(usize) -> bool,
+    ) -> (Vec<f32>, Vec<BypassAction>) {
         let mut output = Vec::new();
+        let mut actions = Vec::new();
         for (index, chunk) in input.chunks(block).enumerate() {
             let mut samples = chunk.to_vec();
             let len = samples.len();
             let mut buffer = Buffer::new([&mut samples[..]], std::iter::empty(), 1, len);
-            match handler.begin(index >= bypass_from, latency, &mut buffer) {
+            let action = handler.begin(bypassed(index), latency(index), &mut buffer);
+            match action {
                 BypassAction::Passthrough => {}
                 BypassAction::Process => plugin.process(&mut buffer),
                 BypassAction::ProcessAndCrossfade => {
                     plugin.process(&mut buffer);
                     handler.finish(&mut buffer);
                 }
+                BypassAction::Resume => {
+                    plugin.clear();
+                    plugin.process(&mut buffer);
+                    handler.finish(&mut buffer);
+                }
             }
             output.extend_from_slice(&samples);
+            actions.push(action);
         }
-        output
+        (output, actions)
+    }
+
+    /// Assert that `output` is `input` `latency` samples later.
+    fn assert_delayed(output: &[f32], input: &[f32], latency: usize, what: &str) {
+        for (index, sample) in output.iter().enumerate() {
+            let expected = if index < latency { 0.0 } else { input[index - latency] };
+            assert!(
+                (sample - expected).abs() < 1e-4,
+                "{what}, sample {index}: {sample} is not {expected}"
+            );
+        }
+    }
+
+    /// A rising input, so that a sample from the wrong time shows.
+    fn rising(len: usize) -> Vec<f32> {
+        (1..=len).map(|n| n as f32).collect()
     }
 
     #[test]
@@ -629,22 +786,150 @@ mod tests {
         // output is that through the ramp and once bypassed. Blocks that
         // do and do not divide the ramp; a largest latency above the
         // latency.
-        let input: Vec<f32> = (1..=48).map(|n| n as f32).collect();
+        let input = rising(48);
         for block in [4, 5] {
             for max_latency in [3, 8] {
                 let mut handler = BypassHandler::new(8, CrossfadeCurve::Linear, 1, 8, max_latency);
                 let mut plugin = DelayPlugin::new(1, 3);
-                let output = run(&mut handler, &mut plugin, &input, block, 3, 2);
-                for (index, sample) in output.iter().enumerate() {
-                    let expected = if index < 3 { 0.0 } else { input[index - 3] };
-                    assert!(
-                        (sample - expected).abs() < 1e-4,
-                        "block {block}, largest latency {max_latency}, sample {index}: {sample} is not {expected}"
-                    );
-                }
+                let (output, _) = run(&mut handler, &mut plugin, &input, block, |_| 3, |b| b >= 2);
+                assert_delayed(&output, &input, 3, &format!("block {block}, largest latency {max_latency}"));
                 assert_eq!(handler.state(), BypassState::Bypassed);
             }
         }
+    }
+
+    #[test]
+    fn test_bypass_and_back_keeps_the_delayed_input_with_and_without_a_ramp() {
+        // Bypassed for blocks 2 to 5, then processing again. The plugin
+        // clears its delay on Resume; the handler holds the dry signal
+        // for the latency, so the output never shows the cleared delay.
+        let input = rising(64);
+        for ramp in [0, 6] {
+            let mut handler = BypassHandler::new(ramp, CrossfadeCurve::Linear, 1, 4, 5);
+            let mut plugin = DelayPlugin::new(1, 5);
+            let (output, actions) = run(&mut handler, &mut plugin, &input, 4, |_| 5, |b| (2..6).contains(&b));
+            assert_delayed(&output, &input, 5, &format!("ramp {ramp}"));
+            assert_eq!(actions[6], BypassAction::Resume, "ramp {ramp}");
+            assert_ne!(actions[7], BypassAction::Resume, "ramp {ramp}");
+            assert_eq!(handler.state(), BypassState::Active, "ramp {ramp}");
+        }
+    }
+
+    #[test]
+    fn test_warmup_holds_the_dry_signal_for_the_latency_or_longer() {
+        // A silent plugin with a latency of 3: after Resume the output is
+        // the delayed input for the warm-up, then fades out over the ramp
+        // (whose first sample is still all dry).
+        let input = vec![1.0f32; 40];
+        for (warmup, expected_hold) in [(0, 3), (10, 10)] {
+            let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 2, 3);
+            handler.set_warmup_samples(warmup);
+            let mut plugin = DelayPlugin::silent(1, 3);
+            // Bypassed from the start, processing again from sample 20.
+            let (output, _) = run(&mut handler, &mut plugin, &input, 2, |_| 3, |b| b < 10);
+            let resumed = &output[20..];
+            assert!(
+                resumed[..expected_hold].iter().all(|&sample| sample == 1.0),
+                "warm-up {warmup}: {resumed:?}"
+            );
+            assert_eq!(resumed[expected_hold], 1.0, "warm-up {warmup}: {resumed:?}");
+            assert!(resumed[expected_hold + 1] < 1.0, "warm-up {warmup}: {resumed:?}");
+            assert_eq!(resumed[expected_hold + 4], 0.0, "warm-up {warmup}: {resumed:?}");
+        }
+    }
+
+    #[test]
+    fn test_latency_that_drops_during_the_warmup_ends_it() {
+        // Latency 8 when processing starts again, 2 from the next block on:
+        // 4 samples have run by then, more than the new warm-up, so the
+        // ramp starts at once (its first sample still all dry).
+        let input = vec![1.0f32; 40];
+        let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 4, 8);
+        let mut plugin = DelayPlugin::silent(1, 2);
+        let (output, _) = run(&mut handler, &mut plugin, &input, 4, |b| if b < 6 { 8 } else { 2 }, |b| b < 5);
+        assert_eq!(output[20..25], [1.0; 5]);
+        assert!(output[25] < 1.0, "{:?}", &output[20..]);
+    }
+
+    #[test]
+    fn test_bypass_again_during_the_warmup_stays_on_the_dry_signal() {
+        // Processing again in block 3 with a warm-up of 8, bypassed again
+        // in block 4 and processing again in block 6: the output is the
+        // delayed input throughout. With a ramp the bypass in block 4 ends
+        // within the block, without one it is at once.
+        let input = rising(48);
+        for (ramp, block_4) in [(4, BypassAction::ProcessAndCrossfade), (0, BypassAction::Passthrough)] {
+            let mut handler = BypassHandler::new(ramp, CrossfadeCurve::Linear, 1, 2, 8);
+            let mut plugin = DelayPlugin::new(1, 8);
+            let (output, actions) = run(&mut handler, &mut plugin, &input, 2, |_| 8, |b| b < 3 || b == 4 || b == 5);
+            assert_delayed(&output, &input, 8, &format!("ramp {ramp}"));
+            assert_eq!(actions[3], BypassAction::Resume, "ramp {ramp}");
+            assert_eq!(actions[4], block_4, "ramp {ramp}");
+            assert_eq!(actions[5], BypassAction::Passthrough, "ramp {ramp}");
+            assert_eq!(actions[6], BypassAction::Resume, "ramp {ramp}");
+            assert_eq!(handler.state(), BypassState::Active, "ramp {ramp}");
+        }
+    }
+
+    #[test]
+    fn test_back_to_active_mid_ramp_continues_the_ramp_without_a_warmup() {
+        // A silent plugin with a latency of 2, so the output is the dry
+        // gain. Bypassed in blocks 1 and 2 (half of the ramp of 8), then
+        // back: the DSP ran all along, so no Resume and no hold; the ramp
+        // goes back from where it was.
+        let input = vec![1.0f32; 24];
+        let mut handler = BypassHandler::new(8, CrossfadeCurve::Linear, 1, 2, 2);
+        let mut plugin = DelayPlugin::silent(1, 2);
+        let (output, actions) = run(&mut handler, &mut plugin, &input, 2, |_| 2, |b| b == 1 || b == 2);
+        assert_eq!(output[2..11], [0.0, 0.125, 0.25, 0.375, 0.5, 0.375, 0.25, 0.125, 0.0]);
+        assert!(!actions.contains(&BypassAction::Resume), "{actions:?}");
+        assert_eq!(handler.state(), BypassState::Active);
+    }
+
+    #[test]
+    fn test_latency_change_while_bypassed_moves_the_dry_signal() {
+        // Bypassed with a latency of 2, then 4: from the change on the
+        // output is the input 4 samples later.
+        let input = rising(24);
+        let mut handler = BypassHandler::new(0, CrossfadeCurve::Linear, 1, 4, 4);
+        let mut plugin = DelayPlugin::new(1, 0);
+        let (output, _) = run(&mut handler, &mut plugin, &input, 4, |b| if b < 3 { 2 } else { 4 }, |_| true);
+        assert_delayed(&output[..12], &input, 2, "latency 2");
+        assert_eq!(output[12..], input[8..20]);
+    }
+
+    #[test]
+    fn test_resume_without_latency_or_ramp_goes_straight_to_active() {
+        let mut handler = BypassHandler::new(0, CrossfadeCurve::Linear, 1, 4, 0);
+        let mut plugin = DelayPlugin::new(1, 0);
+        let input = rising(12);
+        let (output, actions) = run(&mut handler, &mut plugin, &input, 4, |_| 0, |b| b == 0);
+        assert_eq!(output, input);
+        assert_eq!(actions, [BypassAction::Passthrough, BypassAction::Resume, BypassAction::Process]);
+        assert_eq!(handler.state(), BypassState::Active);
+    }
+
+    #[test]
+    fn test_reset_clears_the_dry_signal_and_ends_the_transition() {
+        // Bypassed with a latency of 2, then reset: the next block starts
+        // with silence for the latency.
+        let mut handler = BypassHandler::new(4, CrossfadeCurve::Linear, 1, 4, 2);
+        let mut plugin = DelayPlugin::new(1, 2);
+        let input = rising(16);
+        run(&mut handler, &mut plugin, &input, 4, |_| 2, |_| true);
+        handler.reset();
+        assert_eq!(handler.state(), BypassState::Bypassed);
+        let mut samples = [20.0f32, 21.0, 22.0, 23.0];
+        let mut buffer = Buffer::new([&mut samples[..]], std::iter::empty(), 1, 4);
+        assert_eq!(handler.begin(true, 2, &mut buffer), BypassAction::Passthrough);
+        assert_eq!(samples, [0.0, 0.0, 20.0, 21.0]);
+
+        // Reset during a ramp to active ends it there.
+        let mut samples = [0.0f32; 4];
+        let mut buffer = Buffer::new([&mut samples[..]], std::iter::empty(), 1, 4);
+        assert_eq!(handler.begin(false, 2, &mut buffer), BypassAction::Resume);
+        handler.reset();
+        assert_eq!(handler.state(), BypassState::Active);
     }
 
     #[test]

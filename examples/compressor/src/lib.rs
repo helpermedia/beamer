@@ -350,6 +350,12 @@ struct CompressionReport {
 }
 
 impl CompressorProcessor {
+    /// Start the envelope from silence, as on activation.
+    fn clear_envelope(&mut self) {
+        self.state.env_db = DC_OFFSET;
+        self.state.average_gr_db = 0.0;
+    }
+
     /// Process compression on a buffer and report what it did to a
     /// diagnostics build (`cargo xtask bundle compressor --diagnostics`).
     /// Other builds ignore the reports.
@@ -523,8 +529,8 @@ impl Processor for CompressorProcessor {
     /// Called when plugin is activated/deactivated.
     fn set_active(&mut self, active: bool) {
         if active {
-            self.state.env_db = DC_OFFSET;
-            self.state.average_gr_db = 0.0;
+            self.clear_envelope();
+            self.bypass_handler.reset();
         }
     }
 
@@ -556,6 +562,13 @@ impl Processor for CompressorProcessor {
                 self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
+            BypassAction::Resume => {
+                // The envelope did not follow the input while bypassed:
+                // start it clean, then process and crossfade.
+                self.clear_envelope();
+                self.process_compression(buffer, aux, context);
+                self.bypass_handler.finish(buffer);
+            }
         }
     }
 
@@ -583,6 +596,11 @@ impl Processor for CompressorProcessor {
                 self.process_compression(buffer, aux, context);
             }
             BypassAction::ProcessAndCrossfade => {
+                self.process_compression(buffer, aux, context);
+                self.bypass_handler.finish(buffer);
+            }
+            BypassAction::Resume => {
+                self.clear_envelope();
                 self.process_compression(buffer, aux, context);
                 self.bypass_handler.finish(buffer);
             }
