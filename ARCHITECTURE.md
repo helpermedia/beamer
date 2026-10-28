@@ -295,7 +295,7 @@ A host reads and sets parameters, saves and loads state and opens the editor fro
 2. **No locks on the audio thread**: Values and smoother state are atomics, so every thread works through a shared reference. Access stays a direct field access: `self.model.gain.get()`.
 3. **A lasting model**: `prepare()` gets a clone of the `Arc`, so the model keeps answering the host (buses, MIDI mapping) while audio runs. Host threads may use it at the same time, so every method of `Model` other than `prepare()` takes `&self` and a model is `Sync`.
 4. **Clear roles**: What other threads need to see lives in the model. Everything else in the Processor belongs to the audio thread alone.
-5. **Room for more than numbers**: Data that is not a parameter (a sample path, a table, a setting) is a `State` or `Handover` field of the model. Host and UI threads replace such a value as a whole; the audio thread reads it through a reader without waiting.
+5. **Room for more than numbers**: Data that is not a parameter (a sample path, a table, a setting) is a `State` or `Handover` field of the model. Host and UI threads replace such a value as a whole; the audio thread reads it through a reader without waiting. The other way, the audio thread sends to the web UI through a sender made from the model's event queue.
 
 Smoothing methods take `&self` like the value accessors. They are meant for the audio thread: a second thread advancing a smoother at the same time is memory-safe but disturbs the ramp.
 
@@ -507,7 +507,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 - `setupProcessing()` pre-allocates all buffers based on plugin configuration
 - `process()` uses only stack storage and pre-allocated pools
 - Channel counts are bounded by the accepted bus layout and the reserved capacity, so a misbehaving host cannot cause an allocation
-- Calls meant for host threads panic inside `process()` in debug builds: `get()`, `set()` and `reader()` of a `Handover` or `State`, `reset()`, `save()` and `load()` of a `State` and `WebViewEventQueue::emit()`. They lock, allocate or free memory. The audio thread reads through a `HandoverReader`, which does none of that. The wrappers mark the process call with a `ProcessScope`. In release builds the check compiles to nothing
+- Calls meant for host threads panic inside `process()` in debug builds: `get()`, `set()` and `reader()` of a `Handover` or `State`, `reset()`, `save()` and `load()` of a `State` and `emit()`, `value_sender()` and `stream_sender()` of a `WebViewEventQueue`. They lock, allocate or free memory. The audio thread reads through a `HandoverReader` and sends to the web UI through a `WebViewValueSender` or `WebViewStreamSender`, which do none of that. The wrappers mark the process call with a `ProcessScope`. In release builds the check compiles to nothing
 
 ### Deterministic Bus Limits
 

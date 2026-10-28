@@ -119,7 +119,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
 - **Factory presets in code** - `Model::PRESETS` of typed `Preset::new(name, |m| ...)` closures, checked by the compiler
 - **Sample-accurate automation** - Opt in with `sample_accurate_automation = true` in Config.toml
-- **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC and built-in React/Vite tooling (macOS)
+- **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC, realtime-safe data from the audio thread (meters, streams) and built-in React/Vite tooling (macOS)
 
 ## Documentation
 

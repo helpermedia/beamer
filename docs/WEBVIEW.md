@@ -37,7 +37,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
+| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
 | `beamer-webview` | Platform WebView creation, the injected `beamer_runtime.js`, custom URL scheme, C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
@@ -186,7 +186,7 @@ __BEAMER__.on("sampleLoaded", (name) => {
 });
 ```
 
-`on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side.
+`on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side. Values from the audio thread arrive the same way (see [Data from the Audio Thread](#data-from-the-audio-thread)).
 
 ### Ready Promise
 
@@ -235,10 +235,10 @@ __BEAMER__.on("sampleRate", (rate) => showSampleRate(rate));
 What to know about events:
 
 - **They are for an open editor.** An event reaches JavaScript on the editor's next sync tick, about 16 ms later. While no editor is open, events are dropped. So is an event that arrives before the page registered its listener. An editor that opens asks for what it shows with `invoke()`, as the example below does.
-- **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Real-Time Visualization](#real-time-visualization).
+- **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Data from the Audio Thread](#data-from-the-audio-thread).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. A queue of the model itself is the plugin's, also when a nested group with a queue comes before it in field order. Without one, the first nested group in field order that has a queue provides it. The other queues are not delivered. The attribute knows the field by the name of its type, so a type alias, a renamed import or a wrapper such as `Option` hides it. A queue the framework does not know reports the first event emitted into it on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
+- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. A queue of the model itself is the plugin's, also when a nested group with a queue comes before it in field order. Without one, the first nested group in field order that has a queue provides it. The other queues are not delivered. The attribute knows the field by the name of its type, so a type alias, a renamed import or a wrapper such as `Option` hides it. A queue the framework does not know reports so once, at the first event emitted into it or the first sender created from it, on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
 
 ### Example (from `webview-demo`)
 
@@ -261,6 +261,88 @@ await __BEAMER__.ready;
 show(await __BEAMER__.invoke("getSampleRate"));
 ```
 
+## Data from the Audio Thread
+
+The audio thread cannot emit: `emit()` serializes and takes a lock. It sends through a sender instead, which the model creates from its `WebViewEventQueue` in `prepare()` and moves into the processor. Sending never waits, allocates or frees memory. There are two kinds:
+
+| | `WebViewValueSender<T>` | `WebViewStreamSender<T>` |
+|---|---|---|
+| For | A value the web UI shows as it is now: a meter, a gain reduction, a spectrum | Values the web UI needs all of, in order: a scrolling history, a scope, the notes played |
+| Created with | `events.value_sender(name, initial)` | `events.stream_sender(name, capacity)` |
+| Sent with | `send(&value)` or `send_with(\|value\| ...)` | `push(value)` or `push_slice(&values)` |
+| JavaScript receives | The newest value, at most once per tick | An array of every value since the last tick, oldest first |
+| Several values between two ticks | The last one counts | All of them, up to `capacity` |
+| While no GUI is open | Kept: a GUI that opens gets the current value | Dropped |
+| Type | `Clone + Serialize`, such as a struct or a `Vec<f32>` | `Copy + Serialize`, such as `f32` or a small struct |
+
+Both arrive through `__BEAMER__.on(name, callback)` like the events of `emit()`. JavaScript tells them apart only by their name. `WebViewEventQueue::is_gui_open()` tells the audio thread whether a GUI is open at all: measuring costs time, so a plugin skips it while nothing shows the result. It is one atomic load, also fine in `process()`.
+
+### Example (from `webview-demo`)
+
+The demo shows an output meter (a value sender) and a scrolling level history (a stream sender):
+
+```rust
+/// The output level as the meter shows it.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[serde(crate = "beamer::serde")]
+pub struct Levels {
+    /// The held peak of each channel, linear.
+    pub peak: [f32; 2],
+}
+
+fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
+    // ...
+    WebViewDemoProcessor {
+        // The meter shows the newest level only.
+        levels: self.events.value_sender("levels", Levels::default()),
+        // The history needs every point: 100 a second, room for 640 ms.
+        history: self.events.stream_sender("history", 64),
+        // ...
+        model: self,
+    }
+}
+
+impl Processor for WebViewDemoProcessor {
+    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
+        // ...
+        // Measuring costs time, so only while the GUI is open.
+        if self.model.events.is_gui_open() {
+            self.measure(buffer);
+        } else if self.peaks != [0.0; 2] {
+            // The meter comes to rest, so that a GUI that opens later does
+            // not show a peak from before.
+            self.peaks = [0.0; 2];
+            self.levels.send(&Levels { peak: self.peaks });
+        }
+    }
+}
+
+// In measure(): the held peaks, sent only when they changed.
+if self.peaks != before {
+    self.levels.send(&Levels { peak: self.peaks });
+}
+// One point of the history per 10 ms window.
+self.history.push(self.window_peak);
+```
+
+```javascript
+// A value sender: the value itself.
+__BEAMER__.on("levels", ({ peak }) => meter.show(peak));
+// A stream sender: an array with every value since the last tick.
+__BEAMER__.on("history", (points) => history.append(points));
+```
+
+What to know about senders:
+
+- **Created in `prepare()`, dropped with the processor.** Creating a sender takes a lock and allocates: in debug builds a call from `process()` panics. Dropping one frees memory, which is fine because the framework drops the processor on a host thread. When the host prepares the plugin again, the senders of the new processor take over. A sender of a queue the framework does not deliver (see "One queue per plugin" above) reports it once, when it is created.
+- **A value sender delivers what it is sent.** A tick sends the newest value when anything was sent since the last tick, also a value equal to the one before. A meter at rest should send nothing, so that the GUI has nothing to do. After a page loads, each value sender sends its current value again, so a GUI that opens shows it at once. A plugin that measures only while a GUI is open therefore sends a value at rest when none is, as the demo does, so that the next GUI does not show a level from before. A part of the page that subscribes later (a tab, a panel) shows its initial value until the plugin sends again: start it at the value at rest, as the demo's meter starts at zero, or ask with `invoke()` when it mounts.
+- **A value sender keeps the last value only.** What happened between two ticks is lost unless the plugin holds it: a meter holds its peaks with a decay instead of sending the peak of each block. `send()` copies with `clone_from`, which does not allocate for a `Vec` of the same length as the initial value. `send_with()` fills the value in place; what the closure finds there is an older value, so it has to write the whole value.
+- **A stream needs room for two ticks or more.** A tick comes about every 16 ms. When the ring is full, the newest values are dropped: `push()` returns `false`, `push_slice()` returns how many fit. Room for a few hundred milliseconds lets a GUI whose main thread is busy for a moment (a project that loads, a heavy redraw) lose nothing.
+- **A stream starts with the GUI.** A push while no GUI is open is dropped. When the first GUI opens, values left from before are skipped.
+- **JSON as for `emit()`.** Values that are not finite numbers (NaN, infinity) arrive as `null`, so send a level as a linear value and convert it to dB in JavaScript. serde serializes arrays of up to 32 elements (a longer one does not compile), so a spectrum is a `Vec<f32>` in a value sender.
+- **One name per sender.** In debug builds a second sender with the name of a living one panics. The names share their space with the events of `emit()`.
+- **One GUI.** With two windows of one plugin instance open, each event, value and stream value reaches one of them. The hosts tried open one window per instance.
+
 ## Answering the Web UI
 
 The `Model` answers `invoke()` calls and custom events from JavaScript with two methods. Parameter and `State` synchronization are automatic and do not go through them.
@@ -280,7 +362,7 @@ pub trait Model {
 }
 ```
 
-Both methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows. Host threads may use the model at the same time, so what these methods change is a value that is safe to share: a `State` field, a `Handover`, an atomic or a `Mutex`. The model cannot reach the processor. Data the audio thread produces reaches it through a value the processor writes without locking, such as an atomic (see [Real-Time Visualization](#real-time-visualization)).
+Both methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows. Host threads may use the model at the same time, so what these methods change is a value that is safe to share: a `State` field, a `Handover`, an atomic or a `Mutex`. The model cannot reach the processor. Data the audio thread produces for the web UI goes through a sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). Data it produces for the model goes through a value the processor writes without locking, such as an atomic.
 
 ### Example (from `webview-demo`)
 
@@ -369,6 +451,7 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
 5. If a `State` field was set since the last tick, calls `window.__BEAMER__._onState({path: value, ...})` with the fields that changed. The sum of their generations tells whether any did, so a tick without a change reads no field
 6. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
+7. Delivers what the audio thread sent through its senders since the last tick, one `_onEvent(name, data)` call per sender that has something: the newest value of a value sender, an array of the values of a stream sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). After the init dump, each value sender sends its current value again
 
 The delta format is a plain object mapping numeric parameter IDs to those three values:
 
@@ -551,22 +634,6 @@ The macro parses the hex string into `[R, G, B, A]` bytes (alpha is always 255).
 This is independent from any background set in HTML, CSS or JS. You can use either approach, or both.
 
 ## Status and Planned Work
-
-### Real-Time Visualization
-
-Lock-free data transfer from the audio thread to the WebView for spectrum analyzers, level meters, waveform displays and other real-time visualizations.
-
-**Problem:** `WebViewEventQueue::emit()` allocates (JSON serialization) and takes a lock. It is therefore not safe to call from the audio thread.
-
-**Planned approach:**
-
-- A lock-free ring buffer in `beamer-core` for fixed-size visualization payloads
-- An `emit_rt()` method that writes into the ring buffer without allocating, on an audio end of the event queue that the model creates in `prepare()`
-- The 60 Hz sync timer drains the ring buffer on the main thread, next to the events it already delivers
-
-This is a core-level feature (not webview-specific) because the ring buffer and thread-safety guarantees belong in `beamer-core`.
-
-**Status:** Not implemented. Events from host and UI threads work (see [Events from Rust](#events-from-rust)).
 
 ### Windows WebView2 Support
 

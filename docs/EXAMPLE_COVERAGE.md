@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-10-27
+**Last Updated:** 2026-10-28
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -67,6 +67,9 @@
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **GUI** (macOS only) | on_invoke / on_event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
 | | WebViewEventQueue | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS |
+| | WebViewValueSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread |
+| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Level history from the audio thread |
+| | is_gui_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the GUI is open |
 | | has_gui / gui_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml GUI config |
 | | gui_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme |
