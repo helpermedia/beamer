@@ -70,8 +70,9 @@ pub mod state;
 pub mod state_format;
 pub mod sub_blocks;
 pub mod types;
-pub mod webview_events;
 pub mod webview_dispatch;
+pub mod webview_events;
+pub mod webview_value_sender;
 
 // Re-exports for convenience
 pub use active_buses::{ActiveBuses, BusNegotiation, BusRouting};
@@ -138,6 +139,7 @@ pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use types::{fnv1a_hash, ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
 pub use webview_events::WebViewEventQueue;
+pub use webview_value_sender::WebViewValueSender;
 #[doc(hidden)]
 pub use webview_dispatch::WebViewDispatch;
 

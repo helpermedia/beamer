@@ -151,8 +151,8 @@ mod macos_ffi {
     ///
     /// # Safety
     ///
-    /// `handle` must be a valid pointer returned by `beamer_webview_create`,
-    /// and must not be used after this call.
+    /// `handle` must be a valid pointer returned by `beamer_webview_create`.
+    /// It must not be used after this call.
     #[no_mangle]
     pub extern "C" fn beamer_webview_destroy(handle: *mut c_void) {
         if handle.is_null() {

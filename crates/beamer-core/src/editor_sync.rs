@@ -89,6 +89,11 @@ impl EditorSync {
     /// values of the `State` fields and the name of the plugin format
     /// (`"vst3"`, `"auv2"`, `"auv3"`).
     pub fn init_script(&mut self, plugin_format: &str) -> String {
+        // The page missed the values the senders sent before it loaded.
+        if let Some(events) = &self.events {
+            events.page_loaded();
+        }
+
         let parameters = params_to_init_json(self.model.parameter_store());
         let format = json_string(plugin_format);
 
@@ -500,6 +505,38 @@ mod tests {
         assert_eq!(
             sync.frame_script().as_deref(),
             Some("window.__BEAMER__._onEvent(\"tock\",2);")
+        );
+    }
+
+    #[test]
+    fn test_frame_delivers_the_values_of_the_audio_thread() {
+        let events = WebViewEventQueue::new();
+        events.claim();
+        let mut levels = events.value_sender("levels", [0.0f32; 2]);
+        levels.send(&[0.5, 0.25]);
+
+        // The editor ticks before its page loaded: that value reaches
+        // nothing.
+        let mut sync = EditorSync::open(Arc::new(NoParameters), Some(events.clone()));
+        assert!(sync.frame_script().is_some());
+        assert_eq!(sync.frame_script(), None);
+
+        // The page loaded: the value sent before goes out again.
+        sync.init_script("vst3");
+        assert_eq!(
+            sync.frame_script().as_deref(),
+            Some("window.__BEAMER__._onEvent(\"levels\",[0.5,0.25]);")
+        );
+        assert_eq!(sync.frame_script(), None);
+
+        levels.send(&[1.0, 0.0]);
+        events.emit("tick", &1);
+        assert_eq!(
+            sync.frame_script().as_deref(),
+            Some(
+                "window.__BEAMER__._onEvent(\"tick\",1);\
+                 window.__BEAMER__._onEvent(\"levels\",[1.0,0.0]);"
+            )
         );
     }
 

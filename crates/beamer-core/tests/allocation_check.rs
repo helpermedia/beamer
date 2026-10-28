@@ -158,3 +158,26 @@ fn test_a_panic_in_process_is_not_reported_again() {
     let payload = result.expect_err("the plugin panics");
     assert_eq!(payload.downcast_ref::<&str>(), Some(&"the plugin panics"));
 }
+
+#[test]
+fn test_sending_to_the_web_ui_neither_allocates_nor_frees() {
+    let _turn = turn();
+    let events = beamer_core::WebViewEventQueue::new();
+    events.claim();
+    events.editor_opened();
+    let mut levels = events.value_sender("levels", [0.0f32; 2]);
+    let mut spectrum = events.value_sender("spectrum", vec![0.0f32; 512]);
+    let bins = vec![0.5f32; 512];
+
+    let (_, counts) = allocation_check::count_in_process(|| {
+        for _ in 0..3 {
+            if events.is_gui_open() {
+                levels.send(&[0.5, 0.25]);
+                spectrum.send(&bins);
+                spectrum.send_with(|values| values.fill(0.25));
+            }
+        }
+    });
+    assert!(counts.is_empty(), "{counts:?}");
+    assert!(events.take_script().is_some());
+}

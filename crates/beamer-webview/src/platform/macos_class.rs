@@ -1,6 +1,6 @@
 //! Names for the Objective-C classes that are registered at runtime.
 //!
-//! Class names are global in a process, and a host loads many plugin binaries
+//! Class names are global in a process. A host loads many plugin binaries
 //! that each contain their own copy of this code, possibly from different
 //! versions of the framework. With a fixed name they would all share the class
 //! of the binary that registered it first and run that binary's method

@@ -159,7 +159,7 @@ impl MacosWebView {
             // The `inspectable` property exists from macOS 13.3. Earlier
             // systems switch the Web Inspector on through a preferences key.
             // SAFETY: webview is valid and we are on the main thread. The
-            // selector is only sent when the web view responds to it, and
+            // selector is only sent when the web view responds to it.
             // WKPreferences supports KVC for developerExtrasEnabled.
             unsafe {
                 let has_inspectable: bool = objc2::msg_send![
