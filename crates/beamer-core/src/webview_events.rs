@@ -40,9 +40,10 @@
 //! and UI threads and for threads the plugin starts. It must not be called
 //! on the audio thread. The audio thread sends through a sender that the
 //! plugin creates from the queue in `prepare()`: a
-//! [`WebViewValueSender`] for the newest value, such as a meter.
-//! [`is_gui_open()`](WebViewEventQueue::is_gui_open) tells it whether
-//! anything shows what it measures.
+//! [`WebViewValueSender`] for the newest value, such as a meter, or a
+//! [`WebViewStreamSender`] for every value in order, such as a scrolling
+//! history. [`is_gui_open()`](WebViewEventQueue::is_gui_open) tells it
+//! whether anything shows what it measures.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -50,6 +51,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 
+use crate::webview_stream_sender::{stream_link, WebViewStreamSender};
 use crate::webview_value_sender::{value_link, WebViewValueSender};
 
 /// How many events wait for the editor at most.
@@ -74,8 +76,8 @@ struct Shared {
     pending: Mutex<VecDeque<String>>,
     /// The queue's ends of the senders the audio thread sends through, in
     /// the order they were created. Apart from `pending`, so that turning
-    /// a large value into JSON does not hold up `emit()`. Where both are
-    /// taken, `pending` comes first.
+    /// a large value into JSON does not hold up `emit()`. The two are
+    /// never held at once.
     senders: Mutex<Vec<Box<dyn SenderEnd>>>,
     /// How many editors are open.
     editors: AtomicUsize,
@@ -170,6 +172,34 @@ impl WebViewEventQueue {
         sender
     }
 
+    /// Create a sender of a stream of values for the audio thread.
+    ///
+    /// Call this in `prepare()` and keep the sender in the processor. At
+    /// each tick the web UI receives every value pushed since the last one
+    /// as an array, the argument of the callbacks registered with
+    /// `__BEAMER__.on(name, callback)`. `capacity` is how many values wait
+    /// at most; more are dropped. See [`WebViewStreamSender`].
+    ///
+    /// Takes a lock and allocates: not for the audio thread. Two senders
+    /// with the same name are a mistake; debug builds panic.
+    ///
+    /// # Panics
+    ///
+    /// When `capacity` is 0.
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn stream_sender<T>(&self, name: &str, capacity: usize) -> WebViewStreamSender<T>
+    where
+        T: Copy + Serialize + Send + 'static,
+    {
+        crate::audio_thread::assert_not_in_process(
+            "WebViewEventQueue::stream_sender()",
+            "Create senders in prepare() and keep them in the processor.",
+        );
+        let (sender, end) = stream_link(json_string(name), capacity, self.clone());
+        self.add_sender(name, end);
+        sender
+    }
+
     /// Keep the queue's end of a new sender.
     #[cfg_attr(debug_assertions, track_caller)]
     fn add_sender(&self, name: &str, end: Box<dyn SenderEnd>) {
@@ -209,9 +239,16 @@ impl WebViewEventQueue {
     pub fn editor_opened(&self) {
         // Hold the lock, so that an `emit()` that runs now lands either
         // before the queue is emptied or after the editor counts as open.
-        let mut pending = self.pending();
-        if self.shared.editors.fetch_add(1, Ordering::AcqRel) == 0 {
-            pending.clear();
+        let first = {
+            let mut pending = self.pending();
+            let first = self.shared.editors.fetch_add(1, Ordering::AcqRel) == 0;
+            if first {
+                pending.clear();
+            }
+            first
+        };
+        for end in self.senders().iter_mut() {
+            end.gui_opened(first);
         }
     }
 
@@ -319,6 +356,9 @@ pub(crate) trait SenderEnd: Send {
 
     /// Whether the sender is gone. Its end is then forgotten.
     fn is_gone(&self) -> bool;
+
+    /// An editor was opened. `first` when no other editor was open.
+    fn gui_opened(&mut self, first: bool);
 
     /// The page of an editor loaded and knows nothing yet.
     fn page_loaded(&mut self);

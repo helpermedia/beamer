@@ -26,7 +26,8 @@
 //!
 //! A value sender keeps what happened between two ticks only when the
 //! plugin does: a meter holds its peaks (with a decay) instead of sending
-//! the peak of each block.
+//! the peak of each block. For every value in order, see
+//! [`WebViewStreamSender`](crate::WebViewStreamSender).
 //!
 //! Dropping a sender frees memory. That is fine where it normally happens:
 //! a sender lives in the processor, which the framework drops on a host
@@ -151,6 +152,11 @@ impl<T: Serialize + Send + 'static> SenderEnd for ValueEnd<T> {
 
     fn is_gone(&self) -> bool {
         self.link.strong_count() == 0
+    }
+
+    fn gui_opened(&mut self, _first: bool) {
+        // The editor's page has not loaded yet: the value goes out again
+        // when it has.
     }
 
     fn page_loaded(&mut self) {

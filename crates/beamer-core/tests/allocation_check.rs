@@ -167,6 +167,7 @@ fn test_sending_to_the_web_ui_neither_allocates_nor_frees() {
     events.editor_opened();
     let mut levels = events.value_sender("levels", [0.0f32; 2]);
     let mut spectrum = events.value_sender("spectrum", vec![0.0f32; 512]);
+    let mut history = events.stream_sender("history", 64);
     let bins = vec![0.5f32; 512];
 
     let (_, counts) = allocation_check::count_in_process(|| {
@@ -175,6 +176,8 @@ fn test_sending_to_the_web_ui_neither_allocates_nor_frees() {
                 levels.send(&[0.5, 0.25]);
                 spectrum.send(&bins);
                 spectrum.send_with(|values| values.fill(0.25));
+                history.push(0.5f32);
+                history.push_slice(&[0.25, 0.125]);
             }
         }
     });
