@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import LevelHistory from "./components/LevelHistory";
+import LevelMeter from "./components/LevelMeter";
 import Slider from "./components/Slider";
 import { useBeamerState } from "./hooks/useBeamerState";
 
@@ -93,7 +95,7 @@ function App() {
       <h1 className="text-3xl font-bold mb-2 text-cyan-400">
         Beamer WebView Demo
       </h1>
-      <p className="text-sm text-gray-400 mb-8">
+      <p className="text-sm text-gray-400 mb-6">
         React 19 + Vite + Tailwind v4
       </p>
 
@@ -109,6 +111,11 @@ function App() {
       >
         Pan law: {panLaw === "linear" ? "Linear" : "Constant power"}
       </button>
+
+      <div className="mt-4 flex items-end gap-3">
+        <LevelMeter />
+        <LevelHistory />
+      </div>
 
       <p className="absolute bottom-3 text-xs text-gray-500 font-mono">
         {[pluginFormat, sampleRate === null ? "Not prepared" : `${sampleRate} Hz`]

@@ -11,8 +11,12 @@
 //! And it shows an event from Rust to the web UI: the plugin tells the
 //! editor the sample rate whenever the host prepares it.
 //!
-//! The plugin is two structs: the model, which every thread shares, and
-//! the processor, which the audio thread owns.
+//! And data from the audio thread: an output meter needs only the newest
+//! level (a value sender). A scrolling level history needs every point in
+//! order (a stream sender).
+//!
+//! The plugin is two structs. Every thread shares the model; the audio
+//! thread owns the processor.
 
 use beamer::prelude::*;
 use beamer::serde::{Deserialize, Serialize};
@@ -33,6 +37,15 @@ pub enum PanLaw {
     ConstantPower,
     /// A plain crossfade (-6 dB at the center).
     Linear,
+}
+
+/// The output level as the meter shows it.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[serde(crate = "beamer::serde")]
+pub struct Levels {
+    /// The held peak of each channel, linear. Not in dB: the infinity of
+    /// silence would reach JavaScript as null.
+    pub peak: [f32; 2],
 }
 
 /// Everything the plugin knows, shared by the host, the web UI and the
@@ -60,7 +73,7 @@ pub struct WebViewDemoModel {
     pub sample_rate: Handover<f64>,
 
     /// Events for the web UI. What is emitted here reaches the editor
-    /// while it is open.
+    /// while it is open. The processor's senders are made from it too.
     pub events: WebViewEventQueue,
 }
 
@@ -80,6 +93,19 @@ impl Model for WebViewDemoModel {
             // The audio thread's end of the state field. Taken before the
             // model moves into the processor.
             pan_law: self.pan_law.reader(),
+            // The meter shows the newest level only.
+            levels: self.events.value_sender("levels", Levels::default()),
+            // The history needs every point. About two arrive between two
+            // ticks of the GUI. Room for 64 is 640 ms: a GUI whose main
+            // thread is busy for a moment (a project that loads, a heavy
+            // redraw) loses nothing.
+            history: self.events.stream_sender("history", 64),
+            peaks: [0.0; 2],
+            // A held peak falls by 20 dB a second.
+            release_per_sample: 10f32.powf(-1.0 / sample_rate as f32),
+            window_len: (sample_rate / HISTORY_POINTS_PER_SECOND).round().max(1.0) as usize,
+            window_peak: 0.0,
+            window_filled: 0,
             model: self,
         }
     }
@@ -108,11 +134,73 @@ impl Model for WebViewDemoModel {
 // Processor
 // =============================================================================
 
+/// How many points of the level history a second has.
+const HISTORY_POINTS_PER_SECOND: f64 = 100.0;
+
+/// The level where the meter's scale ends (-60 dB, linear). A held peak
+/// below it is at rest.
+const METER_FLOOR: f32 = 0.001;
+
 /// Audio processor with simple gain.
 pub struct WebViewDemoProcessor {
     model: Arc<WebViewDemoModel>,
     /// The pan law as the audio thread sees it.
     pan_law: HandoverReader<PanLaw>,
+    /// The meter's level, of which the web UI gets the newest.
+    levels: WebViewValueSender<Levels>,
+    /// The points of the level history, of which the web UI gets each.
+    history: WebViewStreamSender<f32>,
+    /// The held peak of each channel, linear.
+    peaks: [f32; 2],
+    /// What a held peak keeps of itself per sample.
+    release_per_sample: f32,
+    /// How many samples one point of the history covers.
+    window_len: usize,
+    /// The loudest sample of the point the history is at.
+    window_peak: f32,
+    /// How many samples of that point were measured.
+    window_filled: usize,
+}
+
+impl WebViewDemoProcessor {
+    /// Measure the output for the meter and the history.
+    fn measure(&mut self, buffer: &Buffer) {
+        let mut channels = buffer.channels();
+        let Some(left) = channels.next() else {
+            return;
+        };
+        // A mono plugin shows its one channel on both sides of the meter.
+        let right = channels.next().unwrap_or(left);
+
+        // The held peaks fall for the length of the block, then rise to
+        // the loudest sample in it. Below the floor a peak is at rest.
+        let before = self.peaks;
+        let fall = self.release_per_sample.powi(left.len() as i32);
+        for (peak, channel) in self.peaks.iter_mut().zip([left, right]) {
+            let loudest = channel.iter().fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
+            *peak = (*peak * fall).max(loudest);
+            if *peak < METER_FLOOR {
+                *peak = 0.0;
+            }
+        }
+        // A value sender delivers what it is sent. A meter at rest sends
+        // nothing, so the GUI has nothing to do.
+        if self.peaks != before {
+            self.levels.send(&Levels { peak: self.peaks });
+        }
+
+        // One point of the history per window: its loudest sample of
+        // both channels.
+        for (left, right) in left.iter().zip(right) {
+            self.window_peak = self.window_peak.max(left.abs()).max(right.abs());
+            self.window_filled += 1;
+            if self.window_filled == self.window_len {
+                self.history.push(self.window_peak);
+                self.window_peak = 0.0;
+                self.window_filled = 0;
+            }
+        }
+    }
 }
 
 impl Processor for WebViewDemoProcessor {
@@ -145,6 +233,20 @@ impl Processor for WebViewDemoProcessor {
             for sample in channel {
                 *sample *= g;
             }
+        }
+
+        // Measuring costs time, so only while the GUI is open.
+        if self.model.events.is_gui_open() {
+            self.measure(buffer);
+        } else if self.peaks != [0.0; 2] {
+            // The meter comes to rest with the next block the host
+            // processes, so that a GUI that opens later does not show a
+            // peak from before. Sending takes no lock and does not
+            // allocate.
+            self.peaks = [0.0; 2];
+            self.window_peak = 0.0;
+            self.window_filled = 0;
+            self.levels.send(&Levels { peak: self.peaks });
         }
     }
 }
