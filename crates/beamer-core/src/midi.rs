@@ -1144,7 +1144,8 @@ pub mod note_expression {
     /// arrives as `v² / 4`, the curve of CC 7.
     pub const VOLUME: u32 = 0;
     /// Per-note pan (0.0 = left, 0.5 = center, 1.0 = right). MIDI 2.0
-    /// registered per-note controller 10.
+    /// registered per-note controller 10, its center 0x80000000 at exactly
+    /// 0.5.
     pub const PAN: u32 = 1;
     /// Per-note tuning: `240 * (value - 0.5)` semitones (0.5 = none), see
     /// [`tuning_semitones`](super::tuning_semitones). MIDI 2.0 registered

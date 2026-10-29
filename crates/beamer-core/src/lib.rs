@@ -69,6 +69,7 @@ pub mod state;
 pub mod state_format;
 pub mod sub_blocks;
 pub mod types;
+pub mod ump;
 pub mod webview_dispatch;
 pub mod webview_events;
 pub mod webview_stream_sender;
