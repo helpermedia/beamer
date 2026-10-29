@@ -1810,6 +1810,44 @@ bool beamer_au_apply_preset(
 bool beamer_au_produces_midi(BeamerAuInstanceHandle _Nullable instance);
 
 /**
+ * Read the MIDI input of a render call that the host bypassed, without the
+ * plugin; pass it on to midi_output if given: a bypassed MIDI effect passes
+ * its MIDI on, in the same form as the plugin's output. Reading it keeps a
+ * SysEx message or an RPN sequence that spans the bypass whole.
+ *
+ * Thread Safety: The render thread; does not wait for a lock.
+ *
+ * @param instance              Handle to the plugin instance.
+ * @param timestamp             The render call's time stamp.
+ * @param frame_count           Frames of the render call.
+ * @param events                The render call's events, or NULL.
+ * @param midi_output           Receives the MIDI passed on, or NULL.
+ * @param midi_output_context   Passed to midi_output unchanged.
+ * @return false when the MIDI could not be read now (a host thread prepares
+ *         the instance): keep it for the next call.
+ */
+bool beamer_au_pass_midi_through(
+    BeamerAuInstanceHandle _Nullable instance,
+    const AudioTimeStamp* _Nonnull timestamp,
+    uint32_t frame_count,
+    const AURenderEvent* _Nullable events,
+    BeamerAuMidiOutputFn _Nullable midi_output,
+    void* _Nullable midi_output_context
+);
+
+/**
+ * The MIDI protocol the plugin asks the host for (midi_protocol in
+ * Config.toml), as a MIDIProtocolID: 1 for MIDI 1.0, 2 for MIDI 2.0. 0 for a
+ * plugin without MIDI input, which reports no protocol.
+ *
+ * Thread Safety: Can be called from any thread.
+ *
+ * @param instance Handle to the plugin instance.
+ * @return The protocol, or 0.
+ */
+int32_t beamer_au_get_midi_protocol(BeamerAuInstanceHandle _Nullable instance);
+
+/**
  * The SysEx bytes one render call holds in each direction for a plugin with
  * MIDI input (sysex_bytes_per_block in Config.toml), 0 without MIDI input.
  *
@@ -1862,6 +1900,14 @@ void beamer_au_diagnostics_note(BeamerAuInstanceHandle _Nullable instance, const
  * Thread Safety: Render thread.
  */
 void beamer_au_diagnostics_host_output_memory(BeamerAuInstanceHandle _Nullable instance, bool has_memory);
+
+/**
+ * Note the time stamp of a packet the host sent through
+ * MusicDeviceMIDIEventList, before the shim folds it into the event's time.
+ *
+ * Thread Safety: Any thread.
+ */
+void beamer_au_diagnostics_host_packet_time_stamp(BeamerAuInstanceHandle _Nullable instance, uint64_t time_stamp);
 
 /**
  * Measure the output of a render call of the main bus that the host

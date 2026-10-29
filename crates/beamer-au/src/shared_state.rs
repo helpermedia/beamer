@@ -22,6 +22,9 @@ pub(crate) struct SharedState {
     /// bypassed render call takes too (the plugin's reset waits for the
     /// next processed block).
     host_bypass_reset_requested: AtomicBool,
+    /// The same request for the reading of the MIDI input (SysEx7 in
+    /// progress, RPN selections), which a bypassed render call takes too.
+    midi_reset_requested: AtomicBool,
     /// A state was loaded: the smoothers have to jump to the new values.
     smoothing_reset_requested: AtomicBool,
     /// What went wrong in render calls since a host thread last looked.
@@ -115,6 +118,13 @@ impl SharedState {
     pub(crate) fn request_reset(&self) {
         self.reset_requested.store(true, Ordering::Release);
         self.host_bypass_reset_requested.store(true, Ordering::Release);
+        self.midi_reset_requested.store(true, Ordering::Release);
+    }
+
+    /// Take the reset request for the reading of the MIDI input, if there
+    /// is one.
+    pub(crate) fn take_midi_reset_request(&self) -> bool {
+        self.midi_reset_requested.swap(false, Ordering::AcqRel)
     }
 
     /// Take the reset request for the delay of the host's bypass, if
@@ -145,6 +155,7 @@ impl SharedState {
     pub(crate) fn clear_reset_request(&self) {
         self.reset_requested.store(false, Ordering::Release);
         self.host_bypass_reset_requested.store(false, Ordering::Release);
+        self.midi_reset_requested.store(false, Ordering::Release);
     }
 
     /// Note a warning of a render call. For the audio thread: one atomic
@@ -168,14 +179,23 @@ mod tests {
     fn test_requests_are_taken_once() {
         let shared = SharedState::default();
         assert!(!shared.take_reset_request());
+        assert!(!shared.take_midi_reset_request());
         assert!(!shared.take_smoothing_reset_request());
 
         shared.request_reset();
         shared.request_smoothing_reset();
         assert!(shared.take_reset_request());
         assert!(!shared.take_reset_request());
+        // The reading of the MIDI input has a request of its own.
+        assert!(shared.take_midi_reset_request());
+        assert!(!shared.take_midi_reset_request());
         assert!(shared.take_smoothing_reset_request());
         assert!(!shared.take_smoothing_reset_request());
+
+        shared.request_reset();
+        shared.clear_reset_request();
+        assert!(!shared.take_reset_request());
+        assert!(!shared.take_midi_reset_request());
     }
 
     #[test]

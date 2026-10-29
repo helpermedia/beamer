@@ -279,6 +279,18 @@ impl Category {
     }
 }
 
+/// The MIDI protocol an Audio Unit asks the host to send its MIDI input in
+/// (see [`Config::midi_protocol`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MidiProtocol {
+    /// MIDI 1.0: 7-bit values, RPN and NRPN as control change sequences.
+    #[default]
+    Midi1,
+    /// MIDI 2.0: 16-bit velocity, 32-bit controllers, per-note controllers
+    /// and pitch bend, note attributes.
+    Midi2,
+}
+
 /// Default SysEx bytes one block holds in each direction.
 pub const DEFAULT_SYSEX_BYTES_PER_BLOCK: usize = 16 * 1024;
 
@@ -329,6 +341,14 @@ pub struct Config {
     /// Whether the plugin sends MIDI (AU and VST3). On by default for MIDI
     /// effects.
     pub midi_output: bool,
+
+    /// The MIDI protocol an Audio Unit with MIDI input asks the host for,
+    /// MIDI 1.0 by default. The host then sends its MIDI as event lists of
+    /// Universal MIDI Packets in that protocol, translating what it has. A
+    /// plugin gets the same events either way; MIDI 2.0 adds resolution
+    /// and per-note messages. VST3 hosts send the same events whatever
+    /// this says.
+    pub midi_protocol: MidiProtocol,
 
     /// Manufacturer code (4-character identifier for your company/brand).
     pub manufacturer: FourCharCode,
@@ -522,6 +542,7 @@ impl Config {
             // Instruments and MIDI effects receive MIDI, MIDI effects send it.
             midi_input: matches!(category, Category::Instrument | Category::MidiEffect),
             midi_output: matches!(category, Category::MidiEffect),
+            midi_protocol: MidiProtocol::Midi1,
             manufacturer: FourCharCode::new(&str_to_four_bytes(manufacturer_code)),
             subtype: FourCharCode::new(&str_to_four_bytes(plugin_code)),
             vst3_id: None,
@@ -671,6 +692,23 @@ impl Config {
     /// `midi_output` in `Config.toml`.
     pub const fn with_midi_output(mut self, enabled: bool) -> Self {
         self.midi_output = enabled;
+        self
+    }
+
+    /// Set the MIDI protocol an Audio Unit asks the host for (see
+    /// [`midi_protocol`](Self::midi_protocol)). `#[beamer::export]` sets it
+    /// from `midi_protocol` in `Config.toml`.
+    ///
+    /// # Panics
+    ///
+    /// Panics for MIDI 2.0 without MIDI input, at compile time for a
+    /// `static`. Set MIDI input first.
+    pub const fn with_midi_protocol(mut self, protocol: MidiProtocol) -> Self {
+        assert!(
+            self.midi_input || matches!(protocol, MidiProtocol::Midi1),
+            "midi_protocol needs MIDI input"
+        );
+        self.midi_protocol = protocol;
         self
     }
 

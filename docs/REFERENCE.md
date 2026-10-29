@@ -56,6 +56,7 @@ log_level = "warn"
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
 | `midi_input` | Boolean | Whether the plugin receives MIDI (default: `true` for instruments and MIDI effects, `false` otherwise). An effect with MIDI input is a music effect in AU (see [AU Component Types](#au-component-types)). A MIDI effect always has MIDI input, a generator never |
 | `midi_output` | Boolean | Whether the plugin sends MIDI (default: `true` for MIDI effects, `false` otherwise) |
+| `midi_protocol` | String | The MIDI protocol an Audio Unit with MIDI input asks the host for: `"1.0"` (default) or `"2.0"` (see [MIDI Input](#midi-input)). Needs MIDI input |
 | `editor_size` | Array | Initial editor size as `[width, height]` in pixels; a VST3 host cannot make the editor smaller. Required for a plugin with a web UI, which the macro finds in `webview/` or at `BEAMER_DEV_URL` (see [WEBVIEW.md](WEBVIEW.md#asset-embedding)); ignored without one |
 | `editor_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
@@ -1969,6 +1970,13 @@ midi_input = true
 
 A plugin without MIDI input gets no events in `process_midi()` or in `context.midi_input()`. The MIDI a plugin without MIDI output writes is dropped.
 
+An Audio Unit with MIDI input asks the host for MIDI 1.0 by default; `midi_protocol = "2.0"` asks for MIDI 2.0, with 16-bit velocities, 32-bit controllers, per-note controllers and note attributes. A plugin gets the same events either way (see [Values](#values), [RPN and NRPN](#rpn-and-nrpn) and [MIDI Input](#midi-input)); VST3 hosts send them whatever the setting says.
+
+```toml
+category = "instrument"
+midi_protocol = "2.0"
+```
+
 An instrument plays its notes in `process()`, from the same events in `context.midi_input()`, so it does not keep them in between:
 
 ```rust
@@ -2018,14 +2026,23 @@ sysex_bytes_per_block = 262144
 **SysEx input in each format:**
 
 - VST3: a data event of type SysEx, at its sample offset.
-- AUv2: the host calls `MusicDeviceSysEx` with a complete message and no
-  sample offset, from the render thread or another thread. The message
-  arrives at offset 0 of the next render call, before the other MIDI of that
-  call. A full queue or a message larger than `sysex_bytes_per_block` or
-  65,535 bytes drops it; the call still succeeds.
-- AUv3: one SysEx render event is one complete message, at its sample
-  offset. A message must start with F0; one without its F7 is taken as it
-  is. Anything else is dropped.
+- AU event lists (both formats, see [MIDI Input](#midi-input)): a message
+  comes as SysEx7 packets of up to six bytes. The wrapper puts them
+  together, also across render calls, in a buffer of
+  `sysex_bytes_per_block` bytes; the message arrives in the render call of
+  its last packet, at that packet's offset. A message that is malformed,
+  interrupted by another, without a start or longer than the buffer is
+  dropped and logged as a warning. One message at a time is put together:
+  one of another UMP group that starts meanwhile is dropped.
+- AUv2: a host that does not ask for the protocol calls `MusicDeviceSysEx`
+  with a complete message and no sample offset, from the render thread or
+  another thread. The message arrives at offset 0 of the next render call,
+  before the other MIDI of that call. A full queue or a message larger than
+  `sysex_bytes_per_block` or 65,535 bytes drops it; the call still succeeds.
+- AUv3: the system hands an AUv3 that reports a protocol every SysEx
+  message as SysEx7 in event lists. A SysEx render event (one complete
+  message, at its sample offset) is still read: a message must start with
+  F0; one without its F7 is taken as it is. Anything else is dropped.
 
 Measured on macOS 26 with an AUv3 MIDI effect that passes SysEx on. The
 limits are in the system's AUv3 code, not in Beamer; they apply to any
@@ -2428,6 +2445,17 @@ The `category` field in `Config.toml` determines the AU component type, together
 | `"generator"` | `augn` | Test tones, noise generators |
 
 Logic lists an `aumf` in the instrument slot of a software instrument track, under AU MIDI-controlled Effects. The track's MIDI plays it and the Side Chain menu in the plugin header feeds its main input. In an audio effect slot it runs as a plain effect, without MIDI.
+
+#### MIDI Input
+
+An Audio Unit with MIDI input reports its MIDI protocol (`midi_protocol` in `Config.toml`): the AUv2 through `kAudioUnitProperty_AudioUnitMIDIProtocol`, the AUv3 through `AudioUnitMIDIProtocol`. A host that asks sends MIDI as event lists of Universal MIDI Packets (UMP) in that protocol, translating what it has: the AUv2 gets them through `MusicDeviceMIDIEventList`, the AUv3 as render events (Apple's framework then hands it all MIDI as event lists, also from hosts that schedule MIDI 1.0 bytes). A host that does not ask uses the MIDI 1.0 calls (`MusicDeviceMIDIEvent`, `MusicDeviceSysEx`), which stay.
+
+- **Messages:** MIDI 1.0 and MIDI 2.0 channel voice messages become events at their resolution, SysEx7 is put together (see [SysEx Handling](#sysex-handling)). Utility and system messages (clock, start, stop and the like), SysEx8, flex data and stream messages have no events and are skipped, as are the system messages of the MIDI 1.0 calls (VST3 has no such events either; transport comes from the host's transport). A packet cut short inside a message ends there.
+- **Time:** a packet plays at its render event's sample time plus the packet's time stamp, the AUv2 at `inOffsetSampleFrame` plus the time stamp. A time stamp that would put a packet past the buffer is not a sample offset: the event's time is taken alone.
+- **Groups:** the 16 UMP groups are merged; the group shows in the note ID (`note_id`).
+- **MIDI 2.0 messages:** a note-on keeps its 16-bit velocity (a note-on with velocity 0 has the smallest velocity, 1 / 65535, as it is a note-on in MIDI 2.0) and its pitch 7.9 attribute as `tuning`; controllers, pitch bend and pressure keep their 32 bits; a program change brings its bank; registered and assignable controllers (also relative ones) are `ParameterNumber` events; per-note controllers and per-note pitch bend are note expressions (see [Note Expression](#note-expression-mpe)). Per-note management has no event.
+
+A bypassed Audio Unit reads its MIDI input as when it processes, so a SysEx message or an RPN sequence that spans the bypass stays whole; a bypassed MIDI effect passes the events on.
 
 #### FourCC Codes
 

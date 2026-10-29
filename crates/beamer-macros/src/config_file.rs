@@ -39,6 +39,10 @@ pub struct ConfigFile {
     /// Whether the plugin sends MIDI (default: true for MIDI effects).
     #[serde(default)]
     pub midi_output: Option<bool>,
+    /// The MIDI protocol an Audio Unit asks the host for: "1.0" (default)
+    /// or "2.0". Needs MIDI input.
+    #[serde(default)]
+    pub midi_protocol: Option<String>,
     /// SysEx bytes one block holds in each direction, counting the F0 and
     /// F7 of each message (default: 16384).
     #[serde(default)]
@@ -66,6 +70,15 @@ pub fn log_level_variant(level: &str) -> Result<&'static str, String> {
         _ => Err(format!(
             "log_level must be \"error\", \"warn\", \"info\", \"debug\" or \"trace\", got {level:?}"
         )),
+    }
+}
+
+/// The `MidiProtocol` variant for a `midi_protocol` value.
+pub fn midi_protocol_variant(protocol: &str) -> Result<&'static str, String> {
+    match protocol {
+        "1.0" => Ok("Midi1"),
+        "2.0" => Ok("Midi2"),
+        _ => Err(format!("midi_protocol must be \"1.0\" or \"2.0\", got {protocol:?}")),
     }
 }
 
@@ -147,6 +160,15 @@ impl ConfigFile {
         if let Some(ref level) = self.log_level {
             log_level_variant(level)?;
         }
+        if let Some(ref protocol) = self.midi_protocol {
+            midi_protocol_variant(protocol)?;
+            let midi_input = self
+                .midi_input
+                .unwrap_or(matches!(self.category.as_str(), "instrument" | "midi_effect"));
+            if !midi_input {
+                return Err("midi_protocol needs MIDI input (midi_input = true)".to_string());
+            }
+        }
         if let Some(ref id) = self.vst3_id {
             validate_uuid(id, "vst3_id")?;
         }
@@ -192,5 +214,24 @@ mod tests {
         // error that names the way out.
         assert!(validate("midi_effect", false).unwrap_err().contains("midi_input = false"));
         assert!(validate("generator", true).unwrap_err().contains("\"instrument\""));
+    }
+
+    #[test]
+    fn test_midi_protocol_needs_midi_input() {
+        let validate = |category: &str, extra: &str| {
+            toml::from_str::<ConfigFile>(&format!(
+                "name = \"Test\"\ncategory = \"{category}\"\nmanufacturer_code = \"Test\"\n\
+                 plugin_code = \"test\"\n{extra}\n"
+            ))
+            .expect("a Config.toml with the required fields")
+            .validate()
+        };
+        assert!(validate("instrument", "midi_protocol = \"2.0\"").is_ok());
+        assert!(validate("midi_effect", "midi_protocol = \"1.0\"").is_ok());
+        assert!(validate("effect", "midi_input = true\nmidi_protocol = \"2.0\"").is_ok());
+        assert!(validate("effect", "midi_protocol = \"2.0\"").unwrap_err().contains("midi_input = true"));
+        assert!(validate("instrument", "midi_input = false\nmidi_protocol = \"2.0\"").is_err());
+        assert!(validate("generator", "midi_protocol = \"1.0\"").is_err());
+        assert!(validate("instrument", "midi_protocol = \"2\"").unwrap_err().contains("\"2.0\""));
     }
 }

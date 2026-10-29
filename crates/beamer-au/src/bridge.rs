@@ -1529,6 +1529,75 @@ pub extern "C" fn beamer_au_delay_bypassed_output(
     });
 }
 
+/// Read the MIDI input of a render call that the host bypassed, without the
+/// plugin; pass it on to `midi_output` if given: a bypassed MIDI effect
+/// passes its MIDI on. Reading it keeps a SysEx message or an RPN sequence
+/// that spans the bypass whole. Returns false when the MIDI could not be
+/// read now (a host thread prepares the instance): the caller keeps it for
+/// the next call.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
+///   or null (in which case this function does nothing)
+/// - `timestamp` must be valid, `events` valid or null, as for `beamer_au_render`
+/// - `midi_output` must be callable with `midi_output_context` during the call
+/// - Thread safety: the render thread; does not wait for a lock
+#[no_mangle]
+pub extern "C" fn beamer_au_pass_midi_through(
+    instance: BeamerAuInstanceHandle,
+    timestamp: *const AudioTimeStamp,
+    frame_count: u32,
+    events: *const AURenderEvent,
+    midi_output: Option<BeamerAuMidiOutputFn>,
+    midi_output_context: *mut c_void,
+) -> bool {
+    if timestamp.is_null() {
+        return true;
+    }
+    with_instance!(instance, true, |handle| {
+        // The render thread does not wait: while a host thread prepares the
+        // instance, the MIDI waits for the next call.
+        let Ok(guard) = handle.render_block.try_read() else {
+            return false;
+        };
+        let Some(render_block) = guard.as_ref() else {
+            return false;
+        };
+        // SAFETY: The caller passes a valid timestamp and list; the function
+        // is callable with the context (see above).
+        unsafe {
+            render_block.pass_midi_through(
+                timestamp,
+                frame_count,
+                events,
+                midi_output.map(|send| MidiOutputSink::new(send, midi_output_context)),
+            )
+        };
+        true
+    })
+}
+
+/// Note the time stamp of a packet the host sent through
+/// `MusicDeviceMIDIEventList`, before the AUv2 shim folds it into the
+/// event's time (diagnostics builds). For any thread: a few atomic
+/// operations.
+///
+/// # Safety
+///
+/// As for `beamer_au_note_host_bypass`.
+#[cfg(feature = "diagnostics")]
+#[no_mangle]
+pub extern "C" fn beamer_au_diagnostics_host_packet_time_stamp(instance: BeamerAuInstanceHandle, time_stamp: u64) {
+    with_instance_void!(instance, |handle| {
+        if let Some(diagnostics) = handle.shared.diagnostics() {
+            diagnostics
+                .state()
+                .note_host_midi(beamer_core::diagnostics::HostMidiForm::PacketTimeStamp(time_stamp));
+        }
+    });
+}
+
 /// Check if render resources are currently allocated.
 ///
 /// # Safety
@@ -2845,6 +2914,26 @@ pub extern "C" fn beamer_au_produces_midi(_instance: BeamerAuInstanceHandle) -> 
     });
 
     result.unwrap_or(false)
+}
+
+/// The MIDI protocol the plugin asks the host for (`midi_protocol` in
+/// Config.toml) as a CoreMIDI `MIDIProtocolID`: 1 for MIDI 1.0, 2 for MIDI
+/// 2.0. 0 for a plugin without MIDI input, which reports no protocol.
+///
+/// # Safety
+///
+/// - `_instance` parameter is currently unused but accepted for API consistency
+/// - Thread safety: Safe to call from any thread
+#[no_mangle]
+pub extern "C" fn beamer_au_get_midi_protocol(_instance: BeamerAuInstanceHandle) -> i32 {
+    let result = catch_unwind(|| match factory::plugin_config() {
+        Some(config) if config.midi_input => match config.midi_protocol {
+            beamer_core::MidiProtocol::Midi1 => 1,
+            beamer_core::MidiProtocol::Midi2 => 2,
+        },
+        _ => 0,
+    });
+    result.unwrap_or(0)
 }
 
 /// The SysEx bytes one render call holds in each direction for a plugin with

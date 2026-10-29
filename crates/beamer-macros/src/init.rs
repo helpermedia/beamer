@@ -156,6 +156,14 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     let midi_output = config.midi_output.map(|enabled| {
         quote! { .with_midi_output(#enabled) }
     });
+    let midi_protocol = config
+        .midi_protocol
+        .as_deref()
+        .map(|protocol| {
+            let variant = format_ident!("{}", crate::config_file::midi_protocol_variant(protocol)?);
+            Ok::<_, String>(quote! { .with_midi_protocol(::beamer::core::MidiProtocol::#variant) })
+        })
+        .transpose()?;
 
     let sample_accurate_automation = (config.sample_accurate_automation == Some(true))
         .then(|| quote! { .with_sample_accurate_automation() });
@@ -229,6 +237,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #vst3_controller_id
         #midi_input
         #midi_output
+        #midi_protocol
         #sysex_bytes_per_block
         #sample_accurate_automation
         #subcategories

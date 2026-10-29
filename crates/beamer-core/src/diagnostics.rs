@@ -20,7 +20,7 @@
 
 use std::fmt::{self, Write as _};
 use std::sync::atomic::{
-    fence, AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering,
+    fence, AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
 };
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -230,6 +230,27 @@ fn kept_bytes(message: &[u8]) -> impl Iterator<Item = u8> + '_ {
 // DiagnosticsState
 // =============================================================================
 
+/// How a host delivered a piece of MIDI input, before the wrapper turned it
+/// into the plugin's events. A host may pick another form per plugin, so
+/// the forms show which path of the wrapper its input takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostMidiForm {
+    /// A single MIDI 1.0 event.
+    Event,
+    /// A SysEx event: one message in bytes.
+    SysEx,
+    /// An event list of Universal MIDI Packets, with the protocol it says
+    /// it has.
+    EventList(u32),
+    /// The time stamp of a packet in an event list, in samples after its
+    /// event.
+    PacketTimeStamp(u64),
+    /// A message in an event list, by its UMP message type (0 to 15).
+    Ump(u8),
+    /// A packet that ended inside a message.
+    Truncated,
+}
+
 /// What the audio thread measured since the reporter last read it.
 ///
 /// Every method for the audio thread is a few atomic operations: no
@@ -282,6 +303,18 @@ pub struct DiagnosticsState {
     midi_other: AtomicU32,
     /// MIDI output events.
     midi_output: AtomicU32,
+    /// MIDI input as the host delivered it, before the wrapper converted it
+    /// (see [`HostMidiForm`]): single events, SysEx events, event lists.
+    host_midi_forms: [AtomicU32; 3],
+    /// Event lists by the protocol they say: other, MIDI 1.0, MIDI 2.0.
+    host_list_protocols: [AtomicU32; 3],
+    /// The messages in event lists by UMP message type.
+    host_ump_messages: [AtomicU32; 16],
+    /// Packets that ended inside a message.
+    host_ump_truncated: AtomicU32,
+    /// Packets with a time stamp other than 0, with the largest one.
+    host_stamped_packets: AtomicU32,
+    host_largest_time_stamp: AtomicU64,
     /// The last SysEx message as the host sent it.
     sysex: SysExCapture,
     /// SysEx messages from the host that were dropped: larger than what was
@@ -366,6 +399,26 @@ impl DiagnosticsState {
             };
             counter.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Note how the host delivered a piece of MIDI input.
+    pub fn note_host_midi(&self, form: HostMidiForm) {
+        let counter = match form {
+            HostMidiForm::Event => &self.host_midi_forms[0],
+            HostMidiForm::SysEx => &self.host_midi_forms[1],
+            HostMidiForm::EventList(protocol) => {
+                self.host_midi_forms[2].fetch_add(1, Ordering::Relaxed);
+                &self.host_list_protocols[if protocol <= 2 { protocol as usize } else { 0 }]
+            }
+            HostMidiForm::PacketTimeStamp(0) => return,
+            HostMidiForm::PacketTimeStamp(stamp) => {
+                self.host_largest_time_stamp.fetch_max(stamp, Ordering::Relaxed);
+                &self.host_stamped_packets
+            }
+            HostMidiForm::Ump(message_type) => &self.host_ump_messages[usize::from(message_type & 0xF)],
+            HostMidiForm::Truncated => &self.host_ump_truncated,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Note the number of MIDI output events of a block.
@@ -906,6 +959,43 @@ fn report_lines(state: &DiagnosticsState, memory: &mut ReportMemory) -> Vec<Stri
         lines.push(format!("SysEx in: {dropped} dropped"));
     }
 
+    // How the host delivered its MIDI input.
+    let take = |counters: &[AtomicU32]| -> Vec<u32> {
+        counters.iter().map(|counter| counter.swap(0, Ordering::Relaxed)).collect()
+    };
+    let forms = take(&state.host_midi_forms);
+    let protocols = take(&state.host_list_protocols);
+    let ump = take(&state.host_ump_messages);
+    let truncated = state.host_ump_truncated.swap(0, Ordering::Relaxed);
+    let stamped = state.host_stamped_packets.swap(0, Ordering::Relaxed);
+    let largest_stamp = state.host_largest_time_stamp.swap(0, Ordering::Relaxed);
+    if forms.iter().any(|&count| count > 0) {
+        let mut line = format!("host MIDI: {} events, {} SysEx events, {} event lists", forms[0], forms[1], forms[2]);
+        if forms[2] > 0 {
+            let _ = write!(line, " (MIDI 1.0: {}, MIDI 2.0: {}", protocols[1], protocols[2]);
+            if protocols[0] > 0 {
+                let _ = write!(line, ", other: {}", protocols[0]);
+            }
+            line.push(')');
+        }
+        let types: Vec<String> = ump
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count > 0)
+            .map(|(message_type, count)| format!("type {message_type:X}: {count}"))
+            .collect();
+        if !types.is_empty() {
+            let _ = write!(line, "; UMP {}", types.join(", "));
+        }
+        if stamped > 0 {
+            let _ = write!(line, "; {stamped} packets with time stamps, up to {largest_stamp}");
+        }
+        if truncated > 0 {
+            let _ = write!(line, "; {truncated} packets cut short");
+        }
+        lines.push(line);
+    }
+
     lines
 }
 
@@ -1245,6 +1335,39 @@ mod tests {
         assert_eq!(&bytes[..SYSEX_HEAD], &message[..SYSEX_HEAD]);
         assert_eq!(&bytes[SYSEX_HEAD..], &message[40 - SYSEX_TAIL..]);
         assert!(state.sysex.take().is_none());
+    }
+
+    #[test]
+    fn test_report_tells_how_the_host_sent_midi() {
+        let mut meter = meter();
+        let mut memory = ReportMemory::default();
+        meter.begin_block(64, None);
+        meter.end_block();
+        let state = meter.state();
+        state.note_host_midi(HostMidiForm::Event);
+        state.note_host_midi(HostMidiForm::SysEx);
+        state.note_host_midi(HostMidiForm::EventList(1));
+        state.note_host_midi(HostMidiForm::EventList(2));
+        state.note_host_midi(HostMidiForm::PacketTimeStamp(0));
+        state.note_host_midi(HostMidiForm::PacketTimeStamp(17));
+        state.note_host_midi(HostMidiForm::PacketTimeStamp(5));
+        state.note_host_midi(HostMidiForm::Ump(2));
+        state.note_host_midi(HostMidiForm::Ump(3));
+        state.note_host_midi(HostMidiForm::Ump(3));
+        state.note_host_midi(HostMidiForm::Truncated);
+        let lines = report_lines(state, &mut memory);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some(
+                "host MIDI: 1 events, 1 SysEx events, 2 event lists (MIDI 1.0: 1, MIDI 2.0: 1); \
+                 UMP type 2: 1, type 3: 2; 2 packets with time stamps, up to 17; 1 packets cut short"
+            )
+        );
+        // Read once: nothing new, no line.
+        meter.begin_block(64, None);
+        meter.end_block();
+        let lines = report_lines(meter.state(), &mut memory);
+        assert!(lines.iter().all(|line| !line.starts_with("host MIDI")));
     }
 
     #[test]

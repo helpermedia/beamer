@@ -249,6 +249,10 @@ typedef struct BeamerAuv2Instance {
     // from the render thread or from another thread.
     SysExQueue sysexQueue;
 
+    // The MIDI protocol the plugin asks for (a MIDIProtocolID), 0 for a
+    // plugin without MIDI input, which reports none.
+    SInt32 midiProtocol;
+
     // Parameter changes with a sample offset, as render events.
     // ScheduleParameters and SetParameter add to it.
     EventSlot parameterSlots[PARAMETER_QUEUE_SIZE];
@@ -337,6 +341,7 @@ static OSStatus BeamerAuv2AddRenderNotify(void* self, AURenderCallback proc, voi
 static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, void* userData);
 static OSStatus BeamerAuv2MIDIEvent(void* self, UInt32 inStatus, UInt32 inData1, UInt32 inData2, UInt32 inOffsetSampleFrame);
 static OSStatus BeamerAuv2SysEx(void* self, const UInt8* inData, UInt32 inLength);
+static OSStatus BeamerAuv2MIDIEventList(void* self, UInt32 inOffsetSampleFrame, const MIDIEventList* evtList);
 static void BeamerAuv2ApplyPendingParameters(BeamerAuv2Instance* inst);
 static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst);
 
@@ -1049,6 +1054,7 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     // SysEx input for a plugin with MIDI input: a message may be as large
     // as what a render call holds.
     SysExQueueInit(&inst->sysexQueue, beamer_au_get_sysex_input_bytes(inst->rustInstance));
+    inst->midiProtocol = beamer_au_get_midi_protocol(inst->rustInstance);
 
     // Build factory presets cache
     uint32_t presetCount = beamer_au_get_preset_count(inst->rustInstance);
@@ -1627,6 +1633,20 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             if (outWritable) *outWritable = false;
             return noErr;
 
+        // The MIDI protocol of the event lists the plugin takes, for a
+        // plugin with MIDI input. A host that gets it sends event lists
+        // through MusicDeviceMIDIEventList.
+        case kAudioUnitProperty_AudioUnitMIDIProtocol:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (inst->midiProtocol == 0) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (outDataSize) *outDataSize = sizeof(SInt32);
+            if (outWritable) *outWritable = false;
+            return noErr;
+
         // MIDI output - only supported when the plugin has MIDI output.
         case kAudioUnitProperty_MIDIOutputCallbackInfo:
         case kAudioUnitProperty_MIDIOutputCallback:
@@ -2161,6 +2181,21 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 *(CFArrayRef*)outData = NULL;
             }
             *ioDataSize = sizeof(CFArrayRef);
+            return noErr;
+        }
+
+        case kAudioUnitProperty_AudioUnitMIDIProtocol: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (inst->midiProtocol == 0) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(SInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            *(SInt32*)outData = inst->midiProtocol;
+            *ioDataSize = sizeof(SInt32);
             return noErr;
         }
 
@@ -3067,16 +3102,6 @@ static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8
     output->packet = next;
 }
 
-// Pass a queued SysEx message on as MIDI output, for a bypassed MIDI effect,
-// if it starts with F0 as in normal processing. `context` is the
-// BeamerAuv2MidiOutput of the render call.
-static void BeamerAuv2PassSysEx(void* context, AUMIDIEvent* event) {
-    const uint8_t* message = (const uint8_t*)event + offsetof(AUMIDIEvent, data);
-    if (message[0] == 0xF0) {
-        BeamerAuv2SendMidi(context, 0, message, event->length);
-    }
-}
-
 // The SysEx events of a render call, linked in order.
 typedef struct {
     // Sample time of the start of the buffer, where the messages play.
@@ -3100,10 +3125,40 @@ static void BeamerAuv2LinkSysEx(void* context, AUMIDIEvent* event) {
     link->last = renderEvent;
 }
 
-// Number of bytes of a channel message, from its status byte.
-static uint32_t BeamerAuv2MidiMessageLength(uint8_t status) {
-    uint8_t type = status & 0xF0;
-    return (type == 0xC0 || type == 0xD0) ? 2 : 3;
+// The queued events of a render call, linked into one list.
+typedef struct {
+    const AURenderEvent* list;
+    UInt32 midiCount;
+    UInt32 parameterCount;
+    uint64_t sysexEnd;
+} BeamerAuv2QueuedEvents;
+
+// Take the queued events and link them into one list: the SysEx messages,
+// the MIDI events, then (with `parameters`) the parameter changes the host
+// scheduled for this buffer. The queues hold offsets into this buffer (a
+// SysEx message plays at its start). Render events carry a sample time on
+// the timeline of the render timestamp, so the buffer start is added. The
+// caller holds queueReaderMutex and releases what it took.
+static BeamerAuv2QueuedEvents BeamerAuv2LinkQueuedEvents(BeamerAuv2Instance* inst,
+    AUEventSampleTime bufferStart, bool parameters) {
+    BeamerAuv2QueuedEvents queued = { .list = NULL, .midiCount = 0, .parameterCount = 0, .sysexEnd = 0 };
+    BeamerAuv2SysExLink sysexLink = { .start = bufferStart, .last = NULL, .first = NULL };
+    queued.sysexEnd = SysExQueueReadyEnd(&inst->sysexQueue, BeamerAuv2LinkSysEx, &sysexLink);
+    queued.midiCount = EventQueueReadyCount(&inst->midiQueue);
+    queued.parameterCount = parameters ? EventQueueReadyCount(&inst->parameterQueue) : 0;
+    queued.list = sysexLink.first;
+    AURenderEvent* prev = sysexLink.last;
+    for (UInt32 i = 0; i < queued.midiCount + queued.parameterCount; i++) {
+        AURenderEvent* ev = (i < queued.midiCount)
+            ? EventQueueAt(&inst->midiQueue, i)
+            : EventQueueAt(&inst->parameterQueue, i - queued.midiCount);
+        ev->head.next = NULL;
+        ev->head.eventSampleTime += bufferStart;
+        if (prev) prev->head.next = ev;
+        else queued.list = ev;
+        prev = ev;
+    }
+    return queued;
 }
 
 // =============================================================================
@@ -3388,30 +3443,27 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
 #endif
 
         // Consume the pending MIDI input, so that it does not play when bypass
-        // ends. A bypassed MIDI effect passes it on unchanged. When a reset
-        // holds the queues right now, the events wait for the next call.
+        // ends. Rust reads it as in normal processing, so that a message
+        // spanning the bypass stays whole; a bypassed MIDI effect passes it
+        // on. When a reset holds the queues right now, the events wait for
+        // the next call.
         if (inOutputBusNumber == 0 && pthread_mutex_trylock(&inst->queueReaderMutex) == 0) {
             BeamerAuv2MidiOutput thru;
             bool passesMidi = inst->isMidiEffect && BeamerAuv2BeginMidiOutput(inst, inTimeStamp, &thru);
-            // SysEx first, as in normal processing. One walk passes on and
-            // releases the same messages.
-            uint64_t sysexEnd = SysExQueueReadyEnd(&inst->sysexQueue,
-                passesMidi ? BeamerAuv2PassSysEx : NULL, &thru);
-            UInt32 midiCount = EventQueueReadyCount(&inst->midiQueue);
-            if (passesMidi) {
-                for (UInt32 i = 0; i < midiCount; i++) {
-                    const AURenderEvent* ev = EventQueueAt(&inst->midiQueue, i);
-                    // Only channel messages, as in normal processing.
-                    uint8_t status = ev->MIDI.data[0];
-                    if (status < 0x80 || status >= 0xF0) {
-                        continue;
-                    }
-                    BeamerAuv2SendMidi(&thru, (uint32_t)ev->MIDI.eventSampleTime, ev->MIDI.data,
-                        BeamerAuv2MidiMessageLength(status));
+            BeamerAuv2QueuedEvents queued = BeamerAuv2LinkQueuedEvents(inst,
+                (AUEventSampleTime)inTimeStamp->mSampleTime, false);
+            bool read = beamer_au_pass_midi_through(inst->rustInstance, inTimeStamp, inNumberFrames,
+                queued.list, passesMidi ? BeamerAuv2SendMidi : NULL, passesMidi ? &thru : NULL);
+            if (read) {
+                EventQueueRelease(&inst->midiQueue, queued.midiCount);
+                SysExQueueRelease(&inst->sysexQueue, queued.sysexEnd);
+            } else {
+                // Unread, the events wait for the next call at their offsets
+                // into its buffer, as for a refused render call.
+                for (UInt32 i = 0; i < queued.midiCount; i++) {
+                    EventQueueAt(&inst->midiQueue, i)->head.eventSampleTime -= (AUEventSampleTime)inTimeStamp->mSampleTime;
                 }
             }
-            EventQueueRelease(&inst->midiQueue, midiCount);
-            SysExQueueRelease(&inst->sysexQueue, sysexEnd);
             beamer_au_note_sysex_input_dropped(inst->rustInstance,
                 atomic_exchange_explicit(&inst->sysexQueue.dropped, 0, memory_order_relaxed));
 
@@ -3454,39 +3506,21 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         BeamerAuv2ReadTransport(&inst->renderCallbacks.host, &transport);
     }
 
-    // Take the queued events and link them into one list: the SysEx
-    // messages, the MIDI events, then the parameter changes the host
-    // scheduled for this buffer. The queues hold offsets into this buffer
-    // (a SysEx message plays at its start). Render events carry a sample
-    // time on the timeline of the render timestamp, so add the buffer start.
-    // Only the render of the main bus takes events: a call for another
-    // output bus leaves them for it, so that none are lost. When a reset
-    // holds the queues right now, the events wait for the next call.
-    const AURenderEvent* eventList = NULL;
+    // Take the queued events, linked into one list with the parameter
+    // changes. Only the render of the main bus takes events: a call for
+    // another output bus leaves them for it, so that none are lost. When a
+    // reset holds the queues right now, the events wait for the next call.
     AUEventSampleTime bufferStart = (AUEventSampleTime)inTimeStamp->mSampleTime;
-    UInt32 midiCount = 0;
-    UInt32 parameterCount = 0;
-    uint64_t sysexEnd = 0;
+    BeamerAuv2QueuedEvents queued = { .list = NULL, .midiCount = 0, .parameterCount = 0, .sysexEnd = 0 };
     bool readsQueues = (inOutputBusNumber == 0)
         && pthread_mutex_trylock(&inst->queueReaderMutex) == 0;
     if (readsQueues) {
-        BeamerAuv2SysExLink sysexLink = { .start = bufferStart, .last = NULL, .first = NULL };
-        sysexEnd = SysExQueueReadyEnd(&inst->sysexQueue, BeamerAuv2LinkSysEx, &sysexLink);
-        midiCount = EventQueueReadyCount(&inst->midiQueue);
-        parameterCount = EventQueueReadyCount(&inst->parameterQueue);
-        eventList = sysexLink.first;
-        AURenderEvent* prev = sysexLink.last;
-        for (UInt32 i = 0; i < midiCount + parameterCount; i++) {
-            AURenderEvent* ev = (i < midiCount)
-                ? EventQueueAt(&inst->midiQueue, i)
-                : EventQueueAt(&inst->parameterQueue, i - midiCount);
-            ev->head.next = NULL;
-            ev->head.eventSampleTime += bufferStart;
-            if (prev) prev->head.next = ev;
-            else eventList = ev;
-            prev = ev;
-        }
+        queued = BeamerAuv2LinkQueuedEvents(inst, bufferStart, true);
     }
+    const AURenderEvent* eventList = queued.list;
+    UInt32 midiCount = queued.midiCount;
+    UInt32 parameterCount = queued.parameterCount;
+    uint64_t sysexEnd = queued.sysexEnd;
 
     // The plugin's MIDI output is collected in a packet list during the call.
     BeamerAuv2MidiOutput midiOutput;
@@ -3610,6 +3644,89 @@ static OSStatus BeamerAuv2SysEx(void* self, const UInt8* inData, UInt32 inLength
     if (!SysExQueuePush(&inst->sysexQueue, inData, inLength)) {
         atomic_fetch_add_explicit(&inst->sysexQueue.dropped, 1, memory_order_relaxed);
     }
+    return noErr;
+}
+
+// Put the packed words of one offset into the MIDI queue as an event list
+// render event of one packet. A full queue drops it, as MIDIEvent does.
+static void BeamerAuv2QueueEventListSlot(BeamerAuv2Instance* inst, AURenderEvent* slot) {
+    if (slot->MIDIEventsList.eventList.packet[0].wordCount > 0) {
+        EventQueuePush(&inst->midiQueue, slot);
+    }
+}
+
+// A list of Universal MIDI Packets for the next render call. Any thread may
+// call it, the render thread included. A packet plays at
+// inOffsetSampleFrame plus its time stamp, which go into the event's sample
+// time; the packet's own time stamp is 0, so that render does not add it
+// again (render takes the time of an event list event plus the time stamp
+// of each packet, as an AUv3 gets them). The messages of packets at one
+// offset share a queue slot, as many as its packet holds (64 words); a
+// message is never split. The protocol of the list goes with each slot. A
+// plugin without MIDI input ignores the call, as Rust ignores its other
+// MIDI. AudioToolbox passes a host's list on one packet per call, with
+// packets of more than 64 words split and messages cut short dropped, so
+// the checks here are for a call that does not pass through it.
+static OSStatus BeamerAuv2MIDIEventList(void* self, UInt32 inOffsetSampleFrame, const MIDIEventList* evtList) {
+    BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
+    if (evtList == NULL) {
+        return kAudio_ParamError;
+    }
+    if (inst->midiProtocol == 0) {
+        return noErr;
+    }
+
+    AURenderEvent slot;
+    memset(&slot, 0, sizeof(slot));
+    slot.MIDIEventsList.eventType = AURenderEventMIDIEventList;
+    slot.MIDIEventsList.eventList.protocol = evtList->protocol;
+    slot.MIDIEventsList.eventList.numPackets = 1;
+    MIDIEventPacket* slotPacket = &slot.MIDIEventsList.eventList.packet[0];
+    const UInt32 slotWords = sizeof(slotPacket->words) / sizeof(slotPacket->words[0]);
+
+    const MIDIEventPacket* packet = &evtList->packet[0];
+    for (UInt32 p = 0; p < evtList->numPackets; p++) {
+        // A packet holds at most 64 words: a larger count is a damaged
+        // list, whose next packet cannot be found.
+        if (packet->wordCount > slotWords) {
+            break;
+        }
+#ifdef BEAMER_DIAGNOSTICS
+        beamer_au_diagnostics_host_packet_time_stamp(inst->rustInstance, packet->timeStamp);
+#endif
+        // A time stamp that would put the packet past any buffer (a host
+        // that stamps packets with another clock) is not used.
+        UInt64 offset = (UInt64)inOffsetSampleFrame + packet->timeStamp;
+        AUEventSampleTime sampleTime = (packet->timeStamp < inst->maxFramesPerSlice && offset < inst->maxFramesPerSlice)
+            ? (AUEventSampleTime)offset : (AUEventSampleTime)inOffsetSampleFrame;
+        if (slotPacket->wordCount > 0 && slot.MIDIEventsList.eventSampleTime != sampleTime) {
+            BeamerAuv2QueueEventListSlot(inst, &slot);
+            slotPacket->wordCount = 0;
+        }
+        slot.MIDIEventsList.eventSampleTime = sampleTime;
+
+        // Copy whole messages; a message that does not fit starts a new
+        // slot, one cut short by the end of the packet is left out.
+        UInt32 i = 0;
+        while (i < packet->wordCount) {
+            UInt32 type = packet->words[i] >> 28;
+            UInt32 size = (type <= 2 || type == 6 || type == 7) ? 1
+                : (type <= 4 || (type >= 8 && type <= 10)) ? 2
+                : (type <= 12) ? 3 : 4;
+            if (i + size > packet->wordCount) {
+                break;
+            }
+            if (slotPacket->wordCount + size > slotWords) {
+                BeamerAuv2QueueEventListSlot(inst, &slot);
+                slotPacket->wordCount = 0;
+            }
+            memcpy(&slotPacket->words[slotPacket->wordCount], &packet->words[i], size * sizeof(UInt32));
+            slotPacket->wordCount += size;
+            i += size;
+        }
+        packet = MIDIEventPacketNext(packet);
+    }
+    BeamerAuv2QueueEventListSlot(inst, &slot);
     return noErr;
 }
 

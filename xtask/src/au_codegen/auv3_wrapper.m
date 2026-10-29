@@ -173,32 +173,6 @@ static void BeamerAuv3FillBypassedOutput(AudioBufferList* output, const AudioBuf
     }
 }
 
-// Pass the channel messages and SysEx of a render's MIDI input on to the
-// host, for a bypassed MIDI effect. MIDI 1.0 events only: the unit does not
-// ask for MIDI 2.0, so hosts send no event lists.
-static void BeamerAuv3PassMidiOn(const AURenderEvent* event, AUMIDIOutputEventBlock __unsafe_unretained block) {
-    for (; event != NULL; event = event->head.next) {
-        // A SysEx message is one event with its bytes from the data field
-        // on. It goes out alone.
-        if (event->head.eventType == AURenderEventMIDISysEx) {
-            const AUMIDIEvent* sysex = &event->MIDI;
-            if (sysex->length > 0 && sysex->data[0] == 0xF0) {
-                block(sysex->eventSampleTime, sysex->cable, sysex->length, sysex->data);
-            }
-            continue;
-        }
-        if (event->head.eventType != AURenderEventMIDI) {
-            continue;
-        }
-        const AUMIDIEvent* midi = &event->MIDI;
-        uint8_t status = midi->data[0];
-        if (status < 0x80 || status >= 0xF0) {
-            continue;
-        }
-        block(midi->eventSampleTime, midi->cable, midi->length, midi->data);
-    }
-}
-
 // =============================================================================
 // MARK: - Channel Layouts
 // =============================================================================
@@ -1233,7 +1207,7 @@ static void beamer_auv3_on_loaded(void* context) {
         // A bypassed unit (a plugin without a bypass parameter) leaves the
         // plugin out: its main output is a copy of the main input, delayed
         // by the plugin's latency (or silence without one). Its MIDI input
-        // is dropped. A MIDI effect passes the channel messages on unchanged.
+        // is read without the plugin; a MIDI effect passes the events on.
         // Parameter changes apply at once.
         if (atomic_load_explicit(&blockSelf->_bypassed, memory_order_relaxed)) {
             void* silence = blockSelf->_bypassSilence;
@@ -1253,9 +1227,15 @@ static void beamer_auv3_on_loaded(void* context) {
 #endif
             if (outputBusNumber == 0) {
                 BeamerAuv3ApplyParameterEvents(rustInstance, realtimeEventListHead);
-                if (blockSelf->_isMidiEffect && hostBlocks.midiOutput != nil) {
-                    BeamerAuv3PassMidiOn(realtimeEventListHead, hostBlocks.midiOutput);
-                }
+                // Rust reads the MIDI input as in normal processing, so that
+                // a message spanning the bypass stays whole; a bypassed MIDI
+                // effect passes it on.
+                BeamerAuv3MidiOutput thru;
+                thru.block = hostBlocks.midiOutput;
+                thru.bufferStart = (AUEventSampleTime)timestamp->mSampleTime;
+                BOOL passesMidi = blockSelf->_isMidiEffect && thru.block != nil;
+                beamer_au_pass_midi_through(rustInstance, timestamp, frameCount, realtimeEventListHead,
+                                            passesMidi ? BeamerAuv3SendMidi : NULL, passesMidi ? &thru : NULL);
             }
             return noErr;
         }
@@ -1672,6 +1652,17 @@ static void beamer_auv3_on_loaded(void* context) {
 
 - (BOOL)supportsMPE {
     return NO;
+}
+
+// The MIDI protocol the plugin takes its input in, for a plugin with MIDI
+// input. With one reported, the framework delivers all MIDI input as event
+// lists in it, translating what the host sends.
+- (MIDIProtocolID)AudioUnitMIDIProtocol API_AVAILABLE(macos(12.0)) {
+    SInt32 protocol = (_rustInstance != NULL) ? beamer_au_get_midi_protocol(_rustInstance) : 0;
+    if (protocol == 0) {
+        return [super AudioUnitMIDIProtocol];
+    }
+    return (MIDIProtocolID)protocol;
 }
 
 - (NSArray<NSString*>*)MIDIOutputNames {

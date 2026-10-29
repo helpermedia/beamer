@@ -84,7 +84,7 @@ pub use buffer_storage::ProcessBufferStorage;
 pub use bus_config::{CachedBusConfig, CachedBusInfo};
 pub use channel_layouts::{validate_layouts, BusLayout, ChannelSet, Layout};
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
-pub use config::{Config, FourCharCode};
+pub use config::{Config, FourCharCode, MidiProtocol};
 pub use conversion_buffers::ConversionBuffers;
 pub use editor_sync::EditorSync;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
