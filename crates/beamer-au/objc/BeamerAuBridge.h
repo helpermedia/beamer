@@ -1051,21 +1051,21 @@ typedef enum BeamerAuFloat64Support {
 BeamerAuFloat64Support beamer_au_get_float64_support(BeamerAuInstanceHandle _Nullable instance);
 
 // =============================================================================
-// MARK: - GUI / WebView
+// MARK: - Editor / WebView
 // =============================================================================
 
 /**
- * Check if the plugin has a custom GUI.
+ * Check if the plugin has an editor (a web UI).
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @return true if the plugin provides a custom WebView GUI.
+ * @return true if the plugin provides its own WebView editor.
  */
-bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
+bool beamer_au_has_editor(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Get the dev server URL.
+ * Get the dev server URL of the web UI.
  *
  * Returns NULL in production mode (embedded assets are used instead).
  * In dev mode, returns a null-terminated URL like "http://localhost:5173".
@@ -1078,33 +1078,33 @@ bool beamer_au_has_gui(BeamerAuInstanceHandle _Nullable instance);
  * @param instance Handle to the plugin instance.
  * @return Null-terminated URL string, or NULL if not in dev mode.
  */
-const char* _Nullable beamer_au_get_gui_url(BeamerAuInstanceHandle _Nullable instance);
+const char* _Nullable beamer_au_get_webview_url(BeamerAuInstanceHandle _Nullable instance);
 
 /**
- * Get the embedded GUI assets pointer.
+ * Get the pointer to the web UI's embedded files.
  *
  * Returns an opaque pointer suitable for passing to beamer_webview_create().
  * Returns NULL if no assets are configured (e.g. dev server mode).
  *
  * Thread Safety: Safe to call from any thread.
  */
-const void* _Nullable beamer_au_get_gui_assets(void);
+const void* _Nullable beamer_au_get_webview_assets(void);
 
 /**
- * Get the initial GUI size in pixels.
+ * Get the initial editor size in pixels.
  *
  * Thread Safety: Can be called from any thread.
  *
  * @param instance Handle to the plugin instance.
- * @param width    Pointer to receive the GUI width.
- * @param height   Pointer to receive the GUI height.
+ * @param width    Pointer to receive the editor width.
+ * @param height   Pointer to receive the editor height.
  */
-void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
-                            uint32_t* _Nonnull width,
-                            uint32_t* _Nonnull height);
+void beamer_au_get_editor_size(BeamerAuInstanceHandle _Nullable instance,
+                               uint32_t* _Nonnull width,
+                               uint32_t* _Nonnull height);
 
 /**
- * Get the GUI background color (RGBA, 0-255).
+ * Get the editor background color (RGBA, 0-255).
  *
  * Used to set the parent view's layer background so the correct color
  * shows while web content loads, preventing a white flash.
@@ -1113,7 +1113,7 @@ void beamer_au_get_gui_size(BeamerAuInstanceHandle _Nullable instance,
  *
  * @param out Pointer to at least 4 writable bytes (R, G, B, A).
  */
-void beamer_au_get_gui_background_color(uint8_t* _Nonnull out);
+void beamer_au_get_editor_background_color(uint8_t* _Nonnull out);
 
 // =============================================================================
 // MARK: - WebView IPC Parameter Sync
@@ -1301,7 +1301,7 @@ void beamer_au_editor_sync_close(BeamerAuEditorSyncHandle _Nullable sync);
  * Thread Safety: Must be called from the main thread.
  *
  * @param parent           A valid NSView* pointer to attach the WebView to.
- * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
+ * @param assets           Opaque assets pointer from beamer_au_get_webview_assets().
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  *
  * @return Opaque handle to the WebView, or NULL on failure.
@@ -1361,7 +1361,7 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
  * Create a WebView with IPC support, serving embedded assets.
  *
  * @param parent           NSView* to attach the WebView to.
- * @param assets           Opaque assets pointer from beamer_au_get_gui_assets().
+ * @param assets           Opaque assets pointer from beamer_au_get_webview_assets().
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
  * @param loaded_callback  Called when the WebView finishes initial load.

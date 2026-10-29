@@ -3,8 +3,8 @@
 //! A [`WebViewStreamSender`] sends values that the web UI needs all of: a
 //! scrolling level history, a scope, the notes that were played. The audio
 //! thread pushes values into a ring of a fixed size. At each tick of the
-//! GUI (about 60 times a second) every value pushed since the last tick is
-//! delivered as one array, oldest first.
+//! editor (about 60 times a second) every value pushed since the last tick
+//! is delivered as one array, oldest first.
 //!
 //! The plugin creates the sender in `prepare()` from the queue of its model
 //! and keeps it in the processor. Pushing takes no lock, never allocates and
@@ -22,7 +22,7 @@
 //! __BEAMER__.on("history", (peaks) => strip.append(peaks));
 //! ```
 //!
-//! A push is dropped while no GUI is open: nothing would show it. When the
+//! A push is dropped while no editor is open: nothing would show it. When the
 //! ring is full, the newest values are dropped and the push says so. Size
 //! the ring for what the plugin pushes in two ticks, so that a tick that
 //! comes late loses nothing. For a value of which only the newest counts,
@@ -90,7 +90,7 @@ impl<T> Ring<T> {
 /// [module documentation](self).
 pub struct WebViewStreamSender<T> {
     ring: Arc<Ring<T>>,
-    /// The queue, to tell whether a GUI is open.
+    /// The queue, to tell whether an editor is open.
     queue: WebViewEventQueue,
     /// The write position. Only this sender changes it.
     write: u64,
@@ -98,7 +98,7 @@ pub struct WebViewStreamSender<T> {
 
 impl<T: Copy + Send> WebViewStreamSender<T> {
     /// Push a value. Returns whether it was kept: a value is dropped while
-    /// no GUI is open or when the ring is full.
+    /// no editor is open or when the ring is full.
     ///
     /// Realtime-safe: no lock, no allocation and no release of memory.
     #[inline]
@@ -107,12 +107,12 @@ impl<T: Copy + Send> WebViewStreamSender<T> {
     }
 
     /// Push values, oldest first. Returns how many were kept: none while no
-    /// GUI is open; when the ring is full the rest of `values` is dropped.
+    /// editor is open; when the ring is full the rest of `values` is dropped.
     ///
     /// Realtime-safe: no lock, no allocation and no release of memory.
     #[inline]
     pub fn push_slice(&mut self, values: &[T]) -> usize {
-        if !self.queue.is_gui_open() {
+        if !self.queue.is_editor_open() {
             return 0;
         }
 
@@ -153,10 +153,10 @@ impl<T: Copy + Serialize + Send + 'static> SenderEnd for StreamEnd<T> {
         self.ring.strong_count() == 0
     }
 
-    fn gui_opened(&mut self, first: bool) {
-        // What was pushed before is not for this GUI: a push can pass the
-        // check that a GUI is open just before the last one closed. With
-        // a GUI open already, the values are that one's.
+    fn editor_opened(&mut self, first: bool) {
+        // What was pushed before is not for this editor: a push can pass the
+        // check that an editor is open just before the last one closed. With
+        // an editor open already, the values are that one's.
         if !first {
             return;
         }
@@ -233,7 +233,7 @@ where
 mod tests {
     use crate::WebViewEventQueue;
 
-    /// A queue as it is while a GUI is open and its page loaded.
+    /// A queue as it is while an editor is open and its page loaded.
     fn open_queue() -> WebViewEventQueue {
         let events = WebViewEventQueue::new();
         events.claim();
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_values_are_dropped_without_a_gui() {
+    fn test_values_are_dropped_without_an_editor() {
         let events = WebViewEventQueue::new();
         events.claim();
         let mut history = events.stream_sender("history", 8);
@@ -311,11 +311,11 @@ mod tests {
     }
 
     #[test]
-    fn test_values_from_before_a_gui_opened_are_skipped() {
+    fn test_values_from_before_an_editor_opened_are_skipped() {
         let events = open_queue();
         let mut history = events.stream_sender("history", 8);
 
-        // Pushed after the last tick of a GUI that closes now.
+        // Pushed after the last tick of an editor that closes now.
         assert!(history.push(1u8));
         events.editor_closed();
 
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_second_gui_does_not_skip_the_values_of_the_first() {
+    fn test_a_second_editor_does_not_skip_the_values_of_the_first() {
         let events = open_queue();
         let mut history = events.stream_sender("history", 8);
 

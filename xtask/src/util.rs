@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use beamer_utils::web_ui::{self, WebUi};
 use serde::Deserialize;
 
 /// Oldest macOS version the bundles run on.
@@ -28,7 +29,6 @@ struct ConfigFile {
     manufacturer_code: String,
     plugin_code: String,
     vendor: Option<String>,
-    has_gui: Option<bool>,
     subcategories: Option<Vec<String>>,
     midi_input: Option<bool>,
 }
@@ -235,7 +235,7 @@ pub struct AuNames {
     /// The class that gives an AUv2 host the editor view.
     pub cocoa_view_factory_class: String,
     /// The view of the AUv2 editor.
-    pub cocoa_gui_view_class: String,
+    pub cocoa_editor_view_class: String,
 }
 
 impl AuNames {
@@ -253,7 +253,7 @@ impl AuNames {
             extension_class: name("AuExtension"),
             auv2_factory: name("Factory"),
             cocoa_view_factory_class: name("CocoaViewFactory"),
-            cocoa_gui_view_class: name("GuiView"),
+            cocoa_editor_view_class: name("EditorView"),
         }
     }
 
@@ -637,23 +637,19 @@ pub fn find_package(package: &str, workspace_root: &Path) -> Result<WorkspacePac
 // Plugin Feature Detection
 // =============================================================================
 
-/// Detect whether a plugin has a custom GUI (WebView UI).
-///
-/// Checks `Config.toml` for `has_gui = true` and also checks for
-/// a `webview/index.html` file in the folder of the package.
-pub fn detect_has_gui(package_dir: &Path) -> bool {
-    // Check Config.toml for explicit has_gui flag
-    let config_path = package_dir.join("Config.toml");
-    if let Ok(toml_str) = fs::read_to_string(&config_path) {
-        if let Ok(config) = toml::from_str::<ConfigFile>(&toml_str) {
-            if config.has_gui == Some(true) {
-                return true;
-            }
-        }
-    }
+/// The web UI of a package, found by the rule of the export macro, with
+/// the same dev server URL from the environment.
+pub fn detect_web_ui(package_dir: &Path) -> Result<Option<WebUi>, String> {
+    web_ui::find(package_dir, std::env::var(web_ui::DEV_URL_VAR).ok())
+}
 
-    // Also check for webview/index.html (mirrors macro behavior)
-    package_dir.join("webview/index.html").exists()
+/// Whether a plugin has an editor: a web UI the export macro embeds or
+/// loads from a dev server.
+///
+/// A folder that cannot be read counts as no editor; the macro then fails
+/// the build.
+pub fn detect_has_editor(package_dir: &Path) -> bool {
+    matches!(detect_web_ui(package_dir), Ok(Some(_)))
 }
 
 // =============================================================================
@@ -662,17 +658,16 @@ pub fn detect_has_gui(package_dir: &Path) -> bool {
 
 /// Detect AU component info by reading Config.toml or parsing plugin source code.
 ///
-/// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name, has_gui).
+/// Returns (component_type, manufacturer, subtype, plugin_name, vendor_name, has_editor).
 /// Used by both AUv2 and AUv3 bundlers.
 ///
 /// Tries to read `Config.toml` in the folder of the package first. Falls
 /// back to parsing the source code in its `src/lib.rs` if the TOML file is
 /// missing or cannot be parsed.
 ///
-/// The `has_gui` field is computed via `detect_has_gui`, avoiding
-/// a second parse of Config.toml by callers that need both pieces of info.
+/// The `has_editor` field is computed via `detect_has_editor`.
 pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
-    let has_gui = detect_has_gui(package_dir);
+    let has_editor = detect_has_editor(package_dir);
 
     // Try Config.toml first
     let config_path = package_dir.join("Config.toml");
@@ -686,7 +681,7 @@ pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, 
                 Some(config.plugin_code),
                 Some(config.name),
                 config.vendor,
-                has_gui,
+                has_editor,
             );
         }
     }
@@ -716,10 +711,10 @@ pub fn detect_au_component_info(package_dir: &Path) -> (String, Option<String>, 
         // Detect plugin name and vendor from Config::new()
         let (plugin_name, vendor_name) = detect_plugin_metadata(&content);
 
-        (component_type, manufacturer, subtype, plugin_name, vendor_name, has_gui)
+        (component_type, manufacturer, subtype, plugin_name, vendor_name, has_editor)
     } else {
         // Default to effect if we can't read the file
-        ("aufx".to_string(), None, None, None, None, has_gui)
+        ("aufx".to_string(), None, None, None, None, has_editor)
     }
 }
 
@@ -1054,7 +1049,7 @@ mod tests {
             assert_ne!(a.extension_class, b.extension_class);
             assert_ne!(a.auv2_factory, b.auv2_factory);
             assert_ne!(a.cocoa_view_factory_class, b.cocoa_view_factory_class);
-            assert_ne!(a.cocoa_gui_view_class, b.cocoa_gui_view_class);
+            assert_ne!(a.cocoa_editor_view_class, b.cocoa_editor_view_class);
         }
     }
 }

@@ -379,6 +379,10 @@ fn deployment_target_link_arg() -> String {
 
 /// Create the cargo command that builds the plugin crate for one target.
 ///
+/// `web_ui_stamp` is the stamp of the plugin's web UI. The export macro's
+/// expansion depends on it, so that cargo expands the plugin again when the
+/// web UI changed since the last build.
+///
 /// `plugin_args` are extra rustc arguments for the plugin crate alone, from
 /// `plugin_rustc_args`. They go through `cargo rustc`, which passes them to
 /// that crate only. Without them (a VST3 for a target other than Apple's)
@@ -394,6 +398,7 @@ fn deployment_target_link_arg() -> String {
 /// Release builds also hand the remap rules to C and C++ code that build
 /// scripts compile, in the flag variables of the target that the cc crate
 /// reads.
+#[allow(clippy::too_many_arguments)]
 fn plugin_build_command(
     package: &str,
     target: &str,
@@ -401,6 +406,7 @@ fn plugin_build_command(
     release: bool,
     diagnostics: bool,
     workspace_root: &Path,
+    web_ui_stamp: &str,
     plugin_args: &[String],
 ) -> Result<Command, String> {
     // A diagnostics build turns on the feature of the framework crate, which
@@ -418,6 +424,7 @@ fn plugin_build_command(
         .arg(target)
         .arg("--features")
         .arg(features)
+        .env(beamer_utils::web_ui::STAMP_VAR, web_ui_stamp)
         .current_dir(workspace_root);
 
     if release {
@@ -479,6 +486,7 @@ fn plugin_build_command(
 }
 
 /// Build for a single architecture (native, arm64, or x86_64).
+#[allow(clippy::too_many_arguments)]
 pub fn build_native(
     package: &str,
     release: bool,
@@ -486,6 +494,7 @@ pub fn build_native(
     workspace_root: &Path,
     format: Format,
     arch: Arch,
+    web_ui_stamp: &str,
     verbose: bool,
 ) -> Result<PathBuf, String> {
     // Always use explicit target to prevent the rustc flags leaking into build scripts.
@@ -502,7 +511,8 @@ pub fn build_native(
 
     let plugin_args = plugin_rustc_args(package, workspace_root, format, target, diagnostics, verbose)?;
 
-    let mut cmd = plugin_build_command(package, target, format, release, diagnostics, workspace_root, &plugin_args)?;
+    let mut cmd =
+        plugin_build_command(package, target, format, release, diagnostics, workspace_root, web_ui_stamp, &plugin_args)?;
 
     let status = cmd.status().map_err(|e| format!("Failed to run cargo: {}", e))?;
     if !status.success() {
@@ -531,6 +541,7 @@ pub fn build_universal(
     diagnostics: bool,
     workspace_root: &Path,
     format: Format,
+    web_ui_stamp: &str,
     verbose: bool,
 ) -> Result<PathBuf, String> {
     crate::status!("  Building {} (universal)...", format.label());
@@ -553,6 +564,7 @@ pub fn build_universal(
         release,
         diagnostics,
         workspace_root,
+        web_ui_stamp,
         &plugin_args_x86,
     )?;
 
@@ -570,6 +582,7 @@ pub fn build_universal(
         release,
         diagnostics,
         workspace_root,
+        web_ui_stamp,
         &plugin_args_arm,
     )?;
 
@@ -903,8 +916,8 @@ fn compile_plugin_objc(
     // Generate plugin-specific ObjC source files.
     let wrapper_source = generate_au_wrapper_source(plugin_name, names);
     let package_dir = crate::util::find_package(plugin_name, workspace_root)?.dir;
-    let has_gui = crate::util::detect_has_gui(&package_dir);
-    let extension_source = generate_au_extension_source(plugin_name, names, has_gui);
+    let has_editor = crate::util::detect_has_editor(&package_dir);
+    let extension_source = generate_au_extension_source(plugin_name, names, has_editor);
 
     // Header search paths for clang.
     let bridge_header_dir = workspace_root.join("crates/beamer-au/objc");
@@ -1262,7 +1275,7 @@ mod tests {
     #[test]
     fn test_diagnostics_build_turns_on_the_framework_feature() {
         let features = |diagnostics: bool| {
-            let cmd = plugin_build_command("gain", "aarch64-apple-darwin", Format::Auv2, false, diagnostics, Path::new("."), &[])
+            let cmd = plugin_build_command("gain", "aarch64-apple-darwin", Format::Auv2, false, diagnostics, Path::new("."), "", &[])
                 .expect("command");
             let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
             let index = args.iter().position(|arg| arg == "--features").expect("--features");
@@ -1275,9 +1288,20 @@ mod tests {
     }
 
     #[test]
+    fn test_web_ui_stamp_reaches_the_build() {
+        let cmd = plugin_build_command("gain", "aarch64-apple-darwin", Format::Vst3, false, false, Path::new("."), "1234abcd", &[])
+            .expect("command");
+        let stamp = cmd
+            .get_envs()
+            .find(|(key, _)| *key == beamer_utils::web_ui::STAMP_VAR)
+            .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()));
+        assert_eq!(stamp.as_deref(), Some("1234abcd"));
+    }
+
+    #[test]
     fn test_deployment_target_is_set_for_apple_targets() {
         let target_of = |target: &str| {
-            let cmd = plugin_build_command("gain", target, Format::Vst3, false, false, Path::new("."), &[])
+            let cmd = plugin_build_command("gain", target, Format::Vst3, false, false, Path::new("."), "", &[])
                 .expect("command");
             cmd.get_envs()
                 .find(|(key, _)| *key == "MACOSX_DEPLOYMENT_TARGET")

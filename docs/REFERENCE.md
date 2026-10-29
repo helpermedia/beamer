@@ -2,7 +2,7 @@
 
 **Version:** 0.2.4
 
-This document provides detailed API documentation for Beamer. For high-level architecture and design decisions, see [ARCHITECTURE.md](../ARCHITECTURE.md). For building, installing and testing plugins, see [BUILDING.md](BUILDING.md). For the WebView GUI system, see [WEBVIEW.md](WEBVIEW.md).
+This document provides detailed API documentation for Beamer. For high-level architecture and design decisions, see [ARCHITECTURE.md](../ARCHITECTURE.md). For building, installing and testing plugins, see [BUILDING.md](BUILDING.md). For the WebView editor, see [WEBVIEW.md](WEBVIEW.md).
 
 ---
 
@@ -56,9 +56,8 @@ log_level = "warn"
 | `subcategories` | Array | Subcategory strings for DAW browser organization (e.g., `["dynamics", "eq"]`) |
 | `midi_input` | Boolean | Whether the plugin receives MIDI (default: `true` for instruments and MIDI effects, `false` otherwise). An effect with MIDI input is a music effect in AU (see [AU Component Types](#au-component-types)). A MIDI effect always has MIDI input, a generator never |
 | `midi_output` | Boolean | Whether the plugin sends MIDI (default: `true` for MIDI effects, `false` otherwise) |
-| `has_gui` | Boolean | Whether plugin has a GUI (default: `false`, turned on by itself when the macro finds web assets to embed or `BEAMER_DEV_URL` is set, see [WEBVIEW.md](WEBVIEW.md#asset-embedding)) |
-| `gui_size` | Array | Initial GUI size as `[width, height]` in pixels. Set it whenever the plugin has a GUI: a missing size is a compile error only with `has_gui = true` |
-| `gui_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
+| `editor_size` | Array | Initial editor size as `[width, height]` in pixels; a VST3 host cannot make the editor smaller. Required for a plugin with a web UI, which the macro finds in `webview/` or at `BEAMER_DEV_URL` (see [WEBVIEW.md](WEBVIEW.md#asset-embedding)); ignored without one |
+| `editor_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 | `sample_accurate_automation` | Boolean | Apply host parameter changes within a block instead of before it, by running a block as sub-blocks (default: `false`, see [Sample-Accurate Automation](#sample-accurate-automation)) |
 | `log_level` | String | Log the framework's and the plugin's messages up to this level: `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"` (see [Logging](#logging)). Without it the plugin installs no logger |

@@ -172,7 +172,7 @@ fn test_sending_to_the_web_ui_neither_allocates_nor_frees() {
 
     let (_, counts) = allocation_check::count_in_process(|| {
         for _ in 0..3 {
-            if events.is_gui_open() {
+            if events.is_editor_open() {
                 levels.send(&[0.5, 0.25]);
                 spectrum.send(&bins);
                 spectrum.send_with(|values| values.fill(0.25));

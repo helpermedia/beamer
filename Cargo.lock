@@ -951,6 +951,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "beamer-core",
+ "beamer-utils",
  "serde",
  "serde_json",
  "toml",

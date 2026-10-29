@@ -29,10 +29,9 @@ pub struct ConfigFile {
     pub vst3_id: Option<String>,
     /// Explicit VST3 controller UUID for split component/controller architecture (format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX").
     pub vst3_controller_id: Option<String>,
-    /// Whether the plugin has a GUI.
-    pub has_gui: Option<bool>,
-    /// Initial GUI size as [width, height] in pixels.
-    pub gui_size: Option<(u32, u32)>,
+    /// Initial editor size as [width, height] in pixels. Required for a
+    /// plugin with a web UI.
+    pub editor_size: Option<(u32, u32)>,
     /// Whether the plugin receives MIDI (default: true for instruments and
     /// MIDI effects). An effect with MIDI input is a music effect in AU.
     #[serde(default)]
@@ -46,7 +45,7 @@ pub struct ConfigFile {
     pub sysex_bytes_per_block: Option<usize>,
     /// Background color shown while web content loads (hex string, e.g. "#1a1a2e").
     #[serde(default)]
-    pub gui_background_color: Option<String>,
+    pub editor_background_color: Option<String>,
     /// Apply host automation at the sample it is meant for (default: false).
     #[serde(default)]
     pub sample_accurate_automation: Option<bool>,
@@ -154,12 +153,6 @@ impl ConfigFile {
         if let Some(ref id) = self.vst3_controller_id {
             validate_uuid(id, "vst3_controller_id")?;
         }
-        if self.has_gui == Some(true) && self.gui_size.is_none() {
-            return Err(
-                "gui_size is required when has_gui is true (e.g. gui_size = [400, 300])"
-                    .to_string(),
-            );
-        }
         Ok(())
     }
 }
@@ -172,12 +165,12 @@ mod tests {
     fn test_unknown_key_is_an_error_that_names_it() {
         let error = toml::from_str::<ConfigFile>(
             "name = \"Test\"\ncategory = \"effect\"\nmanufacturer_code = \"Test\"\n\
-             plugin_code = \"test\"\nhas_gu = true\n",
+             plugin_code = \"test\"\neditor_siz = [400, 300]\n",
         )
         .err()
         .expect("an unknown key is an error")
         .to_string();
-        assert!(error.contains("has_gu"), "{}", error);
+        assert!(error.contains("editor_siz"), "{}", error);
     }
 
     #[test]

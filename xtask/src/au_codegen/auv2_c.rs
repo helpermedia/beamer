@@ -15,6 +15,6 @@ fn generate_auv2_wrapper_source(plugin_name: &str, codes: &AuCodes, names: &AuNa
         .replace("{{PLUGIN_NAME}}", plugin_name)
         .replace("{{FACTORY_NAME}}", &names.auv2_factory)
         .replace("{{COCOA_VIEW_FACTORY_CLASS}}", &names.cocoa_view_factory_class)
-        .replace("{{COCOA_GUI_VIEW_CLASS}}", &names.cocoa_gui_view_class)
+        .replace("{{COCOA_EDITOR_VIEW_CLASS}}", &names.cocoa_editor_view_class)
         .replace("{{MIDI_EVENT_CASE}}", midi_event_case)
 }

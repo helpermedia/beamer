@@ -2904,30 +2904,30 @@ pub extern "C" fn beamer_au_note_sysex_input_dropped(instance: BeamerAuInstanceH
 }
 
 // =============================================================================
-// GUI / WebView
+// Editor / WebView
 // =============================================================================
 
-/// Check if the plugin has a custom GUI.
+/// Check if the plugin has an editor (a web UI).
 ///
 /// # Safety
 ///
 /// - `_instance` parameter is currently unused but accepted for API consistency
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
+pub extern "C" fn beamer_au_has_editor(_instance: BeamerAuInstanceHandle) -> bool {
     let result = catch_unwind(|| {
         let config = match factory::plugin_config() {
             Some(c) => c,
             None => return false,
         };
 
-        config.has_gui
+        config.has_editor()
     });
 
     result.unwrap_or(false)
 }
 
-/// Get the dev server URL.
+/// Get the dev server URL of the web UI.
 ///
 /// Returns NULL in production mode (embedded assets are served via the
 /// custom URL scheme instead). In dev mode, returns a null-terminated
@@ -2942,7 +2942,7 @@ pub extern "C" fn beamer_au_has_gui(_instance: BeamerAuInstanceHandle) -> bool {
 /// - Thread safety: Safe to call from any thread
 /// - The returned pointer must not be freed by the caller
 #[no_mangle]
-pub extern "C" fn beamer_au_get_gui_url(
+pub extern "C" fn beamer_au_get_webview_url(
     _instance: BeamerAuInstanceHandle,
 ) -> *const c_char {
     use std::sync::OnceLock;
@@ -2951,7 +2951,7 @@ pub extern "C" fn beamer_au_get_gui_url(
     let result = catch_unwind(|| {
         let cached = CACHED_URL.get_or_init(|| {
             let config = factory::plugin_config()?;
-            let url = config.gui_url?;
+            let url = config.webview_url?;
             CString::new(url).ok()
         });
 
@@ -2964,7 +2964,7 @@ pub extern "C" fn beamer_au_get_gui_url(
     result.unwrap_or(ptr::null())
 }
 
-/// Get the embedded GUI assets pointer.
+/// Get the pointer to the web UI's embedded files.
 ///
 /// Returns an opaque pointer suitable for passing to `beamer_webview_create()`.
 /// Returns null if no assets are configured (e.g. dev server mode).
@@ -2974,11 +2974,10 @@ pub extern "C" fn beamer_au_get_gui_url(
 /// - Thread safety: Safe to call from any thread
 /// - The returned pointer is valid for the lifetime of the process
 ///   (it points into static data embedded in the binary)
-#[cfg(feature = "webview")]
 #[no_mangle]
-pub extern "C" fn beamer_au_get_gui_assets() -> *const std::ffi::c_void {
+pub extern "C" fn beamer_au_get_webview_assets() -> *const std::ffi::c_void {
     let result = catch_unwind(|| {
-        match factory::plugin_config().and_then(|c| c.gui_assets) {
+        match factory::plugin_config().and_then(|c| c.webview_assets) {
             Some(assets) => {
                 assets as *const beamer_webview::EmbeddedAssets as *const std::ffi::c_void
             }
@@ -2989,7 +2988,7 @@ pub extern "C" fn beamer_au_get_gui_assets() -> *const std::ffi::c_void {
     result.unwrap_or(ptr::null())
 }
 
-/// Get the initial GUI size in pixels.
+/// Get the initial editor size in pixels.
 ///
 /// # Safety
 ///
@@ -2997,7 +2996,7 @@ pub extern "C" fn beamer_au_get_gui_assets() -> *const std::ffi::c_void {
 /// - `width` and `height` must be valid non-null pointers to `uint32_t`
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_get_gui_size(
+pub extern "C" fn beamer_au_get_editor_size(
     _instance: BeamerAuInstanceHandle,
     width: *mut u32,
     height: *mut u32,
@@ -3013,19 +3012,19 @@ pub extern "C" fn beamer_au_get_gui_size(
         };
 
         debug_assert!(
-            config.gui_width > 0 && config.gui_height > 0,
-            "gui_size must be set when has_gui is true"
+            config.editor_width > 0 && config.editor_height > 0,
+            "editor_size must be set when the plugin has an editor"
         );
 
         // SAFETY: width and height validated non-null above.
         unsafe {
-            *width = config.gui_width;
-            *height = config.gui_height;
+            *width = config.editor_width;
+            *height = config.editor_height;
         }
     });
 }
 
-/// Write the 4-byte GUI background color (RGBA) to `out`.
+/// Write the 4-byte editor background color (RGBA) to `out`.
 ///
 /// Returns all zeros if no background color is configured.
 ///
@@ -3034,7 +3033,7 @@ pub extern "C" fn beamer_au_get_gui_size(
 /// - `out` must point to at least 4 writable bytes
 /// - Thread safety: Safe to call from any thread
 #[no_mangle]
-pub extern "C" fn beamer_au_get_gui_background_color(out: *mut u8) {
+pub extern "C" fn beamer_au_get_editor_background_color(out: *mut u8) {
     if out.is_null() {
         return;
     }
@@ -3055,7 +3054,7 @@ pub extern "C" fn beamer_au_get_gui_background_color(out: *mut u8) {
             None => return,
         };
 
-        let rgba = config.gui_background_color;
+        let rgba = config.editor_background_color;
         // SAFETY: caller guarantees out points to at least 4 writable bytes.
         unsafe {
             *out = rgba[0];

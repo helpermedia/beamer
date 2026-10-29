@@ -41,8 +41,8 @@
 ///
 /// Two different strings can have the same hash. `#[beamer::model]`
 /// and `#[beamer::group]` report that at compile time for the
-/// parameter ids of one struct, and the format wrappers check the ids of
-/// the whole model when a plugin instance is created.
+/// parameter ids of one struct. The format wrappers check the ids of the
+/// whole model when a plugin instance is created.
 ///
 /// # VST3 Integration
 ///

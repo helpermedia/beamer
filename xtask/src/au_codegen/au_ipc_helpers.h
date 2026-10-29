@@ -1,6 +1,6 @@
 // Shared IPC helpers for AU codegen templates.
 //
-// Included by auv2_wrapper.c, auv3_wrapper.m and auv3_extension_gui.m.
+// Included by auv2_wrapper.c, auv3_wrapper.m and auv3_extension_editor.m.
 // These static functions keep the web UI in step (through the editor
 // sync of the bridge) and dispatch invokes and events the same way in all
 // AU format variants.

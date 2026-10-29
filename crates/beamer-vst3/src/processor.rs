@@ -21,9 +21,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-#[cfg(feature = "webview")]
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use vst3::{Class, ComRef, Steinberg::Vst::*, Steinberg::*};
@@ -46,8 +44,8 @@ use beamer_core::state_format::{StateEntries, StateWriter};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
-#[cfg(feature = "webview")]
 use beamer_core::{WebViewDispatch, WebViewEventQueue};
+use crate::webview::WebViewConfig;
 use crate::factory::ComponentFactory;
 use crate::speakers;
 use crate::util::{copy_wstring, len_wstring};
@@ -840,7 +838,6 @@ where
     /// the parameter values changed (see `restart_notifier`).
     host_notifier: HostNotifier,
     /// The plugin's queue of events for the web UI, if it has one.
-    #[cfg(feature = "webview")]
     webview_events: Option<WebViewEventQueue>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
@@ -867,7 +864,6 @@ where
     /// The `state_generation()` of the model that the host knows
     /// about: at creation and after a load. Shared with the editor, which
     /// tells the host when it changed.
-    #[cfg(feature = "webview")]
     known_state_generation: Arc<AtomicU64>,
     /// Marker for the plugin type
     _marker: PhantomData<P>,
@@ -952,10 +948,8 @@ impl<P: Model> Vst3Processor<P> {
         if let Some(events) = events {
             events.claim();
         }
-        #[cfg(feature = "webview")]
         let webview_events = events.cloned();
 
-        #[cfg(feature = "webview")]
         let known_state_generation =
             Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
 
@@ -990,7 +984,6 @@ impl<P: Model> Vst3Processor<P> {
             parameter_ids,
             component_handler,
             host_notifier,
-            #[cfg(feature = "webview")]
             webview_events,
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
@@ -1002,7 +995,6 @@ impl<P: Model> Vst3Processor<P> {
             meter: UnsafeCell::new(None),
             #[cfg(feature = "diagnostics")]
             bypass_parameter,
-            #[cfg(feature = "webview")]
             known_state_generation,
             _marker: PhantomData,
         }
@@ -1401,7 +1393,6 @@ impl<P: Model> Vst3Processor<P> {
 
     /// Get a handle to the model for an editor view. The view may live
     /// longer than a processor and uses the model from its own thread.
-    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     fn shared_model(&self) -> Arc<dyn SharedModel> {
         let model: Arc<P> = Arc::clone(&self.model);
         model
@@ -2092,7 +2083,6 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
                 // not ramp in.
                 self.smoothing_reset_requested.store(true, Ordering::Release);
                 // A loaded state is one the host knows.
-                #[cfg(feature = "webview")]
                 self.known_state_generation
                     .store(beamer_core::Saved::state_generation(self.model()), Ordering::Relaxed);
                 kResultOk
@@ -2889,58 +2879,39 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
 
         // SAFETY: name is non-null (checked above) and is null-terminated C string.
         let name_str = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().unwrap_or("");
-        if name_str != "editor" || !self.config.has_gui {
+        if name_str != "editor" || !self.config.has_editor() {
             return std::ptr::null_mut();
         }
 
-        #[cfg(feature = "webview")]
-        {
-            use beamer_webview::WebViewConfig;
+        let config = WebViewConfig {
+            assets: self.config.webview_assets,
+            url: self.config.webview_url,
+            dev_tools: cfg!(debug_assertions),
+            background_color: self.config.editor_background_color,
+            message_callback: None,
+            loaded_callback: None,
+            callback_context: std::ptr::null_mut(),
+        };
+        debug_assert!(
+            self.config.editor_width > 0 && self.config.editor_height > 0,
+            "editor_size must be set when the plugin has an editor"
+        );
+        let size = beamer_core::Size::new(self.config.editor_width, self.config.editor_height);
 
-            if self.config.gui_url.is_none() && self.config.gui_assets.is_none() {
-                return std::ptr::null_mut();
-            }
-
-            let config = WebViewConfig {
-                assets: self.config.gui_assets,
-                url: self.config.gui_url,
-                dev_tools: cfg!(debug_assertions),
-                background_color: self.config.gui_background_color,
-                message_callback: None,
-                loaded_callback: None,
-                callback_context: std::ptr::null_mut(),
-            };
-            debug_assert!(
-                self.config.gui_width > 0 && self.config.gui_height > 0,
-                "gui_size must be set when has_gui is true"
-            );
-            let size = beamer_core::Size::new(self.config.gui_width, self.config.gui_height);
-            let constraints = beamer_core::GuiConstraints {
-                min: size,
-                ..beamer_core::GuiConstraints::default()
-            };
-            let delegate = Box::new(crate::webview::StaticGuiDelegate::new(size, constraints));
-
-            let view = crate::webview::WebViewPlugView::new(
-                config,
-                delegate,
-                self.shared_model(),
-                Arc::clone(&self.component_handler),
-                // The web UI's invoke calls and events go to the model.
-                Arc::clone(&self.model) as Arc<dyn WebViewDispatch>,
-                self.webview_events.clone(),
-                Arc::clone(&self.known_state_generation),
-            );
-            let wrapper = vst3::ComWrapper::new(view);
-            match wrapper.to_com_ptr::<IPlugView>() {
-                Some(ptr) => ptr.into_raw(),
-                None => std::ptr::null_mut(),
-            }
-        }
-
-        #[cfg(not(feature = "webview"))]
-        {
-            std::ptr::null_mut()
+        let view = crate::webview::WebViewPlugView::new(
+            config,
+            size,
+            self.shared_model(),
+            Arc::clone(&self.component_handler),
+            // The web UI's invoke calls and events go to the model.
+            Arc::clone(&self.model) as Arc<dyn WebViewDispatch>,
+            self.webview_events.clone(),
+            Arc::clone(&self.known_state_generation),
+        );
+        let wrapper = vst3::ComWrapper::new(view);
+        match wrapper.to_com_ptr::<IPlugView>() {
+            Some(ptr) => ptr.into_raw(),
+            None => std::ptr::null_mut(),
         }
     }
 }
@@ -6126,8 +6097,8 @@ mod tests {
     use std::sync::Barrier;
 
     const LEVEL_ID: u32 = 2;
-    /// The layouts the editor of the test picks from. The processor reports
-    /// the one it read last as its latency.
+    /// The layouts the host thread of the test picks from, as an editor
+    /// would. The processor reports the one it read last as its latency.
     const LAYOUTS: [u32; 3] = [0, 16, 32];
     const THREADED_TAIL_SAMPLES: u32 = 256;
     /// How many rounds of calls the host thread makes.
@@ -6229,8 +6200,8 @@ mod tests {
             _aux: &mut beamer_core::AuxiliaryBuffers,
             _context: &CoreProcessContext,
         ) {
-            // Take the layout the editor set last, which `latency_samples`
-            // reports.
+            // Take the layout the host thread set last, which
+            // `latency_samples` reports.
             self.layout.latest();
             let level = &self.model.parameters.level;
             for index in 0..buffer.num_samples() {
@@ -6314,7 +6285,8 @@ mod tests {
             // assertion below fails.
             let _stop = StopOnDrop(&host_done);
             for round in 0..HOST_ROUNDS {
-                // The editor sets the layout and the level.
+                // The host thread sets the layout and the level, as an
+                // editor would.
                 model.parameters.layout.set(LAYOUTS[round % LAYOUTS.len()]);
                 // SAFETY: The wrapper is alive for the calls.
                 unsafe {

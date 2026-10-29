@@ -1,10 +1,10 @@
 # Beamer Architecture
 
-This document describes the high-level architecture of Beamer, a Rust framework for building audio plugins with WebView-based GUIs.
+This document describes the high-level architecture of Beamer, a Rust framework for building audio plugins with WebView-based editors.
 
 For detailed API documentation, see [docs/REFERENCE.md](docs/REFERENCE.md).
 For building, installing and testing plugins, see [docs/BUILDING.md](docs/BUILDING.md).
-For the WebView GUI system, see [docs/WEBVIEW.md](docs/WEBVIEW.md).
+For the WebView editor, see [docs/WEBVIEW.md](docs/WEBVIEW.md).
 For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EXAMPLE_COVERAGE.md).
 
 ---
@@ -13,7 +13,7 @@ For example coverage and testing roadmap, see [docs/EXAMPLE_COVERAGE.md](docs/EX
 
 ### What Is Beamer?
 
-A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-based GUIs. Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together. Inspired by Tauri's architecture but focused specifically on the audio plugin context.
+A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-based editors. Named after the beams that connect notes in sheet music, Beamer links your DSP logic and WebView interface together. Inspired by Tauri's architecture but focused specifically on the audio plugin context.
 
 ### Why?
 
@@ -27,7 +27,7 @@ A Rust framework for building audio plugins (Audio Unit and VST3) with WebView-b
 
 - Audio Unit support (macOS, AUv2 and AUv3) ✅
 - VST3 plugin support (VST3 3.8, MIT licensed) ✅
-- WebView GUI using OS-native engines
+- WebView editor using OS-native engines
 - Cross-platform: macOS and Windows
 - Tauri-inspired IPC (invoke/emit pattern)
 - Optional parameter binding helpers
@@ -164,7 +164,7 @@ beamer/
 │   ├── synthesizer/         # Polyphonic synthesizer with MIDI CC emulation
 │   ├── drums/               # Drum synthesizer with multi-output buses
 │   ├── midi-transform/      # MIDI effect example
-│   └── webview-demo/        # WebView GUI with React
+│   └── webview-demo/        # WebView editor with React
 └── xtask/                   # Build tooling (bundle, install)
 ```
 
@@ -354,7 +354,7 @@ Plugins are built, bundled and installed with `cargo xtask bundle`. See [BUILDIN
 
 ### WebView Assets
 
-Plugins with a `webview/` directory embed their web UI at compile time: the `#[beamer::export]` macro scans `webview/dist/` (or `webview/` itself for plain HTML projects), embeds every file via `include_bytes!()` and enables the GUI. See [Asset Embedding](docs/WEBVIEW.md#asset-embedding) for the detection rules.
+Plugins with a `webview/` directory embed their web UI at compile time: the `#[beamer::export]` macro scans `webview/dist/` (or `webview/` itself for plain HTML projects), embeds every file via `include_bytes!()`, which gives the plugin an editor. See [Asset Embedding](docs/WEBVIEW.md#asset-embedding) for the detection rules.
 
 The web assets (HTML, CSS, JS) are served at runtime through a custom URL scheme (`beamer://`) rather than a local HTTP server.
 
@@ -382,7 +382,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - [objc/BeamerAuBridge.h](crates/beamer-au/objc/BeamerAuBridge.h) - C-ABI declarations
 - [xtask/src/au_codegen/auv3_wrapper.m](xtask/src/au_codegen/auv3_wrapper.m) - AUv3 wrapper template (generated per-plugin by xtask)
 - [xtask/src/au_codegen/auv2_wrapper.c](xtask/src/au_codegen/auv2_wrapper.c) - AUv2 wrapper template (generated per-plugin by xtask)
-- [xtask/src/au_codegen/auv3_extension.m](xtask/src/au_codegen/auv3_extension.m) and [auv3_extension_gui.m](xtask/src/au_codegen/auv3_extension_gui.m) - AUv3 extension entry (without and with a GUI)
+- [xtask/src/au_codegen/auv3_extension.m](xtask/src/au_codegen/auv3_extension.m) and [auv3_extension_editor.m](xtask/src/au_codegen/auv3_extension_editor.m) - AUv3 extension entry (without and with an editor)
 - [build.rs](crates/beamer-au/build.rs) - Framework linking (ObjC compilation is handled by xtask)
 
 *Rust Layer:*

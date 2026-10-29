@@ -1,6 +1,8 @@
-# WebView GUI
+# WebView Editor
 
-Beamer provides a platform-native WebView GUI layer for building plugin UIs with standard web technologies (HTML, CSS, JavaScript). The system is designed around a clear separation: the `beamer-webview` crate handles all platform-specific WebView embedding, while the format wrappers (AU and VST3) use it to present the editor and drive parameter synchronization.
+Beamer provides a platform-native WebView layer for building plugin editors with standard web technologies (HTML, CSS, JavaScript). The system is designed around a clear separation: the `beamer-webview` crate handles all platform-specific WebView embedding, while the format wrappers (AU and VST3) use it to present the editor and drive parameter synchronization.
+
+Two words in this document mean different things. The **editor** is the plugin's own view, which a host opens and closes in a window of its own; it is never the generic parameter view a host builds for a plugin without one. The **web UI** is the page in it and its code, the files in `webview/`. Every editor of a Beamer plugin shows a web UI.
 
 Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING.md).
 
@@ -44,27 +46,25 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 ## Configuration
 
-GUI settings are declared in `Config.toml`:
+Editor settings are declared in `Config.toml`:
 
 ```toml
 name = "Beamer WebView Demo"
 category = "effect"
 manufacturer_code = "Bmer"
 plugin_code = "wvdm"
-has_gui = true
-gui_size = [600, 400]
-gui_background_color = "#1a1a2e"
+editor_size = [600, 400]
+editor_background_color = "#1a1a2e"
 ```
 
-**GUI Fields:**
+**Editor Fields:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `has_gui` | Boolean | No | Enable the GUI (default: `false`). Automatically set to `true` when the macro finds web assets to embed or `BEAMER_DEV_URL` is set (see [Asset Embedding](#asset-embedding)). |
-| `gui_size` | Array | For a GUI | Initial window size as `[width, height]` in pixels. A missing size is a compile error only with `has_gui = true` |
-| `gui_background_color` | String | No | Hex color (e.g. `"#1a1a2e"`) painted on the parent view while web content loads |
+| `editor_size` | Array | With a web UI | Initial editor size as `[width, height]` in pixels. A VST3 host cannot make the editor smaller; no format has a maximum. A plugin with a web UI and no size is a compile error; without a web UI the size is ignored |
+| `editor_background_color` | String | No | Hex color (e.g. `"#1a1a2e"`) painted on the parent view while web content loads |
 
-The `#[beamer::export]` macro reads these fields at compile time and generates the appropriate `Config` builder calls. See [Asset Embedding](#asset-embedding) for how the `webview/` directory is detected and embedded.
+A plugin has an editor when it has a web UI: the `#[beamer::export]` macro finds one in `webview/` or at `BEAMER_DEV_URL` (see [Asset Embedding](#asset-embedding)). There is no setting to turn the editor on. The macro reads these fields at compile time and generates the appropriate `Config` builder calls.
 
 ## JavaScript Runtime API
 
@@ -290,11 +290,11 @@ The audio thread cannot emit: `emit()` serializes and takes a lock. It sends thr
 | JavaScript reads it with | `__BEAMER__.values.get(name)` and `values.on(name, callback)` | `__BEAMER__.on(name, callback)`, like the events of `emit()` |
 | JavaScript receives | The newest value, at most once per tick | An array of every value since the last tick, oldest first |
 | Several values between two ticks | The last one counts | All of them, up to `capacity` |
-| While no GUI is open | Kept: a GUI that opens gets the current value | Dropped |
+| While no editor is open | Kept: an editor that opens gets the current value | Dropped |
 | A part of the page that shows up later | Reads the current value with `values.get(name)` | Gets the values from the next tick on |
 | Type | `Clone + Serialize`, such as a struct or a `Vec<f32>` | `Copy + Serialize`, such as `f32` or a small struct |
 
-A value sender's value stays in the runtime, as parameters and `State` fields do, so a component reads it during render. The arrays of a stream sender are events: a listener gets what comes after it registered. `WebViewEventQueue::is_gui_open()` tells the audio thread whether a GUI is open at all: measuring costs time, so a plugin skips it while nothing shows the result. It is one atomic load, also fine in `process()`.
+A value sender's value stays in the runtime, as parameters and `State` fields do, so a component reads it during render. The arrays of a stream sender are events: a listener gets what comes after it registered. `WebViewEventQueue::is_editor_open()` tells the audio thread whether an editor is open at all: measuring costs time, so a plugin skips it while nothing shows the result. It is one atomic load, also fine in `process()`.
 
 ### Example (from `webview-demo`)
 
@@ -324,11 +324,11 @@ fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
 impl Processor for WebViewDemoProcessor {
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
         // ...
-        // Measuring costs time, so only while the GUI is open.
-        if self.model.events.is_gui_open() {
+        // Measuring costs time, so only while the editor is open.
+        if self.model.events.is_editor_open() {
             self.measure(buffer);
         } else if self.peaks != [0.0; 2] {
-            // The meter comes to rest, so that a GUI that opens later does
+            // The meter comes to rest, so that an editor that opens later does
             // not show a peak from before.
             self.peaks = [0.0; 2];
             self.levels.send(&Levels { peak: self.peaks });
@@ -358,13 +358,13 @@ __BEAMER__.on("history", (points) => history.append(points));
 What to know about senders:
 
 - **Created in `prepare()`, dropped with the processor.** Creating a sender takes a lock and allocates: in debug builds a call from `process()` panics. Dropping one frees memory, which is fine because the framework drops the processor on a host thread. When the host prepares the plugin again, the senders of the new processor take over. A sender of a queue the framework does not deliver (see "One queue per plugin" above) reports it once, when it is created.
-- **A value sender delivers what it is sent.** A tick sends the newest value when anything was sent since the last tick, also a value equal to the one before. A meter at rest should send nothing, so that the GUI has nothing to do. After a page loads, each value sender sends its current value again, so a GUI that opens shows it at once. A plugin that measures only while a GUI is open therefore sends a value at rest when none is, as the demo does, so that the next GUI does not show a level from before. The runtime keeps the last value of each value sender in `__BEAMER__.values`, so a part of the page that mounts later (a tab, a panel) reads it at once.
+- **A value sender delivers what it is sent.** A tick sends the newest value when anything was sent since the last tick, also a value equal to the one before. A meter at rest should send nothing, so that the web UI has nothing to do. After a page loads, each value sender sends its current value again, so an editor that opens shows it at once. A plugin that measures only while an editor is open therefore sends a value at rest when none is, as the demo does, so that the next editor does not show a level from before. The runtime keeps the last value of each value sender in `__BEAMER__.values`, so a part of the page that mounts later (a tab, a panel) reads it at once.
 - **A value sender keeps the last value only.** What happened between two ticks is lost unless the plugin holds it: a meter holds its peaks with a decay instead of sending the peak of each block. `send()` copies with `clone_from`, which does not allocate for a `Vec` of the same length as the initial value. `send_with()` fills the value in place; what the closure finds there is an older value, so it has to write the whole value.
-- **A stream needs room for two ticks or more.** A tick comes about every 16 ms. When the ring is full, the newest values are dropped: `push()` returns `false`, `push_slice()` returns how many fit. Room for a few hundred milliseconds lets a GUI whose main thread is busy for a moment (a project that loads, a heavy redraw) lose nothing.
-- **A stream starts with the GUI.** A push while no GUI is open is dropped. When the first GUI opens, values left from before are skipped.
+- **A stream needs room for two ticks or more.** A tick comes about every 16 ms. When the ring is full, the newest values are dropped: `push()` returns `false`, `push_slice()` returns how many fit. Room for a few hundred milliseconds lets an editor whose main thread is busy for a moment (a project that loads, a heavy redraw) lose nothing.
+- **A stream starts with the editor.** A push while no editor is open is dropped. When the first editor opens, values left from before are skipped.
 - **JSON as for `emit()`.** Values that are not finite numbers (NaN, infinity) arrive as `null`, so send a level as a linear value and convert it to dB in JavaScript. serde serializes arrays of up to 32 elements (a longer one does not compile), so a spectrum is a `Vec<f32>` in a value sender.
 - **One name per sender.** A name is one thing in the web UI: an event, a value or a stream. In debug builds a second sender with the name of a living one panics, as does an `emit()` with the name of a living sender.
-- **One GUI.** With two windows of one plugin instance open, each event, value and stream value reaches one of them. The hosts tried open one window per instance.
+- **One editor.** With two windows of one plugin instance open, each event, value and stream value reaches one of them. The hosts tried open one window per instance.
 
 ## Answering the Web UI
 
@@ -619,15 +619,15 @@ function MyKnob({ paramId }: { paramId: string }) {
 
 ## Asset Embedding
 
-The `#[beamer::export]` attribute macro handles web asset detection and embedding at compile time. It scans the plugin crate's `webview/` directory according to these rules:
+The `#[beamer::export]` attribute macro handles web asset detection and embedding at compile time. It scans the plugin crate's `webview/` directory according to these rules, the same ones `cargo xtask bundle` uses to decide whether the plugin has an editor:
 
 | Condition | Behavior |
 |-----------|----------|
 | `BEAMER_DEV_URL` env var set | Load from that URL (dev server mode, see [Development Server](#development-server)) |
-| `webview/package.json` exists and `webview/dist/` exists | Embed all files from `webview/dist/` (no GUI when it is empty) |
+| `webview/package.json` exists and `webview/dist/` exists | Embed all files from `webview/dist/` (no editor when it is empty) |
 | `webview/package.json` exists but no `dist/` | No assets. `cargo xtask bundle` runs the web build first, so this only happens with a plain `cargo build` (run the web build in `webview/` first) |
-| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project, no GUI when it is empty) |
-| No `webview/` directory | No GUI |
+| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project, no editor when it is empty) |
+| No `webview/` directory | No editor |
 
 The scan skips dotfiles and dot-directories, `node_modules` and `.map` source map files.
 
@@ -652,11 +652,11 @@ Path lookup uses `NSURL::path()` to get the decoded path component, stripping qu
 
 ### Rebuild Considerations
 
-Directory scanning runs at macro expansion time, so its results are cached by the Rust compiler. After running a web build for the first time, you may need to `touch` a `.rs` file to trigger recompilation. Changes to existing file contents are tracked automatically by `include_bytes!()`. Setting or clearing `BEAMER_DEV_URL` (see below) is not tracked either and needs the same `touch`, or `--clean`.
+Directory scanning runs at macro expansion time, so its results are cached by the Rust compiler. Changes to existing file contents are tracked automatically by `include_bytes!()`. Setting, changing or clearing `BEAMER_DEV_URL` (see below) expands the macro again, since the expansion names the variable with `option_env!()`. So does a web UI whose files came, went or moved when `cargo xtask bundle` builds: the bundler hands the macro a stamp of the files it found (`BEAMER_WEB_UI_STAMP`). A plain `cargo build` has no such stamp, so after files were added or removed it may need a `touch` of a `.rs` file.
 
 ## Development Server
 
-Set the `BEAMER_DEV_URL` environment variable to bypass asset embedding and load the UI from a dev server:
+Set the `BEAMER_DEV_URL` environment variable to bypass asset embedding and load the web UI from a dev server:
 
 ```bash
 BEAMER_DEV_URL=http://localhost:5173 cargo xtask bundle webview-demo --vst3
@@ -664,7 +664,7 @@ BEAMER_DEV_URL=http://localhost:5173 cargo xtask bundle webview-demo --vst3
 
 When this variable is set:
 
-1. The macro generates `Config::with_gui_url("http://localhost:5173")` instead of `with_gui_assets(...)`
+1. The macro generates `Config::with_webview_url("http://localhost:5173")` instead of `with_webview_assets(...)`
 2. The WebView navigates directly to the URL instead of `beamer://localhost/`
 3. The custom scheme handler is not registered
 
@@ -676,10 +676,10 @@ Developer tools (Web Inspector on macOS) are enabled automatically in debug buil
 
 The WKWebView's default background is disabled (`drawsBackground = false`), making it fully transparent. Whatever is behind the webview is visible until web content covers it. In some DAWs, the view behind the webview has a white background, causing a visible flash before your UI renders.
 
-To prevent this, set `gui_background_color` in `Config.toml`:
+To prevent this, set `editor_background_color` in `Config.toml`:
 
 ```toml
-gui_background_color = "#1a1a2e"
+editor_background_color = "#1a1a2e"
 ```
 
 The macro parses the hex string into `[R, G, B, A]` bytes (alpha is always 255). At runtime, this color is painted on the parent `NSView`'s `CALayer` before the WKWebView is added to it. It stays visible through the transparent webview until your web content renders its own background on top.

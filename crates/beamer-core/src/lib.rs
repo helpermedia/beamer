@@ -13,7 +13,6 @@
 //! - [`Parameters`] - Parameter collection trait
 //! - [`Saved`] - Saving and loading the parameters and `State` fields
 //! - [`WebViewEvents`] - Where the model's queue of events for the web UI is
-//! - [`GuiDelegate`] - GUI configuration and callbacks
 //!
 //! ## Types
 //!
@@ -44,7 +43,6 @@ pub mod config;
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
 pub mod editor_sync;
-pub mod gui;
 pub mod handover;
 pub mod host_notifier;
 pub mod logging;
@@ -89,7 +87,6 @@ pub use conversion_buffers::ConversionBuffers;
 pub use editor_sync::EditorSync;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use host_notifier::{HostChangeTarget, HostChanges, HostNotifier};
-pub use gui::{GuiConstraints, GuiDelegate, NoGui};
 pub use handover::{Handover, HandoverReader};
 pub use logging::LogLevel;
 pub use error::{PluginError, PluginResult};

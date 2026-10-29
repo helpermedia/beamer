@@ -8,9 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["webview"]
-## WebView GUI support.
-webview = ["beamer-webview"]
 ## Measure what the host does and write it to the system log. For test
 ## builds only (`cargo xtask bundle <plugin> --diagnostics`).
 diagnostics = ["beamer-core/diagnostics"]
@@ -20,7 +17,7 @@ workspace = true
 
 [dependencies]
 beamer-core = { workspace = true }
-beamer-webview = { workspace = true, optional = true }
+beamer-webview = { workspace = true }
 vst3 = { workspace = true }
 log = { workspace = true }
 com-scrape-types = "0.1"

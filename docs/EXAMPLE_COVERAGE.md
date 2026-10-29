@@ -65,13 +65,13 @@
 | | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **GUI** (macOS only) | on_invoke / on_event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
+| **Editor** (macOS only) | on_invoke / on_event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
 | | WebViewEventQueue | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS |
 | | WebViewValueSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread |
 | | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Level history from the audio thread |
-| | is_gui_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the GUI is open |
-| | has_gui / gui_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml GUI config |
-| | gui_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
+| | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
+| | editor_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml editor config |
+| | editor_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme |
 | | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |

@@ -1,6 +1,6 @@
 [package]
 name = "webview-demo"
-description = "Example plugin with WebView GUI using the Beamer framework"
+description = "Example plugin with a WebView editor using the Beamer framework"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

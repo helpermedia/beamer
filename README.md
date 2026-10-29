@@ -98,11 +98,11 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | **[drums](https://github.com/helpermedia/beamer/tree/main/examples/drums)** | Drum synthesizer with multi-output buses |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation |
 
-### WebView GUI
+### WebView Editor
 
 | Example | Description |
 |---------|-------------|
-| **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin UI with React |
+| **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin editor with React |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 
@@ -119,14 +119,14 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
 - **Factory presets in code** - `Model::PRESETS` of typed `Preset::new(name, |m| ...)` closures, checked by the compiler
 - **Sample-accurate automation** - Opt in with `sample_accurate_automation = true` in Config.toml
-- **WebView GUI** - Web-based plugin interfaces with WKWebView, bidirectional IPC, realtime-safe data from the audio thread (meters, streams) and built-in React/Vite tooling (macOS)
+- **WebView editor** - Web-based plugin editors with WKWebView, bidirectional IPC, realtime-safe data from the audio thread (meters, streams) and built-in React/Vite tooling (macOS)
 
 ## Documentation
 
 - [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
 - [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - API reference: configuration, parameters, traits, MIDI and format notes
-- [WEBVIEW.md](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md) - WebView GUI system, JavaScript API and React integration
+- [WEBVIEW.md](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md) - WebView editor, JavaScript API and React integration
 - [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) - Example testing roadmap and feature coverage matrix
 
 ## Platform Support
@@ -148,7 +148,7 @@ Contributions for testing and fixes on Windows are welcome.
 | `beamer-utils` | Internal utilities (zero external dependencies) |
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-vst3` | VST3 wrapper implementation |
-| `beamer-webview` | WebView GUI system (WKWebView, IPC, asset serving) |
+| `beamer-webview` | WebView editor (WKWebView, IPC, asset serving) |
 
 ## Building & Installation
 

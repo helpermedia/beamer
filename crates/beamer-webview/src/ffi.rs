@@ -47,7 +47,7 @@ mod macos_ffi {
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: caller guarantees assets is a valid *const EmbeddedAssets
-            // with 'static lifetime (it comes from Config.gui_assets).
+            // with 'static lifetime (it comes from Config.webview_assets).
             let assets_ref: &'static crate::assets::EmbeddedAssets =
                 unsafe { &*(assets as *const crate::assets::EmbeddedAssets) };
 

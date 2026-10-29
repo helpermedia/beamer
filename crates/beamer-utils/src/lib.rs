@@ -1,8 +1,7 @@
 //! Internal utilities for the Beamer audio plugin framework (AU and VST3).
 //!
-//! This crate provides low-level utilities shared between `beamer-core` and
-//! `beamer-macros`. All utilities are compile-time safe (`const fn` where possible)
-//! and have zero external dependencies.
+//! This crate provides low-level utilities shared between `beamer-core`,
+//! `beamer-macros` and the bundler. It has zero external dependencies.
 //!
 //! # Usage
 //!
@@ -12,7 +11,10 @@
 //! # Contents
 //!
 //! - [`fnv1a_32`] - FNV-1a hash function for parameter ID generation
+//! - [`web_ui`] - Where the web UI of a plugin comes from, for the export
+//!   macro and the bundler
 
 pub mod hash;
+pub mod web_ui;
 
 pub use hash::fnv1a_32;

@@ -9,9 +9,6 @@ keywords = ["audio", "plugin", "au", "audiounit", "music"]
 categories = ["multimedia::audio"]
 
 [features]
-default = ["webview"]
-## WebView GUI support.
-webview = ["beamer-webview"]
 ## Measure what the host does and write it to the system log. For test
 ## builds only (`cargo xtask bundle <plugin> --diagnostics`).
 diagnostics = ["beamer-core/diagnostics"]
@@ -21,7 +18,7 @@ workspace = true
 
 [dependencies]
 beamer-core = { workspace = true }
-beamer-webview = { workspace = true, optional = true }
+beamer-webview = { workspace = true }
 log = { workspace = true }
 serde_json = { workspace = true }
 

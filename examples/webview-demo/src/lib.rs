@@ -1,8 +1,8 @@
 //! WebView demo plugin.
 //!
-//! An example demonstrating React + Vite + Tailwind webview GUI support
+//! An example demonstrating React + Vite + Tailwind webview editor support
 //! in a Beamer plugin. Web assets are built with bun and embedded at
-//! compile time. The plugin is a simple gain effect with an interactive GUI.
+//! compile time. The plugin is a simple gain effect with an interactive editor.
 //!
 //! It also shows state beyond parameters: the pan law is a `State` field.
 //! The web UI reads and sets it through `__BEAMER__.state`, the processor
@@ -96,7 +96,7 @@ impl Model for WebViewDemoModel {
             // The meter shows the newest level only.
             levels: self.events.value_sender("levels", Levels::default()),
             // The history needs every point. About two arrive between two
-            // ticks of the GUI. Room for 64 is 640 ms: a GUI whose main
+            // ticks of the editor. Room for 64 is 640 ms: an editor whose main
             // thread is busy for a moment (a project that loads, a heavy
             // redraw) loses nothing.
             history: self.events.stream_sender("history", 64),
@@ -184,7 +184,7 @@ impl WebViewDemoProcessor {
             }
         }
         // A value sender delivers what it is sent. A meter at rest sends
-        // nothing, so the GUI has nothing to do.
+        // nothing, so the web UI has nothing to do.
         if self.peaks != before {
             self.levels.send(&Levels { peak: self.peaks });
         }
@@ -235,12 +235,12 @@ impl Processor for WebViewDemoProcessor {
             }
         }
 
-        // Measuring costs time, so only while the GUI is open.
-        if self.model.events.is_gui_open() {
+        // Measuring costs time, so only while the editor is open.
+        if self.model.events.is_editor_open() {
             self.measure(buffer);
         } else if self.peaks != [0.0; 2] {
             // The meter comes to rest with the next block the host
-            // processes, so that a GUI that opens later does not show a
+            // processes, so that an editor that opens later does not show a
             // peak from before. Sending takes no lock and does not
             // allocate.
             self.peaks = [0.0; 2];

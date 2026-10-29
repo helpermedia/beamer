@@ -1,4 +1,4 @@
-//! Embedded web asset types for WebView GUIs.
+//! Embedded web asset types for the web UI of WebView editors.
 //!
 //! These types live in beamer-core so that [`Config`](crate::Config) can reference
 //! them without creating a circular dependency with beamer-webview.

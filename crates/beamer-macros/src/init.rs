@@ -6,6 +6,8 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use beamer_utils::web_ui::{self, WebUi};
+
 use crate::config_file::{category_variant, ConfigFile};
 
 /// Map a category string from Config.toml to the corresponding token stream.
@@ -56,62 +58,7 @@ fn subcategory_tokens(sub: &str) -> Result<TokenStream, String> {
     Ok(tokens)
 }
 
-/// Recursively scan a directory for web assets, returning relative paths.
-///
-/// Skips dotfiles, dot-directories, node_modules and source maps.
-fn scan_webview_dir(
-    dir: &std::path::Path,
-    manifest_dir: &str,
-) -> Result<Vec<String>, String> {
-    let mut files = Vec::new();
-    scan_dir_recursive(dir, dir, &mut files)
-        .map_err(|e| format!("failed to scan {}: {}", dir.display(), e))?;
-    files.sort();
-    let _ = manifest_dir; // used by caller for include_bytes path
-    Ok(files)
-}
-
-fn scan_dir_recursive(
-    base: &std::path::Path,
-    dir: &std::path::Path,
-    files: &mut Vec<String>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        // Skip dotfiles and dot-directories
-        if name_str.starts_with('.') {
-            continue;
-        }
-
-        // Skip node_modules
-        if name_str == "node_modules" {
-            continue;
-        }
-
-        let path = entry.path();
-        if path.is_dir() {
-            scan_dir_recursive(base, &path, files)?;
-        } else if path.is_file() {
-            // Skip source maps
-            if name_str.ends_with(".map") {
-                continue;
-            }
-
-            let relative = path
-                .strip_prefix(base)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push(relative);
-        }
-    }
-    Ok(())
-}
-
-/// Generate the WEBVIEW_ASSETS static and the with_gui_assets builder call.
+/// Generate the WEBVIEW_ASSETS static and the with_webview_assets builder call.
 ///
 /// `subdir` is the path relative to CARGO_MANIFEST_DIR (e.g. "webview" or "webview/dist").
 fn generate_assets_tokens(asset_paths: &[String], subdir: &str) -> (TokenStream, TokenStream) {
@@ -135,7 +82,7 @@ fn generate_assets_tokens(asset_paths: &[String], subdir: &str) -> (TokenStream,
             ]);
     };
 
-    let builder_call = quote! { .with_gui_assets(&WEBVIEW_ASSETS) };
+    let builder_call = quote! { .with_webview_assets(&WEBVIEW_ASSETS) };
 
     (static_def, builder_call)
 }
@@ -158,62 +105,39 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         quote! { .with_email(#e) }
     });
 
-    // Webview asset detection and embedding.
-    //
-    // Detection rules:
-    // 1. BEAMER_DEV_URL set -> Load from URL (any project type)
-    // 2. package.json + dist/ exists -> Embed all files from webview/dist/
-    // 3. package.json without dist/ -> No assets (build not run yet)
-    // 4. webview/ exists (no package.json) -> Embed all files from webview/
-    // 5. No webview/ directory -> No GUI
-    //
-    // NOTE: Directory scanning runs at macro expansion time, so its results
-    // are baked into the cached compilation. After running a web build for
-    // the first time, you may need to touch a .rs file to trigger
-    // recompilation. Changes to existing file contents are tracked
-    // automatically by include_bytes!().
-    let dev_url = std::env::var("BEAMER_DEV_URL").ok();
-    let webview_dir = std::path::Path::new(manifest_dir).join("webview");
-    let has_package_json = webview_dir.join("package.json").exists();
-    let dist_dir = webview_dir.join("dist");
-
-    let (assets_static, gui_source, has_webview) = if let Some(url) = &dev_url {
-        // Dev server mode: load from URL
-        (None, Some(quote! { .with_gui_url(#url) }), true)
-    } else if has_package_json && dist_dir.exists() {
-        // Framework project with built output: embed from dist/
-        let assets = scan_webview_dir(&dist_dir, manifest_dir)?;
-        if assets.is_empty() {
-            (None, None, false)
-        } else {
-            let (static_def, builder) = generate_assets_tokens(&assets, "webview/dist");
-            (Some(static_def), Some(builder), true)
+    // The web UI, found by the rule the bundler uses too. The expansion is
+    // cached: it names the environment variables it depends on with
+    // `option_env!`, which rustc records, so that cargo expands it again
+    // when the dev server URL or the bundler's stamp of the files changes.
+    // Changes to the contents of embedded files are tracked by
+    // `include_bytes!()`.
+    let dev_url = std::env::var(web_ui::DEV_URL_VAR).ok();
+    let found = web_ui::find(std::path::Path::new(manifest_dir), dev_url)?;
+    let dev_url_var = web_ui::DEV_URL_VAR;
+    let stamp_var = web_ui::STAMP_VAR;
+    let tracked = quote! {
+        const _: Option<&str> = option_env!(#dev_url_var);
+        const _: Option<&str> = option_env!(#stamp_var);
+    };
+    let (assets_static, web_ui_source) = match &found {
+        None => (None, None),
+        Some(WebUi::DevServer(url)) => (None, Some(quote! { .with_webview_url(#url) })),
+        Some(WebUi::Embedded { dir, files }) => {
+            let (static_def, builder) = generate_assets_tokens(files, dir);
+            (Some(static_def), Some(builder))
         }
-    } else if !has_package_json && webview_dir.exists() {
-        // Plain HTML project: embed from webview/
-        let assets = scan_webview_dir(&webview_dir, manifest_dir)?;
-        if assets.is_empty() {
-            (None, None, false)
-        } else {
-            let (static_def, builder) = generate_assets_tokens(&assets, "webview");
-            (Some(static_def), Some(builder), true)
-        }
-    } else {
-        (None, None, false)
     };
 
-    // has_gui is true if explicitly set and no webview (with_gui_assets/with_gui_url already sets it)
-    let has_gui = if !has_webview && config.has_gui.unwrap_or(false) {
-        Some(quote! { .with_gui() })
-    } else {
-        None
+    let editor_size = match (&found, config.editor_size) {
+        (Some(_), Some((w, h))) => Some(quote! { .with_editor_size(#w, #h) }),
+        (Some(_), None) => {
+            return Err(
+                "editor_size is required for a plugin with a web UI (e.g. editor_size = [400, 300])"
+                    .to_string(),
+            );
+        }
+        (None, _) => None,
     };
-
-    let gui_size = config.gui_size.as_ref().map(|size| {
-        let w = size.0;
-        let h = size.1;
-        quote! { .with_gui_size(#w, #h) }
-    });
 
     let vst3_id = config.vst3_id.as_ref().map(|id| {
         quote! { .with_vst3_id(#id) }
@@ -236,24 +160,24 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     let sample_accurate_automation = (config.sample_accurate_automation == Some(true))
         .then(|| quote! { .with_sample_accurate_automation() });
 
-    let gui_background_color = config
-        .gui_background_color
+    let editor_background_color = config
+        .editor_background_color
         .as_deref()
         .map(|hex| {
             let hex = hex.strip_prefix('#').unwrap_or(hex);
             if hex.len() != 6 {
                 return Err(format!(
-                    "gui_background_color must be a 6-digit hex string (e.g. \"#1a1a2e\"), got {:?}",
+                    "editor_background_color must be a 6-digit hex string (e.g. \"#1a1a2e\"), got {:?}",
                     hex
                 ));
             }
             let r = u8::from_str_radix(&hex[0..2], 16)
-                .map_err(|e| format!("gui_background_color red: {e}"))?;
+                .map_err(|e| format!("editor_background_color red: {e}"))?;
             let g = u8::from_str_radix(&hex[2..4], 16)
-                .map_err(|e| format!("gui_background_color green: {e}"))?;
+                .map_err(|e| format!("editor_background_color green: {e}"))?;
             let b = u8::from_str_radix(&hex[4..6], 16)
-                .map_err(|e| format!("gui_background_color blue: {e}"))?;
-            Ok(quote! { .with_gui_background_color([#r, #g, #b, 255]) })
+                .map_err(|e| format!("editor_background_color blue: {e}"))?;
+            Ok(quote! { .with_editor_background_color([#r, #g, #b, 255]) })
         })
         .transpose()?;
 
@@ -286,6 +210,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     };
 
     Ok(quote! {
+        #tracked
         #assets_static
 
         pub static CONFIG: ::beamer::prelude::Config = ::beamer::prelude::Config::new(
@@ -298,9 +223,8 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #url
         #email
         .with_version(env!("CARGO_PKG_VERSION"))
-        #has_gui
-        #gui_source
-        #gui_size
+        #web_ui_source
+        #editor_size
         #vst3_id
         #vst3_controller_id
         #midi_input
@@ -308,7 +232,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #sysex_bytes_per_block
         #sample_accurate_automation
         #subcategories
-        #gui_background_color
+        #editor_background_color
         #logging
         ;
     })

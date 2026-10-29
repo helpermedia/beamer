@@ -12,12 +12,13 @@ fn generate_au_wrapper_source(plugin_name: &str, names: &AuNames) -> String {
 
 /// Generate the AU extension ObjC implementation with plugin-specific class names.
 ///
-/// When `has_gui` is true, uses the AUViewController-based template so that
-/// Logic Pro (and other hosts that check NSExtensionPrincipalClass) shows the
-/// custom WebView GUI. Non-GUI plugins use the plain NSObject template.
-fn generate_au_extension_source(plugin_name: &str, names: &AuNames, has_gui: bool) -> String {
-    let template = if has_gui {
-        include_str!("auv3_extension_gui.m")
+/// When `has_editor` is true, uses the AUViewController-based template so
+/// that Logic Pro (and other hosts that check NSExtensionPrincipalClass)
+/// shows the editor. Plugins without an editor use the plain NSObject
+/// template.
+fn generate_au_extension_source(plugin_name: &str, names: &AuNames, has_editor: bool) -> String {
+    let template = if has_editor {
+        include_str!("auv3_extension_editor.m")
     } else {
         include_str!("auv3_extension.m")
     };

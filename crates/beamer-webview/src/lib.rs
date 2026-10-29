@@ -1,4 +1,4 @@
-//! WebView GUI support for Beamer audio plugins.
+//! WebView editor support for Beamer audio plugins.
 //!
 //! Platform-native WebView embedding. This crate provides the shared platform
 //! layer used by both VST3 and AU format wrappers.
@@ -26,7 +26,7 @@ pub type MessageCallback =
 /// Called on the main thread.
 pub type LoadedCallback = unsafe extern "C-unwind" fn(context: *mut c_void);
 
-/// Configuration for a WebView GUI.
+/// Configuration for a WebView editor.
 pub struct WebViewConfig<'a> {
     /// Embedded web assets. When set, the WebView navigates to
     /// `beamer://localhost/index.html` and a per-instance scheme handler

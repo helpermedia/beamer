@@ -1,4 +1,4 @@
-//! IPlugView wrapper for WebView GUIs.
+//! IPlugView wrapper for the WebView editor.
 
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use beamer_core::{
-    EditorSync, GuiConstraints, GuiDelegate, SharedModel, Size, WebViewDispatch,
-    WebViewEventQueue,
+    EditorSync, SharedModel, Size, WebViewDispatch, WebViewEventQueue,
 };
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
@@ -73,11 +72,18 @@ impl IpcContext {
     }
 }
 
+// A size a host asks for, no smaller than the initial size. There is no
+// maximum: a web UI reflows to any size.
+fn constrain_size(requested: Size, initial: Size) -> Size {
+    Size::new(requested.width.max(initial.width), requested.height.max(initial.height))
+}
+
 /// VST3 IPlugView implementation backed by a platform WebView.
 pub struct WebViewPlugView {
     platform: UnsafeCell<Option<PlatformWebView>>,
     config: UnsafeCell<WebViewConfig<'static>>,
-    delegate: UnsafeCell<Box<dyn GuiDelegate>>,
+    // The size the editor opens with, also its smallest size.
+    initial_size: Size,
     size: UnsafeCell<Size>,
     frame: UnsafeCell<*mut IPlugFrame>,
     /// IPC context, heap-allocated for stable pointer.
@@ -96,19 +102,17 @@ impl WebViewPlugView {
     /// so that the view always calls the handler the host set last.
     pub fn new(
         config: WebViewConfig<'static>,
-        delegate: Box<dyn GuiDelegate>,
+        size: Size,
         model: Arc<dyn SharedModel>,
         component_handler: Arc<ComponentHandler>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEventQueue>,
         known_state_generation: Arc<AtomicU64>,
     ) -> Self {
-        let size = delegate.gui_size();
-
         Self {
             platform: UnsafeCell::new(None),
             config: UnsafeCell::new(config),
-            delegate: UnsafeCell::new(delegate),
+            initial_size: size,
             size: UnsafeCell::new(size),
             frame: UnsafeCell::new(std::ptr::null_mut()),
             ipc: UnsafeCell::new(Box::new(IpcContext {
@@ -432,9 +436,6 @@ impl IPlugViewTrait for WebViewPlugView {
                     ipc.sync_timer = timer;
                 }
 
-                // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-                let delegate = unsafe { &mut *self.delegate.get() };
-                delegate.gui_opened();
                 kResultOk
             }
             Err(e) => {
@@ -449,10 +450,6 @@ impl IPlugViewTrait for WebViewPlugView {
     }
 
     unsafe fn removed(&self) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-        let delegate = unsafe { &mut *self.delegate.get() };
-        delegate.gui_closed();
-
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let ipc = unsafe { &mut *self.ipc.get() };
 
@@ -522,11 +519,6 @@ impl IPlugViewTrait for WebViewPlugView {
         size.width = width;
         size.height = height;
 
-        let new_size = Size::new(width, height);
-        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-        let delegate = unsafe { &mut *self.delegate.get() };
-        delegate.gui_resized(new_size);
-
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let platform = unsafe { &*self.platform.get() };
         if let Some(webview) = platform.as_ref() {
@@ -572,29 +564,20 @@ impl IPlugViewTrait for WebViewPlugView {
     }
 
     unsafe fn canResize(&self) -> tresult {
-        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-        let delegate = unsafe { &*self.delegate.get() };
-        if delegate.gui_constraints().resizable { kResultOk } else { kResultFalse }
+        kResultOk
     }
 
     unsafe fn checkSizeConstraint(&self, rect: *mut ViewRect) -> tresult {
         if rect.is_null() {
             return kInvalidArgument;
         }
-        // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
-        let delegate = unsafe { &*self.delegate.get() };
-        let constraints = delegate.gui_constraints();
-
         // SAFETY: rect is non-null (checked above) and host guarantees validity.
         let r = unsafe { &mut *rect };
-        let mut width = (r.right - r.left).max(0) as u32;
-        let mut height = (r.bottom - r.top).max(0) as u32;
+        let requested = Size::new((r.right - r.left).max(0) as u32, (r.bottom - r.top).max(0) as u32);
+        let size = constrain_size(requested, self.initial_size);
 
-        width = width.clamp(constraints.min.width, constraints.max.width);
-        height = height.clamp(constraints.min.height, constraints.max.height);
-
-        r.right = r.left + width as i32;
-        r.bottom = r.top + height as i32;
+        r.right = r.left + size.width as i32;
+        r.bottom = r.top + size.height as i32;
         kResultOk
     }
 }
@@ -623,11 +606,8 @@ impl Drop for WebViewPlugView {
         // Close the event queue if removed() did not.
         ipc.sync = None;
 
-        // Detach the WebView while the IPC context it calls into is still alive
-        // and tell the delegate, which removed() would have done.
-        if self.platform.get_mut().take().is_some() {
-            self.delegate.get_mut().gui_closed();
-        }
+        // Detach the WebView while the IPC context it calls into is alive.
+        self.platform.get_mut().take();
 
         let frame = *self.frame.get_mut();
         if !frame.is_null() {
@@ -637,28 +617,6 @@ impl Drop for WebViewPlugView {
                 ((*(*unknown).vtbl).release)(unknown);
             }
         }
-    }
-}
-
-/// Simple `GuiDelegate` backed by fixed size and constraints.
-pub struct StaticGuiDelegate {
-    size: Size,
-    constraints: GuiConstraints,
-}
-
-impl StaticGuiDelegate {
-    pub fn new(size: Size, constraints: GuiConstraints) -> Self {
-        Self { size, constraints }
-    }
-}
-
-impl GuiDelegate for StaticGuiDelegate {
-    fn gui_size(&self) -> Size {
-        self.size
-    }
-
-    fn gui_constraints(&self) -> GuiConstraints {
-        self.constraints
     }
 }
 
@@ -717,6 +675,14 @@ mod tests {
     use vst3::Steinberg::Vst::IComponentHandler;
 
     use super::*;
+
+    #[test]
+    fn test_size_is_at_least_the_initial_size() {
+        let initial = Size::new(600, 400);
+        assert_eq!(constrain_size(Size::new(300, 200), initial), initial);
+        assert_eq!(constrain_size(Size::new(300, 500), initial), Size::new(600, 500));
+        assert_eq!(constrain_size(Size::new(5000, 3000), initial), Size::new(5000, 3000));
+    }
 
     /// A plugin that knows no invoke methods and ignores events.
     struct NoDispatch;

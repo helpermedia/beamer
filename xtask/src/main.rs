@@ -31,7 +31,7 @@ pub struct AppexPlistConfig<'a> {
     pub version_int: u32,
     pub plugin_name: Option<&'a str>,
     pub vendor_name: Option<&'a str>,
-    pub has_gui: bool,
+    pub has_editor: bool,
 }
 
 /// Configuration for creating AUv2 component Info.plist
@@ -405,6 +405,10 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     // Build webview assets (must happen before cargo build so dist/ exists for proc macro)
     build::build_webview(&package_info.dir, config.verbose)?;
 
+    // The export macro finds the web UI by the same rule. Its stamp goes to
+    // the build, so that a web UI that changed expands the plugin again.
+    let web_ui_stamp = beamer_utils::web_ui::stamp(util::detect_web_ui(&package_info.dir)?.as_ref());
+
     // Determine paths
     let target_dir = workspace_root.join("target").join(profile_str);
 
@@ -413,7 +417,15 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     // next build replaces it.
     let build_library = |format: build::Format| {
         if config.arch == Arch::Universal {
-            build::build_universal(&config.package, config.release, config.diagnostics, &workspace_root, format, config.verbose)
+            build::build_universal(
+                &config.package,
+                config.release,
+                config.diagnostics,
+                &workspace_root,
+                format,
+                &web_ui_stamp,
+                config.verbose,
+            )
         } else {
             build::build_native(
                 &config.package,
@@ -422,6 +434,7 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
                 &workspace_root,
                 format,
                 config.arch,
+                &web_ui_stamp,
                 config.verbose,
             )
         }

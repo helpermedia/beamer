@@ -176,7 +176,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     );
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
-    // A closed editor gets nothing, and the next one starts with the
+    // A closed editor gets nothing. The next one starts with the
     // parameters.
     beamer_au_editor_sync_close(editor);
     events.emit("between", &3);

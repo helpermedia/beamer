@@ -18,7 +18,7 @@ The [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is MIT licensed (as of
 - **Sample-accurate automation**: Opt-in sub-blocks at the points of the parameter queues
 - **MIDI conversion**: Bidirectional mapping between Beamer and VST3 MIDI events
 - **Real-time buffer management**: Zero-allocation audio processing
-- **WebView GUI**: Web-based plugin interfaces via `beamer-webview`
+- **WebView editor**: Web-based plugin editors via `beamer-webview`
 
 ## Usage
 

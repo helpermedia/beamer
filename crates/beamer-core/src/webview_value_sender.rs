@@ -2,7 +2,7 @@
 //!
 //! A [`WebViewValueSender`] sends a value that the web UI shows as it is
 //! now: a level meter, a gain reduction, a spectrum. The audio thread sends
-//! as often as it likes; at each tick of the GUI (about 60 times a second)
+//! as often as it likes; at each tick of the editor (about 60 times a second)
 //! the newest value is delivered and the ones before it are gone. A value
 //! is delivered once. A page that loads gets it again. The web UI keeps
 //! it in `__BEAMER__.values`, so a part of the page that shows up later
@@ -16,8 +16,8 @@
 //! // In prepare(), before `self` moves into the processor:
 //! MeterProcessor { levels: self.events.value_sender("levels", [0.0f32; 2]), model: self }
 //!
-//! // In process(), once per block. No GUI, nothing to measure:
-//! if self.model.events.is_gui_open() {
+//! // In process(), once per block. No editor, nothing to measure:
+//! if self.model.events.is_editor_open() {
 //!     self.levels.send(&self.peaks());
 //! }
 //! ```
@@ -99,9 +99,9 @@ impl<T: Clone + Send> WebViewValueSender<T> {
     /// does not allocate. A longer one does; for such values fill the
     /// sender in place with [`send_with()`](Self::send_with).
     ///
-    /// Sends also while no GUI is open, so that a GUI that opens shows the
-    /// value of now. To skip the measurement itself, ask
-    /// [`is_gui_open()`](crate::WebViewEventQueue::is_gui_open) first.
+    /// Sends also while no editor is open, so that an editor that opens
+    /// shows the value of now. To skip the measurement itself, ask
+    /// [`is_editor_open()`](crate::WebViewEventQueue::is_editor_open) first.
     #[inline]
     pub fn send(&mut self, value: &T) {
         self.slot().clone_from(value);
@@ -159,7 +159,7 @@ impl<T: Serialize + Send + 'static> SenderEnd for ValueEnd<T> {
         self.link.strong_count() == 0
     }
 
-    fn gui_opened(&mut self, _first: bool) {
+    fn editor_opened(&mut self, _first: bool) {
         // The editor's page has not loaded yet: the value goes out again
         // when it has.
     }
@@ -226,7 +226,7 @@ where
 mod tests {
     use crate::WebViewEventQueue;
 
-    /// A queue as it is while a GUI is open and its page loaded.
+    /// A queue as it is while an editor is open and its page loaded.
     fn open_queue() -> WebViewEventQueue {
         let events = WebViewEventQueue::new();
         events.claim();
@@ -239,7 +239,7 @@ mod tests {
     fn test_a_sent_value_is_delivered_once() {
         let events = open_queue();
         let mut levels = events.value_sender("levels", [0.0f32; 2]);
-        // The initial value reaches the GUI that is open.
+        // The initial value reaches the editor that is open.
         assert_eq!(
             events.take_script().as_deref(),
             Some("window.__BEAMER__._onValue(\"levels\",[0.0,0.0]);")
@@ -275,7 +275,7 @@ mod tests {
         events.claim();
         let mut level = events.value_sender("level", 0u32);
 
-        // Sent while no GUI is open: kept for the one that opens.
+        // Sent while no editor is open: kept for the one that opens.
         level.send(&7);
         events.editor_opened();
         // The first tick may come before the page loaded and reach nothing.
@@ -287,7 +287,7 @@ mod tests {
         );
         assert_eq!(events.take_script(), None);
 
-        // The plugin sends nothing more. A GUI that opens next still gets
+        // The plugin sends nothing more. An editor that opens next still gets
         // the value.
         events.editor_closed();
         events.editor_opened();
@@ -468,7 +468,7 @@ mod tests {
         if let Some(script) = events.take_script() {
             check(script);
         }
-        // Whatever happened in between, the GUI ends on the last value.
+        // Whatever happened in between, the editor ends on the last value.
         assert_eq!(last, SENDS);
     }
 

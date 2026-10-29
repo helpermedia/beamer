@@ -1,6 +1,6 @@
 [package]
 name = "beamer-webview"
-description = "WebView GUI support for Beamer audio plugins"
+description = "WebView editor support for Beamer audio plugins"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

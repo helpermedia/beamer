@@ -1112,7 +1112,7 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     /// Called by DAW when live MIDI CC input is received during learn mode.
     ///
-    /// Override this to implement MIDI learn in your plugin UI. When the user
+    /// Override this to implement MIDI learn in your editor. When the user
     /// enables "MIDI Learn" mode and moves a MIDI CC knob, the DAW calls this
     /// method so the plugin can map that CC to a parameter.
     ///

@@ -1736,7 +1736,7 @@ static void beamer_auv3_on_loaded(void* context) {
 
 // Prefer zero-sized view configurations so Logic and GarageBand defer to
 // preferredContentSize. If no {0, 0} entry exists (Reaper, other hosts),
-// accept all configurations so the host knows we have a GUI.
+// accept all configurations so the host knows we have an editor.
 - (NSIndexSet*)supportedViewConfigurations:(NSArray<AUAudioUnitViewConfiguration*>*)availableViewConfigurations {
     NSMutableIndexSet* zeroSized = [[NSMutableIndexSet alloc] init];
     for (NSUInteger i = 0; i < availableViewConfigurations.count; i++) {
@@ -1748,23 +1748,23 @@ static void beamer_auv3_on_loaded(void* context) {
     if ([zeroSized count] > 0) {
         return zeroSized;
     }
-    // No {0, 0} entry - accept all so the host shows the GUI.
+    // No {0, 0} entry - accept all so the host shows the editor.
     return [NSIndexSet indexSetWithIndexesInRange:
         NSMakeRange(0, availableViewConfigurations.count)];
 }
 
 // =============================================================================
-// MARK: - GUI / WebView
+// MARK: - Editor / WebView
 // =============================================================================
 
 // Hosts call this method on the AUAudioUnit to get a view controller for the
-// plugin UI. This is the primary UI path for hosts like Reaper that use the
+// editor. This is the primary editor path for hosts like Reaper that use the
 // AUAudioUnit API directly. For hosts that check the extension's principal
-// class (Logic Pro), the AUViewController extension in auv3_extension_gui.m
-// provides the UI independently.
+// class (Logic Pro), the AUViewController extension in
+// auv3_extension_editor.m provides the editor independently.
 - (void)requestViewControllerWithCompletionHandler:
     (void (^)(NSViewController* _Nullable))completionHandler {
-    if (!beamer_au_has_gui(_rustInstance)) {
+    if (!beamer_au_has_editor(_rustInstance)) {
         completionHandler(nil);
         return;
     }
@@ -1778,7 +1778,7 @@ static void beamer_auv3_on_loaded(void* context) {
     _editorHideCount++;
 
     uint32_t width = 0, height = 0;
-    beamer_au_get_gui_size(_rustInstance, &width, &height);
+    beamer_au_get_editor_size(_rustInstance, &width, &height);
 
     {{WRAPPER_CLASS}}EditorView* container = [[{{WRAPPER_CLASS}}EditorView alloc]
         initWithFrame:NSMakeRect(0, 0, width, height)];
@@ -1803,9 +1803,9 @@ static void beamer_auv3_on_loaded(void* context) {
 // plugin: its parameter values and the events it emits.
 - (BOOL)_openEditorIn:(NSView*)container {
     uint8_t bgColor[4];
-    beamer_au_get_gui_background_color(bgColor);
+    beamer_au_get_editor_background_color(bgColor);
 
-    const char* devUrl = beamer_au_get_gui_url(_rustInstance);
+    const char* devUrl = beamer_au_get_webview_url(_rustInstance);
     void* webviewHandle;
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url_with_ipc(
@@ -1813,7 +1813,7 @@ static void beamer_auv3_on_loaded(void* context) {
             beamer_auv3_on_message, beamer_auv3_on_loaded,
             (__bridge void*)self);
     } else {
-        const void* assets = beamer_au_get_gui_assets();
+        const void* assets = beamer_au_get_webview_assets();
         webviewHandle = beamer_webview_create_with_ipc(
             (__bridge void*)container, assets, bgColor,
             beamer_auv3_on_message, beamer_auv3_on_loaded,

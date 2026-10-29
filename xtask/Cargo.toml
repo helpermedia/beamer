@@ -11,6 +11,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# Finds the web UI of a plugin by the rule of the export macro.
+beamer-utils = { workspace = true }
 uuid = { version = "1.11", features = ["v4"] }
 toml = "1"
 serde = { workspace = true }

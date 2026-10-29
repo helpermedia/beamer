@@ -15,7 +15,7 @@ This crate provides **both AUv2 and AUv3** support through a shared C-ABI bridge
 - **In-place processing**: The main bus is processed in place and reported to the host as such
 - **Factory presets**: The presets of `Model::PRESETS` as the factory presets of the Audio Unit
 - **Sample-accurate automation**: Opt-in sub-blocks at scheduled parameter changes
-- **WebView GUI**: Web-based plugin interfaces via `beamer-webview`
+- **WebView editor**: Web-based plugin editors via `beamer-webview`
 
 ## Platform Requirements
 

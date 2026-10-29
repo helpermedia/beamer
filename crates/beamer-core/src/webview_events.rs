@@ -42,7 +42,7 @@
 //! plugin creates from the queue in `prepare()`: a
 //! [`WebViewValueSender`] for the newest value, such as a meter, or a
 //! [`WebViewStreamSender`] for every value in order, such as a scrolling
-//! history. [`is_gui_open()`](WebViewEventQueue::is_gui_open) tells it
+//! history. [`is_editor_open()`](WebViewEventQueue::is_editor_open) tells it
 //! whether anything shows what it measures.
 
 use std::collections::VecDeque;
@@ -114,7 +114,7 @@ impl WebViewEventQueue {
         }
         #[cfg(debug_assertions)]
         self.assert_no_sender_named(name);
-        if !self.is_gui_open() {
+        if !self.is_editor_open() {
             return;
         }
 
@@ -140,13 +140,13 @@ impl WebViewEventQueue {
         pending.push_back(format!("{name_json},{data_json}"));
     }
 
-    /// Whether a GUI of the plugin is open now.
+    /// Whether an editor of the plugin is open now.
     ///
     /// Realtime-safe: one atomic load. The audio thread asks it to skip
-    /// work that only a GUI shows, such as a meter or a spectrum. Always
-    /// `false` for a plugin without a GUI.
+    /// work that only an editor shows, such as a meter or a spectrum. Always
+    /// `false` for a plugin without an editor.
     #[inline]
-    pub fn is_gui_open(&self) -> bool {
+    pub fn is_editor_open(&self) -> bool {
         self.shared.editors.load(Ordering::Acquire) > 0
     }
 
@@ -271,7 +271,7 @@ impl WebViewEventQueue {
             first
         };
         for end in self.senders().iter_mut() {
-            end.gui_opened(first);
+            end.editor_opened(first);
         }
     }
 
@@ -368,7 +368,7 @@ impl WebViewEventQueue {
 }
 
 /// The queue's end of a sender the audio thread sends through: what the
-/// queue delivers at each tick of the GUI.
+/// queue delivers at each tick of the editor.
 ///
 /// Only the queue calls these, under the lock of its senders, so each end
 /// has one consumer.
@@ -382,7 +382,7 @@ pub(crate) trait SenderEnd: Send {
     fn is_gone(&self) -> bool;
 
     /// An editor was opened. `first` when no other editor was open.
-    fn gui_opened(&mut self, first: bool);
+    fn editor_opened(&mut self, first: bool);
 
     /// The page of an editor loaded and knows nothing yet.
     fn page_loaded(&mut self);
@@ -617,18 +617,18 @@ mod tests {
     }
 
     #[test]
-    fn test_gui_is_open_while_an_editor_is() {
+    fn test_editor_is_open_while_one_is() {
         let events = WebViewEventQueue::new();
         events.claim();
-        assert!(!events.is_gui_open());
+        assert!(!events.is_editor_open());
 
         events.editor_opened();
         events.editor_opened();
         events.editor_closed();
-        assert!(events.is_gui_open());
+        assert!(events.is_editor_open());
 
         events.editor_closed();
-        assert!(!events.is_gui_open());
+        assert!(!events.is_editor_open());
     }
 
     #[test]

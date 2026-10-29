@@ -237,7 +237,7 @@ pub fn bundle_auv3(
     // Auto-detect component type, manufacturer and subtype from plugin source
     let codes = AuCodes::detect(package, &package_info.dir);
     let names = AuNames::new(package, &codes);
-    let (_, _, _, detected_plugin_name, detected_vendor_name, has_gui) = detect_au_component_info(&package_info.dir);
+    let (_, _, _, detected_plugin_name, detected_vendor_name, has_editor) = detect_au_component_info(&package_info.dir);
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
@@ -264,7 +264,7 @@ pub fn bundle_auv3(
         version_int,
         plugin_name: detected_plugin_name.as_deref(),
         vendor_name: detected_vendor_name.as_deref(),
-        has_gui,
+        has_editor,
     });
     fs::write(appex_contents_dir.join("Info.plist"), appex_info_plist)
         .map_err(|e| format!("Failed to write appex Info.plist: {}", e))?;
@@ -401,8 +401,8 @@ fn create_appex_info_plist(config: &AppexPlistConfig) -> String {
     // Get appropriate tags based on component type
     let tags = plist_strings(&au_tags(&config.codes.component_type, config.subcategories), "                        ");
 
-    // Use AudioUnit-UI extension point for plugins with a GUI
-    let extension_point = if config.has_gui {
+    // Use AudioUnit-UI extension point for plugins with an editor
+    let extension_point = if config.has_editor {
         "com.apple.AudioUnit-UI"
     } else {
         "com.apple.AudioUnit"

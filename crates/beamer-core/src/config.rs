@@ -318,9 +318,6 @@ pub struct Config {
     /// Plugin version string.
     pub version: &'static str,
 
-    /// Whether this plugin has a GUI.
-    pub has_gui: bool,
-
     /// Plugin subcategories for more specific classification.
     pub subcategories: &'static [Subcategory],
 
@@ -367,24 +364,26 @@ pub struct Config {
     /// `com.beamer.<package>`.
     pub log_subsystem: &'static str,
 
-    /// Embedded web assets for the GUI. Set by the proc macro from the
-    /// webview directory contents.
-    pub gui_assets: Option<&'static crate::EmbeddedAssets>,
+    /// The web UI's files, embedded in the binary. Set by the proc macro
+    /// from the `webview` directory. These or a
+    /// [`webview_url`](Self::webview_url) give the plugin an editor.
+    pub webview_assets: Option<&'static crate::EmbeddedAssets>,
 
-    /// Dev server URL. Takes priority over `gui_assets` when set.
-    pub gui_url: Option<&'static str>,
+    /// Dev server URL of the web UI. Takes priority over
+    /// [`webview_assets`](Self::webview_assets) when set.
+    pub webview_url: Option<&'static str>,
 
-    /// Initial GUI width in pixels.
-    pub gui_width: u32,
+    /// Initial editor width in pixels.
+    pub editor_width: u32,
 
-    /// Initial GUI height in pixels.
-    pub gui_height: u32,
+    /// Initial editor height in pixels.
+    pub editor_height: u32,
 
     /// Background color (RGBA, 0-255) painted on the parent view's layer
     /// before the WKWebView loads. Prevents the host's default white from
     /// flashing while web content renders.
     /// All-zero means no override (platform default).
-    pub gui_background_color: [u8; 4],
+    pub editor_background_color: [u8; 4],
 }
 
 /// Helper to convert a string literal to a 4-byte array at compile time.
@@ -519,7 +518,6 @@ impl Config {
             url: "",
             email: "",
             version: "1.0.0",
-            has_gui: false,
             subcategories: &[],
             // Instruments and MIDI effects receive MIDI, MIDI effects send it.
             midi_input: matches!(category, Category::Instrument | Category::MidiEffect),
@@ -532,11 +530,11 @@ impl Config {
             sample_accurate_automation: false,
             log_level: None,
             log_subsystem: "",
-            gui_assets: None,
-            gui_url: None,
-            gui_width: 0,
-            gui_height: 0,
-            gui_background_color: [0; 4],
+            webview_assets: None,
+            webview_url: None,
+            editor_width: 0,
+            editor_height: 0,
+            editor_background_color: [0; 4],
         }
     }
 
@@ -568,42 +566,34 @@ impl Config {
         self
     }
 
-    /// Enable the GUI.
+    /// Set the web UI's embedded files, which gives the plugin an editor.
     #[doc(hidden)]
-    pub const fn with_gui(mut self) -> Self {
-        self.has_gui = true;
+    pub const fn with_webview_assets(mut self, assets: &'static crate::EmbeddedAssets) -> Self {
+        self.webview_assets = Some(assets);
         self
     }
 
-    /// Set the embedded web assets and enable the GUI.
+    /// Set the dev server URL of the web UI, which gives the plugin an
+    /// editor.
     #[doc(hidden)]
-    pub const fn with_gui_assets(mut self, assets: &'static crate::EmbeddedAssets) -> Self {
-        self.gui_assets = Some(assets);
-        self.has_gui = true;
+    pub const fn with_webview_url(mut self, url: &'static str) -> Self {
+        self.webview_url = Some(url);
         self
     }
 
-    /// Set the dev server URL and enable the GUI.
+    /// Set the initial editor size in pixels.
     #[doc(hidden)]
-    pub const fn with_gui_url(mut self, url: &'static str) -> Self {
-        self.gui_url = Some(url);
-        self.has_gui = true;
-        self
-    }
-
-    /// Set the initial GUI size in pixels.
-    #[doc(hidden)]
-    pub const fn with_gui_size(mut self, width: u32, height: u32) -> Self {
-        self.gui_width = width;
-        self.gui_height = height;
+    pub const fn with_editor_size(mut self, width: u32, height: u32) -> Self {
+        self.editor_width = width;
+        self.editor_height = height;
         self
     }
 
     /// Set the background color painted on the parent view while web content
     /// loads. Specified as `[R, G, B, A]` with each component in 0-255 range.
     #[doc(hidden)]
-    pub const fn with_gui_background_color(mut self, rgba: [u8; 4]) -> Self {
-        self.gui_background_color = rgba;
+    pub const fn with_editor_background_color(mut self, rgba: [u8; 4]) -> Self {
+        self.editor_background_color = rgba;
         self
     }
 
@@ -716,6 +706,12 @@ impl Config {
     pub const fn with_log_subsystem(mut self, subsystem: &'static str) -> Self {
         self.log_subsystem = subsystem;
         self
+    }
+
+    /// Whether the plugin has an editor: a web UI, embedded or from a dev
+    /// server.
+    pub const fn has_editor(&self) -> bool {
+        self.webview_assets.is_some() || self.webview_url.is_some()
     }
 
     /// Get VST3 component UID as [u32; 4].

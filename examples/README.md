@@ -297,7 +297,7 @@ A **Bypass** parameter passes all MIDI through unchanged.
 
 ### [WebView Demo](webview-demo/)
 
-Gain and pan effect with a web-based GUI built with React, Vite and Tailwind.
+Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 
 **Parameters:**
 
