@@ -57,6 +57,9 @@
 // produced, the list goes to the host in parts.
 #define MIDI_OUTPUT_LIST_BYTES 32768
 
+// The most bytes a MIDIEventList holds, as CoreMIDI documents it.
+#define MIDI_EVENT_LIST_MAX_BYTES 65536
+
 // Private property for view factory to retrieve the Rust instance handle.
 // Uses the AU custom property range (64000+).
 #define kBeamerAuPropertyRustInstance 64000
@@ -88,6 +91,10 @@ typedef struct {
     AURenderCallbackStruct input[BEAMER_AU_MAX_BUSES];
     InputConnection inputConnection[BEAMER_AU_MAX_BUSES];
     AUMIDIOutputCallbackStruct midiOutput;
+    // The host's AUMIDIEventListBlock for MIDI output, or NULL. Not
+    // retained here: the instance keeps every block the host set alive
+    // until it closes (retainedOutputBlocks).
+    const void* midiOutputEventList;
     HostCallbackInfo host;
 } CallbackSet;
 
@@ -272,6 +279,18 @@ typedef struct BeamerAuv2Instance {
     bool isMultiOutputSource;
     MIDIPacketList* midiOutputList;
     UInt32 midiOutputListBytes;
+    // The event list that collects the MIDI output of a render call for a
+    // host that set an event list callback.
+    MIDIEventList* midiOutputEventList;
+    UInt32 midiOutputEventListBytes;
+    // The protocol the host wants MIDI output in (HostMIDIProtocol), 0
+    // until it sets one.
+    _Atomic SInt32 hostMidiProtocol;
+    // Every event list block the host set, retained until the instance
+    // closes: a render call may still use one the host replaced. Host
+    // threads change it under callbacksMutex.
+    const void** retainedOutputBlocks;
+    UInt32 retainedOutputBlockCount;
 #ifdef BEAMER_DIAGNOSTICS
     // The failing property queries logged so far, so that each is logged
     // once: a host may repeat a query, also on its render thread. Written
@@ -286,15 +305,25 @@ typedef struct BeamerAuv2Instance {
 #endif
 } BeamerAuv2Instance;
 
-// MIDI output of one render call.
+// MIDI output of one render call: to the host's event list block if it set
+// one, else to its legacy callback.
 typedef struct {
-    AUMIDIOutputCallbackStruct callback;
+    // What Rust sends the plugin's MIDI to, with this struct as context.
+    BeamerAuMidiOutput sink;
     const AudioTimeStamp* timeStamp;
+    // Legacy: the host's callback and the packet list.
+    AUMIDIOutputCallbackStruct callback;
     MIDIPacketList* list;
     // Size of the list in bytes.
     UInt32 listBytes;
     // Write position in the list.
     MIDIPacket* packet;
+    // Event lists: the host's block (nil for legacy) and the event list.
+    __unsafe_unretained AUMIDIEventListBlock listBlock;
+    MIDIEventList* eventList;
+    UInt32 eventListBytes;
+    MIDIProtocolID protocol;
+    MIDIEventPacket* eventPacket;
 } BeamerAuv2MidiOutput;
 
 // =============================================================================
@@ -948,6 +977,7 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
     inst->sampleRate = 44100.0;
     inst->maxFramesPerSlice = 1024;
     atomic_init(&inst->initialized, false);
+    atomic_init(&inst->hostMidiProtocol, 0);
     atomic_init(&inst->bypassed, false);
     atomic_init(&inst->processesInPlace, false);
 
@@ -1049,6 +1079,13 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
             ? UINT32_MAX : MIDI_OUTPUT_LIST_BYTES + sysexBytes;
         inst->midiOutputList = (MIDIPacketList*)calloc(1, listBytes);
         inst->midiOutputListBytes = inst->midiOutputList ? listBytes : 0;
+        // As event list: SysEx7 takes 8 bytes of words for 6 of a message.
+        // CoreMIDI documents 65,536 bytes as the most a list holds; a full
+        // list goes to the host and a new one starts.
+        UInt32 eventListBytes = (sysexBytes > (MIDI_EVENT_LIST_MAX_BYTES - MIDI_OUTPUT_LIST_BYTES) / 2)
+            ? MIDI_EVENT_LIST_MAX_BYTES : MIDI_OUTPUT_LIST_BYTES + 2 * sysexBytes;
+        inst->midiOutputEventList = (MIDIEventList*)calloc(1, eventListBytes);
+        inst->midiOutputEventListBytes = inst->midiOutputEventList ? eventListBytes : 0;
     }
 
     // SysEx input for a plugin with MIDI input: a message may be as large
@@ -1121,6 +1158,15 @@ static OSStatus BeamerAuv2Close(void* self) {
     free(inst->midiOutputList);
     inst->midiOutputList = NULL;
     inst->midiOutputListBytes = 0;
+    free(inst->midiOutputEventList);
+    inst->midiOutputEventList = NULL;
+    inst->midiOutputEventListBytes = 0;
+    for (UInt32 i = 0; i < inst->retainedOutputBlockCount; i++) {
+        CFRelease(inst->retainedOutputBlocks[i]);
+    }
+    free(inst->retainedOutputBlocks);
+    inst->retainedOutputBlocks = NULL;
+    inst->retainedOutputBlockCount = 0;
 
     SysExQueueFree(&inst->sysexQueue);
 
@@ -1645,6 +1691,31 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }
             if (outDataSize) *outDataSize = sizeof(SInt32);
             if (outWritable) *outWritable = false;
+            return noErr;
+
+        // The protocol the host wants MIDI output in, set before
+        // initialization, for a plugin with MIDI output.
+        case kAudioUnitProperty_HostMIDIProtocol:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputEventList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (outDataSize) *outDataSize = sizeof(SInt32);
+            if (outWritable) *outWritable = !atomic_load_explicit(&inst->initialized, memory_order_acquire);
+            return noErr;
+
+        // MIDI output as event lists, for a plugin with MIDI output.
+        case kAudioUnitProperty_MIDIOutputEventListCallback:
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputEventList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (outDataSize) *outDataSize = sizeof(AUMIDIEventListBlock);
+            if (outWritable) *outWritable = true;
             return noErr;
 
         // MIDI output - only supported when the plugin has MIDI output.
@@ -2199,6 +2270,21 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             return noErr;
         }
 
+        case kAudioUnitProperty_HostMIDIProtocol: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputEventList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(SInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            *(SInt32*)outData = atomic_load_explicit(&inst->hostMidiProtocol, memory_order_relaxed);
+            *ioDataSize = sizeof(SInt32);
+            return noErr;
+        }
+
         case kAudioUnitProperty_MIDIOutputCallbackInfo: {
             if (scope != kAudioUnitScope_Global) {
                 return kAudioUnitErr_InvalidScope;
@@ -2547,6 +2633,68 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
             // Clear callback when connection is set.
             inst->callbacks.input[element].inputProc = NULL;
             inst->callbacks.input[element].inputProcRefCon = NULL;
+            pthread_mutex_unlock(&inst->callbacksMutex);
+            return noErr;
+        }
+
+        // The host sets it before initialization; it cannot change while
+        // the unit is initialized.
+        case kAudioUnitProperty_HostMIDIProtocol: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputEventList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!inData || inDataSize < sizeof(SInt32)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            if (atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
+                return kAudioUnitErr_Initialized;
+            }
+            atomic_store_explicit(&inst->hostMidiProtocol, *(const SInt32*)inData, memory_order_relaxed);
+            return noErr;
+        }
+
+        // The unit owns the block it gets: a copy, kept until the instance
+        // closes, so that a render call never calls a released one (a host
+        // that sets the same block again adds no copy). A NULL block stops
+        // the event list output.
+        case kAudioUnitProperty_MIDIOutputEventListCallback: {
+            if (scope != kAudioUnitScope_Global) {
+                return kAudioUnitErr_InvalidScope;
+            }
+            if (!inst->midiOutputEventList) {
+                return kAudioUnitErr_InvalidProperty;
+            }
+            if (!inData || inDataSize < sizeof(AUMIDIEventListBlock)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            __unsafe_unretained AUMIDIEventListBlock block = *(__unsafe_unretained AUMIDIEventListBlock const*)inData;
+            const void* retained = NULL;
+            if (block) {
+                const void** blocks = (const void**)realloc((void*)inst->retainedOutputBlocks,
+                    (inst->retainedOutputBlockCount + 1) * sizeof(const void*));
+                if (!blocks) {
+                    return kAudio_MemFullError;
+                }
+                inst->retainedOutputBlocks = blocks;
+                retained = (__bridge_retained const void*)[block copy];
+            }
+            pthread_mutex_lock(&inst->callbacksMutex);
+            if (retained) {
+                // A copy of a heap block is that block: keep it once.
+                bool kept = false;
+                for (UInt32 i = 0; i < inst->retainedOutputBlockCount && !kept; i++) {
+                    kept = (inst->retainedOutputBlocks[i] == retained);
+                }
+                if (kept) {
+                    CFRelease(retained);
+                } else {
+                    inst->retainedOutputBlocks[inst->retainedOutputBlockCount++] = retained;
+                }
+            }
+            inst->callbacks.midiOutputEventList = retained;
             pthread_mutex_unlock(&inst->callbacksMutex);
             return noErr;
         }
@@ -3055,24 +3203,55 @@ static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParamete
 // MARK: - MIDI Output
 // =============================================================================
 
+static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length);
+static void BeamerAuv2SendUmp(void* context, uint32_t sampleOffset, const uint32_t* words, uint32_t wordCount);
+
 // Start collecting the MIDI output of a render call. Returns false if the
-// plugin produces no MIDI or the host does not listen.
+// plugin produces no MIDI or the host does not listen. A host that set an
+// event list callback gets event lists in the protocol it set
+// (HostMIDIProtocol), MIDI 1.0 without one; otherwise the legacy callback
+// gets bytes.
 static bool BeamerAuv2BeginMidiOutput(BeamerAuv2Instance* inst, const AudioTimeStamp* timeStamp,
     BeamerAuv2MidiOutput* output) {
+
+    output->timeStamp = timeStamp;
+    output->listBlock = nil;
+    const void* listBlock = inst->renderCallbacks.midiOutputEventList;
+    if (listBlock && inst->midiOutputEventList) {
+        output->listBlock = (__bridge AUMIDIEventListBlock)listBlock;
+        SInt32 hostProtocol = atomic_load_explicit(&inst->hostMidiProtocol, memory_order_relaxed);
+        output->protocol = (hostProtocol == kMIDIProtocol_2_0) ? kMIDIProtocol_2_0 : kMIDIProtocol_1_0;
+        output->eventList = inst->midiOutputEventList;
+        output->eventListBytes = inst->midiOutputEventListBytes;
+        output->eventPacket = MIDIEventListInit(output->eventList, output->protocol);
+        output->sink = (BeamerAuMidiOutput){
+            .send_bytes = NULL, .send_words = BeamerAuv2SendUmp, .protocol = output->protocol, .context = output };
+        return true;
+    }
 
     output->callback = inst->renderCallbacks.midiOutput;
     if (!inst->midiOutputList || !output->callback.midiOutputCallback) {
         return false;
     }
-    output->timeStamp = timeStamp;
     output->list = inst->midiOutputList;
     output->listBytes = inst->midiOutputListBytes;
     output->packet = MIDIPacketListInit(output->list);
+    output->sink = (BeamerAuMidiOutput){
+        .send_bytes = BeamerAuv2SendMidi, .send_words = NULL, .protocol = 0, .context = output };
     return true;
 }
 
-// Hand the collected packets to the host and start a new list.
+// Hand the collected packets to the host and start a new list. An event
+// list goes with the render's sample time; its packets have their sample
+// offsets as time stamps.
 static void BeamerAuv2FlushMidiOutput(BeamerAuv2MidiOutput* output) {
+    if (output->listBlock) {
+        if (output->eventList->numPackets > 0) {
+            output->listBlock((AUEventSampleTime)output->timeStamp->mSampleTime, 0, output->eventList);
+        }
+        output->eventPacket = MIDIEventListInit(output->eventList, output->protocol);
+        return;
+    }
     if (output->list->numPackets > 0) {
         output->callback.midiOutputCallback(output->callback.userData,
             output->timeStamp, 0, output->list);
@@ -3100,6 +3279,24 @@ static void BeamerAuv2SendMidi(void* context, uint32_t sampleOffset, const uint8
         }
     }
     output->packet = next;
+}
+
+// Add one UMP message from the plugin to the event list
+// (BeamerAuUmpOutputFn), as SendMidi does for bytes.
+static void BeamerAuv2SendUmp(void* context, uint32_t sampleOffset, const uint32_t* words, uint32_t wordCount) {
+    BeamerAuv2MidiOutput* output = (BeamerAuv2MidiOutput*)context;
+
+    MIDIEventPacket* next = MIDIEventListAdd(output->eventList, output->eventListBytes,
+        output->eventPacket, sampleOffset, wordCount, words);
+    if (next == NULL) {
+        BeamerAuv2FlushMidiOutput(output);
+        next = MIDIEventListAdd(output->eventList, output->eventListBytes,
+            output->eventPacket, sampleOffset, wordCount, words);
+        if (next == NULL) {
+            return;
+        }
+    }
+    output->eventPacket = next;
 }
 
 // The SysEx events of a render call, linked in order.
@@ -3453,7 +3650,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
             BeamerAuv2QueuedEvents queued = BeamerAuv2LinkQueuedEvents(inst,
                 (AUEventSampleTime)inTimeStamp->mSampleTime, false);
             bool read = beamer_au_pass_midi_through(inst->rustInstance, inTimeStamp, inNumberFrames,
-                queued.list, passesMidi ? BeamerAuv2SendMidi : NULL, passesMidi ? &thru : NULL);
+                queued.list, passesMidi ? &thru.sink : NULL);
             if (read) {
                 EventQueueRelease(&inst->midiQueue, queued.midiCount);
                 SysExQueueRelease(&inst->sysexQueue, queued.sysexEnd);
@@ -3552,8 +3749,7 @@ static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActio
         pullAuxInput,
         inputData,
         hasTransport ? &transport : NULL,
-        sendsMidi ? BeamerAuv2SendMidi : NULL,
-        sendsMidi ? &midiOutput : NULL
+        sendsMidi ? &midiOutput.sink : NULL
     );
 
     // Give the events back to the queues. A render call that was refused

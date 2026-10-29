@@ -41,8 +41,8 @@ use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
-    scale, split_14bit_raw, ump, ump::SysEx7Assembler, AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, BypassAction, BypassHandler,
-    CrossfadeCurve, Midi1Translator, MidiBuffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel,
+    ump, ump::SysEx7Assembler, AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, BypassAction, BypassHandler,
+    CrossfadeCurve, Midi1Translator, MidiBuffer, MidiEvent, MidiProtocol, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel,
     MAX_BUSES, MAX_CHANNELS,
 };
 
@@ -758,128 +758,134 @@ fn update_midi_cc_state(
 // MIDI Output
 // =============================================================================
 
-/// Function that receives one MIDI message the plugin produced (matches
-/// BeamerAuMidiOutputFn in header).
+/// Function that receives one MIDI message the plugin produced as bytes
+/// (matches BeamerAuMidiOutputFn in header).
 ///
 /// `bytes` holds one complete MIDI 1.0 message of `length` bytes that is only
 /// valid during the call. `sample_offset` is its position in the current buffer.
 pub type BeamerAuMidiOutputFn =
     unsafe extern "C" fn(context: *mut c_void, sample_offset: u32, bytes: *const u8, length: u32);
 
+/// Function that receives one MIDI message the plugin produced as a
+/// Universal MIDI Packet message (matches BeamerAuUmpOutputFn in header).
+///
+/// `words` holds one message of `word_count` words (one SysEx7 packet of a
+/// longer SysEx message), only valid during the call.
+pub type BeamerAuUmpOutputFn =
+    unsafe extern "C" fn(context: *mut c_void, sample_offset: u32, words: *const u32, word_count: u32);
+
+/// Where the MIDI output of a render call goes, as the wrapper describes it
+/// (matches BeamerAuMidiOutput in header): bytes for a host that takes
+/// MIDI 1.0 bytes, or UMP messages in a protocol for one that takes event
+/// lists.
+#[repr(C)]
+pub struct BeamerAuMidiOutput {
+    /// Receives MIDI 1.0 bytes, or null.
+    pub send_bytes: Option<BeamerAuMidiOutputFn>,
+    /// Receives UMP messages, or null. Taken over `send_bytes`.
+    pub send_words: Option<BeamerAuUmpOutputFn>,
+    /// The protocol of the UMP messages: a `MIDIProtocolID`, 2 for MIDI 2.0,
+    /// anything else MIDI 1.0.
+    pub protocol: i32,
+    /// Passed to the function unchanged.
+    pub context: *mut c_void,
+}
+
+/// The form a sink takes MIDI in.
+#[derive(Clone, Copy)]
+enum OutputForm {
+    Bytes(BeamerAuMidiOutputFn),
+    Ump(BeamerAuUmpOutputFn, MidiProtocol),
+}
+
 /// Where the MIDI output of a render call goes.
 ///
 /// The wrapper passes it to `beamer_au_render` when the host listens to the
-/// plugin's MIDI output. It forwards each message to the host in the form its
-/// API generation expects.
+/// plugin's MIDI output. It forwards each message to the host in the form the
+/// host takes.
 #[derive(Clone, Copy)]
 pub struct MidiOutputSink {
-    send: BeamerAuMidiOutputFn,
+    form: OutputForm,
     context: *mut c_void,
 }
 
 impl MidiOutputSink {
-    /// Create a sink from the function and context a wrapper passed.
+    /// Create a sink that takes MIDI 1.0 bytes.
     ///
     /// # Safety
     ///
     /// `send` must be safe to call with `context` from the render thread for as
     /// long as the sink is used.
     pub unsafe fn new(send: BeamerAuMidiOutputFn, context: *mut c_void) -> Self {
-        Self { send, context }
+        Self { form: OutputForm::Bytes(send), context }
     }
 
-    fn send(&self, sample_offset: u32, bytes: &[u8]) {
-        // SAFETY: Guaranteed by the caller of `new`. The slice is valid for the call.
-        unsafe {
-            (self.send)(
-                self.context,
-                sample_offset,
-                bytes.as_ptr(),
-                bytes.len() as u32,
-            )
-        }
+    /// Create a sink from what a wrapper passed: null for none, or the
+    /// form it describes.
+    ///
+    /// # Safety
+    ///
+    /// `output` must be null or valid for the call; its functions must be
+    /// safe to call with its context from the render thread for as long as
+    /// the sink is used.
+    pub unsafe fn from_ffi(output: *const BeamerAuMidiOutput) -> Option<Self> {
+        // SAFETY: Guaranteed by the caller.
+        let output = unsafe { output.as_ref() }?;
+        let form = match (output.send_words, output.send_bytes) {
+            (Some(send), _) => {
+                let protocol = if output.protocol == 2 { MidiProtocol::Midi2 } else { MidiProtocol::Midi1 };
+                OutputForm::Ump(send, protocol)
+            }
+            (None, Some(send)) => OutputForm::Bytes(send),
+            (None, None) => return None,
+        };
+        Some(Self { form, context: output.context })
+    }
+
+    fn send_bytes(&self, send: BeamerAuMidiOutputFn, sample_offset: u32, bytes: &[u8]) {
+        // SAFETY: Guaranteed by the caller of `new` or `from_ffi`. The slice is
+        // valid for the call.
+        unsafe { send(self.context, sample_offset, bytes.as_ptr(), bytes.len() as u32) }
+    }
+
+    fn send_words(&self, send: BeamerAuUmpOutputFn, sample_offset: u32, words: &[u32]) {
+        // SAFETY: Guaranteed by the caller of `from_ffi`. The slice is valid
+        // for the call.
+        unsafe { send(self.context, sample_offset, words.as_ptr(), words.len() as u32) }
     }
 }
 
-/// Encode a MIDI event as MIDI 1.0 channel messages, handing each to `emit`.
-///
-/// Most events are one message. A parameter number change is its selection
-/// and data entry control changes, a program change with a bank is bank
-/// select (CC 0 and 32) before it. SysEx (which `send_midi_output` handles)
-/// and events that have no MIDI 1.0 encoding (note expression, chord and
-/// scale info) emit nothing.
-fn encode_midi_event(event: &MidiEventKind, mut emit: impl FnMut(&[u8])) {
-    let control_change = |channel: u8, controller: u8, value: u8| [0xB0 | (channel & 0x0F), controller & 0x7F, value & 0x7F];
-    match event {
-        MidiEventKind::NoteOn(note) => emit(&[
-            0x90 | (note.channel & 0x0F),
-            note.pitch & 0x7F,
-            // A Note On with velocity 0 means Note Off on the wire.
-            scale::velocity_to_7bit(note.velocity).max(1),
-        ]),
-        MidiEventKind::NoteOff(note) => emit(&[
-            0x80 | (note.channel & 0x0F),
-            note.pitch & 0x7F,
-            scale::velocity_to_7bit(note.velocity),
-        ]),
-        MidiEventKind::PolyPressure(pp) => emit(&[
-            0xA0 | (pp.channel & 0x0F),
-            pp.pitch & 0x7F,
-            scale::to_7bit(pp.pressure),
-        ]),
-        MidiEventKind::ControlChange(cc) => emit(&control_change(cc.channel, cc.controller, scale::to_7bit(cc.value))),
-        MidiEventKind::ProgramChange(pc) => {
-            if let Some(bank) = pc.bank {
-                let (msb, lsb) = split_14bit_raw(bank);
-                emit(&control_change(pc.channel, beamer_core::cc::BANK_SELECT_MSB, msb));
-                emit(&control_change(pc.channel, beamer_core::cc::BANK_SELECT_LSB, lsb));
-            }
-            emit(&[0xC0 | (pc.channel & 0x0F), pc.program & 0x7F]);
-        }
-        MidiEventKind::ChannelPressure(cp) => emit(&[0xD0 | (cp.channel & 0x0F), scale::to_7bit(cp.pressure)]),
-        MidiEventKind::PitchBend(pb) => {
-            let (msb, lsb) = split_14bit_raw(scale::bipolar_to_14bit(pb.value));
-            emit(&[0xE0 | (pb.channel & 0x0F), lsb, msb]);
-        }
-        MidiEventKind::ParameterNumber(change) => {
-            let (changes, count) = change.midi1_control_changes();
-            for &(controller, value) in &changes[..count] {
-                emit(&control_change(change.channel, controller, value));
-            }
-        }
-        MidiEventKind::SysEx(_)
-        | MidiEventKind::NoteExpressionValue(_)
-        | MidiEventKind::NoteExpressionInt(_)
-        | MidiEventKind::NoteExpressionText(_)
-        | MidiEventKind::ChordInfo(_)
-        | MidiEventKind::ScaleInfo(_) => {}
-    }
-}
-
-/// The longest SysEx message an Audio Unit passes in one event or packet:
-/// their length fields have 16 bits.
+/// The longest SysEx message an Audio Unit passes in one legacy event or
+/// packet: their length fields have 16 bits.
 const MAX_AU_SYSEX_BYTES: usize = u16::MAX as usize;
 
 /// Send the MIDI events a plugin produced to the host.
 ///
-/// Every event becomes complete MIDI 1.0 messages (see `encode_midi_event`).
-/// Events without a MIDI 1.0 encoding are skipped. Returns how many SysEx messages were dropped because
-/// they are longer than an Audio Unit passes.
+/// As bytes, every event becomes complete MIDI 1.0 messages
+/// (`ump::midi1_messages`); as UMP, messages in the sink's protocol
+/// (`ump::ump_messages`), SysEx as SysEx7 packets. Events without a form in
+/// it are skipped. Returns how many SysEx messages were dropped because they
+/// are longer than a legacy Audio Unit event passes.
 fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) -> u32 {
     let mut dropped = 0;
     for (index, event) in output.as_slice().iter().enumerate() {
-        match &event.event {
-            MidiEventKind::SysEx(_) => {
-                // The event holds the payload. On the wire the message is
-                // framed by F0 and F7, as the buffer keeps it.
-                match output.framed_sysex(index) {
-                    Some(message) if message.len() <= MAX_AU_SYSEX_BYTES => {
-                        sink.send(event.sample_offset, message);
-                    }
-                    _ => dropped += 1,
-                }
+        let offset = event.sample_offset;
+        match (&event.event, sink.form) {
+            // The event holds the payload. On the wire the message is
+            // framed by F0 and F7, as the buffer keeps it.
+            (MidiEventKind::SysEx(_), OutputForm::Bytes(send)) => match output.framed_sysex(index) {
+                Some(message) if message.len() <= MAX_AU_SYSEX_BYTES => sink.send_bytes(send, offset, message),
+                _ => dropped += 1,
+            },
+            (MidiEventKind::SysEx(payload), OutputForm::Ump(send, _)) => {
+                ump::sysex7_packets(payload, |words| sink.send_words(send, offset, &words));
             }
-            other => encode_midi_event(other, |bytes| sink.send(event.sample_offset, bytes)),
+            (other, OutputForm::Bytes(send)) => {
+                ump::midi1_messages(other, |bytes| sink.send_bytes(send, offset, bytes))
+            }
+            (other, OutputForm::Ump(send, protocol)) => {
+                ump::ump_messages(other, protocol, |words| sink.send_words(send, offset, words))
+            }
         }
     }
     dropped
@@ -2459,6 +2465,7 @@ pub(crate) mod test_events {
 mod tests {
     use super::test_events::*;
     use super::*;
+    use beamer_core::scale;
     use std::mem::{offset_of, size_of};
 
     /// Sample time of the buffer start used by the tests. It is larger than
@@ -2841,6 +2848,81 @@ mod tests {
         let sink = unsafe { MidiOutputSink::new(record, context.cast()) };
         send_midi_output(&output, sink);
         received
+    }
+
+    /// A UMP sink function that records the words it receives.
+    unsafe extern "C" fn record_words(context: *mut c_void, sample_offset: u32, words: *const u32, word_count: u32) {
+        // SAFETY: `sent_as_ump` passes a pointer to its vector. The words are
+        // valid for the call.
+        let (received, words) = unsafe {
+            (
+                &mut *context.cast::<Vec<(u32, Vec<u32>)>>(),
+                std::slice::from_raw_parts(words, word_count as usize),
+            )
+        };
+        received.push((sample_offset, words.to_vec()));
+    }
+
+    /// Send the events through a UMP sink in `protocol` (a MIDIProtocolID)
+    /// and return the messages it received.
+    fn sent_as_ump(events: &[MidiEvent], protocol: i32) -> Vec<(u32, Vec<u32>)> {
+        let mut output = MidiBuffer::new_boxed(4096);
+        for event in events {
+            assert!(output.push(*event));
+        }
+        let mut received: Vec<(u32, Vec<u32>)> = Vec::new();
+        let ffi = BeamerAuMidiOutput {
+            send_bytes: Some(record),
+            send_words: Some(record_words),
+            protocol,
+            context: (&mut received as *mut Vec<(u32, Vec<u32>)>).cast(),
+        };
+        // SAFETY: `record_words` only uses the context while `received` is
+        // alive; the words function is taken over the bytes one.
+        let sink = unsafe { MidiOutputSink::from_ffi(&ffi) }.expect("a sink");
+        assert_eq!(send_midi_output(&output, sink), 0);
+        received
+    }
+
+    #[test]
+    fn test_midi_output_as_ump_in_either_protocol() {
+        let events = [
+            MidiEvent::note_on(3, 0, 62, scale::velocity_from_u16(0x8000), beamer_core::note_id(0, 0, 62), -175.0, 0),
+            MidiEvent::parameter_number(4, beamer_core::ParameterNumber::rpn(0, 0, scale::from_14bit(12 << 7))),
+            MidiEvent::sysex(5, &[1, 2, 3, 4, 5, 6, 7]),
+        ];
+        assert_eq!(
+            sent_as_ump(&events, 2),
+            [
+                (3, vec![0x4090_3E03, 0x8000_7880]),
+                (4, vec![0x4020_0000, 0x1800_0000]),
+                (5, vec![0x3016_0102, 0x0304_0506]),
+                (5, vec![0x3031_0700, 0]),
+            ]
+        );
+        assert_eq!(
+            sent_as_ump(&events, 1),
+            [
+                (3, vec![0x2090_3E40]),
+                (4, vec![0x20B0_6500]),
+                (4, vec![0x20B0_6400]),
+                (4, vec![0x20B0_060C]),
+                (4, vec![0x20B0_2600]),
+                (5, vec![0x3016_0102, 0x0304_0506]),
+                (5, vec![0x3031_0700, 0]),
+            ]
+        );
+        // No words function: bytes.
+        let ffi = BeamerAuMidiOutput {
+            send_bytes: Some(record),
+            send_words: None,
+            protocol: 2,
+            context: std::ptr::null_mut(),
+        };
+        // SAFETY: Only checked for its form, never called.
+        assert!(matches!(unsafe { MidiOutputSink::from_ffi(&ffi) }.map(|sink| sink.form), Some(OutputForm::Bytes(_))));
+        // SAFETY: A null output is none.
+        assert!(unsafe { MidiOutputSink::from_ffi(std::ptr::null()) }.is_none());
     }
 
     #[test]

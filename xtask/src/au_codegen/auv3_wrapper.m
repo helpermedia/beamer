@@ -68,17 +68,97 @@ static void BeamerAuv3ReadTransport(__unsafe_unretained AUHostMusicalContextBloc
 // MARK: - MIDI Output
 // =============================================================================
 
-// MIDI output of one render call: the host's block and the sample time of the
-// start of the buffer. The block is not retained, the wrapper holds it.
+// MIDI output of one render call: the host's block (legacy or event list)
+// and the sample time of the start of the buffer. The blocks are not
+// retained, the wrapper holds them.
 typedef struct {
+    // What Rust sends the plugin's MIDI to, with this struct as context.
+    BeamerAuMidiOutput sink;
     __unsafe_unretained AUMIDIOutputEventBlock block;
+    __unsafe_unretained AUMIDIEventListBlock listBlock;
+    MIDIProtocolID protocol;
     AUEventSampleTime bufferStart;
+    // The messages of one sample offset waiting to go out as one list, with
+    // that offset. The list holds 276 bytes: up to 64 words in one packet,
+    // fewer when SysEx7 and other messages take packets of their own.
+    MIDIEventList pending;
+    MIDIEventPacket* pendingPacket;
+    uint32_t pendingOffset;
 } BeamerAuv3MidiOutput;
 
 // Forward one MIDI message from the plugin to the host (BeamerAuMidiOutputFn).
 static void BeamerAuv3SendMidi(void* context, uint32_t sampleOffset, const uint8_t* bytes, uint32_t length) {
     const BeamerAuv3MidiOutput* output = (const BeamerAuv3MidiOutput*)context;
     output->block(output->bufferStart + sampleOffset, 0, (NSInteger)length, bytes);
+}
+
+// Hand the messages waiting for their offset to the host as one list.
+static void BeamerAuv3FlushUmp(BeamerAuv3MidiOutput* output) {
+    if (output->pending.numPackets > 0) {
+        output->listBlock(output->bufferStart + output->pendingOffset, 0, &output->pending);
+    }
+    output->pendingPacket = MIDIEventListInit(&output->pending, output->protocol);
+}
+
+// Forward one UMP message from the plugin to the host (BeamerAuUmpOutputFn).
+// The messages of one sample offset go out as one list at that sample time,
+// in one packet with time stamp 0, as the framework hands the host the
+// legacy output: a list with time stamps in its packets reaches a legacy v2
+// callback at the start of the buffer. Out of process the framework passes
+// the output through a buffer of its own; fewer lists fill less of it.
+static void BeamerAuv3SendUmp(void* context, uint32_t sampleOffset, const uint32_t* words, uint32_t wordCount) {
+    BeamerAuv3MidiOutput* output = (BeamerAuv3MidiOutput*)context;
+    if (output->pending.numPackets > 0 && sampleOffset != output->pendingOffset) {
+        BeamerAuv3FlushUmp(output);
+    }
+    output->pendingOffset = sampleOffset;
+    MIDIEventPacket* packet = MIDIEventListAdd(&output->pending, sizeof(output->pending),
+                                               output->pendingPacket, 0, wordCount, words);
+    if (packet == NULL) {
+        // The list is full: pass it on and retry in an empty one, which
+        // takes any one message.
+        BeamerAuv3FlushUmp(output);
+        packet = MIDIEventListAdd(&output->pending, sizeof(output->pending),
+                                  output->pendingPacket, 0, wordCount, words);
+        if (packet == NULL) {
+            return;
+        }
+    }
+    output->pendingPacket = packet;
+}
+
+// Hand what a render call's MIDI output still holds to the host.
+static void BeamerAuv3EndMidiOutput(BeamerAuv3MidiOutput* output) {
+    if (output->sink.send_words != NULL) {
+        BeamerAuv3FlushUmp(output);
+    }
+}
+
+// Point a render call's MIDI output at the host's blocks: event lists in
+// the host's protocol if it set one (with a list block), else MIDI 1.0
+// bytes to the legacy block. A host that set no protocol is a legacy one:
+// through the v2 bridge an AUv3 sees both blocks whenever the host set
+// either callback, so the protocol tells them apart. Returns false when
+// the host listens to neither.
+static BOOL BeamerAuv3BeginMidiOutput(BeamerAuv3MidiOutput* output, __unsafe_unretained AUMIDIOutputEventBlock block,
+                                      __unsafe_unretained AUMIDIEventListBlock listBlock, MIDIProtocolID hostProtocol,
+                                      AUEventSampleTime bufferStart) {
+    output->block = block;
+    output->listBlock = listBlock;
+    output->bufferStart = bufferStart;
+    if (listBlock != nil && hostProtocol != 0) {
+        output->protocol = (hostProtocol == kMIDIProtocol_2_0) ? kMIDIProtocol_2_0 : kMIDIProtocol_1_0;
+        output->pendingPacket = MIDIEventListInit(&output->pending, output->protocol);
+        output->sink = (BeamerAuMidiOutput){
+            .send_bytes = NULL, .send_words = BeamerAuv3SendUmp, .protocol = output->protocol, .context = output };
+        return YES;
+    }
+    if (block != nil) {
+        output->sink = (BeamerAuMidiOutput){
+            .send_bytes = BeamerAuv3SendMidi, .send_words = NULL, .protocol = 0, .context = output };
+        return YES;
+    }
+    return NO;
 }
 
 // Tell the host on the main thread that the latency or the tail changed
@@ -281,6 +361,8 @@ typedef struct {
     __unsafe_unretained AUHostMusicalContextBlock musicalContext;
     __unsafe_unretained AUHostTransportStateBlock transportState;
     __unsafe_unretained AUMIDIOutputEventBlock midiOutput;
+    __unsafe_unretained AUMIDIEventListBlock midiOutputList;
+    MIDIProtocolID hostProtocol;
 } BeamerAuv3HostBlocks;
 
 // =============================================================================
@@ -993,7 +1075,7 @@ static void beamer_auv3_on_loaded(void* context) {
     // released after the lock, since releasing one runs the host's code.
     os_unfair_lock_lock(&_hostBlocksLock);
     _hostBlocksInUse = NO;
-    _hostBlocks = (BeamerAuv3HostBlocks){ nil, nil, nil };
+    _hostBlocks = (BeamerAuv3HostBlocks){ nil, nil, nil, nil, 0 };
     _renderHostBlocks = _hostBlocks;
     __attribute__((objc_precise_lifetime)) NSMutableSet* releasedHostBlocks = _hostBlocksKeptAlive;
     _hostBlocksKeptAlive = [[NSMutableSet alloc] init];
@@ -1018,6 +1100,12 @@ static void beamer_auv3_on_loaded(void* context) {
     AUHostMusicalContextBlock musicalContext = self.musicalContextBlock;
     AUHostTransportStateBlock transportState = self.transportStateBlock;
     AUMIDIOutputEventBlock midiOutput = self.MIDIOutputEventBlock;
+    AUMIDIEventListBlock midiOutputList = nil;
+    MIDIProtocolID hostProtocol = 0;
+    if (@available(macOS 12.0, *)) {
+        midiOutputList = self.MIDIOutputEventListBlock;
+        hostProtocol = self.hostMIDIProtocol;
+    }
 
     os_unfair_lock_lock(&_hostBlocksLock);
     if (allocating) {
@@ -1033,9 +1121,14 @@ static void beamer_auv3_on_loaded(void* context) {
         if (midiOutput != nil) {
             [_hostBlocksKeptAlive addObject:midiOutput];
         }
+        if (midiOutputList != nil) {
+            [_hostBlocksKeptAlive addObject:midiOutputList];
+        }
         _hostBlocks.musicalContext = musicalContext;
         _hostBlocks.transportState = transportState;
         _hostBlocks.midiOutput = midiOutput;
+        _hostBlocks.midiOutputList = midiOutputList;
+        _hostBlocks.hostProtocol = hostProtocol;
         // The first copy, so that a render call that cannot take the lock
         // still has the blocks the host set before allocating.
         if (allocating) {
@@ -1057,6 +1150,16 @@ static void beamer_auv3_on_loaded(void* context) {
 
 - (void)setMIDIOutputEventBlock:(AUMIDIOutputEventBlock)MIDIOutputEventBlock {
     [super setMIDIOutputEventBlock:MIDIOutputEventBlock];
+    [self _handOverHostBlocksAllocating:NO];
+}
+
+- (void)setMIDIOutputEventListBlock:(AUMIDIEventListBlock)MIDIOutputEventListBlock API_AVAILABLE(macos(12.0)) {
+    [super setMIDIOutputEventListBlock:MIDIOutputEventListBlock];
+    [self _handOverHostBlocksAllocating:NO];
+}
+
+- (void)setHostMIDIProtocol:(MIDIProtocolID)hostMIDIProtocol API_AVAILABLE(macos(12.0)) {
+    [super setHostMIDIProtocol:hostMIDIProtocol];
     [self _handOverHostBlocksAllocating:NO];
 }
 
@@ -1231,11 +1334,14 @@ static void beamer_auv3_on_loaded(void* context) {
                 // a message spanning the bypass stays whole; a bypassed MIDI
                 // effect passes it on.
                 BeamerAuv3MidiOutput thru;
-                thru.block = hostBlocks.midiOutput;
-                thru.bufferStart = (AUEventSampleTime)timestamp->mSampleTime;
-                BOOL passesMidi = blockSelf->_isMidiEffect && thru.block != nil;
+                BOOL passesMidi = blockSelf->_isMidiEffect
+                    && BeamerAuv3BeginMidiOutput(&thru, hostBlocks.midiOutput, hostBlocks.midiOutputList,
+                                                 hostBlocks.hostProtocol, (AUEventSampleTime)timestamp->mSampleTime);
                 beamer_au_pass_midi_through(rustInstance, timestamp, frameCount, realtimeEventListHead,
-                                            passesMidi ? BeamerAuv3SendMidi : NULL, passesMidi ? &thru : NULL);
+                                            passesMidi ? &thru.sink : NULL);
+                if (passesMidi) {
+                    BeamerAuv3EndMidiOutput(&thru);
+                }
             }
             return noErr;
         }
@@ -1251,11 +1357,11 @@ static void beamer_auv3_on_loaded(void* context) {
 
         // The plugin's MIDI output goes to the host's block, if it set one.
         BeamerAuv3MidiOutput midiOutput;
-        midiOutput.block = hostBlocks.midiOutput;
-        midiOutput.bufferStart = (AUEventSampleTime)timestamp->mSampleTime;
-        BOOL sendsMidi = (outputBusNumber == 0 && midiOutput.block != nil);
+        BOOL sendsMidi = (outputBusNumber == 0)
+            && BeamerAuv3BeginMidiOutput(&midiOutput, hostBlocks.midiOutput, hostBlocks.midiOutputList,
+                                         hostBlocks.hostProtocol, (AUEventSampleTime)timestamp->mSampleTime);
 
-        return beamer_au_render(
+        AUAudioUnitStatus status = beamer_au_render(
             rustInstance,
             actionFlags,
             timestamp,
@@ -1266,9 +1372,12 @@ static void beamer_auv3_on_loaded(void* context) {
             pullInputBlock,
             inputData,
             hasTransport ? &transport : NULL,
-            sendsMidi ? BeamerAuv3SendMidi : NULL,
-            sendsMidi ? &midiOutput : NULL
+            sendsMidi ? &midiOutput.sink : NULL
         );
+        if (sendsMidi) {
+            BeamerAuv3EndMidiOutput(&midiOutput);
+        }
+        return status;
     };
 
     return _cachedInternalRenderBlock;

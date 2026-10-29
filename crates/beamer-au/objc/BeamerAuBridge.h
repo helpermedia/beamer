@@ -532,7 +532,7 @@ typedef struct {
  * plugin's MIDI output. It forwards the message to the host. Called on the
  * render thread, from inside beamer_au_render().
  *
- * @param context       The midi_output_context passed to beamer_au_render().
+ * @param context       The context of the BeamerAuMidiOutput.
  * @param sample_offset Position of the message in the current buffer.
  * @param bytes         One complete MIDI 1.0 message: a channel message without
  *                      running status, or a SysEx message from F0 to F7. Only
@@ -545,6 +545,38 @@ typedef void (*BeamerAuMidiOutputFn)(
     const uint8_t* bytes,
     uint32_t length
 );
+
+/**
+ * Receives one MIDI message the plugin produced during beamer_au_render(), as
+ * a Universal MIDI Packet message.
+ *
+ * Called on the render thread, from inside beamer_au_render().
+ *
+ * @param context       The context of the BeamerAuMidiOutput.
+ * @param sample_offset Position of the message in the current buffer.
+ * @param words         One UMP message (one SysEx7 packet of a longer SysEx
+ *                      message), on group 0. Only valid during the call.
+ * @param word_count    Number of words in the message.
+ */
+typedef void (*BeamerAuUmpOutputFn)(
+    void* _Nullable context,
+    uint32_t sample_offset,
+    const uint32_t* words,
+    uint32_t word_count
+);
+
+/**
+ * Where the MIDI the plugin produces in a render call goes: MIDI 1.0 bytes
+ * for a host that takes them, or UMP messages in a protocol for a host that
+ * takes event lists. send_words is taken over send_bytes.
+ */
+typedef struct {
+    BeamerAuMidiOutputFn _Nullable send_bytes;
+    BeamerAuUmpOutputFn _Nullable send_words;
+    // The protocol of the UMP messages, a MIDIProtocolID (1 or 2).
+    int32_t protocol;
+    void* _Nullable context;
+} BeamerAuMidiOutput;
 
 /**
  * Process audio through the plugin.
@@ -573,10 +605,9 @@ typedef void (*BeamerAuMidiOutputFn)(
  * @param transport             Transport and musical context the wrapper got from the host
  *                              for this call. May be NULL, as it is for the renders of
  *                              output buses other than 0, which do not process audio.
- * @param midi_output           Function that receives the MIDI the plugin produces in
- *                              this call. NULL if the host does not listen, the MIDI
- *                              output is then discarded.
- * @param midi_output_context   Passed to midi_output unchanged.
+ * @param midi_output           Where the MIDI the plugin produces in this call goes.
+ *                              NULL if the host does not listen, the MIDI output is
+ *                              then discarded.
  *
  * @return OSStatus:
  *         - noErr (0): Success
@@ -606,8 +637,7 @@ OSStatus beamer_au_render(
     AURenderPullInputBlock _Nullable pull_input_block,
     const AudioBufferList* _Nullable input_data,
     const BeamerAuTransport* _Nullable transport,
-    BeamerAuMidiOutputFn _Nullable midi_output,
-    void* _Nullable midi_output_context
+    const BeamerAuMidiOutput* _Nullable midi_output
 );
 
 /**
@@ -1821,8 +1851,7 @@ bool beamer_au_produces_midi(BeamerAuInstanceHandle _Nullable instance);
  * @param timestamp             The render call's time stamp.
  * @param frame_count           Frames of the render call.
  * @param events                The render call's events, or NULL.
- * @param midi_output           Receives the MIDI passed on, or NULL.
- * @param midi_output_context   Passed to midi_output unchanged.
+ * @param midi_output           Where the MIDI passed on goes, or NULL.
  * @return false when the MIDI could not be read now (a host thread prepares
  *         the instance): keep it for the next call.
  */
@@ -1831,8 +1860,7 @@ bool beamer_au_pass_midi_through(
     const AudioTimeStamp* _Nonnull timestamp,
     uint32_t frame_count,
     const AURenderEvent* _Nullable events,
-    BeamerAuMidiOutputFn _Nullable midi_output,
-    void* _Nullable midi_output_context
+    const BeamerAuMidiOutput* _Nullable midi_output
 );
 
 /**

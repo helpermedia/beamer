@@ -2617,8 +2617,7 @@ mod tests {
             std::ptr::null(),
             input.as_list().cast_const(),
             std::ptr::null(),
-            None,
-            std::ptr::null_mut(),
+            std::ptr::null(),
         )
     }
 
@@ -3043,8 +3042,7 @@ mod tests {
             std::ptr::null(),
             input.as_list().cast_const(),
             std::ptr::null(),
-            None,
-            std::ptr::null_mut(),
+            std::ptr::null(),
         )
     }
 
@@ -3368,8 +3366,7 @@ mod tests {
             std::ptr::null(),
             input.as_list().cast_const(),
             std::ptr::null(),
-            None,
-            std::ptr::null_mut(),
+            std::ptr::null(),
         );
         assert_eq!(status, 0);
         beamer_au_deallocate_render_resources(instance);

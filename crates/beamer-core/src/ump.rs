@@ -1,14 +1,18 @@
-//! Universal MIDI Packets: reading them into MIDI events.
+//! Universal MIDI Packets: reading them into MIDI events and writing events
+//! as them.
 //!
 //! An Audio Unit host may send MIDI as event lists of Universal MIDI
 //! Packets (UMP), in MIDI 1.0 or MIDI 2.0. This module walks a packet's
 //! words message by message, turns MIDI 1.0 and MIDI 2.0 channel voice
 //! messages into [`MidiEvent`]s and puts SysEx7 packets together into whole
-//! messages. It knows nothing of Audio Units.
+//! messages. The other way, it writes events as MIDI 1.0 bytes or as UMP
+//! messages in either protocol. It knows nothing of Audio Units.
 
+use crate::config::MidiProtocol;
 use crate::midi::{
-    combine_14bit_raw, note_expression, note_id, scale, tuning_value, MidiEvent, MidiEventKind,
-    NoteExpressionValue, ParameterChange, ParameterNumber, ParameterNumberKind,
+    cc, combine_14bit_raw, note_expression, note_id, note_id_parts, scale, split_14bit_raw, tuning_semitones,
+    tuning_value, MidiEvent, MidiEventKind, NoteExpressionValue, ParameterChange, ParameterNumber,
+    ParameterNumberKind,
 };
 
 /// UMP message types (the top four bits of a message's first word).
@@ -488,6 +492,279 @@ impl SysEx7Assembler {
     }
 }
 
+// =============================================================================
+// Encoding
+// =============================================================================
+
+/// The MIDI 1.0 messages of an event, as bytes, each handed to `emit`.
+///
+/// Most events are one message. A parameter number change is its selection
+/// and data entry control changes, a program change with a bank is bank
+/// select (CC 0 and 32) before it. Values are scaled down as MIDI 2.0 does
+/// (see [`scale`]); a note-on keeps a velocity of at least 1. SysEx and the
+/// events without a MIDI 1.0 form (note expressions, chord and scale info)
+/// emit nothing.
+pub fn midi1_messages(event: &MidiEventKind, mut emit: impl FnMut(&[u8])) {
+    let control_change =
+        |channel: u8, controller: u8, value: u8| [0xB0 | (channel & 0x0F), controller & 0x7F, value & 0x7F];
+    match event {
+        MidiEventKind::NoteOn(note) => emit(&[
+            0x90 | (note.channel & 0x0F),
+            note.pitch & 0x7F,
+            // A Note On with velocity 0 means Note Off on the wire.
+            scale::velocity_to_7bit(note.velocity).max(1),
+        ]),
+        MidiEventKind::NoteOff(note) => emit(&[
+            0x80 | (note.channel & 0x0F),
+            note.pitch & 0x7F,
+            scale::velocity_to_7bit(note.velocity),
+        ]),
+        MidiEventKind::PolyPressure(pressure) => emit(&[
+            0xA0 | (pressure.channel & 0x0F),
+            pressure.pitch & 0x7F,
+            scale::to_7bit(pressure.pressure),
+        ]),
+        MidiEventKind::ControlChange(change) => {
+            emit(&control_change(change.channel, change.controller, scale::to_7bit(change.value)))
+        }
+        MidiEventKind::ProgramChange(program) => {
+            if let Some(bank) = program.bank {
+                let (msb, lsb) = split_14bit_raw(bank);
+                emit(&control_change(program.channel, cc::BANK_SELECT_MSB, msb));
+                emit(&control_change(program.channel, cc::BANK_SELECT_LSB, lsb));
+            }
+            emit(&[0xC0 | (program.channel & 0x0F), program.program & 0x7F]);
+        }
+        MidiEventKind::ChannelPressure(pressure) => {
+            emit(&[0xD0 | (pressure.channel & 0x0F), scale::to_7bit(pressure.pressure)])
+        }
+        MidiEventKind::PitchBend(bend) => {
+            let (msb, lsb) = split_14bit_raw(scale::bipolar_to_14bit(bend.value));
+            emit(&[0xE0 | (bend.channel & 0x0F), lsb, msb]);
+        }
+        MidiEventKind::ParameterNumber(change) => {
+            let (changes, count) = change.midi1_control_changes();
+            for &(controller, value) in &changes[..count] {
+                emit(&control_change(change.channel, controller, value));
+            }
+        }
+        MidiEventKind::SysEx(_)
+        | MidiEventKind::NoteExpressionValue(_)
+        | MidiEventKind::NoteExpressionInt(_)
+        | MidiEventKind::NoteExpressionText(_)
+        | MidiEventKind::ChordInfo(_)
+        | MidiEventKind::ScaleInfo(_) => {}
+    }
+}
+
+/// The UMP messages of an event in `protocol`, on group 0, each handed to
+/// `emit` as its words.
+///
+/// MIDI 1.0: the messages of [`midi1_messages`] as MIDI 1.0 channel voice
+/// words. MIDI 2.0: MIDI 2.0 channel voice messages at full resolution, the
+/// inverse of [`midi2_channel_voice`]: a tuning other than 0 goes out as the
+/// pitch 7.9 attribute; a parameter number change as a registered or
+/// assignable controller (relative for a step); a note expression of a note
+/// whose ID [`note_id`] made as its per-note message (a note expression of
+/// another type or note has no MIDI 2.0 form). SysEx goes out through
+/// [`sysex7_packets`], not here.
+pub fn ump_messages(event: &MidiEventKind, protocol: MidiProtocol, mut emit: impl FnMut(&[u32])) {
+    match protocol {
+        MidiProtocol::Midi1 => midi1_messages(event, |bytes| {
+            let data1 = bytes.get(1).copied().unwrap_or(0) as u32;
+            let data2 = bytes.get(2).copied().unwrap_or(0) as u32;
+            emit(&[0x2000_0000 | (bytes[0] as u32) << 16 | data1 << 8 | data2]);
+        }),
+        MidiProtocol::Midi2 => {
+            if let Some(words) = midi2_message(event) {
+                emit(&words);
+            }
+            // A program change with a bank and a parameter number change
+            // are one message each in MIDI 2.0.
+        }
+    }
+}
+
+/// The first word of a MIDI 2.0 channel voice message on group 0.
+fn midi2_word(status: u8, channel: u8, byte3: u8, byte4: u8) -> u32 {
+    0x4000_0000 | (status as u32 & 0x0F) << 20 | (channel as u32 & 0x0F) << 16 | (byte3 as u32) << 8 | byte4 as u32
+}
+
+/// The inverse of `centered`: 0.0 to 1.0 with the center at 0.5 as a
+/// bipolar 32-bit value.
+fn uncentered(value: f64) -> u32 {
+    scale::bipolar_to_u32(value * 2.0 - 1.0)
+}
+
+/// An event as one MIDI 2.0 channel voice message, if it has one.
+fn midi2_message(event: &MidiEventKind) -> Option<[u32; 2]> {
+    // A note's pitch 7.9 attribute for a tuning in cents.
+    let note_attribute = |pitch: u8, tuning: f32| -> (u8, u16) {
+        if tuning == 0.0 {
+            return (0, 0);
+        }
+        let pitch_7_9 = ((pitch as f64 + tuning as f64 / 100.0) * 512.0).round();
+        (ATTRIBUTE_PITCH_7_9, pitch_7_9.clamp(0.0, u16::MAX as f64) as u16)
+    };
+    let words = match event {
+        MidiEventKind::NoteOn(note) => {
+            let (attribute, data) = note_attribute(note.pitch, note.tuning);
+            [
+                midi2_word(status::NOTE_ON, note.channel, note.pitch & 0x7F, attribute),
+                // A note-on with velocity 0 is a note-on in MIDI 2.0, but
+                // Beamer's never has one: keep it above 0.
+                (scale::velocity_to_u16(note.velocity).max(1) as u32) << 16 | data as u32,
+            ]
+        }
+        MidiEventKind::NoteOff(note) => {
+            let (attribute, data) = note_attribute(note.pitch, note.tuning);
+            [
+                midi2_word(status::NOTE_OFF, note.channel, note.pitch & 0x7F, attribute),
+                (scale::velocity_to_u16(note.velocity) as u32) << 16 | data as u32,
+            ]
+        }
+        MidiEventKind::PolyPressure(pressure) => [
+            midi2_word(status::POLY_PRESSURE, pressure.channel, pressure.pitch & 0x7F, 0),
+            scale::unipolar_to_u32(pressure.pressure),
+        ],
+        MidiEventKind::ControlChange(change) => [
+            midi2_word(status::CONTROL_CHANGE, change.channel, change.controller & 0x7F, 0),
+            scale::unipolar_to_u32(change.value),
+        ],
+        MidiEventKind::ProgramChange(program) => {
+            let (flags, msb, lsb) = match program.bank {
+                Some(bank) => {
+                    let (msb, lsb) = split_14bit_raw(bank);
+                    (0x01, msb, lsb)
+                }
+                None => (0, 0, 0),
+            };
+            [
+                midi2_word(status::PROGRAM_CHANGE, program.channel, 0, flags),
+                ((program.program & 0x7F) as u32) << 24 | (msb as u32) << 8 | lsb as u32,
+            ]
+        }
+        MidiEventKind::ChannelPressure(pressure) => [
+            midi2_word(status::CHANNEL_PRESSURE, pressure.channel, 0, 0),
+            scale::unipolar_to_u32(pressure.pressure),
+        ],
+        MidiEventKind::PitchBend(bend) => {
+            [midi2_word(status::PITCH_BEND, bend.channel, 0, 0), scale::bipolar_to_u32(bend.value)]
+        }
+        MidiEventKind::ParameterNumber(change) => {
+            let (bank, index) = split_14bit_raw(change.parameter & 0x3FFF);
+            let (status, data) = match (change.kind, change.change) {
+                (ParameterNumberKind::Rpn, ParameterChange::Absolute(value)) => {
+                    (status::REGISTERED_CONTROLLER, scale::unipolar_to_u32(value))
+                }
+                (ParameterNumberKind::Nrpn, ParameterChange::Absolute(value)) => {
+                    (status::ASSIGNABLE_CONTROLLER, scale::unipolar_to_u32(value))
+                }
+                (ParameterNumberKind::Rpn, ParameterChange::Relative(step)) => {
+                    (status::RELATIVE_REGISTERED_CONTROLLER, relative_to_u32(step))
+                }
+                (ParameterNumberKind::Nrpn, ParameterChange::Relative(step)) => {
+                    (status::RELATIVE_ASSIGNABLE_CONTROLLER, relative_to_u32(step))
+                }
+            };
+            [midi2_word(status, change.channel, bank, index), data]
+        }
+        MidiEventKind::NoteExpressionValue(expression) => {
+            let (_, channel, pitch) = note_id_parts(expression.note_id)?;
+            let value = expression.value;
+            let (status, index, data) = match expression.expression_type {
+                note_expression::TUNING => {
+                    // Pitch 7.25: the note's pitch plus the tuning.
+                    let pitch_7_25 = ((pitch as f64 + tuning_semitones(value)) * (1u32 << 25) as f64).round();
+                    let data = pitch_7_25.clamp(0.0, u32::MAX as f64) as u32;
+                    (status::REGISTERED_PER_NOTE_CONTROLLER, registered_per_note::PITCH_7_25, data)
+                }
+                note_expression::VOLUME => {
+                    // The inverse of `v² / 4`.
+                    let data = scale::unipolar_to_u32((value.clamp(0.0, 0.25) * 4.0).sqrt());
+                    (status::REGISTERED_PER_NOTE_CONTROLLER, registered_per_note::VOLUME, data)
+                }
+                note_expression::PAN => {
+                    (status::REGISTERED_PER_NOTE_CONTROLLER, registered_per_note::PAN, uncentered(value))
+                }
+                note_expression::EXPRESSION => (
+                    status::REGISTERED_PER_NOTE_CONTROLLER,
+                    registered_per_note::EXPRESSION,
+                    scale::unipolar_to_u32(value),
+                ),
+                note_expression::BRIGHTNESS => (
+                    status::REGISTERED_PER_NOTE_CONTROLLER,
+                    registered_per_note::BRIGHTNESS,
+                    scale::unipolar_to_u32(value),
+                ),
+                note_expression::VIBRATO => (
+                    status::REGISTERED_PER_NOTE_CONTROLLER,
+                    registered_per_note::VIBRATO_DEPTH,
+                    scale::unipolar_to_u32(value),
+                ),
+                note_expression::PITCH_BEND => (status::PER_NOTE_PITCH_BEND, 0, uncentered(value)),
+                expression_type
+                    if (note_expression::REGISTERED_START..note_expression::ASSIGNABLE_START)
+                        .contains(&expression_type) =>
+                {
+                    let index = (expression_type - note_expression::REGISTERED_START) as u8;
+                    (status::REGISTERED_PER_NOTE_CONTROLLER, index, scale::unipolar_to_u32(value))
+                }
+                expression_type
+                    if (note_expression::ASSIGNABLE_START..note_expression::PITCH_BEND)
+                        .contains(&expression_type) =>
+                {
+                    let index = (expression_type - note_expression::ASSIGNABLE_START) as u8;
+                    (status::ASSIGNABLE_PER_NOTE_CONTROLLER, index, scale::unipolar_to_u32(value))
+                }
+                _ => return None,
+            };
+            [midi2_word(status, channel, pitch, index), data]
+        }
+        MidiEventKind::SysEx(_)
+        | MidiEventKind::NoteExpressionInt(_)
+        | MidiEventKind::NoteExpressionText(_)
+        | MidiEventKind::ChordInfo(_)
+        | MidiEventKind::ScaleInfo(_) => return None,
+    };
+    Some(words)
+}
+
+/// A relative change as a signed 32-bit value: -0.5 to 0.5 of the range,
+/// what a MIDI 2.0 relative controller carries (a larger step saturates).
+fn relative_to_u32(step: f64) -> u32 {
+    (step.clamp(-0.5, 0.5) * u32::MAX as f64).round() as i32 as u32
+}
+
+/// The SysEx7 packets of a SysEx message on group 0, each handed to `emit`
+/// as its two words. `message` may hold its F0 and F7 or not; data bytes
+/// above 0x7F are masked. An empty message is one complete packet.
+pub fn sysex7_packets(message: &[u8], mut emit: impl FnMut([u32; 2])) {
+    let message = message.strip_prefix(&[0xF0]).unwrap_or(message);
+    let message = message.strip_suffix(&[0xF7]).unwrap_or(message);
+    let chunks = message.len().div_ceil(6).max(1);
+    for (index, chunk) in message.chunks(6).chain((message.is_empty()).then_some(&[][..])).enumerate() {
+        let status = match (index, chunks) {
+            (_, 1) => sysex7_status::COMPLETE,
+            (0, _) => sysex7_status::START,
+            (index, chunks) if index + 1 == chunks => sysex7_status::END,
+            _ => sysex7_status::CONTINUE,
+        };
+        let mut bytes = [0u8; 6];
+        for (byte, &data) in bytes.iter_mut().zip(chunk) {
+            *byte = data & 0x7F;
+        }
+        emit([
+            0x3000_0000
+                | (status as u32) << 20
+                | (chunk.len() as u32) << 16
+                | (bytes[0] as u32) << 8
+                | bytes[1] as u32,
+            u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+        ]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +1037,135 @@ mod tests {
         // A skipped message stays skipped after the open one ended.
         let packets = [packet(0, 1, &[1]), packet(1, 1, &[0x51]), packet(0, 3, &[2]), packet(1, 3, &[0x53])];
         assert_eq!(assemble(&mut assembler, &packets), (vec![vec![0xF0, 1, 2, 0xF7]], 1));
+    }
+
+    /// The MIDI 2.0 message of an event, read back.
+    fn midi2_round_trip(event: MidiEvent<'static>) -> MidiEventKind<'static> {
+        let mut words = Vec::new();
+        ump_messages(&event.event, MidiProtocol::Midi2, |message| words.push(message.to_vec()));
+        assert_eq!(words.len(), 1, "{event:?} gives {words:08x?}");
+        assert_eq!(words[0].len(), 2);
+        match midi2_channel_voice(event.sample_offset, [words[0][0], words[0][1]]) {
+            ChannelVoice::Event(back) => back.event,
+            ChannelVoice::Unsupported => panic!("{words:08x?} is unsupported"),
+        }
+    }
+
+    #[test]
+    fn test_midi2_messages_round_trip() {
+        let id = note_id(0, 3, 62);
+        let events = [
+            MidiEvent::note_on(0, 3, 62, scale::velocity_from_u16(0x1234), id, 0.0, 0),
+            MidiEvent::note_off(0, 3, 62, scale::velocity_from_u16(0xFFFF), id, 0.0),
+            MidiEvent::poly_pressure(0, 3, 62, scale::unipolar_from_u32(0x1234_5678), id),
+            MidiEvent::control_change(0, 4, 74, scale::unipolar_from_u32(0x8765_4321)),
+            MidiEvent::program_change(0, 5, 9, Some((3 << 7) | 4)),
+            MidiEvent::program_change(0, 5, 9, None),
+            MidiEvent::channel_pressure(0, 6, 1.0),
+            MidiEvent::pitch_bend(0, 7, scale::bipolar_from_u32(0x1234_5678)),
+            MidiEvent::pitch_bend(0, 7, -1.0),
+            MidiEvent::parameter_number(0, ParameterNumber::rpn(8, 0, scale::unipolar_from_u32(0x1800_0000))),
+            MidiEvent::parameter_number(0, ParameterNumber::nrpn(8, (1 << 7) | 2, scale::unipolar_from_u32(0x4000_0000))),
+            MidiEvent::parameter_number(
+                0,
+                ParameterNumber {
+                    channel: 9,
+                    kind: ParameterNumberKind::Rpn,
+                    parameter: 1,
+                    change: ParameterChange::Relative(-((1u32 << 18) as f64) / u32::MAX as f64),
+                },
+            ),
+        ];
+        for event in events {
+            assert_eq!(midi2_round_trip(event), event.event);
+        }
+    }
+
+    #[test]
+    fn test_midi2_note_tuning_goes_out_as_its_pitch_attribute() {
+        // 60.25 is exact in 7.9 bits.
+        let event = MidiEvent::note_on(0, 0, 62, scale::velocity_from_u16(0x8000), note_id(0, 0, 62), -175.0, 0);
+        assert_eq!(midi2_round_trip(event), event.event);
+        // A tuning between steps goes to the nearest step of 1/512 semitone.
+        let event = MidiEvent::note_on(0, 0, 62, 0.5, note_id(0, 0, 62), 33.3, 0);
+        let MidiEventKind::NoteOn(back) = midi2_round_trip(event) else { panic!() };
+        assert!((back.tuning - 33.3).abs() <= 100.0 / 1024.0, "{}", back.tuning);
+    }
+
+    #[test]
+    fn test_note_expressions_round_trip_as_per_note_messages() {
+        let id = note_id(0, 2, 60);
+        let expression = |expression_type: u32, value: f64| {
+            MidiEvent::note_expression_value(0, id, expression_type, value)
+        };
+        for event in [
+            expression(note_expression::TUNING, tuning_value(2.5)),
+            expression(note_expression::VOLUME, 0.25),
+            expression(note_expression::PAN, 0.5),
+            expression(note_expression::EXPRESSION, 1.0),
+            expression(note_expression::BRIGHTNESS, 0.0),
+            expression(note_expression::VIBRATO, 1.0),
+            expression(note_expression::PITCH_BEND, 0.5),
+            expression(note_expression::PITCH_BEND, 1.0),
+            expression(note_expression::registered(1), 0.0),
+            expression(note_expression::assignable(200), 1.0),
+        ] {
+            assert_eq!(midi2_round_trip(event), event.event);
+        }
+        // A note ID that note_id did not make, or a VST3 custom type, has
+        // no MIDI 2.0 form.
+        let mut none = 0;
+        ump_messages(
+            &MidiEvent::note_expression_value(0, 1 << 20, note_expression::PAN, 0.5).event,
+            MidiProtocol::Midi2,
+            |_| none += 1,
+        );
+        ump_messages(&expression(note_expression::CUSTOM_START, 0.5).event, MidiProtocol::Midi2, |_| none += 1);
+        assert_eq!(none, 0);
+    }
+
+    #[test]
+    fn test_midi1_words_carry_the_midi1_messages() {
+        let mut words = Vec::new();
+        let rpn = MidiEvent::parameter_number(0, ParameterNumber::rpn(1, 0, scale::from_14bit(12 << 7)));
+        ump_messages(&rpn.event, MidiProtocol::Midi1, |message| words.extend_from_slice(message));
+        assert_eq!(words, [0x20B1_6500, 0x20B1_6400, 0x20B1_060C, 0x20B1_2600]);
+        words.clear();
+        let program = MidiEvent::program_change(0, 0, 5, None);
+        ump_messages(&program.event, MidiProtocol::Midi1, |message| words.extend_from_slice(message));
+        assert_eq!(words, [0x20C0_0500]);
+        // Every MIDI 1.0 word reads back as its event.
+        let on = MidiEvent::note_on(0, 0, 60, scale::velocity_from_7bit(64), note_id(0, 0, 60), 0.0, 0);
+        words.clear();
+        ump_messages(&on.event, MidiProtocol::Midi1, |message| words.extend_from_slice(message));
+        assert_eq!(midi1_channel_voice(0, words[0]), ChannelVoice::Event(on));
+    }
+
+    #[test]
+    fn test_sysex7_packets_come_together_again() {
+        for len in [0usize, 1, 5, 6, 7, 12, 13, 400] {
+            let message: Vec<u8> = (0..len).map(|byte| (byte % 128) as u8).collect();
+            let mut assembler = SysEx7Assembler::new(512);
+            let mut complete = None;
+            let mut packets = 0;
+            sysex7_packets(&message, |words| {
+                packets += 1;
+                let step = assembler.push(words);
+                assert_eq!(step.dropped, 0);
+                if let Some(bytes) = step.complete {
+                    complete = Some(bytes.to_vec());
+                }
+            });
+            assert_eq!(packets, len.div_ceil(6).max(1));
+            let mut framed = vec![0xF0];
+            framed.extend_from_slice(&message);
+            framed.push(0xF7);
+            assert_eq!(complete, Some(framed));
+        }
+        // A framed message is framed once.
+        let mut first = None;
+        sysex7_packets(&[0xF0, 0x7D, 0xF7], |words| first = Some(words));
+        assert_eq!(first, Some([0x3001_7D00, 0]));
     }
 
     #[test]

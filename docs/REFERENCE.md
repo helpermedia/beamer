@@ -2054,11 +2054,13 @@ AUv3:
 - Opened through the v2 API, the system's bridge damages SysEx output after
   its first 256 bytes.
 
-The AUv2 has none of these limits. In both AU formats a message holds at
-most 65,535 bytes, since the length fields of their MIDI structures have
-16 bits: longer SysEx output is dropped and logged as a warning. The AUv2
-takes messages up to that size (and `sysex_bytes_per_block`) in both
-directions.
+The AUv2 has none of these limits. In both AU formats a legacy SysEx
+message holds at most 65,535 bytes, since the length fields of their MIDI
+structures have 16 bits: longer SysEx output to a host that takes bytes is
+dropped and logged as a warning. The AUv2 takes messages up to that size
+(and `sysex_bytes_per_block`) in both directions. Output as event lists
+(see [MIDI Output](#midi-output)) goes as SysEx7 packets, without that
+limit.
 
 ### Note Expression (MPE)
 
@@ -2455,7 +2457,16 @@ An Audio Unit with MIDI input reports its MIDI protocol (`midi_protocol` in `Con
 - **Groups:** the 16 UMP groups are merged; the group shows in the note ID (`note_id`).
 - **MIDI 2.0 messages:** a note-on keeps its 16-bit velocity (a note-on with velocity 0 has the smallest velocity, 1 / 65535, as it is a note-on in MIDI 2.0) and its pitch 7.9 attribute as `tuning`; controllers, pitch bend and pressure keep their 32 bits; a program change brings its bank; registered and assignable controllers (also relative ones) are `ParameterNumber` events; per-note controllers and per-note pitch bend are note expressions (see [Note Expression](#note-expression-mpe)). Per-note management has no event.
 
-A bypassed Audio Unit reads its MIDI input as when it processes, so a SysEx message or an RPN sequence that spans the bypass stays whole; a bypassed MIDI effect passes the events on.
+A bypassed Audio Unit reads its MIDI input as when it processes, so a SysEx message or an RPN sequence that spans the bypass stays whole; a bypassed MIDI effect passes the events on (see [MIDI Output](#midi-output)). A plugin with a bypass parameter is bypassed through that parameter, so it processes and passes MIDI on itself.
+
+#### MIDI Output
+
+An Audio Unit sends the MIDI a plugin writes in the form the host takes, in the host's protocol, whatever `midi_protocol` says:
+
+- **AUv2:** a host that set an event list callback (`kAudioUnitProperty_MIDIOutputEventListCallback`) gets event lists, in the protocol it set with `kAudioUnitProperty_HostMIDIProtocol` (MIDI 1.0 without one); the packets of a render call carry their sample offsets as time stamps. A host that set the legacy callback gets MIDI 1.0 bytes. AudioToolbox refuses the legacy callback (-4) to a host that set `HostMIDIProtocol` first, for every Audio Unit.
+- **AUv3:** a host that set `hostMIDIProtocol` gets event lists in it through `MIDIOutputEventListBlock`, one list per sample offset at its sample time. A host that set none gets MIDI 1.0 bytes through `MIDIOutputEventBlock`; through the system's bridge for v2 hosts an AUv3 sees both blocks either way, so the protocol tells them apart. Out of process the system passes an AUv3's MIDI output through a buffer of its own per render call (128 entries by default): measured on macOS 26, long SysEx output can arrive cut (legacy, at about 1 KB) or not at all (event lists, beyond about 2,000 bytes), with results that varied between runs.
+
+MIDI 1.0 output is the MIDI 1.0 messages of the events: a `ParameterNumber` becomes its CC sequence, a program change with a bank goes after bank select; note expressions, note tuning and the bits past 7 or 14 have no MIDI 1.0 form. MIDI 2.0 output keeps the resolution: a note's `tuning` goes out as its pitch 7.9 attribute, a `ParameterNumber` as a registered or assignable controller, a note expression of a note whose ID `note_id` made as its per-note message. SysEx goes out as SysEx7 packets. Every message is on group 0.
 
 #### FourCC Codes
 

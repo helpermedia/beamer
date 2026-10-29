@@ -47,7 +47,7 @@ use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{
     create_render_block_f32, create_render_block_f64, AURenderEvent, AudioTimeStamp,
-    BeamerAuMidiOutputFn, MidiOutputSink, RenderBlockTrait, RenderSettings,
+    BeamerAuMidiOutput, MidiOutputSink, RenderBlockTrait, RenderSettings,
 };
 use crate::shared_state::SharedState;
 use crate::transport::BeamerAuTransport;
@@ -1541,7 +1541,8 @@ pub extern "C" fn beamer_au_delay_bypassed_output(
 /// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
 ///   or null (in which case this function does nothing)
 /// - `timestamp` must be valid, `events` valid or null, as for `beamer_au_render`
-/// - `midi_output` must be callable with `midi_output_context` during the call
+/// - `midi_output` must be null or valid for the call, its function callable
+///   with its context
 /// - Thread safety: the render thread; does not wait for a lock
 #[no_mangle]
 pub extern "C" fn beamer_au_pass_midi_through(
@@ -1549,8 +1550,7 @@ pub extern "C" fn beamer_au_pass_midi_through(
     timestamp: *const AudioTimeStamp,
     frame_count: u32,
     events: *const AURenderEvent,
-    midi_output: Option<BeamerAuMidiOutputFn>,
-    midi_output_context: *mut c_void,
+    midi_output: *const BeamerAuMidiOutput,
 ) -> bool {
     if timestamp.is_null() {
         return true;
@@ -1571,7 +1571,7 @@ pub extern "C" fn beamer_au_pass_midi_through(
                 timestamp,
                 frame_count,
                 events,
-                midi_output.map(|send| MidiOutputSink::new(send, midi_output_context)),
+                MidiOutputSink::from_ffi(midi_output),
             )
         };
         true
@@ -1641,8 +1641,8 @@ pub extern "C" fn beamer_au_is_prepared(instance: BeamerAuInstanceHandle) -> boo
 /// - `transport` must be null (no transport information, as for the renders of
 ///   output buses other than 0) or point to a `BeamerAuTransport` that is valid
 ///   for the duration of the call
-/// - `midi_output` must be null or a function that is safe to call with
-///   `midi_output_context` on this thread during the call
+/// - `midi_output` must be null or valid for the call, its function safe to
+///   call with its context on this thread during the call
 /// - This function validates `instance`, `action_flags`, `timestamp` and
 ///   `output_data` are non-null; returns `K_AUDIO_UNIT_ERR_INVALID_PARAMETER` if any are null
 /// - Thread safety: Designed for real-time audio thread; uses non-blocking
@@ -1660,8 +1660,7 @@ pub extern "C" fn beamer_au_render(
     pull_input_block: *const c_void,
     input_data: *const AudioBufferList, // Input buffer list from ObjC (after pulling)
     transport: *const BeamerAuTransport,
-    midi_output: Option<BeamerAuMidiOutputFn>,
-    midi_output_context: *mut c_void,
+    midi_output: *const BeamerAuMidiOutput,
 ) -> i32 {
     // Validate instance handle
     if instance.is_null() {
@@ -1709,8 +1708,9 @@ pub extern "C" fn beamer_au_render(
             input_data,
             // SAFETY: The caller passes null or a pointer that is valid for this call.
             unsafe { transport.as_ref() },
-            // SAFETY: The caller guarantees the function is callable with the context.
-            midi_output.map(|send| unsafe { MidiOutputSink::new(send, midi_output_context) }),
+            // SAFETY: The caller passes null or an output valid for the call,
+            // its function callable with its context.
+            unsafe { MidiOutputSink::from_ffi(midi_output) },
         )
     }));
 
@@ -4061,8 +4061,7 @@ mod tests {
                 ptr::null(),
                 ptr::null(), // input_data
                 ptr::null(), // transport
-                None,        // midi_output
-                ptr::null_mut(),
+                ptr::null(), // midi_output
             ),
             os_status::K_AUDIO_UNIT_ERR_INVALID_PARAMETER
         );
