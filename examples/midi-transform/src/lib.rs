@@ -343,7 +343,7 @@ impl MidiTransformProcessor {
     ///
     /// # Returns
     /// Transformed CC value, clamped to 0.0-1.0
-    fn transform_cc_value(&self, cc: u8, value: f32) -> f32 {
+    fn transform_cc_value(&self, cc: u8, value: f64) -> f64 {
         if !self.model.cc.enabled.get() {
             return value;
         }
@@ -365,7 +365,7 @@ impl MidiTransformProcessor {
 
         match self.model.cc.mode.get() {
             CcTransformMode::Scale | CcTransformMode::RemapAndScale => {
-                let scale = self.model.cc.value_scale.get() as f32;
+                let scale = self.model.cc.value_scale.get();
                 (value * scale).clamp(0.0, 1.0)
             }
             CcTransformMode::Invert => {
@@ -473,6 +473,16 @@ impl Processor for MidiTransformProcessor {
                     }
                 }
 
+                // The bank select CCs before a program change pass on as
+                // CCs, so the program change goes without its bank: with it,
+                // the bank would be selected twice.
+                MidiEventKind::ProgramChange(program) => {
+                    output.push(event.with(MidiEventKind::ProgramChange(ProgramChange {
+                        bank: None,
+                        ..*program
+                    })));
+                }
+
                 // Pass through other events unchanged
                 _ => {
                     output.push(*event);
@@ -515,6 +525,24 @@ mod tests {
         model.note.output_note.set(output_note);
         let processor = Arc::clone(&model).prepare(());
         (model, processor)
+    }
+
+    #[test]
+    fn test_bank_select_passes_on_once() {
+        let model = Arc::new(MidiTransformModel::default());
+        let mut processor = Arc::clone(&model).prepare(());
+        let input = [
+            MidiEvent::control_change(0, 0, 0, 0.0),
+            MidiEvent::program_change(1, 0, 5, Some(0)),
+        ];
+        let mut output = MidiBuffer::new_boxed(0);
+        processor.process_midi(&input, &mut output);
+        assert_eq!(output.len(), 2);
+        assert!(matches!(output.as_slice()[0].event, MidiEventKind::ControlChange(_)));
+        assert!(matches!(
+            output.as_slice()[1].event,
+            MidiEventKind::ProgramChange(ProgramChange { program: 5, bank: None, .. })
+        ));
     }
 
     #[test]

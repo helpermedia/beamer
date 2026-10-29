@@ -255,7 +255,8 @@ pub mod prelude {
         Rect, Size,
         // MIDI types
         ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,
-        MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
+        MidiNote, NoteId, NoteOff, NoteOn, ParameterChange, ParameterNumber, ParameterNumberKind,
+        PitchBend, PolyPressure, ProgramChange,
         // Process context and transport
         FrameRate, ProcessContext, Transport,
         // FourCharCode

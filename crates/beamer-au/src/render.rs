@@ -41,8 +41,9 @@ use crate::shared_state::SharedState;
 use crate::transport::{transport_from_host, BeamerAuTransport};
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 use beamer_core::{
-    AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, BypassAction, BypassHandler, CrossfadeCurve, MidiBuffer,
-    MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel, MAX_BUSES, MAX_CHANNELS,
+    scale, split_14bit_raw, AuxiliaryBuffers, Buffer, BusNegotiation, BusRouting, BypassAction, BypassHandler,
+    CrossfadeCurve, Midi1Translator, MidiBuffer, MidiEvent, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel,
+    MAX_BUSES, MAX_CHANNELS,
 };
 
 
@@ -546,7 +547,7 @@ pub unsafe fn extract_midi_events(
                     };
 
                     if let Some(beamer_event) =
-                        MidiEvent::from_midi1_bytes(sample_offset, status, channel, data1, data2)
+                        MidiEvent::from_midi1_bytes(sample_offset, 0, status, channel, data1, data2)
                     {
                         buffer.push(beamer_event);
                     }
@@ -611,13 +612,14 @@ pub unsafe fn extract_midi_events(
                         let message_type = (word >> 28) & 0xF;
                         if message_type == 2 {
                             // MIDI 1.0 Channel Voice in UMP format
+                            let group = ((word >> 24) & 0x0F) as u8;
                             let status = ((word >> 16) & 0xF0) as u8;
                             let channel = ((word >> 16) & 0x0F) as u8;
                             let data1 = ((word >> 8) & 0x7F) as u8;
                             let data2 = (word & 0x7F) as u8;
 
                             if let Some(beamer_event) =
-                                MidiEvent::from_midi1_bytes(sample_offset, status, channel, data1, data2)
+                                MidiEvent::from_midi1_bytes(sample_offset, group, status, channel, data1, data2)
                             {
                                 buffer.push(beamer_event);
                             }
@@ -666,19 +668,19 @@ fn update_midi_cc_state(
                 // MidiCcState uses parameter IDs, need to call set_normalized with parameter ID
                 let param_id = beamer_core::MidiCcState::parameter_id(cc.controller);
                 // CC values are already normalized (0.0-1.0) in beamer format
-                cc_state.set_normalized(param_id, cc.value as f64);
+                cc_state.set_normalized(param_id, cc.value);
             }
             MidiEventKind::PitchBend(pb) => {
                 // Pitch bend in beamer: -1.0 to 1.0 (bipolar)
                 // MidiCcState stores as: 0.0 to 1.0 (normalized, center at 0.5)
-                let normalized = (pb.value as f64 + 1.0) / 2.0;
+                let normalized = (pb.value + 1.0) / 2.0;
                 let param_id = beamer_core::MidiCcState::parameter_id(controller::PITCH_BEND);
                 cc_state.set_normalized(param_id, normalized);
             }
             MidiEventKind::ChannelPressure(cp) => {
                 // Channel pressure is already normalized (0.0-1.0) in beamer format
                 let param_id = beamer_core::MidiCcState::parameter_id(controller::AFTERTOUCH);
-                cc_state.set_normalized(param_id, cp.pressure as f64);
+                cc_state.set_normalized(param_id, cp.pressure);
             }
             _ => {}
         }
@@ -732,73 +734,58 @@ impl MidiOutputSink {
     }
 }
 
-/// Convert a normalized value to a 7-bit MIDI data byte.
+/// Encode a MIDI event as MIDI 1.0 channel messages, handing each to `emit`.
 ///
-/// Rounds, so that a value that came in as a data byte goes out as the same byte.
-fn to_data_byte(value: f32) -> u8 {
-    (value * 127.0).round().clamp(0.0, 127.0) as u8
-}
-
-/// Encode a MIDI event as a MIDI 1.0 channel message.
-///
-/// Returns the bytes and how many of them are used (2 or 3). Returns `None`
-/// for SysEx (which `send_midi_output` handles) and for events that have no
-/// MIDI 1.0 encoding (note expression, chord and scale info).
-fn encode_midi_event(event: &MidiEventKind) -> Option<([u8; 3], usize)> {
+/// Most events are one message. A parameter number change is its selection
+/// and data entry control changes, a program change with a bank is bank
+/// select (CC 0 and 32) before it. SysEx (which `send_midi_output` handles)
+/// and events that have no MIDI 1.0 encoding (note expression, chord and
+/// scale info) emit nothing.
+fn encode_midi_event(event: &MidiEventKind, mut emit: impl FnMut(&[u8])) {
+    let control_change = |channel: u8, controller: u8, value: u8| [0xB0 | (channel & 0x0F), controller & 0x7F, value & 0x7F];
     match event {
-        MidiEventKind::NoteOn(note) => Some((
-            [
-                0x90 | (note.channel & 0x0F),
-                note.pitch & 0x7F,
-                // A Note On with velocity 0 means Note Off on the wire.
-                to_data_byte(note.velocity).max(1),
-            ],
-            3,
-        )),
-        MidiEventKind::NoteOff(note) => Some((
-            [
-                0x80 | (note.channel & 0x0F),
-                note.pitch & 0x7F,
-                to_data_byte(note.velocity),
-            ],
-            3,
-        )),
-        MidiEventKind::PolyPressure(pp) => Some((
-            [
-                0xA0 | (pp.channel & 0x0F),
-                pp.pitch & 0x7F,
-                to_data_byte(pp.pressure),
-            ],
-            3,
-        )),
-        MidiEventKind::ControlChange(cc) => Some((
-            [
-                0xB0 | (cc.channel & 0x0F),
-                cc.controller & 0x7F,
-                to_data_byte(cc.value),
-            ],
-            3,
-        )),
+        MidiEventKind::NoteOn(note) => emit(&[
+            0x90 | (note.channel & 0x0F),
+            note.pitch & 0x7F,
+            // A Note On with velocity 0 means Note Off on the wire.
+            scale::velocity_to_7bit(note.velocity).max(1),
+        ]),
+        MidiEventKind::NoteOff(note) => emit(&[
+            0x80 | (note.channel & 0x0F),
+            note.pitch & 0x7F,
+            scale::velocity_to_7bit(note.velocity),
+        ]),
+        MidiEventKind::PolyPressure(pp) => emit(&[
+            0xA0 | (pp.channel & 0x0F),
+            pp.pitch & 0x7F,
+            scale::to_7bit(pp.pressure),
+        ]),
+        MidiEventKind::ControlChange(cc) => emit(&control_change(cc.channel, cc.controller, scale::to_7bit(cc.value))),
         MidiEventKind::ProgramChange(pc) => {
-            Some(([0xC0 | (pc.channel & 0x0F), pc.program & 0x7F, 0], 2))
+            if let Some(bank) = pc.bank {
+                let (msb, lsb) = split_14bit_raw(bank);
+                emit(&control_change(pc.channel, beamer_core::cc::BANK_SELECT_MSB, msb));
+                emit(&control_change(pc.channel, beamer_core::cc::BANK_SELECT_LSB, lsb));
+            }
+            emit(&[0xC0 | (pc.channel & 0x0F), pc.program & 0x7F]);
         }
-        MidiEventKind::ChannelPressure(cp) => Some((
-            [0xD0 | (cp.channel & 0x0F), to_data_byte(cp.pressure), 0],
-            2,
-        )),
+        MidiEventKind::ChannelPressure(cp) => emit(&[0xD0 | (cp.channel & 0x0F), scale::to_7bit(cp.pressure)]),
         MidiEventKind::PitchBend(pb) => {
-            // -1.0..1.0 maps to the 14-bit range 0..16383 with the center at 8192.
-            let raw = (pb.value * 8192.0 + 8192.0).round().clamp(0.0, 16383.0) as u16;
-            let lsb = (raw & 0x7F) as u8;
-            let msb = (raw >> 7) as u8;
-            Some(([0xE0 | (pb.channel & 0x0F), lsb, msb], 3))
+            let (msb, lsb) = split_14bit_raw(scale::bipolar_to_14bit(pb.value));
+            emit(&[0xE0 | (pb.channel & 0x0F), lsb, msb]);
+        }
+        MidiEventKind::ParameterNumber(change) => {
+            let (changes, count) = change.midi1_control_changes();
+            for &(controller, value) in &changes[..count] {
+                emit(&control_change(change.channel, controller, value));
+            }
         }
         MidiEventKind::SysEx(_)
         | MidiEventKind::NoteExpressionValue(_)
         | MidiEventKind::NoteExpressionInt(_)
         | MidiEventKind::NoteExpressionText(_)
         | MidiEventKind::ChordInfo(_)
-        | MidiEventKind::ScaleInfo(_) => None,
+        | MidiEventKind::ScaleInfo(_) => {}
     }
 }
 
@@ -808,8 +795,8 @@ const MAX_AU_SYSEX_BYTES: usize = u16::MAX as usize;
 
 /// Send the MIDI events a plugin produced to the host.
 ///
-/// Every event becomes one complete MIDI 1.0 message. Events without a MIDI 1.0
-/// encoding are skipped. Returns how many SysEx messages were dropped because
+/// Every event becomes complete MIDI 1.0 messages (see `encode_midi_event`).
+/// Events without a MIDI 1.0 encoding are skipped. Returns how many SysEx messages were dropped because
 /// they are longer than an Audio Unit passes.
 fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) -> u32 {
     let mut dropped = 0;
@@ -825,11 +812,7 @@ fn send_midi_output(output: &MidiBuffer, sink: MidiOutputSink) -> u32 {
                     _ => dropped += 1,
                 }
             }
-            other => {
-                if let Some((bytes, len)) = encode_midi_event(other) {
-                    sink.send(event.sample_offset, &bytes[..len]);
-                }
-            }
+            other => encode_midi_event(other, |bytes| sink.send(event.sample_offset, bytes)),
         }
     }
     dropped
@@ -1003,6 +986,9 @@ pub struct RenderBlock<S: Sample> {
     /// The MIDI input of a render call, with a SysEx pool for a plugin with
     /// MIDI input.
     midi_buffer: UnsafeCell<Box<MidiBuffer>>,
+    /// Assembles the MIDI 1.0 sequences of the MIDI input (RPN, NRPN, bank
+    /// select) across render calls. The render thread uses it.
+    midi1_translator: UnsafeCell<Midi1Translator>,
     /// Pre-allocated parameter event buffer for zero-allocation parameter automation
     parameter_events: UnsafeCell<ParameterEventBuffer>,
     /// Current sample rate for ProcessContext
@@ -1193,6 +1179,7 @@ impl<S: RenderSample> RenderBlock<S> {
             max_frames,
             storage: UnsafeCell::new(storage),
             midi_buffer: UnsafeCell::new(MidiBuffer::new_boxed(settings.midi_input_sysex_bytes())),
+            midi1_translator: UnsafeCell::new(Midi1Translator::new()),
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
             sample_rate,
             settings,
@@ -1411,8 +1398,11 @@ impl<S: RenderSample> RenderBlock<S> {
         // end of the call.
         // SAFETY: The render thread, one call at a time.
         let host_bypass = unsafe { &mut *self.host_bypass.get() };
+        // SAFETY: The render thread, one call at a time.
+        let midi1_translator = unsafe { &mut *self.midi1_translator.get() };
         if self.shared.take_reset_request() {
             plugin_guard.reset();
+            midi1_translator.reset();
         }
         if self.shared.take_host_bypass_reset_request() {
             if let Some(host_bypass) = host_bypass.as_mut() {
@@ -1490,9 +1480,15 @@ impl<S: RenderSample> RenderBlock<S> {
 
         // Update MIDI CC state from incoming events
         // This allows plugins to query current CC values via context.midi_cc()
+        // It sees every CC as the host sent it, as in VST3, before the
+        // translation takes the RPN and NRPN sequences.
         if let Some(cc_state) = plugin_guard.midi_cc_state() {
             update_midi_cc_state(midi_buffer, cc_state);
         }
+
+        // The plugin gets RPN and NRPN changes and program changes with
+        // their bank, whether the host sent MIDI 1.0 or translated it to 2.0.
+        midi1_translator.translate(midi_buffer);
 
         // The plugin gets its MIDI in process_midi() right before each
         // process() call, with the events of that call (see the sub-block
@@ -2550,6 +2546,7 @@ mod tests {
             let data2 = message.get(2).copied().unwrap_or(0);
             let event = MidiEvent::from_midi1_bytes(
                 i as u32,
+                0,
                 message[0] & 0xF0,
                 message[0] & 0x0F,
                 data1,
@@ -2561,7 +2558,7 @@ mod tests {
 
         // All velocities survive the round trip through the normalized value.
         for velocity in 1..=127u8 {
-            let event = MidiEvent::from_midi1_bytes(0, 0x90, 0, 60, velocity).unwrap();
+            let event = MidiEvent::from_midi1_bytes(0, 0, 0x90, 0, 60, velocity).unwrap();
             assert_eq!(sent(&[event])[0].1, vec![0x90, 60, velocity]);
         }
     }
@@ -2609,7 +2606,7 @@ mod tests {
     fn test_midi_output_skips_events_without_midi_encoding() {
         let events = [
             MidiEvent::note_expression_value(0, 1, 0, 0.5),
-            MidiEvent::from_midi1_bytes(3, 0x90, 0, 60, 100).unwrap(),
+            MidiEvent::from_midi1_bytes(3, 0, 0x90, 0, 60, 100).unwrap(),
         ];
         assert_eq!(sent(&events), vec![(3, vec![0x90, 60, 100])]);
     }

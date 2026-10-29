@@ -34,7 +34,29 @@ pub type MidiNote = u8;
 
 /// Unique identifier for tracking note on/off pairs.
 /// Use -1 when note ID is not available.
+///
+/// MIDI input has no note IDs of its own: the wrappers give a note the ID
+/// [`note_id`] makes from its group, channel and pitch.
 pub type NoteId = i32;
+
+/// The note ID of a MIDI note: `group << 11 | channel << 7 | pitch`.
+///
+/// One pitch playing on two channels or groups gets two IDs, so a per-note
+/// message finds its note. Every value is masked to its bits.
+#[inline]
+pub const fn note_id(group: u8, channel: MidiChannel, pitch: MidiNote) -> NoteId {
+    (((group & 0x0F) as NoteId) << 11) | (((channel & 0x0F) as NoteId) << 7) | (pitch & 0x7F) as NoteId
+}
+
+/// The group, channel and pitch of a note ID that [`note_id`] made, or
+/// `None` for an ID it cannot have made.
+#[inline]
+pub const fn note_id_parts(id: NoteId) -> Option<(u8, MidiChannel, MidiNote)> {
+    if id < 0 || id >= 1 << 15 {
+        return None;
+    }
+    Some((((id >> 11) & 0x0F) as u8, ((id >> 7) & 0x0F) as u8, (id & 0x7F) as u8))
+}
 
 /// A MIDI note-on event.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,12 +65,14 @@ pub struct NoteOn {
     pub channel: MidiChannel,
     /// Note number (0-127).
     pub pitch: MidiNote,
-    /// Velocity (0.0 to 1.0). A note-on from the host with velocity 0
-    /// reaches the plugin as a [`NoteOff`].
+    /// Velocity (0.0 to 1.0), above 0. A MIDI 1.0 note-on with velocity 0
+    /// reaches the plugin as a [`NoteOff`]; a MIDI 2.0 note-on with velocity
+    /// 0 (a note-on in MIDI 2.0) has the smallest velocity, 1 / 65535.
     pub velocity: f32,
     /// Unique note ID for tracking this note instance.
     pub note_id: NoteId,
-    /// Pitch offset in cents (-120.0 to +120.0) for microtonal/MPE support.
+    /// Pitch offset in cents for microtonal and per-note pitch: VST3's
+    /// `tuning`, or a MIDI 2.0 note's pitch 7.9 attribute minus its pitch.
     pub tuning: f32,
     /// Note length in samples (0 = unknown/not provided).
     pub length: i32,
@@ -61,11 +85,13 @@ pub struct NoteOff {
     pub channel: MidiChannel,
     /// Note number (0-127).
     pub pitch: MidiNote,
-    /// Release velocity (0.0 to 1.0).
+    /// Release velocity (0.0 to 1.0). A MIDI 1.0 note-on with velocity 0
+    /// has the default release velocity, 64 of 127 (0x8000 of 0xFFFF in
+    /// MIDI 2.0, just above 0.5).
     pub velocity: f32,
     /// Unique note ID matching the original note-on.
     pub note_id: NoteId,
-    /// Pitch offset in cents (-120.0 to +120.0) for microtonal/MPE support.
+    /// Pitch offset in cents, as [`NoteOn::tuning`].
     pub tuning: f32,
 }
 
@@ -76,8 +102,8 @@ pub struct PolyPressure {
     pub channel: MidiChannel,
     /// Note number (0-127).
     pub pitch: MidiNote,
-    /// Pressure amount (0.0 to 1.0).
-    pub pressure: f32,
+    /// Pressure amount (0.0 to 1.0), 32 bits from MIDI 2.0.
+    pub pressure: f64,
     /// Unique note ID for tracking this note instance.
     pub note_id: NoteId,
 }
@@ -89,8 +115,11 @@ pub struct ControlChange {
     pub channel: MidiChannel,
     /// Controller number (0-127).
     pub controller: u8,
-    /// Controller value (0.0 to 1.0, normalized from 0-127).
-    pub value: f32,
+    /// Controller value (0.0 to 1.0), 32 bits from MIDI 2.0. A MIDI 1.0
+    /// value is scaled up as MIDI 2.0 does (see [`scale`]), so 0 is 0.0,
+    /// 64 is the center and 127 is 1.0 in either protocol. Use
+    /// [`scale::to_7bit`] for the 7-bit value.
+    pub value: f64,
 }
 
 impl ControlChange {
@@ -284,8 +313,9 @@ impl ControlChange {
 pub struct PitchBend {
     /// MIDI channel (0-15).
     pub channel: MidiChannel,
-    /// Pitch bend value (-1.0 to 1.0, where 0.0 is center).
-    pub value: f32,
+    /// Pitch bend value (-1.0 to 1.0, where 0.0 is center), 32 bits from
+    /// MIDI 2.0. Both ends are reached exactly (see [`scale::bipolar_from_u32`]).
+    pub value: f64,
 }
 
 /// Channel pressure (channel aftertouch).
@@ -293,8 +323,8 @@ pub struct PitchBend {
 pub struct ChannelPressure {
     /// MIDI channel (0-15).
     pub channel: MidiChannel,
-    /// Pressure amount (0.0 to 1.0).
-    pub pressure: f32,
+    /// Pressure amount (0.0 to 1.0), 32 bits from MIDI 2.0.
+    pub pressure: f64,
 }
 
 /// Program change message.
@@ -304,6 +334,11 @@ pub struct ProgramChange {
     pub channel: MidiChannel,
     /// Program number (0-127).
     pub program: u8,
+    /// The bank, MSB << 7 | LSB, if one was selected: by a MIDI 2.0
+    /// program change that carries one, or by bank select (CC 0 and CC 32)
+    /// on the channel before. Bank select stays in effect until the next
+    /// one, as in MIDI 1.0; the CCs still reach the plugin too.
+    pub bank: Option<u16>,
 }
 
 // =============================================================================
@@ -320,10 +355,32 @@ pub struct NoteExpressionValue {
     pub note_id: NoteId,
     /// Expression type (see [`note_expression`] module for constants).
     pub expression_type: u32,
-    /// Normalized value. Range depends on expression type:
-    /// - Most types: 0.0 to 1.0
-    /// - Tuning: -0.5 to 0.5 (semitones, can exceed for wider range)
+    /// Normalized value, 0.0 to 1.0, as VST3 defines it per type; a
+    /// bipolar type (pan, tuning, [`note_expression::PITCH_BEND`]) has its
+    /// center at 0.5. Tuning is `240 * (value - 0.5)` semitones (see
+    /// [`tuning_semitones`](Self::tuning_semitones)), volume
+    /// `20 * log10(4 * value)` dB.
     pub value: f64,
+}
+
+impl NoteExpressionValue {
+    /// The tuning in semitones of a [`note_expression::TUNING`] value.
+    #[inline]
+    pub fn tuning_semitones(&self) -> f64 {
+        tuning_semitones(self.value)
+    }
+}
+
+/// The semitones of a normalized tuning value: `240 * (value - 0.5)`.
+#[inline]
+pub fn tuning_semitones(value: f64) -> f64 {
+    240.0 * (value - 0.5)
+}
+
+/// The normalized tuning value of semitones (-120 to 120).
+#[inline]
+pub fn tuning_value(semitones: f64) -> f64 {
+    (semitones / 240.0 + 0.5).clamp(0.0, 1.0)
 }
 
 /// Note Expression integer value event.
@@ -628,20 +685,21 @@ pub mod cc {
 
 /// Well-known Registered Parameter Numbers (RPNs).
 ///
-/// These are standard MIDI parameters with defined meanings across all devices.
-/// RPN messages are sent using CC 101 (MSB) and CC 100 (LSB) to select the
-/// parameter, followed by CC 6 (Data Entry MSB) and optionally CC 38 (LSB)
-/// to set the value.
+/// These are standard MIDI parameters with defined meanings across all
+/// devices: the [`ParameterNumber::parameter`] of an RPN (MSB << 7 | LSB).
+/// In MIDI 1.0 CC 101 (MSB) and CC 100 (LSB) select the parameter, then
+/// CC 6 (Data Entry MSB) and optionally CC 38 (LSB) set the value; a plugin
+/// gets one [`ParameterNumber`] event for them.
 ///
 /// # Example
 ///
 /// To set Pitch Bend Sensitivity to 12 semitones:
 /// ```text
 /// CC 101 = 0   (RPN MSB = 0)
-/// CC 100 = 0   (RPN LSB = 0)  → Selects Pitch Bend Sensitivity
+/// CC 100 = 0   (RPN LSB = 0): selects Pitch Bend Sensitivity
 /// CC 6   = 12  (Data Entry = 12 semitones)
 /// CC 101 = 127 (RPN Null)
-/// CC 100 = 127 (RPN Null)     → Deselect to prevent accidental changes
+/// CC 100 = 127 (RPN Null): deselects, to prevent accidental changes
 /// ```
 pub mod rpn {
     /// Pitch Bend Sensitivity (semitones + cents).
@@ -690,7 +748,7 @@ pub mod rpn {
     ///
     /// Send after setting an RPN/NRPN value to prevent accidental
     /// data entry changes from affecting parameters.
-    pub const NULL: u16 = 0x7F7F;
+    pub const NULL: u16 = 0x3FFF;
 
     /// Check if a parameter number represents RPN Null.
     #[inline]
@@ -700,385 +758,298 @@ pub mod rpn {
 }
 
 // =============================================================================
-// RPN/NRPN Message Types
+// RPN/NRPN Messages
 // =============================================================================
 
 /// Type of parameter number (RPN vs NRPN).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterNumberKind {
-    /// Registered Parameter Number (CC 100/101).
-    /// Standard MIDI parameters with defined meanings.
+    /// Registered Parameter Number (MIDI 2.0: registered controller).
     Rpn,
-    /// Non-Registered Parameter Number (CC 98/99).
-    /// Manufacturer/device-specific parameters.
+    /// Non-Registered Parameter Number (MIDI 2.0: assignable controller).
     Nrpn,
 }
 
-/// A complete RPN or NRPN message with its 14-bit value.
+/// A change of an RPN or NRPN.
 ///
-/// This represents a fully-decoded RPN/NRPN sequence after the [`RpnTracker`]
-/// has assembled all the CC messages.
+/// MIDI 1.0 sets one with a sequence of control changes (CC 101 and 100 or
+/// 99 and 98 select it, CC 6 and 38 set it, CC 96 and 97 step it); MIDI 2.0
+/// with one message. The wrappers assemble the sequences, so a plugin gets
+/// this event in either protocol and never the selection CCs (see
+/// [`Midi1Translator`](crate::Midi1Translator)).
 ///
 /// # Example
 ///
-/// ```ignore
-/// use beamer_core::{RpnTracker, ControlChange, cc, rpn};
+/// ```
+/// use beamer_core::{MidiEventKind, ParameterNumber};
 ///
-/// let mut tracker = RpnTracker::new();
-///
-/// // Simulate receiving CC sequence for Pitch Bend Sensitivity = 12 semitones
-/// tracker.process_cc(&ControlChange { channel: 0, controller: cc::RPN_MSB, value: 0.0 });
-/// tracker.process_cc(&ControlChange { channel: 0, controller: cc::RPN_LSB, value: 0.0 });
-/// let msg = tracker.process_cc(&ControlChange { channel: 0, controller: cc::DATA_ENTRY_MSB, value: 12.0/127.0 });
-///
-/// if let Some(msg) = msg {
-///     assert!(msg.is_pitch_bend_sensitivity());
-///     let (semitones, cents) = msg.pitch_bend_sensitivity();
-///     assert_eq!(semitones, 12);
+/// fn pitch_bend_range(event: &MidiEventKind) -> Option<f32> {
+///     match event {
+///         MidiEventKind::ParameterNumber(change) => change
+///             .pitch_bend_sensitivity()
+///             .map(|(semitones, cents)| semitones as f32 + cents as f32 / 100.0),
+///         _ => None,
+///     }
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ParameterNumberMessage {
+pub struct ParameterNumber {
     /// MIDI channel (0-15).
     pub channel: MidiChannel,
     /// RPN or NRPN.
     pub kind: ParameterNumberKind,
-    /// 14-bit parameter number (MSB << 7 | LSB).
+    /// The parameter, MSB << 7 | LSB (MIDI 2.0: bank << 7 | index). See
+    /// [`rpn`] for the registered ones.
     pub parameter: u16,
-    /// 14-bit data value, normalized to 0.0-1.0.
-    pub value: f32,
-    /// Whether this was a data increment (+1 to current value).
-    pub is_increment: bool,
-    /// Whether this was a data decrement (-1 from current value).
-    pub is_decrement: bool,
+    /// The new value or a step.
+    pub change: ParameterChange,
 }
 
-impl ParameterNumberMessage {
-    /// Create a new RPN message.
-    pub const fn rpn(channel: MidiChannel, parameter: u16, value: f32) -> Self {
+/// How a [`ParameterNumber`] changes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParameterChange {
+    /// The value, 0.0 to 1.0, 32 bits from MIDI 2.0. MIDI 1.0 data entry
+    /// (CC 6 and 38) gives 14 bits, scaled up as MIDI 2.0 does.
+    Absolute(f64),
+    /// A step, -1.0 to 1.0 of the full range: a MIDI 2.0 relative change
+    /// over `u32::MAX`, or [`RELATIVE_14BIT_STEP`] for each data increment
+    /// (CC 96) or decrement (CC 97) of MIDI 1.0.
+    Relative(f64),
+}
+
+/// The step of one MIDI 1.0 data increment: one 14-bit step on the 32-bit
+/// scale of MIDI 2.0.
+pub const RELATIVE_14BIT_STEP: f64 = (1u32 << 18) as f64 / u32::MAX as f64;
+
+impl ParameterNumber {
+    /// An absolute change of an RPN.
+    pub const fn rpn(channel: MidiChannel, parameter: u16, value: f64) -> Self {
         Self {
             channel,
             kind: ParameterNumberKind::Rpn,
             parameter,
-            value,
-            is_increment: false,
-            is_decrement: false,
+            change: ParameterChange::Absolute(value),
         }
     }
 
-    /// Create a new NRPN message.
-    pub const fn nrpn(channel: MidiChannel, parameter: u16, value: f32) -> Self {
+    /// An absolute change of an NRPN.
+    pub const fn nrpn(channel: MidiChannel, parameter: u16, value: f64) -> Self {
         Self {
             channel,
             kind: ParameterNumberKind::Nrpn,
             parameter,
-            value,
-            is_increment: false,
-            is_decrement: false,
+            change: ParameterChange::Absolute(value),
         }
     }
 
-    /// Check if this is an RPN.
+    /// Whether this is an RPN.
     #[inline]
     pub const fn is_rpn(&self) -> bool {
         matches!(self.kind, ParameterNumberKind::Rpn)
     }
 
-    /// Check if this is an NRPN.
+    /// Whether this is an NRPN.
     #[inline]
     pub const fn is_nrpn(&self) -> bool {
         matches!(self.kind, ParameterNumberKind::Nrpn)
     }
 
-    /// Check if this is the Pitch Bend Sensitivity RPN.
+    /// The value of an absolute change as 14 bits (MSB << 7 | LSB), as MIDI
+    /// 1.0 data entry sends it.
     #[inline]
-    pub fn is_pitch_bend_sensitivity(&self) -> bool {
-        self.is_rpn() && self.parameter == rpn::PITCH_BEND_SENSITIVITY
+    pub fn value_14bit(&self) -> Option<u16> {
+        match self.change {
+            ParameterChange::Absolute(value) => Some(scale::to_14bit(value)),
+            ParameterChange::Relative(_) => None,
+        }
     }
 
-    /// Check if this is the RPN Null message.
+    /// The semitones and cents of an absolute change of the pitch bend
+    /// sensitivity (RPN 0).
     #[inline]
-    pub fn is_null(&self) -> bool {
-        self.is_rpn() && rpn::is_null(self.parameter)
-    }
-
-    /// Get the raw 14-bit value (0-16383).
-    #[inline]
-    pub fn raw_value(&self) -> u16 {
-        (self.value.clamp(0.0, 1.0) * 16383.0) as u16
-    }
-
-    /// For Pitch Bend Sensitivity: get semitones and cents.
-    ///
-    /// Returns (semitones, cents) where MSB = semitones (0-127)
-    /// and LSB = cents (0-127).
-    #[inline]
-    pub fn pitch_bend_sensitivity(&self) -> (u8, u8) {
-        let raw = self.raw_value();
-        let msb = ((raw >> 7) & 0x7F) as u8;
-        let lsb = (raw & 0x7F) as u8;
-        (msb, lsb)
-    }
-}
-
-// =============================================================================
-// RPN/NRPN Tracker
-// =============================================================================
-
-/// Per-channel RPN/NRPN state for tracking multi-CC sequences.
-#[derive(Debug, Clone, Copy, Default)]
-struct RpnChannelState {
-    /// Currently selected parameter MSB (CC 99/101).
-    parameter_msb: Option<u8>,
-    /// Currently selected parameter LSB (CC 98/100).
-    parameter_lsb: Option<u8>,
-    /// Current data entry MSB (CC 6).
-    data_msb: Option<u8>,
-    /// Current data entry LSB (CC 38).
-    data_lsb: Option<u8>,
-    /// Whether the current selection is RPN (true) or NRPN (false).
-    is_rpn: bool,
-}
-
-impl RpnChannelState {
-    /// Reset all state (e.g., after RPN Null).
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Check if we have a complete parameter selection.
-    fn has_parameter(&self) -> bool {
-        self.parameter_msb.is_some() && self.parameter_lsb.is_some()
-    }
-
-    /// Get the 14-bit parameter number if both MSB and LSB are set.
-    fn parameter(&self) -> Option<u16> {
-        match (self.parameter_msb, self.parameter_lsb) {
-            (Some(msb), Some(lsb)) => Some(combine_14bit_raw(msb, lsb)),
-            _ => None,
+    pub fn pitch_bend_sensitivity(&self) -> Option<(u8, u8)> {
+        if !self.is_rpn() || self.parameter != rpn::PITCH_BEND_SENSITIVITY {
+            return None;
         }
+        self.value_14bit().map(split_14bit_raw)
     }
 
-    /// Get the 14-bit data value if MSB is set (LSB defaults to 0).
-    fn data_value(&self) -> Option<u16> {
-        self.data_msb.map(|msb| {
-            let lsb = self.data_lsb.unwrap_or(0);
-            combine_14bit_raw(msb, lsb)
-        })
-    }
-}
-
-/// Tracks RPN/NRPN state across all 16 MIDI channels.
-///
-/// This struct is designed for real-time safety:
-/// - Fixed-size array (no heap allocation)
-/// - All operations are O(1)
-/// - Implements `Copy` for simple value semantics
-///
-/// # Usage
-///
-/// Plugins that need to receive RPN/NRPN messages should store an instance
-/// of this tracker in their state and call `process_cc` for each incoming
-/// Control Change event.
-///
-/// ```ignore
-/// struct MyPlugin {
-///     rpn_tracker: RpnTracker,
-/// }
-///
-/// impl Processor for MyPlugin {
-///     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
-///         for event in input {
-///             if let MidiEventKind::ControlChange(cc) = &event.event {
-///                 if let Some(msg) = self.rpn_tracker.process_cc(cc) {
-///                     // Handle complete RPN/NRPN message
-///                     if msg.is_pitch_bend_sensitivity() {
-///                         let (semitones, cents) = msg.pitch_bend_sensitivity();
-///                         self.pitch_bend_range = semitones as f32 + cents as f32 / 100.0;
-///                     }
-///                 }
-///             }
-///         }
-///     }
-/// }
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct RpnTracker {
-    /// Per-channel state for all 16 MIDI channels.
-    channels: [RpnChannelState; 16],
-}
-
-impl Default for RpnTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RpnTracker {
-    /// Create a new RPN tracker with all channels in their default state.
-    pub const fn new() -> Self {
-        Self {
-            channels: [RpnChannelState {
-                parameter_msb: None,
-                parameter_lsb: None,
-                data_msb: None,
-                data_lsb: None,
-                is_rpn: false,
-            }; 16],
-        }
-    }
-
-    /// Reset all channel states.
-    pub fn reset(&mut self) {
-        for channel in &mut self.channels {
-            channel.reset();
-        }
-    }
-
-    /// Reset a specific channel's state.
-    pub fn reset_channel(&mut self, channel: MidiChannel) {
-        if (channel as usize) < 16 {
-            self.channels[channel as usize].reset();
-        }
-    }
-
-    /// Process a Control Change event.
-    ///
-    /// Returns `Some(ParameterNumberMessage)` when a complete RPN/NRPN
-    /// message has been assembled from the CC sequence.
-    ///
-    /// # Arguments
-    /// * `cc` - The Control Change event to process
-    ///
-    /// # Returns
-    /// - `None` for non-RPN/NRPN CCs or incomplete sequences
-    /// - `Some(message)` when a complete RPN/NRPN is ready
-    pub fn process_cc(&mut self, cc: &ControlChange) -> Option<ParameterNumberMessage> {
-        let channel_idx = (cc.channel as usize) & 0x0F;
-        let state = &mut self.channels[channel_idx];
-
-        // Convert normalized value back to 7-bit
-        let value_7bit = (cc.value.clamp(0.0, 1.0) * 127.0) as u8;
-
-        match cc.controller {
-            // RPN parameter selection
-            cc::RPN_MSB => {
-                state.parameter_msb = Some(value_7bit);
-                state.is_rpn = true;
-                // Clear data values on new parameter selection
-                state.data_msb = None;
-                state.data_lsb = None;
-                None
-            }
-            cc::RPN_LSB => {
-                state.parameter_lsb = Some(value_7bit);
-                state.is_rpn = true;
-                // Check for RPN Null
-                if let Some(parameter) = state.parameter() {
-                    if rpn::is_null(parameter) {
-                        state.reset();
-                    }
-                }
-                None
-            }
-
-            // NRPN parameter selection
-            cc::NRPN_MSB => {
-                state.parameter_msb = Some(value_7bit);
-                state.is_rpn = false;
-                state.data_msb = None;
-                state.data_lsb = None;
-                None
-            }
-            cc::NRPN_LSB => {
-                state.parameter_lsb = Some(value_7bit);
-                state.is_rpn = false;
-                None
-            }
-
-            // Data Entry MSB - may complete the message
-            cc::DATA_ENTRY_MSB => {
-                state.data_msb = Some(value_7bit);
-                self.try_emit_message(channel_idx, false, false)
-            }
-
-            // Data Entry LSB - may complete the message
-            cc::DATA_ENTRY_LSB => {
-                state.data_lsb = Some(value_7bit);
-                // Only emit if we already have MSB
-                if self.channels[channel_idx].data_msb.is_some() {
-                    self.try_emit_message(channel_idx, false, false)
-                } else {
-                    None
-                }
-            }
-
-            // Data Increment
-            cc::DATA_INCREMENT => {
-                if self.channels[channel_idx].has_parameter() {
-                    self.try_emit_message(channel_idx, true, false)
-                } else {
-                    None
-                }
-            }
-
-            // Data Decrement
-            cc::DATA_DECREMENT => {
-                if self.channels[channel_idx].has_parameter() {
-                    self.try_emit_message(channel_idx, false, true)
-                } else {
-                    None
-                }
-            }
-
-            _ => None,
-        }
-    }
-
-    /// Try to emit a complete RPN/NRPN message.
-    fn try_emit_message(
-        &self,
-        channel_idx: usize,
-        is_increment: bool,
-        is_decrement: bool,
-    ) -> Option<ParameterNumberMessage> {
-        let state = &self.channels[channel_idx];
-
-        let parameter = state.parameter()?;
-
-        // For increment/decrement, we don't need a data value
-        let value = if is_increment || is_decrement {
-            0.0 // Value is relative, not absolute
-        } else {
-            let raw = state.data_value()?;
-            raw as f32 / 16383.0
+    /// The MIDI 1.0 control changes that send this change, as (controller,
+    /// value) pairs, with how many of the four are used: the selection (CC
+    /// 101 and 100, or 99 and 98), then data entry (CC 6 and 38) for an
+    /// absolute change or one increment (CC 96) or decrement (CC 97) for a
+    /// relative one, whatever its size.
+    pub fn midi1_control_changes(&self) -> ([(u8, u8); 4], usize) {
+        let (msb, lsb) = split_14bit_raw(self.parameter & 0x3FFF);
+        let (select_msb, select_lsb) = match self.kind {
+            ParameterNumberKind::Rpn => (cc::RPN_MSB, cc::RPN_LSB),
+            ParameterNumberKind::Nrpn => (cc::NRPN_MSB, cc::NRPN_LSB),
         };
+        let mut changes = [(select_msb, msb), (select_lsb, lsb), (0, 0), (0, 0)];
+        match self.change {
+            ParameterChange::Absolute(value) => {
+                let (data_msb, data_lsb) = split_14bit_raw(scale::to_14bit(value));
+                changes[2] = (cc::DATA_ENTRY_MSB, data_msb);
+                changes[3] = (cc::DATA_ENTRY_LSB, data_lsb);
+                (changes, 4)
+            }
+            ParameterChange::Relative(step) => {
+                let controller = if step < 0.0 { cc::DATA_DECREMENT } else { cc::DATA_INCREMENT };
+                changes[2] = (controller, 0);
+                (changes, 3)
+            }
+        }
+    }
+}
 
-        Some(ParameterNumberMessage {
-            channel: channel_idx as u8,
-            kind: if state.is_rpn {
-                ParameterNumberKind::Rpn
-            } else {
-                ParameterNumberKind::Nrpn
-            },
-            parameter,
-            value,
-            is_increment,
-            is_decrement,
-        })
+// =============================================================================
+// Resolution Scaling
+// =============================================================================
+
+/// Scaling between MIDI 1.0 and MIDI 2.0 resolutions and Beamer's
+/// normalized values.
+///
+/// A MIDI 1.0 value is scaled up as the MIDI 2.0 specification does it
+/// (min-center-max: shifted up to the center, the bits repeated above it),
+/// which is what a host does when it translates MIDI 1.0 to 2.0. So a
+/// plugin gets the same value whether a host sent MIDI 1.0 or translated
+/// it: 0 is 0.0, 127 is 1.0 and 64 is the center. Scaling down rounds to
+/// the nearest step of the wider value and shifts (as MIDI 2.0 does), so
+/// every value that came in leaves as the same byte; a plugin's `n / 127.0`
+/// gives byte `n`. Any other value leaves as its top 7 bits, about
+/// `floor(value * 128)`.
+pub mod scale {
+    /// Scale a 7-bit value up to 16 bits.
+    #[inline]
+    pub const fn upscale_7_to_16(value: u8) -> u16 {
+        let value = (value & 0x7F) as u16;
+        let shifted = value << 9;
+        if value <= 0x40 {
+            return shifted;
+        }
+        let repeat = value & 0x3F;
+        shifted | (repeat << 3) | (repeat >> 3)
     }
 
-    /// Get the currently selected parameter for a channel, if any.
-    pub fn current_parameter(&self, channel: MidiChannel) -> Option<(ParameterNumberKind, u16)> {
-        let state = &self.channels[(channel as usize) & 0x0F];
-        state.parameter().map(|p| {
-            let kind = if state.is_rpn {
-                ParameterNumberKind::Rpn
-            } else {
-                ParameterNumberKind::Nrpn
-            };
-            (kind, p)
-        })
+    /// Scale a 7-bit value up to 32 bits.
+    #[inline]
+    pub const fn upscale_7_to_32(value: u8) -> u32 {
+        let value = (value & 0x7F) as u32;
+        let shifted = value << 25;
+        if value <= 0x40 {
+            return shifted;
+        }
+        let repeat = value & 0x3F;
+        shifted | (repeat << 19) | (repeat << 13) | (repeat << 7) | (repeat << 1) | (repeat >> 5)
+    }
+
+    /// Scale a 14-bit value up to 32 bits.
+    #[inline]
+    pub const fn upscale_14_to_32(value: u16) -> u32 {
+        let value = (value & 0x3FFF) as u32;
+        let shifted = value << 18;
+        if value <= 0x2000 {
+            return shifted;
+        }
+        let repeat = value & 0x1FFF;
+        shifted | (repeat << 5) | (repeat >> 8)
+    }
+
+    /// A 32-bit value as 0.0 to 1.0.
+    #[inline]
+    pub fn unipolar_from_u32(value: u32) -> f64 {
+        value as f64 / u32::MAX as f64
+    }
+
+    /// 0.0 to 1.0 as a 32-bit value, rounded.
+    #[inline]
+    pub fn unipolar_to_u32(value: f64) -> u32 {
+        (value.clamp(0.0, 1.0) * u32::MAX as f64).round() as u32
+    }
+
+    /// The center of a 32-bit bipolar value.
+    const CENTER: u32 = 0x8000_0000;
+
+    /// A 32-bit bipolar value (center 0x80000000) as -1.0 to 1.0, with
+    /// each end reached exactly.
+    #[inline]
+    pub fn bipolar_from_u32(value: u32) -> f64 {
+        if value >= CENTER {
+            (value - CENTER) as f64 / (u32::MAX - CENTER) as f64
+        } else {
+            -((CENTER - value) as f64 / CENTER as f64)
+        }
+    }
+
+    /// -1.0 to 1.0 as a 32-bit bipolar value, rounded.
+    #[inline]
+    pub fn bipolar_to_u32(value: f64) -> u32 {
+        let value = value.clamp(-1.0, 1.0);
+        if value >= 0.0 {
+            CENTER + (value * (u32::MAX - CENTER) as f64).round() as u32
+        } else {
+            CENTER - (-value * CENTER as f64).round() as u32
+        }
+    }
+
+    /// A 7-bit value as 0.0 to 1.0.
+    #[inline]
+    pub fn from_7bit(value: u8) -> f64 {
+        unipolar_from_u32(upscale_7_to_32(value))
+    }
+
+    /// 0.0 to 1.0 as a 7-bit value.
+    #[inline]
+    pub fn to_7bit(value: f64) -> u8 {
+        (unipolar_to_u32(value) >> 25) as u8
+    }
+
+    /// A 14-bit value as 0.0 to 1.0.
+    #[inline]
+    pub fn from_14bit(value: u16) -> f64 {
+        unipolar_from_u32(upscale_14_to_32(value))
+    }
+
+    /// 0.0 to 1.0 as a 14-bit value.
+    #[inline]
+    pub fn to_14bit(value: f64) -> u16 {
+        (unipolar_to_u32(value) >> 18) as u16
+    }
+
+    /// A 14-bit bipolar value (pitch bend, center 8192) as -1.0 to 1.0.
+    #[inline]
+    pub fn bipolar_from_14bit(value: u16) -> f64 {
+        bipolar_from_u32(upscale_14_to_32(value))
+    }
+
+    /// -1.0 to 1.0 as a 14-bit bipolar value (pitch bend).
+    #[inline]
+    pub fn bipolar_to_14bit(value: f64) -> u16 {
+        (bipolar_to_u32(value) >> 18) as u16
+    }
+
+    /// A 16-bit velocity as 0.0 to 1.0.
+    #[inline]
+    pub fn velocity_from_u16(value: u16) -> f32 {
+        (value as f64 / u16::MAX as f64) as f32
+    }
+
+    /// A velocity (0.0 to 1.0) as 16 bits, rounded.
+    #[inline]
+    pub fn velocity_to_u16(value: f32) -> u16 {
+        (value.clamp(0.0, 1.0) as f64 * u16::MAX as f64).round() as u16
+    }
+
+    /// A 7-bit velocity as 0.0 to 1.0.
+    #[inline]
+    pub fn velocity_from_7bit(value: u8) -> f32 {
+        velocity_from_u16(upscale_7_to_16(value))
+    }
+
+    /// A velocity (0.0 to 1.0) as 7 bits.
+    #[inline]
+    pub fn velocity_to_7bit(value: f32) -> u8 {
+        (velocity_to_u16(value) >> 9) as u8
     }
 }
 
@@ -1090,63 +1061,42 @@ impl RpnTracker {
 ///
 /// MIDI CC 0-31 are MSB controllers and CC 32-63 are their corresponding LSB pairs.
 /// Together they provide 14-bit resolution (0-16383) instead of 7-bit (0-127).
-///
-/// # Arguments
-/// * `msb_value` - MSB controller value (0.0 to 1.0, normalized from CC 0-31)
-/// * `lsb_value` - LSB controller value (0.0 to 1.0, normalized from CC 32-63)
-///
-/// # Returns
-/// Combined 14-bit value normalized to 0.0-1.0
+/// The values are scaled as in [`scale`].
 ///
 /// # Example
 /// ```
-/// use beamer_core::midi::combine_14bit_cc;
+/// use beamer_core::midi::{combine_14bit_cc, scale};
 ///
-/// // Full resolution: MSB=127, LSB=127 → 16383 → 1.0
-/// assert!((combine_14bit_cc(1.0, 1.0) - 1.0).abs() < 0.001);
+/// // Full resolution: MSB=127, LSB=127 gives 16383, 1.0.
+/// assert_eq!(combine_14bit_cc(1.0, 1.0), 1.0);
 ///
-/// // Center value: MSB=64, LSB=0 → 8192 → ~0.5
-/// assert!((combine_14bit_cc(0.504, 0.0) - 0.5).abs() < 0.01);
+/// // MSB=64, LSB=0 gives 8192, the center.
+/// assert_eq!(combine_14bit_cc(scale::from_7bit(64), 0.0), scale::from_14bit(8192));
 /// ```
 #[inline]
-pub fn combine_14bit_cc(msb_value: f32, lsb_value: f32) -> f32 {
-    let msb = (msb_value.clamp(0.0, 1.0) * 127.0) as u16;
-    let lsb = (lsb_value.clamp(0.0, 1.0) * 127.0) as u16;
-    let combined = (msb << 7) | (lsb & 0x7F);
-    combined as f32 / 16383.0
+pub fn combine_14bit_cc(msb_value: f64, lsb_value: f64) -> f64 {
+    scale::from_14bit(combine_14bit_raw(scale::to_7bit(msb_value), scale::to_7bit(lsb_value)))
 }
 
 /// Splits a 14-bit normalized value into MSB and LSB controller values.
 ///
 /// This is the inverse of [`combine_14bit_cc`].
 ///
-/// # Arguments
-/// * `value` - Combined 14-bit value (0.0 to 1.0)
-///
-/// # Returns
-/// Tuple of (msb_value, lsb_value), both normalized to 0.0-1.0
-///
 /// # Example
 /// ```
 /// use beamer_core::midi::{split_14bit_cc, combine_14bit_cc};
 ///
-/// // Round-trip test: split then combine should give same value
-/// let original = 0.75;
-/// let (msb, lsb) = split_14bit_cc(original);
-/// let reconstructed = combine_14bit_cc(msb, lsb);
-/// assert!((original - reconstructed).abs() < 0.001);
+/// // Round trip: split then combine gives the 14-bit step of the value.
+/// let (msb, lsb) = split_14bit_cc(0.75);
+/// assert!((combine_14bit_cc(msb, lsb) - 0.75).abs() < 1.0 / 16383.0);
 ///
-/// // Full value splits to (1.0, 1.0)
-/// let (msb, lsb) = split_14bit_cc(1.0);
-/// assert!((msb - 1.0).abs() < 0.01);
-/// assert!((lsb - 1.0).abs() < 0.01);
+/// // The full value splits to (1.0, 1.0).
+/// assert_eq!(split_14bit_cc(1.0), (1.0, 1.0));
 /// ```
 #[inline]
-pub fn split_14bit_cc(value: f32) -> (f32, f32) {
-    let raw = (value.clamp(0.0, 1.0) * 16383.0) as u16;
-    let msb = ((raw >> 7) & 0x7F) as f32 / 127.0;
-    let lsb = (raw & 0x7F) as f32 / 127.0;
-    (msb, lsb)
+pub fn split_14bit_cc(value: f64) -> (f64, f64) {
+    let (msb, lsb) = split_14bit_raw(scale::to_14bit(value));
+    (scale::from_7bit(msb), scale::from_7bit(lsb))
 }
 
 /// Combines two raw 7-bit values into a 14-bit value.
@@ -1180,23 +1130,35 @@ pub const fn split_14bit_raw(value: u16) -> (u8, u8) {
 // Note Expression Constants
 // =============================================================================
 
-/// VST3 Note Expression type IDs.
+/// Note Expression type IDs.
 ///
 /// These constants identify the type of per-note expression in
-/// [`NoteExpressionValue`], [`NoteExpressionInt`] and [`NoteExpressionText`] events.
+/// [`NoteExpressionValue`], [`NoteExpressionInt`] and [`NoteExpressionText`]
+/// events. The types up to [`PHONEME`](note_expression::PHONEME) and the custom range are VST3's,
+/// with VST3's normalized values. MIDI 2.0 per-note messages (Audio Unit)
+/// arrive as the VST3 type of the same meaning where there is one, else as
+/// the types from [`PITCH_BEND`](note_expression::PITCH_BEND) on, which lie past VST3's custom range.
 pub mod note_expression {
-    /// Per-note volume (0.0 = silent, 1.0 = full).
+    /// Per-note volume: `20 * log10(4 * value)` dB (0.25 = 0 dB, 1.0 =
+    /// +12 dB). MIDI 2.0 registered per-note controller 7 (volume, `v`)
+    /// arrives as `v² / 4`, the curve of CC 7.
     pub const VOLUME: u32 = 0;
-    /// Per-note pan (-1.0 = left, 0.0 = center, 1.0 = right).
+    /// Per-note pan (0.0 = left, 0.5 = center, 1.0 = right). MIDI 2.0
+    /// registered per-note controller 10.
     pub const PAN: u32 = 1;
-    /// Per-note tuning in semitones. Critical for MPE pitch bend.
-    /// Typically -0.5 to 0.5 for standard pitch bend range.
+    /// Per-note tuning: `240 * (value - 0.5)` semitones (0.5 = none), see
+    /// [`tuning_semitones`](super::tuning_semitones). MIDI 2.0 registered
+    /// per-note controller 3 (pitch 7.25) arrives as its pitch minus the
+    /// note's.
     pub const TUNING: u32 = 2;
-    /// Per-note vibrato depth (0.0 to 1.0).
+    /// Per-note vibrato depth (0.0 to 1.0). MIDI 2.0 registered per-note
+    /// controller 77 (vibrato depth).
     pub const VIBRATO: u32 = 3;
-    /// Per-note expression (general purpose, 0.0 to 1.0).
+    /// Per-note expression (general purpose, 0.0 to 1.0). MIDI 2.0
+    /// registered per-note controller 11.
     pub const EXPRESSION: u32 = 4;
-    /// Per-note brightness/timbre (0.0 to 1.0).
+    /// Per-note brightness/timbre (0.0 to 1.0). MIDI 2.0 registered per-note
+    /// controller 74.
     pub const BRIGHTNESS: u32 = 5;
     /// Text expression type.
     pub const TEXT: u32 = 6;
@@ -1208,6 +1170,30 @@ pub mod note_expression {
     pub const CUSTOM_END: u32 = 200000;
     /// Invalid type ID.
     pub const INVALID: u32 = u32::MAX;
+
+    /// First of the MIDI 2.0 registered per-note controllers without a VST3
+    /// type: [`registered`] gives index 0 to 255.
+    pub const REGISTERED_START: u32 = 300_000;
+    /// First of the MIDI 2.0 assignable per-note controllers: [`assignable`]
+    /// gives index 0 to 255.
+    pub const ASSIGNABLE_START: u32 = 300_256;
+    /// MIDI 2.0 per-note pitch bend (0.0 to 1.0, 0.5 = none). The plugin
+    /// applies its range, as for channel pitch bend; MPE's default is 48
+    /// semitones each way.
+    pub const PITCH_BEND: u32 = 300_512;
+
+    /// A MIDI 2.0 registered per-note controller that has no VST3 type, by
+    /// its index (0.0 to 1.0).
+    #[inline]
+    pub const fn registered(index: u8) -> u32 {
+        REGISTERED_START + index as u32
+    }
+
+    /// A MIDI 2.0 assignable per-note controller, by its index (0.0 to 1.0).
+    #[inline]
+    pub const fn assignable(index: u8) -> u32 {
+        ASSIGNABLE_START + index as u32
+    }
 }
 
 // =============================================================================
@@ -1242,6 +1228,9 @@ pub enum MidiEventKind<'a> {
     ChannelPressure(ChannelPressure),
     /// Program change.
     ProgramChange(ProgramChange),
+    /// An RPN or NRPN change, from MIDI 1.0 data entry or a MIDI 2.0
+    /// registered or assignable controller.
+    ParameterNumber(ParameterNumber),
 
     // =========================================================================
     // Advanced VST3 events
@@ -1344,7 +1333,7 @@ impl<'a> MidiEvent<'a> {
         sample_offset: u32,
         channel: MidiChannel,
         pitch: MidiNote,
-        pressure: f32,
+        pressure: f64,
         note_id: NoteId,
     ) -> Self {
         Self {
@@ -1363,7 +1352,7 @@ impl<'a> MidiEvent<'a> {
         sample_offset: u32,
         channel: MidiChannel,
         controller: u8,
-        value: f32,
+        value: f64,
     ) -> Self {
         Self {
             sample_offset,
@@ -1376,7 +1365,7 @@ impl<'a> MidiEvent<'a> {
     }
 
     /// Create a pitch bend event.
-    pub const fn pitch_bend(sample_offset: u32, channel: MidiChannel, value: f32) -> Self {
+    pub const fn pitch_bend(sample_offset: u32, channel: MidiChannel, value: f64) -> Self {
         Self {
             sample_offset,
             event: MidiEventKind::PitchBend(PitchBend { channel, value }),
@@ -1387,7 +1376,7 @@ impl<'a> MidiEvent<'a> {
     pub const fn channel_pressure(
         sample_offset: u32,
         channel: MidiChannel,
-        pressure: f32,
+        pressure: f64,
     ) -> Self {
         Self {
             sample_offset,
@@ -1396,10 +1385,23 @@ impl<'a> MidiEvent<'a> {
     }
 
     /// Create a program change event.
-    pub const fn program_change(sample_offset: u32, channel: MidiChannel, program: u8) -> Self {
+    pub const fn program_change(
+        sample_offset: u32,
+        channel: MidiChannel,
+        program: u8,
+        bank: Option<u16>,
+    ) -> Self {
         Self {
             sample_offset,
-            event: MidiEventKind::ProgramChange(ProgramChange { channel, program }),
+            event: MidiEventKind::ProgramChange(ProgramChange { channel, program, bank }),
+        }
+    }
+
+    /// Create an RPN or NRPN change event.
+    pub const fn parameter_number(sample_offset: u32, change: ParameterNumber) -> Self {
+        Self {
+            sample_offset,
+            event: MidiEventKind::ParameterNumber(change),
         }
     }
 
@@ -1415,6 +1417,7 @@ impl<'a> MidiEvent<'a> {
     /// # Arguments
     ///
     /// * `sample_offset` - Sample position within the current buffer
+    /// * `group` - UMP group (0-15), 0 outside Universal MIDI Packets
     /// * `status` - MIDI status byte with channel masked out (0x80-0xF0)
     /// * `channel` - MIDI channel (0-15)
     /// * `data1` - First data byte (note number, CC number, etc.)
@@ -1439,11 +1442,12 @@ impl<'a> MidiEvent<'a> {
     ///
     /// # Notes
     ///
-    /// - Note On with velocity 0 is converted to Note Off (per MIDI spec)
-    /// - Velocities and CC values are normalized: 0-127 → 0.0-1.0
-    /// - Pitch bend is normalized: 0-16383 → -1.0 to 1.0 (center at 8192)
-    /// - `note_id` is set to the pitch value for basic voice allocation
-    /// - `tuning` and `length` default to 0
+    /// - Note On with velocity 0 is a Note Off with the default release
+    ///   velocity, 0.5 (per MIDI spec)
+    /// - Values are scaled up as MIDI 2.0 does (see [`scale`]): 0 is 0.0,
+    ///   64 the center, 127 is 1.0; pitch bend is -1.0 to 1.0
+    /// - `note_id` is [`note_id`] of the group, channel and pitch
+    /// - `tuning` and `length` default to 0; a program change has no bank
     ///
     /// # Example
     ///
@@ -1451,77 +1455,62 @@ impl<'a> MidiEvent<'a> {
     /// use beamer_core::MidiEvent;
     ///
     /// // Parse a Note On: channel 0, note 60 (middle C), velocity 100
-    /// let event = MidiEvent::from_midi1_bytes(0, 0x90, 0, 60, 100);
+    /// let event = MidiEvent::from_midi1_bytes(0, 0, 0x90, 0, 60, 100);
     /// assert!(event.is_some());
     /// ```
     #[inline]
     pub fn from_midi1_bytes(
         sample_offset: u32,
+        group: u8,
         status: u8,
         channel: MidiChannel,
         data1: u8,
         data2: u8,
     ) -> Option<Self> {
+        let channel = channel & 0x0F;
+        let data1 = data1 & 0x7F;
+        let data2 = data2 & 0x7F;
+        let id = note_id(group, channel, data1);
         match status {
             0x80 => Some(Self::note_off(
                 sample_offset,
                 channel,
                 data1,
-                data2 as f32 / 127.0,
-                data1 as NoteId,
+                scale::velocity_from_7bit(data2),
+                id,
                 0.0,
             )),
-            0x90 => {
-                if data2 == 0 {
-                    // Note On with velocity 0 = Note Off (per MIDI spec)
-                    Some(Self::note_off(
-                        sample_offset,
-                        channel,
-                        data1,
-                        0.0,
-                        data1 as NoteId,
-                        0.0,
-                    ))
-                } else {
-                    Some(Self::note_on(
-                        sample_offset,
-                        channel,
-                        data1,
-                        data2 as f32 / 127.0,
-                        data1 as NoteId,
-                        0.0,
-                        0,
-                    ))
-                }
-            }
-            0xA0 => Some(Self::poly_pressure(
+            // Note On with velocity 0 is a Note Off with the default
+            // release velocity (per MIDI spec).
+            0x90 if data2 == 0 => Some(Self::note_off(
                 sample_offset,
                 channel,
                 data1,
-                data2 as f32 / 127.0,
-                data1 as NoteId,
+                scale::velocity_from_7bit(64),
+                id,
+                0.0,
             )),
-            0xB0 => Some(Self::control_change(
+            0x90 => Some(Self::note_on(
                 sample_offset,
                 channel,
                 data1,
-                data2 as f32 / 127.0,
+                scale::velocity_from_7bit(data2),
+                id,
+                0.0,
+                0,
             )),
-            0xC0 => Some(Self::program_change(sample_offset, channel, data1)),
-            0xD0 => Some(Self::channel_pressure(
+            0xA0 => Some(Self::poly_pressure(sample_offset, channel, data1, scale::from_7bit(data2), id)),
+            0xB0 => Some(Self::control_change(sample_offset, channel, data1, scale::from_7bit(data2))),
+            0xC0 => Some(Self::program_change(sample_offset, channel, data1, None)),
+            0xD0 => Some(Self::channel_pressure(sample_offset, channel, scale::from_7bit(data1))),
+            // Pitch bend: data1 is the LSB, data2 the MSB.
+            0xE0 => Some(Self::pitch_bend(
                 sample_offset,
                 channel,
-                data1 as f32 / 127.0,
+                scale::bipolar_from_14bit(combine_14bit_raw(data2, data1)),
             )),
-            0xE0 => {
-                // Pitch bend: data1 = LSB (bits 0-6), data2 = MSB (bits 7-13)
-                // Raw value: 0-16383, center at 8192
-                // Normalized: -1.0 to 1.0
-                let raw_value = ((data2 as u16) << 7) | (data1 as u16);
-                let normalized = (raw_value as f32 - 8192.0) / 8192.0;
-                Some(Self::pitch_bend(sample_offset, channel, normalized))
-            }
-            _ => None, // System messages, etc. not supported
+            // System messages are not supported.
+            _ => None,
         }
     }
 
@@ -1723,6 +1712,7 @@ fn kind_or_payload<'a, 'b>(kind: MidiEventKind<'a>) -> Result<MidiEventKind<'b>,
         MidiEventKind::PitchBend(event) => MidiEventKind::PitchBend(event),
         MidiEventKind::ChannelPressure(event) => MidiEventKind::ChannelPressure(event),
         MidiEventKind::ProgramChange(event) => MidiEventKind::ProgramChange(event),
+        MidiEventKind::ParameterNumber(event) => MidiEventKind::ParameterNumber(event),
         MidiEventKind::NoteExpressionValue(event) => MidiEventKind::NoteExpressionValue(event),
         MidiEventKind::NoteExpressionInt(event) => MidiEventKind::NoteExpressionInt(event),
         MidiEventKind::NoteExpressionText(event) => MidiEventKind::NoteExpressionText(event),
@@ -1889,6 +1879,33 @@ impl MidiBuffer {
         assert!(index < self.len, "index {index} out of {} events", self.len);
         self.events[index..self.len].rotate_left(1);
         self.len -= 1;
+    }
+
+    /// Replace or remove events in place, keeping their order and offsets.
+    /// `f` gets the kind of each event without a SysEx payload and returns
+    /// what takes its place, or `None` to remove it. SysEx events stay.
+    pub(crate) fn map_kinds(&mut self, mut f: impl FnMut(MidiEventKind<'static>) -> Option<MidiEventKind<'static>>) {
+        let mut kept = 0;
+        for index in 0..self.len {
+            let BufferedEvent(event) = self.events[index];
+            let kind = match event.event {
+                MidiEventKind::SysEx(_) => Some(event.event),
+                other => {
+                    let kind = f(other);
+                    // A SysEx payload must point into this buffer's pool.
+                    debug_assert!(!matches!(kind, Some(MidiEventKind::SysEx(_))));
+                    kind
+                }
+            };
+            if let Some(kind) = kind {
+                self.events[kept] = BufferedEvent(MidiEvent {
+                    sample_offset: event.sample_offset,
+                    event: kind,
+                });
+                kept += 1;
+            }
+        }
+        self.len = kept;
     }
 
     /// Iterate over events in the buffer.
@@ -2678,6 +2695,109 @@ mod tests {
         let offsets: Vec<u32> = buf.iter().map(|event| event.sample_offset).collect();
         assert_eq!(offsets, [11, 12]);
         assert_eq!(buf.framed_sysex(1), Some(&[0xF0, 7, 0xF7][..]));
+    }
+
+    #[test]
+    fn test_scaling_matches_the_midi_2_0_upscaling() {
+        // The values Apple's translation from MIDI 1.0 gives.
+        assert_eq!(scale::upscale_7_to_32(64), 0x8000_0000);
+        assert_eq!(scale::upscale_7_to_32(127), 0xFFFF_FFFF);
+        assert_eq!(scale::upscale_7_to_32(33), 0x4200_0000);
+        assert_eq!(scale::upscale_7_to_16(64), 0x8000);
+        assert_eq!(scale::upscale_7_to_16(127), 0xFFFF);
+        assert_eq!(scale::upscale_14_to_32(12 << 7), 0x1800_0000);
+        assert_eq!(scale::upscale_14_to_32(100 << 7), 0xC802_4012);
+        assert_eq!(scale::upscale_14_to_32((100 << 7) | 5), 0xC816_40B2);
+        assert_eq!(scale::upscale_14_to_32(0x3FFF), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_every_value_scales_back_to_itself() {
+        for value in 0..=127u8 {
+            assert_eq!(scale::to_7bit(scale::from_7bit(value)), value);
+            assert_eq!(scale::velocity_to_7bit(scale::velocity_from_7bit(value)), value);
+            // A plugin's n / 127 gives byte n.
+            assert_eq!(scale::to_7bit(value as f64 / 127.0), value);
+            assert_eq!(scale::velocity_to_7bit(value as f32 / 127.0), value);
+        }
+        for value in 0..=0x3FFFu16 {
+            assert_eq!(scale::to_14bit(scale::from_14bit(value)), value);
+            assert_eq!(scale::bipolar_to_14bit(scale::bipolar_from_14bit(value)), value);
+        }
+        for value in [0, 1, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+            assert_eq!(scale::unipolar_to_u32(scale::unipolar_from_u32(value)), value);
+            assert_eq!(scale::bipolar_to_u32(scale::bipolar_from_u32(value)), value);
+        }
+    }
+
+    #[test]
+    fn test_scaling_reaches_both_ends_and_the_center() {
+        assert_eq!(scale::from_7bit(0), 0.0);
+        assert_eq!(scale::from_7bit(127), 1.0);
+        assert_eq!(scale::bipolar_from_14bit(0), -1.0);
+        assert_eq!(scale::bipolar_from_14bit(8192), 0.0);
+        assert_eq!(scale::bipolar_from_14bit(0x3FFF), 1.0);
+        assert_eq!(scale::velocity_from_7bit(127), 1.0);
+        // A sustain pedal at 64 is on, at 63 off.
+        assert!(scale::from_7bit(64) >= 0.5);
+        assert!(scale::from_7bit(63) < 0.5);
+    }
+
+    #[test]
+    fn test_midi1_bytes_scale_as_midi_2_0_does() {
+        let kind = |status, data1, data2| MidiEvent::from_midi1_bytes(0, 2, status, 3, data1, data2).unwrap().event;
+        let MidiEventKind::NoteOn(on) = kind(0x90, 60, 64) else { panic!() };
+        assert_eq!(on.velocity, scale::velocity_from_u16(0x8000));
+        assert_eq!(on.note_id, note_id(2, 3, 60));
+        // Velocity 0: a note-off with the default release velocity.
+        let MidiEventKind::NoteOff(off) = kind(0x90, 60, 0) else { panic!() };
+        assert_eq!(off.velocity, scale::velocity_from_u16(0x8000));
+        assert_eq!(off.note_id, on.note_id);
+        let MidiEventKind::ControlChange(change) = kind(0xB0, 64, 127) else { panic!() };
+        assert_eq!(change.value, 1.0);
+        let MidiEventKind::PitchBend(bend) = kind(0xE0, 0x7F, 0x7F) else { panic!() };
+        assert_eq!(bend.value, 1.0);
+        let MidiEventKind::ProgramChange(program) = kind(0xC0, 5, 0) else { panic!() };
+        assert_eq!(program.bank, None);
+        assert!(MidiEvent::from_midi1_bytes(0, 0, 0xF0, 8, 0, 0).is_none());
+    }
+
+    #[test]
+    fn test_note_ids_hold_group_channel_and_pitch() {
+        assert_eq!(note_id(0, 0, 60), 60);
+        assert_eq!(note_id(0, 1, 60), 128 + 60);
+        assert_eq!(note_id_parts(note_id(15, 15, 127)), Some((15, 15, 127)));
+        assert_eq!(note_id_parts(-1), None);
+        assert_eq!(note_id_parts(1 << 15), None);
+    }
+
+    #[test]
+    fn test_tuning_values_are_vst3_s() {
+        assert_eq!(tuning_semitones(0.5), 0.0);
+        assert_eq!(tuning_semitones(1.0), 120.0);
+        assert_eq!(tuning_value(-120.0), 0.0);
+        assert_eq!(tuning_value(12.0), 0.55);
+    }
+
+    #[test]
+    fn test_map_kinds_replaces_and_removes_in_order() {
+        let mut buffer = MidiBuffer::new_boxed(16);
+        buffer.push(MidiEvent::control_change(1, 0, 1, 0.5));
+        buffer.push(MidiEvent::sysex(2, &[0x7D]));
+        buffer.push(MidiEvent::control_change(3, 0, 2, 0.5));
+        buffer.map_kinds(|kind| match kind {
+            MidiEventKind::ControlChange(change) if change.controller == 1 => None,
+            MidiEventKind::ControlChange(change) => Some(MidiEventKind::PitchBend(PitchBend {
+                channel: change.channel,
+                value: change.value,
+            })),
+            other => Some(other),
+        });
+        let events = buffer.as_slice();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event, MidiEventKind::SysEx(&[0x7D]));
+        assert_eq!(events[1].sample_offset, 3);
+        assert!(matches!(events[1].event, MidiEventKind::PitchBend(_)));
     }
 
     #[test]

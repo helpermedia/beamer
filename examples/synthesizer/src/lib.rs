@@ -622,25 +622,25 @@ impl SynthesizerProcessor {
                         }
                         MidiEventKind::PitchBend(pb) => {
                             // pb.value should be -1.0 to +1.0, with 0.0 as center
-                            self.pitch_bend = pb.value as f64;
+                            self.pitch_bend = pb.value;
                         }
                         MidiEventKind::ControlChange(cc) => {
                             // CC 1 = Mod wheel
                             if cc.is_mod_wheel() {
-                                self.mod_wheel = cc.value as f64;
+                                self.mod_wheel = cc.value;
                             }
                         }
                         MidiEventKind::PolyPressure(poly) => {
                             // Find voice(s) with matching note_id and update pressure
                             for voice in &mut self.voices {
                                 if voice.note_id == poly.note_id && voice.active {
-                                    voice.poly_pressure = poly.pressure as f64;
+                                    voice.poly_pressure = poly.pressure;
                                 }
                             }
                         }
                         MidiEventKind::ChannelPressure(cp) => {
                             // Global aftertouch affects all voices
-                            self.channel_pressure = cp.pressure as f64;
+                            self.channel_pressure = cp.pressure;
                         }
                         _ => {}
                     }

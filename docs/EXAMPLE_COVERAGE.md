@@ -61,7 +61,7 @@
 | | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RpnTracker | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RPN/NRPN (ParameterNumber) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
@@ -155,7 +155,7 @@
 **Goal:** Test RPN/NRPN, 14-bit CC, MIDI learn, PolyPressure
 
 **Features to test:**
-- ✅ `RpnTracker` - RPN/NRPN message assembly
+- ✅ `ParameterNumber` - RPN/NRPN changes the wrappers assemble
 - ✅ 14-bit CC utilities - High-res parameter control
 - ✅ MIDI Learn - `on_midi_learn()`, `on_midi1_learn()`
 - ✅ MIDI Mapping - `midi_cc_to_parameter()`, `midi1_assignments()`

@@ -1761,7 +1761,7 @@ impl Processor for ReverbProcessor {
 
 ## MIDI Reference
 
-The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure` and `ProgramChange`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, RPN/NRPN and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `RpnTracker`, `ParameterNumberMessage`, the `cc`, `rpn`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
+The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure`, `ProgramChange`, `ParameterNumber`, `ParameterChange` and `ParameterNumberKind`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, values and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `note_id`, `note_id_parts`, `tuning_semitones`, `tuning_value`, the `cc`, `rpn`, `scale`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
 
 ### Event Types
 
@@ -1786,6 +1786,8 @@ pub enum MidiEventKind<'a> {
     PitchBend(PitchBend),
     ChannelPressure(ChannelPressure),
     ProgramChange(ProgramChange),
+    // An RPN or NRPN change (see RPN and NRPN).
+    ParameterNumber(ParameterNumber),
 
     // Advanced events. A SysEx event holds its payload, without F0 and F7.
     SysEx(&'a [u8]),
@@ -1805,11 +1807,11 @@ pub struct NoteOn {
     pub channel: MidiChannel,
     // 0-127.
     pub pitch: MidiNote,
-    // 0.0-1.0.
+    // 0.0-1.0, above 0.
     pub velocity: f32,
-    // For tracking.
+    // For tracking: the host's, or note_id(group, channel, pitch).
     pub note_id: NoteId,
-    // Cents (±120.0) for MPE/microtonal.
+    // Cents, for microtonal and per-note pitch.
     pub tuning: f32,
     // Samples (0 = unknown).
     pub length: i32,
@@ -1826,10 +1828,12 @@ pub struct NoteOff {
 pub struct PolyPressure {
     pub channel: MidiChannel,
     pub pitch: MidiNote,
-    pub pressure: f32,
+    pub pressure: f64,
     pub note_id: NoteId,
 }
 ```
+
+A note from MIDI input has no ID of its own: the wrappers give it `note_id(group, channel, pitch)` (`group << 11 | channel << 7 | pitch`; the group is that of a Universal MIDI Packet, otherwise 0), as does the VST3 wrapper for a host that sends -1. So one pitch on two channels is two notes; a per-note change finds its note. `note_id_parts(id)` gives the group, channel and pitch back.
 
 #### Channel Events
 
@@ -1839,25 +1843,35 @@ pub struct ControlChange {
     // 0-127.
     pub controller: u8,
     // 0.0-1.0.
-    pub value: f32,
+    pub value: f64,
 }
 
 pub struct PitchBend {
     pub channel: MidiChannel,
-    // -1.0 to 1.0.
-    pub value: f32,
+    // -1.0 to 1.0, 0.0 is the center.
+    pub value: f64,
 }
 
 pub struct ChannelPressure {
     pub channel: MidiChannel,
-    pub pressure: f32,
+    pub pressure: f64,
 }
 
 pub struct ProgramChange {
     pub channel: MidiChannel,
     pub program: u8,
+    // MSB << 7 | LSB, if a bank was selected.
+    pub bank: Option<u16>,
 }
 ```
+
+#### Values
+
+Controller, pitch bend and pressure values are `f64`, so the 32 bits of MIDI 2.0 arrive whole; velocities are `f32` (MIDI 2.0 has 16 bits). A MIDI 1.0 value is scaled up as MIDI 2.0 does it (min-center-max: shifted up to the center, its bits repeated above), which is what a host does when it translates MIDI 1.0 to 2.0. So a plugin gets the same value either way: 0 is 0.0, 127 is 1.0 and 64 is the center (0x80000000 of 0xFFFFFFFF, a hair above 0.5). Pitch bend reaches -1.0 and 1.0 exactly, with 0.0 at 8192.
+
+The `scale` module has the conversions. For the 7-bit value of a controller, use `scale::to_7bit(value)`, not `(value * 127.0) as u8`, which truncates (0.5000000001 * 127 gives 63). On the way out the wrappers scale down the same way, as MIDI 2.0 does: a value that came in leaves as the same byte, a plugin's `n as f64 / 127.0` leaves as byte `n` and any other value leaves as its top 7 bits (about `floor(value * 128)`: 0.9 is 115).
+
+VST3 hosts send controllers as parameter values they normalize themselves (usually `n / 127`); the VST3 wrapper passes those on as they are; `MidiCcState` holds them. Only the legacy MIDI CC events a VST3 host may send are scaled as above.
 
 #### Constructors
 
@@ -1869,21 +1883,22 @@ MidiEvent::poly_pressure(offset, channel, pitch, pressure, note_id)
 MidiEvent::control_change(offset, channel, controller, value)
 MidiEvent::pitch_bend(offset, channel, value)
 MidiEvent::channel_pressure(offset, channel, pressure)
-MidiEvent::program_change(offset, channel, program)
+MidiEvent::program_change(offset, channel, program, bank)
+MidiEvent::parameter_number(offset, change)
 MidiEvent::sysex(offset, &payload)
 MidiEvent::note_expression_value(offset, note_id, type_id, value)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
 
 // Raw MIDI 1.0 byte parsing (used by AU).
-MidiEvent::from_midi1_bytes(offset, status, channel, data1, data2) -> Option<MidiEvent>
+MidiEvent::from_midi1_bytes(offset, group, status, channel, data1, data2) -> Option<MidiEvent>
 ```
 
 **Construction Paths:**
 - **Semantic constructors** - Used by VST3 which provides already-parsed event structures
-- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; handles velocity normalization, pitch bend 14-bit decoding and turning a Note On with velocity 0 into a Note Off
+- **Raw byte parsing** (`from_midi1_bytes()`) - Used by AU which provides raw MIDI 1.0 bytes; scales the values (see [Values](#values)), decodes 14-bit pitch bend, gives the note ID and turns a Note On with velocity 0 into a Note Off
 
-Both formats deliver a note-on with velocity 0 as a `NoteOff`, so a plugin never receives a `NoteOn` with velocity 0.
+Both formats deliver a note-on with velocity 0 as a `NoteOff` with the default release velocity of MIDI 1.0 (64 of 127, 0.5), so a plugin never receives a `NoteOn` with velocity 0.
 
 ### MidiBuffer
 
@@ -2032,22 +2047,32 @@ directions.
 
 ```rust
 pub mod note_expression {
+    // 20 * log10(4 * value) dB: 0.25 is 0 dB.
     pub const VOLUME: u32 = 0;
+    // 0.5 is the center.
     pub const PAN: u32 = 1;
-    // MPE pitch.
+    // 240 * (value - 0.5) semitones: 0.5 is none.
     pub const TUNING: u32 = 2;
     pub const VIBRATO: u32 = 3;
     pub const EXPRESSION: u32 = 4;
     pub const BRIGHTNESS: u32 = 5;
     pub const CUSTOM_START: u32 = 100000;
+
+    // MIDI 2.0 per-note messages without a VST3 type.
+    pub const PITCH_BEND: u32 = 300512;
+    pub const fn registered(index: u8) -> u32;
+    pub const fn assignable(index: u8) -> u32;
 }
 
 pub struct NoteExpressionValue {
     pub note_id: NoteId,
     pub expression_type: u32,
+    // 0.0-1.0, as VST3 defines it per type.
     pub value: f64,
 }
 ```
+
+A value is VST3's normalized value of its type; a bipolar type (pan, tuning, pitch bend) has its center at 0.5. `tuning_semitones(value)` and `tuning_value(semitones)` convert tuning.
 
 **INoteExpressionController**: Advertise supported expressions:
 
@@ -2249,54 +2274,69 @@ fn keyswitch_info(&self, _bus: i32, _channel: i16, index: usize) -> Option<Keysw
 }
 ```
 
-### RPN/NRPN Helpers
+### RPN and NRPN
 
-**Constants:**
+A plugin gets one `ParameterNumber` event for an RPN or NRPN change, in every format and protocol. MIDI 1.0 sets one with several control changes; the wrappers assemble them (`Midi1Translator`), as a host that translates MIDI 1.0 to 2.0 does:
+
+| MIDI 1.0 | The plugin gets |
+|---|---|
+| CC 101 and 100 (RPN), 99 and 98 (NRPN) | nothing: they select the parameter |
+| CC 6 with a selection | an absolute change: this MSB, LSB 0 |
+| CC 38 with a selection | an absolute change: the last MSB with this LSB |
+| CC 96, 97 with a selection | a relative change of one 14-bit step up or down |
+| CC 6, 38, 96, 97 without a selection | the `ControlChange` |
+| the null RPN (127, 127) | nothing: it ends the selection |
+
+The selection lasts across blocks until the null RPN, another selection or a reset. In VST3 a host sends controllers as parameter changes, one queue per controller, so the controllers of one sequence at one offset are put in MIDI's order (selection, data entry MSB, LSB, increment) first. Two sequences for one channel at one offset cannot be told apart there, nor across process calls without samples, where only the latest value of each controller waits for the next block: the last data entry goes to the last selection.
 
 ```rust
+pub struct ParameterNumber {
+    pub channel: MidiChannel,
+    // Rpn or Nrpn.
+    pub kind: ParameterNumberKind,
+    // MSB << 7 | LSB.
+    pub parameter: u16,
+    pub change: ParameterChange,
+}
+
+pub enum ParameterChange {
+    // 0.0-1.0: 14 bits from MIDI 1.0 data entry, scaled up; 32 from MIDI 2.0.
+    Absolute(f64),
+    // A step of the full range: RELATIVE_14BIT_STEP per MIDI 1.0 increment.
+    Relative(f64),
+}
+
+impl ParameterNumber {
+    pub fn value_14bit(&self) -> Option<u16>;
+    // RPN 0: (semitones, cents).
+    pub fn pitch_bend_sensitivity(&self) -> Option<(u8, u8)>;
+    pub fn midi1_control_changes(&self) -> ([(u8, u8); 4], usize);
+}
+
 pub mod rpn {
     pub const PITCH_BEND_SENSITIVITY: u16 = 0x0000;
     pub const FINE_TUNING: u16 = 0x0001;
     pub const COARSE_TUNING: u16 = 0x0002;
     pub const MPE_CONFIGURATION: u16 = 0x0006;
-    pub const NULL: u16 = 0x7F7F;
+    pub const NULL: u16 = 0x3FFF;
 }
 ```
 
-**RpnTracker**: Real-time safe decoder:
-
 ```rust
-struct MyProcessor {
-    rpn_tracker: RpnTracker,
-}
-
 fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
     for event in input {
-        if let MidiEventKind::ControlChange(cc) = &event.event {
-            if let Some(msg) = self.rpn_tracker.process_cc(cc) {
-                if msg.is_pitch_bend_sensitivity() {
-                    let (semitones, cents) = msg.pitch_bend_sensitivity();
-                    // ...
-                }
+        if let MidiEventKind::ParameterNumber(change) = &event.event {
+            if let Some((semitones, cents)) = change.pitch_bend_sensitivity() {
+                self.pitch_bend_range = semitones as f32 + cents as f32 / 100.0;
             }
         }
     }
 }
 ```
 
-**ParameterNumberMessage:**
+On the way out a `ParameterNumber` becomes its selection and data entry CCs (an increment or decrement for a relative change).
 
-```rust
-pub struct ParameterNumberMessage {
-    pub channel: MidiChannel,
-    // Rpn or Nrpn.
-    pub kind: ParameterNumberKind,
-    pub parameter: u16,
-    pub value: f32,
-    pub is_increment: bool,
-    pub is_decrement: bool,
-}
-```
+**Bank select:** CC 0 and 32 reach the plugin as `ControlChange` events and are remembered per channel; a following `ProgramChange` carries the bank in `bank` (MSB << 7 | LSB) until the next bank select, as in MIDI 1.0. A program change with a bank goes out as CC 0, CC 32 and the program change. So a plugin that passes on both the CCs and the program change selects the bank twice; it passes the program change on with `bank: None` (as the midi-transform example does) or drops the CCs.
 
 ### CC Utilities
 
@@ -2337,7 +2377,7 @@ impl ControlChange {
 **14-bit CC Helpers:**
 
 ```rust
-// 0.0 to 1.0.
+// 0.0 to 1.0, scaled as MIDI 2.0 does.
 let combined = combine_14bit_cc(msb_value, lsb_value);
 let (msb, lsb) = split_14bit_cc(combined);
 
@@ -2362,7 +2402,8 @@ let (msb, lsb) = split_14bit_raw(combined);
 | ControlChange | 65535 (CC 0-127) | In/Out |
 | ChannelPressure | 65535 (CC 128) | In/Out |
 | PitchBend | 65535 (CC 129) | In/Out |
-| ProgramChange | 65535 (CC 130) | In/Out |
+| ProgramChange | 65535 (CC 130), after CC 0 and 32 for a bank | In/Out |
+| ParameterNumber | 65535 (its CCs, see [RPN and NRPN](#rpn-and-nrpn)) | In (assembled)/Out |
 
 ---
 

@@ -33,7 +33,7 @@ use beamer_core::{
     MidiEvent, MidiEventKind, MidiEventsMut, NoteExpressionInt, NoteExpressionText, Preset,
     NoteExpressionValue as CoreNoteExpressionValue, ParameterId, ParameterStore, Config, PluginSetup,
     ProcessBufferStorage, ProcessContext as CoreProcessContext, ProcessWarning,
-    ProcessWarnings, Processor, Sample, ScaleInfo,
+    ProcessWarnings, Processor, Sample, ScaleInfo, Midi1Translator, note_id, scale, split_14bit_raw,
     SharedModel, Transport, MAX_BUSES,
     MAX_CHORD_NAME_SIZE,
     MAX_EXPRESSION_TEXT_SIZE, MAX_SCALE_NAME_SIZE,
@@ -41,6 +41,7 @@ use beamer_core::{
 
 use beamer_core::channel_layouts;
 use beamer_core::state_format::{StateEntries, StateWriter};
+use beamer_core::midi1_translator::order_parameter_number_controllers;
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
@@ -792,6 +793,9 @@ where
     /// Whether the MIDI input buffer holds the events of calls without
     /// samples, which wait for the next call with samples.
     midi_input_carried: UnsafeCell<bool>,
+    /// Assembles the MIDI 1.0 sequences of the MIDI input (RPN, NRPN, bank
+    /// select) across process calls; cleared when the host activates.
+    midi1_translator: UnsafeCell<Midi1Translator>,
     /// MIDI output buffer (reused each process call), with a SysEx pool for
     /// a plugin with MIDI output. A SysEx event the host gets points into
     /// the pool, which stays unchanged until the next process call clears
@@ -970,6 +974,7 @@ impl<P: Model> Vst3Processor<P> {
             process_mode: UnsafeCell::new(ProcessModes_::kRealtime as int32),
             midi_input: UnsafeCell::new(MidiBuffer::new_boxed(if config.midi_input { config.sysex_bytes_per_block } else { 0 })),
             midi_input_carried: UnsafeCell::new(false),
+            midi1_translator: UnsafeCell::new(Midi1Translator::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new_boxed(if config.midi_output { config.sysex_bytes_per_block } else { 0 })),
             parameter_points: UnsafeCell::new(Vec::with_capacity(MAX_PARAMETER_POINTS)),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
@@ -1997,6 +2002,8 @@ impl<P: Model> IComponentTrait for Vst3Processor<P> {
         #[cfg(feature = "diagnostics")]
         self.diagnostics.note(format_args!("host sets active {}", if state != 0 { "on" } else { "off" }));
         if state != 0 {
+            // SAFETY: The host does not process during setActive().
+            unsafe { (*self.midi1_translator.get()).reset() };
             // Buses the host switched since the setup take effect now.
             let buses = self.negotiate_buses();
             // SAFETY: VST3 guarantees single-threaded access. No aliasing.
@@ -2407,7 +2414,7 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
                                     if unsafe { queue.getPoint(j, &mut sample_offset, &mut value) } == kResultOk {
                                         let midi_event = convert_cc_parameter_to_midi(
                                             controller,
-                                            value as f32,
+                                            value,
                                             sample_offset as u32,
                                         );
                                         push_midi_input(midi_input, midi_event, num_samples == 0);
@@ -2467,6 +2474,13 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // controller changes that came as parameter changes follow the
         // host's events in the buffer.
         midi_input.events_mut().sort_by_offset();
+        // The plugin gets RPN and NRPN changes and program changes with
+        // their bank, as in an Audio Unit. Controller changes that came as
+        // parameter changes are in the order of their queues at one offset:
+        // a sequence gets MIDI's order first.
+        order_parameter_number_controllers(midi_input.events_mut());
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        unsafe { (*self.midi1_translator.get()).translate(midi_input) };
         let input = BlockInput {
             points,
             midi_input: midi_input.events_mut(),
@@ -2517,10 +2531,10 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         let output_events = unsafe { ComRef::from_raw(process_data.outputEvents) };
         if let Some(event_list) = output_events.filter(|_| self.config.midi_output) {
             for index in 0..midi_output.len() {
-                if let Some(mut vst3_event) = convert_midi_to_vst3(midi_output, index) {
+                convert_midi_to_vst3(midi_output, index, |mut vst3_event| {
                     // SAFETY: event_list is valid ComRef, vst3_event is valid mutable pointer.
                     let _ = unsafe { event_list.addEvent(&mut vst3_event) };
-                }
+                });
             }
         }
 
@@ -3516,7 +3530,7 @@ fn utf16_to_utf8(utf16: &[u16], utf8_buf: &mut [u8]) -> usize {
 /// - 0-127: Standard MIDI CC (ControlChange)
 /// - 128: Channel Aftertouch (ChannelPressure)
 /// - 129: Pitch Bend (PitchBend)
-fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f32, sample_offset: u32) -> MidiEvent<'static> {
+fn convert_cc_parameter_to_midi(controller: u8, normalized_value: f64, sample_offset: u32) -> MidiEvent<'static> {
     match controller {
         LEGACY_CC_PITCH_BEND => {
             // Pitch bend: 0.0-1.0 normalized → -1.0 to 1.0
@@ -3588,20 +3602,22 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
         K_NOTE_ON_EVENT => {
             // SAFETY: event.type == K_NOTE_ON_EVENT, so noteOn is active variant.
             let note_on = unsafe { &event.__field0.noteOn };
-            // Use pitch as note_id when host sends -1
+            // A host without note IDs sends -1: the ID of the channel and
+            // pitch, as for MIDI input.
             let note_id = if note_on.noteId == -1 {
-                note_on.pitch as i32
+                note_id(0, note_on.channel as u8, note_on.pitch as u8)
             } else {
                 note_on.noteId
             };
-            // A note-on with velocity 0 ends the note, as in MIDI 1.0 and
-            // as the Audio Unit wrapper reads it.
+            // A note-on with velocity 0 ends the note with the default
+            // release velocity, as in MIDI 1.0 and as the Audio Unit wrapper
+            // reads it.
             if note_on.velocity <= 0.0 {
                 return Some(MidiEvent::note_off(
                     sample_offset,
                     note_on.channel as u8,
                     note_on.pitch as u8,
-                    0.0,
+                    scale::velocity_from_7bit(64),
                     note_id,
                     note_on.tuning,
                 ));
@@ -3619,9 +3635,9 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
         K_NOTE_OFF_EVENT => {
             // SAFETY: event.type == K_NOTE_OFF_EVENT, so noteOff is active variant.
             let note_off = unsafe { &event.__field0.noteOff };
-            // Use pitch as note_id when host sends -1
+            // A host without note IDs sends -1.
             let note_id = if note_off.noteId == -1 {
-                note_off.pitch as i32
+                note_id(0, note_off.channel as u8, note_off.pitch as u8)
             } else {
                 note_off.noteId
             };
@@ -3637,9 +3653,9 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
         K_POLY_PRESSURE_EVENT => {
             // SAFETY: event.type == K_POLY_PRESSURE_EVENT, so polyPressure is active variant.
             let poly = unsafe { &event.__field0.polyPressure };
-            // Use pitch as note_id when host sends -1
+            // A host without note IDs sends -1.
             let note_id = if poly.noteId == -1 {
-                poly.pitch as i32
+                note_id(0, poly.channel as u8, poly.pitch as u8)
             } else {
                 poly.noteId
             };
@@ -3647,7 +3663,7 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
                 sample_offset,
                 poly.channel as u8,
                 poly.pitch as u8,
-                poly.pressure,
+                f64::from(poly.pressure),
                 note_id,
             ))
         }
@@ -3773,13 +3789,13 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
                         sample_offset,
                         channel,
                         cc_event.controlNumber,
-                        cc_event.value as f32 / 127.0,
+                        scale::from_7bit(cc_event.value as u8),
                     ))
                 }
                 LEGACY_CC_CHANNEL_PRESSURE => Some(MidiEvent::channel_pressure(
                     sample_offset,
                     channel,
-                    cc_event.value as f32 / 127.0,
+                    scale::from_7bit(cc_event.value as u8),
                 )),
                 LEGACY_CC_PITCH_BEND => {
                     // Pitch bend: 14-bit value split across value (LSB) and value2 (MSB)
@@ -3787,13 +3803,13 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
                     let lsb = (cc_event.value as u8) as u16;
                     let msb = (cc_event.value2 as u8) as u16;
                     let raw = (msb << 7) | (lsb & 0x7F);
-                    let normalized = (raw as f32 - 8192.0) / 8192.0;
-                    Some(MidiEvent::pitch_bend(sample_offset, channel, normalized))
+                    Some(MidiEvent::pitch_bend(sample_offset, channel, scale::bipolar_from_14bit(raw)))
                 }
                 LEGACY_CC_PROGRAM_CHANGE => Some(MidiEvent::program_change(
                     sample_offset,
                     channel,
                     cc_event.value as u8,
+                    None,
                 )),
                 _ => None, // Unknown control number
             }
@@ -3802,25 +3818,47 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
     }
 }
 
-/// Convert the MIDI event at `index` of the plugin's output to a VST3 Event.
+/// Convert the MIDI event at `index` of the plugin's output to VST3 events,
+/// handing each to `add`.
 ///
-/// A SysEx event points at the framed message in the output buffer's pool,
-/// which stays valid until the next process call clears the buffer.
+/// Most events are one VST3 event. A parameter number change is the legacy
+/// control changes of its MIDI 1.0 sequence; a program change with a bank is
+/// bank select (CC 0 and 32) before it. Values go out as 7 or 14 bits,
+/// rounded as in [`scale`]. A SysEx event points at the framed message in
+/// the output buffer's pool, which stays valid until the next process call
+/// clears the buffer.
 ///
 /// Note: ChordInfo, ScaleInfo and NoteExpressionText are primarily input events
-/// (DAW → plugin) and are not output.
-fn convert_midi_to_vst3(output: &MidiBuffer, index: usize) -> Option<Event> {
-    let midi = output.as_slice().get(index)?;
-    // SAFETY: Event is a C struct with no invalid bit patterns; zeroed is a valid state.
-    let mut event: Event = unsafe { std::mem::zeroed() };
-    event.busIndex = 0;
-    event.sampleOffset = midi.sample_offset as i32;
-    event.ppqPosition = 0.0;
-    event.flags = 0;
+/// (DAW to plugin) and are not output.
+fn convert_midi_to_vst3(output: &MidiBuffer, index: usize, mut add: impl FnMut(Event)) {
+    let Some(midi) = output.as_slice().get(index) else {
+        return;
+    };
+    let new_event = || {
+        // SAFETY: Event is a C struct with no invalid bit patterns; zeroed is a valid state.
+        let mut event: Event = unsafe { std::mem::zeroed() };
+        event.busIndex = 0;
+        event.sampleOffset = midi.sample_offset as i32;
+        event.ppqPosition = 0.0;
+        event.flags = 0;
+        event
+    };
+    // A legacy MIDI CC out event: a controller (or one of the special
+    // numbers) with one or two 7-bit values.
+    let control_change = |channel: u8, controller: u8, value: u8, value2: u8| {
+        let mut event = new_event();
+        event.r#type = K_LEGACY_MIDI_CC_OUT_EVENT;
+        event.__field0.midiCCOut.controlNumber = controller;
+        event.__field0.midiCCOut.channel = channel as i8;
+        event.__field0.midiCCOut.value = value as i8;
+        event.__field0.midiCCOut.value2 = value2 as i8;
+        event
+    };
 
     // Note: Writing to union fields is safe in Rust, only reading requires unsafe
     match &midi.event {
         MidiEventKind::NoteOn(note_on) => {
+            let mut event = new_event();
             event.r#type = K_NOTE_ON_EVENT;
             event.__field0.noteOn.channel = note_on.channel as i16;
             event.__field0.noteOn.pitch = note_on.pitch as i16;
@@ -3828,90 +3866,100 @@ fn convert_midi_to_vst3(output: &MidiBuffer, index: usize) -> Option<Event> {
             event.__field0.noteOn.noteId = note_on.note_id;
             event.__field0.noteOn.tuning = note_on.tuning;
             event.__field0.noteOn.length = note_on.length;
+            add(event);
         }
         MidiEventKind::NoteOff(note_off) => {
+            let mut event = new_event();
             event.r#type = K_NOTE_OFF_EVENT;
             event.__field0.noteOff.channel = note_off.channel as i16;
             event.__field0.noteOff.pitch = note_off.pitch as i16;
             event.__field0.noteOff.velocity = note_off.velocity;
             event.__field0.noteOff.noteId = note_off.note_id;
             event.__field0.noteOff.tuning = note_off.tuning;
+            add(event);
         }
         MidiEventKind::PolyPressure(poly) => {
+            let mut event = new_event();
             event.r#type = K_POLY_PRESSURE_EVENT;
             event.__field0.polyPressure.channel = poly.channel as i16;
             event.__field0.polyPressure.pitch = poly.pitch as i16;
-            event.__field0.polyPressure.pressure = poly.pressure;
+            event.__field0.polyPressure.pressure = poly.pressure as f32;
             event.__field0.polyPressure.noteId = poly.note_id;
+            add(event);
         }
         MidiEventKind::ControlChange(cc) => {
-            event.r#type = K_LEGACY_MIDI_CC_OUT_EVENT;
-            event.__field0.midiCCOut.controlNumber = cc.controller;
-            event.__field0.midiCCOut.channel = cc.channel as i8;
-            event.__field0.midiCCOut.value = (cc.value * 127.0) as i8;
-            event.__field0.midiCCOut.value2 = 0;
+            add(control_change(cc.channel, cc.controller, scale::to_7bit(cc.value), 0));
         }
         MidiEventKind::PitchBend(pb) => {
-            event.r#type = K_LEGACY_MIDI_CC_OUT_EVENT;
-            event.__field0.midiCCOut.controlNumber = LEGACY_CC_PITCH_BEND;
-            event.__field0.midiCCOut.channel = pb.channel as i8;
-            // Convert -1.0..1.0 to 14-bit value (0-16383, center at 8192)
-            let raw = ((pb.value * 8192.0) + 8192.0).clamp(0.0, 16383.0) as i16;
-            event.__field0.midiCCOut.value = (raw & 0x7F) as i8;
-            event.__field0.midiCCOut.value2 = ((raw >> 7) & 0x7F) as i8;
+            let (msb, lsb) = split_14bit_raw(scale::bipolar_to_14bit(pb.value));
+            add(control_change(pb.channel, LEGACY_CC_PITCH_BEND, lsb, msb));
         }
         MidiEventKind::ChannelPressure(cp) => {
-            event.r#type = K_LEGACY_MIDI_CC_OUT_EVENT;
-            event.__field0.midiCCOut.controlNumber = LEGACY_CC_CHANNEL_PRESSURE;
-            event.__field0.midiCCOut.channel = cp.channel as i8;
-            event.__field0.midiCCOut.value = (cp.pressure * 127.0) as i8;
-            event.__field0.midiCCOut.value2 = 0;
+            add(control_change(cp.channel, LEGACY_CC_CHANNEL_PRESSURE, scale::to_7bit(cp.pressure), 0));
         }
         MidiEventKind::ProgramChange(pc) => {
-            event.r#type = K_LEGACY_MIDI_CC_OUT_EVENT;
-            event.__field0.midiCCOut.controlNumber = LEGACY_CC_PROGRAM_CHANGE;
-            event.__field0.midiCCOut.channel = pc.channel as i8;
-            event.__field0.midiCCOut.value = pc.program as i8;
-            event.__field0.midiCCOut.value2 = 0;
+            if let Some(bank) = pc.bank {
+                let (msb, lsb) = split_14bit_raw(bank);
+                add(control_change(pc.channel, beamer_core::cc::BANK_SELECT_MSB, msb, 0));
+                add(control_change(pc.channel, beamer_core::cc::BANK_SELECT_LSB, lsb, 0));
+            }
+            add(control_change(pc.channel, LEGACY_CC_PROGRAM_CHANGE, pc.program & 0x7F, 0));
+        }
+        MidiEventKind::ParameterNumber(change) => {
+            let (changes, count) = change.midi1_control_changes();
+            for &(controller, value) in &changes[..count] {
+                add(control_change(change.channel, controller, value, 0));
+            }
         }
         MidiEventKind::NoteExpressionValue(expr) => {
+            let mut event = new_event();
             event.r#type = K_NOTE_EXPRESSION_VALUE_EVENT;
             event.__field0.noteExpressionValue.noteId = expr.note_id;
             event.__field0.noteExpressionValue.typeId = expr.expression_type;
             event.__field0.noteExpressionValue.value = expr.value;
+            add(event);
         }
         MidiEventKind::NoteExpressionInt(expr) => {
+            let mut event = new_event();
             event.r#type = K_NOTE_EXPRESSION_INT_VALUE_EVENT;
             event.__field0.noteExpressionIntValue.noteId = expr.note_id;
             event.__field0.noteExpressionIntValue.typeId = expr.expression_type;
             event.__field0.noteExpressionIntValue.value = expr.value;
+            add(event);
         }
         MidiEventKind::SysEx(_) => {
             // Hosts expect the message framed by F0 and F7.
-            let message = output.framed_sysex(index)?;
-            event.r#type = K_DATA_EVENT;
-            event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
-            event.__field0.data.size = message.len() as u32;
-            event.__field0.data.bytes = message.as_ptr();
+            if let Some(message) = output.framed_sysex(index) {
+                let mut event = new_event();
+                event.r#type = K_DATA_EVENT;
+                event.__field0.data.r#type = DATA_TYPE_MIDI_SYSEX;
+                event.__field0.data.size = message.len() as u32;
+                event.__field0.data.bytes = message.as_ptr();
+                add(event);
+            }
         }
-        // ChordInfo/ScaleInfo are DAW → plugin only (chord track metadata).
+        // ChordInfo/ScaleInfo are DAW to plugin only (chord track metadata).
         // Plugins receive these from the DAW but don't generate them.
-        MidiEventKind::ChordInfo(_) => return None,
-        MidiEventKind::ScaleInfo(_) => return None,
+        MidiEventKind::ChordInfo(_) | MidiEventKind::ScaleInfo(_) => {}
 
         // TODO: NoteExpressionText output not yet implemented.
         // Some vocal/granular synths emit phoneme or waveform text data.
-        // Implementation would require a UTF-8→UTF-16 buffer pool (like SysEx)
+        // Implementation would require a UTF-8 to UTF-16 buffer pool (like SysEx)
         // to provide stable pointers for the host. Low priority but valid use case.
-        MidiEventKind::NoteExpressionText(_) => return None,
+        MidiEventKind::NoteExpressionText(_) => {}
     }
-
-    Some(event)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The VST3 events of the output event at `index`.
+    fn converted(output: &MidiBuffer, index: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        convert_midi_to_vst3(output, index, |event| events.push(event));
+        events
+    }
     use beamer_core::config::Category;
     use beamer_core::{BusLayout, NoParameters, ProcessMode};
 
@@ -4367,7 +4415,7 @@ mod tests {
 
             let mut notes = MidiBuffer::new_boxed(0);
             notes.push(beamer_core::MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0));
-            let note = convert_midi_to_vst3(&notes, 0).expect("a note-on converts");
+            let note = converted(&notes, 0).pop().expect("a note-on converts");
             let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(vec![note]) });
             let output = vst3::ComWrapper::new(Events::default());
             let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
@@ -4523,8 +4571,9 @@ mod tests {
         let beamer_core::MidiEventKind::ControlChange(cc) = &received[0][0].event else {
             panic!("a controller change");
         };
-        let last = (calls - 1) as f32 / calls as f32;
-        assert!((cc.value - last).abs() < 1e-6, "{} is not the last value {}", cc.value, last);
+        // The host's value, unscaled.
+        let last = (calls - 1) as f64 / calls as f64;
+        assert_eq!(cc.value, last);
     }
 
     #[test]
@@ -4543,7 +4592,10 @@ mod tests {
             panic!("a note-off, not {:?}", received.event);
         };
         assert_eq!(received.sample_offset, 12);
-        assert_eq!((note_off.channel, note_off.pitch, note_off.note_id), (2, 64, 64));
+        // Without a note ID from the host, the ID of the channel and pitch;
+        // the default release velocity, as from MIDI 1.0.
+        assert_eq!((note_off.channel, note_off.pitch, note_off.note_id), (2, 64, note_id(0, 2, 64)));
+        assert_eq!(note_off.velocity, scale::velocity_from_7bit(64));
 
         // Any velocity above 0 starts a note.
         event.__field0.noteOn.velocity = 0.01;
@@ -4582,7 +4634,7 @@ mod tests {
         output.push(input.as_slice()[0]);
         output.push(MidiEvent::sysex(3, &[0x01; 40]));
         for (index, expected) in [(0, message.to_vec()), (1, [&[0xF0][..], &[0x01; 40], &[0xF7]].concat())] {
-            let sent = convert_midi_to_vst3(&output, index).expect("a data event");
+            let sent = converted(&output, index).pop().expect("a data event");
             // SAFETY: The event is a data event with bytes in the pool.
             let bytes = unsafe { std::slice::from_raw_parts(sent.__field0.data.bytes, sent.__field0.data.size as usize) };
             assert_eq!(bytes, expected);

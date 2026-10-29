@@ -886,7 +886,7 @@ mod tests {
         set_gain_normalized(&mut processor, 1.0);
 
         // Send PC 1 (Quiet preset: gain = 0.25)
-        let mut input = midi(&[MidiEvent::program_change(0, 0, 1)]);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 1, None)]);
         let mut output = MidiBuffer::new_boxed(0);
 
         run_midi(&mut processor, &mut input, &mut output);
@@ -912,7 +912,7 @@ mod tests {
         let initial_norm = get_gain_normalized(&processor);
 
         // Send PC 10 (out of range - only 3 presets)
-        let mut input = midi(&[MidiEvent::program_change(0, 0, 10)]);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 10, None)]);
         let mut output = MidiBuffer::new_boxed(0);
 
         run_midi(&mut processor, &mut input, &mut output);
@@ -960,9 +960,11 @@ mod tests {
         // Mix of events: CC, valid PC, CC, invalid PC, CC
         let mut input = midi(&[
             MidiEvent::control_change(0, 0, 1, 0.5),
-            MidiEvent::program_change(0, 0, 2), // Boost preset (valid)
+            // Boost preset (valid).
+            MidiEvent::program_change(0, 0, 2, None),
             MidiEvent::control_change(10, 0, 7, 0.8),
-            MidiEvent::program_change(20, 0, 50), // Invalid (out of range)
+            // Invalid (out of range).
+            MidiEvent::program_change(20, 0, 50, None),
             MidiEvent::control_change(30, 0, 10, 0.5),
         ]);
         let mut output = MidiBuffer::new_boxed(0);
@@ -994,7 +996,7 @@ mod tests {
         set_gain_normalized(&mut processor, 0.3);
 
         // Send PC 0 (Unity preset: gain = 0.5)
-        let mut input = midi(&[MidiEvent::program_change(0, 0, 0)]);
+        let mut input = midi(&[MidiEvent::program_change(0, 0, 0, None)]);
         let mut output = MidiBuffer::new_boxed(0);
 
         run_midi(&mut processor, &mut input, &mut output);
@@ -1017,9 +1019,12 @@ mod tests {
 
         // Send multiple PC events - last valid one should win
         let mut input = midi(&[
-            MidiEvent::program_change(0, 0, 0),  // Unity (0.5)
-            MidiEvent::program_change(10, 0, 1), // Quiet (0.25)
-            MidiEvent::program_change(20, 0, 2), // Boost (0.75) - last, should win
+            // Unity (0.5).
+            MidiEvent::program_change(0, 0, 0, None),
+            // Quiet (0.25).
+            MidiEvent::program_change(10, 0, 1, None),
+            // Boost (0.75), last, should win.
+            MidiEvent::program_change(20, 0, 2, None),
         ]);
         let mut output = MidiBuffer::new_boxed(0);
 

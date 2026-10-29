@@ -48,6 +48,7 @@ pub mod host_notifier;
 pub mod logging;
 pub mod error;
 pub mod midi;
+pub mod midi1_translator;
 pub mod midi_cc_config;
 pub mod midi_cc_state;
 pub mod model;
@@ -92,14 +93,15 @@ pub use logging::LogLevel;
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types
-    cc, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind, MidiEventsMut,
-    MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
+    cc, note_id, note_id_parts, scale, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent,
+    MidiEventKind, MidiEventsMut, MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
     // Advanced VST3 events
-    ChordInfo, NoteExpressionInt, NoteExpressionText, NoteExpressionValue, ScaleInfo,
+    tuning_semitones, tuning_value, ChordInfo, NoteExpressionInt, NoteExpressionText, NoteExpressionValue,
+    ScaleInfo,
     // MIDI 2.0 types
     Midi2Controller,
     // RPN/NRPN types
-    rpn, ParameterNumberKind, ParameterNumberMessage, RpnTracker,
+    rpn, ParameterChange, ParameterNumber, ParameterNumberKind, RELATIVE_14BIT_STEP,
     // Note Expression Controller types (VST3 SDK 3.5.0)
     NoteExpressionTypeFlags, NoteExpressionTypeInfo, NoteExpressionValueDesc,
     // Keyswitch Controller types (VST3 SDK 3.5.0)
@@ -126,6 +128,7 @@ pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, Floa
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use process_warnings::{ProcessWarning, ProcessWarnings};
 pub use state::State;
+pub use midi1_translator::Midi1Translator;
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
 pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
 pub use plugin::{
