@@ -426,9 +426,18 @@ mod tests {
             events.take_script().as_deref(),
             Some(
                 "window.__BEAMER__._onEvent(\"history\",[1]);\
-                 window.__BEAMER__._onEvent(\"level\",2);"
+                 window.__BEAMER__._onValue(\"level\",2);"
             )
         );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "A second WebView sender is named \"history\"")]
+    fn test_two_stream_senders_with_one_name_panic() {
+        let events = open_queue();
+        let _first = events.stream_sender::<u8>("history", 8);
+        let _second = events.stream_sender::<u8>("history", 8);
     }
 
     #[test]

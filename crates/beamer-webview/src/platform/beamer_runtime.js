@@ -1,13 +1,18 @@
 (function() {
-  var paramMap = {};
-  var paramById = {};
-  var pendingParamSubs = {};
+  // The maps by name, id or path have no prototype, so that a name such as
+  // "constructor" or "toString" is a name like any other.
+  var paramMap = Object.create(null);
+  var paramById = Object.create(null);
+  var pendingParamSubs = Object.create(null);
   // State fields by path: {value, json, listeners}. `json` is the value as
   // canonical text, to tell a change from a value the UI has already.
-  var stateMap = {};
-  var pendingStateSubs = {};
-  var eventListeners = {};
-  var invokeCallbacks = {};
+  var stateMap = Object.create(null);
+  var pendingStateSubs = Object.create(null);
+  var eventListeners = Object.create(null);
+  // The last value of each value sender, by name.
+  var lastValues = Object.create(null);
+  var valueListeners = Object.create(null);
+  var invokeCallbacks = Object.create(null);
   var nextCallId = 0;
   var readyResolve;
   var readyPromise = new Promise(function(r) { readyResolve = r; });
@@ -164,6 +169,27 @@
       }
     },
 
+    // The values that value senders of the plugin send from the audio
+    // thread, by name: the newest of each, as JSON makes it of the Rust
+    // value.
+    values: {
+      // The last value: the same object until a new one arrives.
+      // Undefined before the first.
+      get: function(name) {
+        return lastValues[name];
+      },
+      // Listen to the values that arrive from now on. The one that
+      // arrived already is `get(name)`.
+      on: function(name, cb) {
+        if (!valueListeners[name]) valueListeners[name] = [];
+        valueListeners[name].push(cb);
+        return function() {
+          valueListeners[name] = valueListeners[name]
+            .filter(function(f){return f!==cb;});
+        };
+      }
+    },
+
     invoke: function(method) {
       var args = Array.prototype.slice.call(arguments, 1);
       return new Promise(function(resolve, reject) {
@@ -173,6 +199,9 @@
       });
     },
 
+    // Listen to events: what the plugin emits and the values of its
+    // stream senders. Not kept: a listener that registers later gets only
+    // what comes after.
     on: function(name, cb) {
       if (!eventListeners[name]) eventListeners[name] = [];
       eventListeners[name].push(cb);
@@ -247,6 +276,12 @@
 
     _onEvent: function(name, data) {
       var cbs = eventListeners[name];
+      if (cbs) cbs.forEach(function(cb) { notify(cb, data); });
+    },
+
+    _onValue: function(name, data) {
+      lastValues[name] = data;
+      var cbs = valueListeners[name];
       if (cbs) cbs.forEach(function(cb) { notify(cb, data); });
     }
   };

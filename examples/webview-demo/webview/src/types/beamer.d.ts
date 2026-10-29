@@ -36,6 +36,13 @@ interface BeamerState {
   ids(): string[];
 }
 
+interface BeamerValues {
+  /** The last value of a value sender, the same object until a new one arrives. Undefined before the first. */
+  get<T = unknown>(name: string): T | undefined;
+  /** Subscribe to the values that arrive from now on; the one that arrived already is `get()`. Returns the unsubscribe function. */
+  on<T = unknown>(name: string, callback: (value: T) => void): () => void;
+}
+
 interface Beamer {
   readonly ready: Promise<void>;
   /** The plugin format the editor runs in, set before `ready` resolves. */
@@ -43,7 +50,14 @@ interface Beamer {
   readonly params: BeamerParams;
   /** The State fields of the plugin, by path. */
   readonly state: BeamerState;
+  /** The values the value senders of the plugin send from the audio thread, by name. */
+  readonly values: BeamerValues;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
+  /**
+   * Listen to events from Rust: what the plugin emits and the arrays of its
+   * stream senders. Not kept: a listener gets what comes after it
+   * registered. Returns the function that unsubscribes.
+   */
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
 
@@ -60,6 +74,8 @@ interface Beamer {
   _onResult(callId: number, result: { ok?: unknown; err?: string }): void;
   /** @internal Called by native code to dispatch events. */
   _onEvent(name: string, data: unknown): void;
+  /** @internal Called by native code with the value of a value sender, kept in `values`. */
+  _onValue(name: string, data: unknown): void;
 }
 
 declare const __BEAMER__: Beamer;

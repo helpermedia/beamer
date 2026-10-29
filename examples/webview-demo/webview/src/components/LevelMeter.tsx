@@ -1,22 +1,19 @@
-import { useEffect, useState } from "react";
+import { useBeamerValue } from "../hooks/useBeamerValue";
 import { meterPosition } from "../levels";
 
-// The output meter. The plugin sends the level through a value sender, so
-// each event holds the newest level and replaces the one before.
-export default function LevelMeter() {
-  const [peaks, setPeaks] = useState<[number, number]>([0, 0]);
+// What the plugin sends: the held peak of each channel, linear. A level
+// that was not a finite number arrives as null.
+interface Levels {
+  peak: [number | null, number | null];
+}
 
-  useEffect(
-    () =>
-      __BEAMER__.on("levels", (data) => {
-        const peak = (data as { peak?: unknown } | null)?.peak;
-        if (Array.isArray(peak) && peak.length === 2) {
-          // A level that was not a finite number arrives as null.
-          setPeaks([Number(peak[0]) || 0, Number(peak[1]) || 0]);
-        }
-      }),
-    [],
-  );
+// The output meter. The plugin sends the level through a value sender, so
+// the runtime holds the newest one and the meter reads it.
+export default function LevelMeter() {
+  const levels = useBeamerValue<Levels>("levels");
+  // Zero until the value is an array, one bar per channel.
+  const peak = levels?.peak;
+  const peaks = (Array.isArray(peak) ? peak : [0, 0]).map((value) => Number(value) || 0);
 
   return (
     <div className="flex gap-1 h-16" aria-label="Output level">

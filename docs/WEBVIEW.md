@@ -107,11 +107,17 @@ interface BeamerState {
   ids(): string[];
 }
 
+interface BeamerValues {
+  get<T = unknown>(name: string): T | undefined;
+  on<T = unknown>(name: string, callback: (value: T) => void): () => void;
+}
+
 interface Beamer {
   readonly ready: Promise<void>;
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   readonly params: BeamerParams;
   readonly state: BeamerState;
+  readonly values: BeamerValues;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
@@ -153,6 +159,17 @@ The type parameter of `get` and `on` is the caller's claim, not a check: `state.
 
 Every `State` field is visible to the web UI and can be set by it. Keep data that the UI must not see or change in a `Handover` field instead. A large value (a wavetable, a sample) is turned into JSON and sent with every change; above 1 MB the plugin logs a warning, once per open editor.
 
+### Value Methods
+
+The values that the plugin's value senders send from the audio thread (see [Data from the Audio Thread](#data-from-the-audio-thread)) are known by the name the sender was created with. A value is what JSON makes of the Rust value.
+
+| Method | Description |
+|--------|-------------|
+| `values.get(name)` | Get the last value. The same object until a new one arrives, so it works with React's `useSyncExternalStore`. `undefined` before the first |
+| `values.on(name, callback)` | Subscribe to the values that arrive from now on. The one that arrived already is `values.get(name)`. Returns an unsubscribe function |
+
+The type parameter of `get` and `on` is the caller's claim, not a check: `values.get<Levels>("levels")`.
+
 ### Invoke
 
 `invoke()` sends a request to the plugin's `Model::on_invoke()` and returns a Promise:
@@ -186,7 +203,7 @@ __BEAMER__.on("sampleLoaded", (name) => {
 });
 ```
 
-`on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side. Values from the audio thread arrive the same way (see [Data from the Audio Thread](#data-from-the-audio-thread)).
+`on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side. The arrays of stream senders from the audio thread arrive the same way. The values of value senders are in `__BEAMER__.values` (see [Data from the Audio Thread](#data-from-the-audio-thread)).
 
 ### Ready Promise
 
@@ -270,12 +287,14 @@ The audio thread cannot emit: `emit()` serializes and takes a lock. It sends thr
 | For | A value the web UI shows as it is now: a meter, a gain reduction, a spectrum | Values the web UI needs all of, in order: a scrolling history, a scope, the notes played |
 | Created with | `events.value_sender(name, initial)` | `events.stream_sender(name, capacity)` |
 | Sent with | `send(&value)` or `send_with(\|value\| ...)` | `push(value)` or `push_slice(&values)` |
+| JavaScript reads it with | `__BEAMER__.values.get(name)` and `values.on(name, callback)` | `__BEAMER__.on(name, callback)`, like the events of `emit()` |
 | JavaScript receives | The newest value, at most once per tick | An array of every value since the last tick, oldest first |
 | Several values between two ticks | The last one counts | All of them, up to `capacity` |
 | While no GUI is open | Kept: a GUI that opens gets the current value | Dropped |
+| A part of the page that shows up later | Reads the current value with `values.get(name)` | Gets the values from the next tick on |
 | Type | `Clone + Serialize`, such as a struct or a `Vec<f32>` | `Copy + Serialize`, such as `f32` or a small struct |
 
-Both arrive through `__BEAMER__.on(name, callback)` like the events of `emit()`. JavaScript tells them apart only by their name. `WebViewEventQueue::is_gui_open()` tells the audio thread whether a GUI is open at all: measuring costs time, so a plugin skips it while nothing shows the result. It is one atomic load, also fine in `process()`.
+A value sender's value stays in the runtime, as parameters and `State` fields do, so a component reads it during render. The arrays of a stream sender are events: a listener gets what comes after it registered. `WebViewEventQueue::is_gui_open()` tells the audio thread whether a GUI is open at all: measuring costs time, so a plugin skips it while nothing shows the result. It is one atomic load, also fine in `process()`.
 
 ### Example (from `webview-demo`)
 
@@ -326,8 +345,12 @@ self.history.push(self.window_peak);
 ```
 
 ```javascript
-// A value sender: the value itself.
-__BEAMER__.on("levels", ({ peak }) => meter.show(peak));
+// A value sender: the runtime keeps the newest value. Read it, then
+// listen to the ones that follow.
+meter.show(__BEAMER__.values.get("levels")?.peak);
+__BEAMER__.values.on("levels", ({ peak }) => meter.show(peak));
+// In React, read it with useBeamerValue (see React Integration).
+const levels = useBeamerValue<Levels>("levels");
 // A stream sender: an array with every value since the last tick.
 __BEAMER__.on("history", (points) => history.append(points));
 ```
@@ -335,12 +358,12 @@ __BEAMER__.on("history", (points) => history.append(points));
 What to know about senders:
 
 - **Created in `prepare()`, dropped with the processor.** Creating a sender takes a lock and allocates: in debug builds a call from `process()` panics. Dropping one frees memory, which is fine because the framework drops the processor on a host thread. When the host prepares the plugin again, the senders of the new processor take over. A sender of a queue the framework does not deliver (see "One queue per plugin" above) reports it once, when it is created.
-- **A value sender delivers what it is sent.** A tick sends the newest value when anything was sent since the last tick, also a value equal to the one before. A meter at rest should send nothing, so that the GUI has nothing to do. After a page loads, each value sender sends its current value again, so a GUI that opens shows it at once. A plugin that measures only while a GUI is open therefore sends a value at rest when none is, as the demo does, so that the next GUI does not show a level from before. A part of the page that subscribes later (a tab, a panel) shows its initial value until the plugin sends again: start it at the value at rest, as the demo's meter starts at zero, or ask with `invoke()` when it mounts.
+- **A value sender delivers what it is sent.** A tick sends the newest value when anything was sent since the last tick, also a value equal to the one before. A meter at rest should send nothing, so that the GUI has nothing to do. After a page loads, each value sender sends its current value again, so a GUI that opens shows it at once. A plugin that measures only while a GUI is open therefore sends a value at rest when none is, as the demo does, so that the next GUI does not show a level from before. The runtime keeps the last value of each value sender in `__BEAMER__.values`, so a part of the page that mounts later (a tab, a panel) reads it at once.
 - **A value sender keeps the last value only.** What happened between two ticks is lost unless the plugin holds it: a meter holds its peaks with a decay instead of sending the peak of each block. `send()` copies with `clone_from`, which does not allocate for a `Vec` of the same length as the initial value. `send_with()` fills the value in place; what the closure finds there is an older value, so it has to write the whole value.
 - **A stream needs room for two ticks or more.** A tick comes about every 16 ms. When the ring is full, the newest values are dropped: `push()` returns `false`, `push_slice()` returns how many fit. Room for a few hundred milliseconds lets a GUI whose main thread is busy for a moment (a project that loads, a heavy redraw) lose nothing.
 - **A stream starts with the GUI.** A push while no GUI is open is dropped. When the first GUI opens, values left from before are skipped.
 - **JSON as for `emit()`.** Values that are not finite numbers (NaN, infinity) arrive as `null`, so send a level as a linear value and convert it to dB in JavaScript. serde serializes arrays of up to 32 elements (a longer one does not compile), so a spectrum is a `Vec<f32>` in a value sender.
-- **One name per sender.** In debug builds a second sender with the name of a living one panics. The names share their space with the events of `emit()`.
+- **One name per sender.** A name is one thing in the web UI: an event, a value or a stream. In debug builds a second sender with the name of a living one panics, as does an `emit()` with the name of a living sender.
 - **One GUI.** With two windows of one plugin instance open, each event, value and stream value reaches one of them. The hosts tried open one window per instance.
 
 ## Answering the Web UI
@@ -451,7 +474,7 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
 5. If a `State` field was set since the last tick, calls `window.__BEAMER__._onState({path: value, ...})` with the fields that changed. The sum of their generations tells whether any did, so a tick without a change reads no field
 6. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
-7. Delivers what the audio thread sent through its senders since the last tick, one `_onEvent(name, data)` call per sender that has something: the newest value of a value sender, an array of the values of a stream sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). After the init dump, each value sender sends its current value again
+7. Delivers what the audio thread sent through its senders since the last tick, one call per sender that has something: `_onValue(name, data)` with the newest value of a value sender, which the runtime keeps in `__BEAMER__.values`, or `_onEvent(name, data)` with an array of the values of a stream sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). After the init dump, each value sender sends its current value again
 
 The delta format is a plain object mapping numeric parameter IDs to those three values:
 
@@ -479,37 +502,37 @@ When JavaScript calls `state.set(path, value)`, the runtime updates its value an
 
 ## React Integration
 
-The `webview-demo` example demonstrates React integration patterns using three hooks.
+The `webview-demo` example demonstrates React integration patterns using four hooks.
 
 ### `useBeamerParam`
 
 Bridges the `__BEAMER__.params` subscription model to React's `useSyncExternalStore`:
 
 ```typescript
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 export function useBeamerParam(name: string): number {
-  return useSyncExternalStore(
-    (cb) => __BEAMER__.params.on(name, cb),
-    () => __BEAMER__.params.get(name),
-  );
+  // The same function while the name stays: React subscribes again when
+  // it gets another one.
+  const subscribe = useCallback((cb: () => void) => __BEAMER__.params.on(name, cb), [name]);
+  return useSyncExternalStore(subscribe, () => __BEAMER__.params.get(name));
 }
 ```
 
-This is a one-liner because the `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function and `get()` returns the current value.
+The `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function and `get()` returns the current value. `useCallback` keeps `subscribe` the same between renders; a new function on each render would make React unsubscribe and subscribe again every time.
 
 ### `useBeamerState`
 
 The same for a `State` field, with the type named by the caller:
 
 ```typescript
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 export function useBeamerState<T>(path: string): T | undefined {
-  return useSyncExternalStore(
-    (cb) => __BEAMER__.state.on(path, cb),
-    () => __BEAMER__.state.get<T>(path),
-  );
+  // The same function while the path stays: React subscribes again when
+  // it gets another one.
+  const subscribe = useCallback((cb: () => void) => __BEAMER__.state.on(path, cb), [path]);
+  return useSyncExternalStore(subscribe, () => __BEAMER__.state.get<T>(path));
 }
 ```
 
@@ -522,6 +545,36 @@ const panLaw = useBeamerState<PanLaw>("pan_law");
 const toggle = () =>
   __BEAMER__.state.set("pan_law", panLaw === "linear" ? "constant_power" : "linear");
 ```
+
+### `useBeamerValue`
+
+The same for the value of a value sender (see [Data from the Audio Thread](#data-from-the-audio-thread)):
+
+```typescript
+import { useCallback, useSyncExternalStore } from "react";
+
+export function useBeamerValue<T>(name: string): T | undefined {
+  // The same function while the name stays: React subscribes again when
+  // it gets another one.
+  const subscribe = useCallback((cb: () => void) => __BEAMER__.values.on(name, cb), [name]);
+  return useSyncExternalStore(subscribe, () => __BEAMER__.values.get<T>(name));
+}
+```
+
+The demo's output meter reads its level with it. A level that was not a finite number arrives as `null`:
+
+```tsx
+interface Levels {
+  peak: [number | null, number | null];
+}
+
+const levels = useBeamerValue<Levels>("levels");
+// Zero until the value is an array, one bar per channel.
+const peak = levels?.peak;
+const peaks = (Array.isArray(peak) ? peak : [0, 0]).map((value) => Number(value) || 0);
+```
+
+The arrays of a stream sender are events, not a value to read: the demo's level history subscribes with `__BEAMER__.on("history", ...)` in an effect and draws each array on a canvas.
 
 ### `useBeamerControl`
 

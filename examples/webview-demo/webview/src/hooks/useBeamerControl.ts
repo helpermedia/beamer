@@ -53,10 +53,8 @@ export function useBeamerControl(paramId: string): BeamerControl {
 
   // Subscribe independently so displayText updates even when the
   // normalized value hasn't changed (e.g. echo after param:set).
-  const displayText = useSyncExternalStore(
-    (cb) => __BEAMER__.params.on(paramId, cb),
-    () => __BEAMER__.params.getDisplayText(paramId),
-  );
+  const subscribe = useCallback((cb: () => void) => __BEAMER__.params.on(paramId, cb), [paramId]);
+  const displayText = useSyncExternalStore(subscribe, () => __BEAMER__.params.getDisplayText(paramId));
 
   return { value, displayValue, displayText, info, beginEdit, set, endEdit, resetToDefault };
 }

@@ -4,7 +4,9 @@
 //! now: a level meter, a gain reduction, a spectrum. The audio thread sends
 //! as often as it likes; at each tick of the GUI (about 60 times a second)
 //! the newest value is delivered and the ones before it are gone. A value
-//! is delivered once. A page that loads gets it again.
+//! is delivered once. A page that loads gets it again. The web UI keeps
+//! it in `__BEAMER__.values`, so a part of the page that shows up later
+//! reads it at once.
 //!
 //! The plugin creates the sender in `prepare()` from the queue of its model
 //! and keeps it in the processor. Sending takes no lock, never allocates and
@@ -21,7 +23,10 @@
 //! ```
 //!
 //! ```js
-//! __BEAMER__.on("levels", ([left, right]) => meter.show(left, right));
+//! // Read the value, then listen to the ones that follow.
+//! const show = ([left, right]) => meter.show(left, right);
+//! show(__BEAMER__.values.get("levels") ?? [0, 0]);
+//! __BEAMER__.values.on("levels", show);
 //! ```
 //!
 //! A value sender keeps what happened between two ticks only when the
@@ -39,7 +44,7 @@ use std::sync::{Arc, Weak};
 
 use serde::Serialize;
 
-use crate::webview_events::{push_event, SenderEnd};
+use crate::webview_events::{push_value, SenderEnd};
 
 /// Set in `Link::middle` when the middle slot holds a value the sender put
 /// there since the queue last took one.
@@ -181,7 +186,7 @@ impl<T: Serialize + Send + 'static> SenderEnd for ValueEnd<T> {
         // senders makes this the only access from the queue's side.
         let value = unsafe { &*link.slots[usize::from(self.front)].get() };
         match serde_json::to_string(value) {
-            Ok(json) => push_event(script, &self.name_json, &json),
+            Ok(json) => push_value(script, &self.name_json, &json),
             Err(error) => {
                 if !std::mem::replace(&mut self.reported, true) {
                     log::error!("Failed to serialize a value of {}: {error}", self.name_json);
@@ -237,13 +242,13 @@ mod tests {
         // The initial value reaches the GUI that is open.
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"levels\",[0.0,0.0]);")
+            Some("window.__BEAMER__._onValue(\"levels\",[0.0,0.0]);")
         );
 
         levels.send(&[0.5, 0.25]);
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"levels\",[0.5,0.25]);")
+            Some("window.__BEAMER__._onValue(\"levels\",[0.5,0.25]);")
         );
         assert_eq!(events.take_script(), None);
     }
@@ -259,7 +264,7 @@ mod tests {
         }
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"level\",5);")
+            Some("window.__BEAMER__._onValue(\"level\",5);")
         );
         assert_eq!(events.take_script(), None);
     }
@@ -278,7 +283,7 @@ mod tests {
         events.page_loaded();
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"level\",7);")
+            Some("window.__BEAMER__._onValue(\"level\",7);")
         );
         assert_eq!(events.take_script(), None);
 
@@ -289,7 +294,7 @@ mod tests {
         events.page_loaded();
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"level\",7);")
+            Some("window.__BEAMER__._onValue(\"level\",7);")
         );
     }
 
@@ -302,7 +307,7 @@ mod tests {
         spectrum.send_with(|bins| bins.copy_from_slice(&[1.0, 2.0, 3.0]));
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"spectrum\",[1.0,2.0,3.0]);")
+            Some("window.__BEAMER__._onValue(\"spectrum\",[1.0,2.0,3.0]);")
         );
     }
 
@@ -322,7 +327,7 @@ mod tests {
         });
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"level\",3);")
+            Some("window.__BEAMER__._onValue(\"level\",3);")
         );
     }
 
@@ -335,7 +340,7 @@ mod tests {
         levels.send(&[f32::NAN, f32::NEG_INFINITY]);
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"levels\",[null,null]);")
+            Some("window.__BEAMER__._onValue(\"levels\",[null,null]);")
         );
     }
 
@@ -353,7 +358,7 @@ mod tests {
         bad.send(&BTreeMap::new());
         assert_eq!(
             events.take_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"bad\",{});")
+            Some("window.__BEAMER__._onValue(\"bad\",{});")
         );
 
         // Another value that cannot be JSON is dropped as well. The values
@@ -401,8 +406,8 @@ mod tests {
             events.take_script().as_deref(),
             Some(
                 "window.__BEAMER__._onEvent(\"emitted\",0);\
-                 window.__BEAMER__._onEvent(\"first\",1);\
-                 window.__BEAMER__._onEvent(\"second\",2);"
+                 window.__BEAMER__._onValue(\"first\",1);\
+                 window.__BEAMER__._onValue(\"second\",2);"
             )
         );
     }
@@ -445,9 +450,9 @@ mod tests {
         let mut last = 0;
         let mut check = |script: String| {
             let json = script
-                .strip_prefix("window.__BEAMER__._onEvent(\"pair\",")
+                .strip_prefix("window.__BEAMER__._onValue(\"pair\",")
                 .and_then(|rest| rest.strip_suffix(");"))
-                .expect("one event");
+                .expect("one value call");
             let (value, inverse): (u64, u64) = serde_json::from_str(json).expect("a pair");
             assert_eq!(inverse, !value);
             // The newest value never goes back in time.

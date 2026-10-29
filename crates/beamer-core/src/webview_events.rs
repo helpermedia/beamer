@@ -77,7 +77,8 @@ struct Shared {
     /// The queue's ends of the senders the audio thread sends through, in
     /// the order they were created. Apart from `pending`, so that turning
     /// a large value into JSON does not hold up `emit()`. The two are
-    /// never held at once.
+    /// never held at once. Debug builds take this lock in `emit()` as well,
+    /// for the check of its name.
     senders: Mutex<Vec<Box<dyn SenderEnd>>>,
     /// How many editors are open.
     editors: AtomicUsize,
@@ -111,6 +112,8 @@ impl WebViewEventQueue {
             self.report_unclaimed(|| format!("WebView event {name:?} was dropped"));
             return;
         }
+        #[cfg(debug_assertions)]
+        self.assert_no_sender_named(name);
         if !self.is_gui_open() {
             return;
         }
@@ -150,14 +153,16 @@ impl WebViewEventQueue {
     /// Create a sender of the newest value for the audio thread.
     ///
     /// Call this in `prepare()` and keep the sender in the processor. The
-    /// web UI receives each value that reaches it as the argument of the
-    /// callbacks registered with `__BEAMER__.on(name, callback)`. `initial`
+    /// web UI reads the value with `__BEAMER__.values.get(name)` and
+    /// listens to it with `__BEAMER__.values.on(name, callback)`. `initial`
     /// is the value before the first send; it also sets the memory a value
     /// fills (the length of a `Vec`, for example). See
     /// [`WebViewValueSender`].
     ///
-    /// Takes a lock and allocates: not for the audio thread. Two senders
-    /// with the same name are a mistake; debug builds panic.
+    /// Takes a lock and allocates: not for the audio thread. The name of
+    /// each sender and event is its own: two senders with the same name
+    /// are a mistake, as is an event with the name of a sender. Debug
+    /// builds panic.
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn value_sender<T>(&self, name: &str, initial: T) -> WebViewValueSender<T>
     where
@@ -180,8 +185,10 @@ impl WebViewEventQueue {
     /// `__BEAMER__.on(name, callback)`. `capacity` is how many values wait
     /// at most; more are dropped. See [`WebViewStreamSender`].
     ///
-    /// Takes a lock and allocates: not for the audio thread. Two senders
-    /// with the same name are a mistake; debug builds panic.
+    /// Takes a lock and allocates: not for the audio thread. The name of
+    /// each sender and event is its own: two senders with the same name
+    /// are a mistake, as is an event with the name of a sender. Debug
+    /// builds panic.
     ///
     /// # Panics
     ///
@@ -213,15 +220,31 @@ impl WebViewEventQueue {
         senders.retain(|end| !end.is_gone());
         #[cfg(debug_assertions)]
         if senders.iter().any(|other| other.name_json() == end.name_json()) {
-            let message = format!(
-                "A second WebView sender is named {name:?}. The web UI cannot tell their values apart."
-            );
-            // The panic message goes to standard error, which a host seldom
-            // shows, so it goes to the plugin's log first.
-            log::error!("{message} ({})", std::panic::Location::caller());
-            panic!("{message}");
+            drop(senders);
+            panic_at_caller(format!(
+                "A second WebView sender is named {name:?}. The web UI cannot tell their values \
+                 apart."
+            ));
         }
         senders.push(end);
+    }
+
+    /// Panic in debug builds when a sender that still exists has the name
+    /// of an emitted event.
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    fn assert_no_sender_named(&self, name: &str) {
+        let name_json = json_string(name);
+        let clash = self
+            .senders()
+            .iter()
+            .any(|end| !end.is_gone() && end.name_json() == name_json);
+        if clash {
+            panic_at_caller(format!(
+                "WebView event {name:?} has the name of a sender. One name is one thing in the \
+                 web UI."
+            ));
+        }
     }
 
     /// Take this queue for a plugin instance.
@@ -286,7 +309,8 @@ impl WebViewEventQueue {
         // Released before the senders are locked: turning their values
         // into JSON does not hold up `emit()`.
         for event in self.pending().drain(..) {
-            push_call(&mut script, &event);
+            // The arguments of an emitted event are written already.
+            push_call(&mut script, "_onEvent", &[&event]);
         }
 
         let mut senders = self.senders();
@@ -349,8 +373,8 @@ impl WebViewEventQueue {
 /// Only the queue calls these, under the lock of its senders, so each end
 /// has one consumer.
 pub(crate) trait SenderEnd: Send {
-    /// The name of the events, as JSON. For the check that two senders do
-    /// not share a name.
+    /// The name of the sender, as JSON. For the checks that no other
+    /// sender and no emitted event has it.
     #[cfg(debug_assertions)]
     fn name_json(&self) -> &str;
 
@@ -370,19 +394,38 @@ pub(crate) trait SenderEnd: Send {
 
 /// Append the JavaScript call that delivers one event.
 pub(crate) fn push_event(script: &mut String, name_json: &str, data_json: &str) {
-    script.push_str("window.__BEAMER__._onEvent(");
-    script.push_str(name_json);
-    script.push(',');
-    script.push_str(data_json);
+    push_call(script, "_onEvent", &[name_json, data_json]);
+}
+
+/// Append the JavaScript call that delivers the value of a value sender.
+/// The runtime keeps it in `__BEAMER__.values`.
+pub(crate) fn push_value(script: &mut String, name_json: &str, data_json: &str) {
+    push_call(script, "_onValue", &[name_json, data_json]);
+}
+
+/// Append `window.__BEAMER__.<function>(<arguments>);`.
+fn push_call(script: &mut String, function: &str, arguments: &[&str]) {
+    script.push_str("window.__BEAMER__.");
+    script.push_str(function);
+    script.push('(');
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            script.push(',');
+        }
+        script.push_str(argument);
+    }
     script.push_str(");");
 }
 
-/// Append the JavaScript call that delivers an emitted event, whose
-/// arguments are written already.
-fn push_call(script: &mut String, arguments: &str) {
-    script.push_str("window.__BEAMER__._onEvent(");
-    script.push_str(arguments);
-    script.push_str(");");
+/// Log a mistake of the plugin with the place of the call, then panic.
+///
+/// The panic message goes to standard error, which a host seldom shows, so
+/// it goes to the plugin's log first.
+#[cfg(debug_assertions)]
+#[track_caller]
+fn panic_at_caller(message: String) -> ! {
+    log::error!("{message} ({})", std::panic::Location::caller());
+    panic!("{message}");
 }
 
 /// A string as JSON.
@@ -528,6 +571,49 @@ mod tests {
         let mut level = events.value_sender("level", 0u8);
         assert!(events.shared.reported.load(Ordering::Acquire));
         level.send(&1);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "WebView event \"history\" has the name of a sender")]
+    fn test_an_event_with_the_name_of_a_stream_sender_panics() {
+        let events = open_queue();
+        let _history = events.stream_sender::<u8>("history", 8);
+        events.emit("history", &1);
+    }
+
+    #[test]
+    fn test_an_event_may_take_the_name_of_a_stream_sender_that_is_gone() {
+        let events = open_queue();
+        drop(events.stream_sender::<u8>("history", 8));
+        events.emit("history", &1);
+        assert!(events.take_script().is_some());
+    }
+
+    #[test]
+    fn test_an_event_may_take_the_name_of_a_value_sender_that_is_gone() {
+        let events = open_queue();
+        drop(events.value_sender("level", 0u8));
+        events.emit("level", &1);
+        assert!(events.take_script().is_some());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "WebView event \"level\" has the name of a sender")]
+    fn test_an_event_with_the_name_of_a_value_sender_panics() {
+        let events = open_queue();
+        let _level = events.value_sender("level", 0u8);
+        events.emit("level", &1);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "A second WebView sender is named \"level\"")]
+    fn test_a_value_and_a_stream_sender_with_one_name_panic() {
+        let events = open_queue();
+        let _level = events.value_sender("level", 0u8);
+        let _history = events.stream_sender::<u8>("level", 8);
     }
 
     #[test]

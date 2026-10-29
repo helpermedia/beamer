@@ -525,7 +525,7 @@ mod tests {
         sync.init_script("vst3");
         assert_eq!(
             sync.frame_script().as_deref(),
-            Some("window.__BEAMER__._onEvent(\"levels\",[0.5,0.25]);")
+            Some("window.__BEAMER__._onValue(\"levels\",[0.5,0.25]);")
         );
         assert_eq!(sync.frame_script(), None);
 
@@ -535,7 +535,7 @@ mod tests {
             sync.frame_script().as_deref(),
             Some(
                 "window.__BEAMER__._onEvent(\"tick\",1);\
-                 window.__BEAMER__._onEvent(\"levels\",[1.0,0.0]);"
+                 window.__BEAMER__._onValue(\"levels\",[1.0,0.0]);"
             )
         );
     }
