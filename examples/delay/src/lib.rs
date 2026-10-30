@@ -19,11 +19,20 @@
 //! - Both simple stereo and ping-pong modes
 //! - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts
 //! - Proper tail length declaration for delay decay
-//! - `SampleRate` setup for sample-rate-dependent initialization
+//! - A `(SampleRate, MainOutputChannels)` setup: the sample rate for the
+//!   delay lines, the output channels for the editor
 //! - `set_active()` to clear the delay lines when the host activates the plugin
 //! - Factory presets that set only some parameters
+//!
+//! # Editor
+//!
+//! The editor in `webview/` is plain HTML, CSS and JavaScript: no package
+//! manager and no build step, the export macro embeds the folder as it is.
+//! It works on `__BEAMER__` directly. The audio thread tells it what only
+//! the processor knows, the host's tempo, through a value sender.
 
 use beamer::prelude::*;
+use beamer::serde::Serialize;
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -66,6 +75,18 @@ pub enum StereoMode {
 // Model
 // =============================================================================
 
+/// What the editor needs to know of the processor, sent from the audio
+/// thread.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(crate = "beamer::serde", rename_all = "camelCase")]
+pub struct Status {
+    /// The host's tempo in BPM, `None` (null in JavaScript) while the host
+    /// reports none.
+    pub tempo: Option<f64>,
+    /// The channels of the main output: 1 on a mono track.
+    pub output_channels: u32,
+}
+
 /// Delay plugin model.
 ///
 /// Uses **declarative parameter definition**: all configuration is in
@@ -93,12 +114,16 @@ pub struct DelayModel {
     /// Wet/dry mix (0% = dry, 100% = wet) - smoothed to avoid zipper noise
     #[parameter(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
     pub mix: FloatParameter,
+
+    /// Events for the editor. The processor's status sender is made from
+    /// it.
+    pub events: WebViewEventQueue,
 }
 
 impl Model for DelayModel {
-    // Delay needs sample rate for buffer allocation.
-    // See `beamer::setup` for all available types.
-    type Setup = SampleRate;
+    // The sample rate sizes the delay lines, the output channels go to the
+    // editor. See `beamer::setup` for all available types.
+    type Setup = (SampleRate, MainOutputChannels);
     type Processor = DelayProcessor;
     // The factory presets, in the Factory Presets section below.
     const PRESETS: &'static [Preset<Self>] = FACTORY_PRESETS;
@@ -106,11 +131,18 @@ impl Model for DelayModel {
     // mono to stereo insert, spreads the mono input over both channels.
     const LAYOUTS: &'static [Layout] = &[Layout::STEREO, Layout::MONO, Layout::MONO_TO_STEREO];
 
-    fn prepare(self: Arc<Self>, setup: SampleRate) -> DelayProcessor {
+    fn prepare(
+        self: Arc<Self>,
+        (sample_rate, channels): (SampleRate, MainOutputChannels),
+    ) -> DelayProcessor {
+        // No tempo is known before the first block.
+        let status = Status { tempo: None, output_channels: channels.0 };
         DelayProcessor {
-            delay_l: DelayLine::new(setup.hz()),
-            delay_r: DelayLine::new(setup.hz()),
-            sample_rate: setup.hz(),
+            delay_l: DelayLine::new(sample_rate.hz()),
+            delay_r: DelayLine::new(sample_rate.hz()),
+            sample_rate: sample_rate.hz(),
+            status_sender: self.events.value_sender("status", status),
+            status,
             model: self,
         }
     }
@@ -158,8 +190,13 @@ const FACTORY_PRESETS: &[Preset<DelayModel>] = &[
 // Delay Buffer
 // =============================================================================
 
-/// Maximum delay time in seconds (covers slow tempos and 2000ms free time)
+/// Maximum delay time in seconds (covers slow tempos and 2000ms free time).
+/// The editor clamps to the same value.
 const MAX_DELAY_SECONDS: f64 = 2.5;
+
+/// The tempo a synced delay assumes while the host reports none. The
+/// editor assumes the same.
+const FALLBACK_TEMPO: f64 = 120.0;
 
 /// Ring buffer delay line implementation.
 ///
@@ -247,6 +284,10 @@ pub struct DelayProcessor {
     delay_r: DelayLine,
     /// Current sample rate
     sample_rate: f64,
+    /// Sends the status to the editor.
+    status_sender: WebViewValueSender<Status>,
+    /// The status last sent.
+    status: Status,
 }
 
 impl DelayProcessor {
@@ -274,9 +315,11 @@ impl DelayProcessor {
     /// delay_samples = time_ms / 1000 * sample_rate
     /// ```
     fn calculate_delay_samples(&self, context: &ProcessContext) -> usize {
-        // samples_per_beat() returns samples directly (sample_rate * 60 / tempo)
-        // Default fallback: 22050 samples = 500ms at 44.1kHz (120 BPM quarter note)
-        let samples_per_beat = context.samples_per_beat().unwrap_or(22050.0);
+        // samples_per_beat() returns samples directly (sample_rate * 60 / tempo).
+        // Without a tempo from the host a beat lasts as long as at 120 BPM.
+        let samples_per_beat = context
+            .samples_per_beat()
+            .unwrap_or(self.sample_rate * 60.0 / FALLBACK_TEMPO);
 
         let delay_samples = match self.model.sync_mode.get() {
             SyncMode::Free => {
@@ -319,6 +362,14 @@ impl DelayProcessor {
     ) {
         let delay_samples = self.calculate_delay_samples(context);
         let stereo_mode = self.model.stereo_mode.get();
+
+        // Tell the editor when the host's tempo changes. Sending never
+        // waits or allocates. While the tempo stays, nothing is sent.
+        let tempo = context.transport.tempo;
+        if tempo != self.status.tempo {
+            self.status.tempo = tempo;
+            self.status_sender.send(&self.status);
+        }
 
         let num_samples = buffer.num_samples();
         let num_channels = buffer.num_channels().min(2);

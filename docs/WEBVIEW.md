@@ -628,7 +628,7 @@ The `#[beamer::export]` attribute macro handles web asset detection and embeddin
 | `BEAMER_DEV_URL` env var set | Load from that URL (dev server mode, see [Development Server](#development-server)) |
 | `webview/package.json` exists and `webview/dist/` exists | Embed all files from `webview/dist/` (no editor when it is empty) |
 | `webview/package.json` exists but no `dist/` | No assets. `cargo xtask bundle` runs the web build first, so this only happens with a plain `cargo build` (run the web build in `webview/` first) |
-| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project, no editor when it is empty) |
+| `webview/` exists (no `package.json`) | Embed all files from `webview/` (plain HTML project such as the `delay` example, no editor when it is empty) |
 | No `webview/` directory | No editor |
 
 The scan skips dotfiles and dot-directories, `node_modules` and `.map` source map files.

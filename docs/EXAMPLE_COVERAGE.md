@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-10-28
+**Last Updated:** 2026-10-30
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -66,16 +66,19 @@
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Editor** (macOS only) | on_invoke / on_event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
-| | WebViewEventQueue | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS |
-| | WebViewValueSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread |
+| | WebViewEventQueue | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS; senders made from it (delay) |
+| | WebViewValueSender | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread, host tempo (delay) |
 | | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Level history from the audio thread |
 | | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
-| | editor_size | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Config.toml editor config |
-| | editor_background_color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
-| | Embedded assets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme |
-| | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
+| | editor_size | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Config.toml editor config |
+| | editor_background_color | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
+| | Embedded assets | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
+| | Parameter sync (JS ↔ Rust) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
-| | DAW undo grouping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | beginEdit/endEdit |
+| | DAW undo grouping | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | beginEdit/endEdit |
+| | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
+| | Enum choices (`valueTexts`) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Buttons for sync and stereo mode |
+| | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Knob value text (delay), slider (WebView Demo) |
 
 **Legend:**
 - ✅ Tested/Used

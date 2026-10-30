@@ -115,7 +115,7 @@ Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 
 ### [Delay](delay/)
 
-Tempo-synced delay for stereo and mono tracks with ping-pong mode and factory presets.
+Tempo-synced delay for stereo and mono tracks with ping-pong mode, factory presets and an editor in plain HTML and JavaScript.
 
 **Parameters:**
 
@@ -133,8 +133,12 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode and factory pr
 - **Ping Pong**: Quarter note bouncing between channels
 - **Ambient**: Long 750ms delay with high feedback for textures
 
+**Editor:**
+
+The delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and knobs for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
+
 **Demonstrates:**
-- `SampleRate` setup for sample-rate-dependent initialization
+- A `(SampleRate, MainOutputChannels)` setup: the sample rate for the delay lines, the output channels for the editor
 - `set_active()` for clearing delay buffers on reset
 - `EnumParameter` for sync mode and stereo mode
 - Tempo sync using `ProcessContext.samples_per_beat()`
@@ -143,6 +147,10 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode and factory pr
 - Proper tail length via `tail_samples()`
 - Factory presets in code that set only some parameters
 - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
+- A web UI in plain HTML, CSS and JavaScript modules, working on `__BEAMER__` directly
+- A `WebViewValueSender` that sends the host's tempo from the audio thread only when it changes
+- Knobs with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/paramTextToNormalized`)
+- Buttons for the choices of an enum parameter, named by its `valueTexts`
 
 ---
 

@@ -1,0 +1,255 @@
+/* The panel is light anodized aluminium. The two channels have the only
+   colors: cobalt for the left, magenta for the right. */
+:root {
+    --panel: #cdd1d6;
+    --well: #e6e8eb;
+    --rule: #a9afb6;
+    --ink: #1d232b;
+    --ink-soft: #49525c;
+    --left: #2343c4;
+    --right: #a3246a;
+
+    --face: "Avenir Next", "Avenir", system-ui, sans-serif;
+    --face-condensed: "Avenir Next Condensed", "Avenir Next", system-ui, sans-serif;
+
+    color-scheme: light;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/* The editor shows once the plugin's values have arrived. */
+[hidden] {
+    display: none !important;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+}
+
+body {
+    background: var(--panel);
+    color: var(--ink);
+    font: 500 13px/1.3 var(--face);
+    /* An editor is a control surface, not a page to select text in. */
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+}
+
+.editor {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 100%;
+    padding: 20px 24px 22px;
+}
+
+/* Delay time and stereo mode. */
+
+.top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.readout p {
+    margin: 0;
+}
+
+.readout-time {
+    font: 600 44px/1 var(--face-condensed);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+}
+
+.readout-unit {
+    font-size: 22px;
+    color: var(--ink-soft);
+}
+
+.readout-source {
+    margin-top: 4px;
+    color: var(--ink-soft);
+}
+
+/* The echo strip. */
+
+.echoes {
+    flex: 1;
+    min-height: 120px;
+    margin: 0;
+    background: var(--well);
+    border-radius: 6px;
+    box-shadow: inset 0 1px 2px rgba(29, 35, 43, 0.18);
+}
+
+.echoes svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.echo-left {
+    stroke: var(--left);
+}
+
+.echo-right {
+    stroke: var(--right);
+}
+
+.echo-input {
+    stroke: var(--ink);
+}
+
+.axis {
+    stroke: var(--rule);
+}
+
+.tick {
+    stroke: var(--rule);
+    stroke-dasharray: 2 3;
+}
+
+.tick-label,
+.lane-label {
+    fill: var(--ink-soft);
+    font: 500 10px var(--face);
+}
+
+.lane-label.left {
+    fill: var(--left);
+}
+
+.lane-label.right {
+    fill: var(--right);
+}
+
+/* Choices of an enum parameter. */
+
+.choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 2px;
+    background: var(--rule);
+    border-radius: 5px;
+}
+
+.choices button {
+    min-width: 40px;
+    padding: 5px 10px;
+    border: 0;
+    border-radius: 3px;
+    background: var(--well);
+    color: var(--ink);
+    font: 600 12px var(--face);
+}
+
+.choices button[aria-checked="true"] {
+    background: var(--ink);
+    color: var(--well);
+}
+
+/* Sync mode beside the knobs. */
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.knobs {
+    display: flex;
+    gap: 18px;
+}
+
+/* A knob: the arc, its name and the value, which takes typed text. */
+
+.knob {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 76px;
+    transition: opacity 120ms;
+}
+
+.knob.unused {
+    opacity: 0.45;
+}
+
+.knob svg {
+    width: 52px;
+    height: 52px;
+    touch-action: none;
+    outline: none;
+}
+
+.knob-track {
+    fill: none;
+    stroke: var(--rule);
+    stroke-width: 5;
+    stroke-linecap: round;
+}
+
+.knob-value {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 5;
+    stroke-linecap: round;
+}
+
+.knob-dot {
+    fill: var(--ink);
+}
+
+.knob-name {
+    margin-top: 2px;
+    color: var(--ink-soft);
+}
+
+.knob-text {
+    width: 100%;
+    padding: 1px 0;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: none;
+    color: var(--ink);
+    font: 600 12px var(--face);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.knob-text:hover {
+    border-color: var(--rule);
+}
+
+input.knob-text {
+    background: var(--well);
+    border-color: var(--ink);
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* Keyboard focus. */
+
+button:focus-visible,
+.knob svg:focus-visible {
+    outline: 2px solid var(--left);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .knob {
+        transition: none;
+    }
+}

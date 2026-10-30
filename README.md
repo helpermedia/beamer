@@ -88,7 +88,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with sidechain input |
 | **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode and an editor |
 
 ### Instruments & MIDI
 
@@ -103,6 +103,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | Example | Description |
 |---------|-------------|
 | **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin editor with React |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Editor in plain HTML and JavaScript, without a build step |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 
