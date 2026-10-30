@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_vst3_bundle_name, to_vst3_executable_name, Arch, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_separate_auv2_component_name, to_vst3_bundle_name, to_vst3_executable_name, Arch, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::BundleConfig;
 
 /// The format a plugin library is built for.
@@ -772,7 +772,7 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
 
     // Build description of what we're cleaning
     let mut formats = Vec::new();
-    if config.build_auv2 {
+    if config.build_auv2 || config.build_auv2_separate {
         formats.push("AUv2");
     }
     if config.build_auv3 {
@@ -808,7 +808,7 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
     }
 
     // Remove the generated ObjC sources and static libraries (AU builds only).
-    if config.build_auv2 || config.build_auv3 {
+    if config.build_auv2 || config.build_auv2_separate || config.build_auv3 {
         let gen_dir = workspace_root.join("target").join("au-gen").join(package);
         if gen_dir.exists() {
             crate::verbose!(verbose, "    Removing: {}", gen_dir.display());
@@ -826,13 +826,14 @@ pub fn clean_build_caches(workspace_root: &Path, config: &BundleConfig) -> Resul
         }
     }
 
-    // Clean previous AUv2 component bundle
-    if config.build_auv2 {
-        let auv2_bundle_name = to_auv2_component_name(package);
-        let component_path = target_dir.join(&auv2_bundle_name);
-        if component_path.exists() {
-            crate::verbose!(verbose, "    Removing: {}", component_path.display());
-            fs::remove_dir_all(&component_path).map_err(|e| e.to_string())?;
+    // Clean previous AUv2 component bundles, the separate one too.
+    if config.build_auv2 || config.build_auv2_separate {
+        for auv2_bundle_name in [to_auv2_component_name(package), to_separate_auv2_component_name(package)] {
+            let component_path = target_dir.join(&auv2_bundle_name);
+            if component_path.exists() {
+                crate::verbose!(verbose, "    Removing: {}", component_path.display());
+                fs::remove_dir_all(&component_path).map_err(|e| e.to_string())?;
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 //! Build tooling for Beamer plugins.
 //!
-//! Usage: `cargo xtask bundle <package> [--vst3] [--auv2] [--auv3] [--arch <arch>] [--release] [--install] [--clean]`
+//! Usage: `cargo xtask bundle <package> [--vst3] [--auv2 | --auv2-separate] [--auv3] [--arch <arch>] [--release] [--install] [--clean]`
 //!
 //! `cargo xtask uninstall <package> [--vst3] [--auv2] [--auv3]` removes an installed plugin.
 
@@ -36,7 +36,7 @@ pub struct AppexPlistConfig<'a> {
 
 /// Configuration for creating AUv2 component Info.plist
 pub struct ComponentPlistConfig<'a> {
-    pub package: &'a str,
+    pub bundle_id: &'a str,
     pub executable_name: &'a str,
     pub codes: &'a AuCodes,
     pub subcategories: &'a [String],
@@ -55,6 +55,9 @@ struct BundleConfig {
     clean: bool,
     build_vst3: bool,
     build_auv2: bool,
+    /// Build the AUv2 as a separate plugin, so that it shows next to the
+    /// AUv3 (see `util::separate_auv2_subtype`).
+    build_auv2_separate: bool,
     build_auv3: bool,
     arch: Arch,
     verbose: bool,
@@ -133,12 +136,14 @@ fn main() {
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let build_vst3 = args.iter().any(|a| a == "--vst3");
     let build_auv2 = args.iter().any(|a| a == "--auv2");
+    let build_auv2_separate = args.iter().any(|a| a == "--auv2-separate");
     let build_auv3 = args.iter().any(|a| a == "--auv3");
     let diagnostics = args.iter().any(|a| a == "--diagnostics");
 
     // Check for unknown flags. Flags that take a value consume the next arg.
     let known_flags = [
-        "--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv3", "--arch", "--diagnostics",
+        "--release", "--install", "--clean", "--verbose", "-v", "--vst3", "--auv2", "--auv2-separate", "--auv3", "--arch",
+        "--diagnostics",
     ];
     let value_flags = ["--arch"];
     let mut rest = args.iter().skip(3);
@@ -176,9 +181,13 @@ fn main() {
         .unwrap_or(Arch::Native);
 
     // Require at least one format flag
-    if !build_vst3 && !build_auv2 && !build_auv3 {
-        print_error("at least one format flag is required (--auv2, --auv3 or --vst3)");
+    if !build_vst3 && !build_auv2 && !build_auv2_separate && !build_auv3 {
+        print_error("at least one format flag is required (--auv2, --auv2-separate, --auv3 or --vst3)");
         print_usage();
+        std::process::exit(1);
+    }
+    if build_auv2 && build_auv2_separate {
+        print_error("--auv2 and --auv2-separate build the same format: use one of them");
         std::process::exit(1);
     }
 
@@ -190,6 +199,7 @@ fn main() {
         verbose,
         build_vst3,
         build_auv2,
+        build_auv2_separate,
         build_auv3,
         arch,
         diagnostics,
@@ -212,7 +222,7 @@ fn uninstall_command(args: &[String]) {
         }
     };
 
-    let known_flags = ["--auv2", "--auv3", "--vst3", "--verbose", "-v"];
+    let known_flags = ["--auv2", "--auv2-separate", "--auv3", "--vst3", "--verbose", "-v"];
     for arg in args.iter().skip(3) {
         if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
             print_error(&format!("unknown flag '{}'", arg));
@@ -225,7 +235,8 @@ fn uninstall_command(args: &[String]) {
         }
     }
 
-    let auv2 = args.iter().any(|a| a == "--auv2");
+    // Either flag removes both kinds of AUv2.
+    let auv2 = args.iter().any(|a| a == "--auv2" || a == "--auv2-separate");
     let auv3 = args.iter().any(|a| a == "--auv3");
     let vst3 = args.iter().any(|a| a == "--vst3");
 
@@ -331,6 +342,10 @@ fn print_usage() {
     eprintln!();
     eprintln!("Formats (bundle requires at least one):");
     eprintln!("  --auv2    Build AUv2 .component bundle (simple distribution, works with all DAWs)");
+    eprintln!("  --auv2-separate");
+    eprintln!("            Build the AUv2 as a plugin of its own, to test it next to the AUv3:");
+    eprintln!("            named \"<name> AUv2\", the plugin code with its last character");
+    eprintln!("            replaced by 2, bundle Beamer<Plugin>Auv2.component");
     eprintln!("  --auv3    Build AUv3 .app/.appex bundle (App Store distribution)");
     eprintln!("  --vst3    Build VST3 bundle");
     eprintln!();
@@ -361,7 +376,7 @@ fn print_usage() {
     eprintln!("  Removes what --install copied to the plugin directories. After removing");
     eprintln!("  an Audio Unit it refreshes the Audio Unit registry.");
     eprintln!("  Takes the format flags and --verbose. Without a format flag it removes");
-    eprintln!("  every format.");
+    eprintln!("  every format. --auv2 and --auv2-separate both remove both kinds of AUv2.");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  cargo xtask bundle gain --auv2 --release --install");
@@ -369,6 +384,7 @@ fn print_usage() {
     eprintln!("  cargo xtask bundle gain --vst3 --release --install");
     eprintln!("  cargo xtask bundle gain --auv2 --auv3 --arch universal    # Both AU formats");
     eprintln!("  cargo xtask bundle gain --auv2 --vst3 --arch universal    # AUv2 + VST3");
+    eprintln!("  cargo xtask bundle gain --auv2-separate --auv3 --install  # Both AU formats to test");
     eprintln!("  cargo xtask uninstall gain                                # Every format");
     eprintln!("  cargo xtask uninstall gain --auv3                         # AUv3 only");
     eprintln!("  cargo xtask bundle compressor --auv2 --install --diagnostics");
@@ -441,7 +457,7 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
     };
 
     // Build and bundle AU (macOS only).
-    if config.build_auv2 && cfg!(target_os = "macos") {
+    if (config.build_auv2 || config.build_auv2_separate) && cfg!(target_os = "macos") {
         let dylib_path = build_library(build::Format::Auv2)?;
         auv2::bundle_auv2(
             &config.package,
@@ -449,6 +465,7 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
             &dylib_path,
             config.install,
             config.diagnostics,
+            config.build_auv2_separate,
             &workspace_root,
             config.arch,
             config.verbose,

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::build::{clang_arches, clang_path_flags, diagnostics_flags, get_version_info};
-use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, shorten_path, to_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::util::{au_tags, codesign_bundle, combine_or_rename_binaries, detect_au_component_info, detect_subcategories, install_bundle, plist_strings, refresh_au_registry, separate_auv2_subtype, shorten_path, to_auv2_component_name, to_separate_auv2_component_name, uninstall_bundle, Arch, AuCodes, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
 use crate::ComponentPlistConfig;
 
 /// Where an installed component lives, relative to the home directory.
@@ -21,6 +21,7 @@ pub fn bundle_auv2(
     dylib_path: &Path,
     install: bool,
     diagnostics: bool,
+    separate: bool,
     workspace_root: &Path,
     arch: Arch,
     verbose: bool,
@@ -40,7 +41,14 @@ pub fn bundle_auv2(
     let path_flags = clang_path_flags(workspace_root)?;
     let (version_string, version_int) = get_version_info(&package_info.version)?;
 
-    let bundle_name = to_auv2_component_name(package);
+    // A separate AUv2 is a plugin of its own next to the AUv3: another
+    // bundle, plugin code, name and bundle identifier. Its classes and
+    // factory get other names through the code.
+    let bundle_name = if separate {
+        to_separate_auv2_component_name(package)
+    } else {
+        to_auv2_component_name(package)
+    };
     let bundle_dir = target_dir.join(&bundle_name);
     let contents_dir = bundle_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
@@ -59,9 +67,20 @@ pub fn bundle_auv2(
     fs::create_dir_all(&resources_dir).map_err(|e| format!("Failed to create Resources dir: {}", e))?;
 
     // Auto-detect component type, manufacturer and subtype from plugin source
-    let codes = AuCodes::detect(package, &package_info.dir);
+    let mut codes = AuCodes::detect(package, &package_info.dir);
+    if separate {
+        codes.subtype = separate_auv2_subtype(&codes.subtype);
+    }
     let names = AuNames::new(package, &codes);
-    let (_, _, _, detected_plugin_name, detected_vendor_name, _) = detect_au_component_info(&package_info.dir);
+    let (_, _, _, mut detected_plugin_name, detected_vendor_name, _) = detect_au_component_info(&package_info.dir);
+    if separate {
+        detected_plugin_name = detected_plugin_name.map(|name| format!("{name} AUv2"));
+    }
+    let bundle_id = if separate {
+        format!("com.beamer.{package}.auv2.component")
+    } else {
+        format!("com.beamer.{package}.component")
+    };
     crate::verbose!(
         verbose,
         "    Detected: {} (manufacturer: {}, subtype: {})",
@@ -80,7 +99,7 @@ pub fn bundle_auv2(
     let wrapper_source = generate_auv2_wrapper_source(package, &codes, &names);
     let gen_dir = workspace_root.join("target/au-gen").join(package);
     fs::create_dir_all(&gen_dir).map_err(|e| format!("Failed to create gen dir: {}", e))?;
-    let wrapper_path = gen_dir.join("auv2_wrapper.m");
+    let wrapper_path = gen_dir.join(if separate { "auv2_separate_wrapper.m" } else { "auv2_wrapper.m" });
     fs::write(&wrapper_path, wrapper_source).map_err(|e| format!("Failed to write wrapper: {}", e))?;
 
     // Build for each architecture
@@ -164,7 +183,7 @@ pub fn bundle_auv2(
 
     // Create Info.plist with factoryFunction
     let info_plist = create_component_info_plist(&ComponentPlistConfig {
-        package,
+        bundle_id: &bundle_id,
         executable_name,
         codes: &codes,
         subcategories: &detect_subcategories(&package_info.dir),
@@ -220,7 +239,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
     <key>CFBundleExecutable</key>
     <string>{executable}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.beamer.{package}.component</string>
+    <string>{bundle_id}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -271,7 +290,7 @@ fn create_component_info_plist(config: &ComponentPlistConfig) -> String {
 "#,
         min_os = MACOS_DEPLOYMENT_TARGET,
         executable = config.executable_name,
-        package = config.package,
+        bundle_id = config.bundle_id,
         manufacturer = config.codes.manufacturer,
         component_type = config.codes.component_type,
         subtype = config.codes.subtype,
@@ -295,9 +314,12 @@ fn install_auv2(bundle_dir: &Path, bundle_name: &str, verbose: bool) -> Result<(
     Ok(())
 }
 
-/// Removes an installed AUv2 component and returns whether there was one.
+/// Removes the installed AUv2 components of a package, the separate one
+/// too. Returns whether there was one.
 ///
 /// The caller refreshes the Audio Unit registry afterwards.
 pub fn uninstall_auv2(package: &str) -> Result<bool, String> {
-    uninstall_bundle(&to_auv2_component_name(package), INSTALL_DIR)
+    let removed = uninstall_bundle(&to_auv2_component_name(package), INSTALL_DIR)?;
+    let removed_separate = uninstall_bundle(&to_separate_auv2_component_name(package), INSTALL_DIR)?;
+    Ok(removed || removed_separate)
 }

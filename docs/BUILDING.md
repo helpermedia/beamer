@@ -7,6 +7,7 @@ the bundle each plugin format expects and optionally installs it.
 | Format | Flag | Platform |
 |--------|------|----------|
 | AUv2 | `--auv2` | macOS |
+| AUv2 as a plugin of its own, to test next to the AUv3 | `--auv2-separate` | macOS |
 | AUv3 | `--auv3` | macOS |
 | VST3 | `--vst3` | macOS (Windows in progress) |
 
@@ -228,7 +229,8 @@ cargo xtask uninstall <package> [formats]
 ```
 
 This removes the bundles that `--install` copied to the plugin folders.
-With format flags it removes only those formats. Without one it removes
+With format flags it removes only those formats; `--auv2` and
+`--auv2-separate` both remove both kinds of AUv2. Without one it removes
 every format:
 
 ```bash
@@ -372,12 +374,21 @@ is the host's request to process in place.
 macOS treats an AUv2 and an AUv3 with the same type, plugin code and
 manufacturer code as one plugin. Hosts show only one of them, usually the
 AUv3. This is intended: an AUv3 can replace its AUv2 without breaking
-existing projects. To test both formats of one plugin, build one format
-with a different `plugin_code` in `Config.toml`, or uninstall one format:
+existing projects. To test both formats of one plugin, build the AUv2 with
+`--auv2-separate` instead of `--auv2`:
 
 ```bash
-cargo xtask uninstall gain --auv3
+cargo xtask bundle gain --auv2-separate --auv3 --release --install
 ```
+
+The separate AUv2 is a plugin of its own: "Beamer Gain AUv2", with the
+plugin code of `Config.toml` whose last character becomes a 2 (a 3 when it
+is a 2 already), so `gain` gives `gai2`. Its bundle is
+`BeamerGainAuv2.component`. It uses the same plugin library as a normal
+AUv2. A project or preset saved with it names its own code, so it opens
+with the separate AUv2 only, not with the AUv3 or a normal AUv2. Install
+one kind of AUv2 at a time: a normal AUv2 next to the AUv3 hides one of
+them again.
 
 ### Running the tests
 

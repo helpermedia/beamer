@@ -173,6 +173,30 @@ pub fn to_auv2_component_name(package: &str) -> String {
     format!("Beamer{}.component", to_pascal_case(package))
 }
 
+/// Convert package name to the bundle name of its separate AUv2 (see
+/// [`separate_auv2_subtype`]).
+/// "gain" -> "BeamerGainAuv2.component"
+#[must_use]
+pub fn to_separate_auv2_component_name(package: &str) -> String {
+    format!("Beamer{}Auv2.component", to_pascal_case(package))
+}
+
+/// The plugin code of a separate AUv2: the plugin's code with its last
+/// character replaced by 2, or by 3 when it is a 2 already.
+///
+/// macOS treats an AUv2 and an AUv3 with the same codes as one plugin and
+/// hosts show only one of them. A separate AUv2 has a code of its own, so
+/// that both formats can be tested side by side.
+/// "dlay" -> "dla2", "lvl2" -> "lvl3"
+#[must_use]
+pub fn separate_auv2_subtype(subtype: &str) -> String {
+    let mut chars: Vec<char> = subtype.chars().collect();
+    if let Some(last) = chars.last_mut() {
+        *last = if *last == '2' { '3' } else { '2' };
+    }
+    chars.into_iter().collect()
+}
+
 /// Generates a 4-character AU subtype code from a package name.
 ///
 /// Takes alphanumeric characters, lowercases them and pads with underscores if needed.
@@ -889,6 +913,14 @@ mod tests {
             Category::MidiEffect => "midi_effect",
             Category::Generator => "generator",
         }
+    }
+
+    #[test]
+    fn test_separate_auv2_subtype_differs_from_the_plugin_code() {
+        assert_eq!(separate_auv2_subtype("dlay"), "dla2");
+        assert_eq!(separate_auv2_subtype("lvl2"), "lvl3");
+        assert_eq!(separate_auv2_subtype("fx__"), "fx_2");
+        assert_eq!(to_separate_auv2_component_name("midi-transform"), "BeamerMidiTransformAuv2.component");
     }
 
     #[test]
