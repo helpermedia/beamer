@@ -22,6 +22,16 @@ pub const MAX_CHORD_NAME_SIZE: usize = 32;
 /// Maximum scale name size in bytes.
 pub const MAX_SCALE_NAME_SIZE: usize = 32;
 
+/// The longest start of `text` that is at most `max` bytes and ends after a
+/// whole character.
+fn utf8_prefix(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 // =============================================================================
 // Basic MIDI Types
 // =============================================================================
@@ -412,10 +422,14 @@ pub struct NoteExpressionText {
 }
 
 impl NoteExpressionText {
-    /// Get the text as a string slice.
+    /// Get the text as a string slice: empty if `text_len` is out of range
+    /// or the text is not UTF-8.
     #[inline]
     pub fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.text[..self.text_len as usize]).unwrap_or("")
+        self.text
+            .get(..self.text_len as usize)
+            .and_then(|text| core::str::from_utf8(text).ok())
+            .unwrap_or("")
     }
 }
 
@@ -457,10 +471,14 @@ pub struct ChordInfo {
 }
 
 impl ChordInfo {
-    /// Get the chord name as a string slice.
+    /// Get the chord name as a string slice: empty if `name_len` is out of
+    /// range or the name is not UTF-8.
     #[inline]
     pub fn name_str(&self) -> &str {
-        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
+        self.name
+            .get(..self.name_len as usize)
+            .and_then(|name| core::str::from_utf8(name).ok())
+            .unwrap_or("")
     }
 
     /// Check if the chord info is valid.
@@ -508,10 +526,14 @@ pub struct ScaleInfo {
 }
 
 impl ScaleInfo {
-    /// Get the scale name as a string slice.
+    /// Get the scale name as a string slice: empty if `name_len` is out of
+    /// range or the name is not UTF-8.
     #[inline]
     pub fn name_str(&self) -> &str {
-        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
+        self.name
+            .get(..self.name_len as usize)
+            .and_then(|name| core::str::from_utf8(name).ok())
+            .unwrap_or("")
     }
 
     /// Check if the scale info is valid.
@@ -1563,7 +1585,9 @@ impl<'a> MidiEvent<'a> {
         }
     }
 
-    /// Create a Note Expression text event.
+    /// Create a Note Expression text event. A text longer than
+    /// [`MAX_EXPRESSION_TEXT_SIZE`] bytes is cut after the last whole
+    /// character that fits.
     ///
     /// Note: This is not `const` because it initializes the fixed-size buffer.
     pub fn note_expression_text(
@@ -1578,17 +1602,17 @@ impl<'a> MidiEvent<'a> {
             text: [0u8; MAX_EXPRESSION_TEXT_SIZE],
             text_len: 0,
         };
-        let bytes = text.as_bytes();
-        let copy_len = bytes.len().min(MAX_EXPRESSION_TEXT_SIZE);
-        expr.text[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        expr.text_len = copy_len as u8;
+        let bytes = utf8_prefix(text, MAX_EXPRESSION_TEXT_SIZE).as_bytes();
+        expr.text[..bytes.len()].copy_from_slice(bytes);
+        expr.text_len = bytes.len() as u8;
         Self {
             sample_offset,
             event: MidiEventKind::NoteExpressionText(expr),
         }
     }
 
-    /// Create a Chord info event.
+    /// Create a Chord info event. A name longer than [`MAX_CHORD_NAME_SIZE`]
+    /// bytes is cut after the last whole character that fits.
     ///
     /// Note: This is not `const` because it initializes the fixed-size buffer.
     pub fn chord_info(
@@ -1605,17 +1629,17 @@ impl<'a> MidiEvent<'a> {
             name: [0u8; MAX_CHORD_NAME_SIZE],
             name_len: 0,
         };
-        let bytes = name.as_bytes();
-        let copy_len = bytes.len().min(MAX_CHORD_NAME_SIZE);
-        info.name[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        info.name_len = copy_len as u8;
+        let bytes = utf8_prefix(name, MAX_CHORD_NAME_SIZE).as_bytes();
+        info.name[..bytes.len()].copy_from_slice(bytes);
+        info.name_len = bytes.len() as u8;
         Self {
             sample_offset,
             event: MidiEventKind::ChordInfo(info),
         }
     }
 
-    /// Create a Scale info event.
+    /// Create a Scale info event. A name longer than [`MAX_SCALE_NAME_SIZE`]
+    /// bytes is cut after the last whole character that fits.
     ///
     /// Note: This is not `const` because it initializes the fixed-size buffer.
     pub fn scale_info(sample_offset: u32, root: i8, mask: u16, name: &str) -> Self {
@@ -1625,10 +1649,9 @@ impl<'a> MidiEvent<'a> {
             name: [0u8; MAX_SCALE_NAME_SIZE],
             name_len: 0,
         };
-        let bytes = name.as_bytes();
-        let copy_len = bytes.len().min(MAX_SCALE_NAME_SIZE);
-        info.name[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        info.name_len = copy_len as u8;
+        let bytes = utf8_prefix(name, MAX_SCALE_NAME_SIZE).as_bytes();
+        info.name[..bytes.len()].copy_from_slice(bytes);
+        info.name_len = bytes.len() as u8;
         Self {
             sample_offset,
             event: MidiEventKind::ScaleInfo(info),
@@ -2681,6 +2704,36 @@ mod tests {
         };
         assert_eq!(kept, note(4, 60));
         assert_eq!(MidiEvent::sysex(0, &[1]).to_static(), None);
+    }
+
+    #[test]
+    fn test_long_texts_are_cut_after_a_whole_character() {
+        // 22 characters of three bytes each: the 64th byte is inside the
+        // 22nd character, which is left out.
+        let text = "ア".repeat(22);
+        let MidiEventKind::NoteExpressionText(expr) = MidiEvent::note_expression_text(0, 1, 0, &text).event else {
+            panic!("a text event");
+        };
+        assert_eq!(expr.as_str(), "ア".repeat(21));
+
+        let name = "é".repeat(20);
+        let MidiEventKind::ChordInfo(chord) = MidiEvent::chord_info(0, 0, -1, 1, &format!("x{name}")).event else {
+            panic!("a chord event");
+        };
+        assert_eq!(chord.name_str(), format!("x{}", "é".repeat(15)));
+        let MidiEventKind::ScaleInfo(scale) = MidiEvent::scale_info(0, 0, 1, &format!("x{name}")).event else {
+            panic!("a scale event");
+        };
+        assert_eq!(scale.name_str(), format!("x{}", "é".repeat(15)));
+    }
+
+    #[test]
+    fn test_a_text_length_out_of_range_reads_as_empty() {
+        let MidiEventKind::NoteExpressionText(mut expr) = MidiEvent::note_expression_text(0, 1, 0, "la").event else {
+            panic!("a text event");
+        };
+        expr.text_len = MAX_EXPRESSION_TEXT_SIZE as u8 + 1;
+        assert_eq!(expr.as_str(), "");
     }
 
     #[test]

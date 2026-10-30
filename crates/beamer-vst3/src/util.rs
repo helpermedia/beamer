@@ -85,3 +85,74 @@ pub unsafe fn wstring_to_string(string: *const TChar) -> Option<String> {
     let slice = unsafe { std::slice::from_raw_parts(string, len) };
     String::from_utf16(slice).ok()
 }
+
+/// Null-terminated wide strings (UTF-16) for a host, in memory allocated
+/// once.
+///
+/// A stored string stays where it is, unchanged, until [`clear`]: a host may
+/// keep its pointer until then. Storing and clearing never allocate.
+///
+/// [`clear`]: Self::clear
+pub struct Utf16Pool {
+    /// The units of the strings, each followed by a 0. Its length is set at
+    /// creation and never changes, so the units do not move while the pool
+    /// lives. It is written and read only through `as_mut_ptr` and
+    /// `as_ptr`, which do not claim the whole allocation, so storing a new
+    /// string leaves the pointers already handed out valid.
+    units: Vec<TChar>,
+    /// Units of `units` in use.
+    len: usize,
+    /// Set when a string did not fit since the last clear.
+    overflowed: bool,
+}
+
+impl Utf16Pool {
+    /// Create an empty pool of `units` units. Allocates; not for the audio
+    /// thread.
+    pub fn new(units: usize) -> Self {
+        Self {
+            units: vec![0; units],
+            len: 0,
+            overflowed: false,
+        }
+    }
+
+    /// Remove every string. The pointers handed out before are no longer
+    /// valid.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.overflowed = false;
+    }
+
+    /// Returns true if a string did not fit since the last clear.
+    pub fn has_overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Copy `text` into the pool as UTF-16 followed by a 0. Returns a
+    /// pointer to the copy and its length in units, without the 0.
+    ///
+    /// Returns `None` and notes the overflow when the string does not fit
+    /// into what is left of the pool; a string is never cut.
+    pub fn store(&mut self, text: &str) -> Option<(*const TChar, u32)> {
+        let len = text.encode_utf16().count();
+        let start = self.len;
+        // The string and its 0.
+        if len >= self.units.len() - start {
+            self.overflowed = true;
+            return None;
+        }
+        let base = self.units.as_mut_ptr();
+        // SAFETY: `start + len + 1` is within the pool. The range lies past
+        // every stored string, so no pointer handed out covers it.
+        unsafe {
+            for (index, unit) in text.encode_utf16().enumerate() {
+                base.add(start + index).write(unit as TChar);
+            }
+            base.add(start + len).write(0);
+        }
+        self.len = start + len + 1;
+        // SAFETY: `start` is within the pool, which never moves.
+        Some((unsafe { self.units.as_ptr().add(start) }, len as u32))
+    }
+}

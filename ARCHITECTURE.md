@@ -398,11 +398,11 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 `processor.rs` and `render.rs` are separate because the AU render callback crosses the FFI boundary from Objective-C: `render.rs` holds the `RenderBlock` that `beamer_au_render()` calls on the audio thread and that splits the buffer, while `processor.rs` holds the type-erased `AuProcessor<P>` wrapper (lifecycle, parameters and the per-sub-block `process()` call) that both the render block and the bridge functions use.
 
 **MIDI**: AU MIDI events to `beamer-core::MidiEvent`
-- Input: MIDI 1.0 channel messages, from legacy MIDI events and from UMP event lists (MIDI 1.0 channel voice packets). No MIDI 2.0 input yet
-- SysEx input: AUv3 SysEx render events; AUv2 `MusicDeviceSysEx` calls go through a lock-free byte ring in the shim, which render links into the event list as the same events
+- Input: legacy MIDI events and UMP event lists (AUv3 render events, AUv2 `MusicDeviceMIDIEventList`). MIDI 1.0 and 2.0 channel voice messages become events, MIDI 2.0 at full resolution; the protocol the plugin reports is `midi_protocol` in `Config.toml` (1.0 by default)
+- SysEx input: AUv3 SysEx render events; AUv2 `MusicDeviceSysEx` calls go through a lock-free byte ring in the shim, which render links into the event list as the same events; SysEx7 packets from event lists are put together across render calls
 - 1024 event buffer (`MAX_MIDI_EVENTS`, as in VST3)
 - `MidiCcState` tracking for CC/pitch bend queries
-- MIDI output (channel messages and SysEx) is handed to the host during the render call
+- MIDI output (channel messages and SysEx) is handed to the host during the render call as event lists or as MIDI 1.0 bytes through the legacy callback. The AUv3 sends event lists in the host's protocol when the host set one; the AUv2 sends them when the host gave it the event list callback, in the host's protocol or MIDI 1.0 without one
 
 **Parameters**: Push model
 - AUv3: `AUParameterTree` built from `ParameterStore`, with implementor blocks
@@ -446,6 +446,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 - 16+ event types (NoteOn, NoteOff, MIDI CC, PolyPressure, etc.)
 - Supports VST3-specific events (NoteExpression, Chord, Scale)
 - Legacy MIDI CC output for host compatibility
+- Note expression text output goes to the host as UTF-16 copies in a pool allocated with the wrapper (`Utf16Pool`, room for 64 texts of the longest kind per block), valid until the next process call clears it
 
 **Parameters**: Pull model via COM methods
 - `getParameterInfo()` - Host queries parameter metadata
@@ -463,7 +464,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **Platform** | macOS only | macOS; Windows planned (UI backend macOS-only so far) |
 | **API Style** | Hybrid ObjC/Rust via C-ABI | COM (C++ style) |
 | **Language** | ObjC + Rust | Rust + vst3 crate |
-| **MIDI Format** | MIDI 1.0 (legacy events and UMP) | VST3 Event union |
+| **MIDI Format** | MIDI 1.0 and 2.0 (legacy events and UMP event lists) | VST3 Event union |
 | **MIDI Buffer** | 1024 events | 1024 events |
 | **MidiCcState** | ✓ | ✓ |
 | **MIDI Output** | ✓ (with `midi_output`, the default for MIDI effects) | ✓ (with `midi_output`) |
@@ -502,6 +503,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 | `AuxiliaryBuffers<S>` | Stack-allocated nested fixed arrays |
 | `MidiBuffer` | Fixed capacity of 1024 events (`MAX_MIDI_EVENTS`) and a SysEx byte pool allocated with it (`sysex_bytes_per_block`, 16 KiB by default) |
 | `ProcessBufferStorage<S>` | Pre-allocated Vecs with reserved capacity; `clear()` + `push()` never allocate |
+| `Utf16Pool` (VST3) | UTF-16 units for the note expression texts of the MIDI output, allocated with the wrapper; `store()` and `clear()` never allocate |
 
 **Enforcement**:
 - `setupProcessing()` pre-allocates all buffers based on plugin configuration
@@ -537,6 +539,7 @@ This section documents the invariants that Beamer enforces. These are API contra
 **Overflow Handling**:
 - `MidiBuffer::has_overflowed()` flag set when capacity exceeded
 - `MidiBuffer::has_sysex_overflowed()` flag set when a SysEx message did not fit into the pool: it is dropped whole, never cut
+- `Utf16Pool::has_overflowed()` flag set when a note expression text of the VST3 MIDI output did not fit into its pool: it is dropped with its event, never cut
 - The audio thread does not log: it notes an overflow in `ProcessWarnings` with one atomic operation and a host thread logs it when the plugin is prepared again or released
 
 ### Buffer Management Contracts

@@ -31,10 +31,13 @@ pub enum ProcessWarning {
     /// (the host gave overlapping input and output buffers) and was
     /// rendered as silence.
     BlockTooLong = 64,
+    /// More note expression text output in one block than its pool holds
+    /// (VST3).
+    NoteExpressionTextOutputOverflow = 128,
 }
 
 impl ProcessWarning {
-    const ALL: [ProcessWarning; 7] = [
+    const ALL: [ProcessWarning; 8] = [
         ProcessWarning::MidiInputOverflow,
         ProcessWarning::MidiOutputOverflow,
         ProcessWarning::ParameterEventOverflow,
@@ -42,6 +45,7 @@ impl ProcessWarning {
         ProcessWarning::SysExOutputOverflow,
         ProcessWarning::SysExInputDropped,
         ProcessWarning::BlockTooLong,
+        ProcessWarning::NoteExpressionTextOutputOverflow,
     ];
 
     /// What the warning tells a developer.
@@ -67,6 +71,9 @@ impl ProcessWarning {
             }
             ProcessWarning::BlockTooLong => {
                 "a block longer than the host announced had overlapping buffers and was rendered as silence"
+            }
+            ProcessWarning::NoteExpressionTextOutputOverflow => {
+                "note expression text output events were dropped: more text than one block holds"
             }
         }
     }

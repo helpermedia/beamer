@@ -49,7 +49,7 @@ use beamer_core::{WebViewDispatch, WebViewEventQueue};
 use crate::webview::WebViewConfig;
 use crate::factory::ComponentFactory;
 use crate::speakers;
-use crate::util::{copy_wstring, len_wstring};
+use crate::util::{copy_wstring, len_wstring, Utf16Pool};
 
 // VST3 event type constants
 const K_NOTE_ON_EVENT: u16 = 0;
@@ -70,6 +70,11 @@ const LEGACY_CC_PROGRAM_CHANGE: u8 = 130;
 
 // DataEvent type for SysEx
 const DATA_TYPE_MIDI_SYSEX: u32 = 0;
+
+// UTF-16 units the note expression texts of one block of MIDI output take:
+// room for 64 texts of the longest kind, each with its 0. A text takes no
+// more units than its UTF-8 bytes.
+const EXPRESSION_TEXT_UNITS_PER_BLOCK: usize = 64 * (MAX_EXPRESSION_TEXT_SIZE + 1);
 
 // Program change parameter ID (for preset selection, distinct from MIDI CC range)
 const PROGRAM_CHANGE_PARAM_ID: u32 = 0x20000000;
@@ -801,6 +806,10 @@ where
     /// the pool, which stays unchanged until the next process call clears
     /// the buffer.
     midi_output: UnsafeCell<Box<MidiBuffer>>,
+    /// The note expression texts of the MIDI output as the host gets them,
+    /// for a plugin with MIDI output. They stay unchanged until the next
+    /// process call clears the pool.
+    expression_text_output: UnsafeCell<Utf16Pool>,
     /// The parameter points of a process call, for the sub-block loop
     /// (pre-allocated, never grows in `process()`).
     parameter_points: UnsafeCell<Vec<ParameterPoint>>,
@@ -976,6 +985,7 @@ impl<P: Model> Vst3Processor<P> {
             midi_input_carried: UnsafeCell::new(false),
             midi1_translator: UnsafeCell::new(Midi1Translator::new()),
             midi_output: UnsafeCell::new(MidiBuffer::new_boxed(if config.midi_output { config.sysex_bytes_per_block } else { 0 })),
+            expression_text_output: UnsafeCell::new(Utf16Pool::new(if config.midi_output { EXPRESSION_TEXT_UNITS_PER_BLOCK } else { 0 })),
             parameter_points: UnsafeCell::new(Vec::with_capacity(MAX_PARAMETER_POINTS)),
             conversion_buffers: UnsafeCell::new(ConversionBuffers::new()),
             buffer_storage_f32: UnsafeCell::new(ProcessBufferStorage::new()),
@@ -2529,9 +2539,14 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // also when the host passes an event list without an event bus.
         // SAFETY: outputEvents may be null; ComRef::from_raw handles this.
         let output_events = unsafe { ComRef::from_raw(process_data.outputEvents) };
+        // Clearing the text pool ends the texts the host got with the
+        // previous block.
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        let texts = unsafe { &mut *self.expression_text_output.get() };
+        texts.clear();
         if let Some(event_list) = output_events.filter(|_| self.config.midi_output) {
             for index in 0..midi_output.len() {
-                convert_midi_to_vst3(midi_output, index, |mut vst3_event| {
+                convert_midi_to_vst3(midi_output, index, texts, |mut vst3_event| {
                     // SAFETY: event_list is valid ComRef, vst3_event is valid mutable pointer.
                     let _ = unsafe { event_list.addEvent(&mut vst3_event) };
                 });
@@ -2549,6 +2564,10 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         // output of a plugin without MIDI output goes nowhere anyway.
         if midi_output.has_sysex_overflowed() && self.config.midi_output {
             self.process_warnings.note(ProcessWarning::SysExOutputOverflow);
+        }
+        // Note expression text output that did not fit into its pool.
+        if texts.has_overflowed() {
+            self.process_warnings.note(ProcessWarning::NoteExpressionTextOutputOverflow);
         }
 
         if preset_applied {
@@ -3466,61 +3485,24 @@ impl<P: Model> IVst3WrapperMPESupportTrait for Vst3Processor<P> {
 // Helper functions
 // =============================================================================
 
-/// Convert UTF-16 slice to UTF-8, writing into a fixed-size buffer.
+/// Convert UTF-16 to UTF-8, writing into a fixed-size buffer.
 ///
-/// Returns the number of bytes written. Handles BMP characters (most common)
-/// and replaces non-BMP surrogates with replacement character.
+/// Stops at a 0 or before the first character that does not fit, so a text
+/// that is too long is cut after a whole character. An unpaired surrogate
+/// becomes the replacement character. Returns the number of bytes written.
 fn utf16_to_utf8(utf16: &[u16], utf8_buf: &mut [u8]) -> usize {
-    let mut utf8_pos = 0;
-
-    for &code_unit in utf16 {
-        if code_unit == 0 {
-            // Null terminator
+    let units = utf16.iter().copied().take_while(|&unit| unit != 0);
+    let mut len = 0;
+    for decoded in char::decode_utf16(units) {
+        let character = decoded.unwrap_or(char::REPLACEMENT_CHARACTER);
+        let end = len + character.len_utf8();
+        if end > utf8_buf.len() {
             break;
         }
-
-        // Calculate how many UTF-8 bytes this character needs
-        let (bytes_needed, char_value) = if code_unit < 0x80 {
-            // ASCII (1 byte)
-            (1, code_unit as u32)
-        } else if code_unit < 0x800 {
-            // 2-byte UTF-8
-            (2, code_unit as u32)
-        } else if (0xD800..=0xDFFF).contains(&code_unit) {
-            // Surrogate pair (non-BMP) - simplified: use replacement char
-            // Full implementation would need to look ahead for the low surrogate
-            (3, 0xFFFD) // Unicode replacement character
-        } else {
-            // 3-byte UTF-8 (most non-ASCII BMP characters)
-            (3, code_unit as u32)
-        };
-
-        // Check if we have room
-        if utf8_pos + bytes_needed > utf8_buf.len() {
-            break;
-        }
-
-        // Encode to UTF-8
-        match bytes_needed {
-            1 => {
-                utf8_buf[utf8_pos] = char_value as u8;
-            }
-            2 => {
-                utf8_buf[utf8_pos] = (0xC0 | (char_value >> 6)) as u8;
-                utf8_buf[utf8_pos + 1] = (0x80 | (char_value & 0x3F)) as u8;
-            }
-            3 => {
-                utf8_buf[utf8_pos] = (0xE0 | (char_value >> 12)) as u8;
-                utf8_buf[utf8_pos + 1] = (0x80 | ((char_value >> 6) & 0x3F)) as u8;
-                utf8_buf[utf8_pos + 2] = (0x80 | (char_value & 0x3F)) as u8;
-            }
-            _ => unreachable!(),
-        }
-
-        utf8_pos += bytes_needed;
+        character.encode_utf8(&mut utf8_buf[len..end]);
+        len = end;
     }
-
-    utf8_pos
+    len
 }
 
 /// Convert a MIDI CC parameter value to a MidiEvent.
@@ -3826,11 +3808,14 @@ unsafe fn convert_vst3_to_midi(event: &Event) -> Option<MidiEvent<'_>> {
 /// bank select (CC 0 and 32) before it. Values go out as 7 or 14 bits,
 /// rounded as in [`scale`]. A SysEx event points at the framed message in
 /// the output buffer's pool, which stays valid until the next process call
-/// clears the buffer.
+/// clears the buffer. A note expression text event points at a UTF-16 copy
+/// of its text in `texts`, which stays valid until the next process call
+/// clears the pool; a text that does not fit into what is left of it is
+/// dropped with its event.
 ///
-/// Note: ChordInfo, ScaleInfo and NoteExpressionText are primarily input events
-/// (DAW to plugin) and are not output.
-fn convert_midi_to_vst3(output: &MidiBuffer, index: usize, mut add: impl FnMut(Event)) {
+/// ChordInfo and ScaleInfo go from the host to the plugin only and are not
+/// output.
+fn convert_midi_to_vst3(output: &MidiBuffer, index: usize, texts: &mut Utf16Pool, mut add: impl FnMut(Event)) {
     let Some(midi) = output.as_slice().get(index) else {
         return;
     };
@@ -3938,15 +3923,21 @@ fn convert_midi_to_vst3(output: &MidiBuffer, index: usize, mut add: impl FnMut(E
                 add(event);
             }
         }
+        MidiEventKind::NoteExpressionText(expr) => {
+            // Hosts expect the text as UTF-16 followed by a 0.
+            if let Some((text, len)) = texts.store(expr.as_str()) {
+                let mut event = new_event();
+                event.r#type = K_NOTE_EXPRESSION_TEXT_EVENT;
+                event.__field0.noteExpressionText.typeId = expr.expression_type;
+                event.__field0.noteExpressionText.noteId = expr.note_id;
+                event.__field0.noteExpressionText.textLen = len;
+                event.__field0.noteExpressionText.text = text;
+                add(event);
+            }
+        }
         // ChordInfo/ScaleInfo are DAW to plugin only (chord track metadata).
         // Plugins receive these from the DAW but don't generate them.
         MidiEventKind::ChordInfo(_) | MidiEventKind::ScaleInfo(_) => {}
-
-        // TODO: NoteExpressionText output not yet implemented.
-        // Some vocal/granular synths emit phoneme or waveform text data.
-        // Implementation would require a UTF-8 to UTF-16 buffer pool (like SysEx)
-        // to provide stable pointers for the host. Low priority but valid use case.
-        MidiEventKind::NoteExpressionText(_) => {}
     }
 }
 
@@ -3954,10 +3945,11 @@ fn convert_midi_to_vst3(output: &MidiBuffer, index: usize, mut add: impl FnMut(E
 mod tests {
     use super::*;
 
-    /// The VST3 events of the output event at `index`.
+    /// The VST3 events of the output event at `index`, without room for
+    /// note expression texts.
     fn converted(output: &MidiBuffer, index: usize) -> Vec<Event> {
         let mut events = Vec::new();
-        convert_midi_to_vst3(output, index, |event| events.push(event));
+        convert_midi_to_vst3(output, index, &mut Utf16Pool::new(0), |event| events.push(event));
         events
     }
     use beamer_core::config::Category;
@@ -4515,6 +4507,55 @@ mod tests {
     }
 
     #[test]
+    fn test_note_expression_text_passes_through_a_process_call() {
+        let wrapper = Vst3Processor::<CcModel>::new(&MIDI_CONFIG);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+
+        // One text of the longest kind more than the pool holds.
+        let fitting = EXPRESSION_TEXT_UNITS_PER_BLOCK / (MAX_EXPRESSION_TEXT_SIZE + 1);
+        let text: Vec<u16> = "a".repeat(MAX_EXPRESSION_TEXT_SIZE).encode_utf16().chain([0]).collect();
+        let events = (0..=fitting)
+            .map(|index| {
+                // SAFETY: zeroed Event is valid for VST3 Event union type.
+                let mut event: Event = unsafe { std::mem::zeroed() };
+                event.r#type = K_NOTE_EXPRESSION_TEXT_EVENT;
+                event.__field0.noteExpressionText.typeId = beamer_core::note_expression::TEXT;
+                event.__field0.noteExpressionText.noteId = index as i32;
+                event.__field0.noteExpressionText.textLen = MAX_EXPRESSION_TEXT_SIZE as u32;
+                event.__field0.noteExpressionText.text = text.as_ptr();
+                event
+            })
+            .collect();
+        let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(events) });
+        let output = vst3::ComWrapper::new(Events::default());
+        let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let output_list = output.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let no_changes = std::ptr::null_mut();
+        process_with_events(&wrapper, 64, no_changes, no_changes, input_list.as_ptr(), output_list.as_ptr());
+
+        // After the call, the host still reads each text that fit, in
+        // order; the last one is dropped.
+        let sent = output.events.borrow();
+        assert_eq!(sent.len(), fitting);
+        for (index, event) in sent.iter().enumerate() {
+            // SAFETY: The event is a note expression text event.
+            assert_eq!(unsafe { event.__field0.noteExpressionText.noteId }, index as i32);
+            // SAFETY: The text stays valid until the next process call.
+            let (units, terminator) = unsafe { host_text(event) };
+            assert_eq!((&units[..], terminator), (&text[..MAX_EXPRESSION_TEXT_SIZE], 0));
+        }
+        let warnings: Vec<_> = wrapper.process_warnings.take().collect();
+        assert_eq!(warnings, [ProcessWarning::NoteExpressionTextOutputOverflow]);
+    }
+
+    #[test]
     fn test_midi_controllers_need_midi_input() {
         static WITHOUT_INPUT: Config = Config::new("No Input", Category::Effect, "Test", "nocc");
         let wrapper = Vst3Processor::<CcModel>::new(&WITHOUT_INPUT);
@@ -4661,6 +4702,88 @@ mod tests {
         assert_eq!(input.len(), 1);
         assert!(input.has_sysex_overflowed());
         assert_eq!(input.framed_sysex(0), Some(&message[..]));
+    }
+
+    #[test]
+    fn test_host_text_is_cut_after_a_whole_character() {
+        // An unpaired surrogate becomes the replacement character.
+        let mut buf = [0u8; 8];
+        let len = utf16_to_utf8(&[0x61, 0xD800, 0x62, 0], &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len]), Ok("a\u{FFFD}b"));
+        // A surrogate pair of four bytes that does not fit into what is
+        // left is left out whole.
+        let units: Vec<u16> = "abcde🎤".encode_utf16().collect();
+        let len = utf16_to_utf8(&units, &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len]), Ok("abcde"));
+    }
+
+    /// The text a host reads from a note expression text event: `textLen`
+    /// units and the 0 after them.
+    ///
+    /// # Safety
+    ///
+    /// The event must be a note expression text event whose text is valid.
+    unsafe fn host_text(event: &Event) -> (Vec<u16>, u16) {
+        // SAFETY: The caller guarantees a note expression text event.
+        let expr = unsafe { &event.__field0.noteExpressionText };
+        let len = expr.textLen as usize;
+        // SAFETY: The caller guarantees the text, which holds a 0 after its
+        // `textLen` units.
+        unsafe { (std::slice::from_raw_parts(expr.text, len).to_vec(), *expr.text.add(len)) }
+    }
+
+    #[test]
+    fn test_note_expression_text_goes_to_the_host_as_utf16() {
+        let mut output = MidiBuffer::new_boxed(0);
+        output.push(MidiEvent::note_expression_text(3, 41, beamer_core::note_expression::TEXT, "la"));
+        // A character of the BMP and one past it, a surrogate pair.
+        output.push(MidiEvent::note_expression_text(7, 42, beamer_core::note_expression::PHONEME, "ア🎤"));
+        let mut texts = Utf16Pool::new(EXPRESSION_TEXT_UNITS_PER_BLOCK);
+        let mut sent = Vec::new();
+        for index in 0..output.len() {
+            convert_midi_to_vst3(&output, index, &mut texts, |event| sent.push(event));
+        }
+
+        assert_eq!(sent.len(), 2);
+        for (event, plugin_event) in sent.iter().zip(output.as_slice()) {
+            let MidiEventKind::NoteExpressionText(expr) = &plugin_event.event else {
+                panic!("a text event");
+            };
+            assert_eq!(event.r#type, K_NOTE_EXPRESSION_TEXT_EVENT);
+            assert_eq!(event.sampleOffset, plugin_event.sample_offset as i32);
+            // SAFETY: The event is a note expression text event.
+            let host = unsafe { &event.__field0.noteExpressionText };
+            assert_eq!((host.noteId, host.typeId), (expr.note_id, expr.expression_type));
+            // SAFETY: The text is in `texts`, which is not cleared.
+            let (units, terminator) = unsafe { host_text(event) };
+            assert_eq!(units, expr.as_str().encode_utf16().collect::<Vec<_>>());
+            assert_eq!(terminator, 0);
+            // A host that sends the event back gives the plugin the same.
+            // SAFETY: The event and its text are valid for the call.
+            let received = unsafe { convert_vst3_to_midi(event) }.expect("a text event");
+            assert_eq!(&received, plugin_event);
+        }
+    }
+
+    #[test]
+    fn test_note_expression_text_that_does_not_fit_is_dropped() {
+        let mut output = MidiBuffer::new_boxed(0);
+        for text in ["abc", "defgh", "xy"] {
+            output.push(MidiEvent::note_expression_text(0, 1, beamer_core::note_expression::TEXT, text));
+        }
+        // Room for "abc" and "xy" with their 0s: "defgh" is dropped whole,
+        // never cut. The text after it still fits.
+        let mut texts = Utf16Pool::new(7);
+        let mut sent = Vec::new();
+        for index in 0..output.len() {
+            convert_midi_to_vst3(&output, index, &mut texts, |event| sent.push(event));
+        }
+
+        assert!(texts.has_overflowed());
+        // SAFETY: The texts are in `texts`, which is not cleared.
+        let read: Vec<_> = sent.iter().map(|event| unsafe { host_text(event) }).collect();
+        let expected = ["abc", "xy"].map(|text| (text.encode_utf16().collect::<Vec<_>>(), 0));
+        assert_eq!(read, expected);
     }
 
     #[test]

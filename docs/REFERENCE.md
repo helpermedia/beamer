@@ -1888,6 +1888,10 @@ MidiEvent::program_change(offset, channel, program, bank)
 MidiEvent::parameter_number(offset, change)
 MidiEvent::sysex(offset, &payload)
 MidiEvent::note_expression_value(offset, note_id, type_id, value)
+MidiEvent::note_expression_int(offset, note_id, type_id, value)
+// A text or name is cut after the last whole character that fits into
+// MAX_EXPRESSION_TEXT_SIZE, MAX_CHORD_NAME_SIZE or MAX_SCALE_NAME_SIZE bytes.
+MidiEvent::note_expression_text(offset, note_id, type_id, text)
 MidiEvent::chord_info(offset, root, bass_note, mask, name)
 MidiEvent::scale_info(offset, root, mask, name)
 
@@ -2075,6 +2079,9 @@ pub mod note_expression {
     pub const VIBRATO: u32 = 3;
     pub const EXPRESSION: u32 = 4;
     pub const BRIGHTNESS: u32 = 5;
+    // For NoteExpressionText (VST3).
+    pub const TEXT: u32 = 6;
+    pub const PHONEME: u32 = 7;
     pub const CUSTOM_START: u32 = 100000;
 
     // MIDI 2.0 per-note messages without a VST3 type.
@@ -2414,7 +2421,7 @@ let (msb, lsb) = split_14bit_raw(combined);
 | SysEx | 2 | In/Out |
 | PolyPressure | 3 | In/Out |
 | NoteExpressionValue | 4 | In/Out |
-| NoteExpressionText | 5 | In only |
+| NoteExpressionText | 5 | In/Out |
 | ChordInfo | 6 | In only |
 | ScaleInfo | 7 | In only |
 | NoteExpressionInt | 8 | In/Out |
@@ -2423,6 +2430,14 @@ let (msb, lsb) = split_14bit_raw(combined);
 | PitchBend | 65535 (CC 129) | In/Out |
 | ProgramChange | 65535 (CC 130), after CC 0 and 32 for a bank | In/Out |
 | ParameterNumber | 65535 (its CCs, see [RPN and NRPN](#rpn-and-nrpn)) | In (assembled)/Out |
+
+A `NoteExpressionText` goes to the host as a UTF-16 copy of its text, which
+the wrapper keeps in a pool allocated with it until the next process call.
+The pool holds 64 texts of the longest kind (`MAX_EXPRESSION_TEXT_SIZE`
+bytes) per block; a text that does not fit into what is left of it is
+dropped with its event, never cut; the drop is logged as a warning. Audio
+Units have no per-note text message: a plugin gets none from them and one
+it sends is dropped.
 
 ---
 

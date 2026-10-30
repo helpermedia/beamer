@@ -177,8 +177,6 @@
 
 ---
 
----
-
 #### Multi-Bus Router
 **Goal:** Test multiple aux buses with stereo outputs and complex routing
 
