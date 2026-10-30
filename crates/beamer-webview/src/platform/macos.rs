@@ -21,6 +21,7 @@ use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
 use crate::error::{Result, WebViewError};
 use crate::platform::macos_scheme::new_scheme_handler;
+use crate::platform::macos_view::alloc_web_view;
 use crate::WebViewConfig;
 
 /// Injected JavaScript runtime that creates `window.__BEAMER__`.
@@ -132,9 +133,11 @@ impl MacosWebView {
             }
         }
 
+        // The subclass accepts the first click in a window that is not
+        // active (see `macos_view.rs`).
         // SAFETY: frame and wk_config are valid; we are on the main thread.
         let webview = unsafe {
-            WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &wk_config)
+            WKWebView::initWithFrame_configuration(alloc_web_view(mtm), frame, &wk_config)
         };
 
         // Set navigation delegate for load-complete detection.
