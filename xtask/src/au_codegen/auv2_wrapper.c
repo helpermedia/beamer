@@ -164,6 +164,9 @@ typedef struct BeamerAuv2Instance {
     // AudioComponentPlugInInterface MUST be first (ABI requirement)
     AudioComponentPlugInInterface interface;
     AudioComponentInstance componentInstance;
+    // The description the component is registered under, from its
+    // Info.plist. A separate AUv2 build has a code of its own here.
+    AudioComponentDescription componentDescription;
     BeamerAuInstanceHandle rustInstance;
 
     // Audio configuration
@@ -1018,6 +1021,11 @@ static CFStringRef BeamerAuv2CopyDeclaredName(BeamerAuv2Instance* inst, bool isI
 static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
     inst->componentInstance = ci;
+    OSStatus descriptionStatus = AudioComponentGetDescription(
+        AudioComponentInstanceGetComponent(ci), &inst->componentDescription);
+    if (descriptionStatus != noErr) {
+        return descriptionStatus;
+    }
 
     // Ensure Rust factory is registered
     if (!beamer_au_ensure_factory_registered()) {
@@ -1067,11 +1075,10 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     atomic_store_explicit(&inst->processesInPlace, inst->inputElementCount > 0, memory_order_relaxed);
 
     // Prepare MIDI output for a plugin with MIDI output.
-    AudioComponentDescription desc;
-    beamer_au_get_component_description(&desc);
-    inst->isMidiEffect = (desc.componentType == kAudioUnitType_MIDIProcessor);
-    inst->isMultiOutputSource = (desc.componentType == kAudioUnitType_MusicDevice
-        || desc.componentType == kAudioUnitType_Generator) && inst->outputElementCount > 1;
+    OSType componentType = inst->componentDescription.componentType;
+    inst->isMidiEffect = (componentType == kAudioUnitType_MIDIProcessor);
+    inst->isMultiOutputSource = (componentType == kAudioUnitType_MusicDevice
+        || componentType == kAudioUnitType_Generator) && inst->outputElementCount > 1;
     if (beamer_au_produces_midi(inst->rustInstance)) {
         // Room for the channel messages and the SysEx output of a render call.
         UInt32 sysexBytes = beamer_au_get_sysex_output_bytes(inst->rustInstance);
@@ -2106,9 +2113,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
 
-            // Get component description for type/subtype/manufacturer
-            AudioComponentDescription desc;
-            beamer_au_get_component_description(&desc);
+            // The description the component is registered under: a saved
+            // state names the component that saved it.
+            AudioComponentDescription desc = inst->componentDescription;
 
             CFMutableDictionaryRef dict = CFDictionaryCreateMutable(NULL, 0,
                 &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);

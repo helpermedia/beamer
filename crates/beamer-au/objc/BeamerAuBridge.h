@@ -309,15 +309,6 @@ typedef struct {
  */
 bool beamer_au_ensure_factory_registered(void);
 
-/**
- * Fill in an AudioComponentDescription from the registered AU config.
- *
- * This is used by +load to register the AUAudioUnit subclass with the framework.
- *
- * @param desc Pointer to AudioComponentDescription to fill in.
- */
-void beamer_au_get_component_description(AudioComponentDescription* desc);
-
 // =============================================================================
 // MARK: - Instance Lifecycle
 // =============================================================================

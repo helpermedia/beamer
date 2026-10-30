@@ -876,33 +876,6 @@ pub extern "C" fn beamer_au_ensure_factory_registered() -> bool {
     factory::is_registered()
 }
 
-/// Fill in the AudioComponentDescription from the registered AU config.
-///
-/// # Safety
-///
-/// `desc` must be a valid pointer to an AudioComponentDescription struct.
-#[no_mangle]
-pub unsafe extern "C" fn beamer_au_get_component_description(desc: *mut u32) {
-    if desc.is_null() {
-        return;
-    }
-    let config = match factory::plugin_config() {
-        Some(c) => c,
-        None => return,
-    };
-    // AudioComponentDescription layout: type, subtype, manufacturer, flags, mask
-    // SAFETY: desc was validated non-null above. Caller guarantees desc points to
-    // a valid AudioComponentDescription struct with at least 5 u32 fields.
-    // The pointer arithmetic accesses consecutive fields in the struct.
-    unsafe {
-        *desc.add(0) = config.au_component_type();
-        *desc.add(1) = u32::from_be_bytes(config.subtype.0);
-        *desc.add(2) = u32::from_be_bytes(config.manufacturer.0);
-        *desc.add(3) = 0; // componentFlags
-        *desc.add(4) = 0; // componentFlagsMask
-    }
-}
-
 // =============================================================================
 // Instance Lifecycle
 // =============================================================================
