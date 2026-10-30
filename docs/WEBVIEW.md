@@ -86,6 +86,7 @@ interface BeamerParamInfo {
   max: number;
   units: string;
   steps: number;
+  valueTexts: string[];
 }
 
 interface BeamerParams {
@@ -436,10 +437,10 @@ When the WebView finishes loading its initial page, the format wrapper injects t
 window.__BEAMER__._onInit([
   {"id":0,"stringId":"gain","name":"Gain","min":-60.0,"max":12.0,
    "defaultValue":0.8333,"value":0.8333,"plainValue":0.0,"displayText":"0.0",
-   "format":"db","units":"dB","steps":0},
+   "format":"db","units":"dB","steps":0,"valueTexts":[]},
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
    "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
-   "format":"pan","units":"","steps":0}
+   "format":"pan","units":"","steps":0,"valueTexts":[]}
 ], {"pluginFormat":"vst3","state":{"pan_law":"constant_power"}})
 ```
 
@@ -461,6 +462,7 @@ Each entry corresponds to a `ParamInitEntry`:
 | `format` | `string` | Formatter kind as reported by the parameter. Float and integer parameters report the kind of their formatter: `float` (the default), `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio` or `semitones`. Boolean parameters report `boolean` and enum parameters `enum` |
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
+| `valueTexts` | `string[]` | The display text of each value of a discrete parameter, from the lowest up: the choices of an enum parameter, `Off` and `On` for a boolean one. Value `i` has the normalized value `i / steps`. Empty for a continuous parameter and for one with more than 128 values |
 
 The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `params.get()` and `state.get()`.
 

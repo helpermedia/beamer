@@ -11,6 +11,8 @@ interface BeamerParamInfo {
   max: number;
   units: string;
   steps: number;
+  /** The display text of each value of a discrete parameter, from the lowest up. Empty for a continuous one and above 128 values. */
+  valueTexts: string[];
 }
 
 interface BeamerParams {

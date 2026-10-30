@@ -256,6 +256,7 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
                 format: store.formatter_kind(info.id),
                 units: info.units,
                 steps: info.step_count,
+                value_texts: value_texts(store, info.id, info.step_count),
             })
         })
         .collect();
@@ -277,4 +278,22 @@ struct ParamInitEntry<'a> {
     format: &'static str,
     units: &'static str,
     steps: i32,
+    value_texts: Vec<String>,
+}
+
+/// The most values a parameter can have for the init dump to list their
+/// texts: enough for a MIDI note or controller number.
+const MAX_VALUE_TEXTS: i32 = 128;
+
+/// The display text of each value of a discrete parameter, from the lowest
+/// up, so that a web UI can label every choice of an enum. Empty for a
+/// continuous parameter and for one with more than [`MAX_VALUE_TEXTS`]
+/// values.
+fn value_texts(store: &dyn ParameterStore, id: ParameterId, steps: i32) -> Vec<String> {
+    if steps <= 0 || steps >= MAX_VALUE_TEXTS {
+        return Vec::new();
+    }
+    (0..=steps)
+        .map(|step| store.normalized_to_string(id, f64::from(step) / f64::from(steps)))
+        .collect()
 }
