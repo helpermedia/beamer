@@ -1102,9 +1102,17 @@ static void beamer_auv3_on_loaded(void* context) {
     AUMIDIOutputEventBlock midiOutput = self.MIDIOutputEventBlock;
     AUMIDIEventListBlock midiOutputList = nil;
     MIDIProtocolID hostProtocol = 0;
-    if (@available(macOS 12.0, *)) {
+    // Both properties came with macOS 12. A check by selector, not
+    // `@available`: that calls `__isPlatformVersionAtLeast`, which Rust's
+    // standard library provides for linked C code but drops under LTO (the
+    // release profile).
+    if ([self respondsToSelector:@selector(MIDIOutputEventListBlock)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
         midiOutputList = self.MIDIOutputEventListBlock;
         hostProtocol = self.hostMIDIProtocol;
+#pragma clang diagnostic pop
     }
 
     os_unfair_lock_lock(&_hostBlocksLock);
