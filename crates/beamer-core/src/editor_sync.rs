@@ -17,6 +17,11 @@
 //! least as new as the generation it notes. A change in between is sent
 //! again in the next frame with the same value (which the runtime
 //! ignores) and is never lost.
+//!
+//! The sync also notes the gestures the web UI began and did not end. A
+//! page that goes away during a drag or a scroll never sends the end, so
+//! the wrapper ends them in the host when the editor closes or the page
+//! loads again.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -51,6 +56,9 @@ pub struct EditorSync {
     state_sum: Option<u64>,
     /// Whether a large `State` value was reported already.
     reported_large: bool,
+    /// The gestures the web UI began and did not end yet: a parameter for
+    /// each begin that waits for its end.
+    open_gestures: Vec<ParameterId>,
 }
 
 /// A `State` value above this size is reported once: it is serialized and
@@ -77,6 +85,7 @@ impl EditorSync {
             state_generations: HashMap::new(),
             state_sum: None,
             reported_large: false,
+            open_gestures: Vec::new(),
         }
     }
 
@@ -178,6 +187,27 @@ impl EditorSync {
         write_parameter(&mut script, parameters, id, value);
         script.push_str("});");
         script
+    }
+
+    /// The web UI began a gesture on a parameter and the wrapper told the
+    /// host.
+    pub fn gesture_began(&mut self, id: ParameterId) {
+        self.open_gestures.push(id);
+    }
+
+    /// The web UI ended a gesture on a parameter.
+    pub fn gesture_ended(&mut self, id: ParameterId) {
+        if let Some(index) = self.open_gestures.iter().rposition(|&open| open == id) {
+            self.open_gestures.remove(index);
+        }
+    }
+
+    /// Take one gesture the web UI began and did not end: the parameter
+    /// whose end the host still waits for. The wrapper ends each one in the
+    /// host when the page goes away, as the editor closes or the page loads
+    /// again. `None` when no gesture is open.
+    pub fn take_open_gesture(&mut self) -> Option<ParameterId> {
+        self.open_gestures.pop()
     }
 }
 
@@ -440,6 +470,28 @@ mod tests {
             Some("window.__BEAMER__._onParams({20:[1.0,null,\"1\"]});")
         );
         assert_eq!(sync.frame_script(), None);
+    }
+
+    #[test]
+    fn test_gestures_without_an_end_are_taken_once() {
+        let (_, mut sync) = sync();
+        assert_eq!(sync.take_open_gesture(), None);
+
+        // Two begins on one parameter wait for two ends.
+        sync.gesture_began(10);
+        sync.gesture_began(20);
+        sync.gesture_began(10);
+        sync.gesture_ended(10);
+        // An end without a begin changes nothing.
+        sync.gesture_ended(30);
+
+        let mut open = Vec::new();
+        while let Some(id) = sync.take_open_gesture() {
+            open.push(id);
+        }
+        open.sort_unstable();
+        assert_eq!(open, [10, 20]);
+        assert_eq!(sync.take_open_gesture(), None);
     }
 
     #[test]

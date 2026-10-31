@@ -41,7 +41,17 @@
 - (void)_startSyncTimer;
 - (void)_sendFrame;
 - (void)_connectWrapper:({{WRAPPER_CLASS}}*)wrapper;
+- (void)_endOpenGestures;
 @end
+
+/// Tell the host that a gesture on a parameter began (touch) or ended
+/// (release).
+static void beamer_auv3_ext_notify_gesture(AUParameterTree* tree, uint32_t paramId, AUParameterAutomationEventType type) {
+    AUParameter* param = [tree parameterWithAddress:(AUParameterAddress)paramId];
+    if (param) {
+        [param setValue:param.value originator:nil atHostTime:0 eventType:type];
+    }
+}
 
 // =============================================================================
 // MARK: - WebView IPC Callbacks
@@ -80,16 +90,13 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
         beamer_au_ipc_handle_state_set(ext->_sync, ext->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeTouch];
-        }
+        beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+        // The editor ends it if the page goes away first.
+        beamer_au_editor_sync_gesture_began(ext->_sync, paramId);
     } else if ([type isEqualToString:@"param:end"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeRelease];
-        }
+        beamer_au_editor_sync_gesture_ended(ext->_sync, paramId);
+        beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
     } else if ([type isEqualToString:@"invoke"]) {
         if (!beamer_au_ipc_handle_builtin_invoke(instance, ext->_webviewHandle, msg)) {
             beamer_au_ipc_handle_invoke(instance, ext->_webviewHandle, msg);
@@ -102,6 +109,9 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
 static void beamer_auv3_ext_on_loaded(void* context) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
     ext->_webviewLoaded = YES;
+    // A page that loads again replaces one that may have left a gesture
+    // open.
+    [ext _endOpenGestures];
 
     // If the wrapper is already available, send the parameter init dump
     // and start the sync timer. Otherwise -_connectWrapper: does it when
@@ -185,7 +195,9 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     // The editor sync opens with the first init dump of a WebView or of a
     // new audio unit, so that the values the page receives and the ones the
     // sync counts as sent match. The first frame sends every parameter.
-    // Events the plugin emits from now on are kept for this editor.
+    // Events the plugin emits from now on are kept for this editor. The
+    // gestures open on a previous audio unit end with it: the host let it
+    // go.
     if (!_sync || _syncWrapper != (__bridge const void*)_wrapper) {
         beamer_au_ipc_close_sync(&_sync);
         _sync = beamer_au_editor_sync_open([_wrapper rustInstance]);
@@ -221,11 +233,23 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     }
 }
 
+// End in the host the gestures the page left open: it goes away, so their
+// ends will not come. Only gestures on the audio unit of the editor sync
+// are open.
+- (void)_endOpenGestures {
+    if (_syncWrapper != (__bridge const void*)_wrapper) return;
+    AUParameterTree* tree = _wrapper.parameterTree;
+    beamer_au_ipc_end_open_gestures(_sync, ^(uint32_t paramId) {
+        beamer_auv3_ext_notify_gesture(tree, paramId, AUParameterAutomationEventTypeRelease);
+    });
+}
+
 - (void)viewDidDisappear {
     [super viewDidDisappear];
 
     [_syncTimer invalidate];
     _syncTimer = nil;
+    [self _endOpenGestures];
     beamer_au_ipc_close_sync(&_sync);
     _webviewLoaded = NO;
 
@@ -239,6 +263,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     // Safety net in case -viewDidDisappear was not called
     [_syncTimer invalidate];
     _syncTimer = nil;
+    [self _endOpenGestures];
     beamer_au_ipc_close_sync(&_sync);
 
     if (_webviewHandle != NULL) {

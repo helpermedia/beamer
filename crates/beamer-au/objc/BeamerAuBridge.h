@@ -1303,6 +1303,42 @@ char* _Nullable beamer_au_editor_sync_message(BeamerAuEditorSyncHandle _Nullable
                                               size_t json_len);
 
 /**
+ * The web UI began a gesture on a parameter and the editor told the host.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
+ * @param param_id Parameter ID.
+ */
+void beamer_au_editor_sync_gesture_began(BeamerAuEditorSyncHandle _Nullable sync,
+                                         uint32_t param_id);
+
+/**
+ * The web UI ended a gesture on a parameter.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
+ * @param param_id Parameter ID.
+ */
+void beamer_au_editor_sync_gesture_ended(BeamerAuEditorSyncHandle _Nullable sync,
+                                         uint32_t param_id);
+
+/**
+ * Take one gesture the web UI began and did not end. The editor ends each
+ * one in the host when the page goes away, as the editor closes or the
+ * page loads again.
+ *
+ * Thread Safety: Main thread.
+ *
+ * @param sync         Handle from beamer_au_editor_sync_open, or NULL.
+ * @param out_param_id Receives the parameter whose end the host waits for.
+ * @return true if a gesture was taken, false when none is open.
+ */
+bool beamer_au_editor_sync_take_open_gesture(BeamerAuEditorSyncHandle _Nullable sync,
+                                             uint32_t* _Nonnull out_param_id);
+
+/**
  * The editor was closed: stop keeping events for it and free the handle.
  *
  * Thread Safety: Main thread.

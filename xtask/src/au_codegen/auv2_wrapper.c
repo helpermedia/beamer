@@ -4003,6 +4003,24 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 // MARK: - AUv2 WebView IPC Callbacks
 // =============================================================================
 
+/// Tell the host that a gesture on a parameter began or ended.
+static void beamer_auv2_notify_gesture(AudioUnit audioUnit, uint32_t paramId, AudioUnitEventType type) {
+    AudioUnitEvent event;
+    memset(&event, 0, sizeof(event));
+    event.mEventType = type;
+    event.mArgument.mParameter.mAudioUnit = audioUnit;
+    event.mArgument.mParameter.mParameterID = paramId;
+    event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
+    AUEventListenerNotify(NULL, NULL, &event);
+}
+
+/// End in the host the gestures the page left open.
+static void beamer_auv2_end_open_gestures(BeamerAuEditorSyncHandle sync, AudioUnit audioUnit) {
+    beamer_au_ipc_end_open_gestures(sync, ^(uint32_t paramId) {
+        beamer_auv2_notify_gesture(audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
+    });
+}
+
 static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t len) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
     NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
@@ -4027,22 +4045,13 @@ static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t le
         beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AudioUnitEvent event;
-        memset(&event, 0, sizeof(event));
-        event.mEventType = kAudioUnitEvent_BeginParameterChangeGesture;
-        event.mArgument.mParameter.mAudioUnit = self->_audioUnit;
-        event.mArgument.mParameter.mParameterID = paramId;
-        event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
-        AUEventListenerNotify(NULL, NULL, &event);
+        beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
+        // The editor ends it if the page goes away first.
+        beamer_au_editor_sync_gesture_began(self->_sync, paramId);
     } else if ([type isEqualToString:@"param:end"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AudioUnitEvent event;
-        memset(&event, 0, sizeof(event));
-        event.mEventType = kAudioUnitEvent_EndParameterChangeGesture;
-        event.mArgument.mParameter.mAudioUnit = self->_audioUnit;
-        event.mArgument.mParameter.mParameterID = paramId;
-        event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
-        AUEventListenerNotify(NULL, NULL, &event);
+        beamer_au_editor_sync_gesture_ended(self->_sync, paramId);
+        beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
     } else if ([type isEqualToString:@"invoke"]) {
         if (!beamer_au_ipc_handle_builtin_invoke(self->_rustInstance, self->_webviewHandle, msg)) {
             beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
@@ -4054,6 +4063,9 @@ static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv2_on_loaded(void* context) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
+    // A page that loads again replaces one that may have left a gesture
+    // open.
+    beamer_auv2_end_open_gestures(self->_sync, self->_audioUnit);
     beamer_au_ipc_send_init_dump(self->_sync, self->_webviewHandle, "auv2");
 }
 
@@ -4091,6 +4103,7 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
+    beamer_auv2_end_open_gestures(_sync, _audioUnit);
     beamer_au_ipc_close_sync(&_sync);
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_webviewHandle != NULL) {

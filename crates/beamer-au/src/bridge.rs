@@ -3592,6 +3592,84 @@ pub extern "C" fn beamer_au_editor_sync_message(
     result.ok().flatten().unwrap_or(ptr::null_mut())
 }
 
+/// The web UI began a gesture on a parameter and the editor told the host.
+///
+/// # Safety
+///
+/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
+///   was not closed yet, or null (in which case this function does nothing)
+/// - Only the main thread of the editor calls it
+#[no_mangle]
+pub extern "C" fn beamer_au_editor_sync_gesture_began(sync: *mut BeamerAuEditorSync, param_id: u32) {
+    if sync.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: sync validated non-null above. The caller guarantees a valid
+        // pointer that only its main thread uses.
+        let sync = unsafe { &mut *sync };
+        sync.0.gesture_began(param_id);
+    }));
+}
+
+/// The web UI ended a gesture on a parameter.
+///
+/// # Safety
+///
+/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
+///   was not closed yet, or null (in which case this function does nothing)
+/// - Only the main thread of the editor calls it
+#[no_mangle]
+pub extern "C" fn beamer_au_editor_sync_gesture_ended(sync: *mut BeamerAuEditorSync, param_id: u32) {
+    if sync.is_null() {
+        return;
+    }
+
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: sync validated non-null above. The caller guarantees a valid
+        // pointer that only its main thread uses.
+        let sync = unsafe { &mut *sync };
+        sync.0.gesture_ended(param_id);
+    }));
+}
+
+/// Take one gesture the web UI began and did not end, for the editor to end
+/// in the host when the page goes away: as the editor closes or the page
+/// loads again.
+///
+/// Writes the parameter to `out_param_id` and returns true, or returns
+/// false when no gesture is open.
+///
+/// # Safety
+///
+/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
+///   was not closed yet, or null (in which case this function returns false)
+/// - `out_param_id` must be a valid pointer to writable memory
+/// - Only the main thread of the editor calls it
+#[no_mangle]
+pub extern "C" fn beamer_au_editor_sync_take_open_gesture(
+    sync: *mut BeamerAuEditorSync,
+    out_param_id: *mut u32,
+) -> bool {
+    if sync.is_null() || out_param_id.is_null() {
+        return false;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: sync validated non-null above. The caller guarantees a valid
+        // pointer that only its main thread uses.
+        let sync = unsafe { &mut *sync };
+        let id = sync.0.take_open_gesture()?;
+        // SAFETY: out_param_id validated non-null above. Caller guarantees it
+        // is writable.
+        unsafe { *out_param_id = id };
+        Some(())
+    }));
+
+    matches!(result, Ok(Some(())))
+}
+
 /// The editor was closed: stop keeping events for it and free the handle.
 ///
 /// # Safety

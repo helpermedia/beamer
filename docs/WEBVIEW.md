@@ -498,7 +498,7 @@ When JavaScript calls `params.set(stringId, value)`:
 4. The native callback calls `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
 5. The native side sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
 
-`beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs.
+`beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs. The native side notes each gesture that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), the native side ends the gesture in the host itself, so the host never keeps a parameter touched.
 
 When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The native side decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 

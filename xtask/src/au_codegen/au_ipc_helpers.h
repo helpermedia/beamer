@@ -193,6 +193,20 @@ static void beamer_au_ipc_send_frame(BeamerAuEditorSyncHandle sync, void* webvie
     beamer_au_ipc_eval_script(webviewHandle, beamer_au_editor_sync_frame_script(sync));
 }
 
+/// End in the host the gestures the web UI began and did not end: its page
+/// goes away, as the editor closes or the page loads again, so their ends
+/// will not come. `end` ends the gesture on one parameter in the host.
+static void beamer_au_ipc_end_open_gestures(
+    BeamerAuEditorSyncHandle sync,
+    void (^end)(uint32_t paramId)
+) {
+    if (!sync) return;
+    uint32_t paramId;
+    while (beamer_au_editor_sync_take_open_gesture(sync, &paramId)) {
+        end(paramId);
+    }
+}
+
 /// Stop keeping an editor that goes away in step and clear its handle.
 static void beamer_au_ipc_close_sync(BeamerAuEditorSyncHandle* sync) {
     if (*sync == NULL) return;

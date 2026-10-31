@@ -49,6 +49,27 @@ impl IpcContext {
         self.sync = Some(EditorSync::open(Arc::clone(&self.model), self.events.clone()));
     }
 
+    /// Stop keeping the web UI in step: the view no longer shows an editor.
+    fn close_sync(&mut self) {
+        self.end_open_gestures();
+        self.sync = None;
+    }
+
+    /// End in the host the gestures the page began and did not end: the
+    /// page goes away, so their ends will not come.
+    fn end_open_gestures(&mut self) {
+        let Some(sync) = self.sync.as_mut() else { return };
+        let handler = self.handler.get();
+        while let Some(id) = sync.take_open_gesture() {
+            if !handler.is_null() {
+                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+                unsafe {
+                    ((*(*handler).vtbl).endEdit)(handler, id);
+                }
+            }
+        }
+    }
+
     /// Tell the host that the plugin state changed when a `State` field was
     /// set since the last check: by the web UI or by any other thread.
     /// Parameters do not count here: the host learns about their changes
@@ -204,10 +225,17 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
                 unsafe {
                     ((*(*handler).vtbl).beginEdit)(handler, id);
                 }
+                // The view ends it if the page goes away first.
+                if let Some(sync) = ipc.sync.as_mut() {
+                    sync.gesture_began(id);
+                }
             }
         }
         "param:end" => {
             let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
+            if let Some(sync) = ipc.sync.as_mut() {
+                sync.gesture_ended(id);
+            }
             let handler = ipc.handler.get();
             if !handler.is_null() {
                 // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
@@ -273,6 +301,9 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
     let ipc = unsafe { &mut *(context as *mut IpcContext) };
+    // A page that loads again replaces one that may have left a gesture
+    // open.
+    ipc.end_open_gestures();
     let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) else {
         return;
     };
@@ -468,8 +499,9 @@ impl IPlugViewTrait for WebViewPlugView {
         // Clear webview pointer before detaching.
         ipc.webview = std::ptr::null();
 
-        // Without an editor, events are dropped.
-        ipc.sync = None;
+        // Without an editor, events are dropped and gestures the page left
+        // open end.
+        ipc.close_sync();
 
         // Dropping the platform WebView detaches it from the parent.
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
@@ -603,8 +635,8 @@ impl Drop for WebViewPlugView {
         // Clear webview pointer to prevent stale dereferences.
         ipc.webview = std::ptr::null();
 
-        // Close the event queue if removed() did not.
-        ipc.sync = None;
+        // Close the event queue and end open gestures if removed() did not.
+        ipc.close_sync();
 
         // Detach the WebView while the IPC context it calls into is alive.
         self.platform.get_mut().take();
@@ -736,8 +768,8 @@ mod tests {
         );
 
         // removed(), then the drop of the view.
-        ipc.sync = None;
-        ipc.sync = None;
+        ipc.close_sync();
+        ipc.close_sync();
         events.emit("closed", &3);
         assert_eq!(frame(&mut ipc), None);
 
@@ -750,18 +782,21 @@ mod tests {
         assert!(frame(&mut second).is_some());
     }
 
-    /// A component handler of a host that counts the calls of setDirty.
+    /// A component handler of a host that counts the calls of setDirty and
+    /// notes the gestures.
     #[derive(Default)]
-    struct DirtyRecorder {
+    struct HostRecorder {
         dirty: std::sync::atomic::AtomicUsize,
+        gestures: std::sync::Mutex<Vec<String>>,
     }
 
-    impl Class for DirtyRecorder {
+    impl Class for HostRecorder {
         type Interfaces = (IComponentHandler, IComponentHandler2);
     }
 
-    impl vst3::Steinberg::Vst::IComponentHandlerTrait for DirtyRecorder {
-        unsafe fn beginEdit(&self, _id: vst3::Steinberg::Vst::ParamID) -> tresult {
+    impl vst3::Steinberg::Vst::IComponentHandlerTrait for HostRecorder {
+        unsafe fn beginEdit(&self, id: vst3::Steinberg::Vst::ParamID) -> tresult {
+            self.gestures.lock().unwrap().push(format!("begin {id}"));
             kResultOk
         }
 
@@ -773,7 +808,8 @@ mod tests {
             kResultOk
         }
 
-        unsafe fn endEdit(&self, _id: vst3::Steinberg::Vst::ParamID) -> tresult {
+        unsafe fn endEdit(&self, id: vst3::Steinberg::Vst::ParamID) -> tresult {
+            self.gestures.lock().unwrap().push(format!("end {id}"));
             kResultOk
         }
 
@@ -782,7 +818,7 @@ mod tests {
         }
     }
 
-    impl IComponentHandler2Trait for DirtyRecorder {
+    impl IComponentHandler2Trait for HostRecorder {
         unsafe fn setDirty(&self, state: TBool) -> tresult {
             if state != 0 {
                 self.dirty.fetch_add(1, Ordering::Relaxed);
@@ -834,7 +870,7 @@ mod tests {
     #[test]
     fn test_view_tells_the_host_when_the_state_changed() {
         let model = Arc::new(OneState::default());
-        let host = vst3::ComWrapper::new(DirtyRecorder::default());
+        let host = vst3::ComWrapper::new(HostRecorder::default());
         let handler = host
             .as_com_ref::<IComponentHandler>()
             .expect("the recorder is an IComponentHandler")
@@ -868,6 +904,46 @@ mod tests {
         known.store(beamer_core::Saved::state_generation(&*model), Ordering::Relaxed);
         ipc.report_state_change();
         assert_eq!(dirty(), 1);
+    }
+
+    /// Send a message of the page to a view.
+    fn message(ipc: &mut IpcContext, json: &str) {
+        // SAFETY: the context is a valid IpcContext and the bytes are valid
+        // for their length.
+        unsafe { on_message(ipc as *mut IpcContext as *mut c_void, json.as_ptr(), json.len()) };
+    }
+
+    #[test]
+    fn test_view_ends_the_gestures_the_page_left_open() {
+        let host = vst3::ComWrapper::new(HostRecorder::default());
+        let handler = host
+            .as_com_ref::<IComponentHandler>()
+            .expect("the recorder is an IComponentHandler")
+            .as_ptr();
+        let mut ipc = context(None);
+        // SAFETY: handler is a valid COM pointer and the test is one thread.
+        unsafe { ipc.handler.set(handler) };
+        let gestures = || std::mem::take(&mut *host.gestures.lock().unwrap());
+
+        // The editor closes during a drag of parameter 2.
+        ipc.open_sync();
+        message(&mut ipc, r#"{"type":"param:begin","id":1}"#);
+        message(&mut ipc, r#"{"type":"param:begin","id":2}"#);
+        message(&mut ipc, r#"{"type":"param:end","id":1}"#);
+        ipc.close_sync();
+        assert_eq!(gestures(), ["begin 1", "begin 2", "end 1", "end 2"]);
+        // The drop of the view after removed() ends nothing again.
+        ipc.close_sync();
+        assert!(gestures().is_empty());
+
+        // The page loads again during a scroll.
+        ipc.open_sync();
+        message(&mut ipc, r#"{"type":"param:begin","id":3}"#);
+        // SAFETY: the context is a valid IpcContext.
+        unsafe { on_loaded(&mut ipc as *mut IpcContext as *mut c_void) };
+        assert_eq!(gestures(), ["begin 3", "end 3"]);
+        ipc.close_sync();
+        assert!(gestures().is_empty());
     }
 
     #[test]

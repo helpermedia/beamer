@@ -452,6 +452,7 @@ typedef struct {
 - (void)_editorHidden:(NSView*)view;
 - (void)_editorResized:(NSView*)view;
 - (void)_editorGone:(const void*)view;
+- (void)_endOpenGestures;
 @end
 
 // =============================================================================
@@ -734,6 +735,15 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 // MARK: - WebView IPC Callbacks
 // =============================================================================
 
+/// Tell the host that a gesture on a parameter began (touch) or ended
+/// (release).
+static void beamer_auv3_notify_gesture(AUParameterTree* tree, uint32_t paramId, AUParameterAutomationEventType type) {
+    AUParameter* param = [tree parameterWithAddress:(AUParameterAddress)paramId];
+    if (param) {
+        [param setValue:param.value originator:nil atHostTime:0 eventType:type];
+    }
+}
+
 static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t len) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
     NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
@@ -763,17 +773,17 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
     } else if ([type isEqualToString:@"state:set"]) {
         beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
     } else if ([type isEqualToString:@"param:begin"]) {
+        // A WebView that -_editorGone: retired can still deliver a begin,
+        // which no end would follow.
+        if (self->_sync == NULL) return;
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeTouch];
-        }
+        beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+        // The editor ends it if the page goes away first.
+        beamer_au_editor_sync_gesture_began(self->_sync, paramId);
     } else if ([type isEqualToString:@"param:end"]) {
         uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            [param setValue:param.value originator:nil atHostTime:0 eventType:AUParameterAutomationEventTypeRelease];
-        }
+        beamer_au_editor_sync_gesture_ended(self->_sync, paramId);
+        beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
     } else if ([type isEqualToString:@"invoke"]) {
         if (!beamer_au_ipc_handle_builtin_invoke(self->_rustInstance, self->_webviewHandle, msg)) {
             beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
@@ -785,6 +795,9 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv3_on_loaded(void* context) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    // A page that loads again replaces one that may have left a gesture
+    // open.
+    [self _endOpenGestures];
     beamer_au_ipc_send_init_dump(self->_sync, self->_webviewHandle, "auv3");
 }
 
@@ -1954,15 +1967,26 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 // Stop following the plugin and remove the WebView of the editor: the sync
-// timer and the editor sync first, then the WebView.
+// timer and the editor sync first, then the WebView. Gestures the page left
+// open end.
 - (void)_closeEditor {
     [_syncTimer invalidate];
     _syncTimer = nil;
+    [self _endOpenGestures];
     beamer_au_ipc_close_sync(&_sync);
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
         _webviewHandle = NULL;
     }
+}
+
+// End in the host the gestures the page left open: it goes away, so their
+// ends will not come.
+- (void)_endOpenGestures {
+    AUParameterTree* tree = self.parameterTree;
+    beamer_au_ipc_end_open_gestures(_sync, ^(uint32_t paramId) {
+        beamer_auv3_notify_gesture(tree, paramId, AUParameterAutomationEventTypeRelease);
+    });
 }
 
 // The view of the editor entered a window: build the WebView again if
