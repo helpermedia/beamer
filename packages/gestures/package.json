@@ -1,0 +1,40 @@
+{
+  "name": "@helpermedia/beamer-gestures",
+  "version": "0.2.4",
+  "description": "Drag, wheel, key and reset gestures for the controls of a Beamer web UI",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/helpermedia/beamer.git",
+    "directory": "packages/gestures"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "bun test --conditions=source"
+  },
+  "dependencies": {
+    "@helpermedia/beamer-api": "workspace:*"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^21.0.4",
+    "@types/bun": "^1.3.0",
+    "typescript": "^6.0.3"
+  }
+}
