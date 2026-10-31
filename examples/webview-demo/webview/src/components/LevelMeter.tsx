@@ -1,4 +1,4 @@
-import { useBeamerValue } from "../hooks/useBeamerValue";
+import { useSenderValue } from "@helpermedia/beamer-react";
 import { meterPosition } from "../levels";
 
 // What the plugin sends: the held peak of each channel, linear. A level
@@ -10,7 +10,7 @@ interface Levels {
 // The output meter. The plugin sends the level through a value sender, so
 // the runtime holds the newest one and the meter reads it.
 export default function LevelMeter() {
-  const levels = useBeamerValue<Levels>("levels");
+  const levels = useSenderValue<Levels>("levels");
   // Zero until the value is an array, one bar per channel.
   const peak = levels?.peak;
   const peaks = (Array.isArray(peak) ? peak : [0, 0]).map((value) => Number(value) || 0);

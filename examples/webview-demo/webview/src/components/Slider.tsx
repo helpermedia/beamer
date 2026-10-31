@@ -1,5 +1,6 @@
 import { useRef, useCallback, useState } from "react";
-import { useBeamerControl } from "../hooks/useBeamerControl";
+import { useGestures, useParam } from "@helpermedia/beamer-react";
+import type { DragMode } from "@helpermedia/beamer-gestures";
 
 interface SliderProps {
   type?: "circular" | "horizontal" | "vertical";
@@ -14,16 +15,16 @@ const ARC_START = (5 / 4) * Math.PI;
 // 270 degrees total.
 const ARC_SWEEP = (3 / 2) * Math.PI;
 
+// The same arc for the gestures, which count degrees clockwise on screen
+// from the right: 135 and 270.
+const ARC_START_DEGREES = 360 - (ARC_START * 180) / Math.PI;
+const ARC_SWEEP_DEGREES = (ARC_SWEEP * 180) / Math.PI;
+
 const CX = 32;
 const CY = 32;
 const R = 26;
 
-const SENSITIVITY = 200;
-const FINE_SENSITIVITY = 800;
-const SCROLL_STEP = 0.01;
-const FINE_SCROLL_STEP = 0.002;
-
-// Hit radius for grabbing the handle (larger than the visual dot).
+// How close to the handle a press grabs it, larger than the visual dot.
 const HANDLE_HIT_RADIUS = 8;
 
 function polarToCartesian(angle: number): { x: number; y: number } {
@@ -31,24 +32,6 @@ function polarToCartesian(angle: number): { x: number; y: number } {
     x: CX + R * Math.cos(angle),
     y: CY - R * Math.sin(angle),
   };
-}
-
-// Convert SVG-local (x, y) to a normalized value [0, 1] along the arc.
-function svgPointToValue(x: number, y: number): number {
-  // atan2 with flipped Y to match SVG coordinate system.
-  const angle = Math.atan2(CY - y, x - CX);
-  // Distance from ARC_START, normalized into [0, 2pi).
-  let delta = ARC_START - angle;
-  if (delta < 0) delta += 2 * Math.PI;
-  if (delta >= 2 * Math.PI) delta -= 2 * Math.PI;
-
-  // Pointer is in the dead zone. Snap to nearest end.
-  if (delta > ARC_SWEEP) {
-    const gapMid = ARC_SWEEP + (2 * Math.PI - ARC_SWEEP) / 2;
-    return delta < gapMid ? 1 : 0;
-  }
-
-  return delta / ARC_SWEEP;
 }
 
 function describeArc(startAngle: number, endAngle: number): string {
@@ -59,50 +42,48 @@ function describeArc(startAngle: number, endAngle: number): string {
   return `M ${start.x} ${start.y} A ${R} ${R} 0 ${largeArc} 1 ${end.x} ${end.y}`;
 }
 
-
 const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 
 // Circular knob slider for plugin parameters.
 //
-// Interaction modes:
-//   - Grab handle: angular tracking (handle follows mouse around the arc).
-//   - Click elsewhere: linear mode (vertical drag adjusts value).
-//   - Shift+drag: fine adjustment.
-//   - Cmd+click: reset to default.
-//   - Scroll wheel: step adjustment (debounced for DAW undo grouping).
-//   - Double-click: type a value directly.
+// Input comes from beamer-gestures:
+//   - Grab handle: the handle follows the pointer around the arc.
+//   - Press elsewhere: drag up and down, finer with shift.
+//   - Scroll wheel, one undo step per scroll.
+//   - Arrow keys once focused. Focus from the keyboard (Tab, or keys after
+//     a click) brightens the track.
+//   - Cmd+click or Ctrl+click: reset to default.
+// Double-click types a value, which the parameter itself parses.
 function Slider({ type = "circular", paramId, size = 64, label, className }: SliderProps) {
-  const { value, displayText, info, beginEdit, set, endEdit, resetToDefault } =
-    useBeamerControl(paramId);
+  const { param, value, displayText, text, info } = useParam(paramId);
 
   const svgRef = useRef<SVGSVGElement>(null);
-  const dragState = useRef<{
-    mode: "linear" | "angular";
-    startY: number;
-    startValue: number;
-    pointerId: number;
-  } | null>(null);
-  // Debounce timer for wheel endEdit, so consecutive ticks form a single DAW undo entry.
-  const wheelTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Whether the handle is held, to light it up.
+  const [grabbed, setGrabbed] = useState(false);
 
-  // Convert client coordinates to SVG-local coordinates.
-  // Handles host-side scaling (e.g. Logic Pro's MATTScaleView).
-  const toSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
+  // The arc when the press lands on the handle, vertical elsewhere. The
+  // test runs in SVG coordinates, which also holds when the host scales
+  // the editor (Logic Pro's zoom).
+  const pickDrag = (event: PointerEvent): DragMode => {
     const svg = svgRef.current;
-    if (!svg) return { x: clientX, y: clientY };
-    const pt = svg.createSVGPoint();
-    pt.x = clientX;
-    pt.y = clientY;
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return { x: clientX, y: clientY };
-    const svgPt = pt.matrixTransform(ctm.inverse());
-    return { x: svgPt.x, y: svgPt.y };
-  }, []);
+    const ctm = svg?.getScreenCTM();
+    if (!svg || !ctm) return "vertical";
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse());
+    const handle = polarToCartesian(ARC_START - param.get() * ARC_SWEEP);
+    const onHandle = Math.hypot(point.x - handle.x, point.y - handle.y) <= HANDLE_HIT_RADIUS;
+    setGrabbed(onHandle);
+    return onHandle ? "arc" : "vertical";
+  };
+  // Double-click is for typing a value, so a modifier click resets.
+  useGestures(svgRef, param, {
+    drag: pickDrag,
+    arcStart: ARC_START_DEGREES,
+    arcSweep: ARC_SWEEP_DEGREES,
+    reset: "modifier-click",
+  });
 
   const displayLabel = label ?? info?.name ?? paramId;
-  const units = info?.units ?? "";
 
-  const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const committing = useRef(false);
@@ -114,103 +95,21 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
     }
   }, []);
 
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (e.metaKey) {
-        resetToDefault();
-        return;
-      }
-      e.preventDefault();
-      (e.target as Element).setPointerCapture(e.pointerId);
-
-      const pt = toSvgPoint(e.clientX, e.clientY);
-      const endAngle = ARC_START - value * ARC_SWEEP;
-      const handlePos = polarToCartesian(endAngle);
-      const dx = pt.x - handlePos.x;
-      const dy = pt.y - handlePos.y;
-      const isOnHandle = dx * dx + dy * dy <= HANDLE_HIT_RADIUS * HANDLE_HIT_RADIUS;
-
-      dragState.current = {
-        mode: isOnHandle ? "angular" : "linear",
-        startY: pt.y,
-        startValue: value,
-        pointerId: e.pointerId,
-      };
-      beginEdit();
-      setDragging(true);
-    },
-    [value, toSvgPoint, beginEdit, resetToDefault],
-  );
-
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragState.current) return;
-      const pt = toSvgPoint(e.clientX, e.clientY);
-
-      if (dragState.current.mode === "angular") {
-        set(svgPointToValue(pt.x, pt.y));
-      } else {
-        const deltaY = dragState.current.startY - pt.y;
-        const sens = e.shiftKey ? FINE_SENSITIVITY : SENSITIVITY;
-        const newValue = dragState.current.startValue + deltaY / sens;
-        set(newValue);
-      }
-    },
-    [toSvgPoint, set],
-  );
-
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragState.current) return;
-      (e.target as Element).releasePointerCapture(e.pointerId);
-      dragState.current = null;
-      endEdit();
-      setDragging(false);
-    },
-    [endEdit],
-  );
-
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      // Undo natural scrolling inversion so physical scroll-up always increases.
-      const rawDeltaY = (e.nativeEvent as any).webkitDirectionInvertedFromDevice ? -e.deltaY : e.deltaY;
-      const step = e.shiftKey ? FINE_SCROLL_STEP : SCROLL_STEP;
-      const delta = rawDeltaY > 0 ? -step : step;
-      if (!wheelTimeout.current) beginEdit();
-      else clearTimeout(wheelTimeout.current);
-      set(value + delta);
-      wheelTimeout.current = setTimeout(() => {
-        wheelTimeout.current = null;
-        endEdit();
-      }, 300);
-    },
-    [value, beginEdit, set, endEdit],
-  );
-
   const handleDoubleClick = useCallback(() => {
     setEditText(displayText);
     setEditing(true);
   }, [displayText]);
 
   const commitEdit = useCallback(async () => {
+    // Enter commits. The blur that follows must not commit again.
     if (committing.current) return;
     committing.current = true;
     setEditing(false);
-    if (!info) { committing.current = false; return; }
-    const text = editText.trim();
-    if (text === "") { committing.current = false; return; }
-    // Use the Rust parser for authoritative normalization. This handles
-    // all format-specific parsing (pan "L 50", dB, percent, etc.) and
-    // non-linear parameter curves correctly.
-    const normalized = await __BEAMER__.invoke(
-      "_beamer/paramTextToNormalized", info.id, text,
-    ) as number | null;
+    // The Rust parser reads the text, so every format works (pan "L 50",
+    // dB, percent) and so does a non-linear parameter curve.
+    await param.typeValue(editText);
     committing.current = false;
-    if (normalized == null) return;
-    beginEdit();
-    set(normalized);
-    endEdit();
-  }, [editText, info, beginEdit, set, endEdit]);
+  }, [editText, param]);
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -257,17 +156,20 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
           viewBox="0 0 64 64"
           width={size}
           height={size}
-          className="cursor-default"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
+          tabIndex={0}
+          role="slider"
+          aria-label={displayLabel}
+          aria-valuemin={0}
+          aria-valuemax={1}
+          aria-valuenow={value}
+          aria-valuetext={text}
+          className="group cursor-default outline-none"
           onDoubleClick={handleDoubleClick}
-          onWheel={handleWheel}
+          onLostPointerCapture={() => setGrabbed(false)}
         >
           <path
             d={trackPath}
-            className="fill-none stroke-gray-700"
+            className="fill-none stroke-gray-700 group-data-[keyboard-focus]:stroke-gray-500"
             strokeWidth={4}
             strokeLinecap="round"
           />
@@ -299,16 +201,14 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
               />
             );
           })()}
-          {/* Invisible hit area for easier handle grabbing. */}
-          <circle cx={dotPos.x} cy={dotPos.y} r={HANDLE_HIT_RADIUS} className="fill-transparent" />
-          <circle cx={dotPos.x} cy={dotPos.y} r={4} className={`pointer-events-none ${dragging && dragState.current?.mode === "angular" ? "fill-cyan-300" : "fill-current"}`} />
+          <circle cx={dotPos.x} cy={dotPos.y} r={4} className={`pointer-events-none ${grabbed ? "fill-cyan-300" : "fill-current"}`} />
         </svg>
 
         <input
           ref={editing ? inputRefCallback : undefined}
           type="text"
           readOnly={!editing}
-          value={editing ? editText : `${displayText} ${units}`.trim()}
+          value={editing ? editText : text}
           onChange={(e) => setEditText(e.target.value)}
           onKeyDown={editing ? handleEditKeyDown : undefined}
           onBlur={editing ? commitEdit : undefined}

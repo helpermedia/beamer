@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { runtime } from "@helpermedia/beamer-api";
+import { useEvent, useReady, useStateField } from "@helpermedia/beamer-react";
 import LevelHistory from "./components/LevelHistory";
 import LevelMeter from "./components/LevelMeter";
 import Slider from "./components/Slider";
-import { useBeamerState } from "./hooks/useBeamerState";
 
 interface PluginInfo {
   name: string;
@@ -19,7 +20,7 @@ function App() {
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
 
   const openAbout = () => {
-    __BEAMER__
+    runtime()
       .invoke("getInfo")
       .then((result) => {
         setPluginInfo(result as PluginInfo);
@@ -32,46 +33,36 @@ function App() {
 
   // The pan law follows the plugin, also when a host changes it behind
   // the UI by loading a project.
-  const panLaw = useBeamerState<PanLaw>("pan_law");
+  const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
 
   const [sampleRate, setSampleRate] = useState<number | null>(null);
-  const [pluginFormat, setPluginFormat] = useState<string | null>(null);
 
   // The format the editor runs in, known once the runtime is ready.
-  useEffect(() => {
-    let mounted = true;
-    __BEAMER__.ready.then(() => {
-      const names = { vst3: "VST3", auv2: "AUv2", auv3: "AUv3" };
-      const format = __BEAMER__.pluginFormat;
-      if (mounted) setPluginFormat(format ? names[format] : null);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  const ready = useReady();
+  const formatNames = { vst3: "VST3", auv2: "AUv2", auv3: "AUv3" };
+  const format = ready ? runtime().pluginFormat : null;
+  const pluginFormat = format ? formatNames[format] : null;
 
   // Ask for the sample rate when the editor opens, then follow the event
   // the plugin sends whenever the host prepares it again.
+  const showSampleRate = (rate: unknown) => {
+    if (typeof rate === "number" && rate > 0) setSampleRate(rate);
+  };
+  useEvent("sampleRate", showSampleRate);
   useEffect(() => {
     let mounted = true;
-    const show = (rate: unknown) => {
-      if (mounted && typeof rate === "number" && rate > 0) setSampleRate(rate);
-    };
-    const unsubscribe = __BEAMER__.on("sampleRate", show);
-    __BEAMER__.ready
-      .then(() => __BEAMER__.invoke("getSampleRate"))
-      .then(show)
+    runtime()
+      .ready.then(() => runtime().invoke("getSampleRate"))
+      .then((rate) => {
+        if (mounted) showSampleRate(rate);
+      })
       .catch((error) => console.error("getSampleRate failed:", error));
     return () => {
       mounted = false;
-      unsubscribe();
     };
   }, []);
 
-  const togglePanLaw = () => {
-    const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
-    __BEAMER__.state.set("pan_law", next);
-  };
+  const togglePanLaw = () => setPanLaw(panLaw === "linear" ? "constant_power" : "linear");
 
   return (
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">

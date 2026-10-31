@@ -1,9 +1,15 @@
 {
+  "name": "webview-demo-web-ui",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bunx --bun vite",
     "build": "bunx --bun vite build"
+  },
+  "dependencies": {
+    "@helpermedia/beamer-api": "workspace:*",
+    "@helpermedia/beamer-gestures": "workspace:*",
+    "@helpermedia/beamer-react": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -324,9 +324,9 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 - `on_invoke()` on the model for request/response calls from JavaScript
 - `WebViewEventQueue` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
-- A `State` field: read and set from the web UI through `__BEAMER__.state`, read on the audio thread with a `HandoverReader`, saved with the plugin state
+- A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
-- React binding of parameters and `State` fields via `useSyncExternalStore`
-- Circular knob with angular and linear drag modes
+- The packages for web UIs: `beamer-react` hooks for parameters, the `State` field and the meter, `beamer-gestures` for the knobs (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), used from the bun workspace
+- Circular knob drawn in SVG, its input from `useGestures`
 - Bipolar arc rendering for pan knob
-- DAW undo grouping with `beginEdit`/`endEdit`
+- DAW undo grouping: each drag, scroll, key, reset or typed value is one undo step

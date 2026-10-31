@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-10-30
+**Last Updated:** 2026-10-31
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -79,6 +79,7 @@
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Buttons for sync and stereo mode |
 | | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Knob value text (delay), slider (WebView Demo) |
+| | Packages for web UIs (`beamer-api`, `beamer-gestures`, `beamer-react`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | From the bun workspace, read from source by Vite |
 
 **Legend:**
 - ✅ Tested/Used

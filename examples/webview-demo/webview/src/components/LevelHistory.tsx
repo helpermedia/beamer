@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { runtime } from "@helpermedia/beamer-api";
 import { meterPosition } from "../levels";
 
 // How many points the history shows. The plugin pushes one every 10 ms
@@ -40,7 +41,7 @@ export default function LevelHistory({ width = 240, height = 64 }: LevelHistoryP
     };
     draw();
 
-    return __BEAMER__.on("history", (data) => {
+    return runtime().on("history", (data) => {
       if (!Array.isArray(data)) return;
       // A point that was not a finite number arrives as null.
       const fresh = data.slice(-POINTS).map((point) => Number(point) || 0);

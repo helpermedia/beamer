@@ -350,8 +350,8 @@ self.history.push(self.window_peak);
 // listen to the ones that follow.
 meter.show(__BEAMER__.values.get("levels")?.peak);
 __BEAMER__.values.on("levels", ({ peak }) => meter.show(peak));
-// In React, read it with useBeamerValue (see React Integration).
-const levels = useBeamerValue<Levels>("levels");
+// In React, read it with useSenderValue (see Packages for the Web UI).
+const levels = useSenderValue<Levels>("levels");
 // A stream sender: an array with every value since the last tick.
 __BEAMER__.on("history", (points) => history.append(points));
 ```
@@ -502,122 +502,77 @@ When JavaScript calls `params.set(stringId, value)`:
 
 When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The native side decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
-## React Integration
+## Packages for the Web UI
 
-The `webview-demo` example demonstrates React integration patterns using four hooks.
+A web UI can use `__BEAMER__` directly, as the `delay` example does in plain JavaScript. Three TypeScript packages in `packages/` add types and the parts that are easy to get wrong:
 
-### `useBeamerParam`
+| Package | Holds | Depends on |
+|---------|-------|------------|
+| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `param()`, `stateField()`, `senderValue()`, `ready()` | Nothing |
+| `@helpermedia/beamer-gestures` | `attachGestures()`: drag, wheel, keys and reset for any element | `beamer-api` |
+| `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-gestures`, React |
 
-Bridges the `__BEAMER__.params` subscription model to React's `useSyncExternalStore`:
+A web UI with gestures of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
-```typescript
-import { useCallback, useSyncExternalStore } from "react";
+### `beamer-api`
 
-export function useBeamerParam(name: string): number {
-  // The same function while the name stays: React subscribes again when
-  // it gets another one.
-  const subscribe = useCallback((cb: () => void) => __BEAMER__.params.on(name, cb), [name]);
-  return useSyncExternalStore(subscribe, () => __BEAMER__.params.get(name));
-}
-```
-
-The `params.on()` API was designed to match `useSyncExternalStore`'s subscribe/getSnapshot contract: `on()` returns an unsubscribe function and `get()` returns the current value. `useCallback` keeps `subscribe` the same between renders; a new function on each render would make React unsubscribe and subscribe again every time.
-
-### `useBeamerState`
-
-The same for a `State` field, with the type named by the caller:
+`param(id)` is a parameter: its value, plain value and text with the unit, the choices of an enum and the changes. Every change goes to the host as a gesture, which the host records as one undo step:
 
 ```typescript
-import { useCallback, useSyncExternalStore } from "react";
+import { param, ready } from "@helpermedia/beamer-api";
 
-export function useBeamerState<T>(path: string): T | undefined {
-  // The same function while the path stays: React subscribes again when
-  // it gets another one.
-  const subscribe = useCallback((cb: () => void) => __BEAMER__.state.on(path, cb), [path]);
-  return useSyncExternalStore(subscribe, () => __BEAMER__.state.get<T>(path));
-}
+await ready();
+const mix = param("mix");
+mix.subscribe(() => (label.textContent = mix.text()));
+mix.edit(0.5);       // begin, set, end
+mix.reset();         // the default value as one gesture
+await mix.typeValue("-6 dB"); // the parameter's own parser
 ```
 
-`state.get()` returns the same object until the value changes, which `useSyncExternalStore` requires. The demo shows its pan law with it and sets it on a click:
+A parameter has at most one open gesture: a gesture that begins while another is open ends that one first, so two controls of one parameter never overlap in the host's undo history. `stateField(path)` and `senderValue(name)` read, follow and (for a `State` field) set the other values. All three return one object per id, whose `get` and `subscribe` work detached, in the shape React's `useSyncExternalStore` and Svelte's stores expect.
+
+### `beamer-gestures`
+
+`attachGestures(element, param, options)` makes any element control a parameter:
+
+- Drag vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the mode for each press. Each drag is one gesture from press to release.
+- The wheel by distance, capped per event so that a mouse notch moves about as far in every browser engine, corrected for natural scrolling. A scroll is one gesture until the wheel rests.
+- Arrow keys, Page Up and Page Down, Home and End once the element has focus; a discrete parameter moves one choice per key.
+- Reset by double-click or by a click with Command or Control held.
+- The `data-keyboard-focus` attribute while the element has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
+
+### `beamer-react`
+
+| Hook | Returns |
+|------|---------|
+| `useParam(id)` | `{ param, value, displayText, text, info }`: the handle for changes and what to show |
+| `useStateField(path)` | `[value, set]` for a `State` field, like `useState` |
+| `useSenderValue(name)` | The newest value of a value sender from the audio thread |
+| `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
+| `useReady()` | Whether parameters and state have arrived |
+| `useGestures(ref, param, options)` | Attaches `beamer-gestures` to an element while mounted |
+
+The `webview-demo` knob uses them like this:
 
 ```tsx
-type PanLaw = "constant_power" | "linear";
-
-const panLaw = useBeamerState<PanLaw>("pan_law");
-const toggle = () =>
-  __BEAMER__.state.set("pan_law", panLaw === "linear" ? "constant_power" : "linear");
-```
-
-### `useBeamerValue`
-
-The same for the value of a value sender (see [Data from the Audio Thread](#data-from-the-audio-thread)):
-
-```typescript
-import { useCallback, useSyncExternalStore } from "react";
-
-export function useBeamerValue<T>(name: string): T | undefined {
-  // The same function while the name stays: React subscribes again when
-  // it gets another one.
-  const subscribe = useCallback((cb: () => void) => __BEAMER__.values.on(name, cb), [name]);
-  return useSyncExternalStore(subscribe, () => __BEAMER__.values.get<T>(name));
+function Slider({ paramId }: { paramId: string }) {
+  const { param, value, displayText, info } = useParam(paramId);
+  const svgRef = useRef<SVGSVGElement>(null);
+  // The arc on the handle, vertical elsewhere (onHandle tests the press
+  // against the handle's position). Double-click is for typing a value,
+  // so a modifier click resets.
+  const pickDrag = (event: PointerEvent) => (onHandle(event) ? "arc" : "vertical");
+  useGestures(svgRef, param, { drag: pickDrag, reset: "modifier-click" });
+  // Draw the arc from `value`; on Enter: param.typeValue(text).
 }
 ```
 
-The demo's output meter reads its level with it. A level that was not a finite number arrives as `null`:
+The demo's pan law and output meter:
 
 ```tsx
-interface Levels {
-  peak: [number | null, number | null];
-}
-
-const levels = useBeamerValue<Levels>("levels");
-// Zero until the value is an array, one bar per channel.
-const peak = levels?.peak;
-const peaks = (Array.isArray(peak) ? peak : [0, 0]).map((value) => Number(value) || 0);
+const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
+const levels = useSenderValue<Levels>("levels");
 ```
-
-The arrays of a stream sender are events, not a value to read: the demo's level history subscribes with `__BEAMER__.on("history", ...)` in an effect and draws each array on a canvas.
-
-### `useBeamerControl`
-
-Wraps `useBeamerParam` with convenience methods for building knobs, sliders and other controls:
-
-```typescript
-interface BeamerControl {
-  value: number;           // Current normalized value (0.0 - 1.0)
-  displayValue: number;    // Current value in plain units
-  displayText: string;     // Current value as formatted by the parameter
-  info: BeamerParamInfo | undefined;
-  beginEdit: () => void;
-  set: (normalized: number) => void;
-  endEdit: () => void;
-  resetToDefault: () => void;
-}
-
-export function useBeamerControl(paramId: string): BeamerControl;
-```
-
-Usage in a component:
-
-```tsx
-function MyKnob({ paramId }: { paramId: string }) {
-  const { value, displayText, info, beginEdit, set, endEdit } =
-    useBeamerControl(paramId);
-
-  return (
-    <Knob
-      value={value}
-      label={info?.name}
-      displayText={`${displayText} ${info?.units ?? ""}`.trim()}
-      onDragStart={beginEdit}
-      onDrag={set}
-      onDragEnd={endEdit}
-    />
-  );
-}
-```
-
-`displayValue` and `displayText` come from the Rust parameter store, so they match what the host shows. The `set()` method clamps the value to `[0, 1]`. The `resetToDefault()` method wraps a full `beginEdit` / `set` / `endEdit` gesture so the host records it as an undoable edit.
 
 ## Asset Embedding
 

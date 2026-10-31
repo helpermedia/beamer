@@ -127,7 +127,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 - [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
 - [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - API reference: configuration, parameters, traits, MIDI and format notes
-- [WEBVIEW.md](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md) - WebView editor, JavaScript API and React integration
+- [WEBVIEW.md](https://github.com/helpermedia/beamer/blob/main/docs/WEBVIEW.md) - WebView editor, JavaScript API and the packages for web UIs (API, gestures, React)
 - [EXAMPLE_COVERAGE.md](https://github.com/helpermedia/beamer/blob/main/docs/EXAMPLE_COVERAGE.md) - Example testing roadmap and feature coverage matrix
 
 ## Platform Support
