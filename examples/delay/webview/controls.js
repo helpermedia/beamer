@@ -125,6 +125,9 @@ export function knob(container, id) {
     svg.addEventListener("pointercancel", release);
     // The capture also ends when the window loses the pointer halfway.
     svg.addEventListener("lostpointercapture", release);
+    // On macOS a click with Control held opens the context menu, which
+    // takes the release: end the drag it began.
+    svg.addEventListener("contextmenu", release);
 
     svg.addEventListener("dblclick", () => {
         settleWheel();
@@ -139,8 +142,11 @@ export function knob(container, id) {
         event.preventDefault();
         // A drag has the value already.
         if (lastY !== null) return;
-        const delta = event.deltaY !== 0 ? event.deltaY : event.shiftKey ? event.deltaX : 0;
-        if (delta === 0) return;
+        const raw = event.deltaY !== 0 ? event.deltaY : event.shiftKey ? event.deltaX : 0;
+        if (raw === 0) return;
+        // With natural scrolling the system inverts the delta. Undo it, so
+        // that scrolling up raises the value as on a hardware knob.
+        const delta = event.webkitDirectionInvertedFromDevice ? -raw : raw;
         if (wheelRest === null) {
             params.beginEdit(id);
         } else {
