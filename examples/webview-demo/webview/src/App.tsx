@@ -19,16 +19,22 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
 
-  const openAbout = () => {
+  // Ask for the name and version when the editor opens. A call needs no
+  // `ready`: the plugin answers it while the parameters are on their way.
+  useEffect(() => {
+    let mounted = true;
     runtime()
       .invoke("getInfo")
       .then((result) => {
-        setPluginInfo(result as PluginInfo);
-        setShowAbout(true);
+        if (mounted) setPluginInfo(result as PluginInfo);
       })
-      .catch(() => {});
-  };
+      .catch((error) => console.error("getInfo failed:", error));
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
+  const openAbout = () => setShowAbout(true);
   const closeAbout = () => setShowAbout(false);
 
   // The pan law follows the plugin, also when a host changes it behind
@@ -52,7 +58,7 @@ function App() {
   useEffect(() => {
     let mounted = true;
     runtime()
-      .ready.then(() => runtime().invoke("getSampleRate"))
+      .invoke("getSampleRate")
       .then((rate) => {
         if (mounted) showSampleRate(rate);
       })
@@ -68,7 +74,8 @@ function App() {
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">
       <button
         onClick={openAbout}
-        className="absolute top-3 right-3 text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+        disabled={pluginInfo === null}
+        className="absolute top-3 right-3 text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer disabled:cursor-default"
       >
         About
       </button>
@@ -109,7 +116,11 @@ function App() {
       </div>
 
       <p className="absolute bottom-3 text-xs text-gray-500 font-mono">
-        {[pluginFormat, sampleRate === null ? "Not prepared" : `${sampleRate} Hz`]
+        {[
+          pluginFormat,
+          sampleRate === null ? "Not prepared" : `${sampleRate} Hz`,
+          pluginInfo && `v${pluginInfo.version}`,
+        ]
           .filter(Boolean)
           .join(" · ")}
       </p>

@@ -181,6 +181,8 @@ console.log(info.name);   // "Beamer WebView Demo"
 console.log(info.version); // The version from Cargo.toml
 ```
 
+A call does not wait for `ready`: the plugin answers it while the parameters are still on their way, so a page can ask for what it shows as soon as it starts. The demo asks for its version and the sample rate that way.
+
 If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")` and an override ends its `match` the same way. Catch the rejection where a method may be missing.
 
 One method is built in and never reaches the model: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
@@ -275,7 +277,6 @@ The web UI asks once and then follows the event:
 
 ```javascript
 const unsubscribe = __BEAMER__.on("sampleRate", (rate) => show(rate));
-await __BEAMER__.ready;
 show(await __BEAMER__.invoke("getSampleRate"));
 ```
 
@@ -417,7 +418,6 @@ impl WebViewHandler for WebViewDemoModel {
 On the JavaScript side the UI asks for the value when it opens:
 
 ```javascript
-await __BEAMER__.ready;
 const rate = await __BEAMER__.invoke("getSampleRate");
 ```
 
