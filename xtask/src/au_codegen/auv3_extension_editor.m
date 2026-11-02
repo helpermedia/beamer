@@ -32,6 +32,8 @@
     // only: it is neither retained nor messaged.
     const void* _syncWrapper;
     BOOL _webviewLoaded;
+    // The messages the page posted before the audio unit was connected.
+    NSMutableArray<NSData*>* _earlyMessages;
 }
 @end
 
@@ -95,16 +97,32 @@ static BeamerAuEditorHost beamer_auv3_ext_host({{EXTENSION_CLASS}}* ext) {
     };
 }
 
-static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_t len) {
-    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    // Without an audio unit the page has no plugin to talk to.
-    if (!ext->_wrapper) return;
+/// Hand a message of the page to the editor sync of the audio unit.
+static void beamer_auv3_ext_handle_message({{EXTENSION_CLASS}}* ext, const uint8_t* json, size_t len) {
     // A page posts before it finished loading too, before the init dump:
     // its calls are answered then as well. The editor sync follows the
     // audio unit whose host the edits reach.
     [ext _openSync];
     BeamerAuEditorHost host = beamer_auv3_ext_host(ext);
     beamer_au_ipc_handle_message(ext->_sync, ext->_webviewHandle, json, len, &host);
+}
+
+/// The most messages kept for an audio unit that is not connected yet. A
+/// page posts a few calls as it starts; more are dropped.
+static const NSUInteger BEAMER_AUV3_EXT_MAX_EARLY_MESSAGES = 64;
+
+static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_t len) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    if (ext->_wrapper) {
+        beamer_auv3_ext_handle_message(ext, json, len);
+        return;
+    }
+    // The view can load before the audio unit is connected. Keep the
+    // message for it, so that a call of the page is answered then.
+    if (!ext->_earlyMessages) ext->_earlyMessages = [NSMutableArray new];
+    if (ext->_earlyMessages.count < BEAMER_AUV3_EXT_MAX_EARLY_MESSAGES) {
+        [ext->_earlyMessages addObject:[NSData dataWithBytes:json length:len]];
+    }
 }
 
 static void beamer_auv3_ext_on_loaded(void* context) {
@@ -256,6 +274,8 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     [self _endOpenGestures];
     beamer_au_ipc_close_sync(&_sync);
     _webviewLoaded = NO;
+    // The page that posted them goes away with its WebView.
+    _earlyMessages = nil;
 
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
@@ -309,6 +329,13 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 // Follow a new audio unit. On the main thread.
 - (void)_connectWrapper:({{WRAPPER_CLASS}}*)wrapper {
     _wrapper = wrapper;
+
+    // Answer what the page posted before the audio unit arrived.
+    NSArray<NSData*>* early = _earlyMessages;
+    _earlyMessages = nil;
+    for (NSData* message in early) {
+        beamer_auv3_ext_handle_message(self, (const uint8_t*)message.bytes, message.length);
+    }
 
     // If the WebView already finished loading, send the init dump and
     // start the parameter sync timer now. Otherwise the on_loaded
