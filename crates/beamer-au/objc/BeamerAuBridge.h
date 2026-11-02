@@ -1137,91 +1137,16 @@ void beamer_au_get_editor_size(BeamerAuInstanceHandle _Nullable instance,
 void beamer_au_get_editor_background_color(uint8_t* _Nonnull out);
 
 // =============================================================================
-// MARK: - WebView IPC Parameter Sync
+// MARK: - Editor
 // =============================================================================
 
 /**
- * Parse a display string for a parameter and return a normalized value.
- *
- * Returns NAN if the string cannot be parsed.
- *
- * Thread Safety: Can be called from any thread.
- *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID.
- * @param text     UTF-8 string to parse.
- * @param text_len Length of the string in bytes.
- * @return Normalized value (0.0 to 1.0), or NAN on parse failure.
- */
-double beamer_au_param_string_to_normalized(
-    BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
-    const uint8_t* _Nonnull text,
-    size_t text_len
-);
-
-/**
- * Free a string returned by a beamer_au function (e.g., beamer_au_on_invoke,
+ * Free a string returned by a beamer_au function (e.g.,
  * beamer_au_editor_sync_frame_script).
  *
  * @param ptr Pointer returned by a beamer_au string-producing function, or NULL (no-op).
  */
 void beamer_au_free_string(char* _Nullable ptr);
-
-/**
- * Set a parameter value from the WebView UI (normalized).
- *
- * The wrapper notifies the host: through the AUParameterTree in the AUv3,
- * through AudioUnitSetParameter in the AUv2.
- *
- * Thread Safety: Can be called from any thread (uses atomics internally).
- *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID.
- * @param value Normalized value (0.0 to 1.0), f64 precision from JS runtime.
- */
-void beamer_au_param_set_from_ui(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id, double value);
-
-/**
- * Handle an invoke call from JavaScript.
- *
- * Dispatches to the descriptor's on_invoke.
- * Returns a JSON string with {"ok":...} or {"err":"..."}.
- * The caller must free the returned string with beamer_au_free_string.
- *
- * Thread Safety: Can be called from the main thread.
- *
- * @param instance Handle to the plugin instance.
- * @param method UTF-8 method name bytes.
- * @param method_len Length of method name in bytes.
- * @param args_json UTF-8 JSON string of the arguments array.
- * @param args_json_len Length of args_json in bytes.
- * @return JSON result string, or NULL on failure. Caller must free with beamer_au_free_string.
- */
-char* _Nullable beamer_au_on_invoke(BeamerAuInstanceHandle _Nullable instance,
-                                    const uint8_t* _Nonnull method,
-                                    size_t method_len,
-                                    const uint8_t* _Nonnull args_json,
-                                    size_t args_json_len);
-
-/**
- * Handle a custom event from JavaScript.
- *
- * Dispatches to the descriptor's on_event.
- *
- * Thread Safety: Can be called from the main thread.
- *
- * @param instance Handle to the plugin instance.
- * @param name UTF-8 event name bytes.
- * @param name_len Length of event name in bytes.
- * @param data_json UTF-8 JSON string of the event data.
- * @param data_json_len Length of data_json in bytes.
- */
-void beamer_au_on_event(BeamerAuInstanceHandle _Nullable instance,
-                        const uint8_t* _Nonnull name,
-                        size_t name_len,
-                        const uint8_t* _Nonnull data_json,
-                        size_t data_json_len);
 
 /**
  * What one open editor uses to keep its web UI in step with the plugin.
@@ -1271,72 +1196,59 @@ char* _Nullable beamer_au_editor_sync_init_script(BeamerAuEditorSyncHandle _Null
 char* _Nullable beamer_au_editor_sync_frame_script(BeamerAuEditorSyncHandle _Nullable sync);
 
 /**
- * The script that tells the web UI the value of a parameter it set, as it
- * is in effect now. Call it after beamer_au_param_set_from_ui and after the
- * host was told, which can round the value.
+ * What an editor does in the host when its web UI edits a parameter. Each
+ * function gets `context`. A NULL function leaves the host untold.
  *
- * Thread Safety: Main thread.
- *
- * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
- * @param param_id Parameter ID.
- * @return JavaScript to evaluate, or NULL on failure. Caller must free with
- *         beamer_au_free_string.
+ * The AUv3 sets the AUParameter and sends its gesture events, the AUv2
+ * calls AudioUnitSetParameter and notifies the gestures.
  */
-char* _Nullable beamer_au_editor_sync_parameter_script(BeamerAuEditorSyncHandle _Nullable sync,
-                                                       uint32_t param_id);
+typedef struct {
+    /** Passed to each function. */
+    void* _Nullable context;
+    /** The web UI began a gesture on a parameter. */
+    void (* _Nullable begin_gesture)(void* _Nullable context, uint32_t param_id);
+    /** The web UI set a parameter to a normalized value, which the plugin
+     *  holds already. The host may round it. */
+    void (* _Nullable set_parameter)(void* _Nullable context, uint32_t param_id, double normalized);
+    /** The web UI ended a gesture on a parameter, or its page went away
+     *  during one. */
+    void (* _Nullable end_gesture)(void* _Nullable context, uint32_t param_id);
+} BeamerAuEditorHost;
 
 /**
- * Handle a message of the web UI that needs no host: "state:set", which
- * sets a State field.
+ * Handle a message of the web UI: set the parameter or State field it
+ * names or pass it to the plugin, tell the host through `host` and return
+ * the script that answers it.
  *
  * Thread Safety: Main thread.
  *
  * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
  * @param json     The message as the web UI sent it (UTF-8 JSON).
  * @param json_len Length of the message in bytes.
- * @return JavaScript that answers with the value in effect, or NULL for any
- *         other message and on failure. Caller must free with
+ * @param host     What the editor does in the host. Its context must stay
+ *                 valid during the call.
+ * @return JavaScript that answers the message, or NULL for a message
+ *         without an answer and on failure. Caller must free with
  *         beamer_au_free_string.
  */
 char* _Nullable beamer_au_editor_sync_message(BeamerAuEditorSyncHandle _Nullable sync,
                                               const uint8_t* _Nonnull json,
-                                              size_t json_len);
+                                              size_t json_len,
+                                              const BeamerAuEditorHost* _Nonnull host);
 
 /**
- * The web UI began a gesture on a parameter and the editor told the host.
+ * End in the host, through `host`, the gestures the web UI began and did
+ * not end: its page goes away, as the editor closes or the page loads
+ * again, so their ends will not come.
  *
  * Thread Safety: Main thread.
  *
- * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
- * @param param_id Parameter ID.
+ * @param sync Handle from beamer_au_editor_sync_open, or NULL.
+ * @param host What the editor does in the host. Its context must stay
+ *             valid during the call.
  */
-void beamer_au_editor_sync_gesture_began(BeamerAuEditorSyncHandle _Nullable sync,
-                                         uint32_t param_id);
-
-/**
- * The web UI ended a gesture on a parameter.
- *
- * Thread Safety: Main thread.
- *
- * @param sync     Handle from beamer_au_editor_sync_open, or NULL.
- * @param param_id Parameter ID.
- */
-void beamer_au_editor_sync_gesture_ended(BeamerAuEditorSyncHandle _Nullable sync,
-                                         uint32_t param_id);
-
-/**
- * Take one gesture the web UI began and did not end. The editor ends each
- * one in the host when the page goes away, as the editor closes or the
- * page loads again.
- *
- * Thread Safety: Main thread.
- *
- * @param sync         Handle from beamer_au_editor_sync_open, or NULL.
- * @param out_param_id Receives the parameter whose end the host waits for.
- * @return true if a gesture was taken, false when none is open.
- */
-bool beamer_au_editor_sync_take_open_gesture(BeamerAuEditorSyncHandle _Nullable sync,
-                                             uint32_t* _Nonnull out_param_id);
+void beamer_au_editor_sync_end_open_gestures(BeamerAuEditorSyncHandle _Nullable sync,
+                                             const BeamerAuEditorHost* _Nonnull host);
 
 /**
  * The editor was closed: stop keeping events for it and free the handle.

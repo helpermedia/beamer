@@ -97,13 +97,13 @@ fn test_vst3_delivers_the_queue_of_its_instance() {
 #[cfg(target_os = "macos")]
 #[test]
 fn test_au_delivers_the_queue_of_its_instance() {
-    use std::ffi::{c_char, CStr};
+    use std::ffi::{c_char, c_void, CStr};
 
     use beamer_au::bridge::{
         beamer_au_create_instance, beamer_au_destroy_instance, beamer_au_editor_sync_close,
-        beamer_au_editor_sync_frame_script, beamer_au_editor_sync_init_script,
-        beamer_au_editor_sync_message, beamer_au_editor_sync_open,
-        beamer_au_editor_sync_parameter_script, beamer_au_free_string, beamer_au_param_set_from_ui,
+        beamer_au_editor_sync_end_open_gestures, beamer_au_editor_sync_frame_script,
+        beamer_au_editor_sync_init_script, beamer_au_editor_sync_message, beamer_au_editor_sync_open,
+        beamer_au_free_string, BeamerAuEditorHost, BeamerAuEditorSync,
     };
     use beamer_au::factory::register_factory;
     use beamer_au::{AuPluginInstance, AuProcessor};
@@ -123,6 +123,39 @@ fn test_au_delivers_the_queue_of_its_instance() {
         beamer_au_free_string(script);
         Some(text)
     }
+
+    /// The edits the host was told about, noted by the functions of the
+    /// editor's host. The context is the list.
+    type Edits = RefCell<Vec<String>>;
+
+    fn note(context: *mut c_void, edit: String) {
+        // SAFETY: The context is the test's list, which outlives the calls.
+        unsafe { &*(context as *const Edits) }.borrow_mut().push(edit);
+    }
+
+    unsafe extern "C" fn begin_gesture(context: *mut c_void, param_id: u32) {
+        note(context, format!("begin {param_id}"));
+    }
+
+    unsafe extern "C" fn set_parameter(context: *mut c_void, param_id: u32, normalized: f64) {
+        note(context, format!("set {param_id} {normalized}"));
+    }
+
+    unsafe extern "C" fn end_gesture(context: *mut c_void, param_id: u32) {
+        note(context, format!("end {param_id}"));
+    }
+
+    let edits = Edits::default();
+    let host = BeamerAuEditorHost {
+        context: &edits as *const Edits as *mut c_void,
+        begin_gesture: Some(begin_gesture),
+        set_parameter: Some(set_parameter),
+        end_gesture: Some(end_gesture),
+    };
+    // A message of the page, with the answer of the editor sync.
+    let message = |editor: *mut BeamerAuEditorSync, json: &str| {
+        text(beamer_au_editor_sync_message(editor, json.as_ptr(), json.len(), &host))
+    };
 
     // One plugin per process: this test is the only one that registers.
     register_factory(create, &CONFIG);
@@ -147,23 +180,36 @@ fn test_au_delivers_the_queue_of_its_instance() {
     );
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
-    // A value the web UI set is answered and not sent again.
-    beamer_au_param_set_from_ui(instance, gain, 0.5);
+    // A value the web UI sets reaches the plugin and the host. It is
+    // answered and not sent again.
+    let set = format!(r#"{{"type":"param:set","id":{gain},"value":0.5}}"#);
     assert_eq!(
-        text(beamer_au_editor_sync_parameter_script(editor, gain)),
+        message(editor, &set),
         Some(format!("window.__BEAMER__._onParams({{{gain}:[0.5,0.5,\"0.50\"]}});"))
     );
+    assert_eq!(*edits.borrow(), [format!("set {gain} 0.5")]);
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
     // A State field the web UI sets, from the message as it sent it.
-    let message = br#"{"type":"state:set","id":"zoom","value":150}"#;
     assert_eq!(
-        text(beamer_au_editor_sync_message(editor, message.as_ptr(), message.len())).as_deref(),
+        message(editor, r#"{"type":"state:set","id":"zoom","value":150}"#).as_deref(),
         Some("window.__BEAMER__._onState({\"zoom\":150});")
     );
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
-    let other = br#"{"type":"param:begin","id":1}"#;
-    assert_eq!(text(beamer_au_editor_sync_message(editor, other.as_ptr(), other.len())), None);
+
+    // A gesture the page left open ends in the host when the page goes
+    // away.
+    edits.borrow_mut().clear();
+    let begin = format!(r#"{{"type":"param:begin","id":{gain}}}"#);
+    assert_eq!(message(editor, &begin), None);
+    beamer_au_editor_sync_end_open_gestures(editor, &host);
+    assert_eq!(*edits.borrow(), [format!("begin {gain}"), format!("end {gain}")]);
+
+    // A method the plugin does not know.
+    assert_eq!(
+        message(editor, r#"{"type":"invoke","method":"getInfo","callId":2}"#).as_deref(),
+        Some(r#"window.__BEAMER__._onResult(2,{"err":"unknown method: getInfo"});"#)
+    );
 
     events.emit("ready", &"now");
     events.emit("count", &2);
@@ -190,11 +236,15 @@ fn test_au_delivers_the_queue_of_its_instance() {
     assert!(text(beamer_au_editor_sync_frame_script(editor)).is_some());
     beamer_au_editor_sync_close(editor);
 
-    // No instance and no editor: nothing to open, build or close.
+    // No instance and no editor: nothing to open, build, handle, end or
+    // close.
+    edits.borrow_mut().clear();
     assert!(beamer_au_editor_sync_open(std::ptr::null_mut()).is_null());
     assert_eq!(text(beamer_au_editor_sync_frame_script(std::ptr::null_mut())), None);
-    assert_eq!(text(beamer_au_editor_sync_parameter_script(std::ptr::null_mut(), gain)), None);
+    assert_eq!(message(std::ptr::null_mut(), &set), None);
+    beamer_au_editor_sync_end_open_gestures(std::ptr::null_mut(), &host);
     beamer_au_editor_sync_close(std::ptr::null_mut());
+    assert!(edits.borrow().is_empty());
 }
 
 /// A model whose queue sits in a nested model.

@@ -744,53 +744,49 @@ static void beamer_auv3_notify_gesture(AUParameterTree* tree, uint32_t paramId, 
     }
 }
 
+// What the web UI edits, told to the host through the parameter tree. The
+// context is the audio unit.
+
+static void beamer_auv3_begin_gesture(void* context, uint32_t paramId) {
+    {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+}
+
+static void beamer_auv3_set_parameter(void* context, uint32_t paramId, double value) {
+    {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+    if (param) {
+        float min = param.minValue;
+        float max = param.maxValue;
+        // Flag prevents the observer from overwriting the precise
+        // f64 value in the Rust store with an f32 round-trip.
+        self->_settingFromWebView = YES;
+        param.value = min + (float)value * (max - min);
+        self->_settingFromWebView = NO;
+    }
+}
+
+static void beamer_auv3_end_gesture(void* context, uint32_t paramId) {
+    {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
+    beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
+}
+
+/// The host as the web UI of the editor edits parameters in it.
+static BeamerAuEditorHost beamer_auv3_host({{WRAPPER_CLASS}}* self) {
+    return (BeamerAuEditorHost){
+        .context = (__bridge void*)self,
+        .begin_gesture = beamer_auv3_begin_gesture,
+        .set_parameter = beamer_auv3_set_parameter,
+        .end_gesture = beamer_auv3_end_gesture,
+    };
+}
+
 static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t len) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
-    if (!jsonStr) return;
-
-    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (!msg) return;
-
-    NSString* type = msg[@"type"];
-    if ([type isEqualToString:@"param:set"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        double value = [msg[@"value"] doubleValue];
-        beamer_au_param_set_from_ui(self->_rustInstance, paramId, value);
-        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            float min = param.minValue;
-            float max = param.maxValue;
-            // Flag prevents the observer from overwriting the precise
-            // f64 value in the Rust store with an f32 round-trip.
-            self->_settingFromWebView = YES;
-            param.value = min + (float)value * (max - min);
-            self->_settingFromWebView = NO;
-        }
-        // Answer with the value in effect.
-        beamer_au_ipc_answer_param(self->_sync, self->_webviewHandle, paramId);
-    } else if ([type isEqualToString:@"state:set"]) {
-        beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
-    } else if ([type isEqualToString:@"param:begin"]) {
-        // A WebView that -_editorGone: retired can still deliver a begin,
-        // which no end would follow.
-        if (self->_sync == NULL) return;
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
-        // The editor ends it if the page goes away first.
-        beamer_au_editor_sync_gesture_began(self->_sync, paramId);
-    } else if ([type isEqualToString:@"param:end"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_au_editor_sync_gesture_ended(self->_sync, paramId);
-        beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
-    } else if ([type isEqualToString:@"invoke"]) {
-        if (!beamer_au_ipc_handle_builtin_invoke(self->_rustInstance, self->_webviewHandle, msg)) {
-            beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
-        }
-    } else if ([type isEqualToString:@"event"]) {
-        beamer_au_ipc_handle_event(self->_rustInstance, msg);
-    }
+    // A WebView that -_editorGone: retired can still deliver a message. It
+    // goes nowhere without the editor sync: a begin would get no end.
+    BeamerAuEditorHost host = beamer_auv3_host(self);
+    beamer_au_ipc_handle_message(self->_sync, self->_webviewHandle, json, len, &host);
 }
 
 static void beamer_auv3_on_loaded(void* context) {
@@ -1983,10 +1979,8 @@ static void beamer_auv3_on_loaded(void* context) {
 // End in the host the gestures the page left open: it goes away, so their
 // ends will not come.
 - (void)_endOpenGestures {
-    AUParameterTree* tree = self.parameterTree;
-    beamer_au_ipc_end_open_gestures(_sync, ^(uint32_t paramId) {
-        beamer_auv3_notify_gesture(tree, paramId, AUParameterAutomationEventTypeRelease);
-    });
+    BeamerAuEditorHost host = beamer_auv3_host(self);
+    beamer_au_editor_sync_end_open_gestures(_sync, &host);
 }
 
 // The view of the editor entered a window: build the WebView again if

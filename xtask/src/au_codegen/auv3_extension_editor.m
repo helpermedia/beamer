@@ -37,6 +37,7 @@
 
 @interface {{EXTENSION_CLASS}} ()
 - (void)_ensureWebView;
+- (void)_openSync;
 - (void)_sendInitDump;
 - (void)_startSyncTimer;
 - (void)_sendFrame;
@@ -57,53 +58,53 @@ static void beamer_auv3_ext_notify_gesture(AUParameterTree* tree, uint32_t param
 // MARK: - WebView IPC Callbacks
 // =============================================================================
 
+// What the web UI edits, told to the host through the parameter tree of
+// the audio unit. The context is the extension.
+
+static void beamer_auv3_ext_begin_gesture(void* context, uint32_t paramId) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+}
+
+static void beamer_auv3_ext_set_parameter(void* context, uint32_t paramId, double value) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
+    if (param) {
+        float min = param.minValue;
+        float max = param.maxValue;
+        // Flag prevents the wrapper's observer from overwriting the
+        // precise f64 value in the Rust store with an f32 round-trip.
+        [ext->_wrapper setSettingFromWebView:YES];
+        param.value = min + (float)value * (max - min);
+        [ext->_wrapper setSettingFromWebView:NO];
+    }
+}
+
+static void beamer_auv3_ext_end_gesture(void* context, uint32_t paramId) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
+}
+
+/// The host as the web UI of the extension edits parameters in it.
+static BeamerAuEditorHost beamer_auv3_ext_host({{EXTENSION_CLASS}}* ext) {
+    return (BeamerAuEditorHost){
+        .context = (__bridge void*)ext,
+        .begin_gesture = beamer_auv3_ext_begin_gesture,
+        .set_parameter = beamer_auv3_ext_set_parameter,
+        .end_gesture = beamer_auv3_ext_end_gesture,
+    };
+}
+
 static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_t len) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    BeamerAuInstanceHandle instance = [ext->_wrapper rustInstance];
-    if (!instance) return;
-
-    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
-    if (!jsonStr) return;
-
-    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (!msg) return;
-
-    NSString* type = msg[@"type"];
-    if ([type isEqualToString:@"param:set"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        double value = [msg[@"value"] doubleValue];
-        beamer_au_param_set_from_ui(instance, paramId, value);
-        AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-        if (param) {
-            float min = param.minValue;
-            float max = param.maxValue;
-            // Flag prevents the wrapper's observer from overwriting the
-            // precise f64 value in the Rust store with an f32 round-trip.
-            [ext->_wrapper setSettingFromWebView:YES];
-            param.value = min + (float)value * (max - min);
-            [ext->_wrapper setSettingFromWebView:NO];
-        }
-        // Answer with the value in effect.
-        beamer_au_ipc_answer_param(ext->_sync, ext->_webviewHandle, paramId);
-    } else if ([type isEqualToString:@"state:set"]) {
-        beamer_au_ipc_handle_state_set(ext->_sync, ext->_webviewHandle, json, len);
-    } else if ([type isEqualToString:@"param:begin"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
-        // The editor ends it if the page goes away first.
-        beamer_au_editor_sync_gesture_began(ext->_sync, paramId);
-    } else if ([type isEqualToString:@"param:end"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_au_editor_sync_gesture_ended(ext->_sync, paramId);
-        beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
-    } else if ([type isEqualToString:@"invoke"]) {
-        if (!beamer_au_ipc_handle_builtin_invoke(instance, ext->_webviewHandle, msg)) {
-            beamer_au_ipc_handle_invoke(instance, ext->_webviewHandle, msg);
-        }
-    } else if ([type isEqualToString:@"event"]) {
-        beamer_au_ipc_handle_event(instance, msg);
-    }
+    // Without an audio unit the page has no plugin to talk to.
+    if (!ext->_wrapper) return;
+    // A page posts before it finished loading too, before the init dump:
+    // its calls are answered then as well. The editor sync follows the
+    // audio unit whose host the edits reach.
+    [ext _openSync];
+    BeamerAuEditorHost host = beamer_auv3_ext_host(ext);
+    beamer_au_ipc_handle_message(ext->_sync, ext->_webviewHandle, json, len, &host);
 }
 
 static void beamer_auv3_ext_on_loaded(void* context) {
@@ -189,20 +190,25 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     }
 }
 
+// Open the editor sync for the audio unit the extension shows, unless it
+// follows that one already. It opens with the first init dump of a WebView
+// or of a new audio unit, or with a message the page posts before that,
+// and never with a frame: the sync timer starts with the init dump. So the
+// values the page receives and the ones the sync counts as sent match. The
+// first frame sends every parameter. Events the plugin emits from now on
+// are kept for this editor. The gestures open on a previous audio unit end
+// with it: the host let it go.
+- (void)_openSync {
+    if (_sync && _syncWrapper == (__bridge const void*)_wrapper) return;
+    beamer_au_ipc_close_sync(&_sync);
+    _sync = beamer_au_editor_sync_open([_wrapper rustInstance]);
+    _syncWrapper = (__bridge const void*)_wrapper;
+}
+
 - (void)_sendInitDump {
     if (!_webviewHandle || !_wrapper) return;
 
-    // The editor sync opens with the first init dump of a WebView or of a
-    // new audio unit, so that the values the page receives and the ones the
-    // sync counts as sent match. The first frame sends every parameter.
-    // Events the plugin emits from now on are kept for this editor. The
-    // gestures open on a previous audio unit end with it: the host let it
-    // go.
-    if (!_sync || _syncWrapper != (__bridge const void*)_wrapper) {
-        beamer_au_ipc_close_sync(&_sync);
-        _sync = beamer_au_editor_sync_open([_wrapper rustInstance]);
-        _syncWrapper = (__bridge const void*)_wrapper;
-    }
+    [self _openSync];
     beamer_au_ipc_send_init_dump(_sync, _webviewHandle, "auv3");
 }
 
@@ -238,10 +244,8 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 // are open.
 - (void)_endOpenGestures {
     if (_syncWrapper != (__bridge const void*)_wrapper) return;
-    AUParameterTree* tree = _wrapper.parameterTree;
-    beamer_au_ipc_end_open_gestures(_sync, ^(uint32_t paramId) {
-        beamer_auv3_ext_notify_gesture(tree, paramId, AUParameterAutomationEventTypeRelease);
-    });
+    BeamerAuEditorHost host = beamer_auv3_ext_host(self);
+    beamer_au_editor_sync_end_open_gestures(_sync, &host);
 }
 
 - (void)viewDidDisappear {

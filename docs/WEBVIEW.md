@@ -22,7 +22,8 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
 │  - 60 Hz parameter sync timer                                   │
-│  - Dispatches IPC messages to the Model                         │
+│  - Hands the page's messages to the EditorSync                  │
+│  - Tells the host what the web UI edits (HostEdits)             │
 ├─────────────────────────────────────────────────────────────────┤
 │  beamer-webview                                                 │
 │  - Both ends of the protocol: beamer_runtime.js (the            │
@@ -39,9 +40,9 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 | Crate | Role |
 |-------|------|
 | `beamer-core` | The editor settings of `Config` and the `EmbeddedAssets` types: which editor a plugin has |
-| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `params_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
-| `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
-| `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
+| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `params_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
+| `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, `HostEdits` through the `IComponentHandler` |
+| `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and the host side of `HostEdits` (`BeamerAuEditorHost`) |
 
 ## Configuration
 
@@ -493,13 +494,13 @@ When JavaScript calls `params.set(stringId, value)`:
 
 1. The runtime updates its local cache immediately
 2. Posts a `{type: "param:set", id, value}` message via `WKScriptMessageHandler`
-3. The native message callback calls `ParameterStore::set_normalized()` on the parameter
-4. The native callback calls `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
-5. The native side sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
+3. The format wrapper hands the message to its `EditorSync`, which reads the messages of the page for every format and calls `ParameterStore::set_normalized()` on the parameter
+4. The wrapper tells the host through its `HostEdits`: `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
+5. The editor sync sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
 
-`beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs. The native side notes each gesture that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), the native side ends the gesture in the host itself, so the host never keeps a parameter touched.
+`beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs. The editor sync notes each gesture the host was told about and that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), it ends the gesture in the host through `HostEdits`, so the host never keeps a parameter touched.
 
-When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The native side decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
+When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The editor sync decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
 ## Packages for the Web UI
 

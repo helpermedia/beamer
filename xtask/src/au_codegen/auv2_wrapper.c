@@ -4014,58 +4014,55 @@ static void beamer_auv2_notify_gesture(AudioUnit audioUnit, uint32_t paramId, Au
     AUEventListenerNotify(NULL, NULL, &event);
 }
 
+// What the web UI edits, told to the host. The context is the editor view.
+
+static void beamer_auv2_begin_gesture(void* context, uint32_t paramId) {
+    {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
+    beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
+}
+
+static void beamer_auv2_set_parameter(void* context, uint32_t paramId, double value) {
+    {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
+    (void)value;
+    // Notify host via AudioUnitSetParameter, with the value the plugin
+    // holds converted to the AU value.
+    float auValue = beamer_au_get_parameter_value_au(self->_rustInstance, paramId);
+    AudioUnitSetParameter(self->_audioUnit, paramId,
+        kAudioUnitScope_Global, 0, auValue, 0);
+}
+
+static void beamer_auv2_end_gesture(void* context, uint32_t paramId) {
+    {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
+    beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
+}
+
+/// The host as the web UI of the editor view edits parameters in it.
+static BeamerAuEditorHost beamer_auv2_host({{COCOA_EDITOR_VIEW_CLASS}}* self) {
+    return (BeamerAuEditorHost){
+        .context = (__bridge void*)self,
+        .begin_gesture = beamer_auv2_begin_gesture,
+        .set_parameter = beamer_auv2_set_parameter,
+        .end_gesture = beamer_auv2_end_gesture,
+    };
+}
+
 /// End in the host the gestures the page left open.
-static void beamer_auv2_end_open_gestures(BeamerAuEditorSyncHandle sync, AudioUnit audioUnit) {
-    beamer_au_ipc_end_open_gestures(sync, ^(uint32_t paramId) {
-        beamer_auv2_notify_gesture(audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
-    });
+static void beamer_auv2_end_open_gestures({{COCOA_EDITOR_VIEW_CLASS}}* self) {
+    BeamerAuEditorHost host = beamer_auv2_host(self);
+    beamer_au_editor_sync_end_open_gestures(self->_sync, &host);
 }
 
 static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t len) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    NSString* jsonStr = [[NSString alloc] initWithBytes:json length:len encoding:NSUTF8StringEncoding];
-    if (!jsonStr) return;
-
-    NSData* data = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary* msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (!msg) return;
-
-    NSString* type = msg[@"type"];
-    if ([type isEqualToString:@"param:set"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        double value = [msg[@"value"] doubleValue];
-        beamer_au_param_set_from_ui(self->_rustInstance, paramId, value);
-        // Notify host via AudioUnitSetParameter (convert normalized to AU value)
-        float auValue = beamer_au_get_parameter_value_au(self->_rustInstance, paramId);
-        AudioUnitSetParameter(self->_audioUnit, paramId,
-            kAudioUnitScope_Global, 0, auValue, 0);
-        // Answer with the value in effect, which the host rounded.
-        beamer_au_ipc_answer_param(self->_sync, self->_webviewHandle, paramId);
-    } else if ([type isEqualToString:@"state:set"]) {
-        beamer_au_ipc_handle_state_set(self->_sync, self->_webviewHandle, json, len);
-    } else if ([type isEqualToString:@"param:begin"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
-        // The editor ends it if the page goes away first.
-        beamer_au_editor_sync_gesture_began(self->_sync, paramId);
-    } else if ([type isEqualToString:@"param:end"]) {
-        uint32_t paramId = [msg[@"id"] unsignedIntValue];
-        beamer_au_editor_sync_gesture_ended(self->_sync, paramId);
-        beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
-    } else if ([type isEqualToString:@"invoke"]) {
-        if (!beamer_au_ipc_handle_builtin_invoke(self->_rustInstance, self->_webviewHandle, msg)) {
-            beamer_au_ipc_handle_invoke(self->_rustInstance, self->_webviewHandle, msg);
-        }
-    } else if ([type isEqualToString:@"event"]) {
-        beamer_au_ipc_handle_event(self->_rustInstance, msg);
-    }
+    BeamerAuEditorHost host = beamer_auv2_host(self);
+    beamer_au_ipc_handle_message(self->_sync, self->_webviewHandle, json, len, &host);
 }
 
 static void beamer_auv2_on_loaded(void* context) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
     // A page that loads again replaces one that may have left a gesture
     // open.
-    beamer_auv2_end_open_gestures(self->_sync, self->_audioUnit);
+    beamer_auv2_end_open_gestures(self);
     beamer_au_ipc_send_init_dump(self->_sync, self->_webviewHandle, "auv2");
 }
 
@@ -4103,7 +4100,7 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_auv2_end_open_gestures(_sync, _audioUnit);
+    beamer_auv2_end_open_gestures(self);
     beamer_au_ipc_close_sync(&_sync);
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_webviewHandle != NULL) {

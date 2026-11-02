@@ -40,9 +40,9 @@ use crate::channel_labels::{self, ChannelOrder, ChannelOrders};
 use crate::error::os_status;
 use beamer_core::{
     ActiveBuses, BusInfo, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, Layout,
-    ParameterInfo, ParameterUnit, ProcessMode, SharedModel, MAX_BUSES, MAX_CHANNELS,
+    ParameterId, ParameterInfo, ParameterUnit, ProcessMode, SharedModel, MAX_BUSES, MAX_CHANNELS,
 };
-use beamer_webview::{EditorSync, WebViewDispatch, WebViewEventQueue};
+use beamer_webview::{EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{
@@ -622,8 +622,8 @@ pub struct BeamerInstanceHandle {
     /// the plugin's.
     bus_negotiation: Mutex<BusNegotiation>,
     /// Where the web UI's invoke calls and events go (the model),
-    /// captured at instance creation to avoid locking the plugin mutex on
-    /// every invoke/event call.
+    /// captured at instance creation, so that an editor that opens never
+    /// locks the plugin mutex for it.
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEventQueue>,
@@ -3225,51 +3225,10 @@ pub extern "C" fn beamer_au_apply_preset(
 }
 
 // =============================================================================
-// WebView IPC Parameter Sync
+// Editor
 // =============================================================================
 
-/// Parse a display string for a parameter and return a normalized value.
-///
-/// Returns `f64::NAN` if the string cannot be parsed.
-///
-/// # Safety
-///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function returns `NAN`)
-/// - `text` must be a valid pointer to a UTF-8 string of `text_len` bytes
-#[no_mangle]
-pub extern "C" fn beamer_au_param_string_to_normalized(
-    instance: BeamerAuInstanceHandle,
-    param_id: u32,
-    text: *const u8,
-    text_len: usize,
-) -> f64 {
-    if instance.is_null() || text.is_null() {
-        return f64::NAN;
-    }
-
-    // SAFETY: text is non-null and text_len is the byte length.
-    let text_slice = unsafe { std::slice::from_raw_parts(text, text_len) };
-    let text_str = match std::str::from_utf8(text_slice) {
-        Ok(s) => s,
-        Err(_) => return f64::NAN,
-    };
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above.
-        let handle = unsafe { &*instance };
-        with_param_store(handle, |store| {
-            store.string_to_normalized(param_id, text_str)
-        })
-    }));
-
-    match result {
-        Ok(Some(normalized)) => normalized,
-        _ => f64::NAN,
-    }
-}
-
-/// Free a string returned by a beamer_au function (e.g., `beamer_au_on_invoke`,
+/// Free a string returned by a beamer_au function (e.g.,
 /// `beamer_au_editor_sync_frame_script`).
 ///
 /// # Safety
@@ -3284,152 +3243,20 @@ pub extern "C" fn beamer_au_free_string(ptr: *mut c_char) {
     }
 }
 
-/// Set a parameter value from the WebView UI (normalized, f64 precision).
-///
-/// This sets the normalized value in the Rust parameter store. The ObjC
-/// wrapper is responsible for notifying the host (via AUParameterTree for
-/// AUv3 or AudioUnitSetParameter for AUv2).
-///
-/// Accepts f64 for full precision from the JS runtime.
-///
-/// # Safety
-///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function does nothing)
-#[no_mangle]
-pub extern "C" fn beamer_au_param_set_from_ui(
-    instance: BeamerAuInstanceHandle,
-    param_id: u32,
-    value: f64,
-) {
-    if instance.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: instance validated non-null above.
-        let handle = unsafe { &*instance };
-        with_param_store(handle, |store| {
-            store.set_normalized(param_id, value);
-        });
-    }));
-}
-
-// =============================================================================
-// WebView Invoke / Event
-// =============================================================================
-
-/// Handle an invoke call from JavaScript.
-///
-/// Called when the WebView sends an `invoke` message. Dispatches to the
-/// model's `on_invoke`. Returns a
-/// heap-allocated JSON string with `{"ok":...}` or `{"err":"..."}` that the
-/// caller must free with `beamer_au_free_string`. Returns null on failure.
-///
-/// # Safety
-///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function returns null)
-/// - `method` must be a valid UTF-8 pointer with at least `method_len` bytes
-/// - `args_json` must be a valid UTF-8 pointer with at least `args_json_len` bytes
-#[no_mangle]
-pub unsafe extern "C" fn beamer_au_on_invoke(
-    instance: BeamerAuInstanceHandle,
-    method: *const u8,
-    method_len: usize,
-    args_json: *const u8,
-    args_json_len: usize,
-) -> *mut c_char {
-    if instance.is_null() || method.is_null() || args_json.is_null() {
-        return ptr::null_mut();
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: Pointers validated non-null above. Caller guarantees correct lengths.
-        let method_bytes = unsafe { std::slice::from_raw_parts(method, method_len) };
-        // SAFETY: args_json validated non-null above. Caller guarantees correct length.
-        let args_bytes = unsafe { std::slice::from_raw_parts(args_json, args_json_len) };
-        let method_str = std::str::from_utf8(method_bytes).ok()?;
-        let args_str = std::str::from_utf8(args_bytes).ok()?;
-
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
-        let handle = unsafe { &*instance };
-
-        let args: Vec<serde_json::Value> = serde_json::from_str(args_str).unwrap_or_default();
-        let json = match handle.webview_dispatch.dispatch_invoke(method_str, &args) {
-            Ok(val) => {
-                format!(r#"{{"ok":{}}}"#, serde_json::to_string(&val).unwrap_or_default())
-            }
-            Err(msg) => {
-                let escaped = serde_json::to_string(&msg).unwrap_or_default();
-                format!(r#"{{"err":{}}}"#, escaped)
-            }
-        };
-
-        CString::new(json).ok()
-    }));
-
-    match result {
-        Ok(Some(cstr)) => cstr.into_raw(),
-        _ => ptr::null_mut(),
-    }
-}
-
-/// Handle a custom event from JavaScript.
-///
-/// Called when the WebView sends an `event` message. Dispatches to the
-/// model's `on_event`.
-///
-/// # Safety
-///
-/// - `instance` must be a valid pointer returned by `beamer_au_create_instance`,
-///   or null (in which case this function does nothing)
-/// - `name` must be a valid UTF-8 pointer with at least `name_len` bytes
-/// - `data_json` must be a valid UTF-8 pointer with at least `data_json_len` bytes
-#[no_mangle]
-pub unsafe extern "C" fn beamer_au_on_event(
-    instance: BeamerAuInstanceHandle,
-    name: *const u8,
-    name_len: usize,
-    data_json: *const u8,
-    data_json_len: usize,
-) {
-    if instance.is_null() || name.is_null() || data_json.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: Pointers validated non-null above. Caller guarantees correct lengths.
-        let name_bytes = unsafe { std::slice::from_raw_parts(name, name_len) };
-        // SAFETY: data_json validated non-null above. Caller guarantees correct length.
-        let data_bytes = unsafe { std::slice::from_raw_parts(data_json, data_json_len) };
-        let name_str = std::str::from_utf8(name_bytes).ok()?;
-        let data_str = std::str::from_utf8(data_bytes).ok()?;
-
-        // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
-        let handle = unsafe { &*instance };
-
-        let data: serde_json::Value =
-            serde_json::from_str(data_str).unwrap_or(serde_json::Value::Null);
-        handle.webview_dispatch.dispatch_event(name_str, &data);
-
-        Some(())
-    }));
-}
-
 /// What one open editor uses to keep its web UI in step with the plugin.
 ///
 /// An editor holds this from the moment it opens until it closes. It holds
-/// the model and the event queue itself and does not point into the
-/// instance, so it stays valid when a host destroys the instance before the
-/// editor.
+/// the model, its dispatch and the event queue itself and does not point
+/// into the instance, so it stays valid when a host destroys the instance
+/// before the editor.
 pub struct BeamerAuEditorSync(EditorSync);
 
 /// An editor was opened: start keeping its web UI in step.
 ///
 /// Events the plugin emits from now on are kept for this editor. The
 /// editor calls `beamer_au_editor_sync_init_script` when its page loaded,
-/// `beamer_au_editor_sync_frame_script` from its sync timer and
+/// `beamer_au_editor_sync_frame_script` from its sync timer,
+/// `beamer_au_editor_sync_message` for each message of its page and
 /// `beamer_au_editor_sync_close` once when it closes.
 ///
 /// # Safety
@@ -3448,7 +3275,11 @@ pub extern "C" fn beamer_au_editor_sync_open(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
 
-        let sync = EditorSync::open(Arc::clone(&handle.model), handle.webview_events.clone());
+        let sync = EditorSync::open(
+            Arc::clone(&handle.model),
+            Arc::clone(&handle.webview_dispatch),
+            handle.webview_events.clone(),
+        );
         Box::into_raw(Box::new(BeamerAuEditorSync(sync)))
     }));
 
@@ -3515,60 +3346,79 @@ pub extern "C" fn beamer_au_editor_sync_frame_script(sync: *mut BeamerAuEditorSy
     result.ok().flatten().unwrap_or(ptr::null_mut())
 }
 
-/// The script that tells the web UI the value of a parameter it set, as it
-/// is in effect now.
-///
-/// The editor calls it after `beamer_au_param_set_from_ui` and after it
-/// told the host, which can round the value. The value counts as sent.
-/// Returns a heap-allocated null-terminated C string that the caller must
-/// free with `beamer_au_free_string`, or null on failure.
-///
-/// # Safety
-///
-/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
-///   was not closed yet, or null (in which case this function returns null)
-/// - Only the main thread of the editor calls it
-#[no_mangle]
-pub extern "C" fn beamer_au_editor_sync_parameter_script(
-    sync: *mut BeamerAuEditorSync,
-    param_id: u32,
-) -> *mut c_char {
-    if sync.is_null() {
-        return ptr::null_mut();
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: sync validated non-null above. The caller guarantees a valid
-        // pointer that only its main thread uses.
-        let sync = unsafe { &mut *sync };
-        script_into_raw(sync.0.parameter_script(param_id))
-    }));
-
-    result.ok().flatten().unwrap_or(ptr::null_mut())
+/// What an editor does in the host when its web UI edits a parameter
+/// (matches BeamerAuEditorHost in header). Each function gets `context`. A
+/// null function leaves the host untold.
+#[repr(C)]
+pub struct BeamerAuEditorHost {
+    /// Passed to each function.
+    pub context: *mut c_void,
+    /// The web UI began a gesture on a parameter.
+    pub begin_gesture: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32)>,
+    /// The web UI set a parameter to a normalized value, which the plugin
+    /// holds already. The host may round it.
+    pub set_parameter: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32, normalized: f64)>,
+    /// The web UI ended a gesture on a parameter, or its page went away
+    /// during one.
+    pub end_gesture: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32)>,
 }
 
-/// Handle a message of the web UI that needs no host: `state:set`, which
-/// sets a `State` field.
+/// The host of an editor as the editor sync tells it about edits.
+struct EditorHostEdits<'a>(&'a BeamerAuEditorHost);
+
+impl HostEdits for EditorHostEdits<'_> {
+    fn begin_gesture(&mut self, id: ParameterId) -> bool {
+        let Some(begin) = self.0.begin_gesture else {
+            return false;
+        };
+        // SAFETY: The editor keeps the context valid during the call that
+        // passed the host.
+        unsafe { begin(self.0.context, id) };
+        true
+    }
+
+    fn set_parameter(&mut self, id: ParameterId, normalized: f64) {
+        if let Some(set) = self.0.set_parameter {
+            // SAFETY: As in `begin_gesture`.
+            unsafe { set(self.0.context, id, normalized) };
+        }
+    }
+
+    fn end_gesture(&mut self, id: ParameterId) {
+        if let Some(end) = self.0.end_gesture {
+            // SAFETY: As in `begin_gesture`.
+            unsafe { end(self.0.context, id) };
+        }
+    }
+}
+
+/// Handle a message of the web UI: set the parameter or `State` field it
+/// names or pass it to the plugin, tell the host through `host` and return
+/// the script that answers it.
 ///
-/// Takes the message as the web UI sent it (UTF-8 JSON), so that its value
-/// reaches the field unchanged. Returns the script that answers with the
-/// value in effect, as a heap-allocated null-terminated C string that the
-/// caller must free with `beamer_au_free_string`, or null for any other
-/// message and on failure.
+/// Takes the message as the web UI sent it (UTF-8 JSON), so that its values
+/// reach the plugin unchanged. Returns the answer as a heap-allocated
+/// null-terminated C string that the caller must free with
+/// `beamer_au_free_string`, or null for a message without an answer and on
+/// failure.
 ///
 /// # Safety
 ///
 /// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
 ///   was not closed yet, or null (in which case this function returns null)
 /// - `json` must point to `json_len` readable bytes
+/// - `host` must point to a valid `BeamerAuEditorHost` whose context stays
+///   valid during the call, or be null (in which case this function returns
+///   null)
 /// - Only the main thread of the editor calls it
 #[no_mangle]
 pub extern "C" fn beamer_au_editor_sync_message(
     sync: *mut BeamerAuEditorSync,
     json: *const u8,
     json_len: usize,
+    host: *const BeamerAuEditorHost,
 ) -> *mut c_char {
-    if sync.is_null() || json.is_null() {
+    if sync.is_null() || json.is_null() || host.is_null() {
         return ptr::null_mut();
     }
 
@@ -3579,95 +3429,45 @@ pub extern "C" fn beamer_au_editor_sync_message(
         // SAFETY: json validated non-null above. Caller guarantees json_len
         // readable bytes.
         let bytes = unsafe { std::slice::from_raw_parts(json, json_len) };
-
-        let message: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-        if message.get("type")?.as_str()? != "state:set" {
-            return None;
-        }
-        let path = message.get("id")?.as_str()?;
-        let value = message.get("value").unwrap_or(&serde_json::Value::Null);
-        script_into_raw(sync.0.state_script(path, value)?)
+        // SAFETY: host validated non-null above. Caller guarantees a valid
+        // host for the call.
+        let host = unsafe { &*host };
+        script_into_raw(sync.0.handle_message(bytes, &mut EditorHostEdits(host))?)
     }));
 
     result.ok().flatten().unwrap_or(ptr::null_mut())
 }
 
-/// The web UI began a gesture on a parameter and the editor told the host.
+/// End in the host, through `host`, the gestures the web UI began and did
+/// not end: its page goes away, as the editor closes or the page loads
+/// again, so their ends will not come.
 ///
 /// # Safety
 ///
 /// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
 ///   was not closed yet, or null (in which case this function does nothing)
+/// - `host` must point to a valid `BeamerAuEditorHost` whose context stays
+///   valid during the call, or be null (in which case this function does
+///   nothing)
 /// - Only the main thread of the editor calls it
 #[no_mangle]
-pub extern "C" fn beamer_au_editor_sync_gesture_began(sync: *mut BeamerAuEditorSync, param_id: u32) {
-    if sync.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: sync validated non-null above. The caller guarantees a valid
-        // pointer that only its main thread uses.
-        let sync = unsafe { &mut *sync };
-        sync.0.gesture_began(param_id);
-    }));
-}
-
-/// The web UI ended a gesture on a parameter.
-///
-/// # Safety
-///
-/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
-///   was not closed yet, or null (in which case this function does nothing)
-/// - Only the main thread of the editor calls it
-#[no_mangle]
-pub extern "C" fn beamer_au_editor_sync_gesture_ended(sync: *mut BeamerAuEditorSync, param_id: u32) {
-    if sync.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: sync validated non-null above. The caller guarantees a valid
-        // pointer that only its main thread uses.
-        let sync = unsafe { &mut *sync };
-        sync.0.gesture_ended(param_id);
-    }));
-}
-
-/// Take one gesture the web UI began and did not end, for the editor to end
-/// in the host when the page goes away: as the editor closes or the page
-/// loads again.
-///
-/// Writes the parameter to `out_param_id` and returns true, or returns
-/// false when no gesture is open.
-///
-/// # Safety
-///
-/// - `sync` must be a pointer returned by `beamer_au_editor_sync_open` that
-///   was not closed yet, or null (in which case this function returns false)
-/// - `out_param_id` must be a valid pointer to writable memory
-/// - Only the main thread of the editor calls it
-#[no_mangle]
-pub extern "C" fn beamer_au_editor_sync_take_open_gesture(
+pub extern "C" fn beamer_au_editor_sync_end_open_gestures(
     sync: *mut BeamerAuEditorSync,
-    out_param_id: *mut u32,
-) -> bool {
-    if sync.is_null() || out_param_id.is_null() {
-        return false;
+    host: *const BeamerAuEditorHost,
+) {
+    if sync.is_null() || host.is_null() {
+        return;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: sync validated non-null above. The caller guarantees a valid
         // pointer that only its main thread uses.
         let sync = unsafe { &mut *sync };
-        let id = sync.0.take_open_gesture()?;
-        // SAFETY: out_param_id validated non-null above. Caller guarantees it
-        // is writable.
-        unsafe { *out_param_id = id };
-        Some(())
+        // SAFETY: host validated non-null above. Caller guarantees a valid
+        // host for the call.
+        let host = unsafe { &*host };
+        sync.0.end_open_gestures(&mut EditorHostEdits(host));
     }));
-
-    matches!(result, Ok(Some(())))
 }
 
 /// The editor was closed: stop keeping events for it and free the handle.

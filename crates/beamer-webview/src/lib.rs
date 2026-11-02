@@ -9,7 +9,8 @@
 //!   [`WebViewValueSender`] and [`WebViewStreamSender`] for the audio
 //!   thread, plus the [`WebViewHandler`] for calls and events from the page
 //! - the [`EditorSync`] of each open editor, which keeps the page in step
-//!   with the plugin
+//!   with the plugin and handles the messages of the page, with the
+//!   wrapper's [`HostEdits`] for what only the host can do
 //! - the platform-native WebView that a format wrapper embeds in the
 //!   host's view ([`platform`])
 
@@ -20,6 +21,7 @@ pub mod editor_sync;
 mod error;
 pub mod event_queue;
 mod ffi;
+mod message;
 pub mod mime;
 pub mod model;
 pub mod parameter_dump;
@@ -28,7 +30,7 @@ pub mod stream_sender;
 pub mod value_sender;
 
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
-pub use editor_sync::EditorSync;
+pub use editor_sync::{EditorSync, HostEdits};
 pub use error::{Result, WebViewError};
 pub use event_queue::WebViewEventQueue;
 #[doc(hidden)]

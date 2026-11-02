@@ -19,6 +19,12 @@
 //! again in the next frame with the same value (which the runtime
 //! ignores) and is never lost.
 //!
+//! The messages of the page go the other way. The wrapper hands each one
+//! to [`EditorSync::handle_message`], which reads it, sets the parameter or
+//! `State` field it names or passes it to the model's handler. The wrapper
+//! does what only it can do in the host through [`HostEdits`] and runs the
+//! answer in the WebView.
+//!
 //! The sync also notes the gestures the web UI began and did not end. A
 //! page that goes away during a drag or a scroll never sends the end, so
 //! the wrapper ends them in the host when the editor closes or the page
@@ -30,18 +36,48 @@ use std::sync::Arc;
 
 use beamer_core::state_format::SavedState;
 use beamer_core::{ParameterId, ParameterStore, SharedModel};
+use serde_json::Value;
 
 use crate::event_queue::WebViewEventQueue;
+use crate::message::PageMessage;
+use crate::model::WebViewDispatch;
 use crate::parameter_dump::params_to_init_json;
+
+/// The built-in invoke method that turns the text a user typed into a
+/// normalized value, with the parameter's own parser. It never reaches the
+/// plugin.
+const PARAMETER_TEXT_TO_NORMALIZED: &str = "_beamer/paramTextToNormalized";
+
+/// What a format wrapper does in the host when the web UI edits a
+/// parameter.
+///
+/// The editor sync calls it on the main thread while it handles a message
+/// of the page and for the gestures the page left open.
+pub trait HostEdits {
+    /// The web UI began a gesture on a parameter. Tell the host and return
+    /// whether it was told: only a gesture the host knows about is ended
+    /// for a page that goes away.
+    fn begin_gesture(&mut self, id: ParameterId) -> bool;
+
+    /// The web UI set a parameter to a normalized value, which the plugin
+    /// holds already. Tell the host.
+    fn set_parameter(&mut self, id: ParameterId, normalized: f64);
+
+    /// The web UI ended a gesture on a parameter, or its page went away
+    /// during one. Tell the host.
+    fn end_gesture(&mut self, id: ParameterId);
+}
 
 /// The link between one open editor and the plugin it shows.
 ///
-/// For the main thread of the editor. Holds the model and the event queue
-/// itself, so that it keeps working when the editor outlives the plugin
-/// instance.
+/// For the main thread of the editor. Holds the model, its dispatch and the
+/// event queue itself, so that it keeps working when the editor outlives
+/// the plugin instance.
 pub struct EditorSync {
     /// The model of the plugin: its parameters and `State` fields.
     model: Arc<dyn SharedModel>,
+    /// Where the web UI's invoke calls and events go: the model.
+    dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEventQueue>,
     /// The id of each parameter, in the order of `ParameterStore::info`,
@@ -69,7 +105,11 @@ const LARGE_STATE: usize = 1 << 20;
 impl EditorSync {
     /// Start keeping an editor in step. Events the plugin emits from now
     /// on reach it.
-    pub fn open(model: Arc<dyn SharedModel>, events: Option<WebViewEventQueue>) -> Self {
+    pub fn open(
+        model: Arc<dyn SharedModel>,
+        dispatch: Arc<dyn WebViewDispatch>,
+        events: Option<WebViewEventQueue>,
+    ) -> Self {
         if let Some(events) = &events {
             events.editor_opened();
         }
@@ -81,6 +121,7 @@ impl EditorSync {
             .collect();
         Self {
             model,
+            dispatch,
             events,
             last_values,
             state_generations: HashMap::new(),
@@ -88,11 +129,6 @@ impl EditorSync {
             reported_large: false,
             open_gestures: Vec::new(),
         }
-    }
-
-    /// The parameters of the plugin, as the host sees them.
-    pub fn parameter_store(&self) -> &dyn ParameterStore {
-        self.model.parameter_store()
     }
 
     /// The script that hands a freshly loaded page its parameters, the
@@ -170,14 +206,77 @@ impl EditorSync {
         (!script.is_empty()).then_some(script)
     }
 
+    /// Handle a message of the page: set what it sets, tell the host
+    /// through `host` and return the script that answers it, if any.
+    ///
+    /// `json` is the message as the page posted it. One that is not a
+    /// message of the runtime is logged and changes nothing.
+    pub fn handle_message(&mut self, json: &[u8], host: &mut dyn HostEdits) -> Option<String> {
+        match PageMessage::parse(json)? {
+            PageMessage::SetParameter { id, value } => {
+                self.model.parameter_store().set_normalized(id, value);
+                host.set_parameter(id, value);
+                // Answer with the value in effect at once, so that the
+                // display text follows without waiting for the next frame.
+                Some(self.parameter_script(id))
+            }
+            PageMessage::BeginGesture { id } => {
+                // The sync ends it if the page goes away first.
+                if host.begin_gesture(id) {
+                    self.open_gestures.push(id);
+                }
+                None
+            }
+            PageMessage::EndGesture { id } => {
+                self.gesture_ended(id);
+                host.end_gesture(id);
+                None
+            }
+            PageMessage::SetState { path, value } => self.state_script(&path, &value),
+            PageMessage::Invoke { method, args, call_id } => {
+                let result = self.invoke(&method, &args);
+                Some(result_script(call_id, result))
+            }
+            PageMessage::Event { name, data } => {
+                self.dispatch.dispatch_event(&name, &data);
+                None
+            }
+        }
+    }
+
+    /// End in the host the gestures the web UI began and did not end. The
+    /// wrapper calls it when the page goes away, as the editor closes or
+    /// the page loads again: their ends will not come.
+    pub fn end_open_gestures(&mut self, host: &mut dyn HostEdits) {
+        while let Some(id) = self.open_gestures.pop() {
+            host.end_gesture(id);
+        }
+    }
+
+    /// Answer an invoke call: a built-in method here, any other one by the
+    /// plugin.
+    fn invoke(&self, method: &str, args: &[Value]) -> Result<Value, String> {
+        if method != PARAMETER_TEXT_TO_NORMALIZED {
+            return self.dispatch.dispatch_invoke(method, args);
+        }
+        // The id of the parameter and the text. `null` for text the
+        // parameter cannot read and for arguments that do not fit.
+        let id = args.first().and_then(Value::as_u64).and_then(|id| ParameterId::try_from(id).ok());
+        let text = args.get(1).and_then(Value::as_str);
+        let normalized = match (id, text) {
+            (Some(id), Some(text)) => self.model.parameter_store().string_to_normalized(id, text),
+            _ => None,
+        };
+        Ok(normalized.map_or(Value::Null, Value::from))
+    }
+
     /// The script that tells the web UI the value of a parameter it set,
     /// as it is in effect now.
     ///
-    /// The wrapper calls it after it stored the value and told the host,
-    /// which can change the value (an Audio Unit host rounds it to 32
-    /// bits). The value counts as sent, so the next frame does not send
-    /// it again.
-    pub fn parameter_script(&mut self, id: ParameterId) -> String {
+    /// Built after the value was stored and the host was told, which can
+    /// change the value (an Audio Unit host rounds it to 32 bits). The
+    /// value counts as sent, so the next frame does not send it again.
+    fn parameter_script(&mut self, id: ParameterId) -> String {
         let parameters = self.model.parameter_store();
         let value = parameters.get_normalized(id);
         if let Some((_, last)) = self.last_values.iter_mut().find(|(known, _)| *known == id) {
@@ -190,25 +289,12 @@ impl EditorSync {
         script
     }
 
-    /// The web UI began a gesture on a parameter and the wrapper told the
-    /// host.
-    pub fn gesture_began(&mut self, id: ParameterId) {
-        self.open_gestures.push(id);
-    }
-
-    /// The web UI ended a gesture on a parameter.
-    pub fn gesture_ended(&mut self, id: ParameterId) {
+    /// The web UI ended a gesture on a parameter: it no longer waits for
+    /// its end. An end without a begin changes nothing.
+    fn gesture_ended(&mut self, id: ParameterId) {
         if let Some(index) = self.open_gestures.iter().rposition(|&open| open == id) {
             self.open_gestures.remove(index);
         }
-    }
-
-    /// Take one gesture the web UI began and did not end: the parameter
-    /// whose end the host still waits for. The wrapper ends each one in the
-    /// host when the page goes away, as the editor closes or the page loads
-    /// again. `None` when no gesture is open.
-    pub fn take_open_gesture(&mut self) -> Option<ParameterId> {
-        self.open_gestures.pop()
     }
 }
 
@@ -219,7 +305,7 @@ impl EditorSync {
     /// A value that does not fit the type of the field leaves the field as
     /// it is and is logged; the answer then corrects the web UI. Returns
     /// `None` for a path that names no field.
-    pub fn state_script(&mut self, path: &str, value: &serde_json::Value) -> Option<String> {
+    fn state_script(&mut self, path: &str, value: &Value) -> Option<String> {
         let json = serde_json::to_vec(value).ok()?;
         let mut answer = None;
         let generations = &mut self.state_generations;
@@ -289,6 +375,16 @@ fn snapshot(state: &dyn SavedState, path: &str) -> Option<(u64, Vec<u8>)> {
     }
 }
 
+/// The script that settles the promise of an invoke call: `{"ok":value}`
+/// or `{"err":message}`.
+fn result_script(call_id: u64, result: Result<Value, String>) -> String {
+    let outcome = match result {
+        Ok(value) => format!("{{\"ok\":{value}}}"),
+        Err(message) => format!("{{\"err\":{}}}", json_string(&message)),
+    };
+    format!("window.__BEAMER__._onResult({call_id},{outcome});")
+}
+
 /// Write `"path":value` into a JavaScript object literal.
 fn push_entry(script: &mut String, path: &str, json: &[u8]) {
     script.push_str(&json_string(path));
@@ -333,9 +429,9 @@ fn json_string(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use std::any::Any;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     use beamer_core::{
         NoParameters, ParameterGroups, ParameterInfo, ParameterRef, ParameterValue, Parameters, Saved,
@@ -397,8 +493,12 @@ mod tests {
             }
         }
 
-        fn string_to_normalized(&self, _id: ParameterId, _string: &str) -> Option<ParameterValue> {
-            None
+        // The second parameter reads a number, the first nothing.
+        fn string_to_normalized(&self, id: ParameterId, string: &str) -> Option<ParameterValue> {
+            match id {
+                20 => string.parse().ok(),
+                _ => None,
+            }
         }
 
         fn normalized_to_plain(&self, id: ParameterId, normalized: ParameterValue) -> ParameterValue {
@@ -444,9 +544,46 @@ mod tests {
         }
     }
 
+    /// Where the calls of a page go that nobody answers.
+    fn no_dispatch() -> Arc<dyn WebViewDispatch> {
+        Arc::new(NoParameters)
+    }
+
+    /// A host that notes what the editor tells it.
+    #[derive(Default)]
+    struct RecordingHost {
+        calls: Vec<String>,
+        /// Whether the host cannot be told of a gesture, as a VST3 host
+        /// that has not set its component handler.
+        unreachable: bool,
+    }
+
+    impl HostEdits for RecordingHost {
+        fn begin_gesture(&mut self, id: ParameterId) -> bool {
+            if self.unreachable {
+                return false;
+            }
+            self.calls.push(format!("begin {id}"));
+            true
+        }
+
+        fn set_parameter(&mut self, id: ParameterId, normalized: f64) {
+            self.calls.push(format!("set {id} {normalized}"));
+        }
+
+        fn end_gesture(&mut self, id: ParameterId) {
+            self.calls.push(format!("end {id}"));
+        }
+    }
+
+    /// Hand the sync a message of the page.
+    fn message(sync: &mut EditorSync, host: &mut RecordingHost, json: &str) -> Option<String> {
+        sync.handle_message(json.as_bytes(), host)
+    }
+
     fn sync() -> (Arc<TwoParameters>, EditorSync) {
         let parameters = Arc::new(TwoParameters::new());
-        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, None);
+        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, no_dispatch(), None);
         (parameters, sync)
     }
 
@@ -472,25 +609,138 @@ mod tests {
     }
 
     #[test]
-    fn test_gestures_without_an_end_are_taken_once() {
+    fn test_gestures_without_an_end_are_ended_once() {
         let (_, mut sync) = sync();
-        assert_eq!(sync.take_open_gesture(), None);
+        let mut host = RecordingHost::default();
 
-        // Two begins on one parameter wait for two ends.
-        sync.gesture_began(10);
-        sync.gesture_began(20);
-        sync.gesture_began(10);
-        sync.gesture_ended(10);
-        // An end without a begin changes nothing.
-        sync.gesture_ended(30);
-
-        let mut open = Vec::new();
-        while let Some(id) = sync.take_open_gesture() {
-            open.push(id);
+        // Two begins on one parameter wait for two ends. An end without a
+        // begin reaches the host and changes nothing else.
+        for json in [
+            r#"{"type":"param:begin","id":10}"#,
+            r#"{"type":"param:begin","id":20}"#,
+            r#"{"type":"param:begin","id":10}"#,
+            r#"{"type":"param:end","id":10}"#,
+            r#"{"type":"param:end","id":30}"#,
+        ] {
+            assert_eq!(message(&mut sync, &mut host, json), None);
         }
-        open.sort_unstable();
-        assert_eq!(open, [10, 20]);
-        assert_eq!(sync.take_open_gesture(), None);
+        assert_eq!(host.calls, ["begin 10", "begin 20", "begin 10", "end 10", "end 30"]);
+
+        // The page goes away: the latest gesture ends first.
+        host.calls.clear();
+        sync.end_open_gestures(&mut host);
+        assert_eq!(host.calls, ["end 20", "end 10"]);
+        sync.end_open_gestures(&mut host);
+        assert_eq!(host.calls.len(), 2);
+    }
+
+    #[test]
+    fn test_gesture_the_host_was_not_told_of_is_not_ended() {
+        let (_, mut sync) = sync();
+        let mut host = RecordingHost { unreachable: true, ..RecordingHost::default() };
+
+        message(&mut sync, &mut host, r#"{"type":"param:begin","id":10}"#);
+        sync.end_open_gestures(&mut host);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn test_parameter_the_page_sets_reaches_the_plugin_and_the_host() {
+        let (parameters, mut sync) = sync();
+        sync.frame_script();
+        let mut host = RecordingHost::default();
+
+        assert_eq!(
+            message(&mut sync, &mut host, r#"{"type":"param:set","id":20,"value":0.75}"#).as_deref(),
+            Some("window.__BEAMER__._onParams({20:[0.75,null,\"0.75\"]});")
+        );
+        assert_eq!(parameters.get_normalized(20), 0.75);
+        assert_eq!(host.calls, ["set 20 0.75"]);
+        // The page has the value.
+        assert_eq!(sync.frame_script(), None);
+    }
+
+    #[test]
+    fn test_message_the_runtime_does_not_send_changes_nothing() {
+        let (parameters, mut sync) = sync();
+        let mut host = RecordingHost::default();
+
+        assert_eq!(message(&mut sync, &mut host, r#"{"type":"param:set","id":20}"#), None);
+        assert_eq!(message(&mut sync, &mut host, "not json"), None);
+        assert_eq!(parameters.get_normalized(20), 0.0);
+        assert!(host.calls.is_empty());
+    }
+
+    /// A plugin that answers one method and keeps the events it gets.
+    #[derive(Default)]
+    struct Echo {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl WebViewDispatch for Echo {
+        fn dispatch_invoke(&self, method: &str, args: &[Value]) -> Result<Value, String> {
+            match method {
+                "echo" => Ok(args.first().cloned().unwrap_or_default()),
+                _ => Err(format!("unknown method: {method}")),
+            }
+        }
+
+        fn dispatch_event(&self, name: &str, data: &Value) {
+            self.events.lock().unwrap().push(format!("{name} {data}"));
+        }
+    }
+
+    fn echo_sync() -> (Arc<Echo>, EditorSync) {
+        let echo = Arc::new(Echo::default());
+        let sync = EditorSync::open(
+            Arc::new(TwoParameters::new()),
+            Arc::clone(&echo) as Arc<dyn WebViewDispatch>,
+            None,
+        );
+        (echo, sync)
+    }
+
+    #[test]
+    fn test_invoke_is_answered_under_its_call_id() {
+        let (_, mut sync) = echo_sync();
+        let mut host = RecordingHost::default();
+
+        assert_eq!(
+            message(&mut sync, &mut host, r#"{"type":"invoke","method":"echo","args":["say \"hi\""],"callId":4}"#)
+                .as_deref(),
+            Some(r#"window.__BEAMER__._onResult(4,{"ok":"say \"hi\""});"#)
+        );
+        assert_eq!(
+            message(&mut sync, &mut host, r#"{"type":"invoke","method":"nothing","callId":5}"#).as_deref(),
+            Some(r#"window.__BEAMER__._onResult(5,{"err":"unknown method: nothing"});"#)
+        );
+    }
+
+    #[test]
+    fn test_built_in_invoke_reads_the_text_of_a_parameter() {
+        let (_, mut sync) = echo_sync();
+        let mut host = RecordingHost::default();
+        let mut invoke = |args: &str| {
+            let json = format!(
+                r#"{{"type":"invoke","method":"_beamer/paramTextToNormalized","args":{args},"callId":1}}"#
+            );
+            message(&mut sync, &mut host, &json)
+        };
+
+        // The plugin never sees the method: it would reject it.
+        assert_eq!(invoke(r#"[20,"0.5"]"#).as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":0.5});"#));
+        assert_eq!(invoke(r#"[10,"0.5"]"#).as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
+        assert_eq!(invoke("[20]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
+    }
+
+    #[test]
+    fn test_event_of_the_page_reaches_the_plugin() {
+        let (echo, mut sync) = echo_sync();
+        let mut host = RecordingHost::default();
+
+        assert_eq!(message(&mut sync, &mut host, r#"{"type":"event","name":"zoom","data":2}"#), None);
+        assert_eq!(message(&mut sync, &mut host, r#"{"type":"event","name":"ping"}"#), None);
+        assert_eq!(*echo.events.lock().unwrap(), ["zoom 2", "ping null"]);
     }
 
     #[test]
@@ -525,7 +775,7 @@ mod tests {
     fn test_first_frame_sends_a_value_that_is_not_a_number() {
         let parameters = Arc::new(TwoParameters::new());
         parameters.set_normalized(10, f64::NAN);
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, None);
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), None);
 
         let script = sync.frame_script().expect("a first frame");
         assert!(script.contains("10:[null,null,"));
@@ -545,7 +795,7 @@ mod tests {
         let events = WebViewEventQueue::new();
         events.claim();
         let parameters = Arc::new(TwoParameters::new());
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, Some(events.clone()));
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), Some(events.clone()));
 
         events.emit("tick", &1);
         let script = sync.frame_script().expect("a first frame");
@@ -568,7 +818,7 @@ mod tests {
 
         // The editor ticks before its page loaded: that value reaches
         // nothing.
-        let mut sync = EditorSync::open(Arc::new(NoParameters), Some(events.clone()));
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
         assert!(sync.frame_script().is_some());
         assert_eq!(sync.frame_script(), None);
 
@@ -597,11 +847,11 @@ mod tests {
         events.claim();
 
         events.emit("before", &1);
-        let mut first = EditorSync::open(Arc::new(NoParameters), Some(events.clone()));
+        let mut first = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
         assert_eq!(first.frame_script(), None);
 
         // A second editor of the same plugin keeps the queue open.
-        let second = EditorSync::open(Arc::new(NoParameters), Some(events.clone()));
+        let second = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
         drop(second);
         events.emit("open", &2);
         assert_eq!(
@@ -616,7 +866,7 @@ mod tests {
 
     #[test]
     fn test_init_script_names_the_plugin_format() {
-        let mut sync = EditorSync::open(Arc::new(NoParameters), None);
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None);
         assert_eq!(
             sync.init_script("vst3"),
             "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\",\"state\":{}})"
@@ -660,7 +910,7 @@ mod tests {
 
     fn state_sync() -> (Arc<TwoStates>, EditorSync) {
         let states = Arc::new(TwoStates::default());
-        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, None);
+        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, no_dispatch(), None);
         (states, sync)
     }
 
@@ -703,11 +953,13 @@ mod tests {
     fn test_state_the_ui_set_is_answered_and_not_sent_again() {
         let (states, mut sync) = state_sync();
         sync.init_script("vst3");
+        let mut host = RecordingHost::default();
 
         assert_eq!(
-            sync.state_script("zoom", &serde_json::json!(200)).as_deref(),
+            message(&mut sync, &mut host, r#"{"type":"state:set","id":"zoom","value":200}"#).as_deref(),
             Some("window.__BEAMER__._onState({\"zoom\":200});")
         );
+        assert!(host.calls.is_empty());
         assert_eq!(*states.zoom.get(), 200);
         assert_eq!(sync.frame_script(), None);
     }

@@ -5,10 +5,10 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use beamer_core::{SharedModel, Size};
+use beamer_core::{ParameterId, SharedModel, Size};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
-use beamer_webview::{EditorSync, WebViewDispatch, WebViewEventQueue};
+use beamer_webview::{EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
 use vst3::Steinberg::Vst::{IComponentHandler2, IComponentHandler2Trait};
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef};
@@ -45,7 +45,11 @@ struct IpcContext {
 impl IpcContext {
     /// Start keeping the web UI in step: the view shows an editor now.
     fn open_sync(&mut self) {
-        self.sync = Some(EditorSync::open(Arc::clone(&self.model), self.events.clone()));
+        self.sync = Some(EditorSync::open(
+            Arc::clone(&self.model),
+            Arc::clone(&self.dispatch),
+            self.events.clone(),
+        ));
     }
 
     /// Stop keeping the web UI in step: the view no longer shows an editor.
@@ -57,15 +61,8 @@ impl IpcContext {
     /// End in the host the gestures the page began and did not end: the
     /// page goes away, so their ends will not come.
     fn end_open_gestures(&mut self) {
-        let Some(sync) = self.sync.as_mut() else { return };
-        let handler = self.handler.get();
-        while let Some(id) = sync.take_open_gesture() {
-            if !handler.is_null() {
-                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-                unsafe {
-                    ((*(*handler).vtbl).endEdit)(handler, id);
-                }
-            }
+        if let Some(sync) = self.sync.as_mut() {
+            sync.end_open_gestures(&mut HandlerEdits(&self.handler));
         }
     }
 
@@ -88,6 +85,44 @@ impl IpcContext {
         if let Some(handler) = handler.cast::<IComponentHandler2>() {
             // SAFETY: handler is a valid COM pointer.
             unsafe { handler.setDirty(1) };
+        }
+    }
+}
+
+/// The host as the web UI edits parameters in it: through the component
+/// handler the host set last. Without one the host cannot be told.
+struct HandlerEdits<'a>(&'a ComponentHandler);
+
+impl HostEdits for HandlerEdits<'_> {
+    fn begin_gesture(&mut self, id: ParameterId) -> bool {
+        let handler = self.0.get();
+        if handler.is_null() {
+            return false;
+        }
+        // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+        unsafe {
+            ((*(*handler).vtbl).beginEdit)(handler, id);
+        }
+        true
+    }
+
+    fn set_parameter(&mut self, id: ParameterId, normalized: f64) {
+        let handler = self.0.get();
+        if !handler.is_null() {
+            // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+            unsafe {
+                ((*(*handler).vtbl).performEdit)(handler, id, normalized);
+            }
+        }
+    }
+
+    fn end_gesture(&mut self, id: ParameterId) {
+        let handler = self.0.get();
+        if !handler.is_null() {
+            // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
+            unsafe {
+                ((*(*handler).vtbl).endEdit)(handler, id);
+            }
         }
     }
 }
@@ -157,7 +192,7 @@ impl Class for WebViewPlugView {
 // IPC callbacks (extern "C-unwind" for WebView)
 // ---------------------------------------------------------------------------
 
-/// Message callback: dispatches JSON messages from JavaScript.
+/// Message callback: hands a message of the page to the editor sync.
 unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, len: usize) {
     if context.is_null() || json.is_null() {
         return;
@@ -167,128 +202,16 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
     let ipc = unsafe { &mut *(context as *mut IpcContext) };
     // SAFETY: json/len come from the WebView message handler.
     let bytes = unsafe { std::slice::from_raw_parts(json, len) };
-    let Ok(json_str) = std::str::from_utf8(bytes) else {
-        log::error!("IPC message is not valid UTF-8.");
+
+    // Without an editor no page is left to send or answer.
+    let Some(sync) = ipc.sync.as_mut() else { return };
+    let Some(script) = sync.handle_message(bytes, &mut HandlerEdits(&ipc.handler)) else {
         return;
     };
-
-    let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) else {
-        log::warn!("Invalid IPC message JSON: {json_str}");
-        return;
-    };
-
-    let Some(msg_type) = msg.get("type").and_then(|t| t.as_str()) else {
-        return;
-    };
-
-    let parameters = ipc.model.parameter_store();
-
-    match msg_type {
-        "param:set" => {
-            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
-            let Some(value) = msg.get("value").and_then(|v| v.as_f64()) else { return };
-            parameters.set_normalized(id, value);
-            let handler = ipc.handler.get();
-            if !handler.is_null() {
-                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-                unsafe {
-                    ((*(*handler).vtbl).performEdit)(handler, id, value);
-                }
-            }
-            // Answer with the value in effect at once, so that the display
-            // text follows without waiting for the next frame.
-            if let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) {
-                // SAFETY: webview is valid for the view lifetime.
-                let webview = unsafe { &*ipc.webview };
-                webview.evaluate_js(&sync.parameter_script(id));
-            }
-        }
-        "state:set" => {
-            let Some(path) = msg.get("id").and_then(|v| v.as_str()) else { return };
-            let value = msg.get("value").unwrap_or(&serde_json::Value::Null);
-            // Answer with the value in effect, which corrects a value that
-            // does not fit the field.
-            if let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) {
-                if let Some(script) = sync.state_script(path, value) {
-                    // SAFETY: webview is valid for the view lifetime.
-                    let webview = unsafe { &*ipc.webview };
-                    webview.evaluate_js(&script);
-                }
-            }
-        }
-        "param:begin" => {
-            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
-            let handler = ipc.handler.get();
-            if !handler.is_null() {
-                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-                unsafe {
-                    ((*(*handler).vtbl).beginEdit)(handler, id);
-                }
-                // The view ends it if the page goes away first.
-                if let Some(sync) = ipc.sync.as_mut() {
-                    sync.gesture_began(id);
-                }
-            }
-        }
-        "param:end" => {
-            let Some(id) = msg.get("id").and_then(|v| v.as_u64()).map(|v| v as u32) else { return };
-            if let Some(sync) = ipc.sync.as_mut() {
-                sync.gesture_ended(id);
-            }
-            let handler = ipc.handler.get();
-            if !handler.is_null() {
-                // SAFETY: handler is non-null and is valid COM pointer with valid vtbl.
-                unsafe {
-                    ((*(*handler).vtbl).endEdit)(handler, id);
-                }
-            }
-        }
-        "invoke" => {
-            let Some(method) = msg.get("method").and_then(|v| v.as_str()) else { return };
-            let args = msg.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let call_id = msg.get("callId").and_then(|v| v.as_u64()).unwrap_or(0);
-
-            // Handle built-in invokes before dispatching to the model.
-            let result = if method == "_beamer/paramTextToNormalized" {
-                let param_id = args.first().and_then(|v| v.as_u64()).map(|v| v as u32);
-                let text = args.get(1).and_then(|v| v.as_str());
-                match (param_id, text) {
-                    (Some(id), Some(s)) => match parameters.string_to_normalized(id, s) {
-                        Some(norm) => Ok(serde_json::Value::from(norm)),
-                        None => Ok(serde_json::Value::Null),
-                    },
-                    _ => Ok(serde_json::Value::Null),
-                }
-            } else {
-                ipc.dispatch.dispatch_invoke(method, &args)
-            };
-
-            // Send result back to JS so the Promise resolves/rejects.
-            if !ipc.webview.is_null() {
-                // SAFETY: webview pointer is valid for the view lifetime.
-                let webview = unsafe { &*ipc.webview };
-                let js = match result {
-                    Ok(val) => {
-                        let json = serde_json::to_string(&val).unwrap_or_else(|_| "null".into());
-                        format!("window.__BEAMER__._onResult({call_id},{{\"ok\":{json}}})")
-                    }
-                    Err(err) => {
-                        let escaped = serde_json::to_string(&err).unwrap_or_default();
-                        format!("window.__BEAMER__._onResult({call_id},{{\"err\":{escaped}}})")
-                    }
-                };
-                webview.evaluate_js(&js);
-            }
-        }
-        "event" => {
-            let Some(name) = msg.get("name").and_then(|v| v.as_str()) else { return };
-            let data = msg.get("data").cloned().unwrap_or(serde_json::Value::Null);
-
-            ipc.dispatch.dispatch_event(name, &data);
-        }
-        _ => {
-            log::debug!("Unknown IPC message type: {msg_type}");
-        }
+    if !ipc.webview.is_null() {
+        // SAFETY: webview pointer is valid for the view lifetime.
+        let webview = unsafe { &*ipc.webview };
+        webview.evaluate_js(&script);
     }
 }
 
@@ -718,17 +641,7 @@ mod tests {
     /// A plugin that knows no invoke methods and ignores events.
     struct NoDispatch;
 
-    impl WebViewDispatch for NoDispatch {
-        fn dispatch_invoke(
-            &self,
-            method: &str,
-            _args: &[serde_json::Value],
-        ) -> Result<serde_json::Value, String> {
-            Err(format!("unknown method: {method}"))
-        }
-
-        fn dispatch_event(&self, _name: &str, _data: &serde_json::Value) {}
-    }
+    impl WebViewDispatch for NoDispatch {}
 
     /// The context of a view of a plugin with this event queue.
     fn context(events: Option<WebViewEventQueue>) -> IpcContext {
@@ -782,11 +695,11 @@ mod tests {
     }
 
     /// A component handler of a host that counts the calls of setDirty and
-    /// notes the gestures.
+    /// notes the edits: begins, values and ends.
     #[derive(Default)]
     struct HostRecorder {
         dirty: std::sync::atomic::AtomicUsize,
-        gestures: std::sync::Mutex<Vec<String>>,
+        edits: std::sync::Mutex<Vec<String>>,
     }
 
     impl Class for HostRecorder {
@@ -795,20 +708,21 @@ mod tests {
 
     impl vst3::Steinberg::Vst::IComponentHandlerTrait for HostRecorder {
         unsafe fn beginEdit(&self, id: vst3::Steinberg::Vst::ParamID) -> tresult {
-            self.gestures.lock().unwrap().push(format!("begin {id}"));
+            self.edits.lock().unwrap().push(format!("begin {id}"));
             kResultOk
         }
 
         unsafe fn performEdit(
             &self,
-            _id: vst3::Steinberg::Vst::ParamID,
-            _value: vst3::Steinberg::Vst::ParamValue,
+            id: vst3::Steinberg::Vst::ParamID,
+            value: vst3::Steinberg::Vst::ParamValue,
         ) -> tresult {
+            self.edits.lock().unwrap().push(format!("set {id} {value}"));
             kResultOk
         }
 
         unsafe fn endEdit(&self, id: vst3::Steinberg::Vst::ParamID) -> tresult {
-            self.gestures.lock().unwrap().push(format!("end {id}"));
+            self.edits.lock().unwrap().push(format!("end {id}"));
             kResultOk
         }
 
@@ -922,27 +836,47 @@ mod tests {
         let mut ipc = context(None);
         // SAFETY: handler is a valid COM pointer and the test is one thread.
         unsafe { ipc.handler.set(handler) };
-        let gestures = || std::mem::take(&mut *host.gestures.lock().unwrap());
+        let edits = || std::mem::take(&mut *host.edits.lock().unwrap());
 
         // The editor closes during a drag of parameter 2.
         ipc.open_sync();
         message(&mut ipc, r#"{"type":"param:begin","id":1}"#);
         message(&mut ipc, r#"{"type":"param:begin","id":2}"#);
+        message(&mut ipc, r#"{"type":"param:set","id":2,"value":0.5}"#);
         message(&mut ipc, r#"{"type":"param:end","id":1}"#);
         ipc.close_sync();
-        assert_eq!(gestures(), ["begin 1", "begin 2", "end 1", "end 2"]);
+        assert_eq!(edits(), ["begin 1", "begin 2", "set 2 0.5", "end 1", "end 2"]);
         // The drop of the view after removed() ends nothing again.
         ipc.close_sync();
-        assert!(gestures().is_empty());
+        assert!(edits().is_empty());
 
         // The page loads again during a scroll.
         ipc.open_sync();
         message(&mut ipc, r#"{"type":"param:begin","id":3}"#);
         // SAFETY: the context is a valid IpcContext.
         unsafe { on_loaded(&mut ipc as *mut IpcContext as *mut c_void) };
-        assert_eq!(gestures(), ["begin 3", "end 3"]);
+        assert_eq!(edits(), ["begin 3", "end 3"]);
         ipc.close_sync();
-        assert!(gestures().is_empty());
+        assert!(edits().is_empty());
+    }
+
+    #[test]
+    fn test_gesture_begun_before_the_host_set_its_handler_is_not_ended() {
+        let host = vst3::ComWrapper::new(HostRecorder::default());
+        let handler = host
+            .as_com_ref::<IComponentHandler>()
+            .expect("the recorder is an IComponentHandler")
+            .as_ptr();
+        let mut ipc = context(None);
+        ipc.open_sync();
+
+        // The host sets its handler during the drag: it never heard the
+        // begin, so it hears no end either.
+        message(&mut ipc, r#"{"type":"param:begin","id":1}"#);
+        // SAFETY: handler is a valid COM pointer and the test is one thread.
+        unsafe { ipc.handler.set(handler) };
+        ipc.close_sync();
+        assert!(host.edits.lock().unwrap().is_empty());
     }
 
     #[test]
