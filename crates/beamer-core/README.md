@@ -4,7 +4,7 @@ Format-agnostic core abstractions for building audio plugins with Beamer.
 
 This crate provides the shared traits and types used by all plugin formats (AU, VST3):
 
-- **Plugin traits**: `Model`, `Processor`, `Parameters`, `Saved`, `WebViewEvents`
+- **Plugin traits**: `Model`, `Processor`, `Parameters`, `Saved`
 - **Audio buffers**: `Buffer<S>`, `AuxiliaryBuffers<S>` with real-time safety guarantees
 - **MIDI types**: Complete MIDI event handling including MPE and Note Expression
 - **Parameter types**: `FloatParameter`, `IntParameter`, `BoolParameter`, `EnumParameter`, with smoothing for `FloatParameter`
@@ -22,7 +22,7 @@ Use `beamer-core` directly only if you're:
 
 ## Advanced: Manual Implementation
 
-Most plugins should use `#[beamer::model]`. For advanced scenarios like dynamic parameter counts or custom storage strategies, a model can implement `Parameters`, `ParameterGroups`, `Saved`, `WebViewEvents` and `Default` by hand. Empty impls of `ParameterGroups`, `Saved` and `WebViewEvents` are enough for a model without groups, `State` fields or an event queue. See [Low-Level Traits](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#low-level-traits).
+Most plugins should use `#[beamer::model]`. For advanced scenarios like dynamic parameter counts or custom storage strategies, a model can implement `Parameters`, `ParameterGroups`, `Saved` and `Default` by hand, with the web UI traits `WebViewEvents` and `WebViewDispatch` of `beamer-webview`. Empty impls of `ParameterGroups`, `Saved`, `WebViewEvents` and `WebViewDispatch` are enough for a model without groups, `State` fields, an event queue or answers to its web UI. See [Low-Level Traits](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#low-level-traits).
 
 ## Documentation
 

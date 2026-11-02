@@ -13,8 +13,6 @@ pub enum PluginError {
     StateError(String),
     /// Platform-specific error.
     PlatformError(String),
-    /// WebView creation or operation failed.
-    WebViewError(String),
 }
 
 impl fmt::Display for PluginError {
@@ -24,7 +22,6 @@ impl fmt::Display for PluginError {
             Self::ProcessingError(msg) => write!(f, "Processing error: {}", msg),
             Self::StateError(msg) => write!(f, "State error: {}", msg),
             Self::PlatformError(msg) => write!(f, "Platform error: {}", msg),
-            Self::WebViewError(msg) => write!(f, "WebView error: {}", msg),
         }
     }
 }

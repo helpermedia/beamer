@@ -321,7 +321,7 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 | **Pan law** | Constant power or linear, set in the web UI and saved with the project |
 
 **Demonstrates:**
-- `on_invoke()` on the model for request/response calls from JavaScript
+- `WebViewHandler::on_invoke()` on the model for request/response calls from JavaScript
 - `WebViewEventQueue` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state

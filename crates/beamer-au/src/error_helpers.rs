@@ -35,7 +35,6 @@ pub fn plugin_error_to_os_status(err: &PluginError) -> i32 {
         PluginError::ProcessingError(_) => os_status::K_AUDIO_UNIT_ERR_RENDER,
         PluginError::StateError(_) => os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY,
         PluginError::PlatformError(_) => os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY,
-        PluginError::WebViewError(_) => os_status::K_AUDIO_UNIT_ERR_INVALID_PROPERTY,
     }
 }
 

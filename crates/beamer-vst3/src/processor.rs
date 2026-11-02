@@ -45,7 +45,7 @@ use beamer_core::midi1_translator::order_parameter_number_controllers;
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
-use beamer_core::{WebViewDispatch, WebViewEventQueue};
+use beamer_webview::{WebViewDispatch, WebViewEventQueue, WebViewEvents};
 use crate::webview::WebViewConfig;
 use crate::factory::ComponentFactory;
 use crate::speakers;
@@ -852,6 +852,8 @@ where
     host_notifier: HostNotifier,
     /// The plugin's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEventQueue>,
+    /// Where the web UI's invoke calls and events go: the model.
+    webview_dispatch: Arc<dyn WebViewDispatch>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
     /// the answer must not need the processor (see `publish_timing`).
@@ -931,7 +933,10 @@ impl<P: Model> Vst3Processor<P> {
     ///
     /// The wrapper starts unprepared, with a default plugin instance.
     /// The processor will be created when `setupProcessing()` is called.
-    pub fn new(config: &'static Config) -> Self {
+    pub fn new(config: &'static Config) -> Self
+    where
+        P: WebViewEvents + WebViewDispatch,
+    {
         let model = Arc::new(P::default());
         #[cfg(feature = "diagnostics")]
         let bypass_parameter = beamer_core::parameter_types::bypass_parameter(&*model);
@@ -957,11 +962,12 @@ impl<P: Model> Vst3Processor<P> {
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        let events = beamer_core::WebViewEvents::webview_events(&*model);
+        let events = WebViewEvents::webview_events(&*model);
         if let Some(events) = events {
             events.claim();
         }
         let webview_events = events.cloned();
+        let webview_dispatch = Arc::clone(&model) as Arc<dyn WebViewDispatch>;
 
         let known_state_generation =
             Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
@@ -1000,6 +1006,7 @@ impl<P: Model> Vst3Processor<P> {
             component_handler,
             host_notifier,
             webview_events,
+            webview_dispatch,
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
@@ -1797,7 +1804,7 @@ impl<P: Model> Vst3Processor<P> {
     }
 }
 
-impl<P: Model> ComponentFactory for Vst3Processor<P> {
+impl<P: Model + WebViewEvents + WebViewDispatch> ComponentFactory for Vst3Processor<P> {
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
 
@@ -2936,8 +2943,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
             size,
             self.shared_model(),
             Arc::clone(&self.component_handler),
-            // The web UI's invoke calls and events go to the model.
-            Arc::clone(&self.model) as Arc<dyn WebViewDispatch>,
+            Arc::clone(&self.webview_dispatch),
             self.webview_events.clone(),
             Arc::clone(&self.known_state_generation),
         );
@@ -3987,6 +3993,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(SetupModel, parameters);
+    beamer_webview::__without_web_ui!(SetupModel);
 
     impl Model for SetupModel {
         type Setup = RecordedSetup;
@@ -4148,8 +4155,6 @@ mod tests {
 
     impl beamer_core::Saved for StateParameters {}
 
-    impl beamer_core::WebViewEvents for StateParameters {}
-
     #[derive(Default)]
     struct StateModel {
         parameters: StateParameters,
@@ -4167,6 +4172,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(StateModel, parameters);
+    beamer_webview::__without_web_ui!(StateModel);
 
     impl Model for StateModel {
         type Setup = ();
@@ -4219,6 +4225,7 @@ mod tests {
     struct MidiProcessor;
 
     beamer_core::__forward_model!(MidiModel, parameters);
+    beamer_webview::__without_web_ui!(MidiModel);
 
     impl Model for MidiModel {
         type Setup = ();
@@ -4302,6 +4309,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(CcModel, parameters);
+    beamer_webview::__without_web_ui!(CcModel);
 
     impl Model for CcModel {
         type Setup = ();
@@ -5267,6 +5275,7 @@ mod tests {
     struct GainPresetProcessor;
 
     beamer_core::__forward_model!(GainPresetModel, parameters);
+    beamer_webview::__without_web_ui!(GainPresetModel);
 
     impl Model for GainPresetModel {
         type Setup = ();
@@ -5398,8 +5407,6 @@ mod tests {
 
     impl beamer_core::Saved for SplitParameters {}
 
-    impl beamer_core::WebViewEvents for SplitParameters {}
-
     /// A plugin with a gain, a stepped parameter, the mod wheel as MIDI and
     /// an aux bus each way, which records its process() calls and writes
     /// each input sample plus the gain to its output.
@@ -5415,6 +5422,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(SplitModel, parameters);
+    beamer_webview::__without_web_ui!(SplitModel);
 
     impl Model for SplitModel {
         type Setup = ();
@@ -6337,8 +6345,6 @@ mod tests {
         }
     }
 
-    impl beamer_core::WebViewEvents for ThreadedParameters {}
-
     #[derive(Default)]
     struct ThreadedModel {
         parameters: ThreadedParameters,
@@ -6350,6 +6356,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(ThreadedModel, parameters);
+    beamer_webview::__without_web_ui!(ThreadedModel);
 
     impl Model for ThreadedModel {
         type Setup = ();
@@ -6541,6 +6548,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(BusModel, parameters);
+    beamer_webview::__without_web_ui!(BusModel);
 
     impl Model for BusModel {
         type Setup = ActiveBuses;
@@ -6861,6 +6869,7 @@ mod tests {
     struct LayoutProcessor;
 
     beamer_core::__forward_model!(LayoutModel, parameters);
+    beamer_webview::__without_web_ui!(LayoutModel);
 
     impl Model for LayoutModel {
         type Setup = ActiveBuses;
@@ -7065,6 +7074,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(AnySidechainModel, parameters);
+    beamer_webview::__without_web_ui!(AnySidechainModel);
 
     impl Model for AnySidechainModel {
         type Setup = ActiveBuses;
@@ -7119,6 +7129,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(StereoOutputModel, parameters);
+    beamer_webview::__without_web_ui!(StereoOutputModel);
 
     impl Model for StereoOutputModel {
         type Setup = ActiveBuses;

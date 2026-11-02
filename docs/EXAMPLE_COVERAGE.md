@@ -65,7 +65,7 @@
 | | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** (macOS only) | on_invoke / on_event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
+| **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
 | | WebViewEventQueue | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS; senders made from it (delay) |
 | | WebViewValueSender | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread, host tempo (delay) |
 | | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Level history from the audio thread |

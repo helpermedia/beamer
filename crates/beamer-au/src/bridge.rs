@@ -39,10 +39,10 @@ use crate::buffers::AudioBufferList;
 use crate::channel_labels::{self, ChannelOrder, ChannelOrders};
 use crate::error::os_status;
 use beamer_core::{
-    ActiveBuses, BusInfo, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, EditorSync,
-    Layout, ParameterInfo, ParameterUnit, ProcessMode, SharedModel, WebViewDispatch, WebViewEventQueue,
-    MAX_BUSES, MAX_CHANNELS,
+    ActiveBuses, BusInfo, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, Layout,
+    ParameterInfo, ParameterUnit, ProcessMode, SharedModel, MAX_BUSES, MAX_CHANNELS,
 };
+use beamer_webview::{EditorSync, WebViewDispatch, WebViewEventQueue};
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{

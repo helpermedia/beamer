@@ -22,9 +22,9 @@
 //! }
 //! ```
 //!
-//! The attribute generates implementations of `Parameters`,
-//! [`Saved`](crate::model::Saved) and
-//! [`WebViewEvents`](crate::model::WebViewEvents). Every `Parameters` is a
+//! The attribute generates implementations of `Parameters` and
+//! [`Saved`](crate::model::Saved), along with the traits of the web UI.
+//! Every `Parameters` is a
 //! [`ParameterStore`](crate::parameter_store::ParameterStore) as well. See
 //! [`crate::parameter_store`] for details on the relationship between
 //! these traits.
@@ -236,9 +236,8 @@ pub fn bypass_on(parameters: &dyn Parameters, id: Option<ParameterId>) -> Option
 /// Implement this trait to declare your plugin's parameters. It covers the
 /// parameters alone: type-erased iteration, ids, groups and smoothing.
 /// Saving and loading and `State` fields are in
-/// [`Saved`](crate::model::Saved), the event queue is in
-/// [`WebViewEvents`](crate::model::WebViewEvents). A hand-written
-/// implementation adds both as an empty `impl`.
+/// [`Saved`](crate::model::Saved), which a hand-written implementation adds
+/// as an empty `impl`. A model also has the traits of its web UI.
 ///
 /// # Example
 ///

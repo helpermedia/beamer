@@ -1,8 +1,9 @@
 //! Code generation for the model and group attributes.
 //!
-//! This module generates the Rust code for the `Parameters`, `Saved` and
-//! `WebViewEvents` trait implementations from the validated IR. The
-//! `ParameterStore` of the struct follows from `Parameters`.
+//! This module generates the Rust code for the `Parameters`, `Saved`,
+//! `WebViewEvents` and (for a model) `WebViewDispatch` trait
+//! implementations from the validated IR. The `ParameterStore` of the
+//! struct follows from `Parameters`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -18,6 +19,7 @@ pub fn generate(ir: &ModelIR) -> TokenStream {
     let parameters_impl = generate_parameters_impl(ir);
     let saved_impl = generate_saved_impl(ir);
     let webview_events_impl = generate_webview_events_impl(ir);
+    let webview_dispatch_impl = generate_webview_dispatch_impl(ir);
     let set_group_ids_impl = generate_set_group_ids(ir);
     let default_impl = generate_default_impl(ir);
 
@@ -27,6 +29,7 @@ pub fn generate(ir: &ModelIR) -> TokenStream {
         #parameters_impl
         #saved_impl
         #webview_events_impl
+        #webview_dispatch_impl
         #set_group_ids_impl
         #default_impl
     }
@@ -698,7 +701,7 @@ fn generate_webview_events_impl(ir: &ModelIR) -> TokenStream {
     let webview_events_impl = generate_webview_events(ir);
 
     quote! {
-        impl #impl_generics ::beamer::core::model::WebViewEvents for #struct_name #ty_generics #where_clause {
+        impl #impl_generics ::beamer::webview::WebViewEvents for #struct_name #ty_generics #where_clause {
             #webview_events_impl
         }
     }
@@ -732,7 +735,7 @@ fn generate_state_generation(ir: &ModelIR) -> TokenStream {
 fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     if let Some(field) = ir.event_queue_fields().next() {
         return quote! {
-            fn webview_events(&self) -> Option<&::beamer::core::WebViewEventQueue> {
+            fn webview_events(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
                 Some(&self.#field)
             }
         };
@@ -743,7 +746,7 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
         .map(|nested| {
             let field = &nested.field_name;
             quote! {
-                if let Some(events) = ::beamer::core::model::WebViewEvents::webview_events(&self.#field) {
+                if let Some(events) = ::beamer::webview::WebViewEvents::webview_events(&self.#field) {
                     return Some(events);
                 }
             }
@@ -756,9 +759,45 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     }
 
     quote! {
-        fn webview_events(&self) -> Option<&::beamer::core::WebViewEventQueue> {
+        fn webview_events(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
             #(#nested)*
             None
+        }
+    }
+}
+
+/// Generate `WebViewDispatch` for a model: the way of the format wrappers to
+/// the model's `WebViewHandler`, or to the answers of a model without one.
+///
+/// The generated code knows the type of the model, so `&ModelRef(self)`
+/// finds `Implemented` when the model implements `WebViewHandler` and
+/// `Missing`, one reference further, when it does not. For a generic
+/// model the impl has to hold for every type the struct takes.
+fn generate_webview_dispatch_impl(ir: &ModelIR) -> TokenStream {
+    if !ir.generate_dispatch {
+        return quote! {};
+    }
+
+    let struct_name = &ir.struct_name;
+    let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
+
+    quote! {
+        impl #impl_generics ::beamer::webview::WebViewDispatch for #struct_name #ty_generics #where_clause {
+            fn dispatch_invoke(
+                &self,
+                method: &str,
+                args: &[::beamer::webview::serde_json::Value],
+            ) -> ::std::result::Result<::beamer::webview::serde_json::Value, ::std::string::String> {
+                #[allow(unused_imports)]
+                use ::beamer::webview::__private::{Implemented as _, Missing as _};
+                (&::beamer::webview::__private::ModelRef(self)).invoke(method, args)
+            }
+
+            fn dispatch_event(&self, name: &str, data: &::beamer::webview::serde_json::Value) {
+                #[allow(unused_imports)]
+                use ::beamer::webview::__private::{Implemented as _, Missing as _};
+                (&::beamer::webview::__private::ModelRef(self)).event(name, data);
+            }
         }
     }
 }

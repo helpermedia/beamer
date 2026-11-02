@@ -44,7 +44,7 @@ use std::sync::{Arc, Weak};
 
 use serde::Serialize;
 
-use crate::webview_events::{push_value, SenderEnd};
+use crate::event_queue::{push_value, SenderEnd};
 
 /// Set in `Link::middle` when the middle slot holds a value the sender put
 /// there since the queue last took one.
@@ -426,7 +426,7 @@ mod tests {
     #[should_panic(expected = "WebViewEventQueue::value_sender() was called in process()")]
     fn test_creating_a_sender_in_process_panics() {
         let events = open_queue();
-        let _scope = crate::ProcessScope::enter();
+        let _scope = beamer_core::ProcessScope::enter();
         let _level = events.value_sender("level", 0u8);
     }
 

@@ -40,6 +40,7 @@ dependencies = [
  "beamer-core",
  "beamer-macros",
  "beamer-vst3",
+ "beamer-webview",
  "serde_json",
  "vst3",
 ]
@@ -107,6 +108,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "serde",
  "serde_json",
  "webview2-com",
  "windows",

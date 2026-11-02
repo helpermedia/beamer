@@ -203,6 +203,7 @@ pub struct GainModel {
 - `Parameters` trait implementation (count, iter, by_id, groups, smoothing), which also makes the struct a `ParameterStore` for the host
 - `Saved` trait implementation (parameters and `State` fields, saving and loading)
 - `WebViewEvents` trait implementation (where the event queue of the web UI is)
+- `WebViewDispatch` trait implementation, `#[beamer::model]` only: passes the web UI's `invoke()` calls and events to the model's `WebViewHandler` when it has one (see [WEBVIEW.md](WEBVIEW.md#answering-the-web-ui))
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (`State` fields and fields without an attribute get their own default)
 - The ids of every parameter: its path as text and the FNV-1a hash of the path as the number hosts see (see [Parameter Ids](#parameter-ids))
@@ -768,7 +769,7 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents` and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
 
 Every `Parameters` is also a `ParameterStore`: the parameters as the host sees them, looked up through `Parameters`. A store that keeps values without parameter objects implements `ParameterStore` directly. For a `Parameters`, `info(index)` walks the parameters and allocates. It is for listing them on host and editor threads, never per frame or on the audio thread. `info_by_id()` looks one up through `by_id()` and does not allocate. The trait and the metadata it returns:
 
@@ -827,7 +828,7 @@ impl ParameterInfo {
 The `Model` trait is implemented by the model struct: what every thread shares and the plugin as the host sees it (buses, MIDI behavior and factory presets). The framework creates the model with the plugin instance and keeps it in one `Arc` for as long as the instance lives. When the host provides audio setup information, the framework calls `prepare()` with a clone of that `Arc` to create a `Processor`.
 
 ```rust
-pub trait Model: Saved + WebViewEvents + Default + 'static {
+pub trait Model: Saved + Default + 'static {
     /// Setup type for prepare() - determines what info is needed
     type Setup: PluginSetup;
 
@@ -865,16 +866,10 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
 
     // MIDI mapping and learn, note expression, keyswitch and MPE methods,
     // all with defaults (see MIDI Reference).
-
-    /// Answers from the web UI (see WEBVIEW.md).
-    fn on_invoke(&self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
-        Err(format!("unknown method: {method}"))
-    }
-    fn on_event(&self, name: &str, data: &serde_json::Value) {}
 }
 ```
 
-`#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example).
+`#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example). The answers to the web UI's `invoke()` calls and events are in a trait of their own, `WebViewHandler` (see [WEBVIEW.md](WEBVIEW.md#answering-the-web-ui)).
 
 `prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread (the functions of its factory presets may be). Several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
 

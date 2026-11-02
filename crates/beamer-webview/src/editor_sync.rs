@@ -8,8 +8,9 @@
 //! events the plugin emitted. The wrapper runs the script in the WebView.
 //!
 //! The scripts call the JavaScript runtime of the WebView
-//! (`window.__BEAMER__`). The format wrappers build them here, so that
-//! they send the same messages.
+//! (`window.__BEAMER__`, in `beamer_runtime.js` of this crate). Every
+//! format wrapper gets them from here, so that they send the same
+//! messages.
 //!
 //! A `State` field is known by its path, as in a saved state. To tell
 //! whether the web UI has its latest value, the sync reads the generation
@@ -27,11 +28,11 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::model::SharedModel;
-use crate::parameter_store::{params_to_init_json, ParameterStore};
-use crate::state_format::SavedState;
-use crate::types::ParameterId;
-use crate::webview_events::WebViewEventQueue;
+use beamer_core::state_format::SavedState;
+use beamer_core::{ParameterId, ParameterStore, SharedModel};
+
+use crate::event_queue::WebViewEventQueue;
+use crate::parameter_dump::params_to_init_json;
 
 /// The link between one open editor and the plugin it shows.
 ///
@@ -336,14 +337,12 @@ mod tests {
 
     use std::any::Any;
 
+    use beamer_core::{
+        NoParameters, ParameterGroups, ParameterInfo, ParameterRef, ParameterValue, Parameters, Saved,
+        State,
+    };
+
     use super::*;
-    use crate::parameter_info::ParameterInfo;
-    use crate::parameter_store::NoParameters;
-    use crate::model::Saved;
-    use crate::parameter_groups::ParameterGroups;
-    use crate::parameter_types::{ParameterRef, Parameters};
-    use crate::state::State;
-    use crate::types::ParameterValue;
 
     /// Two parameters whose values a test sets directly. The display text
     /// of the first contains characters that a script has to escape.

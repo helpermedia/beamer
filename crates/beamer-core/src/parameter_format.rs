@@ -363,8 +363,7 @@ impl Formatter {
 
     /// Get a stable identifier for this formatter variant.
     ///
-    /// Used by the webview IPC protocol so JavaScript can implement
-    /// custom formatting per parameter kind.
+    /// Lets an editor format values itself, per parameter kind.
     pub fn kind(&self) -> &'static str {
         match self {
             Formatter::Float { .. } => "float",

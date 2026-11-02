@@ -176,6 +176,9 @@ pub struct ModelIR {
     /// Whether to generate `Default` when the attributes allow it. False
     /// with `no_default`, for a struct that writes its own.
     pub generate_default: bool,
+    /// Whether to generate `WebViewDispatch`: for the model of a plugin,
+    /// not for a nested group.
+    pub generate_dispatch: bool,
 }
 
 /// A single field of a model or of a nested group.

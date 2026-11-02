@@ -1,6 +1,6 @@
 # WebView Editor
 
-Beamer provides a platform-native WebView layer for building plugin editors with standard web technologies (HTML, CSS, JavaScript). The system is designed around a clear separation: the `beamer-webview` crate handles all platform-specific WebView embedding, while the format wrappers (AU and VST3) use it to present the editor and drive parameter synchronization.
+Beamer provides a platform-native WebView layer for building plugin editors with standard web technologies (HTML, CSS, JavaScript). The system is designed around a clear separation: the `beamer-webview` crate holds both ends of the protocol between the plugin and its web UI, keeps each open editor in step and embeds the platform-specific WebView, while the format wrappers (AU and VST3) use it to present the editor and tell the host what the web UI edits.
 
 Two words in this document mean different things. The **editor** is the plugin's own view, which a host opens and closes in a window of its own; it is never the generic parameter view a host builds for a plugin without one. The **web UI** is the page in it and its code, the files in `webview/`. Every editor of a Beamer plugin shows a web UI.
 
@@ -15,21 +15,20 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 │  Plugin crate (your code)                                       │
 │  ┌───────────────────────┐  ┌──────────────────────────────┐    │
 │  │  Rust: Model          │  │  JS: React/Svelte/vanilla    │    │
-│  │  on_invoke / on_event │  │  window.__BEAMER__ runtime   │    │
+│  │  WebViewHandler       │  │  window.__BEAMER__ runtime   │    │
 │  └───────────┬───────────┘  └───────────────┬──────────────┘    │
 │              │                              │                   │
-├──────────────┼──────────────────────────────┼───────────────────┤
-│  beamer-core │ WebViewDispatch (internal)   │                   │
-│              │ EditorSync                   │                   │
 ├──────────────┼──────────────────────────────┼───────────────────┤
 │  Format wrapper (beamer-vst3 / beamer-au)                       │
 │  - Creates WebView via beamer-webview                           │
 │  - 60 Hz parameter sync timer                                   │
 │  - Dispatches IPC messages to the Model                         │
 ├─────────────────────────────────────────────────────────────────┤
-│  beamer-webview (platform layer)                                │
+│  beamer-webview                                                 │
+│  - Both ends of the protocol: beamer_runtime.js (the            │
+│    window.__BEAMER__ runtime), WebViewDispatch, EditorSync,     │
+│    the event queue and its senders                              │
 │  - WKWebView on macOS, WebView2 stub on Windows                 │
-│  - Injects beamer_runtime.js (the window.__BEAMER__ runtime)    │
 │  - Custom URL scheme handler (beamer://localhost/...)           │
 │  - Message handler (WKScriptMessageHandler)                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -39,8 +38,8 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 
 | Crate | Role |
 |-------|------|
-| `beamer-core` | `Model::on_invoke()` and `on_event()`, the internal `WebViewDispatch` the wrappers call them through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `EmbeddedAssets` types, `params_to_init_json()` |
-| `beamer-webview` | Platform WebView creation, the injected `beamer_runtime.js`, custom URL scheme, C-ABI bridge |
+| `beamer-core` | The editor settings of `Config` and the `EmbeddedAssets` types: which editor a plugin has |
+| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame), `params_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, IPC dispatch |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and IPC dispatch |
 
@@ -173,7 +172,7 @@ The type parameter of `get` and `on` is the caller's claim, not a check: `values
 
 ### Invoke
 
-`invoke()` sends a request to the plugin's `Model::on_invoke()` and returns a Promise:
+`invoke()` sends a request to `on_invoke()` of the model's `WebViewHandler` (see [Answering the Web UI](#answering-the-web-ui)) and returns a Promise:
 
 ```javascript
 const info = await __BEAMER__.invoke("getInfo");
@@ -195,10 +194,10 @@ const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info
 Events provide fire-and-forget communication in both directions:
 
 ```javascript
-// JS -> Rust, handled by Model::on_event
+// JS to Rust, handled by WebViewHandler::on_event
 __BEAMER__.emit("myEvent", { some: "data" });
 
-// Rust -> JS, sent with WebViewEventQueue::emit
+// Rust to JS, sent with WebViewEventQueue::emit
 __BEAMER__.on("sampleLoaded", (name) => {
   showSample(name);
 });
@@ -242,7 +241,7 @@ pub struct WebViewDemoModel {
 The model's methods can then send an event. So can every other thread that holds the model's `Arc`, except the audio thread. The data can be anything that serializes to JSON:
 
 ```rust
-// In a method of the model, such as prepare() or on_invoke().
+// In a method of the model, such as prepare(), or in its WebViewHandler.
 self.events.emit("sampleRate", &48000.0);
 ```
 
@@ -369,11 +368,10 @@ What to know about senders:
 
 ## Answering the Web UI
 
-The `Model` answers `invoke()` calls and custom events from JavaScript with two methods. Parameter and `State` synchronization are automatic and do not go through them.
+A model answers `invoke()` calls and custom events from JavaScript with the two methods of `WebViewHandler`, which a plugin implements when its web UI uses them. Parameter and `State` synchronization are automatic and do not go through them.
 
 ```rust
-pub trait Model {
-    // ...
+pub trait WebViewHandler {
     fn on_invoke(
         &self,
         method: &str,
@@ -386,6 +384,8 @@ pub trait Model {
 }
 ```
 
+`#[beamer::model]` generates the `WebViewDispatch` through which the format wrappers call the handler. A model without a `WebViewHandler` rejects every call as an unknown method and ignores the events. A hand-written model (without `#[beamer::model]`) adds an empty `impl WebViewDispatch for MyModel {}`, which does the same, or forwards its methods to its handler. A generic model implements `WebViewHandler` for every type the struct takes, with no bounds beyond the struct's own: the dispatch does not find an impl for one type only.
+
 Both methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows. Host threads may use the model at the same time, so what these methods change is a value that is safe to share: a `State` field, a `Handover`, an atomic or a `Mutex`. The model cannot reach the processor. Data the audio thread produces for the web UI goes through a sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). Data it produces for the model goes through a value the processor writes without locking, such as an atomic.
 
 ### Example (from `webview-demo`)
@@ -393,8 +393,7 @@ Both methods are called on the main thread. The model lives as long as the plugi
 Here the model answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
 
 ```rust
-impl Model for WebViewDemoModel {
-    // ...
+impl WebViewHandler for WebViewDemoModel {
     fn on_invoke(
         &self,
         method: &str,

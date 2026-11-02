@@ -3,9 +3,9 @@
 //!
 //! Some calls of the framework take a lock, allocate or free memory:
 //! [`Handover::get`](crate::Handover::get) and the rest of the setting side
-//! of a [`Handover`](crate::Handover) or [`State`](crate::State) and
-//! [`WebViewEventQueue::emit`](crate::WebViewEventQueue::emit). On the audio thread
-//! that can make the audio drop out. A call from `process()` still compiles
+//! of a [`Handover`](crate::Handover) or [`State`](crate::State) and the
+//! `emit()` of the web UI's event queue. On the audio thread that can make
+//! the audio drop out. A call from `process()` still compiles
 //! and mostly works, so the mistake is easy to miss.
 //!
 //! The format wrappers mark the time a plugin processes with a
@@ -86,9 +86,12 @@ pub(crate) const READ_THROUGH_A_READER: &str =
 
 /// Log and panic in debug builds when `call`, a call for host threads, runs
 /// inside `process()`. `instead` says what to use there.
+///
+/// Public for the event queue of the web UI in beamer-webview.
+#[doc(hidden)]
 #[inline]
 #[cfg_attr(debug_assertions, track_caller)]
-pub(crate) fn assert_not_in_process(call: &str, instead: &str) {
+pub fn assert_not_in_process(call: &str, instead: &str) {
     #[cfg(debug_assertions)]
     if in_process() {
         let location = std::panic::Location::caller();

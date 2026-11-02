@@ -19,8 +19,9 @@ use std::sync::Arc;
 use crate::error::PluginResult;
 use beamer_core::{
     ActiveBuses, AuxiliaryBuffers, Buffer, MidiBuffer, MidiEvent, MidiEventsMut, ProcessContext, ProcessMode,
-    SharedModel, WebViewDispatch, WebViewEventQueue,
+    SharedModel,
 };
+use beamer_webview::{WebViewDispatch, WebViewEventQueue};
 
 /// The factory presets of a plugin type.
 ///

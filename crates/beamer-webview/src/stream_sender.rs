@@ -39,7 +39,7 @@ use std::sync::{Arc, Weak};
 
 use serde::Serialize;
 
-use crate::webview_events::{push_event, SenderEnd, WebViewEventQueue};
+use crate::event_queue::{push_event, SenderEnd, WebViewEventQueue};
 
 /// What a sender and the queue share: a ring of slots with a write and a
 /// read position.
@@ -452,7 +452,7 @@ mod tests {
     #[should_panic(expected = "WebViewEventQueue::stream_sender() was called in process()")]
     fn test_creating_a_sender_in_process_panics() {
         let events = open_queue();
-        let _scope = crate::ProcessScope::enter();
+        let _scope = beamer_core::ProcessScope::enter();
         let _history = events.stream_sender::<u8>("history", 8);
     }
 

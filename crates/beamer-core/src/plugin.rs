@@ -26,7 +26,7 @@ use crate::midi::{
     NoteExpressionTypeInfo, PhysicalUIMap,
 };
 use crate::midi_cc_config::MidiCcConfig;
-use crate::model::{Saved, WebViewEvents};
+use crate::model::Saved;
 use crate::preset::Preset;
 use crate::process_context::ProcessContext;
 use crate::types::MAX_BUSES;
@@ -823,8 +823,8 @@ pub trait Processor: Send + 'static {
 /// marked with `#[beamer::model]`, which reads its parameters, `State`
 /// fields and event queue. The `impl Model` adds how the plugin behaves:
 /// it creates a [`Processor`] via [`Model::prepare()`] when the audio
-/// configuration is known, describes buses and MIDI behavior and answers the
-/// web UI.
+/// configuration is known and describes buses and MIDI behavior. The calls
+/// of a web UI go to a handler of their own.
 ///
 /// The framework creates the model with the plugin instance and keeps it in
 /// one [`Arc`] for as long as the instance lives. The host, the UI and the
@@ -911,7 +911,7 @@ pub trait Processor: Send + 'static {
 /// with the project), an atomic or a `Mutex`. No method of this trait is
 /// called on the audio thread. The functions of the
 /// [`PRESETS`](Model::PRESETS) may be.
-pub trait Model: Saved + WebViewEvents + Default + 'static {
+pub trait Model: Saved + Default + 'static {
     /// The setup information this plugin needs to prepare.
     ///
     /// Request exactly what you need:
@@ -1315,37 +1315,6 @@ pub trait Model: Saved + WebViewEvents + Default + 'static {
     fn set_mpe_input_device_settings(&self, settings: MpeInputDeviceSettings) -> bool {
         let _ = settings;
         true
-    }
-
-    // =========================================================================
-    // WebView (custom JS invoke/event handling)
-    // =========================================================================
-
-    /// Answer an invoke call from JavaScript.
-    ///
-    /// Called on the main thread when the web UI calls
-    /// `__BEAMER__.invoke("method", args...)`. Return `Ok(value)` to
-    /// resolve the JavaScript promise with `value`, `Err(message)` to reject
-    /// it. Parameter synchronization is automatic and does not go through
-    /// here.
-    ///
-    /// The default rejects every call as an unknown method. An override
-    /// ends its `match` the same way for the methods it does not know.
-    fn on_invoke(
-        &self,
-        method: &str,
-        args: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
-        let _ = args;
-        Err(format!("unknown method: {method}"))
-    }
-
-    /// Handle a custom event from JavaScript.
-    ///
-    /// Called on the main thread when the web UI calls
-    /// `__BEAMER__.emit("name", data)`. The default does nothing.
-    fn on_event(&self, name: &str, data: &serde_json::Value) {
-        let _ = (name, data);
     }
 }
 

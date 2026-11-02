@@ -51,8 +51,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 
-use crate::webview_stream_sender::{stream_link, WebViewStreamSender};
-use crate::webview_value_sender::{value_link, WebViewValueSender};
+use crate::stream_sender::{stream_link, WebViewStreamSender};
+use crate::value_sender::{value_link, WebViewValueSender};
 
 /// How many events wait for the editor at most.
 ///
@@ -104,7 +104,7 @@ impl WebViewEventQueue {
     /// thread: this allocates and takes a lock.
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn emit(&self, name: &str, data: &impl Serialize) {
-        crate::audio_thread::assert_not_in_process(
+        beamer_core::audio_thread::assert_not_in_process(
             "WebViewEventQueue::emit()",
             "Data from the audio thread needs a lock-free channel to the editor.",
         );
@@ -168,7 +168,7 @@ impl WebViewEventQueue {
     where
         T: Clone + Serialize + Send + 'static,
     {
-        crate::audio_thread::assert_not_in_process(
+        beamer_core::audio_thread::assert_not_in_process(
             "WebViewEventQueue::value_sender()",
             "Create senders in prepare() and keep them in the processor.",
         );
@@ -198,7 +198,7 @@ impl WebViewEventQueue {
     where
         T: Copy + Serialize + Send + 'static,
     {
-        crate::audio_thread::assert_not_in_process(
+        beamer_core::audio_thread::assert_not_in_process(
             "WebViewEventQueue::stream_sender()",
             "Create senders in prepare() and keep them in the processor.",
         );

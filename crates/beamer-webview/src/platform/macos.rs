@@ -22,14 +22,7 @@ use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 use crate::error::{Result, WebViewError};
 use crate::platform::macos_scheme::new_scheme_handler;
 use crate::platform::macos_view::alloc_web_view;
-use crate::WebViewConfig;
-
-/// Injected JavaScript runtime that creates `window.__BEAMER__`.
-///
-/// Loaded from `beamer_runtime.js` at compile time. The script is injected
-/// at document start before any page code runs. Uses var/function (no ES6)
-/// for maximum WebView compatibility.
-const BEAMER_RUNTIME_JS: &str = include_str!("beamer_runtime.js");
+use crate::{WebViewConfig, BEAMER_RUNTIME_JS};
 
 /// macOS WebView backed by WKWebView.
 pub struct MacosWebView {

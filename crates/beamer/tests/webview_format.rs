@@ -58,7 +58,7 @@ fn value_texts(dump: &serde_json::Value, string_id: &str) -> Vec<String> {
 #[test]
 fn test_init_dump_reports_the_format_of_each_parameter_kind() {
     let model = TestModel::default();
-    let json = beamer::core::params_to_init_json(&model);
+    let json = beamer::webview::params_to_init_json(&model);
     let dump: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     let format_of = |string_id: &str| {
@@ -77,7 +77,7 @@ fn test_init_dump_reports_the_format_of_each_parameter_kind() {
 #[test]
 fn test_init_dump_lists_the_texts_of_the_values_of_a_discrete_parameter() {
     let model = TestModel::default();
-    let json = beamer::core::params_to_init_json(&model);
+    let json = beamer::webview::params_to_init_json(&model);
     let dump: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     assert_eq!(value_texts(&dump, "mode"), ["Clean", "Warm"]);

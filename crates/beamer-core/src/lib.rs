@@ -12,7 +12,6 @@
 //! - [`Processor`] - Core DSP processing trait (created for an audio configuration)
 //! - [`Parameters`] - Parameter collection trait
 //! - [`Saved`] - Saving and loading the parameters and `State` fields
-//! - [`WebViewEvents`] - Where the model's queue of events for the web UI is
 //!
 //! ## Types
 //!
@@ -42,7 +41,6 @@ pub mod conversion_buffers;
 pub mod config;
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
-pub mod editor_sync;
 pub mod handover;
 pub mod host_notifier;
 pub mod logging;
@@ -70,10 +68,6 @@ pub mod state_format;
 pub mod sub_blocks;
 pub mod types;
 pub mod ump;
-pub mod webview_dispatch;
-pub mod webview_events;
-pub mod webview_stream_sender;
-pub mod webview_value_sender;
 
 // Re-exports for convenience
 pub use active_buses::{ActiveBuses, BusNegotiation, BusRouting};
@@ -86,7 +80,6 @@ pub use channel_layouts::{validate_layouts, BusLayout, ChannelSet, Layout};
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
 pub use config::{Config, FourCharCode, MidiProtocol};
 pub use conversion_buffers::ConversionBuffers;
-pub use editor_sync::EditorSync;
 pub use bypass::{BypassAction, BypassHandler, BypassState, CrossfadeCurve};
 pub use host_notifier::{HostChangeTarget, HostChanges, HostNotifier};
 pub use handover::{Handover, HandoverReader};
@@ -123,8 +116,8 @@ pub use parameter_format::Formatter;
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
-pub use model::{Saved, SharedModel, WebViewEvents};
-pub use parameter_store::{params_to_init_json, NoParameters, ParameterStore};
+pub use model::{Saved, SharedModel};
+pub use parameter_store::{NoParameters, ParameterStore};
 pub use parameter_types::{BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, ParameterRef, Parameters};
 pub use smoothing::{Smoother, SmoothingStyle};
 pub use process_warnings::{ProcessWarning, ProcessWarnings};
@@ -140,15 +133,6 @@ pub use preset::Preset;
 pub use process_context::{FrameRate, ProcessContext, Transport};
 pub use sample::Sample;
 pub use types::{fnv1a_hash, ParameterId, ParameterValue, Rect, Size, MAX_AUX_BUSES, MAX_BUSES, MAX_CHANNELS};
-pub use webview_events::WebViewEventQueue;
-pub use webview_stream_sender::WebViewStreamSender;
-pub use webview_value_sender::WebViewValueSender;
-#[doc(hidden)]
-pub use webview_dispatch::WebViewDispatch;
-
-// Re-export serde_json so plugins can answer the web UI without adding
-// serde_json to their own Cargo.toml.
-pub use serde_json;
 
 // Re-export serde for the types a plugin keeps in a `State`. A plugin that
 // derives `Serialize` and `Deserialize` without a serde dependency of its

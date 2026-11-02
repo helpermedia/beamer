@@ -2,12 +2,11 @@
 //!
 //! The model is the struct of a plugin that holds what every thread
 //! shares: the parameters, the `State` fields that are saved with them, the
-//! `WebViewEventQueue` of the web UI and plain values such as a
-//! `Handover`. It lives in one `Arc` for the life of the instance.
+//! queue of events for its web UI and plain values such as a `Handover`.
+//! It lives in one `Arc` for the life of the instance.
 //!
 //! [`Parameters`] covers the parameters alone. [`Saved`] adds the `State`
 //! fields and saves and loads the parameters and `State` fields together.
-//! [`WebViewEvents`] tells where the event queue of the web UI is.
 //! [`SharedModel`] is the model as the format wrappers and the editor use
 //! it, behind a `dyn`.
 
@@ -16,7 +15,6 @@ use std::any::Any;
 use crate::parameter_store::ParameterStore;
 use crate::parameter_types::Parameters;
 use crate::state_format::{join_path, SavedState, StateEntries, StateWriter};
-use crate::webview_events::WebViewEventQueue;
 
 /// A struct whose fields are saved with the plugin: its parameters and
 /// `State` fields, nested groups included. It saves and loads them.
@@ -113,24 +111,6 @@ pub trait Saved: Parameters {
     }
 }
 
-/// Where the queue of events for the web UI is: a [`WebViewEventQueue`]
-/// field of this struct, or else the first one of a nested group in field
-/// order.
-///
-/// `#[beamer::model]` and `#[beamer::group]` generate this for a model and
-/// each of its nested groups. A hand-written model or group adds an empty
-/// `impl WebViewEvents for MyModel {}`, or returns its queue.
-pub trait WebViewEvents {
-    /// The plugin's queue of events for the web UI.
-    ///
-    /// The format wrappers deliver what is emitted into it while an editor
-    /// is open. `#[beamer::model]` and `#[beamer::group]` find the field by its type; the
-    /// default is for structs without one.
-    fn webview_events(&self) -> Option<&WebViewEventQueue> {
-        None
-    }
-}
-
 /// The model of a plugin as the format wrappers and the editor use it.
 ///
 /// Everything behind this trait works through a shared reference. The
@@ -198,9 +178,8 @@ impl<T: Saved + 'static> SharedModel for T {
 /// `#[beamer::model]`.
 ///
 /// `__forward_model!(MidiModel, parameters)` implements `ParameterGroups`,
-/// `Parameters`, `Saved` and `WebViewEvents` for `MidiModel` through
-/// its field `parameters`. The rest of the struct (a `Mutex`, a counter) is
-/// what the test looks at.
+/// `Parameters` and `Saved` for `MidiModel` through its field `parameters`.
+/// The rest of the struct (a `Mutex`, a counter) is what the test looks at.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __forward_model {
@@ -310,12 +289,6 @@ macro_rules! __forward_model {
 
             fn load_state(&self, data: &[u8]) -> Result<(), String> {
                 $crate::model::Saved::load_state(&self.$field, data)
-            }
-        }
-
-        impl $crate::model::WebViewEvents for $model {
-            fn webview_events(&self) -> Option<&$crate::webview_events::WebViewEventQueue> {
-                $crate::model::WebViewEvents::webview_events(&self.$field)
             }
         }
     };

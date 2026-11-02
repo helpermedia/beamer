@@ -5,11 +5,10 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use beamer_core::{
-    EditorSync, SharedModel, Size, WebViewDispatch, WebViewEventQueue,
-};
+use beamer_core::{SharedModel, Size};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
+use beamer_webview::{EditorSync, WebViewDispatch, WebViewEventQueue};
 use vst3::Steinberg::Vst::{IComponentHandler2, IComponentHandler2Trait};
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef};

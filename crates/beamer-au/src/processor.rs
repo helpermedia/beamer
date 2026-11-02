@@ -36,9 +36,9 @@ use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::lifecycle::{AuState, Prepared};
 use beamer_core::{
     AuxiliaryBuffers, Buffer, Model,
-    MidiBuffer, MidiEvent, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, WebViewDispatch,
-    WebViewEventQueue, MAX_AUX_BUSES,
+    MidiBuffer, MidiEvent, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, MAX_AUX_BUSES,
 };
+use beamer_webview::{WebViewDispatch, WebViewEventQueue, WebViewEvents};
 
 /// Generic AU processor wrapper.
 ///
@@ -55,6 +55,8 @@ where
     state: AuState<P>,
     /// The plugin's queue of events for the web UI, if its model has one.
     webview_events: Option<WebViewEventQueue>,
+    /// Where the web UI's invoke calls and events go: the model.
+    webview_dispatch: Arc<dyn WebViewDispatch>,
 }
 
 impl<P> AuProcessor<P>
@@ -66,25 +68,30 @@ where
     /// The processor starts in the Unprepared state with a default
     /// plugin instance. Call `allocate_render_resources` to prepare
     /// for audio processing.
-    pub fn new() -> Self {
+    pub fn new() -> Self
+    where
+        P: WebViewEvents + WebViewDispatch,
+    {
         let model = Arc::new(P::default());
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = beamer_core::WebViewEvents::webview_events(&*model).cloned();
+        let events = WebViewEvents::webview_events(&*model).cloned();
         if let Some(events) = &events {
             events.claim();
         }
+        let webview_dispatch = Arc::clone(&model) as Arc<dyn WebViewDispatch>;
 
         Self {
             state: AuState::with_model(model),
             webview_events: events,
+            webview_dispatch,
         }
     }
 }
 
 impl<P> Default for AuProcessor<P>
 where
-    P: Model,
+    P: Model + WebViewEvents + WebViewDispatch,
 {
     fn default() -> Self {
         Self::new()
@@ -425,7 +432,7 @@ where
     }
 
     fn webview_dispatch(&self) -> Arc<dyn WebViewDispatch> {
-        Arc::clone(&self.state.model) as Arc<dyn WebViewDispatch>
+        Arc::clone(&self.webview_dispatch)
     }
 
     fn webview_events(&self) -> Option<WebViewEventQueue> {
@@ -470,7 +477,7 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// This is used by the export_au! macro.
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
-    P: Model,
+    P: Model + WebViewEvents + WebViewDispatch,
 {
     Box::new(AuProcessor::<P>::new())
 }
@@ -692,8 +699,6 @@ mod tests {
         }
     }
 
-    impl beamer_core::WebViewEvents for TestFields {}
-
     // =========================================================================
     // Mock Plugin
     // =========================================================================
@@ -710,6 +715,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(TestModel, fields);
+    beamer_webview::__without_web_ui!(TestModel);
 
     impl Model for TestModel {
         type Setup = ();
@@ -1072,6 +1078,7 @@ mod tests {
     const OFFLINE_VALUE: f32 = 2.0;
 
     beamer_core::__forward_model!(ModeModel, fields);
+    beamer_webview::__without_web_ui!(ModeModel);
 
     impl Model for ModeModel {
         type Setup = ProcessMode;
@@ -1330,6 +1337,7 @@ mod tests {
     struct DoublingProcessor;
 
     beamer_core::__forward_model!(DoublingModel, fields);
+    beamer_webview::__without_web_ui!(DoublingModel);
 
     impl Model for DoublingModel {
         type Setup = ();
@@ -1468,6 +1476,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(RecordingModel, fields);
+    beamer_webview::__without_web_ui!(RecordingModel);
 
     impl Model for RecordingModel {
         type Setup = ();
@@ -1808,6 +1817,7 @@ mod tests {
     struct SecondSidechainProcessor;
 
     beamer_core::__forward_model!(SecondSidechainModel, fields);
+    beamer_webview::__without_web_ui!(SecondSidechainModel);
 
     impl Model for SecondSidechainModel {
         type Setup = ();
@@ -1930,6 +1940,7 @@ mod tests {
     struct AuxOutputProcessor;
 
     beamer_core::__forward_model!(AuxOutputModel, fields);
+    beamer_webview::__without_web_ui!(AuxOutputModel);
 
     impl Model for AuxOutputModel {
         type Setup = ();
@@ -2035,6 +2046,7 @@ mod tests {
     struct SidechainProcessor;
 
     beamer_core::__forward_model!(SidechainModel, fields);
+    beamer_webview::__without_web_ui!(SidechainModel);
 
     impl Model for SidechainModel {
         type Setup = ();
@@ -2435,6 +2447,7 @@ mod tests {
     struct AmbisonicProcessor;
 
     beamer_core::__forward_model!(AmbisonicModel, fields);
+    beamer_webview::__without_web_ui!(AmbisonicModel);
 
     impl Model for AmbisonicModel {
         type Setup = ActiveBuses;
@@ -2955,14 +2968,13 @@ mod tests {
 
     impl beamer_core::Saved for BypassFields {}
 
-    impl beamer_core::WebViewEvents for BypassFields {}
-
     #[derive(Default)]
     struct BypassModel {
         fields: BypassFields,
     }
 
     beamer_core::__forward_model!(BypassModel, fields);
+    beamer_webview::__without_web_ui!(BypassModel);
 
     struct BypassProcessor;
 
@@ -3249,6 +3261,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(MonoOrStereoModel, fields);
+    beamer_webview::__without_web_ui!(MonoOrStereoModel);
 
     impl Model for MonoOrStereoModel {
         type Setup = ();
@@ -3269,6 +3282,7 @@ mod tests {
     struct SurroundProcessor;
 
     beamer_core::__forward_model!(SurroundModel, fields);
+    beamer_webview::__without_web_ui!(SurroundModel);
 
     impl Model for SurroundModel {
         type Setup = ();
@@ -3397,6 +3411,7 @@ mod tests {
     }
 
     beamer_core::__forward_model!(MatchedModel, fields);
+    beamer_webview::__without_web_ui!(MatchedModel);
 
     impl Model for MatchedModel {
         type Setup = ();

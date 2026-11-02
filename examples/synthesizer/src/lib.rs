@@ -87,6 +87,7 @@ enum EnvelopeStage {
 ///   makes the model a `ParameterStore` for the host
 /// - `Saved` trait (parameters and `State` fields, saving and loading)
 /// - `WebViewEvents` trait (where the event queue of the web UI is)
+/// - `WebViewDispatch` trait (how the web UI's calls reach the model)
 /// - `Default` trait (from attribute values)
 ///
 /// The `#[beamer::export]` attribute exports the model as a plugin, with

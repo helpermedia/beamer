@@ -81,6 +81,7 @@ pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
         fields: parsed_fields,
         span: Span::call_site(),
         generate_default: true,
+        generate_dispatch: false,
     })
 }
 

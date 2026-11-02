@@ -5,7 +5,7 @@
 //!
 //! # How the Traits Work Together
 //!
-//! A model and each nested group in it implement three traits:
+//! A model and each nested group in it implement two traits of this crate:
 //!
 //! - **[`Parameters`]**: the parameters themselves, with type-erased
 //!   iteration, ids, groups and smoothing, for parameter types like
@@ -15,11 +15,9 @@
 //!   parameters. It saves and loads the parameters and `State` fields
 //!   together.
 //!
-//! - **[`WebViewEvents`](crate::model::WebViewEvents)**: where the event
-//!   queue of the web UI is.
-//!
 //! For most plugins, use `#[beamer::model]` (and `#[beamer::group]` for
-//! nested groups), which implements all three.
+//! nested groups), which implements both, along with the traits of the web
+//! UI.
 //!
 //! Every [`Parameters`] is also a [`ParameterStore`]: the parameters as the
 //! host sees them, with raw access to normalized values and parameter
@@ -133,8 +131,7 @@ pub trait ParameterStore: Send + Sync {
 
     /// Get the formatter kind string for a parameter (e.g. "db", "pan", "hz").
     ///
-    /// Used by the webview IPC protocol so JavaScript can implement custom
-    /// formatting. Returns "float" by default.
+    /// Lets an editor format values itself. Returns "float" by default.
     fn formatter_kind(&self, _id: ParameterId) -> &'static str {
         "float"
     }
@@ -230,70 +227,3 @@ impl Parameters for NoParameters {
 }
 
 impl crate::model::Saved for NoParameters {}
-
-impl crate::model::WebViewEvents for NoParameters {}
-
-/// Build a JSON array of parameter info for WebView init dumps.
-///
-/// Returns a JSON string like `[{"id":0,"stringId":"gain",...}, ...]`.
-/// Used by both VST3 and AU format wrappers to send the initial
-/// parameter state to the JavaScript runtime.
-pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
-    let entries: Vec<ParamInitEntry> = (0..store.count())
-        .filter_map(|i| {
-            let info = store.info(i)?;
-            let normalized = store.get_normalized(info.id);
-            Some(ParamInitEntry {
-                id: info.id,
-                string_id: &info.string_id,
-                name: info.name,
-                min: store.normalized_to_plain(info.id, 0.0),
-                max: store.normalized_to_plain(info.id, 1.0),
-                default_value: info.default_normalized,
-                value: normalized,
-                plain_value: store.normalized_to_plain(info.id, normalized),
-                display_text: store.normalized_to_string(info.id, normalized),
-                format: store.formatter_kind(info.id),
-                units: info.units,
-                steps: info.step_count,
-                value_texts: value_texts(store, info.id, info.step_count),
-            })
-        })
-        .collect();
-    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ParamInitEntry<'a> {
-    id: u32,
-    string_id: &'a str,
-    name: &'static str,
-    min: f64,
-    max: f64,
-    default_value: f64,
-    value: f64,
-    plain_value: f64,
-    display_text: String,
-    format: &'static str,
-    units: &'static str,
-    steps: i32,
-    value_texts: Vec<String>,
-}
-
-/// The most values a parameter can have for the init dump to list their
-/// texts: enough for a MIDI note or controller number.
-const MAX_VALUE_TEXTS: i32 = 128;
-
-/// The display text of each value of a discrete parameter, from the lowest
-/// up, so that a web UI can label every choice of an enum. Empty for a
-/// continuous parameter and for one with more than [`MAX_VALUE_TEXTS`]
-/// values.
-fn value_texts(store: &dyn ParameterStore, id: ParameterId, steps: i32) -> Vec<String> {
-    if steps <= 0 || steps >= MAX_VALUE_TEXTS {
-        return Vec::new();
-    }
-    (0..=steps)
-        .map(|step| store.normalized_to_string(id, f64::from(step) / f64::from(steps)))
-        .collect()
-}

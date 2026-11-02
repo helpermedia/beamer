@@ -95,6 +95,7 @@
 
 // Re-export sub-crates
 pub use beamer_core as core;
+pub use beamer_webview as webview;
 
 /// A check in debug builds that `process()` neither allocates nor frees
 /// memory, with the `allocation-check` feature.
@@ -227,7 +228,7 @@ pub mod prelude {
         // Sample trait for generic f32/f64 processing
         Sample,
         // Traits
-        Model, Processor, Saved, WebViewEvents,
+        Model, Processor, Saved,
         // Plugin setup types (composable)
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         ActiveBuses, ProcessMode,
@@ -261,10 +262,14 @@ pub mod prelude {
         FrameRate, ProcessContext, Transport,
         // FourCharCode
         FourCharCode,
-        // WebView support
-        WebViewEventQueue, WebViewStreamSender, WebViewValueSender, serde_json,
         // For the types kept in a `State`
         serde,
+    };
+
+    // The web UI: events and values for it, the handler of its calls
+    pub use beamer_webview::{
+        serde_json, WebViewEventQueue, WebViewEvents, WebViewHandler, WebViewStreamSender,
+        WebViewValueSender,
     };
 
     // Plugin configuration

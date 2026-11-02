@@ -30,6 +30,7 @@ use beamer::prelude::*;
 ///   makes the model a `ParameterStore` for the host
 /// - `Saved` trait (parameters and `State` fields, saving and loading)
 /// - `WebViewEvents` trait (where the event queue of the web UI is)
+/// - `WebViewDispatch` trait (how the web UI's calls reach the model)
 /// - `Default` trait (from attribute values)
 ///
 /// It lives as long as the plugin instance and creates the `GainProcessor`

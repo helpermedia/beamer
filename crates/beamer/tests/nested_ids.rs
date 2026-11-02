@@ -159,7 +159,7 @@ fn test_saved_state_uses_the_same_paths() {
 #[test]
 fn test_web_ui_gets_the_paths() {
     let model = TwoLayerModel::default();
-    let json = beamer::core::params_to_init_json(&model);
+    let json = beamer::webview::params_to_init_json(&model);
     let dump: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     let string_ids: Vec<&str> = dump

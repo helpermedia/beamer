@@ -1,11 +1,13 @@
 //! Calls from the web UI reach the model: the format wrappers pass
-//! `invoke()` calls and custom events on through `WebViewDispatch`.
+//! `invoke()` calls and custom events on through `WebViewDispatch`, which
+//! `#[beamer::model]` generates. It finds the model's `WebViewHandler` when
+//! the model has one.
 
 #![cfg(feature = "derive")]
 
 use std::sync::Mutex;
 
-use beamer::core::WebViewDispatch;
+use beamer::webview::WebViewDispatch;
 use beamer::prelude::*;
 
 struct Silence;
@@ -47,7 +49,9 @@ impl Model for EchoModel {
     fn prepare(self: Arc<Self>, _: ()) -> Silence {
         Silence
     }
+}
 
+impl WebViewHandler for EchoModel {
     fn on_invoke(
         &self,
         method: &str,
@@ -67,8 +71,40 @@ impl Model for EchoModel {
     }
 }
 
+/// A generic plugin whose handler holds for every type it takes.
+#[beamer::model]
+struct GenericEchoModel<T: Send + Sync + 'static> {
+    #[parameter(id = "gain", name = "Gain", default = 0.0, range = 0.0..=1.0)]
+    gain: FloatParameter,
+
+    /// What the type parameter stands for, not a parameter.
+    marker: std::marker::PhantomData<T>,
+}
+
+impl<T: Send + Sync + 'static> Model for GenericEchoModel<T> {
+    type Setup = ();
+    type Processor = Silence;
+
+    fn prepare(self: Arc<Self>, _: ()) -> Silence {
+        Silence
+    }
+}
+
+impl<T: Send + Sync + 'static> WebViewHandler for GenericEchoModel<T> {
+    fn on_invoke(
+        &self,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        match method {
+            "echo" => Ok(args.first().cloned().unwrap_or_default()),
+            _ => Err(format!("unknown method: {method}")),
+        }
+    }
+}
+
 /// The model as the wrappers hold it for the web UI.
-fn dispatch<P: Model>(model: P) -> Arc<dyn WebViewDispatch> {
+fn dispatch<P: Model + WebViewDispatch>(model: P) -> Arc<dyn WebViewDispatch> {
     Arc::new(model)
 }
 
@@ -97,6 +133,16 @@ fn test_invoke_reaches_the_model() {
     assert_eq!(
         echo.dispatch_invoke("echo", &[serde_json::json!("hello")]),
         Ok(serde_json::json!("hello")),
+    );
+}
+
+#[test]
+fn test_invoke_reaches_a_generic_model() {
+    let echo = dispatch(GenericEchoModel::<f32>::default());
+
+    assert_eq!(
+        echo.dispatch_invoke("echo", &[serde_json::json!(1)]),
+        Ok(serde_json::json!(1)),
     );
 }
 

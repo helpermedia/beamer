@@ -1,9 +1,9 @@
 //! The `#[beamer::model]` and `#[beamer::group]` attributes.
 //!
-//! Both generate the same code: `Parameters`, `Saved`, `WebViewEvents`,
-//! `ParameterGroups` and `Default`. They differ in what
-//! they say about the struct: `model` marks the model of a plugin, `group`
-//! a nested part of it that the host shows as a group.
+//! Both generate `Parameters`, `Saved`, `WebViewEvents`, `ParameterGroups`
+//! and `Default`. `model` marks the model of a plugin and also generates
+//! `WebViewDispatch`, `group` a nested part of it that the host shows as a
+//! group.
 //!
 //! An attribute macro is not a derive, so the field attributes
 //! (`#[parameter]`, `#[state]`, `#[nested]`) are not registered for it. It
@@ -69,6 +69,7 @@ fn generate(kind: Kind, attr: TokenStream, input: &DeriveInput) -> syn::Result<T
     refuse_cfg_fields(kind, input)?;
     let mut ir = parse::parse(input.clone(), kind.name())?;
     validate::validate(&ir)?;
+    ir.generate_dispatch = matches!(kind, Kind::Model);
     if options.no_default {
         ir.generate_default = false;
     } else if let Some(field) = ir.parameter_fields().find(|field| !field.has_declarative_attributes()) {

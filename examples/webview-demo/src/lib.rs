@@ -109,7 +109,9 @@ impl Model for WebViewDemoModel {
             model: self,
         }
     }
+}
 
+impl WebViewHandler for WebViewDemoModel {
     /// Handles `__BEAMER__.invoke()` calls from JavaScript.
     fn on_invoke(
         &self,

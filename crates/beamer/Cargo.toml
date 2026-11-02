@@ -29,6 +29,7 @@ workspace = true
 
 [dependencies]
 beamer-core = { workspace = true }
+beamer-webview = { workspace = true }
 beamer-macros = { workspace = true, optional = true }
 beamer-au = { workspace = true, optional = true }
 beamer-vst3 = { workspace = true, optional = true }

@@ -6,6 +6,7 @@ This crate provides web-based plugin editors using WKWebView, with bidirectional
 
 ## Features
 
+- **The web UI's protocol in one place**: the `window.__BEAMER__` runtime, the event queue with its senders for the audio thread, `WebViewHandler` for the calls of the page and the editor sync that every format wrapper uses
 - **WKWebView integration**: Native macOS WebView with no external dependencies
 - **Bidirectional IPC**: Parameter sync and custom message passing between Rust and JavaScript
 - **Custom URL scheme**: Embedded asset serving (HTML, CSS, JS) without a local HTTP server

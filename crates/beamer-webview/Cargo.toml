@@ -6,9 +6,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Check that sending to the web UI neither allocates nor frees memory on the
+# audio thread: `cargo test -p beamer-webview --features allocation-check`.
+allocation-check = ["beamer-core/allocation-check"]
+
 [dependencies]
 beamer-core = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -49,3 +55,7 @@ windows = { version = "0.62", features = [
 
 [lints]
 workspace = true
+
+[[test]]
+name = "allocation_check"
+required-features = ["allocation-check"]

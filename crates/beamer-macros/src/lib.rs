@@ -73,13 +73,16 @@ mod validate;
 ///   saving and loading)
 /// - the `WebViewEvents` trait implementation (where the event queue of
 ///   the web UI is)
+/// - the `WebViewDispatch` trait implementation, which passes the calls and
+///   events of the web UI to the model's `WebViewHandler` when it has one
 /// - the `ParameterGroups` trait implementation
 /// - `Default`
 /// - the ids of every parameter (`assign_ids`), with a compile error for two
 ///   ids in a struct that are equal or hash to the same value
 ///
 /// The plugin then implements `Model` for the struct: how it creates its
-/// processor, its buses and MIDI behavior and its answers to the web UI.
+/// processor and its buses and MIDI behavior. A plugin whose web UI calls
+/// `invoke()` or emits events also implements `WebViewHandler` for it.
 ///
 /// # Field Attributes
 ///
@@ -162,7 +165,8 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// The model holds it in a field with `#[nested(group = "...")]`. It takes
 /// the same field attributes and options as [`macro@model`] and generates
-/// the same code.
+/// the same code, except `WebViewDispatch`: the calls of the web UI go to
+/// the model.
 ///
 /// # Example
 ///
