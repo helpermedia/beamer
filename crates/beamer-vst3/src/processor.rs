@@ -2929,6 +2929,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
             dev_tools: cfg!(debug_assertions),
             background_color: self.config.editor_background_color,
             message_callback: None,
+            page_gone_callback: None,
             loaded_callback: None,
             callback_context: std::ptr::null_mut(),
         };

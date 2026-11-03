@@ -637,7 +637,7 @@ A right click or Control click on the editor shows no menu from the webview in r
 
 ## When the Page Loads Again
 
-The webview runs the page in a process of its own. When the system ends that process (to reclaim memory, or after a crash in the webview), Beamer loads the page again. The new page starts like the first one: it gets the parameter values and `State` fields from Rust (the init dump). The gestures the old page left open end in the host. What only the page held, such as an open panel or a scroll position, is gone. Keep what has to survive in a `State` field. If the process ends again within 10 seconds, Beamer does not load the page a third time: the editor stays blank until it is opened again, so a page that ends its own process does not keep doing so in the host.
+A page loads again after Reload in a debug build, `location.reload()`, a reload of a dev server, or when its process ends. The webview runs the page in a process of its own. When the system ends that process (to reclaim memory, or after a crash in the webview), Beamer loads the page again. The new page starts like the first one: it gets the parameter values and `State` fields from Rust (the init dump). The gestures the old page left open end in the host as soon as the new page replaces it or its process ends, also when Beamer does not load it again. Nothing the old page posted reaches the plugin after that. What only the page held, such as an open panel or a scroll position, is gone. Keep what has to survive in a `State` field. If the process ends again within 10 seconds, Beamer does not load the page a third time: the editor stays blank until it is opened again, so a page that ends its own process does not keep doing so in the host.
 
 ## Background Color
 

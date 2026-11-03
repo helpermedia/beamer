@@ -15,7 +15,7 @@ use objc2::{msg_send, sel, ClassType, MainThreadMarker};
 use objc2_foundation::{NSObject, NSProcessInfo, NSURLRequest};
 
 use crate::platform::macos_class::class_name;
-use crate::{LoadedCallback, MessageCallback};
+use crate::{LoadedCallback, MessageCallback, PageGoneCallback};
 
 // ---------------------------------------------------------------------------
 // Ivar names
@@ -23,6 +23,7 @@ use crate::{LoadedCallback, MessageCallback};
 
 const MSG_CALLBACK_IVAR: &CStr = c"_beamerMsgCallback";
 const MSG_CONTEXT_IVAR: &CStr = c"_beamerMsgContext";
+const NAV_PAGE_GONE_IVAR: &CStr = c"_beamerNavPageGone";
 const NAV_LOADED_IVAR: &CStr = c"_beamerNavLoaded";
 const NAV_CONTEXT_IVAR: &CStr = c"_beamerNavContext";
 const NAV_TERMINATED_IVAR: &CStr = c"_beamerNavTerminated";
@@ -184,6 +185,7 @@ fn navigation_delegate_class() -> &'static AnyClass {
         }
     };
 
+    builder.add_ivar::<*const c_void>(NAV_PAGE_GONE_IVAR);
     builder.add_ivar::<*const c_void>(NAV_LOADED_IVAR);
     builder.add_ivar::<*mut c_void>(NAV_CONTEXT_IVAR);
     // System uptime in seconds when the web content process last ended,
@@ -192,6 +194,11 @@ fn navigation_delegate_class() -> &'static AnyClass {
 
     // SAFETY: method signatures match the WKNavigationDelegate protocol.
     unsafe {
+        builder.add_method(
+            sel!(webView:didCommitNavigation:),
+            did_commit_navigation
+                as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *const AnyObject, *const AnyObject),
+        );
         builder.add_method(
             sel!(webView:didFinishNavigation:),
             did_finish_navigation
@@ -207,6 +214,53 @@ fn navigation_delegate_class() -> &'static AnyClass {
     builder.register()
 }
 
+/// Call the callback a navigation delegate keeps in `ivar`, if it has one.
+///
+/// # Safety
+///
+/// `this` must be a BeamerNavigationDelegate and `ivar` one of its callback
+/// ivars.
+unsafe fn call_navigation_callback(this: &AnyObject, ivar: &CStr) {
+    let callback_ivar = this.class().instance_variable(ivar);
+    let context_ivar = this.class().instance_variable(NAV_CONTEXT_IVAR);
+
+    let (Some(cb_ivar), Some(ctx_ivar)) = (callback_ivar, context_ivar) else {
+        return;
+    };
+
+    // SAFETY: ivar was written in new_navigation_delegate and is never mutated.
+    let cb_ptr: *const c_void = unsafe { *cb_ivar.load_ptr::<*const c_void>(this) };
+    // SAFETY: ivar was written in new_navigation_delegate and is never mutated.
+    let ctx: *mut c_void = unsafe { *ctx_ivar.load_ptr::<*mut c_void>(this) };
+
+    if cb_ptr.is_null() {
+        return;
+    }
+
+    // SAFETY: cb_ptr was set from a valid PageGoneCallback or LoadedCallback
+    // function pointer; both have this signature.
+    let callback: unsafe extern "C-unwind" fn(*mut c_void) = unsafe { std::mem::transmute(cb_ptr) };
+    // SAFETY: callback and context are valid per new_navigation_delegate contract.
+    unsafe { callback(ctx) };
+}
+
+/// `webView:didCommitNavigation:` implementation.
+///
+/// The new page replaced the old one. WebKit delivers the script messages
+/// and this commit over one connection in order, so the messages of the old
+/// page all came before it.
+unsafe extern "C-unwind" fn did_commit_navigation(
+    this: *mut AnyObject,
+    _cmd: Sel,
+    _webview: *const AnyObject,
+    _navigation: *const AnyObject,
+) {
+    // SAFETY: WebKit provides a valid receiver pointer.
+    let this: &AnyObject = unsafe { &*this };
+    // SAFETY: this is a BeamerNavigationDelegate.
+    unsafe { call_navigation_callback(this, NAV_PAGE_GONE_IVAR) };
+}
+
 /// `webView:didFinishNavigation:` implementation.
 unsafe extern "C-unwind" fn did_finish_navigation(
     this: *mut AnyObject,
@@ -216,34 +270,16 @@ unsafe extern "C-unwind" fn did_finish_navigation(
 ) {
     // SAFETY: WebKit provides a valid receiver pointer.
     let this: &AnyObject = unsafe { &*this };
-
-    let loaded_ivar = this.class().instance_variable(NAV_LOADED_IVAR);
-    let context_ivar = this.class().instance_variable(NAV_CONTEXT_IVAR);
-
-    let (Some(ld_ivar), Some(ctx_ivar)) = (loaded_ivar, context_ivar) else {
-        return;
-    };
-
-    // SAFETY: ivar was written in new_navigation_delegate and is never mutated.
-    let ld_ptr: *const c_void = unsafe { *ld_ivar.load_ptr::<*const c_void>(this) };
-    // SAFETY: ivar was written in new_navigation_delegate and is never mutated.
-    let ctx: *mut c_void = unsafe { *ctx_ivar.load_ptr::<*mut c_void>(this) };
-
-    if ld_ptr.is_null() {
-        return;
-    }
-
-    // SAFETY: ld_ptr was set from a valid LoadedCallback function pointer.
-    let callback: LoadedCallback = unsafe { std::mem::transmute(ld_ptr) };
-    // SAFETY: callback and context are valid per new_navigation_delegate contract.
-    unsafe { callback(ctx) };
+    // SAFETY: this is a BeamerNavigationDelegate.
+    unsafe { call_navigation_callback(this, NAV_LOADED_IVAR) };
 }
 
 /// `webViewWebContentProcessDidTerminate:` implementation.
 ///
 /// WebKit runs the page in a process of its own. When that process ends (the
-/// system reclaims its memory, or WebKit crashes), the view stays blank. This
-/// loads the page again, which reaches `did_finish_navigation` like any other
+/// system reclaims its memory, or WebKit crashes), the page is gone and the
+/// view stays blank. This reports the page gone and loads it again, which
+/// reaches `did_commit_navigation` and `did_finish_navigation` like any other
 /// load, unless the process ended shortly before as well.
 unsafe extern "C-unwind" fn web_content_process_did_terminate(
     this: *mut AnyObject,
@@ -256,6 +292,10 @@ unsafe extern "C-unwind" fn web_content_process_did_terminate(
     let Some(terminated_ivar) = this.class().instance_variable(NAV_TERMINATED_IVAR) else {
         return;
     };
+
+    // The page went with its process, also when it is not loaded again.
+    // SAFETY: this is a BeamerNavigationDelegate.
+    unsafe { call_navigation_callback(this, NAV_PAGE_GONE_IVAR) };
 
     let now = NSProcessInfo::processInfo().systemUptime();
 
@@ -303,9 +343,10 @@ unsafe extern "C-unwind" fn web_content_process_did_terminate(
 ///
 /// # Safety
 ///
-/// Must be called from the main thread. `loaded` and `context` must remain
-/// valid until the delegate is removed from the web view.
+/// Must be called from the main thread. `page_gone`, `loaded` and `context`
+/// must remain valid until the delegate is removed from the web view.
 pub unsafe fn new_navigation_delegate(
+    page_gone: Option<PageGoneCallback>,
     loaded: Option<LoadedCallback>,
     request: Option<&NSURLRequest>,
     context: *mut c_void,
@@ -319,6 +360,9 @@ pub unsafe fn new_navigation_delegate(
     let obj: *mut AnyObject = unsafe { msg_send![obj, init] };
     assert!(!obj.is_null(), "alloc+init returned nil");
 
+    let pg_ivar = cls
+        .instance_variable(NAV_PAGE_GONE_IVAR)
+        .expect("page gone ivar must exist");
     let ld_ivar = cls
         .instance_variable(NAV_LOADED_IVAR)
         .expect("loaded ivar must exist");
@@ -328,6 +372,8 @@ pub unsafe fn new_navigation_delegate(
 
     // SAFETY: obj is a freshly init'd instance; no Retained/shared ref exists yet.
     unsafe {
+        let ptr: *mut *const c_void = pg_ivar.load_ptr(&*obj);
+        *ptr = page_gone.map_or(std::ptr::null(), |page_gone| page_gone as *const c_void);
         let ptr: *mut *const c_void = ld_ivar.load_ptr(&*obj);
         *ptr = loaded.map_or(std::ptr::null(), |loaded| loaded as *const c_void);
         let ptr: *mut *mut c_void = ctx_ivar.load_ptr(&*obj);

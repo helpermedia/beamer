@@ -1332,10 +1332,14 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
  * @param parent           NSView* to attach the WebView to.
  * @param assets           Opaque assets pointer from beamer_au_get_webview_assets().
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
- * @param message_callback Called when JS sends a message to native.
- * @param loaded_callback  Called each time the WebView finishes loading the
- *                         page, also after its web content process ended.
- * @param callback_context Opaque pointer passed to both callbacks.
+ * @param message_callback   Called when JS sends a message to native.
+ * @param page_gone_callback Called when the page the WebView showed is gone:
+ *                           a new page committed in its place, or its web
+ *                           content process ended. Every message of the old
+ *                           page came before it.
+ * @param loaded_callback    Called each time the WebView finishes loading the
+ *                           page, also after its web content process ended.
+ * @param callback_context   Opaque pointer passed to all callbacks.
  * @return Opaque WebView handle, or NULL on failure.
  */
 void* _Nullable beamer_webview_create_with_ipc(
@@ -1343,6 +1347,7 @@ void* _Nullable beamer_webview_create_with_ipc(
     const void* _Nonnull assets,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
+    void (* _Nonnull page_gone_callback)(void* context),
     void (* _Nonnull loaded_callback)(void* context),
     void* _Nullable callback_context
 );
@@ -1353,10 +1358,14 @@ void* _Nullable beamer_webview_create_with_ipc(
  * @param parent           NSView* to attach the WebView to.
  * @param url              Null-terminated UTF-8 URL.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
- * @param message_callback Called when JS sends a message to native.
- * @param loaded_callback  Called each time the WebView finishes loading the
- *                         page, also after its web content process ended.
- * @param callback_context Opaque pointer passed to both callbacks.
+ * @param message_callback   Called when JS sends a message to native.
+ * @param page_gone_callback Called when the page the WebView showed is gone:
+ *                           a new page committed in its place, or its web
+ *                           content process ended. Every message of the old
+ *                           page came before it.
+ * @param loaded_callback    Called each time the WebView finishes loading the
+ *                           page, also after its web content process ended.
+ * @param callback_context   Opaque pointer passed to all callbacks.
  * @return Opaque WebView handle, or NULL on failure.
  */
 void* _Nullable beamer_webview_create_url_with_ipc(
@@ -1364,6 +1373,7 @@ void* _Nullable beamer_webview_create_url_with_ipc(
     const char* _Nonnull url,
     const uint8_t* _Nullable background_color,
     void (* _Nonnull message_callback)(void* context, const uint8_t* json, size_t len),
+    void (* _Nonnull page_gone_callback)(void* context),
     void (* _Nonnull loaded_callback)(void* context),
     void* _Nullable callback_context
 );

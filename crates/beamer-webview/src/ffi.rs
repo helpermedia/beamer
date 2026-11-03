@@ -61,6 +61,7 @@ mod macos_ffi {
                 dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback: None,
+                page_gone_callback: None,
                 loaded_callback: None,
                 callback_context: std::ptr::null_mut(),
             };
@@ -109,6 +110,7 @@ mod macos_ffi {
                 dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback: None,
+                page_gone_callback: None,
                 loaded_callback: None,
                 callback_context: std::ptr::null_mut(),
             };
@@ -196,13 +198,14 @@ mod macos_ffi {
 
     /// Create a WebView with IPC callbacks.
     ///
-    /// Extended version of `beamer_webview_create` that accepts message and
-    /// loaded callbacks for IPC support.
+    /// Extended version of `beamer_webview_create` that accepts message,
+    /// page gone and loaded callbacks for IPC support.
     ///
     /// # Safety
     ///
     /// Same requirements as `beamer_webview_create`, plus:
     /// - `message_callback` must be a valid function pointer or null
+    /// - `page_gone_callback` must be a valid function pointer or null
     /// - `loaded_callback` must be a valid function pointer or null
     /// - `callback_context` must remain valid until the WebView is destroyed
     #[no_mangle]
@@ -211,6 +214,7 @@ mod macos_ffi {
         assets: *const c_void,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
+        page_gone_callback: Option<crate::PageGoneCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
         callback_context: *mut c_void,
     ) -> *mut c_void {
@@ -234,6 +238,7 @@ mod macos_ffi {
                 dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback,
+                page_gone_callback,
                 loaded_callback,
                 callback_context,
             };
@@ -259,6 +264,7 @@ mod macos_ffi {
         url: *const c_char,
         background_color: *const u8,
         message_callback: Option<crate::MessageCallback>,
+        page_gone_callback: Option<crate::PageGoneCallback>,
         loaded_callback: Option<crate::LoadedCallback>,
         callback_context: *mut c_void,
     ) -> *mut c_void {
@@ -280,6 +286,7 @@ mod macos_ffi {
                 dev_tools: cfg!(debug_assertions),
                 background_color: bg,
                 message_callback,
+                page_gone_callback,
                 loaded_callback,
                 callback_context,
             };

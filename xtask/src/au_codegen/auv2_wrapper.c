@@ -4058,11 +4058,13 @@ static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t le
     beamer_au_ipc_handle_message(self->_sync, self->_webviewHandle, json, len, &host);
 }
 
+static void beamer_auv2_on_page_gone(void* context) {
+    {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
+    beamer_auv2_end_open_gestures(self);
+}
+
 static void beamer_auv2_on_loaded(void* context) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    // A page that loads again replaces one that may have left a gesture
-    // open.
-    beamer_auv2_end_open_gestures(self);
     beamer_au_ipc_send_init_dump(self->_sync, self->_webviewHandle, "auv2");
 }
 
@@ -4182,13 +4184,15 @@ static void beamer_auv2_on_loaded(void* context) {
     if (devUrl != NULL) {
         webviewHandle = beamer_webview_create_url_with_ipc(
             (__bridge void*)container, devUrl, bgColor,
-            beamer_auv2_on_message, beamer_auv2_on_loaded,
+            beamer_auv2_on_message, beamer_auv2_on_page_gone,
+            beamer_auv2_on_loaded,
             (__bridge void*)editorView);
     } else {
         const void* assets = beamer_au_get_webview_assets();
         webviewHandle = beamer_webview_create_with_ipc(
             (__bridge void*)container, assets, bgColor,
-            beamer_auv2_on_message, beamer_auv2_on_loaded,
+            beamer_auv2_on_message, beamer_auv2_on_page_gone,
+            beamer_auv2_on_loaded,
             (__bridge void*)editorView);
     }
     if (webviewHandle == NULL) {

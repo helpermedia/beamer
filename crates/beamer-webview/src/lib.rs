@@ -59,6 +59,14 @@ pub(crate) const BEAMER_RUNTIME_JS: &str = include_str!("beamer_runtime.js");
 pub type MessageCallback =
     unsafe extern "C-unwind" fn(context: *mut c_void, json: *const u8, len: usize);
 
+/// Callback fired when the page the WebView showed is gone: a new page
+/// committed in its place, or the web content process that ran it ended.
+/// Fires on the first commit as well, with no page before it.
+///
+/// Every message of the old page came before it and every message of the
+/// new page comes after it. Called on the main thread.
+pub type PageGoneCallback = unsafe extern "C-unwind" fn(context: *mut c_void);
+
 /// Callback fired each time the WebView finishes loading the page, also
 /// when it loads the page again after its web content process ended.
 ///
@@ -82,6 +90,8 @@ pub struct WebViewConfig<'a> {
     pub background_color: [u8; 4],
     /// Callback for messages from JavaScript. May be null.
     pub message_callback: Option<MessageCallback>,
+    /// Callback when the page the WebView showed is gone. May be null.
+    pub page_gone_callback: Option<PageGoneCallback>,
     /// Callback when the page finishes loading. May be null.
     pub loaded_callback: Option<LoadedCallback>,
     /// Context pointer passed to callbacks.

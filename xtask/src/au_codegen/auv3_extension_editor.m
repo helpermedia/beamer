@@ -125,12 +125,19 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
     }
 }
 
+static void beamer_auv3_ext_on_page_gone(void* context) {
+    {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
+    [ext _endOpenGestures];
+    // The messages it kept for the audio unit came from the page that is
+    // gone: its calls must not settle those of the next page.
+    ext->_earlyMessages = nil;
+    // An audio unit that connects now waits for the next page to load.
+    ext->_webviewLoaded = NO;
+}
+
 static void beamer_auv3_ext_on_loaded(void* context) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
     ext->_webviewLoaded = YES;
-    // A page that loads again replaces one that may have left a gesture
-    // open.
-    [ext _endOpenGestures];
 
     // If the wrapper is already available, send the parameter init dump
     // and start the sync timer. Otherwise -_connectWrapper: does it when
@@ -197,13 +204,15 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     if (devUrl != NULL) {
         _webviewHandle = beamer_webview_create_url_with_ipc(
             (__bridge void*)self.view, devUrl, bgColor,
-            beamer_auv3_ext_on_message, beamer_auv3_ext_on_loaded,
+            beamer_auv3_ext_on_message, beamer_auv3_ext_on_page_gone,
+            beamer_auv3_ext_on_loaded,
             (__bridge void*)self);
     } else {
         const void* assets = beamer_au_get_webview_assets();
         _webviewHandle = beamer_webview_create_with_ipc(
             (__bridge void*)self.view, assets, bgColor,
-            beamer_auv3_ext_on_message, beamer_auv3_ext_on_loaded,
+            beamer_auv3_ext_on_message, beamer_auv3_ext_on_page_gone,
+            beamer_auv3_ext_on_loaded,
             (__bridge void*)self);
     }
 }

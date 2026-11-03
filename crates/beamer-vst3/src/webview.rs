@@ -18,7 +18,8 @@ use crate::component_handler::ComponentHandler;
 /// Shared context between WebViewPlugView and its IPC callbacks.
 ///
 /// This struct is heap-allocated and pinned. Raw pointers to it are passed
-/// as the callback context for the WebView's message and loaded callbacks.
+/// as the callback context for the WebView's message, page gone and loaded
+/// callbacks.
 struct IpcContext {
     /// The model of the plugin (trait object for type-erased access). The
     /// view shares it with the plugin for as long as it lives.
@@ -215,6 +216,17 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
     }
 }
 
+/// Page gone callback: ends the gestures the page that is gone left open.
+unsafe extern "C-unwind" fn on_page_gone(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+
+    // SAFETY: context is a valid IpcContext pointer (set in attached()).
+    let ipc = unsafe { &mut *(context as *mut IpcContext) };
+    ipc.end_open_gestures();
+}
+
 /// Loaded callback: sends the parameter init dump when the page finishes loading.
 unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
     if context.is_null() {
@@ -223,9 +235,6 @@ unsafe extern "C-unwind" fn on_loaded(context: *mut c_void) {
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
     let ipc = unsafe { &mut *(context as *mut IpcContext) };
-    // A page that loads again replaces one that may have left a gesture
-    // open.
-    ipc.end_open_gestures();
     let (false, Some(sync)) = (ipc.webview.is_null(), ipc.sync.as_mut()) else {
         return;
     };
@@ -315,6 +324,7 @@ impl IPlugViewTrait for WebViewPlugView {
         // SAFETY: VST3 guarantees single-threaded access for IPlugView methods.
         let config = unsafe { &mut *self.config.get() };
         config.message_callback = Some(on_message);
+        config.page_gone_callback = Some(on_page_gone);
         config.loaded_callback = Some(on_loaded);
         config.callback_context = ipc_ptr;
 
@@ -395,6 +405,7 @@ impl IPlugViewTrait for WebViewPlugView {
                 log::error!("Failed to create WebView: {e}");
                 // Clear callbacks on failure.
                 config.message_callback = None;
+                config.page_gone_callback = None;
                 config.loaded_callback = None;
                 config.callback_context = std::ptr::null_mut();
                 kResultFalse
@@ -850,11 +861,12 @@ mod tests {
         ipc.close_sync();
         assert!(edits().is_empty());
 
-        // The page loads again during a scroll.
+        // The page loads again during a scroll: it ends when the new page
+        // commits.
         ipc.open_sync();
         message(&mut ipc, r#"{"type":"param:begin","id":3}"#);
         // SAFETY: the context is a valid IpcContext.
-        unsafe { on_loaded(&mut ipc as *mut IpcContext as *mut c_void) };
+        unsafe { on_page_gone(&mut ipc as *mut IpcContext as *mut c_void) };
         assert_eq!(edits(), ["begin 3", "end 3"]);
         ipc.close_sync();
         assert!(edits().is_empty());

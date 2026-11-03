@@ -149,11 +149,12 @@ impl MacosWebView {
             WKWebView::initWithFrame_configuration(alloc_web_view(mtm), frame, &wk_config)
         };
 
-        // The navigation delegate reports a finished load and replaces an
-        // ended web content process, also without a loaded callback.
-        // SAFETY: loaded and context are valid per caller contract.
+        // The navigation delegate reports a gone page and a finished load
+        // and replaces an ended web content process, also without callbacks.
+        // SAFETY: page_gone, loaded and context are valid per caller contract.
         let nav_delegate = unsafe {
             crate::platform::macos_ipc::new_navigation_delegate(
+                config.page_gone_callback,
                 config.loaded_callback,
                 request.as_deref(),
                 config.callback_context,
