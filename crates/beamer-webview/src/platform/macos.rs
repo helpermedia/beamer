@@ -21,7 +21,7 @@ use objc2_web_kit::{WKURLSchemeHandler, WKWebView, WKWebViewConfiguration};
 
 use crate::error::{Result, WebViewError};
 use crate::platform::macos_scheme::new_scheme_handler;
-use crate::platform::macos_view::alloc_web_view;
+use crate::platform::macos_view::{alloc_web_view, set_dev_tools};
 use crate::{WebViewConfig, BEAMER_RUNTIME_JS};
 
 /// macOS WebView backed by WKWebView.
@@ -152,26 +152,31 @@ impl MacosWebView {
         }
 
         if config.dev_tools {
-            // The `inspectable` property exists from macOS 13.3. Earlier
-            // systems switch the Web Inspector on through a preferences key.
+            // The context menu keeps Reload and Inspect Element (see
+            // `macos_view.rs`).
+            set_dev_tools(&webview, mtm);
+
+            // The developer extras preference adds Inspect Element to the
+            // context menu. The `inspectable` property, which exists from
+            // macOS 13.3, lets Safari's Develop menu inspect the page.
             // SAFETY: webview is valid and we are on the main thread. The
             // selector is only sent when the web view responds to it.
             // WKPreferences supports KVC for developerExtrasEnabled.
             unsafe {
+                // The web view shares the preferences object of the
+                // configuration it was created with.
+                let preferences: Retained<AnyObject> =
+                    objc2::msg_send![&wk_config, preferences];
+                let key = NSString::from_str("developerExtrasEnabled");
+                let value = NSNumber::new_bool(true);
+                let _: () = objc2::msg_send![&*preferences, setValue: &*value, forKey: &*key];
+
                 let has_inspectable: bool = objc2::msg_send![
                     &webview,
                     respondsToSelector: objc2::sel!(setInspectable:)
                 ];
                 if has_inspectable {
                     webview.setInspectable(true);
-                } else {
-                    // The web view shares the preferences object of the
-                    // configuration it was created with.
-                    let preferences: Retained<AnyObject> =
-                        objc2::msg_send![&wk_config, preferences];
-                    let key = NSString::from_str("developerExtrasEnabled");
-                    let value = NSNumber::new_bool(true);
-                    let _: () = objc2::msg_send![&*preferences, setValue: &*value, forKey: &*key];
                 }
             }
         }

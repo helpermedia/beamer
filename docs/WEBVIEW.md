@@ -629,7 +629,11 @@ When this variable is set:
 
 This enables hot-reload workflows during development. The Beamer runtime (`beamer_runtime.js`) is still injected as a user script, so all `__BEAMER__` APIs work the same way regardless of asset source.
 
-Developer tools (Web Inspector on macOS) are enabled automatically in debug builds of every format: Beamer sets `WebViewConfig::dev_tools` from `debug_assertions`.
+Developer tools (Web Inspector on macOS) are enabled automatically in debug builds of every format: Beamer sets `WebViewConfig::dev_tools` from `debug_assertions`. On macOS, a right click on the page then offers Reload and Inspect Element. Safari's Develop menu lists the page as well.
+
+## Context Menu
+
+A right click or Control click on the editor shows no menu from the webview in release builds: the Reload, Copy, Look Up, Translate and Share items of a browser have no place in a plugin editor. A page can show a menu of its own (for MIDI learn on a knob, say) by handling the `contextmenu` event and calling `preventDefault()`, in every build.
 
 ## Background Color
 
