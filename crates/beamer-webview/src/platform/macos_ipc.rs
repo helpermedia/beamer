@@ -6,10 +6,13 @@
 
 use std::ffi::{c_void, CStr};
 
+use objc2::ffi::{
+    objc_getAssociatedObject, objc_setAssociatedObject, OBJC_ASSOCIATION_RETAIN_NONATOMIC,
+};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
 use objc2::{msg_send, sel, ClassType, MainThreadMarker};
-use objc2_foundation::NSObject;
+use objc2_foundation::{NSObject, NSProcessInfo, NSURLRequest};
 
 use crate::platform::macos_class::class_name;
 use crate::{LoadedCallback, MessageCallback};
@@ -22,6 +25,16 @@ const MSG_CALLBACK_IVAR: &CStr = c"_beamerMsgCallback";
 const MSG_CONTEXT_IVAR: &CStr = c"_beamerMsgContext";
 const NAV_LOADED_IVAR: &CStr = c"_beamerNavLoaded";
 const NAV_CONTEXT_IVAR: &CStr = c"_beamerNavContext";
+const NAV_TERMINATED_IVAR: &CStr = c"_beamerNavTerminated";
+
+/// Key of the request that loaded the page, an associated object of the
+/// navigation delegate (released with it).
+static NAV_REQUEST_KEY: u8 = 0;
+
+/// A web content process that ends again within this many seconds of the
+/// last end is not replaced: the page itself most likely ends it. Loading it
+/// again would repeat that without end.
+const RELOAD_GUARD_SECONDS: f64 = 10.0;
 
 // ---------------------------------------------------------------------------
 // BeamerMessageHandler (WKScriptMessageHandler)
@@ -173,13 +186,21 @@ fn navigation_delegate_class() -> &'static AnyClass {
 
     builder.add_ivar::<*const c_void>(NAV_LOADED_IVAR);
     builder.add_ivar::<*mut c_void>(NAV_CONTEXT_IVAR);
+    // System uptime in seconds when the web content process last ended,
+    // 0 before it ever did.
+    builder.add_ivar::<f64>(NAV_TERMINATED_IVAR);
 
-    // SAFETY: method signature matches the WKNavigationDelegate protocol.
+    // SAFETY: method signatures match the WKNavigationDelegate protocol.
     unsafe {
         builder.add_method(
             sel!(webView:didFinishNavigation:),
             did_finish_navigation
                 as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *const AnyObject, *const AnyObject),
+        );
+        builder.add_method(
+            sel!(webViewWebContentProcessDidTerminate:),
+            web_content_process_did_terminate
+                as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
         );
     }
 
@@ -218,13 +239,75 @@ unsafe extern "C-unwind" fn did_finish_navigation(
     unsafe { callback(ctx) };
 }
 
+/// `webViewWebContentProcessDidTerminate:` implementation.
+///
+/// WebKit runs the page in a process of its own. When that process ends (the
+/// system reclaims its memory, or WebKit crashes), the view stays blank. This
+/// loads the page again, which reaches `did_finish_navigation` like any other
+/// load, unless the process ended shortly before as well.
+unsafe extern "C-unwind" fn web_content_process_did_terminate(
+    this: *mut AnyObject,
+    _cmd: Sel,
+    webview: *mut AnyObject,
+) {
+    // SAFETY: WebKit provides a valid receiver pointer.
+    let this: &AnyObject = unsafe { &*this };
+
+    let Some(terminated_ivar) = this.class().instance_variable(NAV_TERMINATED_IVAR) else {
+        return;
+    };
+
+    let now = NSProcessInfo::processInfo().systemUptime();
+
+    // SAFETY: the ivar is an f64, read and written only here, on the main
+    // thread where WebKit calls the delegate.
+    let previous = unsafe {
+        let ptr: *mut f64 = terminated_ivar.load_ptr(this);
+        std::mem::replace(&mut *ptr, now)
+    };
+
+    if previous > 0.0 && now - previous < RELOAD_GUARD_SECONDS {
+        log::error!(
+            "The web content process of the editor ended again within \
+             {RELOAD_GUARD_SECONDS} s; the editor stays blank until it is opened again"
+        );
+        return;
+    }
+
+    log::warn!("The web content process of the editor ended; loading the page again");
+    // SAFETY: WebKit provides a valid WKWebView; we are on the main thread.
+    let mut navigation: *mut AnyObject = unsafe { msg_send![webview, reload] };
+    if navigation.is_null() {
+        // The process ended before the first page committed, so the web view
+        // has nothing to reload: load the request of that page again.
+        // SAFETY: the key holds an NSURLRequest or nothing, set only in
+        // `new_navigation_delegate`. It lives as long as the delegate.
+        let request = unsafe {
+            objc_getAssociatedObject(this, &NAV_REQUEST_KEY as *const u8 as *const c_void)
+        };
+        if !request.is_null() {
+            // SAFETY: webview is a valid WKWebView and request a valid
+            // NSURLRequest; we are on the main thread.
+            navigation = unsafe { msg_send![webview, loadRequest: request] };
+        }
+    }
+    if navigation.is_null() {
+        log::error!(
+            "The page of the editor could not be loaded again; \
+             the editor stays blank until it is opened again"
+        );
+    }
+}
+
 /// Allocate a BeamerNavigationDelegate instance.
 ///
 /// # Safety
 ///
-/// Must be called from the main thread.
+/// Must be called from the main thread. `loaded` and `context` must remain
+/// valid until the delegate is removed from the web view.
 pub unsafe fn new_navigation_delegate(
-    loaded: LoadedCallback,
+    loaded: Option<LoadedCallback>,
+    request: Option<&NSURLRequest>,
     context: *mut c_void,
     _mtm: MainThreadMarker,
 ) -> Retained<AnyObject> {
@@ -246,9 +329,23 @@ pub unsafe fn new_navigation_delegate(
     // SAFETY: obj is a freshly init'd instance; no Retained/shared ref exists yet.
     unsafe {
         let ptr: *mut *const c_void = ld_ivar.load_ptr(&*obj);
-        *ptr = loaded as *const c_void;
+        *ptr = loaded.map_or(std::ptr::null(), |loaded| loaded as *const c_void);
         let ptr: *mut *mut c_void = ctx_ivar.load_ptr(&*obj);
         *ptr = context;
+    }
+
+    // The delegate retains the request that loads the page, for a load
+    // after an ended web content process.
+    if let Some(request) = request {
+        // SAFETY: obj is a valid object; the key is a static address.
+        unsafe {
+            objc_setAssociatedObject(
+                obj,
+                &NAV_REQUEST_KEY as *const u8 as *const c_void,
+                request as *const NSURLRequest as *mut AnyObject,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC,
+            );
+        }
     }
 
     // SAFETY: alloc+init returned a +1 retained, non-null object.

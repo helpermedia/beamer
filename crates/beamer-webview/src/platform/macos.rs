@@ -28,7 +28,7 @@ use crate::{WebViewConfig, BEAMER_RUNTIME_JS};
 pub struct MacosWebView {
     webview: Retained<WKWebView>,
     /// Retained reference to the navigation delegate to prevent deallocation.
-    _nav_delegate: Option<Retained<AnyObject>>,
+    _nav_delegate: Retained<AnyObject>,
     /// Retained reference to the message handler to prevent deallocation.
     _msg_handler: Option<Retained<AnyObject>>,
 }
@@ -126,6 +126,22 @@ impl MacosWebView {
             }
         }
 
+        let request = if let Some(url) = config.url {
+            let url_str = NSString::from_str(url);
+            let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
+                WebViewError::CreationFailed(format!("invalid dev server URL: {url}"))
+            })?;
+            Some(NSURLRequest::requestWithURL(&nsurl))
+        } else if config.assets.is_some() {
+            let url_str = NSString::from_str("beamer://localhost/index.html");
+            let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
+                WebViewError::CreationFailed("failed to create scheme URL".into())
+            })?;
+            Some(NSURLRequest::requestWithURL(&nsurl))
+        } else {
+            None
+        };
+
         // The subclass accepts the first click in a window that is not
         // active (see `macos_view.rs`).
         // SAFETY: frame and wk_config are valid; we are on the main thread.
@@ -133,22 +149,20 @@ impl MacosWebView {
             WKWebView::initWithFrame_configuration(alloc_web_view(mtm), frame, &wk_config)
         };
 
-        // Set navigation delegate for load-complete detection.
-        let mut nav_delegate_retained = None;
-        if let Some(loaded) = config.loaded_callback {
-            // SAFETY: loaded and context are valid per caller contract.
-            let delegate = unsafe {
-                crate::platform::macos_ipc::new_navigation_delegate(
-                    loaded,
-                    config.callback_context,
-                    mtm,
-                )
-            };
-            // SAFETY: webview and delegate are valid; we are on the main thread.
-            unsafe {
-                let _: () = objc2::msg_send![&webview, setNavigationDelegate: &*delegate];
-            }
-            nav_delegate_retained = Some(delegate);
+        // The navigation delegate reports a finished load and replaces an
+        // ended web content process, also without a loaded callback.
+        // SAFETY: loaded and context are valid per caller contract.
+        let nav_delegate = unsafe {
+            crate::platform::macos_ipc::new_navigation_delegate(
+                config.loaded_callback,
+                request.as_deref(),
+                config.callback_context,
+                mtm,
+            )
+        };
+        // SAFETY: webview and delegate are valid; we are on the main thread.
+        unsafe {
+            let _: () = objc2::msg_send![&webview, setNavigationDelegate: &*nav_delegate];
         }
 
         if config.dev_tools {
@@ -215,29 +229,16 @@ impl MacosWebView {
         // SAFETY: WKWebView supports KVC for drawsBackground; we are on the main thread.
         let _: () = unsafe { objc2::msg_send![&webview, setValue: &*value, forKey: &*key] };
 
-        if let Some(url) = config.url {
-            let url_str = NSString::from_str(url);
-            let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
-                WebViewError::CreationFailed(format!("invalid dev server URL: {url}"))
-            })?;
-            let request = NSURLRequest::requestWithURL(&nsurl);
+        if let Some(request) = &request {
             // SAFETY: webview and request are valid; we are on the main thread.
-            unsafe { webview.loadRequest(&request) };
-        } else if config.assets.is_some() {
-            let url_str = NSString::from_str("beamer://localhost/index.html");
-            let nsurl = NSURL::URLWithString(&url_str).ok_or_else(|| {
-                WebViewError::CreationFailed("failed to create scheme URL".into())
-            })?;
-            let request = NSURLRequest::requestWithURL(&nsurl);
-            // SAFETY: webview and request are valid; we are on the main thread.
-            unsafe { webview.loadRequest(&request) };
+            unsafe { webview.loadRequest(request) };
         }
 
         parent_view.addSubview(&webview);
 
         Ok(Self {
             webview,
-            _nav_delegate: nav_delegate_retained,
+            _nav_delegate: nav_delegate,
             _msg_handler: msg_handler_retained,
         })
     }

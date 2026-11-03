@@ -1333,7 +1333,8 @@ void beamer_webview_eval_js(void* _Nonnull handle, const uint8_t* _Nonnull scrip
  * @param assets           Opaque assets pointer from beamer_au_get_webview_assets().
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
- * @param loaded_callback  Called when the WebView finishes initial load.
+ * @param loaded_callback  Called each time the WebView finishes loading the
+ *                         page, also after its web content process ended.
  * @param callback_context Opaque pointer passed to both callbacks.
  * @return Opaque WebView handle, or NULL on failure.
  */
@@ -1353,7 +1354,8 @@ void* _Nullable beamer_webview_create_with_ipc(
  * @param url              Null-terminated UTF-8 URL.
  * @param background_color Pointer to 4 bytes (RGBA) or NULL for default.
  * @param message_callback Called when JS sends a message to native.
- * @param loaded_callback  Called when the WebView finishes initial load.
+ * @param loaded_callback  Called each time the WebView finishes loading the
+ *                         page, also after its web content process ended.
  * @param callback_context Opaque pointer passed to both callbacks.
  * @return Opaque WebView handle, or NULL on failure.
  */

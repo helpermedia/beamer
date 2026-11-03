@@ -23,6 +23,7 @@ objc2-foundation = { version = "0.3", features = [
     "NSData",
     "NSDictionary",
     "NSGeometry",
+    "NSProcessInfo",
     "NSString",
     "NSURL",
     "NSURLRequest",

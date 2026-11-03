@@ -431,7 +431,7 @@ Parameter sync is fully automatic. No plugin code is required. The same holds fo
 
 ### Init Dump
 
-When the WebView finishes loading its initial page, the format wrapper injects the parameters (`params_to_init_json()`) via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)) and carries the values of the `State` fields by path:
+Each time the WebView finishes loading the page (see [When the Page Loads Again](#when-the-page-loads-again)), the format wrapper injects the parameters (`params_to_init_json()`) via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)) and carries the values of the `State` fields by path:
 
 ```javascript
 window.__BEAMER__._onInit([
@@ -634,6 +634,10 @@ Developer tools (Web Inspector on macOS) are enabled automatically in debug buil
 ## Context Menu
 
 A right click or Control click on the editor shows no menu from the webview in release builds: the Reload, Copy, Look Up, Translate and Share items of a browser have no place in a plugin editor. A page can show a menu of its own (for MIDI learn on a knob, say) by handling the `contextmenu` event and calling `preventDefault()`, in every build.
+
+## When the Page Loads Again
+
+The webview runs the page in a process of its own. When the system ends that process (to reclaim memory, or after a crash in the webview), Beamer loads the page again. The new page starts like the first one: it gets the parameter values and `State` fields from Rust (the init dump). The gestures the old page left open end in the host. What only the page held, such as an open panel or a scroll position, is gone. Keep what has to survive in a `State` field. If the process ends again within 10 seconds, Beamer does not load the page a third time: the editor stays blank until it is opened again, so a page that ends its own process does not keep doing so in the host.
 
 ## Background Color
 

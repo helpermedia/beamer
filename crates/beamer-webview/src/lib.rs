@@ -59,7 +59,8 @@ pub(crate) const BEAMER_RUNTIME_JS: &str = include_str!("beamer_runtime.js");
 pub type MessageCallback =
     unsafe extern "C-unwind" fn(context: *mut c_void, json: *const u8, len: usize);
 
-/// Callback fired when the WebView finishes loading initial content.
+/// Callback fired each time the WebView finishes loading the page, also
+/// when it loads the page again after its web content process ended.
 ///
 /// Called on the main thread.
 pub type LoadedCallback = unsafe extern "C-unwind" fn(context: *mut c_void);
