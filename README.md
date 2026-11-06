@@ -1,6 +1,6 @@
-# BEAMER
+<img src="docs/branding/beamer-banner.png" alt="Beamer" width="1600">
 
-A Rust framework for building Audio Unit (AU) and VST3 audio plugins.
+Beamer is a Rust framework for building Audio Unit (AU) and VST3 audio plugins.
 
 Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS; Windows planned) through modern web UI from a single codebase.
 
