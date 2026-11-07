@@ -560,9 +560,9 @@ function Slider({ paramId }: { paramId: string }) {
   const svgRef = useRef<SVGSVGElement>(null);
   // The arc on the handle, vertical elsewhere (onHandle tests the press
   // against the handle's position). Double-click is for typing a value,
-  // so a modifier click resets.
+  // so only a modifier click resets.
   const pickDrag = (event: PointerEvent) => (onHandle(event) ? "arc" : "vertical");
-  useGestures(svgRef, param, { drag: pickDrag, reset: "modifier-click" });
+  useGestures(svgRef, param, { drag: pickDrag, reset: ["modifier-click"] });
   // Draw the arc from `value`; on Enter: param.typeValue(text).
 }
 ```

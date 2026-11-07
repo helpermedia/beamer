@@ -198,9 +198,52 @@ test("a key moves a discrete parameter one choice", () => {
 test("a modifier click resets with Command or Control", () => {
   const element = knob();
   const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { reset: "modifier-click" });
+  attachGestures(element, param, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
+});
+
+test("by default a double click resets, a modifier click does not", () => {
+  const element = knob();
+  const { param, calls } = fakeParam(0.5);
+  attachGestures(element, param);
+  // A Command click is a drag that does not move.
+  pointer(element, "pointerdown", { metaKey: true });
+  pointer(element, "pointerup", {});
+  expect(calls).toEqual(["begin", "end"]);
+  calls.length = 0;
+  element.dispatchEvent(new MouseEvent("dblclick"));
+  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+});
+
+test("both resets together", () => {
+  const element = knob();
+  const { param, calls } = fakeParam(0.5);
+  attachGestures(element, param, { reset: ["double-click", "modifier-click"] });
+  element.dispatchEvent(new MouseEvent("dblclick"));
+  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+  param.set(0.5);
+  calls.length = 0;
+  pointer(element, "pointerdown", { metaKey: true });
+  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+});
+
+test("an option given as undefined keeps its default", () => {
+  const element = knob();
+  const { param, calls } = fakeParam(0.5);
+  attachGestures(element, param, { reset: undefined, dragStep: undefined });
+  element.dispatchEvent(new MouseEvent("dblclick"));
+  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+});
+
+test("an empty reset list turns reset off", () => {
+  const element = knob();
+  const { param, calls } = fakeParam(0.5);
+  attachGestures(element, param, { reset: [] });
+  element.dispatchEvent(new MouseEvent("dblclick"));
+  pointer(element, "pointerdown", { ctrlKey: true });
+  pointer(element, "pointerup", {});
+  expect(calls).toEqual(["begin", "end"]);
 });
 
 test("an arc drag jumps to the pointer and follows it", () => {
@@ -316,6 +359,8 @@ test("detaching ends an open drag and gives the element its touch action back", 
 test("the context menu of a Control click ends the drag it began", () => {
   const element = knob();
   const { param, calls } = fakeParam(0.5);
+  // Without the modifier click reset (the default), a Control click begins
+  // a drag.
   attachGestures(element, param);
   pointer(element, "pointerdown", { clientY: 100, ctrlKey: true });
   const menu = new MouseEvent("contextmenu", { cancelable: true });
@@ -328,7 +373,7 @@ test("the context menu of a Control click ends the drag it began", () => {
 test("a Control click that resets shows no context menu", () => {
   const element = knob();
   const { param } = fakeParam(0.5);
-  attachGestures(element, param, { reset: "modifier-click" });
+  attachGestures(element, param, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
   const menu = new MouseEvent("contextmenu", { cancelable: true });
   element.dispatchEvent(menu);

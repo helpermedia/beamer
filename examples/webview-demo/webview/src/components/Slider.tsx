@@ -79,7 +79,7 @@ function Slider({ type = "circular", paramId, size = 64, label, className }: Sli
     drag: pickDrag,
     arcStart: ARC_START_DEGREES,
     arcSweep: ARC_SWEEP_DEGREES,
-    reset: "modifier-click",
+    reset: ["modifier-click"],
   });
 
   const displayLabel = label ?? info?.name ?? paramId;

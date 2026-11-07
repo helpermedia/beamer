@@ -39,7 +39,9 @@ const detach = attachGestures(knob, param("mix"));
 - **Keys:** arrows, Page Up and Page Down, Home and End, finer with shift.
   A discrete parameter moves one choice per key. The element must be
   focusable.
-- **Reset:** double click (default) or a click with Command or Control held.
+- **Reset:** a double click (default), a click with Command or Control
+  held, or both. `reset` takes a list of the ones to use; an empty list
+  turns reset off.
 - **Focus:** while the element has focus from the keyboard (Tab, or keys
   after a click) it has the `data-keyboard-focus` attribute, for a focus
   style. Use it instead of `:focus-visible`, which WebKit also shows after

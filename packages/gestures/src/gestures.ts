@@ -10,6 +10,9 @@ import type { Param } from "@helpermedia/beamer-api";
  */
 export type DragMode = "vertical" | "horizontal" | "both" | "arc";
 
+/** A way to reset a value to its default: a double click, or a click with Command or Control held. */
+export type ResetGesture = "double-click" | "modifier-click";
+
 /** How a control takes pointer, wheel and key input. */
 export interface GestureOptions {
   /**
@@ -47,10 +50,11 @@ export interface GestureOptions {
   /** A scroll ends when no wheel event came for this long, in ms. Default 300. */
   wheelRestMs?: number;
   /**
-   * What resets the value to its default: a double click, or a click with
-   * Command or Control held. Default "double-click".
+   * What resets the value to its default: a double click, a click with
+   * Command or Control held, or both. An empty list turns reset off.
+   * Default a double click.
    */
-  reset?: "double-click" | "modifier-click" | "none";
+  reset?: ResetGesture[];
 }
 
 const DEFAULTS: Required<GestureOptions> = {
@@ -64,7 +68,7 @@ const DEFAULTS: Required<GestureOptions> = {
   pageStep: 0.1,
   wheelCap: 10,
   wheelRestMs: 300,
-  reset: "double-click",
+  reset: ["double-click"],
 };
 
 // Pixels a wheel event counts for per line and per page, when it reports
@@ -220,7 +224,9 @@ export function attachGestures(
   target: Param,
   options: GestureOptions = {},
 ): () => void {
-  const settings = { ...DEFAULTS, ...options };
+  // An option given as undefined keeps its default.
+  const given = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+  const settings: Required<GestureOptions> = { ...DEFAULTS, ...given };
   const listeners: Array<[string, EventListener, AddEventListenerOptions?]> = [];
   const listen = <E extends Event>(type: string, listener: (event: E) => void, opts?: AddEventListenerOptions) => {
     listeners.push([type, listener as EventListener, opts]);
@@ -298,7 +304,7 @@ export function attachGestures(
     // The primary button only: a right click opens the context menu, which
     // takes the release.
     if (event.button !== 0 || drag || !target.info) return;
-    if (settings.reset === "modifier-click" && (event.metaKey || event.ctrlKey)) {
+    if (settings.reset.includes("modifier-click") && (event.metaKey || event.ctrlKey)) {
       target.reset();
       resetByClick = true;
       return;
@@ -397,7 +403,7 @@ export function attachGestures(
     target.edit(next);
   });
 
-  if (settings.reset === "double-click") {
+  if (settings.reset.includes("double-click")) {
     listen("dblclick", () => target.reset());
   }
 
