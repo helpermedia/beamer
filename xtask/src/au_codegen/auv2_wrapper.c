@@ -4112,6 +4112,14 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)_sendFrame {
     beamer_au_ipc_send_frame(_sync, _webviewHandle);
 }
+// The host resized the editor: the WebView follows. Its container resizes
+// with this view, the WebView in it does not on its own.
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
+    if (_webviewHandle != NULL) {
+        beamer_webview_set_frame(_webviewHandle, 0, 0, (int32_t)size.width, (int32_t)size.height);
+    }
+}
 - (BOOL)mouseDownCanMoveWindow {
     return NO;
 }
