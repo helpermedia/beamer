@@ -52,7 +52,7 @@ Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 | **Ratio** | Compression intensity. 2:1 (gentle) through 20:1 (near-limiting). |
 | **Attack** | How fast compression engages (0.1-200 ms). Slower preserves transients. |
 | **Release** | How fast compression releases (10-2000 ms). Faster = punchier, slower = smoother. |
-| **Soft Knee** | Toggle between soft knee (gradual onset) and hard knee (abrupt). |
+| **Soft Knee** | Toggle between a soft knee (a gradual onset, 6 dB wide and centered on the threshold) and a hard knee (abrupt). |
 | **Lookahead** | Delays the audio (0-10 ms) so that compression starts before a peak arrives. It is the plugin's latency, which the host compensates. |
 | **Auto Makeup** | Automatically compensate for volume reduction from compression. |
 | **Makeup Gain** | Manual output boost (0-24 dB). Only active when Auto Makeup is off. |

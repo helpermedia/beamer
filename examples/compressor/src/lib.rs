@@ -28,9 +28,9 @@
 //! # DSP Overview
 //!
 //! Classic feed-forward compressor with dB-domain envelope processing:
-//! - Envelope tracks overshoot above threshold
+//! - Envelope tracks overshoot above the start of the knee
 //! - Stereo-linked peak detection
-//! - Soft/hard knee selection
+//! - A soft knee centered on the threshold or a hard knee
 //! - Dynamic auto makeup gain
 //! - Optional lookahead: the audio is delayed, the detector is not
 
@@ -317,6 +317,25 @@ fn db_to_linear(db: f64) -> f64 {
     10.0_f64.powf(db / 20.0)
 }
 
+/// The gain reduction in dB (0 or negative) for a level `over_db` above
+/// the start of the knee.
+///
+/// Nothing below the knee, then a quadratic knee centered on the threshold
+/// and `knee_db` wide, then the full ratio. A hard knee is 0 dB wide. The
+/// knee meets the ratio without a step in level or slope, so the output
+/// rises with the input everywhere.
+#[inline]
+fn gain_reduction_db(over_db: f64, ratio: f64, knee_db: f64) -> f64 {
+    let slope = 1.0 - 1.0 / ratio;
+    if over_db <= 0.0 {
+        0.0
+    } else if over_db < knee_db {
+        -slope * over_db * over_db / (2.0 * knee_db)
+    } else {
+        -slope * (over_db - knee_db / 2.0)
+    }
+}
+
 // =============================================================================
 // Bypass Handler Constants
 // =============================================================================
@@ -332,7 +351,7 @@ const MAX_LOOKAHEAD_MS: f64 = 10.0;
 /// within 5 percent of where it settles.
 const WARMUP_ATTACK_TIMES: f64 = 3.0;
 
-/// Fixed soft knee width in dB.
+/// Fixed soft knee width in dB, centered on the threshold.
 const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
 
 /// DC offset to prevent denormals in envelope follower.
@@ -486,7 +505,7 @@ impl CompressorProcessor {
 ///
 /// Processing steps:
 /// 1. Rectify input and stereo-link (max of L/R)
-/// 2. Convert to dB and compute overshoot above threshold
+/// 2. Convert to dB and compute overshoot above the start of the knee
 /// 3. Run attack/release envelope on the overshoot
 /// 4. Compute gain reduction from smoothed overshoot
 /// 5. Apply it to the audio delayed by the lookahead
@@ -512,11 +531,14 @@ fn process_compression_inner<S: Sample>(
     // Get parameter values
     let threshold_db = model.threshold.get();
     let ratio = model.ratio.get().to_value();
-    let knee_width = if model.soft_knee.get() {
+    let knee_db = if model.soft_knee.get() {
         SOFT_KNEE_WIDTH_DB
     } else {
         0.0
     };
+    // The knee is centered on the threshold: compression starts half its
+    // width below it.
+    let knee_start_db = threshold_db - knee_db / 2.0;
 
     let manual_makeup_db = model.makeup_gain.get();
 
@@ -574,8 +596,8 @@ fn process_compression_inner<S: Sample>(
         // Add DC offset before log to avoid log(0)
         let key_db = linear_to_db(detect_linked + DC_OFFSET);
 
-        // Compute overshoot above threshold (clamped to >= 0)
-        let over_db = (key_db - threshold_db).max(0.0);
+        // Compute overshoot above the start of the knee (clamped to >= 0).
+        let over_db = (key_db - knee_start_db).max(0.0);
 
         // =====================================================================
         // Step 3: Run attack/release envelope on overshoot (dB domain)
@@ -592,23 +614,14 @@ fn process_compression_inner<S: Sample>(
         // =====================================================================
         // Step 4: Compute gain reduction with soft/hard knee
         // =====================================================================
-        let gain_reduction_db = if knee_width <= 0.0 || smoothed_over_db >= knee_width / 2.0 {
-            // Hard knee or above knee region: full compression
-            -smoothed_over_db * (1.0 - 1.0 / ratio)
-        } else if smoothed_over_db <= 0.0 {
-            // Below threshold: no compression
-            0.0
-        } else {
-            // In soft knee region: quadratic interpolation
-            -(smoothed_over_db * smoothed_over_db) / (knee_width / 2.0) * (1.0 - 1.0 / ratio)
-        };
+        let reduction_db = gain_reduction_db(smoothed_over_db, ratio, knee_db);
 
         // =====================================================================
         // Step 5: Auto makeup and final gain
         // =====================================================================
         // Update smoothed average gain reduction
-        state.average_gr_db += gr_smooth_coeff * (gain_reduction_db - state.average_gr_db);
-        report.largest_reduction_db = report.largest_reduction_db.max(-gain_reduction_db);
+        state.average_gr_db += gr_smooth_coeff * (reduction_db - state.average_gr_db);
+        report.largest_reduction_db = report.largest_reduction_db.max(-reduction_db);
 
         let auto_makeup_db = if model.auto_makeup.get() {
             -state.average_gr_db
@@ -616,7 +629,7 @@ fn process_compression_inner<S: Sample>(
             0.0
         };
 
-        let total_gain_linear = db_to_linear(gain_reduction_db + auto_makeup_db + manual_makeup_db);
+        let total_gain_linear = db_to_linear(reduction_db + auto_makeup_db + manual_makeup_db);
 
         // Apply the gain to the audio delayed by the lookahead. The buffer
         // is processed in place: this sample still holds the input.
@@ -840,6 +853,41 @@ mod tests {
         model.lookahead.set(20.0);
         process(&mut processor, &mut [0.0; BLOCK], &mut [0.0; BLOCK]);
         assert_eq!(processor.latency_samples(), 480);
+    }
+
+    #[test]
+    fn test_soft_knee_output_rises_with_the_input() {
+        // From 10 dB below the start of the knee to 10 dB above its end,
+        // for every ratio.
+        for ratio in [2.0, 4.0, 8.0, 10.0, 20.0] {
+            let mut last = f64::NEG_INFINITY;
+            for step in 0..=260 {
+                let over_db = -10.0 + step as f64 * 0.1;
+                let output = over_db + gain_reduction_db(over_db, ratio, SOFT_KNEE_WIDTH_DB);
+                assert!(output > last, "ratio {ratio}, {over_db} dB over the knee's start: {output} after {last}");
+                last = output;
+            }
+        }
+    }
+
+    #[test]
+    fn test_soft_knee_is_centered_on_the_threshold() {
+        let ratio = 4.0;
+        let knee = SOFT_KNEE_WIDTH_DB;
+        let slope = 1.0 - 1.0 / ratio;
+        // Nothing at the start of the knee, half its width below the
+        // threshold.
+        assert_eq!(gain_reduction_db(0.0, ratio, knee), 0.0);
+        // At the threshold an eighth of the knee's width times the slope.
+        let at_threshold = gain_reduction_db(knee / 2.0, ratio, knee);
+        assert!((at_threshold + slope * knee / 8.0).abs() < 1e-12, "{at_threshold}");
+        // Above the knee the hard knee's curve: the full ratio from the
+        // threshold.
+        for over_threshold in [3.0, 6.0, 20.0] {
+            let soft = gain_reduction_db(over_threshold + knee / 2.0, ratio, knee);
+            let hard = gain_reduction_db(over_threshold, ratio, 0.0);
+            assert!((soft - hard).abs() < 1e-12, "{over_threshold} dB over the threshold: {soft} is not {hard}");
+        }
     }
 
     #[test]
