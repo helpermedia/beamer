@@ -7,3 +7,5 @@ vendor = "Beamer Framework"
 url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
 log_level = "warn"
+editor_size = [760, 428]
+editor_background_color = "#171717"

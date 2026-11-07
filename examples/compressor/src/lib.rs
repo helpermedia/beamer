@@ -24,6 +24,8 @@
 //! - `Model::LAYOUTS` with mono and stereo main buses and sidechains
 //! - `SampleRate` setup for sample-rate-dependent initialization
 //! - `context.report_value()` for the gain reduction in a diagnostics build
+//! - Value senders from the audio thread for the editor's meters and its
+//!   sidechain status
 //!
 //! # DSP Overview
 //!
@@ -33,8 +35,18 @@
 //! - A soft knee centered on the threshold or a hard knee
 //! - Dynamic auto makeup gain
 //! - Optional lookahead: the audio is delayed, the detector is not
+//!
+//! # Editor
+//!
+//! The editor in `webview/` is React, on the packages beamer-api,
+//! beamer-gestures and beamer-react. bun and Vite build it into
+//! `webview/dist/`, which the export macro embeds. It draws the transfer
+//! curve from the parameters, with the same formula as
+//! [`gain_reduction_db()`]. The audio thread sends what only it knows: the
+//! levels for the meters and whether the detector keys on the sidechain.
 
 use beamer::prelude::*;
+use beamer::serde::Serialize;
 
 // =============================================================================
 // Compression Ratio Enum
@@ -74,6 +86,45 @@ impl Ratio {
             Ratio::Ratio20 => 20.0,
         }
     }
+}
+
+// =============================================================================
+// Editor Values
+// =============================================================================
+
+/// What the editor needs to know of the processor, sent from the audio
+/// thread.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(crate = "beamer::serde", rename_all = "camelCase")]
+pub struct Status {
+    /// The sample rate the host prepared the plugin for, which turns the
+    /// lookahead into samples.
+    pub sample_rate: f64,
+    /// Whether the detector keys on the sidechain: the parameter asks for
+    /// it, the bus is on and the host passes its samples.
+    pub keyed_on_sidechain: bool,
+}
+
+/// The levels as the editor's meters show them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(crate = "beamer::serde", rename_all = "camelCase")]
+pub struct Meters {
+    /// The held peak of the level the detector keys on (the main input or
+    /// the sidechain) in dB, at least the floor of the meters.
+    pub key_db: f32,
+    /// The held gain reduction in dB, a positive number.
+    pub reduction_db: f32,
+    /// The auto makeup gain in effect in dB, 0 while auto makeup is off.
+    pub auto_makeup_db: f32,
+}
+
+impl Meters {
+    /// The meters at rest: no signal and no reduction.
+    const REST: Self = Self {
+        key_db: METER_FLOOR_DB,
+        reduction_db: 0.0,
+        auto_makeup_db: 0.0,
+    };
 }
 
 // =============================================================================
@@ -176,6 +227,13 @@ pub struct CompressorModel {
     /// Use sidechain input for detection signal.
     #[parameter(id = "sidechain", name = "Sidechain", default = false)]
     pub use_sidechain: BoolParameter,
+
+    // =========================================================================
+    // Editor
+    // =========================================================================
+
+    /// Events for the editor. The processor's senders are made from it.
+    pub events: WebViewEventQueue,
 }
 
 impl Model for CompressorModel {
@@ -219,6 +277,14 @@ impl Model for CompressorModel {
         let ramp_samples = (sample_rate.hz() * BYPASS_RAMP_MS * 0.001) as u32;
         // The longest lookahead is the largest latency.
         let max_lookahead_samples = ms_to_samples(MAX_LOOKAHEAD_MS, sample_rate.hz());
+        // Input bus 1 is the sidechain. A host switches it on when the user
+        // routes a key signal to it.
+        let has_sidechain = buses.is_input_on(1);
+        // What an editor shows before the first block.
+        let status = Status {
+            sample_rate: sample_rate.hz(),
+            keyed_on_sidechain: false,
+        };
 
         let mut processor = CompressorProcessor {
             // The handler keeps the dry signal, so it needs the channel
@@ -238,9 +304,11 @@ impl Model for CompressorModel {
             lookahead_samples: 0,
             max_lookahead_samples,
             sample_rate: sample_rate.hz(),
-            // Input bus 1 is the sidechain. A host switches it on when the
-            // user routes a key signal to it.
-            has_sidechain: buses.is_input_on(1),
+            has_sidechain,
+            status_sender: self.events.value_sender("status", status),
+            status,
+            meters_sender: self.events.value_sender("meters", Meters::REST),
+            meters: Meters::REST,
             model: self,
         };
         // The latency a host asks for before the first block.
@@ -323,7 +391,8 @@ fn db_to_linear(db: f64) -> f64 {
 /// Nothing below the knee, then a quadratic knee centered on the threshold
 /// and `knee_db` wide, then the full ratio. A hard knee is 0 dB wide. The
 /// knee meets the ratio without a step in level or slope, so the output
-/// rises with the input everywhere.
+/// rises with the input everywhere. The editor draws the same curve
+/// (`webview/src/curve.ts`).
 #[inline]
 fn gain_reduction_db(over_db: f64, ratio: f64, knee_db: f64) -> f64 {
     let slope = 1.0 - 1.0 / ratio;
@@ -353,6 +422,19 @@ const WARMUP_ATTACK_TIMES: f64 = 3.0;
 
 /// Fixed soft knee width in dB, centered on the threshold.
 const SOFT_KNEE_WIDTH_DB: f64 = 6.0;
+
+/// The lowest level the editor's meters show in dB, the bottom of its
+/// transfer curve.
+const METER_FLOOR_DB: f32 = -60.0;
+
+/// How fast the held peaks of the meters fall in dB per second. Slower
+/// than a short release, so that a short reduction stays visible between
+/// two frames of the editor.
+const METER_FALL_DB_PER_SECOND: f64 = 20.0;
+
+/// Below this many dB a reduction or an auto makeup gain shows as none.
+/// The envelope decays without end, but meters at rest send nothing.
+const METER_REST_DB: f32 = 0.01;
 
 /// DC offset to prevent denormals in envelope follower.
 const DC_OFFSET: f64 = 1e-25;
@@ -390,6 +472,18 @@ pub struct CompressorProcessor {
     /// Whether the plugin was prepared with the sidechain on. Without it
     /// the detector keys on the main input.
     has_sidechain: bool,
+
+    /// Sends the status to the editor.
+    status_sender: WebViewValueSender<Status>,
+
+    /// The status last sent.
+    status: Status,
+
+    /// Sends the levels of the meters to the editor.
+    meters_sender: WebViewValueSender<Meters>,
+
+    /// The levels last sent.
+    meters: Meters,
 }
 
 /// Compression state (envelope and gain reduction tracking).
@@ -448,12 +542,18 @@ impl Lookahead {
     }
 }
 
-/// What a block of compression did, for the diagnostics log.
+/// What a block of compression did, for the diagnostics log and the
+/// editor.
 struct CompressionReport {
     /// The largest gain reduction of the block in dB, as a positive number.
     largest_reduction_db: f64,
     /// Whether the detector keyed on the sidechain.
     keyed_on_sidechain: bool,
+    /// The loudest level the detector keyed on in dB.
+    loudest_key_db: f64,
+    /// The auto makeup gain at the end of the block in dB, 0 while auto
+    /// makeup is off.
+    auto_makeup_db: f64,
 }
 
 impl CompressorProcessor {
@@ -477,15 +577,20 @@ impl CompressorProcessor {
             .set_warmup_samples((self.lookahead_samples + attack_samples) as u32);
     }
 
-    /// Process compression on a buffer and report what it did to a
-    /// diagnostics build (`cargo xtask bundle compressor --diagnostics`).
-    /// Other builds ignore the reports.
+    /// Process compression on a buffer, report what it did to a
+    /// diagnostics build (`cargo xtask bundle compressor --diagnostics`)
+    /// and show it in the editor. Other builds ignore the reports.
     fn process_compression<S: Sample>(
         &mut self,
         buffer: &mut Buffer<S>,
         aux: &mut AuxiliaryBuffers<S>,
         context: &ProcessContext,
     ) {
+        let num_samples = buffer.num_samples();
+        // An empty block measures nothing, so the editor keeps what it shows.
+        if num_samples == 0 {
+            return;
+        }
         let report = process_compression_inner(
             buffer,
             aux,
@@ -498,6 +603,37 @@ impl CompressorProcessor {
         );
         context.report_value("gain reduction dB", report.largest_reduction_db as f32);
         context.report_value("keyed on sidechain", if report.keyed_on_sidechain { 1.0 } else { 0.0 });
+
+        // Tell the editor when the detector changes its key. Sending never
+        // waits or allocates. While the key stays, nothing is sent.
+        if report.keyed_on_sidechain != self.status.keyed_on_sidechain {
+            self.status.keyed_on_sidechain = report.keyed_on_sidechain;
+            self.status_sender.send(&self.status);
+        }
+        self.update_meters(report.loudest_key_db, report.largest_reduction_db, report.auto_makeup_db, num_samples);
+    }
+
+    /// Hold the peaks of the meters and send them. Each peak falls for the
+    /// length of the block, then rises to the block's own. The editor shows
+    /// the newest value it gets, so a peak between two of its frames stays
+    /// visible.
+    fn update_meters(&mut self, key_db: f64, reduction_db: f64, auto_makeup_db: f64, num_samples: usize) {
+        let at_rest = |db: f32| if db.abs() < METER_REST_DB { 0.0 } else { db };
+        let fall = (METER_FALL_DB_PER_SECOND * num_samples as f64 / self.sample_rate) as f32;
+        let meters = Meters {
+            key_db: (self.meters.key_db - fall).max(key_db as f32).max(METER_FLOOR_DB),
+            reduction_db: at_rest((self.meters.reduction_db - fall).max(reduction_db as f32).max(0.0)),
+            auto_makeup_db: at_rest(auto_makeup_db as f32),
+        };
+        // While the meters show something they go out with every block,
+        // also when they hold still. A pause tells the editor that the host
+        // stopped calling the plugin (Logic's power button, Reaper's FX
+        // switch): it lets them fall on its own then. Meters at rest send
+        // nothing, so the editor has nothing to do.
+        if meters != self.meters || meters != Meters::REST {
+            self.meters = meters;
+            self.meters_sender.send(&meters);
+        }
     }
 }
 
@@ -522,7 +658,12 @@ fn process_compression_inner<S: Sample>(
 ) -> CompressionReport {
     let num_samples = buffer.num_samples();
     let num_channels = buffer.num_channels().min(2);
-    let mut report = CompressionReport { largest_reduction_db: 0.0, keyed_on_sidechain: false };
+    let mut report = CompressionReport {
+        largest_reduction_db: 0.0,
+        keyed_on_sidechain: false,
+        loudest_key_db: f64::NEG_INFINITY,
+        auto_makeup_db: 0.0,
+    };
 
     if num_channels == 0 || num_samples == 0 {
         return report;
@@ -595,6 +736,7 @@ fn process_compression_inner<S: Sample>(
         // =====================================================================
         // Add DC offset before log to avoid log(0)
         let key_db = linear_to_db(detect_linked + DC_OFFSET);
+        report.loudest_key_db = report.loudest_key_db.max(key_db);
 
         // Compute overshoot above the start of the knee (clamped to >= 0).
         let over_db = (key_db - knee_start_db).max(0.0);
@@ -641,6 +783,11 @@ fn process_compression_inner<S: Sample>(
         lookahead.advance();
     }
 
+    report.auto_makeup_db = if model.auto_makeup.get() {
+        -state.average_gr_db
+    } else {
+        0.0
+    };
     report
 }
 
@@ -683,7 +830,9 @@ impl Processor for CompressorProcessor {
         // Split API: begin() returns what action to take
         match self.bypass_handler.begin(is_bypassed, latency, buffer) {
             BypassAction::Passthrough => {
-                // Fully bypassed: the buffer holds the input, delayed by the latency.
+                // Fully bypassed: the buffer holds the input, delayed by the
+                // latency. The meters fall to rest.
+                self.update_meters(f64::NEG_INFINITY, 0.0, 0.0, buffer.num_samples());
             }
             BypassAction::Process => {
                 // Normal processing - no crossfade needed
@@ -725,7 +874,9 @@ impl Processor for CompressorProcessor {
 
         // Split API: same pattern for f64 processing
         match self.bypass_handler.begin(is_bypassed, latency, buffer) {
-            BypassAction::Passthrough => {}
+            BypassAction::Passthrough => {
+                self.update_meters(f64::NEG_INFINITY, 0.0, 0.0, buffer.num_samples());
+            }
             BypassAction::Process => {
                 self.process_compression(buffer, aux, context);
             }
@@ -888,6 +1039,36 @@ mod tests {
             let hard = gain_reduction_db(over_threshold, ratio, 0.0);
             assert!((soft - hard).abs() < 1e-12, "{over_threshold} dB over the threshold: {soft} is not {hard}");
         }
+    }
+
+    #[test]
+    fn test_meters_hold_the_peaks_and_fall_to_rest() {
+        // A steady input of -6 dB, 14 dB above a hard knee at 4:1.
+        let model = Arc::new(CompressorModel::default());
+        model.threshold.set(-20.0);
+        model.soft_knee.set(false);
+        let mut processor = prepare(&model);
+        assert_eq!(processor.meters, Meters::REST);
+        for _ in 0..200 {
+            process(&mut processor, &mut [0.5; BLOCK], &mut [0.5; BLOCK]);
+        }
+        let loud = processor.meters;
+        assert!((loud.key_db + 6.02).abs() < 0.01, "{loud:?}");
+        assert!((loud.reduction_db - 10.5).abs() < 0.1, "{loud:?}");
+
+        // In silence the held key level falls by 20 dB a second: 5 dB in
+        // 250 ms (188 blocks of 64 samples).
+        for _ in 0..188 {
+            process(&mut processor, &mut [0.0; BLOCK], &mut [0.0; BLOCK]);
+        }
+        let falling = processor.meters;
+        assert!((falling.key_db - (loud.key_db - 5.01)).abs() < 0.01, "{falling:?}");
+
+        // After three seconds both meters are at rest.
+        for _ in 0..2250 {
+            process(&mut processor, &mut [0.0; BLOCK], &mut [0.0; BLOCK]);
+        }
+        assert_eq!(processor.meters, Meters::REST);
     }
 
     #[test]

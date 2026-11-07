@@ -66,6 +66,8 @@ editor_background_color = "#1a1a2e"
 
 A plugin has an editor when it has a web UI: the `#[beamer::export]` macro finds one in `webview/` or at `BEAMER_DEV_URL` (see [Asset Embedding](#asset-embedding)). There is no setting to turn the editor on. The macro reads these fields at compile time and generates the appropriate `Config` builder calls.
 
+When a host resizes the editor, the WebView fills it in every format, so the page sees the new window size. How the layout uses it is up to the page. The `compressor` example scales its whole design with the window: it sets the root font size from the window (`font-size: min(100vw / 47.5, 100vh / 26.75)` for a 760 x 428 design) and gives its sizes in `rem`. A tall window gets a portrait layout of its own, with a second size under `@media (orientation: portrait)`.
+
 ## JavaScript Runtime API
 
 The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any page content loads. It creates the `window.__BEAMER__` global object, which is the sole interface between JavaScript and the plugin's native code.
@@ -512,7 +514,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | `@helpermedia/beamer-gestures` | `attachGestures()`: drag, wheel, keys and reset for any element | `beamer-api` |
 | `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-gestures`, React |
 
-A web UI with gestures of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
+A web UI with gestures of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
 ### `beamer-api`
 

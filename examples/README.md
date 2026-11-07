@@ -42,7 +42,7 @@ Simple gain effect for stereo and mono tracks with minimal complexity.
 
 ### [Compressor](compressor/)
 
-Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
+Feed-forward compressor with soft/hard knee, lookahead, sidechain input and an editor in React.
 
 **Parameters:**
 
@@ -55,7 +55,7 @@ Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 | **Soft Knee** | Toggle between a soft knee (a gradual onset, 6 dB wide and centered on the threshold) and a hard knee (abrupt). |
 | **Lookahead** | Delays the audio (0-10 ms) so that compression starts before a peak arrives. It is the plugin's latency, which the host compensates. |
 | **Auto Makeup** | Automatically compensate for volume reduction from compression. |
-| **Makeup Gain** | Manual output boost (0-24 dB). Only active when Auto Makeup is off. |
+| **Makeup Gain** | Manual output boost (0-24 dB), added to the auto makeup when that is on. |
 | **Sidechain** | Use external sidechain input for detection instead of main input, once the host has switched the sidechain bus on. |
 
 **Typical Settings:**
@@ -63,6 +63,10 @@ Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 - **Punchy drums**: 4:1 ratio, fast attack (5ms), fast release (50ms), hard knee
 - **Vocal control**: 4:1-8:1 ratio, medium attack (20ms), medium release (150ms), soft knee
 - **Sidechain ducking**: Enable sidechain, route kick to sidechain input, high ratio, fast attack/release
+
+**Editor:**
+
+A bar with the plugin's name and the Beamer logo, then the transfer curve: threshold, knee, ratio and makeup from the parameters, the area the compressor turns down in blue, the level the detector keys on as a bar along the input axis and as a dot on the curve. Beside it a gain reduction meter, then knobs, buttons and switches for every parameter but the bypass, which the host's own bypass sets. Below them the choice of an internal or external sidechain and the latency of the lookahead in samples. The curve's input axis says which of the two the compressor hears. The displays dim while the plugin is bypassed. The editor scales with its window, side by side in a wide one and the displays above the controls in a tall one. It has the look of the Beamer brand (ink, paper and one blue, the font Inter, embedded from fontsource with no request to the internet). Built with React, Vite and Tailwind.
 
 **Demonstrates:**
 - A tuple setup `(SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses)`: the sample rate for the envelope coefficients, the channels and block size for the bypass handler and the active buses
@@ -75,6 +79,10 @@ Feed-forward compressor with soft/hard knee, lookahead and sidechain input.
 - A sidechain input (`BusInfo::aux()`) that stays off until the host switches it on, read from `ActiveBuses` in `prepare()`
 - `Model::LAYOUTS` with mono and stereo main buses and sidechains
 - dB-domain envelope processing
+- Two value senders from the audio thread: the meters (held peaks that fall by 20 dB a second, sent with every block until they rest, so that the editor lets them fall on its own when the host stops calling the plugin) and the status (sample rate, whether the detector keys on the sidechain), whose first value `prepare()` sets
+- An editor that works out from the parameters what it can (the transfer curve, the latency in samples), so it follows a knob at once, also while the host does not run the processor
+- The packages for web UIs: `beamer-react` hooks for parameters and sender values, `beamer-gestures` for the knobs (vertical drag, wheel, keys, double click to reset), used from the bun workspace
+- Enum choices from the parameter (`valueTexts`) as buttons for the ratio, from which the editor also reads the ratio for its curve
 
 ---
 
