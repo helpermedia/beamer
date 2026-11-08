@@ -44,7 +44,10 @@ export interface Param extends Readable<number> {
   reset(): void;
   /**
    * Set the value a user typed, read by the parameter's own parser. Resolves
-   * to false when the text is no value or the plugin could not read it.
+   * to false when the text is no value or the plugin could not read it. A
+   * gesture of the parameter that begins while the text is read (a drag
+   * that starts as the text field loses the focus) wins: the typed value is
+   * dropped and the call resolves to false.
    */
   typeValue(text: string): Promise<boolean>;
 
@@ -63,6 +66,9 @@ function clamp(normalized: number): number {
 class ParamHandle implements Param {
   #open = false;
   #onInterrupt: (() => void) | null = null;
+  // How many gestures began, so that a typed value can tell whether one
+  // began while the plugin read it.
+  #gestures = 0;
 
   constructor(
     readonly id: string,
@@ -104,6 +110,7 @@ class ParamHandle implements Param {
       interrupted?.();
     }
     this.beamer.params.beginEdit(this.id);
+    this.#gestures += 1;
     this.#open = true;
     this.#onInterrupt = onInterrupt ?? null;
   }
@@ -135,13 +142,14 @@ class ParamHandle implements Param {
   async typeValue(text: string): Promise<boolean> {
     const info = this.info;
     if (!info || text.trim() === "") return false;
+    const gestures = this.#gestures;
     let normalized: unknown;
     try {
       normalized = await this.beamer.invoke("_beamer/paramTextToNormalized", info.id, text);
     } catch {
       return false;
     }
-    if (typeof normalized !== "number") return false;
+    if (typeof normalized !== "number" || this.#gestures !== gestures) return false;
     this.edit(normalized);
     return true;
   }

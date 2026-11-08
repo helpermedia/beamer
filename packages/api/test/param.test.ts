@@ -154,6 +154,20 @@ test("a typed value goes through the parameter's parser", async () => {
   expect(calls).toEqual(["invoke _beamer/paramTextToNormalized 3 75", "begin mix", "set mix 0.75", "end mix"]);
 });
 
+test("a gesture that begins while a typed value is read wins", async () => {
+  let answer: (normalized: number) => void = () => {};
+  install({ invoke: () => new Promise((resolve) => (answer = resolve)) });
+  const mix = param("mix");
+  const typed = mix.typeValue("75");
+  // A drag starts as the text field loses the focus.
+  mix.begin();
+  mix.set(0.6);
+  answer(0.75);
+  expect(await typed).toBe(false);
+  mix.end();
+  expect(calls).toEqual(["begin mix", "set mix 0.6", "end mix"]);
+});
+
 test("text that is no value changes nothing", async () => {
   install({ invoke: async () => null });
   expect(await param("mix").typeValue("loud")).toBe(false);
