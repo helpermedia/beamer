@@ -112,7 +112,7 @@ pub use midi::{
     MAX_CHORD_NAME_SIZE, MAX_EXPRESSION_TEXT_SIZE, MAX_KEYSWITCH_TITLE_SIZE,
     MAX_NOTE_EXPRESSION_TITLE_SIZE, MAX_SCALE_NAME_SIZE,
 };
-pub use parameter_format::Formatter;
+pub use parameter_format::{Formatter, MiddleC};
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
 pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};

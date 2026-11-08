@@ -89,6 +89,7 @@ pub enum ParameterKind {
 
     // Int kinds
     Semitones,
+    NoteNumber,
 }
 
 impl ParameterKind {
@@ -106,6 +107,7 @@ impl ParameterKind {
             "ratio" => Some(ParameterKind::Ratio),
             "linear" => Some(ParameterKind::Linear),
             "semitones" => Some(ParameterKind::Semitones),
+            "note_number" => Some(ParameterKind::NoteNumber),
             _ => None,
         }
     }

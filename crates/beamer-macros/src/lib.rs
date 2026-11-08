@@ -94,7 +94,7 @@ mod validate;
 /// - `default = <value>`: default value (float, int or bool)
 /// - `range = start..=end`: value range (for FloatParameter/IntParameter)
 /// - `kind = "..."`: unit type: db, db_log, db_log_offset, hz, ms, seconds,
-///   percent, pan, ratio, linear, semitones
+///   percent, pan, ratio, linear, semitones, note_number
 /// - `short_name = "..."`: short name for constrained UIs
 /// - `smoothing = "exp:5.0"`: parameter smoothing (exp or linear)
 /// - `bypass`: mark as the bypass parameter (BoolParameter only). A host's

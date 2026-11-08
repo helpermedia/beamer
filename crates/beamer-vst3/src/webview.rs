@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use beamer_core::{ParameterId, SharedModel, Size};
+use beamer_core::{Config, MiddleC, ParameterId, SharedModel, Size};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
 use beamer_webview::{EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
@@ -30,6 +30,8 @@ struct IpcContext {
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEventQueue>,
+    /// The name of MIDI note 60 in the plugin's note names, for the page.
+    middle_c: MiddleC,
     /// The `state_generation()` of the model that the host knows
     /// about, shared with the processor.
     known_state_generation: Arc<AtomicU64>,
@@ -50,6 +52,7 @@ impl IpcContext {
             Arc::clone(&self.model),
             Arc::clone(&self.dispatch),
             self.events.clone(),
+            self.middle_c,
         ));
     }
 
@@ -154,17 +157,20 @@ unsafe impl Sync for WebViewPlugView {}
 impl WebViewPlugView {
     /// Create a new WebView plug view with parameter sync support.
     ///
-    /// `component_handler` is the controller's slot for the host's handler,
-    /// so that the view always calls the handler the host set last.
+    /// `plugin` is the plugin's configuration, for the editor's size and
+    /// the name of middle C. `component_handler` is the controller's slot
+    /// for the host's handler, so that the view always calls the handler the
+    /// host set last.
     pub fn new(
         config: WebViewConfig<'static>,
-        size: Size,
+        plugin: &'static Config,
         model: Arc<dyn SharedModel>,
         component_handler: Arc<ComponentHandler>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEventQueue>,
         known_state_generation: Arc<AtomicU64>,
     ) -> Self {
+        let size = Size::new(plugin.editor_width, plugin.editor_height);
         Self {
             platform: UnsafeCell::new(None),
             config: UnsafeCell::new(config),
@@ -176,6 +182,7 @@ impl WebViewPlugView {
                 handler: component_handler,
                 dispatch,
                 events,
+                middle_c: plugin.middle_c,
                 known_state_generation,
                 sync: None,
                 webview: std::ptr::null(),
@@ -661,6 +668,7 @@ mod tests {
             handler: Arc::new(ComponentHandler::new()),
             dispatch: Arc::new(NoDispatch),
             events,
+            middle_c: MiddleC::C3,
             known_state_generation: Arc::new(AtomicU64::new(0)),
             sync: None,
             webview: std::ptr::null(),

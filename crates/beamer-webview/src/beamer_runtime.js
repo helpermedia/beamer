@@ -101,6 +101,10 @@
     // before `ready` resolves.
     pluginFormat: null,
 
+    // The name of MIDI note 60 in the plugin's note names: "C3" or "C4"
+    // (`middle_c` in Config.toml). Set before `ready` resolves.
+    middleC: null,
+
     params: {
       get: function(stringId) {
         var p = paramMap[stringId];
@@ -218,6 +222,9 @@
     _onInit: function(params, info) {
       if (info && info.pluginFormat) {
         window.__BEAMER__.pluginFormat = info.pluginFormat;
+      }
+      if (info && info.middleC) {
+        window.__BEAMER__.middleC = info.middleC;
       }
       params.forEach(function(p) {
         var pending = pendingParamSubs[p.stringId] || [];

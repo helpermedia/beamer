@@ -13,4 +13,5 @@ export { ready, runtime } from "./runtime.js";
 export { param } from "./param.js";
 export type { Param } from "./param.js";
 export { senderValue, stateField } from "./stores.js";
+export { noteName } from "./notes.js";
 export type { Readable, StateField } from "./stores.js";

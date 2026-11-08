@@ -14,7 +14,7 @@ export interface BeamerParamInfo {
   plainValue: number;
   /** Current value as the parameter formats it, without the unit. */
   displayText: string;
-  /** Formatter kind: float, db, hz, ms, s, percent, pan, ratio, semitones, boolean or enum. */
+  /** Formatter kind: float, db, hz, ms, s, percent, pan, ratio, semitones, note_number, boolean or enum. */
   format: string;
   /** Default value, normalized. */
   defaultValue: number;
@@ -64,6 +64,8 @@ export interface Beamer {
   readonly ready: Promise<void>;
   /** The plugin format the editor runs in, set before `ready` resolves. */
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
+  /** The name of MIDI note 60 in the plugin's note names, set before `ready` resolves. */
+  readonly middleC: "C3" | "C4" | null;
   readonly params: BeamerParams;
   readonly state: BeamerState;
   readonly values: BeamerValues;

@@ -61,6 +61,7 @@ log_level = "warn"
 | `editor_background_color` | String | Hex color (e.g. `"#1a1a2e"`) painted on the parent view behind the WebView while content loads |
 | `vst3_id` | String | Override auto-derived VST3 UUID (format: `"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"`) |
 | `sample_accurate_automation` | Boolean | Apply host parameter changes within a block instead of before it, by running a block as sub-blocks (default: `false`, see [Sample-Accurate Automation](#sample-accurate-automation)) |
+| `middle_c` | String | The name of MIDI note 60 in note names (`kind = "note_number"` and `noteName()` in the web UI): `"C3"` (default, as in Logic, Cubase, Pro Tools, Ableton Live, Bitwig and Studio One) or `"C4"` (as in Reaper and scientific pitch notation) |
 | `log_level` | String | Log the framework's and the plugin's messages up to this level: `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"` (see [Logging](#logging)). Without it the plugin installs no logger |
 
 **Advanced Optional Fields:**
@@ -264,12 +265,13 @@ impl Default for SamplerModel {
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`, FloatParameter only) | Optional |
 | `bypass` | Mark as bypass parameter (BoolParameter only) | Optional |
 
-**Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`
+**Kind Values:** `db`, `db_log`, `db_log_offset`, `hz`, `ms`, `seconds`, `percent`, `pan`, `ratio`, `linear`, `semitones`, `note_number`
 
 - `db_log` - Power curve (exponent 2.0) for more resolution near 0 dB (use for thresholds)
 - `db_log_offset` - True logarithmic mapping for dB ranges (geometric mean at midpoint)
+- `note_number` - A MIDI note number shown as its name: 60 (middle C) is C3, or C4 with `middle_c = "C4"` in `Config.toml`. A typed name ("F#1", "Db3") or number is read back
 
-`semitones` is for `IntParameter`, the other kinds for `FloatParameter`: a kind on the wrong type is a compile error. `BoolParameter` and `EnumParameter` take no kind. `percent` values are fractions (0.5 is 50%).
+`semitones` and `note_number` are for `IntParameter`, the other kinds for `FloatParameter`: a kind on the wrong type is a compile error. `BoolParameter` and `EnumParameter` take no kind. `percent` values are fractions (0.5 is 50%).
 
 Supported field types: `FloatParameter`, `IntParameter`, `BoolParameter` and `EnumParameter<E>` with `#[parameter]`, a `#[beamer::group]` struct with `#[nested]` and `State<T>` with `#[state]` (see [State Beyond Parameters](#state-beyond-parameters)). A field without an attribute is not a parameter and is not saved.
 
@@ -411,7 +413,7 @@ let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
     .with_smoother(SmoothingStyle::Exponential(5.0));
 ```
 
-**Note:** Formatters without precision fields (`Pan`, `Boolean`, `Semitones`, `Frequency`) ignore `.with_precision()` calls.
+**Note:** Formatters without precision fields (`Pan`, `Boolean`, `Semitones`, `NoteNumber`, `Frequency`) ignore `.with_precision()` calls.
 
 #### Parameter Smoothing
 

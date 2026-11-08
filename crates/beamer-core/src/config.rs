@@ -376,6 +376,12 @@ pub struct Config {
     /// `process()` call for the whole block.
     pub sample_accurate_automation: bool,
 
+    /// The name of MIDI note 60 in the plugin's note names (`kind =
+    /// "note_number"`), [`MiddleC::C3`] by default. The format wrappers hand
+    /// it to the model's parameters when they create it and to the web UI
+    /// as `__BEAMER__.middleC`.
+    pub middle_c: crate::MiddleC,
+
     /// How much the plugin logs, or nothing for no logger (see
     /// [`logging`](crate::logging)).
     pub log_level: Option<crate::logging::LogLevel>,
@@ -549,6 +555,7 @@ impl Config {
             vst3_controller_id: None,
             sysex_bytes_per_block: DEFAULT_SYSEX_BYTES_PER_BLOCK,
             sample_accurate_automation: false,
+            middle_c: crate::MiddleC::C3,
             log_level: None,
             log_subsystem: "",
             webview_assets: None,
@@ -718,6 +725,14 @@ impl Config {
     /// `Config.toml`.
     pub const fn with_sample_accurate_automation(mut self) -> Self {
         self.sample_accurate_automation = true;
+        self
+    }
+
+    /// Name MIDI note 60 `middle_c` in note names (see
+    /// [`middle_c`](Self::middle_c)). `#[beamer::export]` sets it from
+    /// `middle_c` in `Config.toml`.
+    pub const fn with_middle_c(mut self, middle_c: crate::MiddleC) -> Self {
+        self.middle_c = middle_c;
         self
     }
 

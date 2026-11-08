@@ -35,7 +35,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use beamer_core::state_format::SavedState;
-use beamer_core::{ParameterId, ParameterStore, SharedModel};
+use beamer_core::{MiddleC, ParameterId, ParameterStore, SharedModel};
 use serde_json::Value;
 
 use crate::event_queue::WebViewEventQueue;
@@ -80,6 +80,8 @@ pub struct EditorSync {
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEventQueue>,
+    /// The name of MIDI note 60 in the plugin's note names, for the page.
+    middle_c: MiddleC,
     /// The id of each parameter, in the order of `ParameterStore::info`,
     /// with the bits of the normalized value the web UI knows. `None` until
     /// it was sent. The ids are taken once: listing the parameters by index
@@ -104,11 +106,13 @@ const LARGE_STATE: usize = 1 << 20;
 
 impl EditorSync {
     /// Start keeping an editor in step. Events the plugin emits from now
-    /// on reach it.
+    /// on reach it. `middle_c` is the plugin's from its `Config`, which the
+    /// page gets as `__BEAMER__.middleC`.
     pub fn open(
         model: Arc<dyn SharedModel>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEventQueue>,
+        middle_c: MiddleC,
     ) -> Self {
         if let Some(events) = &events {
             events.editor_opened();
@@ -123,6 +127,7 @@ impl EditorSync {
             model,
             dispatch,
             events,
+            middle_c,
             last_values,
             state_generations: HashMap::new(),
             state_sum: None,
@@ -132,8 +137,9 @@ impl EditorSync {
     }
 
     /// The script that hands a freshly loaded page its parameters, the
-    /// values of the `State` fields and the name of the plugin format
-    /// (`"vst3"`, `"auv2"`, `"auv3"`).
+    /// values of the `State` fields, the name of the plugin format
+    /// (`"vst3"`, `"auv2"`, `"auv3"`) and the name of middle C (`"C3"` or
+    /// `"C4"`).
     pub fn init_script(&mut self, plugin_format: &str) -> String {
         // The page missed the values the senders sent before it loaded.
         if let Some(events) = &self.events {
@@ -142,6 +148,7 @@ impl EditorSync {
 
         let parameters = params_to_init_json(self.model.parameter_store());
         let format = json_string(plugin_format);
+        let middle_c = json_string(self.middle_c.name());
 
         // Every field, whether or not it changed: the page knows nothing.
         self.state_sum = Some(self.model.state_generation());
@@ -155,7 +162,7 @@ impl EditorSync {
 
         format!(
             "window.__BEAMER__._onInit({parameters},\
-             {{\"pluginFormat\":{format},\"state\":{{{states}}}}})"
+             {{\"pluginFormat\":{format},\"middleC\":{middle_c},\"state\":{{{states}}}}})"
         )
     }
 
@@ -583,7 +590,7 @@ mod tests {
 
     fn sync() -> (Arc<TwoParameters>, EditorSync) {
         let parameters = Arc::new(TwoParameters::new());
-        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, no_dispatch(), None);
+        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
         (parameters, sync)
     }
 
@@ -696,6 +703,7 @@ mod tests {
             Arc::new(TwoParameters::new()),
             Arc::clone(&echo) as Arc<dyn WebViewDispatch>,
             None,
+            MiddleC::C3,
         );
         (echo, sync)
     }
@@ -775,7 +783,7 @@ mod tests {
     fn test_first_frame_sends_a_value_that_is_not_a_number() {
         let parameters = Arc::new(TwoParameters::new());
         parameters.set_normalized(10, f64::NAN);
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), None);
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
 
         let script = sync.frame_script().expect("a first frame");
         assert!(script.contains("10:[null,null,"));
@@ -795,7 +803,7 @@ mod tests {
         let events = WebViewEventQueue::new();
         events.claim();
         let parameters = Arc::new(TwoParameters::new());
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), Some(events.clone()));
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), Some(events.clone()), MiddleC::C3);
 
         events.emit("tick", &1);
         let script = sync.frame_script().expect("a first frame");
@@ -818,7 +826,7 @@ mod tests {
 
         // The editor ticks before its page loaded: that value reaches
         // nothing.
-        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
         assert!(sync.frame_script().is_some());
         assert_eq!(sync.frame_script(), None);
 
@@ -847,11 +855,11 @@ mod tests {
         events.claim();
 
         events.emit("before", &1);
-        let mut first = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
+        let mut first = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
         assert_eq!(first.frame_script(), None);
 
         // A second editor of the same plugin keeps the queue open.
-        let second = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()));
+        let second = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
         drop(second);
         events.emit("open", &2);
         assert_eq!(
@@ -865,11 +873,11 @@ mod tests {
     }
 
     #[test]
-    fn test_init_script_names_the_plugin_format() {
-        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None);
+    fn test_init_script_names_the_plugin_format_and_middle_c() {
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None, MiddleC::C4);
         assert_eq!(
             sync.init_script("vst3"),
-            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\",\"state\":{}})"
+            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\",\"middleC\":\"C4\",\"state\":{}})"
         );
     }
 
@@ -910,7 +918,7 @@ mod tests {
 
     fn state_sync() -> (Arc<TwoStates>, EditorSync) {
         let states = Arc::new(TwoStates::default());
-        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, no_dispatch(), None);
+        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
         (states, sync)
     }
 
@@ -921,7 +929,7 @@ mod tests {
 
         assert_eq!(
             sync.init_script("auv3"),
-            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"auv3\",\
+            "window.__BEAMER__._onInit([],{\"pluginFormat\":\"auv3\",\"middleC\":\"C3\",\
              \"state\":{\"zoom\":0,\"layer/name\":\"say \\\"hi\\\"\"}})"
         );
         // The page has every value.

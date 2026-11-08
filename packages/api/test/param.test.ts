@@ -42,6 +42,7 @@ function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } =
   const beamer: Beamer = {
     ready: Promise.resolve(),
     pluginFormat: "auv3",
+    middleC: "C3",
     params: {
       get: (id) => (infos[id] ? values[id] : 0),
       getPlain: (id) => (infos[id] ? values[id] : 0),

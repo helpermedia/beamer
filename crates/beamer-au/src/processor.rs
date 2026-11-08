@@ -72,7 +72,12 @@ where
     where
         P: WebViewEvents + WebViewDispatch,
     {
-        let model = Arc::new(P::default());
+        let mut model = P::default();
+        // Note names follow the plugin's middle C.
+        if let Some(config) = crate::factory::plugin_config() {
+            beamer_core::parameter_types::Parameters::set_middle_c(&mut model, config.middle_c);
+        }
+        let model = Arc::new(model);
 
         // Taking the queue here marks it as delivered by this instance.
         let events = WebViewEvents::webview_events(&*model).cloned();

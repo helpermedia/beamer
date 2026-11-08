@@ -937,7 +937,10 @@ impl<P: Model> Vst3Processor<P> {
     where
         P: WebViewEvents + WebViewDispatch,
     {
-        let model = Arc::new(P::default());
+        let mut model = P::default();
+        // Note names follow the plugin's middle C.
+        beamer_core::parameter_types::Parameters::set_middle_c(&mut model, config.middle_c);
+        let model = Arc::new(model);
         #[cfg(feature = "diagnostics")]
         let bypass_parameter = beamer_core::parameter_types::bypass_parameter(&*model);
 
@@ -2937,11 +2940,10 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
             self.config.editor_width > 0 && self.config.editor_height > 0,
             "editor_size must be set when the plugin has an editor"
         );
-        let size = beamer_core::Size::new(self.config.editor_width, self.config.editor_height);
 
         let view = crate::webview::WebViewPlugView::new(
             config,
-            size,
+            self.config,
             self.shared_model(),
             Arc::clone(&self.component_handler),
             Arc::clone(&self.webview_dispatch),

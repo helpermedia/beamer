@@ -43,6 +43,7 @@ function install() {
   const beamer: Beamer = {
     ready: Promise.resolve(),
     pluginFormat: "vst3",
+    middleC: "C3",
     params: {
       get: () => mix.value,
       getPlain: () => mix.value,

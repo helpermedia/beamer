@@ -228,11 +228,17 @@ fn validate_kind_type_consistency(parameter: &ParameterFieldIR) -> syn::Result<(
 
     // Check for mismatched kinds
     match (parameter.parameter_type, kind) {
-        // Semitones is for IntParameter
+        // Semitones and note_number are for IntParameter
         (ParameterType::Float, ParameterKind::Semitones) => {
             return Err(syn::Error::new(
                 parameter.span,
                 "kind 'semitones' should be used with IntParameter, not FloatParameter",
+            ));
+        }
+        (ParameterType::Float, ParameterKind::NoteNumber) => {
+            return Err(syn::Error::new(
+                parameter.span,
+                "kind 'note_number' should be used with IntParameter, not FloatParameter",
             ));
         }
         // Float-specific kinds on IntParameter

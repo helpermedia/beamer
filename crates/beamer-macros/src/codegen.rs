@@ -281,6 +281,7 @@ fn generate_parameters_impl(ir: &ModelIR) -> TokenStream {
     let by_id_impl = generate_by_id(ir);
     let assign_ids_impl = generate_assign_ids(ir);
     let set_all_group_ids_impl = generate_set_all_group_ids(ir);
+    let set_middle_c_impl = generate_set_middle_c(ir);
     let nested_discovery_impl = generate_nested_discovery(ir);
     let set_sample_rate_impl = generate_set_sample_rate(ir);
     let reset_smoothing_impl = generate_reset_smoothing(ir);
@@ -303,6 +304,8 @@ fn generate_parameters_impl(ir: &ModelIR) -> TokenStream {
             #assign_ids_impl
 
             #set_all_group_ids_impl
+
+            #set_middle_c_impl
 
             #nested_discovery_impl
 
@@ -336,6 +339,43 @@ fn generate_set_all_group_ids(ir: &ModelIR) -> TokenStream {
     quote! {
         fn set_all_group_ids(&mut self, group_id: ::beamer::core::parameter_groups::GroupId) {
             #(#assignments)*
+        }
+    }
+}
+
+/// Generate `set_middle_c()`: every `IntParameter` of this struct and of
+/// its nested groups names notes with it.
+fn generate_set_middle_c(ir: &ModelIR) -> TokenStream {
+    let parameter_assignments: Vec<TokenStream> = ir
+        .parameter_fields()
+        .filter(|parameter| parameter.parameter_type == crate::ir::ParameterType::Int)
+        .map(|parameter| {
+            let field = &parameter.field_name;
+            quote! {
+                self.#field.set_middle_c(middle_c);
+            }
+        })
+        .collect();
+
+    let nested_assignments: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            quote! {
+                ::beamer::core::parameter_types::Parameters::set_middle_c(&mut self.#field, middle_c);
+            }
+        })
+        .collect();
+
+    if parameter_assignments.is_empty() && nested_assignments.is_empty() {
+        // Nothing names notes: use the default no-op.
+        return quote! {};
+    }
+
+    quote! {
+        fn set_middle_c(&mut self, middle_c: ::beamer::core::MiddleC) {
+            #(#parameter_assignments)*
+            #(#nested_assignments)*
         }
     }
 }
@@ -1090,8 +1130,8 @@ fn generate_float_constructor(parameter: &ParameterFieldIR) -> TokenStream {
         ParameterKind::Linear => quote! {
             ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
         },
-        ParameterKind::Semitones => {
-            // Semitones is an int kind, shouldn't reach here
+        ParameterKind::Semitones | ParameterKind::NoteNumber => {
+            // An int kind, rejected for a FloatParameter by validation.
             quote! {
                 ::beamer::core::parameter_types::FloatParameter::new(#name, #default, #start..=#end)
             }
@@ -1112,15 +1152,16 @@ fn generate_int_constructor(parameter: &ParameterFieldIR) -> TokenStream {
     let start = range.start as i64;
     let end = range.end as i64;
 
-    // Check for semitones kind
-    if parameter.attributes.kind == Some(ParameterKind::Semitones) {
-        quote! {
+    match parameter.attributes.kind {
+        Some(ParameterKind::Semitones) => quote! {
             ::beamer::core::parameter_types::IntParameter::semitones(#name, #default, #start..=#end)
-        }
-    } else {
-        quote! {
+        },
+        Some(ParameterKind::NoteNumber) => quote! {
+            ::beamer::core::parameter_types::IntParameter::note_number(#name, #default, #start..=#end)
+        },
+        _ => quote! {
             ::beamer::core::parameter_types::IntParameter::new(#name, #default, #start..=#end)
-        }
+        },
     }
 }
 

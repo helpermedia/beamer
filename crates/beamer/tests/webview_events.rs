@@ -171,7 +171,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     assert!(!editor.is_null());
     let init = text(beamer_au_editor_sync_init_script(editor, c"auv2".as_ptr())).expect("init");
     assert!(init.starts_with("window.__BEAMER__._onInit([{"));
-    assert!(init.ends_with("],{\"pluginFormat\":\"auv2\",\"state\":{\"zoom\":0}})"));
+    assert!(init.ends_with("],{\"pluginFormat\":\"auv2\",\"middleC\":\"C3\",\"state\":{\"zoom\":0}})"));
 
     // The first frame sends every parameter, then nothing changed.
     assert_eq!(

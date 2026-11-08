@@ -53,6 +53,9 @@ pub struct ConfigFile {
     /// Apply host automation at the sample it is meant for (default: false).
     #[serde(default)]
     pub sample_accurate_automation: Option<bool>,
+    /// The name of MIDI note 60 in note names: "C3" (default) or "C4".
+    #[serde(default)]
+    pub middle_c: Option<String>,
     /// How much the plugin logs to the system log: "error", "warn", "info",
     /// "debug" or "trace". Without it the plugin installs no logger.
     #[serde(default)]
@@ -79,6 +82,15 @@ pub fn midi_protocol_variant(protocol: &str) -> Result<&'static str, String> {
         "1.0" => Ok("Midi1"),
         "2.0" => Ok("Midi2"),
         _ => Err(format!("midi_protocol must be \"1.0\" or \"2.0\", got {protocol:?}")),
+    }
+}
+
+/// The `MiddleC` variant for `middle_c` in Config.toml.
+pub fn middle_c_variant(middle_c: &str) -> Result<&'static str, String> {
+    match middle_c {
+        "C3" => Ok("C3"),
+        "C4" => Ok("C4"),
+        _ => Err(format!("middle_c must be \"C3\" or \"C4\", got {middle_c:?}")),
     }
 }
 
@@ -159,6 +171,9 @@ impl ConfigFile {
         }
         if let Some(ref level) = self.log_level {
             log_level_variant(level)?;
+        }
+        if let Some(ref middle_c) = self.middle_c {
+            middle_c_variant(middle_c)?;
         }
         if let Some(ref protocol) = self.midi_protocol {
             midi_protocol_variant(protocol)?;

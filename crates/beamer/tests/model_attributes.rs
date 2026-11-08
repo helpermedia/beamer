@@ -157,3 +157,40 @@ fn test_percent_and_pan_take_a_given_range() {
     assert_eq!(model.amount.display_normalized(1.0), "95");
     assert_eq!(model.width.info().unit, ParameterUnit::Pan);
 }
+
+/// A nested group with a note number, as a split point.
+#[beamer::group]
+struct SplitGroup {
+    #[parameter(id = "point", name = "Split Point", default = 60, range = 0..=127, kind = "note_number")]
+    point: IntParameter,
+}
+
+/// Note numbers at the root and in a nested group.
+#[beamer::model]
+struct KeyboardModel {
+    #[parameter(id = "root", name = "Root", default = 61, range = 0..=127, kind = "note_number")]
+    root: IntParameter,
+
+    #[parameter(id = "transpose", name = "Transpose", default = 0, range = -12..=12, kind = "semitones")]
+    transpose: IntParameter,
+
+    #[nested(group = "Split")]
+    split: SplitGroup,
+}
+
+#[test]
+fn test_note_numbers_follow_middle_c_also_in_nested_groups() {
+    let mut model = KeyboardModel::default();
+    assert_eq!(model.root.display_normalized(model.root.get_normalized()), "C#3");
+    assert_eq!(model.split.point.display_normalized(model.split.point.get_normalized()), "C3");
+    assert_eq!(model.root.units(), "");
+    assert_eq!(model.root.formatter_kind(), "note_number");
+    assert_eq!(model.root.info().unit, ParameterUnit::MidiNoteNumber);
+
+    model.set_middle_c(MiddleC::C4);
+    assert_eq!(model.root.display_normalized(model.root.get_normalized()), "C#4");
+    assert_eq!(model.split.point.display_normalized(model.split.point.get_normalized()), "C4");
+    assert_eq!(model.split.point.parse("C4").map(|normalized| model.split.point.normalized_to_plain(normalized)), Some(60.0));
+    // Other formatters stay as they are.
+    assert_eq!(model.transpose.display_normalized(model.transpose.get_normalized()), "0");
+}

@@ -40,7 +40,7 @@ use std::borrow::Cow;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-use crate::parameter_format::Formatter;
+use crate::parameter_format::{Formatter, MiddleC};
 use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
@@ -297,6 +297,16 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     fn set_all_group_ids(&mut self, _group_id: GroupId) {
         // Default: no-op (macro generates override for parameter-containing structs)
     }
+
+    /// Name notes with `middle_c` in every parameter that shows a MIDI note
+    /// number as its name (`kind = "note_number"`), also in nested groups.
+    ///
+    /// The format wrappers call it once when they create the model, with
+    /// `middle_c` from `Config.toml`. `#[beamer::model]` and
+    /// `#[beamer::group]` generate it; the default does nothing, for
+    /// hand-written implementations, whose parameters keep the formatter
+    /// they were given.
+    fn set_middle_c(&mut self, _middle_c: MiddleC) {}
 
     // =========================================================================
     // Nested Group Discovery (for recursive group ID assignment)
@@ -1334,6 +1344,7 @@ impl ParameterRef for FloatParameter {
 ///
 /// - [`IntParameter::new`]: Generic integer parameter
 /// - [`IntParameter::semitones`]: Semitones parameter for pitch shifting
+/// - [`IntParameter::note_number`]: MIDI note number shown as a note name
 ///
 /// # Example
 ///
@@ -1421,6 +1432,31 @@ impl IntParameter {
         let formatter = Formatter::Semitones;
         parameter.info.units = formatter.unit();
         parameter.info.unit = ParameterUnit::RelativeSemiTones;
+        parameter.formatter = formatter;
+        parameter
+    }
+
+    /// Create a parameter for a MIDI note number, shown as its name.
+    ///
+    /// Format: "C3" for 60, "F#1", "C-2" (no unit), or one octave higher
+    /// with middle C as C4 (see [`MiddleC`]). A typed note name or number is
+    /// read back. The plugin's `middle_c` in `Config.toml` reaches the
+    /// parameter through [`Parameters::set_middle_c`]; until then it names
+    /// middle C C3.
+    ///
+    /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
+    /// or by `#[beamer::model]` and `#[beamer::group]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Display name
+    /// * `default` - Default MIDI note number
+    /// * `range` - Valid range of MIDI note numbers (inclusive), usually 0 to 127
+    pub fn note_number(name: &'static str, default: i64, range: RangeInclusive<i64>) -> Self {
+        let mut parameter = Self::new(name, default, range);
+        let formatter = Formatter::NoteNumber { middle_c: MiddleC::default() };
+        parameter.info.units = formatter.unit();
+        parameter.info.unit = ParameterUnit::MidiNoteNumber;
         parameter.formatter = formatter;
         parameter
     }
@@ -1539,6 +1575,14 @@ impl IntParameter {
         self.info.units = formatter.unit();
         self.formatter = formatter;
         self
+    }
+
+    /// Name notes with `middle_c`, when the parameter shows a MIDI note
+    /// number as its name. Other formatters stay as they are.
+    pub fn set_middle_c(&mut self, middle_c: MiddleC) {
+        if let Formatter::NoteNumber { .. } = self.formatter {
+            self.formatter = Formatter::NoteNumber { middle_c };
+        }
     }
 
     /// Get the current formatter.

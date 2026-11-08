@@ -38,6 +38,7 @@ document.querySelector("#reset")!.addEventListener("click", () => mix.reset());
 | `param(id)` | A parameter: value, plain value, text with unit, gestures (`begin`, `set`, `end`, `edit`, `reset`), typed values, the choices of an enum |
 | `stateField(path)` | A `State` field to read, follow and set |
 | `senderValue(name)` | The newest value of a value sender from the audio thread |
+| `noteName(noteNumber)` | The name of a MIDI note number as the plugin's parameters name it: 60 is "C3", or "C4" with `middle_c = "C4"` in Config.toml |
 | Types | `Beamer`, `BeamerParamInfo` and the rest of `__BEAMER__` |
 
 Each parameter has at most one open gesture: a gesture that begins while

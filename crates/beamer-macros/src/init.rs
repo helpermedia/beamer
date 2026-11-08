@@ -168,6 +168,15 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
     let sample_accurate_automation = (config.sample_accurate_automation == Some(true))
         .then(|| quote! { .with_sample_accurate_automation() });
 
+    let middle_c = config
+        .middle_c
+        .as_deref()
+        .map(|middle_c| {
+            let variant = format_ident!("{}", crate::config_file::middle_c_variant(middle_c)?);
+            Ok::<_, String>(quote! { .with_middle_c(::beamer::core::MiddleC::#variant) })
+        })
+        .transpose()?;
+
     let editor_background_color = config
         .editor_background_color
         .as_deref()
@@ -240,6 +249,7 @@ fn generate_config(config: &ConfigFile, manifest_dir: &str) -> Result<TokenStrea
         #midi_protocol
         #sysex_bytes_per_block
         #sample_accurate_automation
+        #middle_c
         #subcategories
         #editor_background_color
         #logging

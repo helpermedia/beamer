@@ -3275,10 +3275,12 @@ pub extern "C" fn beamer_au_editor_sync_open(
         // SAFETY: instance validated non-null above. Caller guarantees valid pointer.
         let handle = unsafe { &*instance };
 
+        let middle_c = factory::plugin_config().map(|config| config.middle_c).unwrap_or_default();
         let sync = EditorSync::open(
             Arc::clone(&handle.model),
             Arc::clone(&handle.webview_dispatch),
             handle.webview_events.clone(),
+            middle_c,
         );
         Box::into_raw(Box::new(BeamerAuEditorSync(sync)))
     }));

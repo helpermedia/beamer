@@ -118,6 +118,7 @@ interface BeamerValues {
 interface Beamer {
   readonly ready: Promise<void>;
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
+  readonly middleC: "C3" | "C4" | null;
   readonly params: BeamerParams;
   readonly state: BeamerState;
   readonly values: BeamerValues;
@@ -226,6 +227,16 @@ await __BEAMER__.ready;
 ```javascript
 await __BEAMER__.ready;
 statusLine.textContent = __BEAMER__.pluginFormat; // "auv3"
+```
+
+### Middle C
+
+`__BEAMER__.middleC` is the name of MIDI note 60 in the plugin's note names: `"C3"` (the default) or `"C4"`, from `middle_c` in `Config.toml`. Parameters with `kind = "note_number"` name notes with it, so a web UI that names notes itself (a keyboard, a list of played notes) should too. It arrives with the initial parameter dump and is `null` until `__BEAMER__.ready` resolves. `noteName()` of `beamer-api` names a note number with it:
+
+```javascript
+import { noteName } from "@helpermedia/beamer-api";
+
+noteName(60); // "C3", or "C4" for a plugin with middle_c = "C4"
 ```
 
 ## Events from Rust
@@ -443,7 +454,7 @@ window.__BEAMER__._onInit([
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
    "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
    "format":"pan","units":"","steps":0,"valueTexts":[]}
-], {"pluginFormat":"vst3","state":{"pan_law":"constant_power"}})
+], {"pluginFormat":"vst3","middleC":"C3","state":{"pan_law":"constant_power"}})
 ```
 
 The example is shortened for readability: real numeric IDs are hashes of the string IDs and values carry full precision.
@@ -461,7 +472,7 @@ Each entry corresponds to a `ParamInitEntry`:
 | `value` | `f64` | Current value in normalized form (0.0 - 1.0) |
 | `plainValue` | `f64` | Current value in plain units |
 | `displayText` | `string` | Current value as formatted by the parameter, without the unit |
-| `format` | `string` | Formatter kind as reported by the parameter. Float and integer parameters report the kind of their formatter: `float` (the default), `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio` or `semitones`. Boolean parameters report `boolean` and enum parameters `enum` |
+| `format` | `string` | Formatter kind as reported by the parameter. Float and integer parameters report the kind of their formatter: `float` (the default), `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio`, `semitones` or `note_number`. Boolean parameters report `boolean` and enum parameters `enum` |
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
 | `valueTexts` | `string[]` | The display text of each value of a discrete parameter, from the lowest up: the choices of an enum parameter, `Off` and `On` for a boolean one. Value `i` has the normalized value `i / steps`. Empty for a continuous parameter and for one with more than 128 values |
@@ -510,7 +521,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 
 | Package | Holds | Depends on |
 |---------|-------|------------|
-| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `param()`, `stateField()`, `senderValue()`, `ready()` | Nothing |
+| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `param()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
 | `@helpermedia/beamer-gestures` | `attachGestures()`: drag, wheel, keys and reset for any element | `beamer-api` |
 | `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-gestures`, React |
 

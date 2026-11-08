@@ -239,7 +239,7 @@ pub mod prelude {
         // Factory presets
         Preset,
         // Parameter types
-        BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, ParameterRef, Parameters,
+        BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, MiddleC, ParameterRef, Parameters,
         // MIDI CC configuration (framework manages runtime state)
         MidiCcConfig,
         // Parameter smoothing
