@@ -23,6 +23,11 @@
 //!   when the settings change while the note is held
 //! - Sample-accurate automation (`sample_accurate_automation` in
 //!   `Config.toml`), since the settings apply to each note
+//! - `kind = "note_number"` for note numbers shown as names ("C3"), named
+//!   by `middle_c` in `Config.toml`
+//! - `kind = "percent"` for the scales
+//! - A stream sender from the audio thread that sends every note and CC as
+//!   it came in and went out, for the editor
 //!
 //! # MIDI Event Modification
 //!
@@ -35,8 +40,18 @@
 //!     ..*note_on
 //! })));
 //! ```
+//!
+//! # Editor
+//!
+//! The editor in `webview/` is React, on the packages beamer-api,
+//! beamer-gestures and beamer-react. bun and Vite build it into
+//! `webview/dist/`, which the export macro embeds. It draws the note map
+//! and the CC curve from the parameters, with the same rules as
+//! [`MidiTransformProcessor`]. The audio thread sends what only it knows:
+//! the notes and CCs that pass through, which light up in the displays.
 
 use beamer::prelude::*;
+use beamer::serde::Serialize;
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -63,7 +78,7 @@ pub enum NoteTransformMode {
     /// Remap a specific note to another note
     #[name = "Remap Note"]
     Remap,
-    /// Invert pitch around middle C (C4 = 60)
+    /// Invert pitch around middle C (note 60)
     #[name = "Invert"]
     Invert,
 }
@@ -116,15 +131,15 @@ pub struct NoteTransformGroup {
     pub transpose: IntParameter,
 
     /// Input note for remap mode (0-127)
-    #[parameter(id = "input", name = "Input Note", default = 60, range = 0..=127)]
+    #[parameter(id = "input", name = "Input Note", default = 60, range = 0..=127, kind = "note_number")]
     pub input_note: IntParameter,
 
     /// Output note for remap mode (0-127)
-    #[parameter(id = "output", name = "Output Note", default = 60, range = 0..=127)]
+    #[parameter(id = "output", name = "Output Note", default = 60, range = 0..=127, kind = "note_number")]
     pub output_note: IntParameter,
 
-    /// Velocity scale (0.0 to 2.0, where 1.0 = 100%)
-    #[parameter(id = "velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0)]
+    /// Velocity scale (0% to 200%)
+    #[parameter(id = "velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0, kind = "percent")]
     pub velocity_scale: FloatParameter,
 }
 
@@ -150,8 +165,8 @@ pub struct CcTransformGroup {
     #[parameter(id = "output", name = "Output CC", default = 11, range = 0..=127)]
     pub output_cc: IntParameter,
 
-    /// Value scale (0.0 to 2.0, where 1.0 = 100%)
-    #[parameter(id = "scale", name = "Scale", default = 1.0, range = 0.0..=2.0)]
+    /// Value scale (0% to 200%)
+    #[parameter(id = "scale", name = "Scale", default = 1.0, range = 0.0..=2.0, kind = "percent")]
     pub value_scale: FloatParameter,
 }
 
@@ -178,6 +193,9 @@ pub struct MidiTransformModel {
     /// CC transformation settings (nested group)
     #[nested(group = "CC Transform")]
     pub cc: CcTransformGroup,
+
+    /// Events for the editor. The processor's sender is made from it.
+    pub events: WebViewEventQueue,
 }
 
 impl Model for MidiTransformModel {
@@ -188,11 +206,62 @@ impl Model for MidiTransformModel {
 
     fn prepare(self: Arc<Self>, _: ()) -> MidiTransformProcessor {
         MidiTransformProcessor {
+            transformed_sender: self.events.stream_sender("transformed", TRANSFORMED_CAPACITY),
+            pressed_sender: self.events.value_sender("pressed", 0),
             model: self,
             held_notes: [[None; 128]; 16],
+            pressed_keys: [0; 16],
+            pressed_sent: 0,
         }
     }
 }
+
+// =============================================================================
+// Editor
+// =============================================================================
+
+/// A note or a CC as it came in and as it went out, sent to the editor,
+/// which lights up the notes that sound and shows the last CC. As JSON an
+/// object with its `type` ("noteOn", "noteOff", "cc" or "reset") and the
+/// fields in camelCase.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(
+    crate = "beamer::serde",
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Transformed {
+    /// A note started: its pitch in and out, `None` when it was filtered
+    /// out. Velocities from 0.0 to 1.0.
+    NoteOn {
+        channel: u8,
+        pitch: u8,
+        out_pitch: Option<u8>,
+        velocity: f32,
+        out_velocity: f32,
+    },
+    /// The note on `pitch` ended, by its incoming pitch.
+    NoteOff { channel: u8, pitch: u8 },
+    /// A CC in and out. Values from 0.0 to 1.0.
+    Cc {
+        channel: u8,
+        controller: u8,
+        value: f64,
+        out_controller: u8,
+        out_value: f64,
+    },
+    /// The host reset the plugin: no note sounds any more.
+    Reset,
+}
+
+/// The CCs that end every note of their channel: All Sound Off and All
+/// Notes Off.
+const ENDS_NOTES: [u8; 2] = [120, 123];
+
+/// Room for the events of two ticks of the editor (a tick is about 16 ms),
+/// more than a player or a sequence sends.
+const TRANSFORMED_CAPACITY: usize = 1024;
 
 // =============================================================================
 // Processor
@@ -211,9 +280,44 @@ pub struct MidiTransformProcessor {
     /// changed while the note was held, so no note hangs. One entry per key:
     /// a second note-on on a held key replaces the first.
     held_notes: [[Option<u8>; 128]; 16],
+
+    /// The incoming keys that are down, a bit per pitch, by channel, also
+    /// those whose note was filtered out. Only for the editor: it shows
+    /// the notes that sound until they end.
+    pressed_keys: [u128; 16],
+
+    /// Sends what passes through to the editor. Sends nothing while no
+    /// editor is open.
+    transformed_sender: WebViewStreamSender<Transformed>,
+
+    /// Sends how many keys are down, with every block while any is and
+    /// once when the last one comes up. A pause while keys are down tells
+    /// the editor that the host stopped calling the plugin (Logic's power
+    /// button, Reaper's FX switch), so no note-off will come through: it
+    /// lets the keys go out then.
+    pressed_sender: WebViewValueSender<u32>,
+
+    /// The count `pressed_sender` sent last.
+    pressed_sent: u32,
 }
 
 impl MidiTransformProcessor {
+    /// Mark an incoming key as down or up.
+    fn press(&mut self, channel: MidiChannel, pitch: MidiNote, down: bool) {
+        let bit = 1u128 << (pitch & 0x7F);
+        let keys = &mut self.pressed_keys[(channel & 0x0F) as usize];
+        if down {
+            *keys |= bit;
+        } else {
+            *keys &= !bit;
+        }
+    }
+
+    /// How many incoming keys are down.
+    fn pressed_count(&self) -> u32 {
+        self.pressed_keys.iter().map(|keys| keys.count_ones()).sum()
+    }
+
     /// The entry in `held_notes` for a channel and an incoming pitch.
     fn held_note(&mut self, channel: MidiChannel, pitch: MidiNote) -> &mut Option<u8> {
         &mut self.held_notes[(channel & 0x0F) as usize][(pitch & 0x7F) as usize]
@@ -384,12 +488,22 @@ impl Processor for MidiTransformProcessor {
         _context: &ProcessContext,
     ) {
         // Audio passes through unchanged: the buffer already holds the input.
+
+        // While keys are down the count goes out with every block, also
+        // when it holds still. When it falls to 0 it goes out once more.
+        let pressed = self.pressed_count();
+        if pressed > 0 || self.pressed_sent > 0 {
+            self.pressed_sender.send(&pressed);
+            self.pressed_sent = pressed;
+        }
     }
 
     fn set_active(&mut self, active: bool) {
         // A reset ends every note, so none is held any more.
         if active {
             self.held_notes = [[None; 128]; 16];
+            self.pressed_keys = [0; 16];
+            self.transformed_sender.push(Transformed::Reset);
         }
     }
 
@@ -406,15 +520,15 @@ impl Processor for MidiTransformProcessor {
                         self.transform_pitch(note_on.pitch)
                     };
                     *self.held_note(note_on.channel, note_on.pitch) = new_pitch;
+                    self.press(note_on.channel, note_on.pitch, true);
+                    let new_velocity = if bypassed {
+                        note_on.velocity
+                    } else {
+                        self.transform_velocity(note_on.velocity)
+                    };
 
                     // If transform_pitch returns None, the note is filtered out.
                     if let Some(new_pitch) = new_pitch {
-                        let new_velocity = if bypassed {
-                            note_on.velocity
-                        } else {
-                            self.transform_velocity(note_on.velocity)
-                        };
-
                         // Use with() to preserve sample_offset, struct update for the rest
                         output.push(event.with(MidiEventKind::NoteOn(NoteOn {
                             pitch: new_pitch,
@@ -422,9 +536,22 @@ impl Processor for MidiTransformProcessor {
                             ..*note_on
                         })));
                     }
+                    self.transformed_sender.push(Transformed::NoteOn {
+                        channel: note_on.channel,
+                        pitch: note_on.pitch,
+                        out_pitch: new_pitch,
+                        velocity: note_on.velocity,
+                        out_velocity: new_velocity,
+                    });
                 }
 
                 MidiEventKind::NoteOff(note_off) => {
+                    self.press(note_off.channel, note_off.pitch, false);
+                    self.transformed_sender.push(Transformed::NoteOff {
+                        channel: note_off.channel,
+                        pitch: note_off.pitch,
+                    });
+
                     // The pitch the note-on went out with, not the one the
                     // current settings give. Nothing to end for a note that
                     // was filtered out.
@@ -456,20 +583,34 @@ impl Processor for MidiTransformProcessor {
                     }
                 }
 
-                MidiEventKind::ControlChange(_) if bypassed => {
-                    output.push(*event);
-                }
-
                 MidiEventKind::ControlChange(cc) => {
-                    if let Some(new_cc) = self.transform_cc_number(cc.controller) {
-                        let new_value = self.transform_cc_value(cc.controller, cc.value);
+                    // When bypassed, a CC goes out unchanged.
+                    let new_cc = if bypassed {
+                        Some((cc.controller, cc.value))
+                    } else {
+                        self.transform_cc_number(cc.controller).map(|controller| {
+                            (controller, self.transform_cc_value(cc.controller, cc.value))
+                        })
+                    };
+                    if let Some((new_controller, new_value)) = new_cc {
+                        // The editor shows no note of the channel after it.
+                        if ENDS_NOTES.contains(&new_controller) {
+                            self.pressed_keys[(cc.channel & 0x0F) as usize] = 0;
+                        }
                         output.push(event.with(MidiEventKind::ControlChange(
                             ControlChange {
-                                controller: new_cc,
+                                controller: new_controller,
                                 value: new_value,
                                 ..*cc
                             },
                         )));
+                        self.transformed_sender.push(Transformed::Cc {
+                            channel: cc.channel,
+                            controller: cc.controller,
+                            value: cc.value,
+                            out_controller: new_controller,
+                            out_value: new_value,
+                        });
                     }
                 }
 
@@ -525,6 +666,49 @@ mod tests {
         model.note.output_note.set(output_note);
         let processor = Arc::clone(&model).prepare(());
         (model, processor)
+    }
+
+    #[test]
+    fn test_transformed_json_is_what_the_editor_reads() {
+        // The shapes webview/src/transformed.ts checks.
+        let note_on = Transformed::NoteOn {
+            channel: 0,
+            pitch: 60,
+            out_pitch: None,
+            velocity: 0.5,
+            out_velocity: 0.25,
+        };
+        assert_eq!(
+            serde_json::to_string(&note_on).unwrap(),
+            r#"{"type":"noteOn","channel":0,"pitch":60,"outPitch":null,"velocity":0.5,"outVelocity":0.25}"#
+        );
+        let cc = Transformed::Cc { channel: 1, controller: 1, value: 0.5, out_controller: 11, out_value: 1.0 };
+        assert_eq!(
+            serde_json::to_string(&cc).unwrap(),
+            r#"{"type":"cc","channel":1,"controller":1,"value":0.5,"outController":11,"outValue":1.0}"#
+        );
+        assert_eq!(serde_json::to_string(&Transformed::Reset).unwrap(), r#"{"type":"reset"}"#);
+    }
+
+    #[test]
+    fn test_pressed_keys_count_every_key_that_is_down() {
+        let model = Arc::new(MidiTransformModel::default());
+        model.note.mode.set(NoteTransformMode::OctaveUp);
+        let mut processor = Arc::clone(&model).prepare(());
+
+        // A filtered note counts too: its key is down.
+        run(&mut processor, &[note_on(60), note_on(120)]);
+        assert_eq!(processor.pressed_count(), 2);
+        run(&mut processor, &[note_off(60)]);
+        assert_eq!(processor.pressed_count(), 1);
+
+        // All Notes Off ends every note of its channel.
+        run(&mut processor, &[MidiEvent::control_change(0, 0, 123, 0.0)]);
+        assert_eq!(processor.pressed_count(), 0);
+
+        run(&mut processor, &[note_on(64)]);
+        processor.set_active(true);
+        assert_eq!(processor.pressed_count(), 0);
     }
 
     #[test]

@@ -7,3 +7,8 @@ url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
 sample_accurate_automation = true
 log_level = "warn"
+editor_size = [760, 520]
+editor_background_color = "#171717"
+# The name of note 60 in note names: "C3" (the default, as in most hosts)
+# or "C4".
+middle_c = "C3"

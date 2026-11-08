@@ -96,7 +96,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 |---------|-------------|
 | **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
 | **[drums](https://github.com/helpermedia/beamer/tree/main/examples/drums)** | Drum synthesizer with multi-output buses |
-| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation and an editor |
 
 ### WebView Editor
 
@@ -105,6 +105,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin editor with React |
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Editor in plain HTML and JavaScript, without a build step |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Editor in React with a live transfer curve and meters from the audio thread |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | Editor in React with a note map that lights up the notes passing through, streamed from the audio thread |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 

@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/* Inter, the brand's typeface, from fontsource: its Latin subset only, as
+   the editor's text is English. Vite copies the file into dist/ and the
+   plugin embeds it, so nothing is loaded from the internet. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+/* The Beamer brand (docs/branding): ink for the panel, paper for the
+   signal and the values, blue for what the plugin does. The rest comes
+   from Tailwind's neutral scale. */
+@theme {
+  --color-ink: #101010;
+  --color-paper: #f4f2ee;
+  --color-brand-blue: #206fff;
+
+  /* What passes through: the notes that sound and the last CC, in paper.
+     Resolved here, so it stays lit where a display turns gray: while the
+     plugin is bypassed the notes still pass, unchanged. */
+  --color-signal: var(--color-paper);
+
+  /* The surfaces by their role: the panel behind everything, the top
+     bar's fill and the wells (the displays, the groups of choices and
+     the switches). */
+  --color-panel: var(--color-neutral-900);
+  --color-bar: var(--color-ink);
+  --color-well: var(--color-ink);
+
+  --font-sans: "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* The editor scales with its window: the design of 760 x 520 pixels at a
+   rem of 16 px (`editor_size` in Config.toml). The rem follows the window
+   by its width or its height, whichever leaves less room, so the panel
+   keeps its proportions and stays whole. Sizes are in rem; inside the
+   SVGs the viewBox scales text and strokes. */
+html {
+  font-size: min(100vw / 47.5, 100vh / 32.5);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* The bar across the top, the panel under it in the middle. Room left
+   over is plain panel: at the sides, or below. */
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-panel);
+  color: var(--color-paper);
+  /* An editor is a control surface, not a page to select text in. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* While the plugin is bypassed a display turns gray: its blue and its
+   paper take quieter neutrals. Colors only: a fading opacity or filter
+   moves the display onto a layer of its own, which WebKit places a pixel
+   off until the fade ends. */
+.display[data-unlit] {
+  --color-brand-blue: var(--color-neutral-600);
+  --color-paper: var(--color-neutral-500);
+}
+
+/* A control the settings leave without effect turns gray the same way. */
+.control[data-unused] {
+  --color-brand-blue: var(--color-neutral-600);
+  --color-paper: var(--color-neutral-500);
+}
+
+.display * {
+  transition: fill 200ms, stroke 200ms;
+}
+
+/* Keys light up with a note at once. */
+.display .key {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .display * {
+    transition: none;
+  }
+}

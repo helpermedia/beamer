@@ -25,6 +25,7 @@
 | | Nested groups (`#[beamer::group]`, `#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Rust code organization only? |
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
+| | Note Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Note numbers as names ("C3") via kind = "note_number", middle_c in Config.toml |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
 | | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
 | | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Saved state beyond parameters, read on the audio thread |
@@ -66,18 +67,18 @@
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
-| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Events from Rust to JS; senders made from it (delay, compressor) |
+| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform) |
 | | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor) |
-| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Level history from the audio thread |
+| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform) |
 | | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
-| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Config.toml editor config |
-| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Prevents white flash |
-| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
-| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
+| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Config.toml editor config |
+| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Prevents white flash |
+| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
+| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
-| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | beginEdit/endEdit |
+| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
-| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor) |
+| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
 | | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Knob value text (delay, compressor), slider (WebView Demo) |
 | | Packages for web UIs (`beamer-api`, `beamer-gestures`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | From the bun workspace, read from source by Vite |
 

@@ -258,7 +258,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 
 ### [MIDI Transform](midi-transform/)
 
-MIDI effect that transforms notes and CC messages.
+MIDI effect that transforms notes and CC messages, with an editor in React.
 
 **Note Transform Parameters:**
 
@@ -267,16 +267,16 @@ MIDI effect that transforms notes and CC messages.
 | **Enabled** | Toggle note processing on/off |
 | **Mode** | How notes are transformed (see below) |
 | **Transpose** | Semitones to shift (-24 to +24), only for Transpose mode |
-| **Input Note** | Source note for Remap mode (0-127) |
-| **Output Note** | Target note for Remap mode (0-127) |
-| **Velocity** | Velocity scaling (0.0-2.0). 1.0 = no change |
+| **Input Note** | Source note for Remap mode, shown as its name (C3 is 60) |
+| **Output Note** | Target note for Remap mode, shown as its name |
+| **Velocity** | Velocity scaling (0% to 200%). 100% = no change |
 
 **Note Modes:**
 - **Through** - Pass notes unchanged (with optional velocity scaling)
 - **Transpose** - Shift all notes by semitones
 - **Octave Up/Down** - Shift all notes by one octave
 - **Remap Note** - Change one specific note to another (e.g., kick on C1 to D1)
-- **Invert** - Mirror pitches around middle C (C4)
+- **Invert** - Mirror pitches around middle C (note 60)
 
 **CC Transform Parameters:**
 
@@ -286,7 +286,7 @@ MIDI effect that transforms notes and CC messages.
 | **Mode** | How CC messages are transformed (see below) |
 | **Input CC** | Source CC number for Remap modes (0-127) |
 | **Output CC** | Target CC number for Remap modes (0-127) |
-| **Scale** | Value scaling (0.0-2.0). 1.0 = no change |
+| **Scale** | Value scaling (0% to 200%). 100% = no change |
 
 A **Bypass** parameter passes all MIDI through unchanged.
 
@@ -297,17 +297,23 @@ A **Bypass** parameter passes all MIDI through unchanged.
 - **Invert** - Flip CC values (0 becomes 127, 127 becomes 0)
 - **Remap + Scale** - Remap CC number AND scale value
 
+**Editor:**
+
+A bar with the plugin's name and the Beamer logo, then a section for notes and one for CCs, each with its switch and its modes. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Knobs the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The editor scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
+
 **Demonstrates:**
 - `()` setup: a MIDI transformer needs nothing from the audio setup
 - Nested groups with `#[beamer::group]` and `#[nested(group = "...")]`
 - `EnumParameter` for discrete choices
-- `IntParameter` for note/CC selection
+- `IntParameter` for note/CC selection, `kind = "note_number"` to show note numbers as names ("C3") and read typed names back, with `middle_c` in `Config.toml` and `noteName()` from beamer-api in the editor
 - `BoolParameter` for enable toggles
-- `FloatParameter` for velocity and value scaling
+- `FloatParameter` for velocity and value scaling, as percentages (`kind = "percent"`)
 - `process_midi()` for MIDI processing
 - MIDI event modification with the `with()` method
 - Held-note tracking, so a note-off ends the note its note-on started when the settings change while the note is held
 - Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the settings apply to each note
+- A stream sender from the audio thread with every note and CC as it came in and went out, for an editor that needs all of them (a value sender would keep only the newest)
+- An editor that works out the note map and the CC curve from the parameters, with the same rules as the processor, so it follows a knob at once
 
 ---
 
