@@ -269,10 +269,17 @@ pub enum Category {
 }
 
 impl Category {
-    /// Convert to VST3 base category string
+    /// Convert to VST3 base category string.
+    ///
+    /// VST3 has no MIDI effects. A MIDI effect is an effect that may be
+    /// loaded as an instrument too (`Fx|Instrument`): Cubase and Studio One
+    /// take no MIDI insert from another vendor, so there it goes on an
+    /// instrument track of its own, whose MIDI output another track takes
+    /// as its input.
     pub const fn to_vst3_category(&self) -> &'static str {
         match self {
-            Category::Effect | Category::MidiEffect => "Fx",
+            Category::Effect => "Fx",
+            Category::MidiEffect => "Fx|Instrument",
             Category::Instrument => "Instrument",
             Category::Generator => "Generator",
         }
@@ -824,5 +831,26 @@ impl Config {
             result.push_str(sub.to_vst3());
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vst3_subcategories_of_each_category() {
+        let effect = Config::new("Effect", Category::Effect, "Test", "efct");
+        assert_eq!(effect.vst3_subcategories(), "Fx");
+
+        // A MIDI effect can be loaded as an instrument too.
+        let midi_effect = Config::new("Midi", Category::MidiEffect, "Test", "midi");
+        assert_eq!(midi_effect.vst3_subcategories(), "Fx|Instrument");
+        let tools = midi_effect.with_subcategories(&[Subcategory::Tools]);
+        assert_eq!(tools.vst3_subcategories(), "Fx|Instrument|Tools");
+
+        let instrument = Config::new("Synth", Category::Instrument, "Test", "synt")
+            .with_subcategories(&[Subcategory::Synth]);
+        assert_eq!(instrument.vst3_subcategories(), "Instrument|Synth");
     }
 }

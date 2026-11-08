@@ -2533,4 +2533,6 @@ manufacturer_code = "Myco"
 plugin_code = "synt"
 ```
 
+A `midi_effect` becomes `"Fx|Instrument"`: VST3 has no MIDI effects, so it is an effect that may be loaded as an instrument too. Hosts that take MIDI effects as effects (Reaper) offer it as one. Cubase and Studio One take no MIDI insert from another vendor; there it goes on an instrument track of its own. The track of the instrument it plays takes its MIDI output as input (MIDI Input in the track's routing, with monitoring on).
+
 Common subcategories: `"dynamics"`, `"eq"`, `"filter"`, `"delay"`, `"reverb"`, `"modulation"`, `"distortion"`, `"synth"` and `"sampler"`.
