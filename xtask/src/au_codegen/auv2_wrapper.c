@@ -556,14 +556,14 @@ static void BeamerAuv2HostChanged(void* context, uint32_t changes) {
     }
 }
 
-// Tell parameter listeners (a generic view, an automation lane) that a
-// parameter changed, for a change that did not come through
-// AudioUnitSetParameter.
-static void BeamerAuv2NotifyParameterChange(BeamerAuv2Instance* inst, AudioUnitParameterID paramID) {
+// Tell parameter listeners (a host, its generic view, an automation lane)
+// what AudioUnitSetParameter does not tell them: that a gesture on a
+// parameter began or ended, or that its value changed.
+static void BeamerAuv2NotifyParameterEvent(AudioUnit unit, AudioUnitParameterID paramID, AudioUnitEventType type) {
     AudioUnitEvent event;
     memset(&event, 0, sizeof(event));
-    event.mEventType = kAudioUnitEvent_ParameterValueChange;
-    event.mArgument.mParameter.mAudioUnit = inst->componentInstance;
+    event.mEventType = type;
+    event.mArgument.mParameter.mAudioUnit = unit;
     event.mArgument.mParameter.mParameterID = paramID;
     event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
     event.mArgument.mParameter.mElement = 0;
@@ -2596,7 +2596,8 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 // bypass once more, which the host reads back unchanged.
                 beamer_au_note_host_bypass(inst->rustInstance, bypassed);
                 beamer_au_set_parameter_value(inst->rustInstance, inst->bypassParameterId, bypassed ? 1.0f : 0.0f);
-                BeamerAuv2NotifyParameterChange(inst, inst->bypassParameterId);
+                BeamerAuv2NotifyParameterEvent(inst->componentInstance, inst->bypassParameterId,
+                    kAudioUnitEvent_ParameterValueChange);
             } else {
                 beamer_au_note_host_bypass(inst->rustInstance, bypassed);
                 atomic_store_explicit(&inst->bypassed, bypassed, memory_order_relaxed);
@@ -4003,37 +4004,25 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 // MARK: - AUv2 WebView IPC Callbacks
 // =============================================================================
 
-/// Tell the host that a gesture on a parameter began or ended.
-static void beamer_auv2_notify_gesture(AudioUnit audioUnit, uint32_t paramId, AudioUnitEventType type) {
-    AudioUnitEvent event;
-    memset(&event, 0, sizeof(event));
-    event.mEventType = type;
-    event.mArgument.mParameter.mAudioUnit = audioUnit;
-    event.mArgument.mParameter.mParameterID = paramId;
-    event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
-    AUEventListenerNotify(NULL, NULL, &event);
-}
-
 // What the web UI edits, told to the host. The context is the editor view.
 
 static void beamer_auv2_begin_gesture(void* context, uint32_t paramId) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
 }
 
 static void beamer_auv2_set_parameter(void* context, uint32_t paramId, double value) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
     (void)value;
-    // Notify host via AudioUnitSetParameter, with the value the plugin
-    // holds converted to the AU value.
-    float auValue = beamer_au_get_parameter_value_au(self->_rustInstance, paramId);
-    AudioUnitSetParameter(self->_audioUnit, paramId,
-        kAudioUnitScope_Global, 0, auValue, 0);
+    // The plugin holds the value already. AudioUnitSetParameter would only
+    // set it again through a float and tell no listener. The host hears
+    // of the change through the event and reads the value from the unit.
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_ParameterValueChange);
 }
 
 static void beamer_auv2_end_gesture(void* context, uint32_t paramId) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    beamer_auv2_notify_gesture(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
 }
 
 /// The host as the web UI of the editor view edits parameters in it.

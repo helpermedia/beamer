@@ -1200,7 +1200,7 @@ char* _Nullable beamer_au_editor_sync_frame_script(BeamerAuEditorSyncHandle _Nul
  * function gets `context`. A NULL function leaves the host untold.
  *
  * The AUv3 sets the AUParameter and sends its gesture events, the AUv2
- * calls AudioUnitSetParameter and notifies the gestures.
+ * sends the gestures and each value change as parameter events.
  */
 typedef struct {
     /** Passed to each function. */

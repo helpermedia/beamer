@@ -542,6 +542,8 @@ mix.reset();         // the default value as one gesture
 await mix.typeValue("-6 dB"); // the parameter's own parser
 ```
 
+Where a host keeps these steps differs. Reaper adds them to its undo history, Logic to the Undo and Redo of its plug-in window (not the project's undo history). Cubase keeps them in the MixConsole history for effects only and records none for instruments.
+
 A parameter has at most one open gesture: a gesture that begins while another is open ends that one first, so two controls of one parameter never overlap in the host's undo history. `stateField(path)` and `senderValue(name)` read, follow and (for a `State` field) set the other values. All three return one object per id, whose `get` and `subscribe` work detached, in the shape React's `useSyncExternalStore` and Svelte's stores expect.
 
 ### `beamer-controls`
