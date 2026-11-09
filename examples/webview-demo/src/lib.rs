@@ -185,9 +185,13 @@ impl WebViewDemoProcessor {
                 *peak = 0.0;
             }
         }
-        // A value sender delivers what it is sent. A meter at rest sends
-        // nothing, so the web UI has nothing to do.
-        if self.peaks != before {
+        // The levels go out with every block while the meter shows
+        // something, also when they did not change (a steady tone). When
+        // they stop coming, the host stopped calling the plugin (a host's
+        // bypass, a host that rests while stopped) and the web UI lets the
+        // meter fall on its own. A meter at rest sends nothing, so the web
+        // UI has nothing to do.
+        if self.peaks != before || self.peaks != [0.0; 2] {
             self.levels.send(&Levels { peak: self.peaks });
         }
 
