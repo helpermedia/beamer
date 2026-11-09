@@ -4,9 +4,9 @@ import { useParam, useReady } from "@helpermedia/beamer-react";
 import beamerLogo from "./beamer-logo.svg";
 import AutoMakeup from "./components/AutoMakeup";
 import Choices from "./components/Choices";
-import Knob from "./components/Knob";
+import Dial from "./components/Dial";
 import ReductionMeter from "./components/ReductionMeter";
-import Toggle from "./components/Toggle";
+import Switch from "./components/Switch";
 import TransferCurve from "./components/TransferCurve";
 import { ratioOf, SOFT_KNEE_DB } from "./curve";
 import type { Curve } from "./curve";
@@ -76,38 +76,38 @@ function App() {
           </div>
 
           {portrait ? (
-            // A tall window: the ratios, the knobs in one row and the
+            // A tall window: the ratios, the dials in one row and the
             // switches, each row the full width. Auto makeup sits on the
-            // right, under the makeup knob.
+            // right, under the makeup dial.
             <div className="flex flex-col gap-5">
               <Choices paramId="ratio" />
               <div className="grid grid-cols-5 justify-items-center">
-                <Knob paramId="threshold" />
-                <Knob paramId="attack" />
-                <Knob paramId="release" />
-                <Knob paramId="lookahead" />
-                <Knob paramId="makeup" label="Makeup" />
+                <Dial paramId="threshold" />
+                <Dial paramId="attack" />
+                <Dial paramId="release" />
+                <Dial paramId="lookahead" />
+                <Dial paramId="makeup" label="Makeup" />
               </div>
               <div className="flex items-center justify-between">
-                <Toggle paramId="knee" label="Soft knee" />
+                <Switch paramId="knee" label="Soft knee" />
                 <AutoMakeup gainFirst />
               </div>
             </div>
           ) : (
             <div className="ml-4 grid flex-1 grid-cols-3 content-between justify-items-center">
-              <Knob paramId="threshold" />
+              <Dial paramId="threshold" />
               <div className="col-span-2 flex w-full flex-col justify-center gap-2.5">
                 <Choices paramId="ratio" />
                 <div>
-                  <Toggle paramId="knee" label="Soft knee" />
+                  <Switch paramId="knee" label="Soft knee" />
                 </div>
               </div>
 
-              <Knob paramId="attack" />
-              <Knob paramId="release" />
-              <Knob paramId="lookahead" />
+              <Dial paramId="attack" />
+              <Dial paramId="release" />
+              <Dial paramId="lookahead" />
 
-              <Knob paramId="makeup" label="Makeup" />
+              <Dial paramId="makeup" label="Makeup" />
               <div className="col-span-2 flex w-full items-center">
                 <AutoMakeup />
               </div>

@@ -31,10 +31,10 @@
   },
   "dependencies": {
     "@helpermedia/beamer-api": "workspace:*",
-    "@helpermedia/beamer-gestures": "workspace:*"
+    "@helpermedia/beamer-controls": "workspace:*"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=19"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^21.0.4",

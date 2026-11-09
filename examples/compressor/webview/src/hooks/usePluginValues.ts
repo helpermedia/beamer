@@ -1,6 +1,5 @@
-import { useSyncExternalStore } from "react";
-import { useSenderValue } from "@helpermedia/beamer-react";
-import { shownMeters, subscribeMeters } from "../meters";
+import { useReadable, useSenderValue } from "@helpermedia/beamer-react";
+import { meters } from "../meters";
 import type { Meters } from "../meters";
 
 // What the audio thread sends through its value senders: the status
@@ -32,5 +31,5 @@ export function useStatus(): Status | null {
 // The meters as the editor shows them, at rest until the host prepared
 // the plugin. They fall on their own once the host stops calling it.
 export function useMeters(): Meters {
-  return useSyncExternalStore(subscribeMeters, shownMeters);
+  return useReadable(meters);
 }

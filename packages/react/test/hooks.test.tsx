@@ -8,7 +8,8 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, useRef } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useEvent, useGestures, useParam, useReady, useSenderValue, useStateField } = await import("../src/index");
+const { useChoices, useDial, useEvent, useParam, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
+  await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -108,11 +109,11 @@ function render(element: React.ReactNode) {
 beforeEach(install);
 
 test("useParam follows the value and the text the plugin answers with", () => {
-  function Knob() {
+  function Dial() {
     const { value, text } = useParam("mix");
     return <span>{`${value} ${text}`}</span>;
   }
-  const { container, unmount } = render(<Knob />);
+  const { container, unmount } = render(<Dial />);
   expect(container.textContent).toBe("0.5 50%");
   // The text can change without the value: it renders anyway.
   act(() => push.param(0.5, "50.0"));
@@ -176,15 +177,17 @@ test("useReady turns true once the runtime is ready", async () => {
   unmount();
 });
 
-test("useGestures attaches while mounted", () => {
-  function Knob() {
+test("useDial attaches while mounted", () => {
+  function Dial() {
     const ref = useRef<HTMLDivElement>(null);
     const { param } = useParam("mix");
-    useGestures(ref, param);
-    return <div ref={ref} tabIndex={0} />;
+    useDial(ref, param);
+    return <div ref={ref} />;
   }
-  const { container, unmount } = render(<Knob />);
+  const { container, unmount } = render(<Dial />);
   const element = container.firstElementChild as HTMLElement;
+  expect(element.getAttribute("role")).toBe("slider");
+  expect(element.getAttribute("aria-valuetext")).toBe("50%");
   act(() => {
     element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
   });
@@ -193,14 +196,15 @@ test("useGestures attaches while mounted", () => {
   calls = [];
   element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
   expect(calls).toEqual([]);
+  expect(element.hasAttribute("role")).toBe(false);
 });
 
-test("useGestures calls the newest drag function for each press", () => {
+test("useDial calls the newest drag function for each press", () => {
   const picked: string[] = [];
-  function Knob({ tag }: { tag: string }) {
+  function Dial({ tag }: { tag: string }) {
     const ref = useRef<HTMLDivElement>(null);
     const { param } = useParam("mix");
-    useGestures(ref, param, {
+    useDial(ref, param, {
       drag: () => {
         picked.push(tag);
         return "horizontal";
@@ -211,8 +215,8 @@ test("useGestures calls the newest drag function for each press", () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  act(() => root.render(<Knob tag="first" />));
-  act(() => root.render(<Knob tag="second" />));
+  act(() => root.render(<Dial tag="first" />));
+  act(() => root.render(<Dial tag="second" />));
   const element = container.firstElementChild as HTMLElement;
   element.setPointerCapture = () => {};
   act(() => {
@@ -222,5 +226,93 @@ test("useGestures calls the newest drag function for each press", () => {
   });
   expect(picked).toEqual(["second"]);
   expect(calls).toEqual(["begin", "set 0.6", "end"]);
+  act(() => root.unmount());
+});
+
+test("useSwitch and useChoices attach to the markup", () => {
+  function Controls() {
+    const onOff = useRef<HTMLButtonElement>(null);
+    const group = useRef<HTMLDivElement>(null);
+    const { param } = useParam("mix");
+    useSwitch(onOff, param);
+    useChoices(group, param);
+    return (
+      <>
+        <button ref={onOff}>Mix</button>
+        <div ref={group} />
+      </>
+    );
+  }
+  const { container, unmount } = render(<Controls />);
+  const [button, group] = [...container.children] as HTMLElement[];
+  expect(button.getAttribute("role")).toBe("switch");
+  expect(button.getAttribute("aria-checked")).toBe("true");
+  act(() => button.click());
+  expect(calls).toEqual(["begin", "set 0", "end"]);
+  expect(group.getAttribute("role")).toBe("radiogroup");
+  unmount();
+});
+
+test("useValueEntry shows the text of the newest function", () => {
+  function Field({ prefix }: { prefix: string }) {
+    const ref = useRef<HTMLInputElement>(null);
+    const { param } = useParam("mix");
+    useValueEntry(ref, param, { text: (mix) => `${prefix}${mix.text()}` });
+    return <input ref={ref} />;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Field prefix="a " />));
+  const input = container.firstElementChild as HTMLInputElement;
+  expect(input.value).toBe("a 50%");
+  expect(input.readOnly).toBe(true);
+  act(() => root.render(<Field prefix="b " />));
+  act(() => push.param(0.8, "80"));
+  expect(input.value).toBe("b 80%");
+  act(() => root.unmount());
+});
+
+test("useReadable follows a readable", () => {
+  let value = 1;
+  const callbacks = new Set<(next: number) => void>();
+  const readable = {
+    get: () => value,
+    subscribe: (callback: (next: number) => void) => {
+      callbacks.add(callback);
+      callback(value);
+      return () => callbacks.delete(callback);
+    },
+  };
+  function Show() {
+    return <span>{useReadable(readable)}</span>;
+  }
+  const { container, unmount } = render(<Show />);
+  expect(container.textContent).toBe("1");
+  act(() => {
+    value = 2;
+    callbacks.forEach((callback) => callback(value));
+  });
+  expect(container.textContent).toBe("2");
+  unmount();
+  expect(callbacks.size).toBe(0);
+});
+
+test("useSlider attaches an upright slider and follows its orientation", () => {
+  function Slider({ orientation }: { orientation: "vertical" | "horizontal" }) {
+    const ref = useRef<HTMLDivElement>(null);
+    const { param } = useParam("mix");
+    useSlider(ref, param, { orientation });
+    return <div ref={ref} />;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Slider orientation="vertical" />));
+  const element = container.firstElementChild as HTMLElement;
+  expect(element.getAttribute("role")).toBe("slider");
+  expect(element.getAttribute("aria-orientation")).toBe("vertical");
+  act(() => root.render(<Slider orientation="horizontal" />));
+  expect(element.getAttribute("aria-orientation")).toBe("horizontal");
   act(() => root.unmount());
 });

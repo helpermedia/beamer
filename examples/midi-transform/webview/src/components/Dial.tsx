@@ -1,13 +1,13 @@
 import { useRef } from "react";
-import { useGestures, useParam } from "@helpermedia/beamer-react";
+import { useParam, useDial } from "@helpermedia/beamer-react";
 import ValueText from "./ValueText";
 
-// The arc of a knob in degrees clockwise from the right, as the gestures
+// The arc of a dial in degrees clockwise from the right, as the gestures
 // count them: 270, open at the bottom.
 const ARC_START = 135;
 const ARC_SWEEP = 270;
 
-// The knob in SVG units: rem-sized pixels at the editor's own size.
+// The dial in SVG units: rem-sized pixels at the editor's own size.
 const SIZE = 48;
 const CENTER = SIZE / 2;
 const RING = 21;
@@ -27,19 +27,24 @@ function ringPath(part: number): string {
 
 const TRACK = ringPath(1);
 
-interface KnobProps {
+interface DialProps {
   paramId: string;
-  // The name under the knob, the parameter's own name by default.
+  // The name under the dial, the parameter's own name by default.
   label?: string;
+  // A line under the value, such as the name of a CC.
+  detail?: string;
+  // Whether the settings leave the parameter without effect: the dial turns
+  // gray and still works, to set it up ahead.
+  unused?: boolean;
 }
 
-// A knob for a continuous parameter. The input comes from beamer-gestures:
+// A dial for a continuous parameter, from beamer-controls:
 // drag up and down (finer with shift), scroll, arrow keys once focused and
 // double click to reset. A click on the value types one.
-function Knob({ paramId, label }: KnobProps) {
-  const { param, value, text, info } = useParam(paramId);
+function Dial({ paramId, label, detail, unused = false }: DialProps) {
+  const { param, value, info } = useParam(paramId);
   const svgRef = useRef<SVGSVGElement>(null);
-  useGestures(svgRef, param);
+  useDial(svgRef, param);
 
   const name = label ?? info?.name ?? paramId;
   const angle = ARC_START + value * ARC_SWEEP;
@@ -47,17 +52,11 @@ function Knob({ paramId, label }: KnobProps) {
   const [x1, y1] = pointAt(angle, 14);
 
   return (
-    <div className="flex w-21 flex-col items-center portrait:w-20">
+    <div className="control flex w-21 flex-col items-center" data-unused={unused ? "" : undefined}>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        tabIndex={0}
-        role="slider"
-        aria-label={name}
-        aria-valuemin={0}
-        aria-valuemax={1}
-        aria-valuenow={value}
-        aria-valuetext={text}
+        aria-label={label}
         className="group size-12 outline-none"
       >
         <path
@@ -72,10 +71,11 @@ function Knob({ paramId, label }: KnobProps) {
         <circle cx={CENTER} cy={CENTER} r={16} className="fill-neutral-800 stroke-neutral-700" strokeWidth={1} />
         <line x1={x0} y1={y0} x2={x1} y2={y1} className="stroke-paper" strokeWidth={2.5} strokeLinecap="round" />
       </svg>
-      <span className="mt-1 text-[0.6875rem] text-neutral-400">{name}</span>
-      <ValueText param={param} text={text} name={name} />
+      <span className={`mt-1 text-[0.6875rem] ${unused ? "text-neutral-600" : "text-neutral-400"}`}>{name}</span>
+      <ValueText param={param} label={label} />
+      {detail !== undefined && <span className="h-3.5 text-[0.625rem] leading-3.5 text-neutral-500">{detail}</span>}
     </div>
   );
 }
 
-export default Knob;
+export default Dial;

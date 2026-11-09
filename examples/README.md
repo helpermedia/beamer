@@ -66,7 +66,7 @@ Feed-forward compressor with soft/hard knee, lookahead, sidechain input and an e
 
 **Editor:**
 
-A bar with the plugin's name and the Beamer logo, then the transfer curve: threshold, knee, ratio and makeup from the parameters, the area the compressor turns down in blue, the level the detector keys on as a bar along the input axis and as a dot on the curve. Beside it a gain reduction meter, then knobs, buttons and switches for every parameter but the bypass, which the host's own bypass sets. Below them the choice of an internal or external sidechain and the latency of the lookahead in samples. The curve's input axis says which of the two the compressor hears. The displays dim while the plugin is bypassed. The editor scales with its window, side by side in a wide one and the displays above the controls in a tall one. It has the look of the Beamer brand (ink, paper and one blue, the font Inter, embedded from fontsource with no request to the internet). Built with React, Vite and Tailwind.
+A bar with the plugin's name and the Beamer logo, then the transfer curve: threshold, knee, ratio and makeup from the parameters, the area the compressor turns down in blue, the level the detector keys on as a bar along the input axis and as a dot on the curve. Beside it a gain reduction meter, then dials, buttons and switches for every parameter but the bypass, which the host's own bypass sets. Below them the choice of an internal or external sidechain and the latency of the lookahead in samples. The curve's input axis says which of the two the compressor hears. The displays dim while the plugin is bypassed. The editor scales with its window, side by side in a wide one and the displays above the controls in a tall one. It has the look of the Beamer brand (ink, paper and one blue, the font Inter, embedded from fontsource with no request to the internet). Built with React, Vite and Tailwind.
 
 **Demonstrates:**
 - A tuple setup `(SampleRate, MaxBufferSize, MainInputChannels, ActiveBuses)`: the sample rate for the envelope coefficients, the channels and block size for the bypass handler and the active buses
@@ -80,8 +80,8 @@ A bar with the plugin's name and the Beamer logo, then the transfer curve: thres
 - `Model::LAYOUTS` with mono and stereo main buses and sidechains
 - dB-domain envelope processing
 - Two value senders from the audio thread: the meters (held peaks that fall by 20 dB a second, sent with every block until they rest, so that the editor lets them fall on its own when the host stops calling the plugin) and the status (sample rate, whether the detector keys on the sidechain), whose first value `prepare()` sets
-- An editor that works out from the parameters what it can (the transfer curve, the latency in samples), so it follows a knob at once, also while the host does not run the processor
-- The packages for web UIs: `beamer-react` hooks for parameters and sender values, `beamer-gestures` for the knobs (vertical drag, wheel, keys, double click to reset), used from the bun workspace
+- An editor that works out from the parameters what it can (the transfer curve, the latency in samples), so it follows a dial at once, also while the host does not run the processor
+- The packages for web UIs: `beamer-controls` for the dials (vertical drag, wheel, keys, double click to reset), the value fields, the switches, the choices and the falling meters, `beamer-react` hooks for them, the parameters and sender values, used from the bun workspace
 - Enum choices from the parameter (`valueTexts`) as buttons for the ratio, from which the editor also reads the ratio for its curve
 
 ---
@@ -143,7 +143,7 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode, factory prese
 
 **Editor:**
 
-The delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and knobs for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
+The delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and dials for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
 
 **Demonstrates:**
 - A `(SampleRate, MainOutputChannels)` setup: the sample rate for the delay lines, the output channels for the editor
@@ -157,7 +157,7 @@ The delay time in effect and where it comes from (free or a note value at the ho
 - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
 - A web UI in plain HTML, CSS and JavaScript modules, working on `__BEAMER__` directly
 - A `WebViewValueSender` that sends the host's tempo from the audio thread only when it changes
-- Knobs with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/paramTextToNormalized`)
+- Dials with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/paramTextToNormalized`)
 - Buttons for the choices of an enum parameter, named by its `valueTexts`
 
 ---
@@ -299,7 +299,7 @@ A **Bypass** parameter passes all MIDI through unchanged.
 
 **Editor:**
 
-A bar with the plugin's name and the Beamer logo, then a section for notes and one for CCs, each with its switch and its modes. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Knobs the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The editor scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
+A bar with the plugin's name and the Beamer logo, then a section for notes and one for CCs, each with its switch and its modes. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Dials the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The editor scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
 
 **Demonstrates:**
 - `()` setup: a MIDI transformer needs nothing from the audio setup
@@ -313,7 +313,8 @@ A bar with the plugin's name and the Beamer logo, then a section for notes and o
 - Held-note tracking, so a note-off ends the note its note-on started when the settings change while the note is held
 - Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the settings apply to each note
 - A stream sender from the audio thread with every note and CC as it came in and went out, for an editor that needs all of them (a value sender would keep only the newest)
-- An editor that works out the note map and the CC curve from the parameters, with the same rules as the processor, so it follows a knob at once
+- An editor that works out the note map and the CC curve from the parameters, with the same rules as the processor, so it follows a dial at once
+- The packages for web UIs: `beamer-controls` for the dials, the value fields, the switches and the choices, `beamer-react` hooks for them and the parameters, used from the bun workspace
 
 ---
 
@@ -340,7 +341,7 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
-- The packages for web UIs: `beamer-react` hooks for parameters, the `State` field and the meter, `beamer-gestures` for the knobs (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), used from the bun workspace
-- Circular knob drawn in SVG, its input from `useGestures`
-- Bipolar arc rendering for pan knob
+- The packages for web UIs: `beamer-controls` for the dials (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), the value fields and the falling output meter, `beamer-react` hooks for them, the parameters and the `State` field, used from the bun workspace
+- A dial drawn in SVG, its input from `useDial`
+- Bipolar arc rendering for the pan dial
 - DAW undo grouping: each drag, scroll, key, reset or typed value is one undo step

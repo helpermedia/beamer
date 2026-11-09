@@ -8,7 +8,7 @@
       "dependencies": {
         "@fontsource-variable/inter": "^5.3.0",
         "@helpermedia/beamer-api": "workspace:*",
-        "@helpermedia/beamer-gestures": "workspace:*",
+        "@helpermedia/beamer-controls": "workspace:*",
         "@helpermedia/beamer-react": "workspace:*",
       },
       "devDependencies": {
@@ -28,7 +28,7 @@
       "dependencies": {
         "@fontsource-variable/inter": "^5.3.0",
         "@helpermedia/beamer-api": "workspace:*",
-        "@helpermedia/beamer-gestures": "workspace:*",
+        "@helpermedia/beamer-controls": "workspace:*",
         "@helpermedia/beamer-react": "workspace:*",
       },
       "devDependencies": {
@@ -47,7 +47,7 @@
       "name": "webview-demo-web-ui",
       "dependencies": {
         "@helpermedia/beamer-api": "workspace:*",
-        "@helpermedia/beamer-gestures": "workspace:*",
+        "@helpermedia/beamer-controls": "workspace:*",
         "@helpermedia/beamer-react": "workspace:*",
       },
       "devDependencies": {
@@ -70,8 +70,8 @@
         "typescript": "^6.0.3",
       },
     },
-    "packages/gestures": {
-      "name": "@helpermedia/beamer-gestures",
+    "packages/controls": {
+      "name": "@helpermedia/beamer-controls",
       "version": "0.2.4",
       "dependencies": {
         "@helpermedia/beamer-api": "workspace:*",
@@ -87,7 +87,7 @@
       "version": "0.2.4",
       "dependencies": {
         "@helpermedia/beamer-api": "workspace:*",
-        "@helpermedia/beamer-gestures": "workspace:*",
+        "@helpermedia/beamer-controls": "workspace:*",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^21.0.4",
@@ -99,7 +99,7 @@
         "typescript": "^6.0.3",
       },
       "peerDependencies": {
-        "react": ">=18",
+        "react": ">=19",
       },
     },
   },
@@ -110,7 +110,7 @@
 
     "@helpermedia/beamer-api": ["@helpermedia/beamer-api@workspace:packages/api"],
 
-    "@helpermedia/beamer-gestures": ["@helpermedia/beamer-gestures@workspace:packages/gestures"],
+    "@helpermedia/beamer-controls": ["@helpermedia/beamer-controls@workspace:packages/controls"],
 
     "@helpermedia/beamer-react": ["@helpermedia/beamer-react@workspace:packages/react"],
 

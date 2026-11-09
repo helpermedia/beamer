@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { BeamerParamInfo, Param } from "@helpermedia/beamer-api";
-import { KEYBOARD_FOCUS, angleAround, arcPosition, attachGestures, boundedOffset, dragPixels, keyValue, wheelPixels } from "../src/gestures";
+import { angleAround, arcPosition, attachGestures, boundedOffset, dragPixels, keyValue, wheelPixels } from "../src/gestures";
 
 beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
@@ -46,7 +46,7 @@ function fakeParam(value: number, steps = 0) {
   return { param: param as unknown as Param, calls };
 }
 
-function knob() {
+function dial() {
   const element = document.createElement("div");
   element.tabIndex = 0;
   // happy-dom has no pointer to capture.
@@ -55,9 +55,9 @@ function knob() {
   return element;
 }
 
-// A knob of 100 by 100 pixels at the top left, its center at 50, 50.
-function arcKnob() {
-  const element = knob();
+// A dial of 100 by 100 pixels at the top left, its center at 50, 50.
+function arcDial() {
+  const element = dial();
   element.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) });
   return element;
 }
@@ -124,7 +124,7 @@ test("an offset stops at the ends", () => {
 });
 
 test("shift makes a drag ten times finer", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param);
   pointer(element, "pointerdown", { clientY: 100 });
@@ -134,7 +134,7 @@ test("shift makes a drag ten times finer", () => {
 });
 
 test("a drag is one gesture from the value at the press", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param);
   pointer(element, "pointerdown", { clientY: 100 });
@@ -144,7 +144,7 @@ test("a drag is one gesture from the value at the press", () => {
 });
 
 test("a drag on a discrete parameter does not stick on the snapped value", () => {
-  const element = knob();
+  const element = dial();
   // Four steps: 0, 0.25, 0.5, 0.75, 1.
   const { param, calls } = fakeParam(0.5, 4);
   attachGestures(element, param);
@@ -156,7 +156,7 @@ test("a drag on a discrete parameter does not stick on the snapped value", () =>
 });
 
 test("a click focuses the control, a right click does nothing", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param);
   pointer(element, "pointerdown", { button: 2 });
@@ -167,7 +167,7 @@ test("a click focuses the control, a right click does nothing", () => {
 });
 
 test("a scroll is one gesture until the wheel rests", async () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { wheelRestMs: 20 });
   for (let i = 0; i < 3; i++) {
@@ -179,7 +179,7 @@ test("a scroll is one gesture until the wheel rests", async () => {
 });
 
 test("a key during a scroll ends the scroll first", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { wheelRestMs: 1000 });
   element.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, cancelable: true }));
@@ -188,7 +188,7 @@ test("a key during a scroll ends the scroll first", () => {
 });
 
 test("a key moves a discrete parameter one choice", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5, 4);
   attachGestures(element, param);
   element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
@@ -196,7 +196,7 @@ test("a key moves a discrete parameter one choice", () => {
 });
 
 test("a modifier click resets with Command or Control", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
@@ -204,7 +204,7 @@ test("a modifier click resets with Command or Control", () => {
 });
 
 test("by default a double click resets, a modifier click does not", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param);
   // A Command click is a drag that does not move.
@@ -217,7 +217,7 @@ test("by default a double click resets, a modifier click does not", () => {
 });
 
 test("both resets together", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { reset: ["double-click", "modifier-click"] });
   element.dispatchEvent(new MouseEvent("dblclick"));
@@ -229,7 +229,7 @@ test("both resets together", () => {
 });
 
 test("an option given as undefined keeps its default", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { reset: undefined, dragStep: undefined });
   element.dispatchEvent(new MouseEvent("dblclick"));
@@ -237,7 +237,7 @@ test("an option given as undefined keeps its default", () => {
 });
 
 test("an empty reset list turns reset off", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { reset: [] });
   element.dispatchEvent(new MouseEvent("dblclick"));
@@ -247,7 +247,7 @@ test("an empty reset list turns reset off", () => {
 });
 
 test("an arc drag jumps to the pointer and follows it", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.2);
   attachGestures(element, param, { drag: "arc" });
   // Straight up is the middle of the arc.
@@ -258,7 +258,7 @@ test("an arc drag jumps to the pointer and follows it", () => {
 });
 
 test("an arc drag through the gap waits at the end, then follows the pointer again", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { drag: "arc" });
   pointer(element, "pointerdown", at(0));
@@ -272,7 +272,7 @@ test("an arc drag through the gap waits at the end, then follows the pointer aga
 });
 
 test("a parked value sends nothing until the pointer is back, also after a full turn", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { drag: "arc" });
   pointer(element, "pointerdown", at(30));
@@ -285,7 +285,7 @@ test("a parked value sends nothing until the pointer is back, also after a full 
 });
 
 test("an arc of another sweep parks and follows the same way", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.5);
   // From the left (180) clockwise over the top to the right (0).
   attachGestures(element, param, { drag: "arc", arcStart: 180, arcSweep: 180 });
@@ -300,7 +300,7 @@ test("an arc of another sweep parks and follows the same way", () => {
 });
 
 test("a fast flick within the arc follows the pointer", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param, { drag: "arc" });
   // From near the end over the top to near the start, 170 degrees at once.
@@ -311,7 +311,7 @@ test("a fast flick within the arc follows the pointer", () => {
 });
 
 test("after a press at the center the first move jumps to the pointer", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.1);
   attachGestures(element, param, { drag: "arc" });
   pointer(element, "pointerdown", { clientX: 50, clientY: 50 });
@@ -321,7 +321,7 @@ test("after a press at the center the first move jumps to the pointer", () => {
 });
 
 test("an arc drag ignores the pointer at the center", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.3);
   attachGestures(element, param, { drag: "arc" });
   pointer(element, "pointerdown", { clientX: 51, clientY: 51 });
@@ -331,7 +331,7 @@ test("an arc drag ignores the pointer at the center", () => {
 });
 
 test("the drag mode can be picked for each press", () => {
-  const element = arcKnob();
+  const element = arcDial();
   const { param, calls } = fakeParam(0.5);
   // On the top half the arc, below it vertical.
   attachGestures(element, param, { drag: (event) => (event.clientY < 50 ? "arc" : "vertical") });
@@ -344,7 +344,7 @@ test("the drag mode can be picked for each press", () => {
 });
 
 test("detaching ends an open drag and gives the element its touch action back", () => {
-  const element = knob();
+  const element = dial();
   element.style.touchAction = "pan-y";
   const { param, calls } = fakeParam(0.5);
   const detach = attachGestures(element, param);
@@ -357,7 +357,7 @@ test("detaching ends an open drag and gives the element its touch action back", 
 });
 
 test("the context menu of a Control click ends the drag it began", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   // Without the modifier click reset (the default), a Control click begins
   // a drag.
@@ -371,7 +371,7 @@ test("the context menu of a Control click ends the drag it began", () => {
 });
 
 test("a Control click that resets shows no context menu", () => {
-  const element = knob();
+  const element = dial();
   const { param } = fakeParam(0.5);
   attachGestures(element, param, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
@@ -381,7 +381,7 @@ test("a Control click that resets shows no context menu", () => {
 });
 
 test("keys with Command, Control or Alt are left to the page", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   attachGestures(element, param);
   for (const modifier of ["metaKey", "ctrlKey", "altKey"]) {
@@ -391,49 +391,11 @@ test("keys with Command, Control or Alt are left to the page", () => {
 });
 
 test("input before the parameter is known is ignored", () => {
-  const element = knob();
+  const element = dial();
   const { param, calls } = fakeParam(0.5);
   (param as { info: unknown }).info = undefined;
   attachGestures(element, param);
   pointer(element, "pointerdown", { clientY: 100 });
   element.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, cancelable: true }));
   expect(calls).toEqual([]);
-});
-
-test("focus from Tab shows as keyboard focus, focus from a click does not", () => {
-  const element = knob();
-  const { param } = fakeParam(0.5);
-  const detach = attachGestures(element, param);
-  // Tab: a key, then the focus moves to the element.
-  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
-  element.focus();
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(true);
-  element.blur();
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
-  // A click focuses it without the attribute.
-  pointer(element, "pointerdown", { clientY: 10 });
-  expect(document.activeElement).toBe(element);
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
-  pointer(element, "pointerup");
-  // Keys after the click show it.
-  element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(true);
-  detach();
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
-});
-
-test("modifier keys and shortcuts do not show keyboard focus", () => {
-  const element = knob();
-  const { param } = fakeParam(0.5);
-  attachGestures(element, param);
-  pointer(element, "pointerdown", { clientY: 10 });
-  pointer(element, "pointerup");
-  for (const init of [{ key: "Shift", shiftKey: true }, { key: "z", metaKey: true }]) {
-    element.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
-  }
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
-  // Nor does focus that comes after them.
-  element.blur();
-  element.focus();
-  expect(element.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
 });

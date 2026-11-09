@@ -44,7 +44,7 @@
 //! # Editor
 //!
 //! The editor in `webview/` is React, on the packages beamer-api,
-//! beamer-gestures and beamer-react. bun and Vite build it into
+//! beamer-controls and beamer-react. bun and Vite build it into
 //! `webview/dist/`, which the export macro embeds. It draws the note map
 //! and the CC curve from the parameters, with the same rules as
 //! [`MidiTransformProcessor`]. The audio thread sends what only it knows:

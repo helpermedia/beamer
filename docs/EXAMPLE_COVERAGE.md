@@ -79,8 +79,8 @@
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
-| | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Knob value text (delay, compressor), slider (WebView Demo) |
-| | Packages for web UIs (`beamer-api`, `beamer-gestures`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | From the bun workspace, read from source by Vite |
+| | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Dial value text (delay, compressor, midi-transform, WebView Demo) |
+| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | From the bun workspace, read from source by Vite |
 
 **Legend:**
 - ✅ Tested/Used

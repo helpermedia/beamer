@@ -3,7 +3,7 @@ import { runtime } from "@helpermedia/beamer-api";
 import { useEvent, useReady, useStateField } from "@helpermedia/beamer-react";
 import LevelHistory from "./components/LevelHistory";
 import LevelMeter from "./components/LevelMeter";
-import Slider from "./components/Slider";
+import Dial from "./components/Dial";
 
 interface PluginInfo {
   name: string;
@@ -98,8 +98,8 @@ function App() {
       </p>
 
       <div className="flex gap-6">
-        <Slider type="circular" paramId="gain" size={80} />
-        <Slider type="circular" paramId="pan" size={80} />
+        <Dial paramId="gain" size={80} />
+        <Dial paramId="pan" size={80} />
       </div>
 
       <button

@@ -1,14 +1,14 @@
 {
-  "name": "@helpermedia/beamer-gestures",
+  "name": "@helpermedia/beamer-controls",
   "version": "0.2.4",
-  "description": "Drag, wheel, key and reset gestures for the controls of a Beamer web UI",
+  "description": "Unstyled controls for the web UI of a Beamer plugin: dial, slider, switch, choices, value field and meter",
   "private": true,
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/helpermedia/beamer.git",
-    "directory": "packages/gestures"
+    "directory": "packages/controls"
   },
   "files": [
     "dist",

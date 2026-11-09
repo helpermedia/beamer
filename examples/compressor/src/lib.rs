@@ -39,7 +39,7 @@
 //! # Editor
 //!
 //! The editor in `webview/` is React, on the packages beamer-api,
-//! beamer-gestures and beamer-react. bun and Vite build it into
+//! beamer-controls and beamer-react. bun and Vite build it into
 //! `webview/dist/`, which the export macro embeds. It draws the transfer
 //! curve from the parameters, with the same formula as
 //! [`gain_reduction_db()`]. The audio thread sends what only it knows: the

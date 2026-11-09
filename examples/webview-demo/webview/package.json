@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@helpermedia/beamer-api": "workspace:*",
-    "@helpermedia/beamer-gestures": "workspace:*",
+    "@helpermedia/beamer-controls": "workspace:*",
     "@helpermedia/beamer-react": "workspace:*"
   },
   "devDependencies": {

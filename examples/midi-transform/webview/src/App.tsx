@@ -7,9 +7,9 @@ import beamerLogo from "./beamer-logo.svg";
 import CcCurve from "./components/CcCurve";
 import Choices from "./components/Choices";
 import KeyboardMap from "./components/KeyboardMap";
-import Knob from "./components/Knob";
+import Dial from "./components/Dial";
 import Readout from "./components/Readout";
-import Toggle from "./components/Toggle";
+import Switch from "./components/Switch";
 import { ccName, remapsCc, usesCcScale, usesNoteRemap, usesTranspose } from "./transform";
 import type { CcSettings, NoteSettings } from "./transform";
 import { subscribeTransformed, transformed } from "./transformed";
@@ -96,23 +96,23 @@ function App() {
       </header>
 
       {/* Notes above, CCs below. Each section has its switch and its
-          modes, a display and the knobs its modes use; the others turn
+          modes, a display and the dials its modes use; the others turn
           gray. With the bar the size matches the scale in index.css. Room
           left over under the bar is shared above and below the panel. */}
       <main className="mx-auto my-auto flex h-[29.25rem] w-[47.5rem] shrink-0 flex-col px-5 pt-4 pb-4">
         <section aria-label="Notes" className="flex flex-col gap-2.5">
           <div className="flex items-center gap-3">
-            <Toggle paramId="note/enabled" label="Notes" />
+            <Switch paramId="note/enabled" label="Notes" />
             <div className="flex-1">
               <Choices paramId="note/mode" />
             </div>
           </div>
           <KeyboardMap settings={notes} held={passed.held} lit={lit} />
           <div className="flex items-start">
-            <Knob paramId="note/transpose" unused={!usesTranspose(notes)} />
-            <Knob paramId="note/input" label="Input" unused={!usesNoteRemap(notes)} />
-            <Knob paramId="note/output" label="Output" unused={!usesNoteRemap(notes)} />
-            <Knob paramId="note/velocity" unused={!notes.enabled} />
+            <Dial paramId="note/transpose" unused={!usesTranspose(notes)} />
+            <Dial paramId="note/input" label="Input" unused={!usesNoteRemap(notes)} />
+            <Dial paramId="note/output" label="Output" unused={!usesNoteRemap(notes)} />
+            <Dial paramId="note/velocity" unused={!notes.enabled} />
             <div className="ml-auto">
               <Readout columns={["Note", "Velocity"]} rows={noteRows(passed.lastNote)} />
             </div>
@@ -123,15 +123,15 @@ function App() {
           <CcCurve settings={ccs} last={passed.lastCc} lit={lit} />
           <div className="flex flex-1 flex-col gap-2.5">
             <div className="flex items-center gap-3">
-              <Toggle paramId="cc/enabled" label="CCs" />
+              <Switch paramId="cc/enabled" label="CCs" />
               <div className="flex-1">
                 <Choices paramId="cc/mode" />
               </div>
             </div>
             <div className="flex items-start">
-              <Knob paramId="cc/input" label="Input" detail={ccName(inputCc.param.plain())} unused={!remapsCc(ccs)} />
-              <Knob paramId="cc/output" label="Output" detail={ccName(outputCc.param.plain())} unused={!remapsCc(ccs)} />
-              <Knob paramId="cc/scale" detail="" unused={!usesCcScale(ccs)} />
+              <Dial paramId="cc/input" label="Input" detail={ccName(inputCc.param.plain())} unused={!remapsCc(ccs)} />
+              <Dial paramId="cc/output" label="Output" detail={ccName(outputCc.param.plain())} unused={!remapsCc(ccs)} />
+              <Dial paramId="cc/scale" detail="" unused={!usesCcScale(ccs)} />
               <div className="ml-auto">
                 <Readout columns={["CC", "Value"]} rows={ccRows(passed.lastCc)} />
               </div>

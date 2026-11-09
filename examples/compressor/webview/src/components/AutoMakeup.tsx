@@ -1,6 +1,6 @@
 import { useParam } from "@helpermedia/beamer-react";
 import { useMeters } from "../hooks/usePluginValues";
-import Toggle from "./Toggle";
+import Switch from "./Switch";
 import { withMinus } from "../format";
 
 interface AutoMakeupProps {
@@ -18,7 +18,7 @@ function AutoMakeup({ gainFirst = false }: AutoMakeupProps) {
 
   return (
     <div className={`flex items-center gap-3 ${gainFirst ? "flex-row-reverse" : ""}`}>
-      <Toggle paramId="auto_makeup" label="Auto makeup" />
+      <Switch paramId="auto_makeup" label="Auto makeup" />
       {value >= 0.5 && (
         <span className="text-xs font-medium tabular-nums text-brand-blue" aria-label="Auto makeup gain">
           {autoMakeupDb >= 0 ? "+" : ""}

@@ -522,10 +522,10 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | Package | Holds | Depends on |
 |---------|-------|------------|
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `param()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
-| `@helpermedia/beamer-gestures` | `attachGestures()`: drag, wheel, keys and reset for any element | `beamer-api` |
-| `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-gestures`, React |
+| `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachChoices()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
+| `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-controls`, React |
 
-A web UI with gestures of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
+A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
 ### `beamer-api`
 
@@ -544,15 +544,21 @@ await mix.typeValue("-6 dB"); // the parameter's own parser
 
 A parameter has at most one open gesture: a gesture that begins while another is open ends that one first, so two controls of one parameter never overlap in the host's undo history. `stateField(path)` and `senderValue(name)` read, follow and (for a `State` field) set the other values. All three return one object per id, whose `get` and `subscribe` work detached, in the shape React's `useSyncExternalStore` and Svelte's stores expect.
 
-### `beamer-gestures`
+### `beamer-controls`
 
-`attachGestures(element, param, options)` makes any element control a parameter:
+Each control is a function that takes an element of your own markup and a parameter and returns the function that detaches it. It adds the role, the ARIA attributes and the input, each change one undo step in the host. It sets a role, a `tabindex` or an `aria-label` (from the parameter's name) only where your markup has none. Detaching removes what it set. The same shape fits a Svelte action.
 
-- Drag vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the mode for each press. Each drag is one gesture from press to release.
-- The wheel by distance, capped per event so that a mouse notch moves about as far in every browser engine, corrected for natural scrolling. A scroll is one gesture until the wheel rests.
-- Arrow keys, Page Up and Page Down, Home and End once the element has focus; a discrete parameter moves one choice per key.
-- Reset by double-click or by a click with Command or Control held.
-- The `data-keyboard-focus` attribute while the element has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
+- `attachDial(element, param, options)` for a round control and `attachSlider(element, param, options)` for one that moves along a line. Both get ARIA's `role="slider"` (ARIA has no role for a dial) with `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in the parameter's plain units and its text as `aria-valuetext`; a slider also gets `aria-orientation`.
+  - A dial drags vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the drag for each press. Each drag is one gesture from press to release.
+  - A slider moves along its `orientation`, upright by default. A press on the track brings the thumb to the pointer and a press on the thumb grabs it; the thumb then follows the pointer, ten times finer with Shift. `thumbLength` (a part of the element's length, below 1) keeps the pointer on the spot of the thumb it pressed; `thumbPosition(value, thumbLength)` says where to draw the thumb so the drawing and the drag agree. `orientation` is the direction on screen.
+  - The wheel by distance, capped per event so that a mouse notch moves about as far in every browser engine, corrected for natural scrolling. A scroll is one gesture until the wheel rests.
+  - Arrow keys, Page Up and Page Down, Home and End once the element has focus; a discrete parameter moves one choice per key.
+  - Reset by double-click or by a click with Command or Control held.
+- `attachSwitch(button, param)` for an on and off parameter: `role="switch"` and `aria-checked`, each click one undo step.
+- `attachChoices(container, param)` for an enum: a radio group of the container's children in order, `aria-checked` on the one the parameter is at, arrow keys that check the next or previous choice, one tab stop.
+- `attachValueEntry(input, param, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openValueEntry(input)` opens it from elsewhere.
+- Every control has the `data-keyboard-focus` attribute while it has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
+- `fallingMeter(sender, { read })` follows a value sender of meter levels. When no value comes for 300 ms (the host stopped calling the plugin), the levels fall on their own at 20 dB a second, each towards its rest. The plugin sends the levels with every block while they show something.
 
 ### `beamer-react`
 
@@ -563,20 +569,24 @@ A parameter has at most one open gesture: a gesture that begins while another is
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
 | `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
-| `useGestures(ref, param, options)` | Attaches `beamer-gestures` to an element while mounted |
+| `useDial(ref, param, options)`, `useSlider(ref, param, options)`, `useSwitch(ref, param)`, `useChoices(ref, param)`, `useValueEntry(ref, param, options)` | Attach a control of `beamer-controls` to an element while mounted |
+| `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
 
-The `webview-demo` knob uses them like this:
+The `webview-demo` dial uses them like this:
 
 ```tsx
-function Slider({ paramId }: { paramId: string }) {
-  const { param, value, displayText, info } = useParam(paramId);
+function Dial({ paramId }: { paramId: string }) {
+  const { param, value } = useParam(paramId);
   const svgRef = useRef<SVGSVGElement>(null);
+  const valueRef = useRef<HTMLInputElement>(null);
   // The arc on the handle, vertical elsewhere (onHandle tests the press
   // against the handle's position). Double-click is for typing a value,
   // so only a modifier click resets.
   const pickDrag = (event: PointerEvent) => (onHandle(event) ? "arc" : "vertical");
-  useGestures(svgRef, param, { drag: pickDrag, reset: ["modifier-click"] });
-  // Draw the arc from `value`; on Enter: param.typeValue(text).
+  useDial(svgRef, param, { drag: pickDrag, reset: ["modifier-click"] });
+  useValueEntry(valueRef, param, { open: "double-click" });
+  // Draw the arc from `value` in the <svg ref={svgRef}>, then the
+  // <input ref={valueRef}> for the value.
 }
 ```
 
@@ -584,7 +594,9 @@ The demo's pan law and output meter:
 
 ```tsx
 const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
-const levels = useSenderValue<Levels>("levels");
+// Made once, when the module loads: the levels in dB, falling on their own.
+const levels = fallingMeter("levels", { read: (value) => peaksInDb(value) });
+const peaks = useReadable(levels);
 ```
 
 ## Asset Embedding
@@ -646,7 +658,7 @@ Developer tools (Web Inspector on macOS) are enabled automatically in debug buil
 
 ## Context Menu
 
-A right click or Control click on the editor shows no menu from the webview in release builds: the Reload, Copy, Look Up, Translate and Share items of a browser have no place in a plugin editor. A page can show a menu of its own (for MIDI learn on a knob, say) by handling the `contextmenu` event and calling `preventDefault()`, in every build.
+A right click or Control click on the editor shows no menu from the webview in release builds: the Reload, Copy, Look Up, Translate and Share items of a browser have no place in a plugin editor. A page can show a menu of its own (for MIDI learn on a dial, say) by handling the `contextmenu` event and calling `preventDefault()`, in every build.
 
 ## When the Page Loads Again
 

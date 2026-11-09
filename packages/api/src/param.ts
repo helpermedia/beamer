@@ -8,7 +8,7 @@ import type { Readable } from "./stores.js";
  * Every change goes to the host as a gesture (begin, set, end), which the
  * host records as one undo step. A parameter has at most one open gesture:
  * a gesture that begins while another is open ends that one first, so
- * gestures from two controls (a knob and its text field) never overlap.
+ * gestures from two controls (a dial and its text field) never overlap.
  *
  * Before `ready` a parameter reads as empty (0, "", no choices) and changes
  * do nothing. `get` and `subscribe` work detached from the handle, as
