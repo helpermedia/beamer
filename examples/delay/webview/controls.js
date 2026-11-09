@@ -1,4 +1,4 @@
-// Controls on `__BEAMER__.params`: a knob for a continuous parameter and a
+// Controls on `__BEAMER__.params`: a dial for a continuous parameter and a
 // row of buttons for the choices of an enum parameter. Each change is a
 // gesture of its own (beginEdit, set, endEdit), so the host records it as
 // one undo step. A drag is one gesture from press to release. So is a
@@ -17,7 +17,7 @@ const FINE_STEP = 0.002;
 // A scroll ends when no wheel event came for this long.
 const WHEEL_REST_MS = 300;
 
-// The arc of a knob: 270 degrees, open at the bottom.
+// The arc of a dial: 270 degrees, open at the bottom.
 const ARC_START = 135;
 const ARC_SWEEP = 270;
 const RADIUS = 20;
@@ -56,26 +56,26 @@ function arcPath(part) {
     return `M ${x0} ${y0} A ${RADIUS} ${RADIUS} 0 ${large} 1 ${x1} ${y1}`;
 }
 
-// A knob for the parameter `id` in `container`. Drag up and down (shift for
+// A dial for the parameter `id` in `container`. Drag up and down (shift for
 // fine steps), scroll, use the arrow keys or double click to reset. A click
 // on the value lets the user type one, which the parameter itself parses.
-export function knob(container, id) {
+export function dial(container, id) {
     const info = params.info(id);
-    container.className = "knob";
+    container.className = "dial";
     container.innerHTML = `
         <svg viewBox="0 0 52 52" tabindex="0" role="slider"
              aria-label="${info.name}" aria-valuemin="0" aria-valuemax="1">
-            <path class="knob-track" d="${arcPath(1)}"></path>
-            <path class="knob-value"></path>
-            <circle class="knob-dot" r="3"></circle>
+            <path class="dial-track" d="${arcPath(1)}"></path>
+            <path class="dial-value"></path>
+            <circle class="dial-dot" r="3"></circle>
         </svg>
-        <span class="knob-name">${info.name}</span>
-        <button class="knob-text" type="button" title="Type a value"></button>`;
+        <span class="dial-name">${info.name}</span>
+        <button class="dial-text" type="button" title="Type a value"></button>`;
 
     const svg = container.querySelector("svg");
-    const valueArc = container.querySelector(".knob-value");
-    const dot = container.querySelector(".knob-dot");
-    let text = container.querySelector(".knob-text");
+    const valueArc = container.querySelector(".dial-value");
+    const dot = container.querySelector(".dial-dot");
+    let text = container.querySelector(".dial-text");
 
     function render() {
         const value = params.get(id);
@@ -145,7 +145,7 @@ export function knob(container, id) {
         const raw = event.deltaY !== 0 ? event.deltaY : event.shiftKey ? event.deltaX : 0;
         if (raw === 0) return;
         // With natural scrolling the system inverts the delta. Undo it, so
-        // that scrolling up raises the value as on a hardware knob.
+        // that scrolling up raises the value as on a hardware dial.
         const delta = event.webkitDirectionInvertedFromDevice ? -raw : raw;
         if (wheelRest === null) {
             params.beginEdit(id);
@@ -184,7 +184,7 @@ export function knob(container, id) {
     function startTyping() {
         settleWheel();
         const input = document.createElement("input");
-        input.className = "knob-text";
+        input.className = "dial-text";
         input.value = params.getDisplayText(id);
         input.setAttribute("aria-label", `${info.name} value`);
         const button = text;
@@ -220,7 +220,7 @@ export function knob(container, id) {
     render();
 
     return {
-        // Dim the knob while the parameter has no effect. It stays usable.
+        // Dim the dial while the parameter has no effect. It stays usable.
         setUnused(unused, reason) {
             container.classList.toggle("unused", unused);
             container.title = unused ? reason : "";

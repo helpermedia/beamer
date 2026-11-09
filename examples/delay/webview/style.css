@@ -156,7 +156,7 @@ body {
     color: var(--well);
 }
 
-/* Sync mode beside the knobs. */
+/* Sync mode beside the dials. */
 
 .controls {
     display: flex;
@@ -166,14 +166,14 @@ body {
     gap: 16px;
 }
 
-.knobs {
+.dials {
     display: flex;
     gap: 18px;
 }
 
-/* A knob: the arc, its name and the value, which takes typed text. */
+/* A dial: the arc, its name and the value, which takes typed text. */
 
-.knob {
+.dial {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -181,41 +181,41 @@ body {
     transition: opacity 120ms;
 }
 
-.knob.unused {
+.dial.unused {
     opacity: 0.45;
 }
 
-.knob svg {
+.dial svg {
     width: 52px;
     height: 52px;
     touch-action: none;
     outline: none;
 }
 
-.knob-track {
+.dial-track {
     fill: none;
     stroke: var(--rule);
     stroke-width: 5;
     stroke-linecap: round;
 }
 
-.knob-value {
+.dial-value {
     fill: none;
     stroke: var(--ink);
     stroke-width: 5;
     stroke-linecap: round;
 }
 
-.knob-dot {
+.dial-dot {
     fill: var(--ink);
 }
 
-.knob-name {
+.dial-name {
     margin-top: 2px;
     color: var(--ink-soft);
 }
 
-.knob-text {
+.dial-text {
     width: 100%;
     padding: 1px 0;
     border: 1px solid transparent;
@@ -227,11 +227,11 @@ body {
     text-align: center;
 }
 
-.knob-text:hover {
+.dial-text:hover {
     border-color: var(--rule);
 }
 
-input.knob-text {
+input.dial-text {
     background: var(--well);
     border-color: var(--ink);
     outline: none;
@@ -242,14 +242,14 @@ input.knob-text {
 /* Keyboard focus. */
 
 button:focus-visible,
-.knob svg:focus-visible {
+.dial svg:focus-visible {
     outline: 2px solid var(--left);
     outline-offset: 2px;
     border-radius: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .knob {
+    .dial {
         transition: none;
     }
 }

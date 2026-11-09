@@ -3,10 +3,10 @@
 // The parameters come from `__BEAMER__.params`. The host's tempo and the
 // output channels come from the processor's value sender "status" (see
 // `Status` in `src/lib.rs`). From both the editor works out the delay time
-// in effect, so it follows a knob at once, also while the host is stopped
+// in effect, so it follows a dial at once, also while the host is stopped
 // and does not run the processor.
 
-import { choices, knob } from "./controls.js";
+import { choices, dial } from "./controls.js";
 import { drawEchoes, WINDOW_MS } from "./echoes.js";
 
 const params = __BEAMER__.params;
@@ -58,9 +58,9 @@ async function start() {
 
     choices(document.getElementById("stereo-mode"), "stereo_mode");
     choices(document.getElementById("sync-mode"), "sync_mode");
-    const time = knob(document.getElementById("time"), "time");
-    knob(document.getElementById("feedback"), "feedback");
-    knob(document.getElementById("mix"), "mix");
+    const time = dial(document.getElementById("time"), "time");
+    dial(document.getElementById("feedback"), "feedback");
+    dial(document.getElementById("mix"), "mix");
 
     // Draw at most once per frame, however many changes arrive.
     let pending = false;
