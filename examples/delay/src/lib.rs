@@ -16,9 +16,12 @@
 //! - Tempo information from `ProcessContext` for tempo-synced delays
 //! - Ring buffer delay line implementation
 //! - Parameter smoothing to avoid zipper noise
+//! - A standalone `Smoother` that glides the delay time, read between
+//!   samples, so that a new time bends the pitch instead of clicking
+//! - A limiter in the feedback loop, so that repeats never grow
 //! - Both simple stereo and ping-pong modes
 //! - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts
-//! - Proper tail length declaration for delay decay
+//! - A tail that follows the feedback and the time, infinite at 100%
 //! - A `(SampleRate, MainOutputChannels)` setup: the sample rate for the
 //!   delay lines, the output channels for the editor
 //! - `set_active()` to clear the delay lines when the host activates the plugin
@@ -137,9 +140,15 @@ impl Model for DelayModel {
     ) -> DelayProcessor {
         // No tempo is known before the first block.
         let status = Status { tempo: None, output_channels: channels.0 };
+        let mut delay_time = Smoother::new(SmoothingStyle::Exponential(GLIDE_MS));
+        delay_time.set_sample_rate(sample_rate.hz());
         DelayProcessor {
             delay_l: DelayLine::new(sample_rate.hz()),
             delay_r: DelayLine::new(sample_rate.hz()),
+            limiter_l: FeedbackLimiter::new(sample_rate.hz()),
+            limiter_r: FeedbackLimiter::new(sample_rate.hz()),
+            delay_time,
+            delay_time_set: false,
             sample_rate: sample_rate.hz(),
             status_sender: self.events.value_sender("status", status),
             status,
@@ -198,6 +207,14 @@ const MAX_DELAY_SECONDS: f64 = 2.5;
 /// editor assumes the same.
 const FALLBACK_TEMPO: f64 = 120.0;
 
+/// How fast the delay time follows a new value: it covers about 63% of
+/// the way in this many milliseconds. Large jumps in quick succession
+/// sound like a tape being spun.
+const GLIDE_MS: f64 = 100.0;
+
+/// How fast the feedback limiter lets go after a peak, in milliseconds.
+const LIMITER_RELEASE_MS: f64 = 100.0;
+
 /// Ring buffer delay line implementation.
 ///
 /// A ring buffer (circular buffer) is a fixed-size buffer that wraps around,
@@ -234,19 +251,31 @@ impl DelayLine {
         }
     }
 
-    /// Read from the delay line at the given delay in samples.
+    /// Read from the delay line at a delay in samples that need not be
+    /// whole: between two stored samples it interpolates linearly. A
+    /// gliding delay time moves smoothly that way, without steps.
+    fn read(&self, delay_samples: f64) -> f64 {
+        if self.max_samples < 3 {
+            return 0.0;
+        }
+        // At least one sample back, with room for the older neighbor.
+        let delay = delay_samples.clamp(1.0, (self.max_samples - 2) as f64);
+        let whole = delay.floor();
+        let fraction = delay - whole;
+        let newer = self.sample_at(whole as usize);
+        let older = self.sample_at(whole as usize + 1);
+        newer + (older - newer) * fraction
+    }
+
+    /// The sample written `delay` samples ago, `delay` from 1 to
+    /// `max_samples - 1`.
     ///
-    /// Calculates read position using modular arithmetic:
+    /// Calculates the read position using modular arithmetic:
     /// ```text
     /// read_pos = (write_pos + max_samples - delay) % max_samples
     /// ```
-    fn read(&self, delay_samples: usize) -> f64 {
-        if self.max_samples == 0 {
-            return 0.0;
-        }
-        let delay_clamped = delay_samples.min(self.max_samples - 1);
-        let read_pos = (self.write_pos + self.max_samples - delay_clamped) % self.max_samples;
-        self.buffer[read_pos]
+    fn sample_at(&self, delay: usize) -> f64 {
+        self.buffer[(self.write_pos + self.max_samples - delay) % self.max_samples]
     }
 
     /// Write to the delay line and advance the write pointer.
@@ -261,9 +290,45 @@ impl DelayLine {
         self.write_pos = (self.write_pos + 1) % self.max_samples;
     }
 
-    /// Clear the buffer (e.g., on parameter changes that could cause feedback issues)
+    /// Clear the buffer, so that no old echoes play.
     fn clear(&mut self) {
         self.buffer.fill(0.0);
+    }
+}
+
+/// A peak limiter for the feedback loop.
+///
+/// It follows the level of what goes into a delay line and scales down
+/// whatever would go above 1.0 (0 dBFS). With high feedback the repeats
+/// add up with new input. Limited, they stay at full level at most, also
+/// at 100% feedback, where the echoes hold instead of fading.
+struct FeedbackLimiter {
+    /// The level followed: up at once with a peak, down slowly after it,
+    /// never below 1.0. Dividing by it leaves a quieter sample as it is.
+    envelope: f64,
+    /// How much of the envelope one sample keeps when the level falls.
+    release: f64,
+}
+
+impl FeedbackLimiter {
+    fn new(sample_rate: f64) -> Self {
+        Self {
+            envelope: 1.0,
+            release: (-1.0 / (LIMITER_RELEASE_MS / 1000.0 * sample_rate)).exp(),
+        }
+    }
+
+    /// The sample, scaled down while the envelope is above 1.0.
+    fn process(&mut self, sample: f64) -> f64 {
+        // The envelope is at least the level of this sample, so the result
+        // never goes above 1.0.
+        self.envelope = sample.abs().max(self.envelope * self.release).max(1.0);
+        sample / self.envelope
+    }
+
+    /// Forget the level, with the delay lines cleared.
+    fn reset(&mut self) {
+        self.envelope = 1.0;
     }
 }
 
@@ -282,6 +347,16 @@ pub struct DelayProcessor {
     delay_l: DelayLine,
     /// Right channel delay line (allocated for current sample rate)
     delay_r: DelayLine,
+    /// The limiter of what goes into the left delay line.
+    limiter_l: FeedbackLimiter,
+    /// The limiter of what goes into the right delay line.
+    limiter_r: FeedbackLimiter,
+    /// The delay time in samples, gliding to a new time.
+    delay_time: Smoother,
+    /// Whether the delay time starts from where it should be. False after
+    /// `prepare()` and `set_active()`: the first block jumps to the time
+    /// instead of gliding to it from a guess.
+    delay_time_set: bool,
     /// Current sample rate
     sample_rate: f64,
     /// Sends the status to the editor.
@@ -314,7 +389,7 @@ impl DelayProcessor {
     /// ```text
     /// delay_samples = time_ms / 1000 * sample_rate
     /// ```
-    fn calculate_delay_samples(&self, context: &ProcessContext) -> usize {
+    fn calculate_delay_samples(&self, context: &ProcessContext) -> f64 {
         // samples_per_beat() returns samples directly (sample_rate * 60 / tempo).
         // Without a tempo from the host a beat lasts as long as at 120 BPM.
         let samples_per_beat = context
@@ -332,8 +407,13 @@ impl DelayProcessor {
             SyncMode::ThirtySecond => samples_per_beat * 0.125, // 1/8 beat
         };
 
-        // Clamp to buffer size
-        (delay_samples as usize).min(self.delay_l.max_samples.saturating_sub(1))
+        // A whole number of samples: reading between two samples dulls the
+        // sound a little, which would add up over the repeats. Only the
+        // glide reads between samples. Clamped to the buffer size, with
+        // room for the older neighbor that `read` interpolates with.
+        delay_samples
+            .round()
+            .min(self.delay_l.max_samples.saturating_sub(2) as f64)
     }
 
     /// Generic processing implementation for both f32 and f64.
@@ -360,7 +440,15 @@ impl DelayProcessor {
         _aux: &mut AuxiliaryBuffers<S>,
         context: &ProcessContext,
     ) {
+        // The delay time glides to the time of this block. A jump would
+        // click, as the read position would skip to other samples.
         let delay_samples = self.calculate_delay_samples(context);
+        if self.delay_time_set {
+            self.delay_time.set_target(delay_samples);
+        } else {
+            self.delay_time.reset(delay_samples);
+            self.delay_time_set = true;
+        }
         let stereo_mode = self.model.stereo_mode.get();
 
         // Tell the editor when the host's tempo changes. Sending never
@@ -385,6 +473,7 @@ impl DelayProcessor {
             // This prevents "zipper noise" when automating parameters
             let feedback = self.model.feedback.tick_smoothed();
             let mix = self.model.mix.tick_smoothed();
+            let delay = self.delay_time.tick();
 
             // Read input samples. The buffer is processed in place, so they
             // are read before the output is written over them.
@@ -396,8 +485,8 @@ impl DelayProcessor {
             };
 
             // Read from delay lines (the "wet" signal)
-            let wet_l = self.delay_l.read(delay_samples);
-            let wet_r = self.delay_r.read(delay_samples);
+            let wet_l = self.delay_l.read(delay);
+            let wet_r = self.delay_r.read(delay);
             // Ping-pong echoes alternate between the lines. A single
             // channel plays both, so that no echo is lost.
             let wet_out_l = if num_channels == 1 && stereo_mode == StereoMode::PingPong {
@@ -418,14 +507,15 @@ impl DelayProcessor {
             // Write to delay lines based on stereo mode
             match stereo_mode {
                 StereoMode::Stereo => {
-                    // Simple stereo: each channel feeds back to itself
+                    // Simple stereo: each channel feeds back to itself.
                     // Feedback formula: delay_input = input + wet * feedback
                     //
-                    // feedback=0.0 → single echo
-                    // feedback=0.5 → decaying repeats
-                    // feedback=1.0 → infinite repeats (careful!)
-                    self.delay_l.write(in_l + wet_l * feedback);
-                    self.delay_r.write(in_r + wet_r * feedback);
+                    // feedback=0.0: a single echo.
+                    // feedback=0.5: decaying repeats.
+                    // feedback=1.0: repeats that hold, kept at full level
+                    // at most by the limiter.
+                    self.delay_l.write(self.limiter_l.process(in_l + wet_l * feedback));
+                    self.delay_r.write(self.limiter_r.process(in_r + wet_r * feedback));
                 }
                 StereoMode::PingPong => {
                     // True ping-pong: sum to mono, alternate sides
@@ -434,8 +524,8 @@ impl DelayProcessor {
                     let mono_in = (in_l + in_r) * 0.5;
 
                     // Mono input goes to L buffer, L feeds R, R feeds L
-                    self.delay_l.write(mono_in + wet_r * feedback);
-                    self.delay_r.write(wet_l * feedback);
+                    self.delay_l.write(self.limiter_l.process(mono_in + wet_r * feedback));
+                    self.delay_r.write(self.limiter_r.process(wet_l * feedback));
                 }
             }
 
@@ -477,12 +567,36 @@ impl Processor for DelayProcessor {
             // This ensures no stale audio bleeds into the new playback position
             self.delay_l.clear();
             self.delay_r.clear();
+            self.limiter_l.reset();
+            self.limiter_r.reset();
+            // The next block starts at its delay time, without a glide.
+            self.delay_time_set = false;
         }
     }
 
     fn tail_samples(&self) -> u32 {
-        // Return the maximum delay buffer size as tail length
-        // This ensures the host knows the plugin has audio tail
-        self.delay_l.max_samples as u32
+        // At 100% feedback the repeats hold: the tail never ends.
+        let feedback = self.model.feedback.get();
+        if feedback >= 1.0 {
+            return u32::MAX;
+        }
+        // Otherwise the repeats fall below -60 dB after this many delays,
+        // the first echo included. Rounded up to whole seconds, so that
+        // small moves of a dial mostly leave the tail as it is: an Audio
+        // Unit host hears of each change.
+        let repeats = if feedback > 0.0 {
+            (0.001_f64.ln() / feedback.ln()).ceil() + 1.0
+        } else {
+            1.0
+        };
+        // Hosts ask before the first block, which sets the delay time:
+        // until then the longest delay stands in for it.
+        let delay = if self.delay_time_set {
+            self.delay_time.target()
+        } else {
+            self.delay_l.max_samples as f64
+        };
+        let seconds = (repeats * delay / self.sample_rate).ceil();
+        (seconds * self.sample_rate).min((u32::MAX - 1) as f64) as u32
     }
 }

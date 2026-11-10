@@ -131,8 +131,8 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode, factory prese
 |-----------|-------------|
 | **Sync Mode** | How delay time is determined. "Free" uses manual time; note values (1/4, 1/8, 1/16, 1/32) lock to DAW tempo. |
 | **Stereo Mode** | "Stereo" delays both channels equally. "Ping-Pong" bounces echoes between left and right for a wider sound. |
-| **Time** | Delay time in milliseconds (1-2000ms). Only active when Sync Mode is "Free". |
-| **Feedback** | Controls how many repeats you hear. 0% = single echo, higher = more repeats. |
+| **Time** | Delay time in milliseconds (1-2000ms). Only active when Sync Mode is "Free". A new time glides in like tape. |
+| **Feedback** | Controls how many repeats you hear. 0% = single echo, higher = more repeats, 100% = repeats that hold. |
 | **Mix** | Blend between dry (original) and wet (delayed) signal. 0% = no effect, 100% = only echoes. |
 
 **Factory Presets:**
@@ -151,8 +151,10 @@ The delay time in effect and where it comes from (free or a note value at the ho
 - `EnumParameter` for sync mode and stereo mode
 - Tempo sync using `ProcessContext.samples_per_beat()`
 - Declarative parameter smoothing with `smoothing = "exp:5.0"`
+- A standalone `Smoother` that glides the delay time, read between samples, so that a new time bends the pitch instead of clicking
+- A limiter in the feedback loop: the repeats never grow, at 100% feedback they hold
 - Ring buffer delay line implementation
-- Proper tail length via `tail_samples()`
+- A tail via `tail_samples()` that follows the feedback and the time, infinite (`u32::MAX`) at 100%
 - Factory presets in code that set only some parameters
 - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
 - A web UI in plain HTML, CSS and JavaScript modules, working on `__BEAMER__` directly
