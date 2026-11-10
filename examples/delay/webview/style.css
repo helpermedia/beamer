@@ -43,6 +43,11 @@ body {
     cursor: default;
 }
 
+/* The logo is part of the surface: it does not drag out as an image. */
+img {
+    -webkit-user-drag: none;
+}
+
 .editor {
     display: flex;
     flex-direction: column;
