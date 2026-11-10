@@ -31,6 +31,9 @@ body {
 }
 
 body {
+    /* The editor fits its view: no scrolling, also not the elastic bounce
+       of a page. */
+    overflow: hidden;
     background: var(--panel);
     color: var(--ink);
     font: 500 13px/1.3 var(--face);
@@ -43,17 +46,39 @@ body {
 .editor {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
     height: 100%;
-    padding: 20px 24px 22px;
+    padding: 14px 24px 22px;
 }
 
-/* Delay time and stereo mode. */
+/* The plugin's name and the Beamer logo, over a rule. */
+
+.title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    /* With the gap of the editor, 10px from the rule to the readout. */
+    margin-bottom: -4px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+}
+
+.title h1 {
+    margin: 0;
+    font: 600 15px var(--face);
+}
+
+.title img {
+    display: block;
+    height: 14px;
+}
+
+/* Delay time and stereo mode, the modes centered beside the readout. */
 
 .top {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
 }
@@ -82,7 +107,7 @@ body {
 
 .echoes {
     flex: 1;
-    min-height: 120px;
+    min-height: 96px;
     margin: 0;
     background: var(--well);
     border-radius: 6px;

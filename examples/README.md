@@ -143,7 +143,7 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode, factory prese
 
 **Editor:**
 
-The delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and dials for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
+A line with the plugin's name and the Beamer logo, then the delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and dials for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
 
 **Demonstrates:**
 - A `(SampleRate, MainOutputChannels)` setup: the sample rate for the delay lines, the output channels for the editor

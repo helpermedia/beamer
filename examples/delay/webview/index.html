@@ -9,13 +9,19 @@
 </head>
 <body>
     <main class="editor" hidden>
-        <header class="top">
+        <header class="title">
+            <h1>Delay</h1>
+            <!-- The Beamer logo for light grounds, a copy of docs/branding/beamer.svg. -->
+            <img src="beamer-logo.svg" alt="Beamer">
+        </header>
+
+        <div class="top">
             <div class="readout">
                 <p class="readout-time"><span id="delay-time">0</span> <span class="readout-unit">ms</span></p>
                 <p class="readout-source" id="delay-source"></p>
             </div>
             <div class="choices" id="stereo-mode" role="radiogroup" aria-label="Stereo mode"></div>
-        </header>
+        </div>
 
         <figure class="echoes">
             <svg id="echoes" role="img" aria-label="The echoes over time"></svg>
