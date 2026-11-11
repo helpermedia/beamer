@@ -1729,6 +1729,30 @@ static void beamer_auv3_on_loaded(void* context) {
 
     if (currentPreset.number >= 0) {
         [self applyFactoryPreset:(int)currentPreset.number];
+        return;
+    }
+
+    // A user preset (negative number) loads like a saved state when the
+    // base class keeps one under its number and name. A host may also set
+    // a preset only to name a state it restored itself. The base class
+    // throws when asked for a name it cannot store (empty, with a slash,
+    // too long), so it is only asked for presets it lists (none when the
+    // plugin is loaded in a host's process, see supportsUserPresets).
+    AUAudioUnitPreset* stored = nil;
+    for (AUAudioUnitPreset* preset in self.userPresets) {
+        if (preset.number == currentPreset.number && [preset.name isEqualToString:currentPreset.name]) {
+            stored = preset;
+            break;
+        }
+    }
+    if (stored == nil) {
+        return;
+    }
+    // The base class returns no state when given no error pointer.
+    NSError* error = nil;
+    NSDictionary<NSString*, id>* state = [self presetStateFor:stored error:&error];
+    if (state != nil) {
+        self.fullState = state;
     }
 }
 
@@ -1818,7 +1842,13 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 - (BOOL)supportsUserPresets {
-    return YES;
+    // User presets work in the extension process only. When the plugin is
+    // loaded in a host's process, the base class forwards each request for
+    // them to the extension process, which crashes on it. Answering NO
+    // there makes the base class list none (and refuse to save, delete or
+    // read one). The flag is also set in the extension until the system
+    // has opened the unit, so code in init must not rely on this answer.
+    return !self.isLoadedInProcess;
 }
 
 // Whether the unit is an instrument or a generator with several output
