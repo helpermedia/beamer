@@ -2159,12 +2159,13 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             CFDictionarySetValue(dict, CFSTR("version"), versionNum);
             CFRelease(versionNum);
 
-            // Get state from Rust (save as "data" key which is the standard AU key)
+            // The plugin's state, under the key the AUv3 uses too, so that
+            // either format loads what the other saved.
             uint32_t stateSize = 0;
             uint8_t* stateBuffer = beamer_au_copy_state(inst->rustInstance, &stateSize);
             if (stateBuffer) {
                 CFDataRef data = CFDataCreate(NULL, stateBuffer, stateSize);
-                CFDictionarySetValue(dict, CFSTR("data"), data);
+                CFDictionarySetValue(dict, CFSTR("beamerState"), data);
                 CFRelease(data);
                 beamer_au_free_state(stateBuffer, stateSize);
             }
@@ -2757,11 +2758,8 @@ static OSStatus BeamerAuv2SetProperty(void* self, AudioUnitPropertyID propID,
                 inst->currentPresetName = CFStringCreateCopy(NULL, nameStr);
             }
 
-            // Try "data" key (standard AU) first, then fallback to "beamer-state"
-            CFDataRef stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("data"));
-            if (!stateData) {
-                stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("beamer-state"));
-            }
+            // The plugin's state, saved by the AUv2 or the AUv3.
+            CFDataRef stateData = (CFDataRef)CFDictionaryGetValue(dict, CFSTR("beamerState"));
             if (stateData && CFGetTypeID(stateData) == CFDataGetTypeID()) {
                 const uint8_t* bytes = CFDataGetBytePtr(stateData);
                 CFIndex length = CFDataGetLength(stateData);

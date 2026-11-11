@@ -1657,6 +1657,8 @@ static void beamer_auv3_on_loaded(void* context) {
         uint32_t stateSize = 0;
         uint8_t* buffer = beamer_au_copy_state(_rustInstance, &stateSize);
         if (buffer != NULL) {
+            // The plugin's state, under the key the AUv2 uses too, so that
+            // either format loads what the other saved.
             state[@"beamerState"] = [NSData dataWithBytes:buffer length:stateSize];
             beamer_au_free_state(buffer, stateSize);
         }
