@@ -1430,10 +1430,9 @@ static void beamer_auv3_on_loaded(void* context) {
             continue;
         }
 
-        // Saved states and host documents know a parameter by this
-        // identifier: the base class keys the values in its fullState by it.
-        // It must never change, so it keeps its old spelling.
-        NSString* identifier = [NSString stringWithFormat:@"param_%u", info.id];
+        // Hosts may record a parameter by its key path, which holds this
+        // identifier, so it must not change from release to release.
+        NSString* identifier = [NSString stringWithFormat:@"parameter_%u", info.id];
         NSString* name = [NSString stringWithUTF8String:info.name];
         AudioUnitParameterUnit auUnit = (AudioUnitParameterUnit)info.unit_type;
 
@@ -1519,6 +1518,8 @@ static void beamer_auv3_on_loaded(void* context) {
 
             if ([parentId intValue] == 0 || groupNodes[parentId] != nil) {
                 NSString* gname = ginfo[@"name"];
+                // Part of the key paths of the parameters in the group: when the group
+                // ID changes, hosts lose what they recorded for those parameters.
                 NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
 
                 AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
@@ -1536,6 +1537,8 @@ static void beamer_auv3_on_loaded(void* context) {
             for (NSNumber* gid in remaining) {
                 NSDictionary* ginfo = groupInfoMap[gid];
                 NSString* gname = ginfo[@"name"];
+                // Part of the key paths of the parameters in the group: when the group
+                // ID changes, hosts lose what they recorded for those parameters.
                 NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
 
                 AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
@@ -1678,7 +1681,14 @@ static void beamer_auv3_on_loaded(void* context) {
 }
 
 - (void)setFullState:(NSDictionary<NSString*, id>*)fullState {
-    [super setFullState:fullState];
+    // The base class saves the parameter values under "data", keyed by
+    // their identifiers. It needs the key to save a user preset, but
+    // loading the values throws when the plugin has other parameters now
+    // (another identifier, a parameter removed). So the base class gets the
+    // state without it; the values come from beamerState below.
+    NSMutableDictionary* baseState = [fullState mutableCopy];
+    [baseState removeObjectForKey:@kAUPresetDataKey];
+    [super setFullState:baseState];
 
     // The bus names it saved, the declared ones for the others.
     NSDictionary* names = BeamerAuv3Dictionary(fullState[@kAUPresetElementNameKey]);
