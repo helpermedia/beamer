@@ -109,6 +109,13 @@ typedef void* BeamerAuInstanceHandle;
 #define BEAMER_AU_MAX_CHANNELS 32
 
 /**
+ * Size of the buffers the wrappers read bus names into.
+ *
+ * Names longer than this are cut at a character.
+ */
+#define BEAMER_AU_MAX_BUS_NAME_LENGTH 128
+
+/**
  * Maximum number of MIDI events per render buffer.
  *
  * Matches `beamer_core::midi::MAX_MIDI_EVENTS` for consistency across plugin formats.
@@ -200,7 +207,7 @@ typedef enum {
  *
  * Names and units longer than this are truncated.
  */
-#define BEAMER_AU_MAX_PARAM_NAME_LENGTH 128
+#define BEAMER_AU_MAX_PARAMETER_NAME_LENGTH 128
 
 /**
  * Parameter metadata for building AUParameterTree.
@@ -218,9 +225,9 @@ typedef struct {
     /// Parameter ID (unique within the plugin, maps to AU parameter address)
     uint32_t id;
     /// Human-readable parameter name (UTF-8, null-terminated)
-    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    char name[BEAMER_AU_MAX_PARAMETER_NAME_LENGTH];
     /// Parameter unit string (e.g., "dB", "Hz", "ms"; UTF-8, null-terminated)
-    char units[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    char units[BEAMER_AU_MAX_PARAMETER_NAME_LENGTH];
     /// AudioUnitParameterUnit value for host UI hints.
     ///
     /// This tells AU hosts what visual control to render:
@@ -685,12 +692,12 @@ bool beamer_au_get_parameter_info(
  *
  * Thread Safety: Can be called from any thread (uses atomics internally).
  *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
+ * @param instance     Handle to the plugin instance.
+ * @param parameter_id Parameter ID (from BeamerAuParameterInfo.id).
  *
  * @return Normalized value (0.0 to 1.0), or 0.0 if parameter not found.
  */
-float beamer_au_get_parameter_value(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
+float beamer_au_get_parameter_value(BeamerAuInstanceHandle _Nullable instance, uint32_t parameter_id);
 
 /**
  * Set a parameter's normalized value.
@@ -700,16 +707,16 @@ float beamer_au_get_parameter_value(BeamerAuInstanceHandle _Nullable instance, u
  *
  * Thread Safety: Can be called from any thread (uses atomics internally).
  *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
- * @param value    Normalized value (0.0 to 1.0, clamped internally).
+ * @param instance     Handle to the plugin instance.
+ * @param parameter_id Parameter ID (from BeamerAuParameterInfo.id).
+ * @param value        Normalized value (0.0 to 1.0, clamped internally).
  *
  * Note: The parameter's smoother will interpolate to the new value over time
  * to avoid zipper noise.
  */
 void beamer_au_set_parameter_value(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
+    uint32_t parameter_id,
     float value
 );
 
@@ -724,12 +731,12 @@ void beamer_au_set_parameter_value(
  *
  * Thread Safety: Can be called from any thread (uses atomics internally).
  *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
+ * @param instance     Handle to the plugin instance.
+ * @param parameter_id Parameter ID (from BeamerAuParameterInfo.id).
  *
  * @return Actual value in the parameter's native units (min_value to max_value range).
  */
-float beamer_au_get_parameter_value_au(BeamerAuInstanceHandle _Nullable instance, uint32_t param_id);
+float beamer_au_get_parameter_value_au(BeamerAuInstanceHandle _Nullable instance, uint32_t parameter_id);
 
 /**
  * Set a parameter's value from AU format (actual value).
@@ -743,16 +750,16 @@ float beamer_au_get_parameter_value_au(BeamerAuInstanceHandle _Nullable instance
  *
  * Thread Safety: Can be called from any thread (uses atomics internally).
  *
- * @param instance Handle to the plugin instance.
- * @param param_id Parameter ID (from BeamerAuParameterInfo.id).
- * @param value    Actual value in the parameter's native units (min_value to max_value range).
+ * @param instance     Handle to the plugin instance.
+ * @param parameter_id Parameter ID (from BeamerAuParameterInfo.id).
+ * @param value        Actual value in the parameter's native units (min_value to max_value range).
  *
  * Note: The parameter's smoother will interpolate to the new value over time
  * to avoid zipper noise.
  */
 void beamer_au_set_parameter_value_au(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
+    uint32_t parameter_id,
     float value
 );
 
@@ -766,17 +773,17 @@ void beamer_au_set_parameter_value_au(
  *
  * Thread Safety: Can be called from any thread.
  *
- * @param instance    Handle to the plugin instance.
- * @param param_id    Parameter ID.
- * @param value       Value in AU format (plain value, or index).
- * @param out_buffer  Buffer to write the formatted string (UTF-8, null-terminated).
- * @param buffer_len  Size of out_buffer in bytes (including null terminator).
+ * @param instance      Handle to the plugin instance.
+ * @param parameter_id  Parameter ID.
+ * @param value         Value in AU format (plain value, or index).
+ * @param out_buffer    Buffer to write the formatted string (UTF-8, null-terminated).
+ * @param buffer_len    Size of out_buffer in bytes (including null terminator).
  *
  * @return Number of bytes written (excluding null terminator), or 0 on error.
  */
 uint32_t beamer_au_format_parameter_value(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
+    uint32_t parameter_id,
     float value,
     char* out_buffer,
     uint32_t buffer_len
@@ -791,16 +798,16 @@ uint32_t beamer_au_format_parameter_value(
  *
  * Thread Safety: Can be called from any thread.
  *
- * @param instance   Handle to the plugin instance.
- * @param param_id   Parameter ID.
- * @param string     Display string to parse (UTF-8, null-terminated).
- * @param out_value  Pointer to receive the value in AU format.
+ * @param instance      Handle to the plugin instance.
+ * @param parameter_id  Parameter ID.
+ * @param string        Display string to parse (UTF-8, null-terminated).
+ * @param out_value     Pointer to receive the value in AU format.
  *
  * @return true if parsing succeeded, false if string is invalid.
  */
 bool beamer_au_parse_parameter_value(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
+    uint32_t parameter_id,
     const char* string,
     float* out_value
 );
@@ -816,14 +823,14 @@ bool beamer_au_parse_parameter_value(
  *
  * Thread Safety: Can be called from any thread.
  *
- * @param instance  Handle to the plugin instance.
- * @param param_id  Parameter ID (from BeamerAuParameterInfo.id).
+ * @param instance      Handle to the plugin instance.
+ * @param parameter_id  Parameter ID (from BeamerAuParameterInfo.id).
  *
  * @return Number of value strings (0 if not an indexed parameter).
  */
 uint32_t beamer_au_get_parameter_value_count(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id
+    uint32_t parameter_id
 );
 
 /**
@@ -835,17 +842,17 @@ uint32_t beamer_au_get_parameter_value_count(
  *
  * Thread Safety: Can be called from any thread.
  *
- * @param instance     Handle to the plugin instance.
- * @param param_id     Parameter ID (from BeamerAuParameterInfo.id).
- * @param value_index  Index of the value (0 to count-1).
- * @param out_string   Buffer to receive the string (UTF-8, null-terminated).
- * @param max_length   Maximum buffer length including null terminator.
+ * @param instance      Handle to the plugin instance.
+ * @param parameter_id  Parameter ID (from BeamerAuParameterInfo.id).
+ * @param value_index   Index of the value (0 to count-1).
+ * @param out_string    Buffer to receive the string (UTF-8, null-terminated).
+ * @param max_length    Maximum buffer length including null terminator.
  *
  * @return true if successful, false if index out of range or not indexed parameter.
  */
 bool beamer_au_get_parameter_value_string(
     BeamerAuInstanceHandle _Nullable instance,
-    uint32_t param_id,
+    uint32_t parameter_id,
     uint32_t value_index,
     char* out_string,
     uint32_t max_length
@@ -1206,13 +1213,13 @@ typedef struct {
     /** Passed to each function. */
     void* _Nullable context;
     /** The web UI began a gesture on a parameter. */
-    void (* _Nullable begin_gesture)(void* _Nullable context, uint32_t param_id);
+    void (* _Nullable begin_gesture)(void* _Nullable context, uint32_t parameter_id);
     /** The web UI set a parameter to a normalized value, which the plugin
      *  holds already. The host may round it. */
-    void (* _Nullable set_parameter)(void* _Nullable context, uint32_t param_id, double normalized);
+    void (* _Nullable set_parameter)(void* _Nullable context, uint32_t parameter_id, double normalized);
     /** The web UI ended a gesture on a parameter, or its page went away
      *  during one. */
-    void (* _Nullable end_gesture)(void* _Nullable context, uint32_t param_id);
+    void (* _Nullable end_gesture)(void* _Nullable context, uint32_t parameter_id);
 } BeamerAuEditorHost;
 
 /**
@@ -1714,6 +1721,13 @@ uint32_t beamer_au_get_layout_tag(
 // =============================================================================
 
 /**
+ * Maximum length of preset name strings.
+ *
+ * Names longer than this are truncated.
+ */
+#define BEAMER_AU_MAX_PRESET_NAME_LENGTH 128
+
+/**
  * Preset information for building AUAudioUnitPreset / AUPreset arrays.
  *
  * This structure provides information about a single factory preset,
@@ -1723,7 +1737,7 @@ typedef struct {
     /// Preset number/index (0-based, maps to AUPreset.presetNumber)
     int32_t number;
     /// Human-readable preset name (UTF-8, null-terminated)
-    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    char name[BEAMER_AU_MAX_PRESET_NAME_LENGTH];
 } BeamerAuPresetInfo;
 
 /**

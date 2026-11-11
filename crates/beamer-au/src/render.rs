@@ -733,21 +733,21 @@ fn update_midi_cc_state(
         match &event.event {
             MidiEventKind::ControlChange(cc) => {
                 // MidiCcState uses parameter IDs, need to call set_normalized with parameter ID
-                let param_id = beamer_core::MidiCcState::parameter_id(cc.controller);
+                let parameter_id = beamer_core::MidiCcState::parameter_id(cc.controller);
                 // CC values are already normalized (0.0-1.0) in beamer format
-                cc_state.set_normalized(param_id, cc.value);
+                cc_state.set_normalized(parameter_id, cc.value);
             }
             MidiEventKind::PitchBend(pb) => {
                 // Pitch bend in beamer: -1.0 to 1.0 (bipolar)
                 // MidiCcState stores as: 0.0 to 1.0 (normalized, center at 0.5)
                 let normalized = (pb.value + 1.0) / 2.0;
-                let param_id = beamer_core::MidiCcState::parameter_id(controller::PITCH_BEND);
-                cc_state.set_normalized(param_id, normalized);
+                let parameter_id = beamer_core::MidiCcState::parameter_id(controller::PITCH_BEND);
+                cc_state.set_normalized(parameter_id, normalized);
             }
             MidiEventKind::ChannelPressure(cp) => {
                 // Channel pressure is already normalized (0.0-1.0) in beamer format
-                let param_id = beamer_core::MidiCcState::parameter_id(controller::AFTERTOUCH);
-                cc_state.set_normalized(param_id, cp.pressure);
+                let parameter_id = beamer_core::MidiCcState::parameter_id(controller::AFTERTOUCH);
+                cc_state.set_normalized(parameter_id, cp.pressure);
             }
             _ => {}
         }
@@ -930,15 +930,15 @@ pub unsafe fn extract_parameter_events(
             1 | 2 => {
                 // SAFETY: event_type is 1 (Parameter) or 2 (ParameterRamp),
                 // so the parameter field is the active variant.
-                let param_event = unsafe { &event.parameter };
+                let parameter_event = unsafe { &event.parameter };
                 buffer.push(AuParameterEvent {
                     sample_offset: buffer_offset(
-                        param_event.event_sample_time,
+                        parameter_event.event_sample_time,
                         buffer_start,
                         num_samples,
                     ),
-                    parameter_address: param_event.parameter_address,
-                    value: param_event.value,
+                    parameter_address: parameter_event.parameter_address,
+                    value: parameter_event.value,
                 });
             }
             _ => {

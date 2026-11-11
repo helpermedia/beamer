@@ -159,7 +159,7 @@ fn test_saved_state_uses_the_same_paths() {
 #[test]
 fn test_web_ui_gets_the_paths() {
     let model = TwoLayerModel::default();
-    let json = beamer::webview::params_to_init_json(&model);
+    let json = beamer::webview::parameters_to_init_json(&model);
     let dump: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     let string_ids: Vec<&str> = dump
@@ -329,7 +329,7 @@ struct GenericModel<T: Send + Sync + 'static> {
 fn test_generic_struct_with_groups() {
     let model = GenericModel::<f32>::default();
 
-    assert_eq!(GenericModel::<f32>::PARAM_GROUP_FILTER, 1);
+    assert_eq!(GenericModel::<f32>::PARAMETER_GROUP_FILTER, 1);
     assert_eq!(GenericModel::<f32>::GROUP_ENVELOPE, 2);
     assert_eq!(model.envelope.attack.info().string_id, "envelope/attack");
     assert_eq!(ParameterStore::count(&model), 2);

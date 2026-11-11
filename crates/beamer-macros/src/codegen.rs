@@ -46,9 +46,10 @@ fn generate_group_consts(ir: &ModelIR) -> TokenStream {
         .iter()
         .enumerate()
         .map(|(idx, group_name)| {
-            // Convert group name to uppercase const name (e.g., "Filter" -> "PARAM_GROUP_FILTER")
+            // Convert the group name to an uppercase const name: "Filter" becomes
+            // "PARAMETER_GROUP_FILTER".
             let const_name = syn::Ident::new(
-                &format!("PARAM_GROUP_{}", group_name.to_uppercase().replace(' ', "_")),
+                &format!("PARAMETER_GROUP_{}", group_name.to_uppercase().replace(' ', "_")),
                 proc_macro2::Span::call_site(),
             );
             let group_id = (idx + 1) as i32; // Start at 1 (0 is root)

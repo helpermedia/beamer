@@ -40,7 +40,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 | Crate | Role |
 |-------|------|
 | `beamer-core` | The editor settings of `Config` and the `EmbeddedAssets` types: which editor a plugin has |
-| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `params_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
+| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `parameters_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, `HostEdits` through the `IComponentHandler` |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and the host side of `HostEdits` (`BeamerAuEditorHost`) |
 
@@ -444,7 +444,7 @@ Parameter sync is fully automatic. No plugin code is required. The same holds fo
 
 ### Init Dump
 
-Each time the WebView finishes loading the page (see [When the Page Loads Again](#when-the-page-loads-again)), the format wrapper injects the parameters (`params_to_init_json()`) via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)) and carries the values of the `State` fields by path:
+Each time the WebView finishes loading the page (see [When the Page Loads Again](#when-the-page-loads-again)), the format wrapper injects the parameters (`parameters_to_init_json()`) via `evaluateJavaScript`, followed by an object that names the plugin format (see [Plugin Format](#plugin-format)) and carries the values of the `State` fields by path:
 
 ```javascript
 window.__BEAMER__._onInit([
@@ -459,7 +459,7 @@ window.__BEAMER__._onInit([
 
 The example is shortened for readability: real numeric IDs are hashes of the string IDs and values carry full precision.
 
-Each entry corresponds to a `ParamInitEntry`:
+Each entry corresponds to a `ParameterInitEntry`:
 
 | Field | Type | Description |
 |-------|------|-------------|

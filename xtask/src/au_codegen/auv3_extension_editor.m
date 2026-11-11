@@ -49,10 +49,10 @@
 
 /// Tell the host that a gesture on a parameter began (touch) or ended
 /// (release).
-static void beamer_auv3_ext_notify_gesture(AUParameterTree* tree, uint32_t paramId, AUParameterAutomationEventType type) {
-    AUParameter* param = [tree parameterWithAddress:(AUParameterAddress)paramId];
-    if (param) {
-        [param setValue:param.value originator:nil atHostTime:0 eventType:type];
+static void beamer_auv3_ext_notify_gesture(AUParameterTree* tree, uint32_t parameterId, AUParameterAutomationEventType type) {
+    AUParameter* parameter = [tree parameterWithAddress:(AUParameterAddress)parameterId];
+    if (parameter) {
+        [parameter setValue:parameter.value originator:nil atHostTime:0 eventType:type];
     }
 }
 
@@ -63,28 +63,28 @@ static void beamer_auv3_ext_notify_gesture(AUParameterTree* tree, uint32_t param
 // What the web UI edits, told to the host through the parameter tree of
 // the audio unit. The context is the extension.
 
-static void beamer_auv3_ext_begin_gesture(void* context, uint32_t paramId) {
+static void beamer_auv3_ext_begin_gesture(void* context, uint32_t parameterId) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, parameterId, AUParameterAutomationEventTypeTouch);
 }
 
-static void beamer_auv3_ext_set_parameter(void* context, uint32_t paramId, double value) {
+static void beamer_auv3_ext_set_parameter(void* context, uint32_t parameterId, double value) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    AUParameter* param = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-    if (param) {
-        float min = param.minValue;
-        float max = param.maxValue;
+    AUParameter* parameter = [ext->_wrapper.parameterTree parameterWithAddress:(AUParameterAddress)parameterId];
+    if (parameter) {
+        float min = parameter.minValue;
+        float max = parameter.maxValue;
         // Flag prevents the wrapper's observer from overwriting the
         // precise f64 value in the Rust store with an f32 round-trip.
         [ext->_wrapper setSettingFromWebView:YES];
-        param.value = min + (float)value * (max - min);
+        parameter.value = min + (float)value * (max - min);
         [ext->_wrapper setSettingFromWebView:NO];
     }
 }
 
-static void beamer_auv3_ext_end_gesture(void* context, uint32_t paramId) {
+static void beamer_auv3_ext_end_gesture(void* context, uint32_t parameterId) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
+    beamer_auv3_ext_notify_gesture(ext->_wrapper.parameterTree, parameterId, AUParameterAutomationEventTypeRelease);
 }
 
 /// The host as the web UI of the extension edits parameters in it.

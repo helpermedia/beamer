@@ -737,38 +737,38 @@ static NSUInteger {{WRAPPER_CLASS}}InstanceCounter = 0;
 
 /// Tell the host that a gesture on a parameter began (touch) or ended
 /// (release).
-static void beamer_auv3_notify_gesture(AUParameterTree* tree, uint32_t paramId, AUParameterAutomationEventType type) {
-    AUParameter* param = [tree parameterWithAddress:(AUParameterAddress)paramId];
-    if (param) {
-        [param setValue:param.value originator:nil atHostTime:0 eventType:type];
+static void beamer_auv3_notify_gesture(AUParameterTree* tree, uint32_t parameterId, AUParameterAutomationEventType type) {
+    AUParameter* parameter = [tree parameterWithAddress:(AUParameterAddress)parameterId];
+    if (parameter) {
+        [parameter setValue:parameter.value originator:nil atHostTime:0 eventType:type];
     }
 }
 
 // What the web UI edits, told to the host through the parameter tree. The
 // context is the audio unit.
 
-static void beamer_auv3_begin_gesture(void* context, uint32_t paramId) {
+static void beamer_auv3_begin_gesture(void* context, uint32_t parameterId) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeTouch);
+    beamer_auv3_notify_gesture(self.parameterTree, parameterId, AUParameterAutomationEventTypeTouch);
 }
 
-static void beamer_auv3_set_parameter(void* context, uint32_t paramId, double value) {
+static void beamer_auv3_set_parameter(void* context, uint32_t parameterId, double value) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)paramId];
-    if (param) {
-        float min = param.minValue;
-        float max = param.maxValue;
+    AUParameter* parameter = [self.parameterTree parameterWithAddress:(AUParameterAddress)parameterId];
+    if (parameter) {
+        float min = parameter.minValue;
+        float max = parameter.maxValue;
         // Flag prevents the observer from overwriting the precise
         // f64 value in the Rust store with an f32 round-trip.
         self->_settingFromWebView = YES;
-        param.value = min + (float)value * (max - min);
+        parameter.value = min + (float)value * (max - min);
         self->_settingFromWebView = NO;
     }
 }
 
-static void beamer_auv3_end_gesture(void* context, uint32_t paramId) {
+static void beamer_auv3_end_gesture(void* context, uint32_t parameterId) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    beamer_auv3_notify_gesture(self.parameterTree, paramId, AUParameterAutomationEventTypeRelease);
+    beamer_auv3_notify_gesture(self.parameterTree, parameterId, AUParameterAutomationEventTypeRelease);
 }
 
 /// The host as the web UI of the editor edits parameters in it.
@@ -878,7 +878,7 @@ static void beamer_auv3_on_loaded(void* context) {
         ? beamer_au_is_input_bus_default_active(_rustInstance, index)
         : beamer_au_is_output_bus_default_active(_rustInstance, index);
 
-    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    char name[BEAMER_AU_MAX_BUS_NAME_LENGTH];
     NSString* declaredName = nil;
     if (beamer_au_get_bus_name(_rustInstance, isInput, index, name, sizeof(name))) {
         declaredName = [NSString stringWithUTF8String:name];
@@ -1236,10 +1236,10 @@ static void beamer_auv3_on_loaded(void* context) {
         // parameter observers. A render call between the note and the
         // write reports the bypass once more, which the host reads back
         // unchanged.
-        AUParameter* param = [self.parameterTree parameterWithAddress:(AUParameterAddress)_bypassParameterId];
-        if (param != nil) {
+        AUParameter* parameter = [self.parameterTree parameterWithAddress:(AUParameterAddress)_bypassParameterId];
+        if (parameter != nil) {
             beamer_au_note_host_bypass(_rustInstance, shouldBypassEffect);
-            param.value = shouldBypassEffect ? param.maxValue : param.minValue;
+            parameter.value = shouldBypassEffect ? parameter.maxValue : parameter.minValue;
         }
         return;
     }
@@ -1415,21 +1415,24 @@ static void beamer_auv3_on_loaded(void* context) {
         return;
     }
 
-    uint32_t paramCount = beamer_au_get_parameter_count(_rustInstance);
+    uint32_t parameterCount = beamer_au_get_parameter_count(_rustInstance);
     uint32_t groupCount = beamer_au_get_group_count(_rustInstance);
 
-    if (paramCount == 0) {
+    if (parameterCount == 0) {
         _parameterTree = [AUParameterTree createTreeWithChildren:@[]];
         return;
     }
 
-    NSMutableArray<NSDictionary*>* allParams = [[NSMutableArray alloc] initWithCapacity:paramCount];
-    for (uint32_t i = 0; i < paramCount; i++) {
+    NSMutableArray<NSDictionary*>* parameterEntries = [[NSMutableArray alloc] initWithCapacity:parameterCount];
+    for (uint32_t i = 0; i < parameterCount; i++) {
         BeamerAuParameterInfo info;
         if (!beamer_au_get_parameter_info(_rustInstance, i, &info)) {
             continue;
         }
 
+        // Saved states and host documents know a parameter by this
+        // identifier: the base class keys the values in its fullState by it.
+        // It must never change, so it keeps its old spelling.
         NSString* identifier = [NSString stringWithFormat:@"param_%u", info.id];
         NSString* name = [NSString stringWithUTF8String:info.name];
         AudioUnitParameterUnit auUnit = (AudioUnitParameterUnit)info.unit_type;
@@ -1460,20 +1463,20 @@ static void beamer_auv3_on_loaded(void* context) {
 
         // The range from Rust is in AU format: actual values, or an index
         // (0..step_count) for indexed parameters.
-        AUParameter* param = [AUParameterTree createParameterWithIdentifier:identifier
-                                                                       name:name
-                                                                    address:(AUParameterAddress)info.id
-                                                                        min:info.min_value
-                                                                        max:info.max_value
-                                                                       unit:auUnit
-                                                                   unitName:nil
-                                                                      flags:flags
-                                                               valueStrings:valueStrings
-                                                        dependentParameters:nil];
-        param.value = info.default_value;
+        AUParameter* parameter = [AUParameterTree createParameterWithIdentifier:identifier
+                                                                           name:name
+                                                                        address:(AUParameterAddress)info.id
+                                                                            min:info.min_value
+                                                                            max:info.max_value
+                                                                           unit:auUnit
+                                                                       unitName:nil
+                                                                          flags:flags
+                                                                   valueStrings:valueStrings
+                                                            dependentParameters:nil];
+        parameter.value = info.default_value;
 
-        [allParams addObject:@{
-            @"param": param,
+        [parameterEntries addObject:@{
+            @"parameter": parameter,
             @"groupId": @(info.group_id)
         }];
     }
@@ -1498,13 +1501,13 @@ static void beamer_auv3_on_loaded(void* context) {
         groupChildren[gid] = [[NSMutableArray alloc] init];
     }
 
-    for (NSDictionary* pdict in allParams) {
-        NSNumber* gid = pdict[@"groupId"];
+    for (NSDictionary* entry in parameterEntries) {
+        NSNumber* gid = entry[@"groupId"];
         NSMutableArray* children = groupChildren[gid];
         if (children == nil) {
             children = groupChildren[@0];
         }
-        [children addObject:pdict[@"param"]];
+        [children addObject:entry[@"parameter"]];
     }
 
     NSMutableSet<NSNumber*>* remaining = [NSMutableSet setWithArray:groupInfoMap.allKeys];
@@ -1556,7 +1559,7 @@ static void beamer_auv3_on_loaded(void* context) {
 
     __weak typeof(self) weakSelf = self;
 
-    _parameterTree.implementorValueProvider = ^AUValue(AUParameter* param) {
+    _parameterTree.implementorValueProvider = ^AUValue(AUParameter* parameter) {
         __strong typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return 0.0f;
@@ -1565,13 +1568,13 @@ static void beamer_auv3_on_loaded(void* context) {
         [strongSelf->_instanceLock lock];
         AUValue result = 0.0f;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
-            result = beamer_au_get_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address);
+            result = beamer_au_get_parameter_value_au(strongSelf->_rustInstance, (uint32_t)parameter.address);
         }
         [strongSelf->_instanceLock unlock];
         return result;
     };
 
-    _parameterTree.implementorValueObserver = ^(AUParameter* param, AUValue value) {
+    _parameterTree.implementorValueObserver = ^(AUParameter* parameter, AUValue value) {
         __strong typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
@@ -1585,14 +1588,14 @@ static void beamer_auv3_on_loaded(void* context) {
 
         [strongSelf->_instanceLock lock];
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
-            beamer_au_set_parameter_value_au(strongSelf->_rustInstance, (uint32_t)param.address, value);
+            beamer_au_set_parameter_value_au(strongSelf->_rustInstance, (uint32_t)parameter.address, value);
         }
         [strongSelf->_instanceLock unlock];
     };
 
-    _parameterTree.implementorStringFromValueCallback = ^NSString* _Nonnull(AUParameter* param, const AUValue* value) {
+    _parameterTree.implementorStringFromValueCallback = ^NSString* _Nonnull(AUParameter* parameter, const AUValue* value) {
         __strong typeof(self) strongSelf = weakSelf;
-        AUValue displayValue = (value != NULL) ? *value : param.value;
+        AUValue displayValue = (value != NULL) ? *value : parameter.value;
 
         if (strongSelf == nil) {
             return [NSString stringWithFormat:@"%.2f", displayValue];
@@ -1606,7 +1609,7 @@ static void beamer_auv3_on_loaded(void* context) {
             char buffer[128];
             uint32_t written = beamer_au_format_parameter_value(
                 strongSelf->_rustInstance,
-                (uint32_t)param.address,
+                (uint32_t)parameter.address,
                 displayValue,
                 buffer,
                 sizeof(buffer)
@@ -1620,19 +1623,19 @@ static void beamer_auv3_on_loaded(void* context) {
         return (result != nil) ? result : [NSString stringWithFormat:@"%.2f", displayValue];
     };
 
-    _parameterTree.implementorValueFromStringCallback = ^AUValue(AUParameter* param, NSString* string) {
+    _parameterTree.implementorValueFromStringCallback = ^AUValue(AUParameter* parameter, NSString* string) {
         __strong typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil || string == nil) {
-            return param.value;
+            return parameter.value;
         }
 
         [strongSelf->_instanceLock lock];
-        AUValue result = param.value;
+        AUValue result = parameter.value;
         if (strongSelf->_instanceValid && strongSelf->_rustInstance != NULL) {
             // Rust parses to AU format: the plain value, or the index for an
             // indexed parameter.
             float parsedValue = 0.0f;
-            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)param.address, string.UTF8String, &parsedValue)) {
+            if (beamer_au_parse_parameter_value(strongSelf->_rustInstance, (uint32_t)parameter.address, string.UTF8String, &parsedValue)) {
                 result = parsedValue;
             }
         }
@@ -1692,9 +1695,9 @@ static void beamer_auv3_on_loaded(void* context) {
             }
 
             if (_parameterTree != nil) {
-                for (AUParameter* param in _parameterTree.allParameters) {
-                    AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)param.address);
-                    [param setValue:newValue originator:nil];
+                for (AUParameter* parameter in _parameterTree.allParameters) {
+                    AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)parameter.address);
+                    [parameter setValue:newValue originator:nil];
                 }
             }
         }
@@ -1727,9 +1730,9 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 
     if (_parameterTree != nil) {
-        for (AUParameter* param in _parameterTree.allParameters) {
-            AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)param.address);
-            [param setValue:newValue originator:nil];
+        for (AUParameter* parameter in _parameterTree.allParameters) {
+            AUValue newValue = beamer_au_get_parameter_value_au(_rustInstance, (uint32_t)parameter.address);
+            [parameter setValue:newValue originator:nil];
         }
     }
 }

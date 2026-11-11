@@ -36,7 +36,7 @@ pub use event_queue::WebViewEventQueue;
 #[doc(hidden)]
 pub use model::__private;
 pub use model::{WebViewDispatch, WebViewEvents, WebViewHandler};
-pub use parameter_dump::params_to_init_json;
+pub use parameter_dump::parameters_to_init_json;
 pub use stream_sender::WebViewStreamSender;
 pub use value_sender::WebViewValueSender;
 

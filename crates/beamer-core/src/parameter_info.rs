@@ -232,7 +232,7 @@ impl ParameterInfo {
     /// # Example
     ///
     /// ```ignore
-    /// const PARAM_BYPASS: u32 = 0;
+    /// const BYPASS_PARAMETER_ID: u32 = 0;
     ///
     /// struct MyModel {
     ///     bypass: AtomicU64,
@@ -243,7 +243,7 @@ impl ParameterInfo {
     ///     fn new() -> Self {
     ///         Self {
     ///             bypass: AtomicU64::new(0.0f64.to_bits()),
-    ///             bypass_info: ParameterInfo::bypass(PARAM_BYPASS),
+    ///             bypass_info: ParameterInfo::bypass(BYPASS_PARAMETER_ID),
     ///         }
     ///     }
     /// }

@@ -361,9 +361,9 @@ static OSStatus BeamerAuv2RemovePropertyListener(void* self, AudioUnitPropertyID
     AudioUnitPropertyListenerProc proc);
 static OSStatus BeamerAuv2RemovePropertyListenerWithUserData(void* self, AudioUnitPropertyID propID,
     AudioUnitPropertyListenerProc proc, void* userData);
-static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
+static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID parameterId,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue* outValue);
-static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
+static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID parameterId,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset);
 static OSStatus BeamerAuv2ScheduleParameters(void* self, const AudioUnitParameterEvent* events, UInt32 numEvents);
 static OSStatus BeamerAuv2Render(void* self, AudioUnitRenderActionFlags* ioActionFlags,
@@ -559,12 +559,12 @@ static void BeamerAuv2HostChanged(void* context, uint32_t changes) {
 // Tell parameter listeners (a host, its generic view, an automation lane)
 // what AudioUnitSetParameter does not tell them: that a gesture on a
 // parameter began or ended, or that its value changed.
-static void BeamerAuv2NotifyParameterEvent(AudioUnit unit, AudioUnitParameterID paramID, AudioUnitEventType type) {
+static void BeamerAuv2NotifyParameterEvent(AudioUnit unit, AudioUnitParameterID parameterId, AudioUnitEventType type) {
     AudioUnitEvent event;
     memset(&event, 0, sizeof(event));
     event.mEventType = type;
     event.mArgument.mParameter.mAudioUnit = unit;
-    event.mArgument.mParameter.mParameterID = paramID;
+    event.mArgument.mParameter.mParameterID = parameterId;
     event.mArgument.mParameter.mScope = kAudioUnitScope_Global;
     event.mArgument.mParameter.mElement = 0;
     AUEventListenerNotify(NULL, NULL, &event);
@@ -1010,7 +1010,7 @@ void* {{FACTORY_NAME}}(const AudioComponentDescription* inDesc) {
 // The name the plugin gives a bus, as a new string. An empty name if the
 // bridge has none, so that every element has a name.
 static CFStringRef BeamerAuv2CopyDeclaredName(BeamerAuv2Instance* inst, bool isInput, UInt32 index) {
-    char name[BEAMER_AU_MAX_PARAM_NAME_LENGTH];
+    char name[BEAMER_AU_MAX_BUS_NAME_LENGTH];
     CFStringRef string = NULL;
     if (beamer_au_get_bus_name(inst->rustInstance, isInput, index, name, sizeof(name))) {
         string = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
@@ -1458,7 +1458,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }
             return kAudioUnitErr_InvalidScope;
 
-        // Parameter info (element is param ID)
+        // Parameter info (element is parameter ID).
         case kAudioUnitProperty_ParameterInfo:
             if (scope == kAudioUnitScope_Global) {
                 if (outDataSize) *outDataSize = sizeof(AudioUnitParameterInfo);
@@ -1467,7 +1467,7 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
             }
             return kAudioUnitErr_InvalidScope;
 
-        // Parameter value strings (for indexed params)
+        // Parameter value strings (for indexed parameters).
         case kAudioUnitProperty_ParameterValueStrings:
             if (scope == kAudioUnitScope_Global) {
                 uint32_t count = beamer_au_get_parameter_value_count(inst->rustInstance, element);
@@ -1923,28 +1923,28 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
 
-            AudioUnitParameterStringFromValue* params = (AudioUnitParameterStringFromValue*)outData;
-            AudioUnitParameterID paramID = params->inParamID;
+            AudioUnitParameterStringFromValue* stringFromValue = (AudioUnitParameterStringFromValue*)outData;
+            AudioUnitParameterID parameterId = stringFromValue->inParamID;
 
             // Get the value to convert (either provided or current)
             float value;
-            if (params->inValue != NULL) {
-                value = *(params->inValue);
+            if (stringFromValue->inValue != NULL) {
+                value = *(stringFromValue->inValue);
             } else {
-                value = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
+                value = beamer_au_get_parameter_value_au(inst->rustInstance, parameterId);
             }
 
             // Pass the AU value directly to Rust which normalizes in f64
             // precision, avoiding f32 round-trip artifacts in display strings.
             char buffer[256];
-            uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, paramID, value, buffer, sizeof(buffer));
+            uint32_t written = beamer_au_format_parameter_value(inst->rustInstance, parameterId, value, buffer, sizeof(buffer));
             if (written > 0) {
-                params->outString = CFStringCreateWithCString(NULL, buffer, kCFStringEncodingUTF8);
+                stringFromValue->outString = CFStringCreateWithCString(NULL, buffer, kCFStringEncodingUTF8);
             } else {
                 // Fallback: format as number
                 char fallback[64];
                 snprintf(fallback, sizeof(fallback), "%.2f", value);
-                params->outString = CFStringCreateWithCString(NULL, fallback, kCFStringEncodingUTF8);
+                stringFromValue->outString = CFStringCreateWithCString(NULL, fallback, kCFStringEncodingUTF8);
             }
 
             *ioDataSize = sizeof(AudioUnitParameterStringFromValue);
@@ -1959,9 +1959,9 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 return kAudioUnitErr_InvalidPropertyValue;
             }
 
-            AudioUnitParameterValueFromString* params = (AudioUnitParameterValueFromString*)outData;
-            AudioUnitParameterID paramID = params->inParamID;
-            CFStringRef inputString = params->inString;
+            AudioUnitParameterValueFromString* valueFromString = (AudioUnitParameterValueFromString*)outData;
+            AudioUnitParameterID parameterId = valueFromString->inParamID;
+            CFStringRef inputString = valueFromString->inString;
 
             if (inputString == NULL) {
                 return kAudioUnitErr_InvalidPropertyValue;
@@ -1975,10 +1975,10 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
             // Rust parses to AU format: the plain value, or the index for an
             // indexed parameter. Text it cannot parse is not a value.
             float parsedValue = 0.0f;
-            if (!beamer_au_parse_parameter_value(inst->rustInstance, paramID, buffer, &parsedValue)) {
+            if (!beamer_au_parse_parameter_value(inst->rustInstance, parameterId, buffer, &parsedValue)) {
                 return kAudioUnitErr_InvalidPropertyValue;
             }
-            params->outValue = parsedValue;
+            valueFromString->outValue = parsedValue;
 
             *ioDataSize = sizeof(AudioUnitParameterValueFromString);
             return noErr;
@@ -3077,7 +3077,7 @@ static OSStatus BeamerAuv2RemovePropertyListenerWithUserData(void* self, AudioUn
 // MARK: - Parameters
 // =============================================================================
 
-static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
+static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID parameterId,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue* outValue) {
 
     (void)element;
@@ -3088,14 +3088,14 @@ static OSStatus BeamerAuv2GetParameter(void* self, AudioUnitParameterID paramID,
 
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
     // Use AU-format getter which handles indexed parameter conversion internally
-    *outValue = beamer_au_get_parameter_value_au(inst->rustInstance, paramID);
+    *outValue = beamer_au_get_parameter_value_au(inst->rustInstance, parameterId);
     return noErr;
 }
 
 // Queue a parameter change for the next render call, at a sample offset into
 // its buffer. Returns false when the unit does not render or the queue is
 // full: the caller then sets the value right away.
-static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParameterID paramID,
+static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParameterID parameterId,
     AudioUnitParameterValue value, UInt32 bufferOffset, UInt32 rampFrames) {
 
     if (!atomic_load_explicit(&inst->initialized, memory_order_acquire)) {
@@ -3108,7 +3108,7 @@ static bool BeamerAuv2QueueParameter(BeamerAuv2Instance* inst, AudioUnitParamete
     // Offset into the next buffer. Render turns it into a sample time.
     event.parameter.eventSampleTime = (AUEventSampleTime)bufferOffset;
     event.parameter.rampDurationSampleFrames = rampFrames;
-    event.parameter.parameterAddress = paramID;
+    event.parameter.parameterAddress = parameterId;
     event.parameter.value = value;
     if (!EventQueuePush(&inst->parameterQueue, &event)) {
         return false;
@@ -3148,7 +3148,7 @@ static void BeamerAuv2DiscardMidi(BeamerAuv2Instance* inst) {
     SysExQueueRelease(&inst->sysexQueue, SysExQueueReadyEnd(&inst->sysexQueue, NULL, NULL));
 }
 
-static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
+static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID parameterId,
     AudioUnitScope scope, AudioUnitElement element, AudioUnitParameterValue value, UInt32 bufferOffset) {
 
     (void)element;
@@ -3161,12 +3161,12 @@ static OSStatus BeamerAuv2SetParameter(void* self, AudioUnitParameterID paramID,
 
     // A host passes an offset only right before a render call, for a change
     // within its buffer. Without one, the value applies now.
-    if (bufferOffset > 0 && BeamerAuv2QueueParameter(inst, paramID, value, bufferOffset, 0)) {
+    if (bufferOffset > 0 && BeamerAuv2QueueParameter(inst, parameterId, value, bufferOffset, 0)) {
         return noErr;
     }
 
     // Use AU-format setter which handles indexed parameter conversion internally
-    beamer_au_set_parameter_value_au(inst->rustInstance, paramID, value);
+    beamer_au_set_parameter_value_au(inst->rustInstance, parameterId, value);
     return noErr;
 }
 
@@ -4006,23 +4006,23 @@ static OSStatus BeamerAuv2RemoveRenderNotify(void* self, AURenderCallback proc, 
 
 // What the web UI edits, told to the host. The context is the editor view.
 
-static void beamer_auv2_begin_gesture(void* context, uint32_t paramId) {
+static void beamer_auv2_begin_gesture(void* context, uint32_t parameterId) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_BeginParameterChangeGesture);
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, parameterId, kAudioUnitEvent_BeginParameterChangeGesture);
 }
 
-static void beamer_auv2_set_parameter(void* context, uint32_t paramId, double value) {
+static void beamer_auv2_set_parameter(void* context, uint32_t parameterId, double value) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
     (void)value;
     // The plugin holds the value already. AudioUnitSetParameter would only
     // set it again through a float and tell no listener. The host hears
     // of the change through the event and reads the value from the unit.
-    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_ParameterValueChange);
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, parameterId, kAudioUnitEvent_ParameterValueChange);
 }
 
-static void beamer_auv2_end_gesture(void* context, uint32_t paramId) {
+static void beamer_auv2_end_gesture(void* context, uint32_t parameterId) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    BeamerAuv2NotifyParameterEvent(self->_audioUnit, paramId, kAudioUnitEvent_EndParameterChangeGesture);
+    BeamerAuv2NotifyParameterEvent(self->_audioUnit, parameterId, kAudioUnitEvent_EndParameterChangeGesture);
 }
 
 /// The host as the web UI of the editor view edits parameters in it.

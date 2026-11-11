@@ -124,7 +124,7 @@ pub use process_warnings::{ProcessWarning, ProcessWarnings};
 pub use state::State;
 pub use midi1_translator::Midi1Translator;
 pub use midi_cc_config::{controller, MidiCcConfig, MAX_CC_CONTROLLER};
-pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAM_BASE};
+pub use midi_cc_state::{MidiCcState, MIDI_CC_PARAMETER_BASE};
 pub use plugin::{
     BusInfo, BusType, HostSetup, MainInputChannels, MainOutputChannels, MaxBufferSize, Midi1Assignment,
     Midi2Assignment, MidiControllerAssignment, Model, PluginSetup, ProcessMode, Processor, SampleRate,

@@ -369,11 +369,11 @@ where
         // parameter), like the ones the host sets on the parameter directly.
         for event in events {
             // AU parameter addresses map directly to beamer parameter IDs.
-            let param_id = event.parameter_address as u32;
-            let normalized = crate::bridge::au_value_to_normalized(model, param_id, event.value);
+            let parameter_id = event.parameter_address as u32;
+            let normalized = crate::bridge::au_value_to_normalized(model, parameter_id, event.value);
 
-            if let Some(param) = Parameters::by_id(model, param_id) {
-                param.set_normalized(normalized);
+            if let Some(parameter) = Parameters::by_id(model, parameter_id) {
+                parameter.set_normalized(normalized);
             }
         }
 

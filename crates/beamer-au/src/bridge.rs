@@ -132,7 +132,7 @@ macro_rules! with_instance_void {
 // =============================================================================
 
 /// Maximum length of parameter name/unit strings.
-const BEAMER_AU_MAX_PARAM_NAME_LENGTH: usize = 128;
+const BEAMER_AU_MAX_PARAMETER_NAME_LENGTH: usize = 128;
 
 /// Maximum length of group name strings.
 const BEAMER_AU_MAX_GROUP_NAME_LENGTH: usize = 128;
@@ -220,9 +220,9 @@ pub struct BeamerAuParameterInfo {
     /// Parameter ID (unique within the plugin, maps to AU parameter address)
     pub id: u32,
     /// Human-readable parameter name (UTF-8, null-terminated)
-    pub name: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+    pub name: [c_char; BEAMER_AU_MAX_PARAMETER_NAME_LENGTH],
     /// Parameter unit string (e.g., "dB", "Hz", "ms"; UTF-8, null-terminated)
-    pub units: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+    pub units: [c_char; BEAMER_AU_MAX_PARAMETER_NAME_LENGTH],
     /// AudioUnitParameterUnit value for host UI hints.
     ///
     /// This tells AU hosts what visual control to render:
@@ -253,8 +253,8 @@ impl Default for BeamerAuParameterInfo {
     fn default() -> Self {
         Self {
             id: 0,
-            name: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
-            units: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+            name: [0; BEAMER_AU_MAX_PARAMETER_NAME_LENGTH],
+            units: [0; BEAMER_AU_MAX_PARAMETER_NAME_LENGTH],
             unit_type: 0, // Generic
             min_value: 0.0,
             max_value: 1.0,
@@ -786,7 +786,7 @@ fn with_model<R>(
 }
 
 /// Access the plugin's ParameterStore (see `with_model`).
-fn with_param_store<R>(
+fn with_parameter_store<R>(
     handle: &BeamerInstanceHandle,
     f: impl FnOnce(&dyn ParameterStore) -> R,
 ) -> R {
@@ -1725,7 +1725,7 @@ pub extern "C" fn beamer_au_reset(instance: BeamerAuInstanceHandle) {
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_count(instance: BeamerAuInstanceHandle) -> u32 {
     with_instance!(instance, 0, |handle| {
-        with_param_store(handle, |store| store.count() as u32)
+        with_parameter_store(handle, |store| store.count() as u32)
     })
 }
 
@@ -1753,44 +1753,44 @@ pub extern "C" fn beamer_au_get_parameter_info(
     with_instance!(instance, false, |handle| {
         // SAFETY: out_info was validated as non-null at function start.
         let out = unsafe { &mut *out_info };
-        with_param_store(handle, |store| {
-            let param_info = match store.info(index as usize) {
+        with_parameter_store(handle, |store| {
+            let parameter_info = match store.info(index as usize) {
                 Some(info) => info,
                 None => return false,
             };
 
             // Fill output struct.
-            out.id = param_info.id;
-            copy_str_to_char_array(param_info.name, &mut out.name);
-            copy_str_to_char_array(param_info.units, &mut out.units);
-            out.unit_type = param_info.unit as u32;
+            out.id = parameter_info.id;
+            copy_str_to_char_array(parameter_info.name, &mut out.name);
+            copy_str_to_char_array(parameter_info.units, &mut out.units);
+            out.unit_type = parameter_info.unit as u32;
             // The range and the values are in AU format, like the values
             // the host gets and sets.
-            out.min_value = normalized_to_au_value(store, param_info, 0.0);
-            out.max_value = normalized_to_au_value(store, param_info, 1.0);
+            out.min_value = normalized_to_au_value(store, parameter_info, 0.0);
+            out.max_value = normalized_to_au_value(store, parameter_info, 1.0);
             out.default_value =
-                normalized_to_au_value(store, param_info, param_info.default_normalized);
+                normalized_to_au_value(store, parameter_info, parameter_info.default_normalized);
             out.current_value =
-                normalized_to_au_value(store, param_info, store.get_normalized(param_info.id));
-            out.step_count = param_info.step_count;
+                normalized_to_au_value(store, parameter_info, store.get_normalized(parameter_info.id));
+            out.step_count = parameter_info.step_count;
             // Convert ParameterFlags to u32 bitfield.
             out.flags = {
                 let mut flags = 0u32;
-                if param_info.flags.can_automate {
+                if parameter_info.flags.can_automate {
                     // BeamerAuParameterFlagAutomatable.
                     flags |= 1 << 0;
                 }
-                if param_info.flags.is_hidden {
+                if parameter_info.flags.is_hidden {
                     // BeamerAuParameterFlagHidden.
                     flags |= 1 << 1;
                 }
-                if param_info.flags.is_readonly {
+                if parameter_info.flags.is_readonly {
                     // BeamerAuParameterFlagReadOnly.
                     flags |= 1 << 2;
                 }
                 flags
             };
-            out.group_id = param_info.group_id;
+            out.group_id = parameter_info.group_id;
 
             true
         })
@@ -1809,10 +1809,10 @@ pub extern "C" fn beamer_au_get_parameter_info(
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
 ) -> f32 {
     with_instance!(instance, 0.0, |handle| {
-        with_param_store(handle, |store| store.get_normalized(param_id) as f32)
+        with_parameter_store(handle, |store| store.get_normalized(parameter_id) as f32)
     })
 }
 
@@ -1828,12 +1828,12 @@ pub extern "C" fn beamer_au_get_parameter_value(
 #[no_mangle]
 pub extern "C" fn beamer_au_set_parameter_value(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
     value: f32,
 ) {
     with_instance_void!(instance, |handle| {
-        with_param_store(handle, |store| {
-            store.set_normalized(param_id, value as f64);
+        with_parameter_store(handle, |store| {
+            store.set_normalized(parameter_id, value as f64);
         });
     })
 }
@@ -1857,11 +1857,11 @@ pub extern "C" fn beamer_au_set_parameter_value(
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_au(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
 ) -> f32 {
     with_instance!(instance, 0.0, |handle| {
-        with_param_store(handle, |store| {
-            normalized_to_au_value_by_id(store, param_id, store.get_normalized(param_id))
+        with_parameter_store(handle, |store| {
+            normalized_to_au_value_by_id(store, parameter_id, store.get_normalized(parameter_id))
         })
     })
 }
@@ -1886,12 +1886,12 @@ pub extern "C" fn beamer_au_get_parameter_value_au(
 #[no_mangle]
 pub extern "C" fn beamer_au_set_parameter_value_au(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
     value: f32,
 ) {
     with_instance_void!(instance, |handle| {
-        with_param_store(handle, |store| {
-            store.set_normalized(param_id, au_value_to_normalized(store, param_id, value));
+        with_parameter_store(handle, |store| {
+            store.set_normalized(parameter_id, au_value_to_normalized(store, parameter_id, value));
         });
     })
 }
@@ -1905,10 +1905,10 @@ fn is_au_indexed(info: &ParameterInfo) -> bool {
 ///
 /// AU hosts use an index (0 to step_count) for indexed parameters and the
 /// actual (plain) value, such as dB or Hz, for all others.
-pub(crate) fn au_value_to_normalized(store: &dyn ParameterStore, param_id: u32, value: f32) -> f64 {
-    match store.info_by_id(param_id) {
+pub(crate) fn au_value_to_normalized(store: &dyn ParameterStore, parameter_id: u32, value: f32) -> f64 {
+    match store.info_by_id(parameter_id) {
         Some(info) if is_au_indexed(info) => value as f64 / info.step_count as f64,
-        _ => store.plain_to_normalized(param_id, value as f64),
+        _ => store.plain_to_normalized(parameter_id, value as f64),
     }
 }
 
@@ -1929,17 +1929,17 @@ fn normalized_to_au_value(
 }
 
 /// [`normalized_to_au_value`] for a parameter that is known by its ID.
-fn normalized_to_au_value_by_id(store: &dyn ParameterStore, param_id: u32, normalized: f64) -> f32 {
-    match store.info_by_id(param_id) {
+fn normalized_to_au_value_by_id(store: &dyn ParameterStore, parameter_id: u32, normalized: f64) -> f32 {
+    match store.info_by_id(parameter_id) {
         Some(info) => normalized_to_au_value(store, info, normalized),
-        None => store.normalized_to_plain(param_id, normalized) as f32,
+        None => store.normalized_to_plain(parameter_id, normalized) as f32,
     }
 }
 
 /// Parse a display string to a parameter value in AU format.
-fn string_to_au_value(store: &dyn ParameterStore, param_id: u32, string: &str) -> Option<f32> {
-    let normalized = store.string_to_normalized(param_id, string)?;
-    Some(normalized_to_au_value_by_id(store, param_id, normalized))
+fn string_to_au_value(store: &dyn ParameterStore, parameter_id: u32, string: &str) -> Option<f32> {
+    let normalized = store.string_to_normalized(parameter_id, string)?;
+    Some(normalized_to_au_value_by_id(store, parameter_id, normalized))
 }
 
 /// Format a parameter value in AU format as a display string.
@@ -1961,7 +1961,7 @@ fn string_to_au_value(store: &dyn ParameterStore, param_id: u32, string: &str) -
 #[no_mangle]
 pub extern "C" fn beamer_au_format_parameter_value(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
     value: f32,
     out_buffer: *mut c_char,
     buffer_len: u32,
@@ -1973,9 +1973,9 @@ pub extern "C" fn beamer_au_format_parameter_value(
     with_instance!(instance, 0, |handle| {
         // Normalize using f64 precision to avoid f32 round-trip artifacts
         // (e.g. 0.0 dB displaying as "-0.0").
-        let string = with_param_store(handle, |store| {
-            let normalized = au_value_to_normalized(store, param_id, value);
-            store.normalized_to_string(param_id, normalized)
+        let string = with_parameter_store(handle, |store| {
+            let normalized = au_value_to_normalized(store, parameter_id, value);
+            store.normalized_to_string(parameter_id, normalized)
         });
 
         // Copy to buffer.
@@ -2012,7 +2012,7 @@ pub extern "C" fn beamer_au_format_parameter_value(
 #[no_mangle]
 pub extern "C" fn beamer_au_parse_parameter_value(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
     string: *const c_char,
     out_value: *mut f32,
 ) -> bool {
@@ -2027,8 +2027,8 @@ pub extern "C" fn beamer_au_parse_parameter_value(
             Err(_) => return false,
         };
 
-        let result = with_param_store(handle, |store| {
-            string_to_au_value(store, param_id, rust_string)
+        let result = with_parameter_store(handle, |store| {
+            string_to_au_value(store, parameter_id, rust_string)
         });
 
         match result {
@@ -2056,10 +2056,10 @@ pub extern "C" fn beamer_au_parse_parameter_value(
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_count(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
 ) -> u32 {
     with_instance!(instance, 0, |handle| {
-        with_param_store(handle, |store| match store.info_by_id(param_id) {
+        with_parameter_store(handle, |store| match store.info_by_id(parameter_id) {
             Some(info) if is_au_indexed(info) => (info.step_count + 1) as u32,
             _ => 0,
         })
@@ -2084,7 +2084,7 @@ pub extern "C" fn beamer_au_get_parameter_value_count(
 #[no_mangle]
 pub extern "C" fn beamer_au_get_parameter_value_string(
     instance: BeamerAuInstanceHandle,
-    param_id: u32,
+    parameter_id: u32,
     value_index: u32,
     out_string: *mut c_char,
     max_length: u32,
@@ -2094,8 +2094,8 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
     }
 
     with_instance!(instance, false, |handle| {
-        let result = with_param_store(handle, |store| {
-            let step_count = match store.info_by_id(param_id) {
+        let result = with_parameter_store(handle, |store| {
+            let step_count = match store.info_by_id(parameter_id) {
                 Some(info) if is_au_indexed(info) => info.step_count,
                 _ => return None,
             };
@@ -2110,7 +2110,7 @@ pub extern "C" fn beamer_au_get_parameter_value_string(
                 0.0
             };
 
-            Some(store.normalized_to_string(param_id, normalized))
+            Some(store.normalized_to_string(parameter_id, normalized))
         });
 
         let display_string = match result {
@@ -3131,6 +3131,9 @@ pub extern "C" fn beamer_au_get_editor_background_color(out: *mut u8) {
 // Factory Presets
 // =============================================================================
 
+/// Maximum length of preset name strings (must match BeamerAuBridge.h).
+const BEAMER_AU_MAX_PRESET_NAME_LENGTH: usize = 128;
+
 /// Preset information for building AUAudioUnitPreset / AUPreset arrays.
 ///
 /// Matches `BeamerAuPresetInfo` in header.
@@ -3139,14 +3142,14 @@ pub struct BeamerAuPresetInfo {
     /// Preset number/index (0-based)
     pub number: i32,
     /// Human-readable preset name (UTF-8, null-terminated)
-    pub name: [c_char; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+    pub name: [c_char; BEAMER_AU_MAX_PRESET_NAME_LENGTH],
 }
 
 impl Default for BeamerAuPresetInfo {
     fn default() -> Self {
         Self {
             number: 0,
-            name: [0; BEAMER_AU_MAX_PARAM_NAME_LENGTH],
+            name: [0; BEAMER_AU_MAX_PRESET_NAME_LENGTH],
         }
     }
 }
@@ -3356,13 +3359,13 @@ pub struct BeamerAuEditorHost {
     /// Passed to each function.
     pub context: *mut c_void,
     /// The web UI began a gesture on a parameter.
-    pub begin_gesture: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32)>,
+    pub begin_gesture: Option<unsafe extern "C" fn(context: *mut c_void, parameter_id: u32)>,
     /// The web UI set a parameter to a normalized value, which the plugin
     /// holds already. The host may round it.
-    pub set_parameter: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32, normalized: f64)>,
+    pub set_parameter: Option<unsafe extern "C" fn(context: *mut c_void, parameter_id: u32, normalized: f64)>,
     /// The web UI ended a gesture on a parameter, or its page went away
     /// during one.
-    pub end_gesture: Option<unsafe extern "C" fn(context: *mut c_void, param_id: u32)>,
+    pub end_gesture: Option<unsafe extern "C" fn(context: *mut c_void, parameter_id: u32)>,
 }
 
 /// The host of an editor as the editor sync tells it about edits.

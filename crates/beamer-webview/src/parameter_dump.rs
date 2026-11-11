@@ -7,12 +7,12 @@ use beamer_core::{ParameterId, ParameterStore};
 /// Returns a JSON string like `[{"id":0,"stringId":"gain",...}, ...]`.
 /// The init script of the editor sync hands it to the JavaScript runtime
 /// of a page that loaded.
-pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
-    let entries: Vec<ParamInitEntry> = (0..store.count())
+pub fn parameters_to_init_json(store: &dyn ParameterStore) -> String {
+    let entries: Vec<ParameterInitEntry> = (0..store.count())
         .filter_map(|i| {
             let info = store.info(i)?;
             let normalized = store.get_normalized(info.id);
-            Some(ParamInitEntry {
+            Some(ParameterInitEntry {
                 id: info.id,
                 string_id: &info.string_id,
                 name: info.name,
@@ -34,7 +34,7 @@ pub fn params_to_init_json(store: &dyn ParameterStore) -> String {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ParamInitEntry<'a> {
+struct ParameterInitEntry<'a> {
     id: u32,
     string_id: &'a str,
     name: &'static str,

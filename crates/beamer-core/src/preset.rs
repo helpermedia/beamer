@@ -257,32 +257,32 @@ mod tests {
 
     #[test]
     fn test_apply_sets_the_parameters_of_the_preset() {
-        let params = MockParameters::new();
-        PRESETS[0].apply(&params);
-        assert_eq!(params.gain.get_value(), 0.5);
-        assert_eq!(params.mix.get_value(), 1.0);
+        let parameters = MockParameters::new();
+        PRESETS[0].apply(&parameters);
+        assert_eq!(parameters.gain.get_value(), 0.5);
+        assert_eq!(parameters.mix.get_value(), 1.0);
     }
 
     #[test]
     fn test_sparse_preset_keeps_the_other_parameters() {
-        let params = MockParameters::new();
-        params.gain.set_normalized(0.75);
-        params.mix.set_normalized(0.5);
+        let parameters = MockParameters::new();
+        parameters.gain.set_normalized(0.75);
+        parameters.mix.set_normalized(0.5);
 
-        PRESETS[1].apply(&params);
-        assert_eq!(params.gain.get_value(), 0.0);
-        assert_eq!(params.mix.get_value(), 0.5);
+        PRESETS[1].apply(&parameters);
+        assert_eq!(parameters.gain.get_value(), 0.0);
+        assert_eq!(parameters.mix.get_value(), 0.5);
     }
 
     #[test]
     fn test_reset_parameters_sets_the_defaults() {
         // MockParameter has the default 0.0.
-        let params = MockParameters::new();
-        params.gain.set_normalized(0.75);
-        params.mix.set_normalized(0.5);
+        let parameters = MockParameters::new();
+        parameters.gain.set_normalized(0.75);
+        parameters.mix.set_normalized(0.5);
 
-        params.reset_parameters();
-        assert_eq!(params.gain.get_value(), 0.0);
-        assert_eq!(params.mix.get_value(), 0.0);
+        parameters.reset_parameters();
+        assert_eq!(parameters.gain.get_value(), 0.0);
+        assert_eq!(parameters.mix.get_value(), 0.0);
     }
 }

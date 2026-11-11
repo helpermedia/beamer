@@ -41,7 +41,7 @@ use serde_json::Value;
 use crate::event_queue::WebViewEventQueue;
 use crate::message::PageMessage;
 use crate::model::WebViewDispatch;
-use crate::parameter_dump::params_to_init_json;
+use crate::parameter_dump::parameters_to_init_json;
 
 /// The built-in invoke method that turns the text a user typed into a
 /// normalized value, with the parameter's own parser. It never reaches the
@@ -146,7 +146,7 @@ impl EditorSync {
             events.page_loaded();
         }
 
-        let parameters = params_to_init_json(self.model.parameter_store());
+        let parameters = parameters_to_init_json(self.model.parameter_store());
         let format = json_string(plugin_format);
         let middle_c = json_string(self.middle_c.name());
 

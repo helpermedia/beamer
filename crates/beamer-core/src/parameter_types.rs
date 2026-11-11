@@ -2393,57 +2393,62 @@ mod tests {
 
     #[test]
     fn test_step_size_snapping() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
 
         // Test snapping to nearest step
-        param.set(2.3);
-        assert!((param.get() - 2.5).abs() < 1e-10);
+        parameter.set(2.3);
+        assert!((parameter.get() - 2.5).abs() < 1e-10);
 
-        param.set(2.2);
-        assert!((param.get() - 2.0).abs() < 1e-10);
+        parameter.set(2.2);
+        assert!((parameter.get() - 2.0).abs() < 1e-10);
 
-        param.set(2.25);
-        assert!((param.get() - 2.5).abs() < 1e-10); // Round up at midpoint
+        parameter.set(2.25);
+        // Round up at midpoint.
+        assert!((parameter.get() - 2.5).abs() < 1e-10);
     }
 
     #[test]
     fn test_step_size_edge_cases() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.3);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.3);
 
         // Snap at boundaries
-        param.set(-0.1);
-        assert!((param.get() - 0.0).abs() < 1e-10); // Clamp to min
+        parameter.set(-0.1);
+        // Clamp to min.
+        assert!((parameter.get() - 0.0).abs() < 1e-10);
 
-        param.set(10.1);
-        assert!((param.get() - 10.0).abs() < 1e-10); // Clamp to max
+        parameter.set(10.1);
+        // Clamp to max.
+        assert!((parameter.get() - 10.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_step_count_calculation() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
 
         // 10.0 / 0.5 = 20 steps, meaning 21 discrete values
-        assert_eq!(param.step_count(), 20);
+        assert_eq!(parameter.step_count(), 20);
     }
 
     #[test]
     fn test_step_size_with_negative_range() {
-        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_step_size(0.5);
+        let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_step_size(0.5);
 
         // Range is 72, so 144 steps
-        assert_eq!(param.step_count(), 144);
+        assert_eq!(parameter.step_count(), 144);
 
-        param.set(-5.3);
-        assert!((param.get() - -5.5).abs() < 1e-10);
+        parameter.set(-5.3);
+        assert!((parameter.get() - -5.5).abs() < 1e-10);
     }
 
     #[test]
     fn test_continuous_parameter_no_snapping() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0);
 
-        param.set(2.3);
-        assert!((param.get() - 2.3).abs() < 1e-10); // No snapping
-        assert_eq!(param.step_count(), 0); // Continuous
+        parameter.set(2.3);
+        // No snapping.
+        assert!((parameter.get() - 2.3).abs() < 1e-10);
+        // Continuous.
+        assert_eq!(parameter.step_count(), 0);
     }
 
     #[test]
@@ -2460,32 +2465,33 @@ mod tests {
 
     #[test]
     fn test_step_size_larger_than_range() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=1.0).with_step_size(2.0);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=1.0).with_step_size(2.0);
 
         // Step larger than range = step_count of 1 (two values: min and max)
-        assert_eq!(param.step_count(), 1);
+        assert_eq!(parameter.step_count(), 1);
     }
 
     #[test]
     fn test_step_size_getter() {
-        let param_with_step = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
-        assert_eq!(param_with_step.step_size(), Some(0.5));
+        let parameter_with_step = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
+        assert_eq!(parameter_with_step.step_size(), Some(0.5));
 
-        let param_continuous = FloatParameter::new("Test", 0.0, 0.0..=10.0);
-        assert_eq!(param_continuous.step_size(), None);
+        let parameter_continuous = FloatParameter::new("Test", 0.0, 0.0..=10.0);
+        assert_eq!(parameter_continuous.step_size(), None);
     }
 
     #[test]
     fn test_step_size_with_smoother() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=10.0)
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0)
             .with_step_size(1.0)
             .with_smoother(crate::smoothing::SmoothingStyle::Linear(10.0));
 
-        param.set_sample_rate(1000.0);
-        param.set(5.3); // Snaps to 5.0
+        parameter.set_sample_rate(1000.0);
+        // Snaps to 5.0.
+        parameter.set(5.3);
 
         // Target should be the snapped value
-        assert!((param.get() - 5.0).abs() < 1e-10);
+        assert!((parameter.get() - 5.0).abs() < 1e-10);
     }
 
     // =========================================================================
@@ -2746,109 +2752,114 @@ mod tests {
 
     #[test]
     fn test_float_parameter_with_precision_db() {
-        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_precision(2);
+        let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_precision(2);
 
         // Check precision was updated
-        assert_eq!(param.formatter().precision(), Some(2));
+        assert_eq!(parameter.formatter().precision(), Some(2));
 
         // Check display uses new precision
-        param.set(-6.5);
-        let display = param.display();
+        parameter.set(-6.5);
+        let display = parameter.display();
         assert_eq!(display, "-6.50");
     }
 
     #[test]
     fn test_float_parameter_with_precision_ms() {
-        let param = FloatParameter::ms("Attack", 10.0, 0.1..=100.0).with_precision(0);
+        let parameter = FloatParameter::ms("Attack", 10.0, 0.1..=100.0).with_precision(0);
 
-        assert_eq!(param.formatter().precision(), Some(0));
+        assert_eq!(parameter.formatter().precision(), Some(0));
 
-        param.set(10.5);
-        let display = param.display();
+        parameter.set(10.5);
+        let display = parameter.display();
         assert_eq!(display, "10"); // Rounded to 0 decimal places
     }
 
     #[test]
     fn test_float_parameter_with_precision_percent() {
-        let param = FloatParameter::percent("Mix", 0.5, 0.0..=1.0).with_precision(1);
+        let parameter = FloatParameter::percent("Mix", 0.5, 0.0..=1.0).with_precision(1);
 
-        assert_eq!(param.formatter().precision(), Some(1));
+        assert_eq!(parameter.formatter().precision(), Some(1));
 
-        param.set(0.755);
-        let display = param.display();
+        parameter.set(0.755);
+        let display = parameter.display();
         assert_eq!(display, "75.5");
     }
 
     #[test]
     fn test_float_parameter_with_precision_pan_no_effect() {
-        let param = FloatParameter::pan("Pan", 0.0, -1.0..=1.0).with_precision(3);
+        let parameter = FloatParameter::pan("Pan", 0.0, -1.0..=1.0).with_precision(3);
 
         // Pan formatter doesn't support precision, should remain unchanged
-        assert_eq!(param.formatter().precision(), None);
-        assert!(!param.formatter().supports_precision());
+        assert_eq!(parameter.formatter().precision(), None);
+        assert!(!parameter.formatter().supports_precision());
     }
 
     #[test]
     fn test_float_parameter_with_formatter_replace() {
-        let param = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
+        let parameter = FloatParameter::new("Ratio", 4.0, 1.0..=20.0)
             .with_formatter(Formatter::Ratio { precision: 1 });
 
-        assert_eq!(param.info().units, ""); // Ratio uses empty unit (suffix is ":1")
-        assert_eq!(param.formatter().precision(), Some(1));
+        // Ratio uses empty unit (suffix is ":1").
+        assert_eq!(parameter.info().units, "");
+        assert_eq!(parameter.formatter().precision(), Some(1));
 
-        param.set(4.0);
-        let display = param.display();
+        parameter.set(4.0);
+        let display = parameter.display();
         assert_eq!(display, "4.0:1");
     }
 
     #[test]
     fn test_float_parameter_with_formatter_updates_units() {
         // Start with a generic float parameter (no units)
-        let param =
+        let parameter =
             FloatParameter::new("Time", 100.0, 1.0..=1000.0).with_formatter(Formatter::Milliseconds {
                 precision: 1,
             });
 
         // Units should be updated to match the new formatter
-        assert_eq!(param.info().units, "ms");
+        assert_eq!(parameter.info().units, "ms");
     }
 
     #[test]
     fn test_float_parameter_with_formatter_preserves_is_db() {
         // Create a dB parameter, then change formatter
-        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
+        let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
             .with_formatter(Formatter::Float { precision: 2 });
 
         // Even though we changed the formatter, as_linear() should still work
         // because is_db is based on how the parameter was constructed
-        param.set(0.0);
-        assert!((param.as_linear() - 1.0).abs() < 0.001); // 0 dB = 1.0 linear
+        parameter.set(0.0);
+        // 0 dB = 1.0 linear.
+        assert!((parameter.as_linear() - 1.0).abs() < 0.001);
     }
 
     #[test]
     fn test_float_parameter_formatter_getter() {
-        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
+        let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
 
         // Check we can access the formatter
-        let formatter = param.formatter();
+        let formatter = parameter.formatter();
         assert!(formatter.supports_precision());
         assert_eq!(formatter.unit(), "dB");
     }
 
     #[test]
     fn test_float_parameter_chained_precision_and_step_size() {
-        let param = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
+        let parameter = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
             .with_step_size(0.5)
             .with_precision(2);
 
-        // Both should work together
-        assert_eq!(param.step_count(), 144); // (12 - (-60)) / 0.5 = 144
-        assert_eq!(param.formatter().precision(), Some(2));
+        // Both should work together.
+        // (12 - (-60)) / 0.5 = 144.
+        assert_eq!(parameter.step_count(), 144);
+        assert_eq!(parameter.formatter().precision(), Some(2));
 
-        param.set(-5.3);
-        assert!((param.get() - -5.5).abs() < 1e-10); // Snapped
-        let display = param.display();
-        assert_eq!(display, "-5.50"); // High precision
+        parameter.set(-5.3);
+        // Snapped.
+        assert!((parameter.get() - -5.5).abs() < 1e-10);
+        let display = parameter.display();
+        // High precision.
+        assert_eq!(display, "-5.50");
     }
 
     // =========================================================================
@@ -2858,32 +2869,32 @@ mod tests {
     #[test]
     fn test_int_parameter_with_precision() {
         // IntParameter uses Float { precision: 0 } by default
-        let param = IntParameter::new("Value", 0, -100..=100).with_precision(0);
+        let parameter = IntParameter::new("Value", 0, -100..=100).with_precision(0);
 
-        assert_eq!(param.formatter().precision(), Some(0));
+        assert_eq!(parameter.formatter().precision(), Some(0));
     }
 
     #[test]
     fn test_int_parameter_with_formatter() {
-        let param =
+        let parameter =
             IntParameter::new("Transpose", 0, -24..=24).with_formatter(Formatter::Semitones);
 
-        assert_eq!(param.info().units, "st");
+        assert_eq!(parameter.info().units, "st");
 
-        param.set(12);
-        let display = param.display_normalized(param.get_normalized());
+        parameter.set(12);
+        let display = parameter.display_normalized(parameter.get_normalized());
         assert_eq!(display, "+12");
 
-        param.set(-7);
-        let display = param.display_normalized(param.get_normalized());
+        parameter.set(-7);
+        let display = parameter.display_normalized(parameter.get_normalized());
         assert_eq!(display, "-7");
     }
 
     #[test]
     fn test_int_parameter_formatter_getter() {
-        let param = IntParameter::semitones("Pitch", 0, -24..=24);
+        let parameter = IntParameter::semitones("Pitch", 0, -24..=24);
 
-        let formatter = param.formatter();
+        let formatter = parameter.formatter();
         assert_eq!(formatter.unit(), "st");
         assert!(!formatter.supports_precision()); // Semitones doesn't have precision
     }
@@ -2894,93 +2905,93 @@ mod tests {
 
     #[test]
     fn test_float_parameter_unit_generic() {
-        let param = FloatParameter::new("Test", 0.0, 0.0..=1.0);
-        assert_eq!(param.info().unit, ParameterUnit::Generic);
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=1.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Generic);
     }
 
     #[test]
     fn test_float_parameter_unit_decibels() {
-        let param = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
-        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+        let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Decibels);
     }
 
     #[test]
     fn test_float_parameter_unit_db_log() {
-        let param = FloatParameter::db_log("Threshold", -20.0, -60.0..=0.0);
-        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+        let parameter = FloatParameter::db_log("Threshold", -20.0, -60.0..=0.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Decibels);
     }
 
     #[test]
     fn test_float_parameter_unit_db_log_offset() {
-        let param = FloatParameter::db_log_offset("Threshold", -20.0, -60.0..=0.0);
-        assert_eq!(param.info().unit, ParameterUnit::Decibels);
+        let parameter = FloatParameter::db_log_offset("Threshold", -20.0, -60.0..=0.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Decibels);
     }
 
     #[test]
     fn test_float_parameter_unit_hertz() {
-        let param = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0);
-        assert_eq!(param.info().unit, ParameterUnit::Hertz);
+        let parameter = FloatParameter::hz("Frequency", 440.0, 20.0..=20000.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Hertz);
     }
 
     #[test]
     fn test_float_parameter_unit_milliseconds() {
-        let param = FloatParameter::ms("Attack", 10.0, 0.1..=100.0);
-        assert_eq!(param.info().unit, ParameterUnit::Milliseconds);
+        let parameter = FloatParameter::ms("Attack", 10.0, 0.1..=100.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Milliseconds);
     }
 
     #[test]
     fn test_float_parameter_unit_seconds() {
-        let param = FloatParameter::seconds("Decay", 1.0, 0.0..=10.0);
-        assert_eq!(param.info().unit, ParameterUnit::Seconds);
+        let parameter = FloatParameter::seconds("Decay", 1.0, 0.0..=10.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Seconds);
     }
 
     #[test]
     fn test_float_parameter_unit_percent() {
-        let param = FloatParameter::percent("Mix", 0.5, 0.0..=1.0);
-        assert_eq!(param.info().unit, ParameterUnit::Percent);
+        let parameter = FloatParameter::percent("Mix", 0.5, 0.0..=1.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Percent);
     }
 
     #[test]
     fn test_float_parameter_unit_pan() {
-        let param = FloatParameter::pan("Pan", 0.0, -1.0..=1.0);
-        assert_eq!(param.info().unit, ParameterUnit::Pan);
+        let parameter = FloatParameter::pan("Pan", 0.0, -1.0..=1.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Pan);
     }
 
     #[test]
     fn test_float_parameter_unit_ratio() {
-        let param = FloatParameter::ratio("Ratio", 4.0, 1.0..=20.0);
-        assert_eq!(param.info().unit, ParameterUnit::Ratio);
+        let parameter = FloatParameter::ratio("Ratio", 4.0, 1.0..=20.0);
+        assert_eq!(parameter.info().unit, ParameterUnit::Ratio);
     }
 
     #[test]
     fn test_int_parameter_unit_generic() {
-        let param = IntParameter::new("Value", 0, -100..=100);
-        assert_eq!(param.info().unit, ParameterUnit::Generic);
+        let parameter = IntParameter::new("Value", 0, -100..=100);
+        assert_eq!(parameter.info().unit, ParameterUnit::Generic);
     }
 
     #[test]
     fn test_int_parameter_unit_semitones() {
-        let param = IntParameter::semitones("Transpose", 0, -24..=24);
-        assert_eq!(param.info().unit, ParameterUnit::RelativeSemiTones);
+        let parameter = IntParameter::semitones("Transpose", 0, -24..=24);
+        assert_eq!(parameter.info().unit, ParameterUnit::RelativeSemiTones);
     }
 
     #[test]
     fn test_bool_parameter_unit_boolean() {
-        let param = BoolParameter::new("Enabled", true);
-        assert_eq!(param.info().unit, ParameterUnit::Boolean);
+        let parameter = BoolParameter::new("Enabled", true);
+        assert_eq!(parameter.info().unit, ParameterUnit::Boolean);
     }
 
     #[test]
     fn test_bool_parameter_bypass_unit_boolean() {
-        let param = BoolParameter::bypass();
-        assert_eq!(param.info().unit, ParameterUnit::Boolean);
+        let parameter = BoolParameter::bypass();
+        assert_eq!(parameter.info().unit, ParameterUnit::Boolean);
     }
 
     #[test]
     fn test_float_parameter_with_unit_override() {
-        let param = FloatParameter::new("Custom", 0.5, 0.0..=1.0)
+        let parameter = FloatParameter::new("Custom", 0.5, 0.0..=1.0)
             .with_unit(ParameterUnit::Percent);
-        assert_eq!(param.info().unit, ParameterUnit::Percent);
+        assert_eq!(parameter.info().unit, ParameterUnit::Percent);
     }
 
     #[test]
@@ -3038,32 +3049,32 @@ mod tests {
             }
         }
 
-        let param = EnumParameter::<TestEnum>::new("Mode");
-        assert_eq!(param.info().unit, ParameterUnit::Indexed);
-        assert_eq!(param.formatter_kind(), "enum");
+        let parameter = EnumParameter::<TestEnum>::new("Mode");
+        assert_eq!(parameter.info().unit, ParameterUnit::Indexed);
+        assert_eq!(parameter.formatter_kind(), "enum");
 
         // A name in any case, or an index, also with spaces around it and
         // written as a float.
-        let b = param.plain_to_normalized(1.0);
-        assert_eq!(param.parse("b"), Some(b));
-        assert_eq!(param.parse(" B "), Some(b));
-        assert_eq!(param.parse("1"), Some(b));
-        assert_eq!(param.parse(" 1 "), Some(b));
-        assert_eq!(param.parse("1.0"), Some(b));
+        let b = parameter.plain_to_normalized(1.0);
+        assert_eq!(parameter.parse("b"), Some(b));
+        assert_eq!(parameter.parse(" B "), Some(b));
+        assert_eq!(parameter.parse("1"), Some(b));
+        assert_eq!(parameter.parse(" 1 "), Some(b));
+        assert_eq!(parameter.parse("1.0"), Some(b));
         for text in ["1.5", "3", "-1", "nan", "inf", "D", ""] {
-            assert_eq!(param.parse(text), None, "\"{}\"", text);
+            assert_eq!(parameter.parse(text), None, "\"{}\"", text);
         }
 
-        assert_stores_as_set(&param);
-        assert!(param.is_discrete());
+        assert_stores_as_set(&parameter);
+        assert!(parameter.is_discrete());
     }
 
     /// Check that `stored_normalized` gives what the parameter returns after
     /// `set_normalized`, for values on, between and outside its steps.
-    fn assert_stores_as_set(param: &dyn ParameterRef) {
+    fn assert_stores_as_set(parameter: &dyn ParameterRef) {
         for value in [-0.5, 0.0, 0.1, 0.25, 0.3, 0.5, 0.51, 0.7, 0.75, 1.0, 1.5] {
-            param.set_normalized(value);
-            assert_eq!(param.stored_normalized(value), param.get_normalized(), "{}", value);
+            parameter.set_normalized(value);
+            assert_eq!(parameter.stored_normalized(value), parameter.get_normalized(), "{}", value);
         }
     }
 

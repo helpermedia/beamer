@@ -133,16 +133,16 @@ fn test_au_delivers_the_queue_of_its_instance() {
         unsafe { &*(context as *const Edits) }.borrow_mut().push(edit);
     }
 
-    unsafe extern "C" fn begin_gesture(context: *mut c_void, param_id: u32) {
-        note(context, format!("begin {param_id}"));
+    unsafe extern "C" fn begin_gesture(context: *mut c_void, parameter_id: u32) {
+        note(context, format!("begin {parameter_id}"));
     }
 
-    unsafe extern "C" fn set_parameter(context: *mut c_void, param_id: u32, normalized: f64) {
-        note(context, format!("set {param_id} {normalized}"));
+    unsafe extern "C" fn set_parameter(context: *mut c_void, parameter_id: u32, normalized: f64) {
+        note(context, format!("set {parameter_id} {normalized}"));
     }
 
-    unsafe extern "C" fn end_gesture(context: *mut c_void, param_id: u32) {
-        note(context, format!("end {param_id}"));
+    unsafe extern "C" fn end_gesture(context: *mut c_void, parameter_id: u32) {
+        note(context, format!("end {parameter_id}"));
     }
 
     let edits = Edits::default();

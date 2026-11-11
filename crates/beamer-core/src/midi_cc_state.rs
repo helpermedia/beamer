@@ -25,11 +25,12 @@ use crate::types::{ParameterId, ParameterValue};
 ///
 /// Uses a high value to avoid collision with user-defined parameters.
 /// The controller number (0-129) is added to get the final parameter ID.
+/// The base is 268435456 in decimal.
 ///
 /// - CC 0-127: Standard MIDI CCs
 /// - CC 128: Channel aftertouch (kAfterTouch)
 /// - CC 129: Pitch bend (kPitchBend)
-pub const MIDI_CC_PARAM_BASE: u32 = 0x10000000; // 268435456
+pub const MIDI_CC_PARAMETER_BASE: u32 = 0x10000000;
 
 // =============================================================================
 // MidiCcState
@@ -199,13 +200,13 @@ impl MidiCcState {
     /// Get parameter ID for a controller.
     #[inline]
     pub const fn parameter_id(controller: u8) -> u32 {
-        MIDI_CC_PARAM_BASE + controller as u32
+        MIDI_CC_PARAMETER_BASE + controller as u32
     }
 
     /// Check if a parameter ID belongs to MIDI CC emulation.
     #[inline]
     pub const fn is_midi_cc_parameter(parameter_id: u32) -> bool {
-        parameter_id >= MIDI_CC_PARAM_BASE && parameter_id < MIDI_CC_PARAM_BASE + MAX_CC_CONTROLLER as u32
+        parameter_id >= MIDI_CC_PARAMETER_BASE && parameter_id < MIDI_CC_PARAMETER_BASE + MAX_CC_CONTROLLER as u32
     }
 
     /// Extract controller number from a MIDI CC parameter ID.
@@ -214,7 +215,7 @@ impl MidiCcState {
     #[inline]
     pub const fn parameter_id_to_controller(parameter_id: u32) -> Option<u8> {
         if Self::is_midi_cc_parameter(parameter_id) {
-            Some((parameter_id - MIDI_CC_PARAM_BASE) as u8)
+            Some((parameter_id - MIDI_CC_PARAMETER_BASE) as u8)
         } else {
             None
         }
@@ -431,16 +432,16 @@ mod tests {
 
     #[test]
     fn test_parameter_id_helpers() {
-        assert_eq!(MidiCcState::parameter_id(1), MIDI_CC_PARAM_BASE + 1);
-        assert_eq!(MidiCcState::parameter_id(129), MIDI_CC_PARAM_BASE + 129);
+        assert_eq!(MidiCcState::parameter_id(1), MIDI_CC_PARAMETER_BASE + 1);
+        assert_eq!(MidiCcState::parameter_id(129), MIDI_CC_PARAMETER_BASE + 129);
 
-        assert!(MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAM_BASE));
-        assert!(MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAM_BASE + 129));
+        assert!(MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAMETER_BASE));
+        assert!(MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAMETER_BASE + 129));
         assert!(!MidiCcState::is_midi_cc_parameter(0));
-        assert!(!MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAM_BASE + 200));
+        assert!(!MidiCcState::is_midi_cc_parameter(MIDI_CC_PARAMETER_BASE + 200));
 
         assert_eq!(
-            MidiCcState::parameter_id_to_controller(MIDI_CC_PARAM_BASE + 1),
+            MidiCcState::parameter_id_to_controller(MIDI_CC_PARAMETER_BASE + 1),
             Some(1)
         );
         assert_eq!(MidiCcState::parameter_id_to_controller(100), None);

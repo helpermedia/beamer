@@ -77,7 +77,7 @@ const DATA_TYPE_MIDI_SYSEX: u32 = 0;
 const EXPRESSION_TEXT_UNITS_PER_BLOCK: usize = 64 * (MAX_EXPRESSION_TEXT_SIZE + 1);
 
 // Program change parameter ID (for preset selection, distinct from MIDI CC range)
-const PROGRAM_CHANGE_PARAM_ID: u32 = 0x20000000;
+const PROGRAM_CHANGE_PARAMETER_ID: u32 = 0x20000000;
 
 /// Check that no parameter of the plugin has an id this wrapper uses for
 /// its own parameters: the MIDI CC parameters and the program change.
@@ -90,7 +90,7 @@ fn check_reserved_ids(parameters: &dyn beamer_core::parameter_types::Parameters)
         let id = parameter.id();
         let reserved_for = if MidiCcState::is_midi_cc_parameter(id) {
             "the MIDI CC parameters"
-        } else if id == PROGRAM_CHANGE_PARAM_ID {
+        } else if id == PROGRAM_CHANGE_PARAMETER_ID {
             "the program change parameter"
         } else {
             continue;
@@ -1070,7 +1070,7 @@ impl<P: Model> Vst3Processor<P> {
         let mut preset_applied = false;
         for queue in queues() {
             // SAFETY: queue is a valid ComRef.
-            if unsafe { queue.getParameterId() } != PROGRAM_CHANGE_PARAM_ID {
+            if unsafe { queue.getParameterId() } != PROGRAM_CHANGE_PARAMETER_ID {
                 continue;
             }
             if let Some(index) = last_value(queue).and_then(Self::preset_index_for) {
@@ -1093,7 +1093,7 @@ impl<P: Model> Vst3Processor<P> {
             let parameter_id = unsafe { queue.getParameterId() };
             // The program change is applied above. MIDI controller queues
             // and ids of no parameter are not parameters of the model.
-            if parameter_id == PROGRAM_CHANGE_PARAM_ID {
+            if parameter_id == PROGRAM_CHANGE_PARAMETER_ID {
                 continue;
             }
             let Some(parameter) = beamer_core::parameter_types::Parameters::by_id(model, parameter_id) else {
@@ -2727,11 +2727,11 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
         // Program change parameter for factory presets (after all other parameters)
         let preset_count = P::PRESETS.len();
         if preset_count > 0 {
-            let preset_param_index = user_parameter_count + cc_parameter_count;
-            if parameter_index as usize == preset_param_index {
+            let preset_parameter_index = user_parameter_count + cc_parameter_count;
+            if parameter_index as usize == preset_parameter_index {
                 // SAFETY: info is non-null (checked above) and host guarantees validity.
                 let info = unsafe { &mut *info };
-                info.id = PROGRAM_CHANGE_PARAM_ID;
+                info.id = PROGRAM_CHANGE_PARAMETER_ID;
                 copy_wstring("Program", &mut info.title);
                 copy_wstring("Prg", &mut info.shortTitle);
                 copy_wstring("", &mut info.units);
@@ -2759,7 +2759,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
         }
 
         // Handle program change parameter (preset names)
-        if id == PROGRAM_CHANGE_PARAM_ID {
+        if id == PROGRAM_CHANGE_PARAMETER_ID {
             let preset_count = P::PRESETS.len();
             if preset_count > 0 {
                 // Convert normalized value to preset index
@@ -2800,7 +2800,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
         // SAFETY: string is valid for len elements (len_wstring counts to null terminator).
         if let Ok(s) = String::from_utf16(unsafe { slice::from_raw_parts(string as *const u16, len) }) {
             // Handle program change parameter (preset name to value)
-            if id == PROGRAM_CHANGE_PARAM_ID {
+            if id == PROGRAM_CHANGE_PARAMETER_ID {
                 let preset_count = P::PRESETS.len();
                 // Find preset by name
                 for i in 0..preset_count {
@@ -2828,7 +2828,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
 
     unsafe fn normalizedParamToPlain(&self, id: u32, value_normalized: f64) -> f64 {
         // Handle program change parameter (normalized to index)
-        if id == PROGRAM_CHANGE_PARAM_ID {
+        if id == PROGRAM_CHANGE_PARAMETER_ID {
             let preset_count = P::PRESETS.len();
             if preset_count > 0 {
                 let step_count = (preset_count - 1).max(1) as f64;
@@ -2841,7 +2841,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
 
     unsafe fn plainParamToNormalized(&self, id: u32, plain_value: f64) -> f64 {
         // Handle program change parameter (index to normalized)
-        if id == PROGRAM_CHANGE_PARAM_ID {
+        if id == PROGRAM_CHANGE_PARAMETER_ID {
             let preset_count = P::PRESETS.len();
             if preset_count > 1 {
                 let step_count = (preset_count - 1) as f64;
@@ -2861,7 +2861,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
         }
 
         // Check if this is the program change parameter
-        if id == PROGRAM_CHANGE_PARAM_ID {
+        if id == PROGRAM_CHANGE_PARAMETER_ID {
             let preset_count = P::PRESETS.len();
             if preset_count > 1 {
                 let current_index = self.current_preset_index.load(Ordering::Relaxed);
@@ -2886,7 +2886,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
         }
 
         // Check if this is the program change parameter (preset selection)
-        if id == PROGRAM_CHANGE_PARAM_ID {
+        if id == PROGRAM_CHANGE_PARAMETER_ID {
             if let Some(preset_index) = Self::preset_index_for(value) {
                 // Always apply unconditionally - never skip with "if changed" guard.
                 // Hosts may re-send the same preset index (e.g., user clicks preset 0
@@ -5313,13 +5313,13 @@ mod tests {
             .expect("the changes are IParameterChanges")
             .as_ptr();
 
-        let changes = changes_of(&[(PROGRAM_CHANGE_PARAM_ID, 1.0)]);
+        let changes = changes_of(&[(PROGRAM_CHANGE_PARAMETER_ID, 1.0)]);
         process_with(&wrapper, 64, changes.as_ptr(), output_pointer);
 
         // SAFETY: The wrapper is alive for the calls.
         unsafe {
             assert_eq!(wrapper.getParamNormalized(GAIN_ID), 0.9);
-            assert_eq!(wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID), 1.0);
+            assert_eq!(wrapper.getParamNormalized(PROGRAM_CHANGE_PARAMETER_ID), 1.0);
         }
         assert_eq!(output.reported(), [(GAIN_ID, vec![(0, 0.9)])]);
     }
@@ -5328,7 +5328,7 @@ mod tests {
     fn test_a_preset_reports_only_the_parameters_it_changed() {
         let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         prepare_state_wrapper(&wrapper);
-        let changes = changes_of(&[(PROGRAM_CHANGE_PARAM_ID, 1.0)]);
+        let changes = changes_of(&[(PROGRAM_CHANGE_PARAMETER_ID, 1.0)]);
         process_with(&wrapper, 64, changes.as_ptr(), std::ptr::null_mut());
 
         // The gain already holds the value of the preset, so the second
@@ -5353,7 +5353,7 @@ mod tests {
             .as_ptr();
 
         // The host lists the gain before the program change.
-        let changes = changes_of(&[(GAIN_ID, 0.4), (PROGRAM_CHANGE_PARAM_ID, 0.0)]);
+        let changes = changes_of(&[(GAIN_ID, 0.4), (PROGRAM_CHANGE_PARAMETER_ID, 0.0)]);
         process_with(&wrapper, 64, changes.as_ptr(), output_pointer);
 
         // SAFETY: The wrapper is alive for the call.
@@ -5944,7 +5944,7 @@ mod tests {
         // SAFETY: The wrapper is alive for the calls.
         unsafe {
             // The second preset, then a change of the gain after it.
-            assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0), kResultOk);
+            assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAMETER_ID, 1.0), kResultOk);
             assert_eq!(wrapper.setParamNormalized(GAIN_ID, 0.3), kResultOk);
         }
         let state = saved_state(&wrapper);
@@ -5954,7 +5954,7 @@ mod tests {
         assert_eq!(load_state(&reopened, &state), kResultOk);
         // SAFETY: The wrapper is alive for the calls.
         unsafe {
-            assert_eq!(reopened.getParamNormalized(PROGRAM_CHANGE_PARAM_ID), 1.0);
+            assert_eq!(reopened.getParamNormalized(PROGRAM_CHANGE_PARAMETER_ID), 1.0);
             // The preset is not applied again over the saved gain.
             assert_eq!(reopened.getParamNormalized(GAIN_ID), 0.3);
         }
@@ -5977,11 +5977,11 @@ mod tests {
             let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
             // SAFETY: The wrapper is alive for the call.
             unsafe {
-                assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0), kResultOk);
+                assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAMETER_ID, 1.0), kResultOk);
             }
             assert_eq!(load_state(&wrapper, loaded), kResultOk);
             // SAFETY: The wrapper is alive for the call.
-            assert_eq!(unsafe { wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID) }, 0.0);
+            assert_eq!(unsafe { wrapper.getParamNormalized(PROGRAM_CHANGE_PARAMETER_ID) }, 0.0);
         }
     }
 
@@ -6257,7 +6257,7 @@ mod tests {
         let wrapper = Vst3Processor::<GainPresetModel>::new(&STATE_CONFIG);
         let (_host, flags) = record_restarts(&wrapper);
         // SAFETY: The wrapper is alive.
-        assert_eq!(unsafe { wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, 1.0) }, kResultOk);
+        assert_eq!(unsafe { wrapper.setParamNormalized(PROGRAM_CHANGE_PARAMETER_ID, 1.0) }, kResultOk);
         // The restart comes on the UI thread, not within the call.
         assert!(flags.lock().unwrap().is_empty());
         wrapper.host_notifier.deliver();
@@ -6454,7 +6454,7 @@ mod tests {
                     // and then.
                     let mut values = vec![(LEVEL_ID, (blocks % 7) as f64 / 7.0)];
                     if blocks.is_multiple_of(5) {
-                        values.push((PROGRAM_CHANGE_PARAM_ID, 1.0));
+                        values.push((PROGRAM_CHANGE_PARAMETER_ID, 1.0));
                     }
                     let changes = changes_of(&values);
                     process_with(&wrapper, 64, changes.as_ptr(), std::ptr::null_mut());
@@ -6490,11 +6490,11 @@ mod tests {
                 unsafe {
                     // A preset from the host's list.
                     let preset = (round % ThreadedModel::PRESETS.len()) as f64;
-                    assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAM_ID, preset), kResultOk);
+                    assert_eq!(wrapper.setParamNormalized(PROGRAM_CHANGE_PARAMETER_ID, preset), kResultOk);
 
                     // What the plugin reports to the host.
                     assert!((0.0..=1.0).contains(&wrapper.getParamNormalized(LEVEL_ID)));
-                    let program = wrapper.getParamNormalized(PROGRAM_CHANGE_PARAM_ID);
+                    let program = wrapper.getParamNormalized(PROGRAM_CHANGE_PARAMETER_ID);
                     assert!((0.0..=1.0).contains(&program));
                     assert!(LAYOUTS.contains(&wrapper.getLatencySamples()));
                     assert_eq!(wrapper.getTailSamples(), tail);
