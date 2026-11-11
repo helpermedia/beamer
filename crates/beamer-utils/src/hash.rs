@@ -65,6 +65,16 @@ pub const fn fnv1a_32(s: &str) -> u32 {
     hash
 }
 
+/// FNV-1a 32-bit hash of `s`, kept to 31 bits so that it fits a positive
+/// `i32`.
+///
+/// Parameter group ids use it: VST3 unit ids are `int32` values, kept
+/// positive since -1 means "no parent" for a VST3 unit.
+#[inline]
+pub const fn fnv1a_31(s: &str) -> i32 {
+    (fnv1a_32(s) & 0x7FFF_FFFF) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +112,16 @@ mod tests {
         let id1 = fnv1a_32("gain");
         let id2 = fnv1a_32("frequency");
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_fnv1a_31_drops_the_top_bit() {
+        // Hosts know groups by these values, so they must never change.
+        // The 32-bit hashes of "Filter" and "envelope" have the top bit set.
+        assert_eq!(fnv1a_32("Filter"), 0xf4a9c097);
+        assert_eq!(fnv1a_31("Filter"), 0x74a9c097);
+        assert_eq!(fnv1a_31("envelope"), 0x7a10a755);
+        assert_eq!(fnv1a_31("first/envelope"), 0x2d8a4bfa);
+        assert_eq!(fnv1a_31(""), 0x011c9dc5);
     }
 }

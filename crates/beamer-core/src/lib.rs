@@ -114,7 +114,7 @@ pub use midi::{
 };
 pub use parameter_format::{Formatter, MiddleC};
 pub use parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
-pub use parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
+pub use parameter_groups::{group_id, GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 pub use parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 pub use model::{Saved, SharedModel};
 pub use parameter_store::{NoParameters, ParameterStore};

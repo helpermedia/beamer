@@ -245,10 +245,6 @@ pub struct NestedFieldIR {
     pub field_type: syn::Type,
     /// Group name from `#[nested(group = "...")]`
     pub group_name: String,
-    /// Assigned group ID (1-indexed, root is 0)
-    pub group_id: i32,
-    /// Parent group ID (0 for top-level, parent's group_id for nested-within-nested)
-    pub parent_group_id: i32,
     /// Span for error reporting
     pub span: Span,
 }

@@ -72,9 +72,6 @@ pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
         ));
     }
 
-    // Assign sequential group IDs to nested fields
-    assign_group_ids(&mut parsed_fields);
-
     Ok(ModelIR {
         struct_name: input.ident.clone(),
         generics: input.generics.clone(),
@@ -492,43 +489,8 @@ fn parse_nested_field(field: &Field, attr: &syn::Attribute) -> syn::Result<Neste
         field_name,
         field_type: field.ty.clone(),
         group_name,
-        group_id: 0,         // Assigned later by assign_group_ids()
-        parent_group_id: 0,  // Assigned later by assign_group_ids()
         span: attr.path().segments[0].ident.span(),
     })
-}
-
-/// Assign sequential group IDs to nested fields.
-///
-/// Group 0 is reserved for root. Flat groups (via `group = "..."`) get IDs 1, 2, 3, ...
-/// Nested groups get IDs starting after flat groups.
-fn assign_group_ids(fields: &mut [FieldIR]) {
-    // Count flat groups first - they get IDs 1, 2, 3, ...
-    let flat_group_count = count_flat_groups(fields);
-
-    // Nested groups start after flat groups
-    let mut next_group_id: i32 = flat_group_count as i32 + 1;
-
-    for field in fields {
-        if let FieldIR::Nested(nested) = field {
-            nested.group_id = next_group_id;
-            nested.parent_group_id = 0; // Top-level nested fields are children of root; deeper nesting handled at runtime
-            next_group_id += 1;
-        }
-    }
-}
-
-/// Count unique flat group names in the fields.
-fn count_flat_groups(fields: &[FieldIR]) -> usize {
-    let mut seen = std::collections::HashSet::new();
-    for field in fields {
-        if let FieldIR::Parameter(p) = field {
-            if let Some(ref group) = p.attributes.group {
-                seen.insert(group.as_str());
-            }
-        }
-    }
-    seen.len()
 }
 
 /// Extract the parameter type from a type path.

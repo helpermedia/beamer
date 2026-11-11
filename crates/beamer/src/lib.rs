@@ -247,7 +247,7 @@ pub mod prelude {
         // Values for the audio thread and state beyond parameters
         Handover, HandoverReader, State,
         // Parameter group system
-        GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID,
+        group_id, GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID,
         // Range mapping
         LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper,
         // Error types

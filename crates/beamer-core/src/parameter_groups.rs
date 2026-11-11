@@ -12,13 +12,15 @@
 //!
 //! # Example
 //!
+//! A flat group ("Filter") has the id of its name, a nested group (the
+//! field `envelope`) the id of its field path:
+//!
 //! ```text
-//! Parameter group hierarchy:
-//! Root (id=0)
-//! ├── Filter (id=1)
+//! Root (id 0)
+//! ├── Filter (id group_id("Filter"))
 //! │   ├── cutoff
 //! │   └── resonance
-//! └── Envelope (id=2)
+//! └── Envelope (id group_id("envelope"))
 //!     ├── attack
 //!     └── release
 //! ```
@@ -28,6 +30,21 @@
 /// Groups are used to organize parameters into hierarchical groups in the DAW UI.
 /// Each group has a unique ID and can have a parent group.
 pub type GroupId = i32;
+
+/// The id that hosts see for the group at `path`: the FNV-1a hash of the
+/// path, kept to 31 bits so that it is positive.
+///
+/// The path of a flat group (`group = "Filter"` on its parameters) is its
+/// name. The path of a nested group is the path of its field, as in the
+/// ids of its parameters: `"filter"`, or `"filter/lfo"` for the field
+/// `lfo` inside it. So a group keeps its id when other groups are added,
+/// removed or moved. A host may record a parameter by the ids of its
+/// groups (an Audio Unit host by its key path).
+///
+/// This is the hash that `#[beamer::model]` and `#[beamer::group]` use.
+pub const fn group_id(path: &str) -> GroupId {
+    beamer_utils::fnv1a_31(path)
+}
 
 /// Root group ID constant (parameters with no group).
 ///
@@ -71,9 +88,9 @@ impl GroupInfo {
 /// Implemented automatically by `#[beamer::model]` and `#[beamer::group]` when nested groups are present.
 /// Provides information about parameter groups for DAW display.
 ///
-/// Group IDs are assigned dynamically at runtime to support deeply nested groups
-/// where the same nested group type can appear in multiple contexts with
-/// different parent groups.
+/// The ids of nested groups come from their paths at runtime (see
+/// [`group_id`]), so the same nested group type can appear in several
+/// fields with different parent groups.
 ///
 /// A host may ask for the groups from one of its own threads while audio
 /// runs. Implementations may only read immutable data.

@@ -226,28 +226,28 @@ macro_rules! __forward_model {
             fn nested_group(
                 &self,
                 index: usize,
-            ) -> Option<(&'static str, &dyn $crate::parameter_types::Parameters)> {
+            ) -> Option<(&'static str, &'static str, &dyn $crate::parameter_types::Parameters)> {
                 $crate::parameter_types::Parameters::nested_group(&self.$field, index)
             }
 
             fn nested_group_mut(
                 &mut self,
                 index: usize,
-            ) -> Option<(&'static str, &mut dyn $crate::parameter_types::Parameters)> {
+            ) -> Option<(&'static str, &'static str, &mut dyn $crate::parameter_types::Parameters)> {
                 $crate::parameter_types::Parameters::nested_group_mut(&mut self.$field, index)
             }
 
-            fn assign_group_ids(&mut self, start_id: i32, parent_id: i32) -> i32 {
-                $crate::parameter_types::Parameters::assign_group_ids(&mut self.$field, start_id, parent_id)
+            fn assign_group_ids(&mut self, prefix: &str) {
+                $crate::parameter_types::Parameters::assign_group_ids(&mut self.$field, prefix);
             }
 
             fn collect_groups(
                 &self,
                 groups: &mut Vec<$crate::parameter_groups::GroupInfo>,
-                start_id: i32,
-                parent_id: i32,
-            ) -> i32 {
-                $crate::parameter_types::Parameters::collect_groups(&self.$field, groups, start_id, parent_id)
+                prefix: &str,
+                parent_id: $crate::parameter_groups::GroupId,
+            ) {
+                $crate::parameter_types::Parameters::collect_groups(&self.$field, groups, prefix, parent_id);
             }
 
             fn set_sample_rate(&self, sample_rate: f64) {

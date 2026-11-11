@@ -169,17 +169,21 @@ pub fn parameter_path(prefix: &str, id: &'static str) -> Cow<'static, str> {
     }
 }
 
-/// Check that no two parameters share the id that hosts see.
+/// Check that no two parameters share the id that hosts see. The same
+/// goes for groups.
 ///
 /// That id is a 32-bit hash of the parameter's path, so two different
 /// paths can hash to the same value. It is unlikely. When it happens a
 /// host would treat the two parameters as one. The same error shows when
 /// ids were never set, for example by a hand-written `Default` that does
-/// not call [`Parameters::assign_ids`].
+/// not call [`Parameters::assign_ids`]. A group's id is a 31-bit hash of
+/// its path (see [`group_id`](crate::parameter_groups::group_id)). It
+/// must be above 0, the root group's id. Every parameter must be in the
+/// root or in one of the listed groups.
 ///
 /// The format wrappers call this when a plugin instance is created. They
-/// refuse the instance and report the error, which names both parameters.
-/// A test of the plugin that calls this shows it earlier.
+/// refuse the instance and report the error, which names the parameters
+/// or groups. A test of the plugin that calls this shows it earlier.
 pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
     let mut seen: Vec<(ParameterId, &dyn ParameterRef)> = parameters
         .iter()
@@ -216,7 +220,73 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
             ));
         }
     }
+
+    // The groups by their ids, a nested group also by its field path when
+    // its id and name match a nested field.
+    let mut nested = Vec::new();
+    nested_group_paths(parameters, "", &mut nested);
+    let mut groups: Vec<(GroupId, String)> = (1..parameters.group_count())
+        .filter_map(|index| parameters.group_info(index))
+        .map(|group| {
+            let field = nested.iter().position(|(path, name)| {
+                *name == group.name && crate::parameter_groups::group_id(path) == group.id
+            });
+            match field {
+                Some(position) => {
+                    let (path, _) = nested.remove(position);
+                    (group.id, format!("\"{}\" (field {})", group.name, path))
+                }
+                None => (group.id, format!("\"{}\"", group.name)),
+            }
+        })
+        .collect();
+    groups.sort_unstable_by_key(|(id, _)| *id);
+
+    // A flat group gets another id by another name, a nested group by
+    // another field name.
+    let how = "a flat group by its name, a nested group by its field";
+    if let Some((id, label)) = groups.iter().find(|(id, _)| *id <= ROOT_GROUP_ID) {
+        return Err(format!(
+            "group {} has the host id {}, but group ids are above 0, the root group's; \
+             rename it ({}), or give a hand-written group an id above 0",
+            label, id, how
+        ));
+    }
+    for pair in groups.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(format!(
+                "groups {} and {} both have the host id 0x{:08x}; rename one of them ({})",
+                pair[0].1, pair[1].1, pair[0].0, how
+            ));
+        }
+    }
+
+    // A parameter in a group that is not listed: its group ids were never
+    // set, or it was given a number by hand.
+    for parameter in parameters.iter() {
+        let group = parameter.info().group_id;
+        if group != ROOT_GROUP_ID && groups.binary_search_by_key(&group, |(id, _)| *id).is_err() {
+            return Err(format!(
+                "parameter {} is in the group 0x{:08x}, which the plugin does not list; \
+                 a hand-written `Default` sets the group ids with `set_group_ids()`, \
+                 `with_group` takes `group_id(path)`",
+                label(parameter),
+                group
+            ));
+        }
+    }
     Ok(())
+}
+
+/// The paths and names of the nested groups below `parameters`.
+fn nested_group_paths(parameters: &dyn Parameters, prefix: &str, groups: &mut Vec<(String, &'static str)>) {
+    for index in 0..parameters.nested_count() {
+        if let Some((field, name, nested)) = parameters.nested_group(index) {
+            let path = join_path(prefix, field);
+            nested_group_paths(nested, &path, groups);
+            groups.push((path, name));
+        }
+    }
 }
 
 /// The id of the plugin's bypass parameter (the one with the `bypass`
@@ -322,59 +392,47 @@ pub trait Parameters: Send + Sync + ParameterGroups {
 
     /// Get information about a nested group by index.
     ///
-    /// Returns the group name and a reference to the nested Parameters.
+    /// Returns the field name (its part of the paths of the parameters and
+    /// groups inside it), the group name and the nested Parameters.
     /// Default returns None (no nested groups).
-    fn nested_group(&self, _index: usize) -> Option<(&'static str, &dyn Parameters)> {
+    fn nested_group(&self, _index: usize) -> Option<(&'static str, &'static str, &dyn Parameters)> {
         None
     }
 
     /// Get mutable access to a nested group by index.
     ///
-    /// Returns the group name and a mutable reference to the nested Parameters.
+    /// Returns the field name, the group name and a mutable reference to
+    /// the nested Parameters.
     /// Default returns None (no nested groups).
-    fn nested_group_mut(&mut self, _index: usize) -> Option<(&'static str, &mut dyn Parameters)> {
+    fn nested_group_mut(&mut self, _index: usize) -> Option<(&'static str, &'static str, &mut dyn Parameters)> {
         None
     }
 
-    /// Recursively assign group IDs to all nested groups.
+    /// Recursively give the parameters of all nested groups their group ids.
     ///
-    /// This method traverses the nested group hierarchy and assigns
-    /// sequential group IDs, properly setting parent relationships for
-    /// deeply nested groups.
-    ///
-    /// # Arguments
-    ///
-    /// * `start_id` - The first group ID to assign (typically 1, since 0 is root)
-    /// * `parent_id` - The parent group ID for this level's nested groups
-    ///
-    /// # Returns
-    ///
-    /// The next available group ID after all assignments.
+    /// A nested group's id is the [`group_id`](crate::parameter_groups::group_id)
+    /// of its path: its field name behind `prefix`, the path of this struct
+    /// (empty for the root).
     ///
     /// # Example
     ///
     /// ```ignore
     /// // Called by set_group_ids() on the top-level struct:
-    /// let next_id = self.assign_group_ids(1, 0);
+    /// self.assign_group_ids("");
     /// ```
-    fn assign_group_ids(&mut self, start_id: i32, _parent_id: i32) -> i32 {
-        let mut next_id = start_id;
-
+    fn assign_group_ids(&mut self, prefix: &str) {
         for i in 0..self.nested_count() {
-            if let Some((_, nested)) = self.nested_group_mut(i) {
-                let group_id = next_id;
-                next_id += 1;
+            if let Some((field, _, nested)) = self.nested_group_mut(i) {
+                let path = join_path(prefix, field);
+                let group_id = crate::parameter_groups::group_id(&path);
 
-                // Set group ID on all direct parameters in this nested group
+                // Set group ID on all direct parameters in this nested group.
                 nested.set_all_group_ids(group_id);
 
-                // Recurse into this nested group's nested groups
-                // The current group_id becomes the parent for nested groups
-                next_id = nested.assign_group_ids(next_id, group_id);
+                // Recurse into the groups nested in it.
+                nested.assign_group_ids(&path);
             }
         }
-
-        next_id
     }
 
     /// Collect all group infos from nested groups recursively.
@@ -385,33 +443,20 @@ pub trait Parameters: Send + Sync + ParameterGroups {
     /// # Arguments
     ///
     /// * `groups` - Vector to append GroupInfo entries to
-    /// * `start_id` - The first group ID for this level
-    /// * `parent_id` - The parent group ID for this level's groups
-    ///
-    /// # Returns
-    ///
-    /// The next available group ID after all groups are collected.
-    fn collect_groups(
-        &self,
-        groups: &mut Vec<GroupInfo>,
-        start_id: i32,
-        parent_id: i32,
-    ) -> i32 {
-        let mut next_id = start_id;
-
+    /// * `prefix` - The path of this struct, empty for the root
+    /// * `parent_id` - The group id of this struct, the parent of its nested groups
+    fn collect_groups(&self, groups: &mut Vec<GroupInfo>, prefix: &str, parent_id: GroupId) {
         for i in 0..self.nested_count() {
-            if let Some((name, nested)) = self.nested_group(i) {
-                let group_id = next_id;
-                next_id += 1;
+            if let Some((field, name, nested)) = self.nested_group(i) {
+                let path = join_path(prefix, field);
+                let group_id = crate::parameter_groups::group_id(&path);
 
                 groups.push(GroupInfo::new(group_id, name, parent_id));
 
-                // Recurse into nested groups
-                next_id = nested.collect_groups(groups, next_id, group_id);
+                // Recurse into nested groups.
+                nested.collect_groups(groups, &path, group_id);
             }
         }
-
-        next_id
     }
 
     // =========================================================================

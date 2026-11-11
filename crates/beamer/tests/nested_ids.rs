@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 
+use beamer::core::parameter_groups::{group_id, ROOT_GROUP_ID};
 use beamer::core::parameter_store::ParameterStore;
 use beamer::core::parameter_types::check_unique_ids;
 use beamer::core::types::fnv1a_hash;
@@ -189,7 +190,7 @@ fn test_field_names_that_are_keywords() {
     let model = KeywordModel::default();
 
     assert_eq!(paths(&model), ["loop", "type/attack"]);
-    assert_eq!(KeywordModel::GROUP_TYPE, 1);
+    assert_eq!(KeywordModel::GROUP_TYPE, group_id("type"));
 }
 
 /// A group whose `Default` is written by hand, because its parameter has
@@ -329,8 +330,72 @@ struct GenericModel<T: Send + Sync + 'static> {
 fn test_generic_struct_with_groups() {
     let model = GenericModel::<f32>::default();
 
-    assert_eq!(GenericModel::<f32>::PARAMETER_GROUP_FILTER, 1);
-    assert_eq!(GenericModel::<f32>::GROUP_ENVELOPE, 2);
+    assert_eq!(GenericModel::<f32>::PARAMETER_GROUP_FILTER, group_id("Filter"));
+    assert_eq!(GenericModel::<f32>::GROUP_ENVELOPE, group_id("envelope"));
     assert_eq!(model.envelope.attack.info().string_id, "envelope/attack");
     assert_eq!(ParameterStore::count(&model), 2);
+}
+
+#[test]
+fn test_group_id_is_the_hash_of_the_path() {
+    let model = TwoLayerModel::default();
+
+    let groups: Vec<(i32, &str, i32)> = (1..model.group_count())
+        .filter_map(|index| model.group_info(index))
+        .map(|group| (group.id, group.name, group.parent_id))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            (group_id("first"), "Layer A", ROOT_GROUP_ID),
+            (group_id("first/envelope"), "Envelope", group_id("first")),
+            (group_id("second"), "Layer B", ROOT_GROUP_ID),
+            (group_id("second/envelope"), "Envelope", group_id("second")),
+        ]
+    );
+
+    // The parameters are in the groups of their fields.
+    assert_eq!(model.level.info().group_id, ROOT_GROUP_ID);
+    assert_eq!(model.first.voices.info().group_id, group_id("first"));
+    assert_eq!(model.second.envelope.attack.info().group_id, group_id("second/envelope"));
+    assert!(check_unique_ids(&model).is_ok());
+}
+
+#[beamer::group]
+struct OuterGroup {
+    #[nested(group = "Inner")]
+    ya: EnvelopeGroup,
+}
+
+/// A flat group `nbki` and a nested group at `ot/ya`: the two paths have
+/// one hash. Only the root knows the second path, so the macro cannot
+/// see the clash.
+#[beamer::model]
+struct GroupClashModel {
+    #[parameter(id = "gain", name = "Gain", default = 0.5, range = 0.0..=1.0, group = "nbki")]
+    gain: FloatParameter,
+
+    #[nested(group = "Outer")]
+    ot: OuterGroup,
+}
+
+#[test]
+fn test_groups_with_one_id_are_refused() {
+    assert_eq!(group_id("nbki"), group_id("ot/ya"));
+    let model = GroupClashModel::default();
+
+    let error = check_unique_ids(&model).expect_err("the group ids clash");
+    assert!(error.contains("\"nbki\""), "{error}");
+    assert!(error.contains("\"Inner\" (field ot/ya)"), "{error}");
+}
+
+#[test]
+fn test_parameter_in_a_group_that_is_not_listed_is_refused() {
+    let mut model = TwoLayerModel::default();
+    // A number given by hand, not the hash of a path.
+    model.level.set_group_id(1);
+
+    let error = check_unique_ids(&model).expect_err("group 1 is not listed");
+    assert!(error.contains("\"level\""), "{error}");
+    assert!(error.contains("set_group_ids()"), "{error}");
 }

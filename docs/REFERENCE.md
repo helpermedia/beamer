@@ -363,7 +363,7 @@ Every parameter type has builder methods for customization. Chain these after co
 | `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
 | `.with_string_id(id)` | Set the string ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
-| `.with_group(group_id)` | Assign to parameter group |
+| `.with_group(group_id)` | Assign to parameter group (its id is `group_id(path)`) |
 | `.with_unit(unit)` | Unit type hint for AU hosts (`ParameterUnit`) |
 | `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments) |
 | `.with_precision(n)` | Display precision (decimal places) |
@@ -379,7 +379,7 @@ Every parameter type has builder methods for customization. Chain these after co
 | `.with_id(id)` | Set parameter ID (the macro sets it from the path) |
 | `.with_string_id(id)` | Set the string ID (the macro sets it from the path) |
 | `.with_short_name(name)` | Short name for constrained UIs |
-| `.with_group(group_id)` | Assign to parameter group |
+| `.with_group(group_id)` | Assign to parameter group (its id is `group_id(path)`) |
 | `.with_unit(unit)` | Unit type hint for AU hosts (`ParameterUnit`) |
 | `.with_precision(n)` | Display precision (for Float formatter) |
 | `.with_formatter(fmt)` | Replace formatter entirely |
@@ -600,6 +600,8 @@ pub struct EnvelopeGroup {
 
 With declarative attributes, `set_group_ids()` is called automatically in the generated `Default` implementation.
 
+A group's id, which hosts see (a VST3 unit, a part of the key path of an Audio Unit parameter), is the FNV-1a hash of its path kept to 31 bits: the name of a flat group, the field path of a nested group (`filter`, or `osc1/filter` one level down). The macro gives the ids as constants, which hold when the struct is the root of the plugin: `SynthesizerModel::GROUP_FILTER` for the nested field `filter`, `PARAMETER_GROUP_FILTER` for a flat group named "Filter". Adding, removing or moving a group leaves the ids of the other groups alone (a nested group that moves takes the groups inside it along, which get new paths). Renaming a flat group or the field of a nested group gives it another id; the display name of a nested group can change freely. Two groups with one id, a group with id 0 (the root) and a parameter in a group the plugin does not list are refused like parameter ids that clash (see below).
+
 #### Parameter Ids
 
 A parameter is known by its path: the `id` of its attribute, behind the names of the nested fields it sits in. The `/` separates the segments of the path, so an `id` cannot contain one (a compile error). The same holds for the `id` of a `State` field, which also cannot be empty.
@@ -629,7 +631,7 @@ pub osc1: OscGroup,
 pub osc2: OscGroup,
 ```
 
-Paths use the name of the field, not the display name of its group, so renaming a group changes nothing for hosts and saved states. Renaming a field or a parameter id does: a host no longer finds its automation and a saved state no longer finds its value.
+Paths use the name of the field, not the display name of its group, so renaming a nested group changes nothing for hosts and saved states. Renaming a field or a parameter id does: a host no longer finds its automation and a saved state no longer finds its value. A flat group is different from a nested one: its name is its path, so renaming it gives its parameters another group id.
 
 The generated `Default` gives all parameters their ids with `assign_ids("")`. A hand-written `Default` (with `no_default`) calls `assign_ids("")` and `set_group_ids()` itself.
 

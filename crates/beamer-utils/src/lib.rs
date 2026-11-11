@@ -11,10 +11,11 @@
 //! # Contents
 //!
 //! - [`fnv1a_32`] - FNV-1a hash function for parameter ID generation
+//! - [`fnv1a_31`] - the same hash in 31 bits, for parameter group IDs
 //! - [`web_ui`] - Where the web UI of a plugin comes from, for the export
 //!   macro and the bundler
 
 pub mod hash;
 pub mod web_ui;
 
-pub use hash::fnv1a_32;
+pub use hash::{fnv1a_31, fnv1a_32};

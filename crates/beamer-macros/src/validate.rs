@@ -11,6 +11,7 @@ pub fn validate(ir: &ModelIR) -> syn::Result<()> {
     check_unique_string_ids(ir)?;
     check_one_event_queue(ir)?;
     check_no_hash_collisions(ir)?;
+    check_no_group_id_collisions(ir)?;
     validate_parameter_attributes(ir)?;
     Ok(())
 }
@@ -95,6 +96,60 @@ fn check_no_hash_collisions(ir: &ModelIR) -> syn::Result<()> {
             }
             seen.insert(parameter.hash_id, &parameter.string_id);
         }
+    }
+
+    Ok(())
+}
+
+/// Check that the groups of this struct have ids of their own that are
+/// not 0, the root group's.
+///
+/// A group's id is a 31-bit hash of its path: the name of a flat group,
+/// the field of a nested group (`beamer_core::parameter_groups::group_id`).
+/// This check sees the groups of one struct as if it were the root. The
+/// format wrappers check all groups when a plugin instance is created
+/// (`check_unique_ids()`).
+fn check_no_group_id_collisions(ir: &ModelIR) -> syn::Result<()> {
+    // The path of each group with what it is, for the messages.
+    let mut groups: Vec<(String, String, proc_macro2::Span)> = Vec::new();
+    for field in &ir.fields {
+        match field {
+            FieldIR::Parameter(parameter) => {
+                if let Some(name) = &parameter.attributes.group {
+                    if !groups.iter().any(|(path, _, _)| path == name) {
+                        groups.push((name.clone(), format!("the flat group \"{}\"", name), parameter.span));
+                    }
+                }
+            }
+            FieldIR::Nested(nested) => {
+                let field = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
+                let label = format!("the nested field `{}`", field);
+                groups.push((field, label, nested.span));
+            }
+            _ => {}
+        }
+    }
+
+    let mut seen: HashMap<i32, &str> = HashMap::new();
+    for (path, label, span) in &groups {
+        let id = beamer_utils::fnv1a_31(path);
+        if id == 0 {
+            return Err(syn::Error::new(
+                *span,
+                format!("The id of {} is 0, the id of the root group. Rename it.", label),
+            ));
+        }
+        if let Some(first) = seen.get(&id) {
+            return Err(syn::Error::new(
+                *span,
+                format!(
+                    "Group ID collision: {} and {} both have the id 0x{:08x}. \
+                     Rename one of them (a flat group by its name, a nested group by its field).",
+                    label, first, id
+                ),
+            ));
+        }
+        seen.insert(id, label);
     }
 
     Ok(())
