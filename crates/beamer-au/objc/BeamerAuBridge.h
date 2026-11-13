@@ -284,7 +284,8 @@ typedef enum {
  * - parent_id = 0 means the group is at the top level
  */
 typedef struct {
-    /// Unique group identifier (matches VST3 UnitId)
+    /// Unique group identifier: the hash of the group's path, part of the
+    /// AUv3 key paths of its parameters.
     int32_t id;
     /// Human-readable group name (UTF-8, null-terminated)
     char name[BEAMER_AU_MAX_GROUP_NAME_LENGTH];

@@ -221,6 +221,14 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
         }
     }
 
+    // The format wrappers take the first group for the root.
+    if let Some(first) = parameters.group_info(0).filter(|group| group.id != ROOT_GROUP_ID) {
+        return Err(format!(
+            "the first group is \"{}\" with the id {}; `group_info(0)` must return the root group (id 0)",
+            first.name, first.id
+        ));
+    }
+
     // The groups by their ids, a nested group also by its field path when
     // its id and name match a nested field.
     let mut nested = Vec::new();
@@ -247,7 +255,7 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
     let how = "a flat group by its name, a nested group by its field";
     if let Some((id, label)) = groups.iter().find(|(id, _)| *id <= ROOT_GROUP_ID) {
         return Err(format!(
-            "group {} has the host id {}, but group ids are above 0, the root group's; \
+            "group {} has the id {}, but group ids are above 0, the root group's; \
              rename it ({}), or give a hand-written group an id above 0",
             label, id, how
         ));
@@ -255,7 +263,7 @@ pub fn check_unique_ids(parameters: &dyn Parameters) -> Result<(), String> {
     for pair in groups.windows(2) {
         if pair[0].0 == pair[1].0 {
             return Err(format!(
-                "groups {} and {} both have the host id 0x{:08x}; rename one of them ({})",
+                "groups {} and {} both have the id 0x{:08x}; rename one of them ({})",
                 pair[0].1, pair[1].1, pair[0].0, how
             ));
         }

@@ -2174,8 +2174,9 @@ pub struct NoteExpressionTypeInfo {
     pub units: [u8; MAX_NOTE_EXPRESSION_TITLE_SIZE],
     /// Units length.
     pub units_len: u8,
-    /// Unit ID for grouping (-1 for none).
-    pub unit_id: i32,
+    /// The parameter group it belongs to (its `group_id(path)`), or -1
+    /// for none.
+    pub group_id: crate::parameter_groups::GroupId,
     /// Value range description.
     pub value_desc: NoteExpressionValueDesc,
     /// Associated parameter ID for automation mapping (-1 for none).
@@ -2195,7 +2196,7 @@ impl NoteExpressionTypeInfo {
             short_title_len: 0,
             units: [0u8; MAX_NOTE_EXPRESSION_TITLE_SIZE],
             units_len: 0,
-            unit_id: -1,
+            group_id: -1,
             value_desc: NoteExpressionValueDesc::unipolar(),
             associated_parameter_id: -1,
             flags: NoteExpressionTypeFlags::NONE,
@@ -2330,8 +2331,9 @@ pub struct KeyswitchInfo {
     pub keyswitch_max: i32,
     /// Remapped key (-1 if not remapped).
     pub key_remapped: i32,
-    /// Unit ID for grouping (-1 for none).
-    pub unit_id: i32,
+    /// The parameter group it belongs to (its `group_id(path)`), or -1
+    /// for none.
+    pub group_id: crate::parameter_groups::GroupId,
     /// Flags (reserved for future use).
     pub flags: i32,
 }
@@ -2348,7 +2350,7 @@ impl KeyswitchInfo {
             keyswitch_min: key,
             keyswitch_max: key,
             key_remapped: -1,
-            unit_id: -1,
+            group_id: -1,
             flags: 0,
         };
         info.set_title(title);

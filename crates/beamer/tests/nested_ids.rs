@@ -399,3 +399,29 @@ fn test_parameter_in_a_group_that_is_not_listed_is_refused() {
     assert!(error.contains("\"level\""), "{error}");
     assert!(error.contains("set_group_ids()"), "{error}");
 }
+
+/// A flat group whose parameters are not declared next to each other,
+/// around a parameter of the root and a nested group.
+#[beamer::model]
+struct SplitFlatGroupModel {
+    #[parameter(id = "cutoff", name = "Cutoff", default = 0.5, range = 0.0..=1.0, group = "Filter")]
+    cutoff: FloatParameter,
+
+    #[parameter(id = "gain", name = "Gain", default = 0.5, range = 0.0..=1.0)]
+    gain: FloatParameter,
+
+    #[nested(group = "Envelope")]
+    envelope: EnvelopeGroup,
+
+    #[parameter(id = "resonance", name = "Resonance", default = 0.5, range = 0.0..=1.0, group = "Filter")]
+    resonance: FloatParameter,
+}
+
+#[test]
+fn test_flat_group_parameters_come_together() {
+    let model = SplitFlatGroupModel::default();
+
+    // The group's parameters where its first parameter is, as hosts show
+    // the group.
+    assert_eq!(paths(&model), ["cutoff", "resonance", "gain", "envelope/attack"]);
+}

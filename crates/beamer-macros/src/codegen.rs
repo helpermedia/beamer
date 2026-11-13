@@ -112,65 +112,95 @@ fn generate_groups_impl(ir: &ModelIR) -> TokenStream {
         };
     }
 
-    // Generate flat group GroupInfo entries
-    let flat_group_count = flat_groups.len();
-    let flat_group_infos: Vec<TokenStream> = flat_groups
-        .iter()
-        .enumerate()
-        .map(|(idx, group_name)| {
-            let group_id = group_id_expr(group_name);
-            // All flat groups are children of the root.
-            quote! {
-                #idx => Some(::beamer::core::parameter_groups::GroupInfo {
-                    id: #group_id,
-                    name: #group_name,
-                    parent_id: ::beamer::core::parameter_groups::ROOT_GROUP_ID,
-                }),
-            }
-        })
-        .collect();
-
     if has_nested {
-        // Flat groups + nested groups: combine static flat groups with dynamic nested collection
+        // Flat and nested groups in the order of the fields: a flat group
+        // where its first parameter is, a nested group at its field with
+        // the groups inside it right after it. VST3 units and AUv2 clumps
+        // are numbered in this order.
+        let mut seen_flat = std::collections::HashSet::new();
+        let mut nested_index = 0usize;
+        let mut pushes: Vec<TokenStream> = Vec::new();
+        for field in &ir.fields {
+            match field {
+                crate::ir::FieldIR::Parameter(parameter) => {
+                    if let Some(group_name) = &parameter.attributes.group {
+                        if seen_flat.insert(group_name.as_str()) {
+                            let group_id = group_id_expr(group_name);
+                            pushes.push(quote! {
+                                groups.push(::beamer::core::parameter_groups::GroupInfo::new(
+                                    #group_id,
+                                    #group_name,
+                                    ::beamer::core::parameter_groups::ROOT_GROUP_ID,
+                                ));
+                            });
+                        }
+                    }
+                }
+                crate::ir::FieldIR::Nested(_) => {
+                    let index = nested_index;
+                    nested_index += 1;
+                    pushes.push(quote! {
+                        if let Some((field, name, nested)) = Parameters::nested_group(self, #index) {
+                            let id = ::beamer::core::parameter_groups::group_id(field);
+                            groups.push(::beamer::core::parameter_groups::GroupInfo::new(
+                                id,
+                                name,
+                                ::beamer::core::parameter_groups::ROOT_GROUP_ID,
+                            ));
+                            nested.collect_groups(&mut groups, field, id);
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+        let collect = quote! {
+            use ::beamer::core::parameter_types::Parameters;
+            let mut groups: Vec<::beamer::core::parameter_groups::GroupInfo> = Vec::new();
+            #(#pushes)*
+        };
+
         quote! {
             impl #impl_generics ::beamer::core::parameter_groups::ParameterGroups for #struct_name #ty_generics #where_clause {
                 fn group_count(&self) -> usize {
-                    use ::beamer::core::parameter_types::Parameters;
-                    // Count = 1 (root) + flat groups + nested units recursively
-                    let mut units = Vec::new();
-                    self.collect_groups(&mut units, "", ::beamer::core::parameter_groups::ROOT_GROUP_ID);
-                    1 + #flat_group_count + units.len()
+                    #collect
+                    // The root, then the groups.
+                    1 + groups.len()
                 }
 
                 fn group_info(&self, index: usize) -> Option<::beamer::core::parameter_groups::GroupInfo> {
-                    use ::beamer::core::parameter_types::Parameters;
                     if index == 0 {
                         return Some(::beamer::core::parameter_groups::GroupInfo::root());
                     }
-
-                    // Check flat groups first (indices 1..=flat_group_count)
-                    let flat_idx = index - 1;
-                    if flat_idx < #flat_group_count {
-                        return match flat_idx {
-                            #(#flat_group_infos)*
-                            _ => None,
-                        };
-                    }
-
-                    // Then check nested groups
-                    let mut units = Vec::new();
-                    self.collect_groups(&mut units, "", ::beamer::core::parameter_groups::ROOT_GROUP_ID);
-                    let nested_idx = index - 1 - #flat_group_count;
-                    units.get(nested_idx).cloned()
+                    #collect
+                    groups.get(index - 1).cloned()
                 }
             }
         }
     } else {
-        // Only flat groups, no nesting
+        // Only flat groups, no nesting: their entries in the order of first use.
+        let flat_group_count = flat_groups.len();
+        let flat_group_infos: Vec<TokenStream> = flat_groups
+            .iter()
+            .enumerate()
+            .map(|(idx, group_name)| {
+                let group_id = group_id_expr(group_name);
+                // All flat groups are children of the root.
+                quote! {
+                    #idx => Some(::beamer::core::parameter_groups::GroupInfo {
+                        id: #group_id,
+                        name: #group_name,
+                        parent_id: ::beamer::core::parameter_groups::ROOT_GROUP_ID,
+                    }),
+                }
+            })
+            .collect();
+
         quote! {
             impl #impl_generics ::beamer::core::parameter_groups::ParameterGroups for #struct_name #ty_generics #where_clause {
                 fn group_count(&self) -> usize {
-                    1 + #flat_group_count // root + flat groups
+                    // The root, then the flat groups.
+                    1 + #flat_group_count
                 }
 
                 fn group_info(&self, index: usize) -> Option<::beamer::core::parameter_groups::GroupInfo> {
@@ -454,46 +484,48 @@ fn generate_count(ir: &ModelIR) -> TokenStream {
 }
 
 /// Generate the iter() method body.
+///
+/// The parameters come in the order of the fields: a nested group's
+/// parameters where its field is, a flat group's parameters together where
+/// its first parameter is, as hosts show a group's parameters together.
 fn generate_iter(ir: &ModelIR) -> TokenStream {
-    let parameter_iters: Vec<TokenStream> = ir
-        .parameter_fields()
-        .map(|parameter| {
-            let field = &parameter.field_name;
-            quote! { &self.#field as &dyn ::beamer::core::parameter_types::ParameterRef }
-        })
-        .collect();
-
-    let nested_chains: Vec<TokenStream> = ir
-        .nested_fields()
-        .map(|nested| {
-            let field = &nested.field_name;
-            quote! { .chain(self.#field.iter()) }
-        })
-        .collect();
-
-    if parameter_iters.is_empty() && nested_chains.is_empty() {
-        quote! { Box::new(::std::iter::empty()) }
-    } else if parameter_iters.is_empty() {
-        // Only nested fields
-        let first_nested = &ir.nested_fields().next().unwrap().field_name;
-        let rest_nested: Vec<TokenStream> = ir
-            .nested_fields()
-            .skip(1)
-            .map(|n| {
-                let field = &n.field_name;
-                quote! { .chain(self.#field.iter()) }
-            })
-            .collect();
+    // Collected into a vector: chained iterators nest one type per field,
+    // which the compiler refuses past its recursion limit for a struct with
+    // many fields.
+    let push = |field: &syn::Ident| {
         quote! {
-            Box::new(self.#first_nested.iter() #(#rest_nested)*)
+            all.push(&self.#field as &dyn ::beamer::core::parameter_types::ParameterRef);
         }
-    } else {
-        quote! {
-            Box::new(
-                [#(#parameter_iters),*].into_iter()
-                    #(#nested_chains)*
-            )
+    };
+    let mut flat_groups_done = std::collections::HashSet::new();
+    let mut parts: Vec<TokenStream> = Vec::new();
+    for field in &ir.fields {
+        match field {
+            crate::ir::FieldIR::Parameter(parameter) => match &parameter.attributes.group {
+                Some(group) => {
+                    if flat_groups_done.insert(group.as_str()) {
+                        for member in ir.parameter_fields() {
+                            if member.attributes.group.as_deref() == Some(group.as_str()) {
+                                parts.push(push(&member.field_name));
+                            }
+                        }
+                    }
+                }
+                None => parts.push(push(&parameter.field_name)),
+            },
+            crate::ir::FieldIR::Nested(nested) => {
+                let field = &nested.field_name;
+                parts.push(quote! { all.extend(::beamer::core::parameter_types::Parameters::iter(&self.#field)); });
+            }
+            _ => {}
         }
+    }
+
+    quote! {
+        let mut all: Vec<&dyn ::beamer::core::parameter_types::ParameterRef> =
+            Vec::with_capacity(::beamer::core::parameter_types::Parameters::count(self));
+        #(#parts)*
+        Box::new(all.into_iter())
     }
 }
 

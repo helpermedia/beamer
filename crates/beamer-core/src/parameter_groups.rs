@@ -31,15 +31,16 @@
 /// Each group has a unique ID and can have a parent group.
 pub type GroupId = i32;
 
-/// The id that hosts see for the group at `path`: the FNV-1a hash of the
-/// path, kept to 31 bits so that it is positive.
+/// The id of the group at `path`: the FNV-1a hash of the path, kept to
+/// 31 bits so that it is positive.
 ///
 /// The path of a flat group (`group = "Filter"` on its parameters) is its
 /// name. The path of a nested group is the path of its field, as in the
 /// ids of its parameters: `"filter"`, or `"filter/lfo"` for the field
 /// `lfo` inside it. So a group keeps its id when other groups are added,
-/// removed or moved. A host may record a parameter by the ids of its
-/// groups (an Audio Unit host by its key path).
+/// removed or moved. AUv3 hosts see it in the key paths of the parameters
+/// in the group, by which they may record them. VST3 hosts get units
+/// numbered by the position of the group in the plugin's list instead.
 ///
 /// This is the hash that `#[beamer::model]` and `#[beamer::group]` use.
 pub const fn group_id(path: &str) -> GroupId {

@@ -272,7 +272,8 @@ impl Default for BeamerAuParameterInfo {
 /// Matches `BeamerAuGroupInfo` in header.
 #[repr(C)]
 pub struct BeamerAuGroupInfo {
-    /// Unique group identifier (matches VST3 UnitId)
+    /// Unique group identifier: the hash of the group's path, part of the
+    /// AUv3 key paths of its parameters.
     pub id: i32,
     /// Human-readable group name (UTF-8, null-terminated)
     pub name: [c_char; BEAMER_AU_MAX_GROUP_NAME_LENGTH],

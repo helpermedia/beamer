@@ -68,8 +68,8 @@ pub const fn fnv1a_32(s: &str) -> u32 {
 /// FNV-1a 32-bit hash of `s`, kept to 31 bits so that it fits a positive
 /// `i32`.
 ///
-/// Parameter group ids use it: VST3 unit ids are `int32` values, kept
-/// positive since -1 means "no parent" for a VST3 unit.
+/// Parameter group ids use it. They are `i32` values, of which 0 is the
+/// root group and -1 means "no group".
 #[inline]
 pub const fn fnv1a_31(s: &str) -> i32 {
     (fnv1a_32(s) & 0x7FFF_FFFF) as i32

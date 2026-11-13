@@ -40,6 +40,7 @@ use beamer_core::{
 };
 
 use beamer_core::channel_layouts;
+use beamer_core::parameter_groups::{GroupId, GroupInfo, ROOT_GROUP_ID};
 use beamer_core::state_format::{StateEntries, StateWriter};
 use beamer_core::midi1_translator::order_parameter_number_controllers;
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
@@ -784,6 +785,9 @@ where
     processor: UnsafeCell<Option<P::Processor>>,
     /// Plugin configuration reference
     config: &'static Config,
+    /// The groups in the order the plugin lists them, the root first. A
+    /// unit's id is the position of its group here.
+    unit_groups: Box<[GroupInfo]>,
     /// Current sample rate
     sample_rate: UnsafeCell<f64>,
     /// Maximum block size
@@ -979,6 +983,16 @@ impl<P: Model> Vst3Processor<P> {
         // `getBusInfo()` reports) until the host activates others.
         let buses = HostBuses::new(&*model);
 
+        // Hosts such as Cubase show the units in the order of their ids, so
+        // a unit's id is the position of its group in the plugin's list,
+        // which follows the declaration. The hashed group ids stay with the
+        // Audio Units, whose hosts may record parameters by them; VST3
+        // hosts record automation by parameter id.
+        // `check_unique_ids()` refuses the instance when the first group
+        // is not the root.
+        let unit_groups: Box<[GroupInfo]> =
+            (0..model.group_count()).filter_map(|index| model.group_info(index)).collect();
+
         let component_handler = Arc::new(ComponentHandler::new());
         let host_notifier = restart_notifier(Arc::clone(&component_handler));
 
@@ -986,6 +1000,7 @@ impl<P: Model> Vst3Processor<P> {
             model,
             processor: UnsafeCell::new(None),
             config,
+            unit_groups,
             sample_rate: UnsafeCell::new(44100.0),
             max_block_size: UnsafeCell::new(1024),
             symbolic_sample_size: UnsafeCell::new(SymbolicSampleSizes_::kSample32 as i32),
@@ -1414,6 +1429,26 @@ impl<P: Model> Vst3Processor<P> {
     #[inline]
     fn model(&self) -> &P {
         &self.model
+    }
+
+    /// The unit of the group `group_id`: its position in the plugin's list
+    /// of groups. A group that is not listed is the root.
+    fn unit_id(&self, group_id: GroupId) -> UnitID {
+        self.unit_groups
+            .iter()
+            .position(|group| group.id == group_id)
+            .map_or(kRootUnitId, |position| position as UnitID)
+    }
+
+    /// The unit of a note expression or key switch: the unit of its group,
+    /// or -1 (no unit) when it has none. A group that is not listed is the
+    /// root, as for parameters.
+    fn unit_id_or_none(&self, group_id: GroupId) -> UnitID {
+        if group_id == -1 {
+            -1
+        } else {
+            self.unit_id(group_id)
+        }
     }
 
     /// Get a handle to the model for an editor view. The view may live
@@ -2672,7 +2707,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
                 copy_wstring(parameter_info.units, &mut info.units);
                 info.stepCount = parameter_info.step_count;
                 info.defaultNormalizedValue = parameter_info.default_normalized;
-                info.unitId = parameter_info.group_id;
+                info.unitId = self.unit_id(parameter_info.group_id);
                 info.flags = {
                     let mut flags = 0;
                     if parameter_info.flags.can_automate {
@@ -2715,7 +2750,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
                     copy_wstring(parameter_info.units, &mut info.units);
                     info.stepCount = parameter_info.step_count;
                     info.defaultNormalizedValue = parameter_info.default_normalized;
-                    info.unitId = parameter_info.group_id;
+                    info.unitId = self.unit_id(parameter_info.group_id);
                     // Hidden + automatable
                     info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate
                         | ParameterInfo_::ParameterFlags_::kIsHidden;
@@ -2737,7 +2772,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
                 copy_wstring("", &mut info.units);
                 info.stepCount = (preset_count - 1) as i32; // Discrete steps
                 info.defaultNormalizedValue = 0.0; // First preset is default
-                info.unitId = 0; // Root unit
+                info.unitId = kRootUnitId;
                 // Program change + list (shows preset names in host)
                 info.flags = ParameterInfo_::ParameterFlags_::kIsProgramChange
                     | ParameterInfo_::ParameterFlags_::kIsList;
@@ -2964,7 +2999,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
 
 impl<P: Model> IUnitInfoTrait for Vst3Processor<P> {
     unsafe fn getUnitCount(&self) -> i32 {
-        self.model().group_count() as i32
+        self.unit_groups.len() as i32
     }
 
     unsafe fn getUnitInfo(&self, unit_index: i32, info: *mut UnitInfo) -> tresult {
@@ -2972,15 +3007,17 @@ impl<P: Model> IUnitInfoTrait for Vst3Processor<P> {
             return kInvalidArgument;
         }
 
-        let model = self.model();
-
-        if let Some(group_info) = model.group_info(unit_index as usize) {
+        if let Some(group_info) = self.unit_groups.get(unit_index as usize) {
             // SAFETY: info is non-null (checked above) and host guarantees validity.
             let info = unsafe { &mut *info };
-            info.id = group_info.id;
-            info.parentUnitId = group_info.parent_id;
+            info.id = unit_index;
+            info.parentUnitId = if group_info.id == ROOT_GROUP_ID {
+                kNoParentUnitId
+            } else {
+                self.unit_id(group_info.parent_id)
+            };
             // Assign program list to root unit if we have presets
-            info.programListId = if group_info.id == 0 && !P::PRESETS.is_empty() {
+            info.programListId = if group_info.id == ROOT_GROUP_ID && !P::PRESETS.is_empty() {
                 FACTORY_PRESETS_LIST_ID
             } else {
                 kNoProgramListId
@@ -3067,7 +3104,7 @@ impl<P: Model> IUnitInfoTrait for Vst3Processor<P> {
     }
 
     unsafe fn getSelectedUnit(&self) -> i32 {
-        0 // Return root unit
+        kRootUnitId
     }
 
     unsafe fn selectUnit(&self, _unit_id: i32) -> tresult {
@@ -3321,7 +3358,7 @@ impl<P: Model> INoteExpressionControllerTrait for Vst3Processor<P> {
             copy_wstring(expr_info.title_str(), &mut vst_info.title);
             copy_wstring(expr_info.short_title_str(), &mut vst_info.shortTitle);
             copy_wstring(expr_info.units_str(), &mut vst_info.units);
-            vst_info.unitId = expr_info.unit_id;
+            vst_info.unitId = self.unit_id_or_none(expr_info.group_id);
             vst_info.valueDesc.minimum = expr_info.value_desc.minimum;
             vst_info.valueDesc.maximum = expr_info.value_desc.maximum;
             vst_info.valueDesc.defaultValue = expr_info.value_desc.default_value;
@@ -3414,7 +3451,7 @@ impl<P: Model> IKeyswitchControllerTrait for Vst3Processor<P> {
             vst_info.keyswitchMin = ks_info.keyswitch_min;
             vst_info.keyswitchMax = ks_info.keyswitch_max;
             vst_info.keyRemapped = ks_info.key_remapped;
-            vst_info.unitId = ks_info.unit_id;
+            vst_info.unitId = self.unit_id_or_none(ks_info.group_id);
             vst_info.flags = ks_info.flags;
             kResultOk
         } else {
