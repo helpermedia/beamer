@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-11-07
+**Last Updated:** 2026-11-13
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
 
 ---
@@ -67,20 +67,21 @@
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
-| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform) |
-| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor) |
-| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform) |
+| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drums) |
+| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per output (drums) |
+| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drums) |
 | | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
-| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Config.toml editor config |
-| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Prevents white flash |
-| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
-| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
+| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Config.toml editor config |
+| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Prevents white flash |
+| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
+| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
-| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | beginEdit/endEdit |
+| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
-| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Dial value text (delay, compressor, midi-transform, WebView Demo) |
-| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | From the bun workspace, read from source by Vite |
+| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Value text of dials and faders (delay, compressor, midi-transform, drums, WebView Demo) |
+| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drums with `beamer-svelte` instead of `beamer-react` |
+| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders and value fields as Svelte components, parameters and meters as Svelte stores |
 
 **Legend:**
 - ✅ Tested/Used

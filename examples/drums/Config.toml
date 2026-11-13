@@ -8,3 +8,5 @@ url = "https://github.com/helpermedia/beamer"
 email = "support@example.com"
 sample_accurate_automation = true
 log_level = "warn"
+editor_size = [560, 460]
+editor_background_color = "#171717"

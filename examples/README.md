@@ -225,7 +225,7 @@ Each preset starts from the defaults with `reset_parameters()`, so it sounds the
 
 ### [Drums](drums/)
 
-MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes to its own mono output bus for independent mixing in the DAW.
+MIDI-triggered drum synthesizer with multi-output buses and an editor in Svelte. Each drum type routes to its own mono output bus for independent mixing in the DAW.
 
 **Parameters:**
 
@@ -233,7 +233,7 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 |-----------|-------------|
 | **Kick** | Kick output level (-60 to +6 dB) |
 | **Snare** | Snare output level (-60 to +6 dB) |
-| **HiHat** | Hi-hat output level (-60 to +6 dB) |
+| **Hi-Hat** | Hi-hat output level (-60 to +6 dB) |
 | **Crash** | Crash cymbal output level (-60 to +6 dB) |
 
 **MIDI Note Mapping (GM Standard):**
@@ -245,6 +245,10 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 | 42 (F#1) | Hi-Hat |
 | 49 (C#2) | Crash |
 
+**Editor:**
+
+A bar with the plugin's name and the Beamer logo, then a channel strip per drum in the order of the output buses. Each strip has a lamp that flashes on every hit, as bright as the hit is loud, the drum's name and note, a fader for its level on a scale in dB with a meter of its output beside it, the level as a value to type and the output the drum plays through. A line under the strips says why only the kick sounds until the host's extra outputs are on. When the host stops calling the plugin (a power button, an FX switch) the meters fall on their own; the lamps fade on their own anyway. The editor scales with its window and has the look of the Beamer brand. Built with Svelte, Vite and Tailwind, the first example in Svelte.
+
 **Demonstrates:**
 - Multi-output auxiliary buses (`LAYOUTS`, `output_bus_info()`, `AuxiliaryBuffers`)
 - Mono buses via `BusLayout::MONO`, named with `BusInfo::main()` and `BusInfo::aux()`
@@ -255,6 +259,8 @@ MIDI-triggered drum synthesizer with multi-output buses. Each drum type routes t
 - Per-drum synthesis algorithms (sine, triangle, noise, metallic oscillators)
 - Velocity-sensitive response
 - Generic f32/f64 processing
+- A stream sender with every hit and a value sender with the held peak of each output, from the audio thread
+- The packages for web UIs: `beamer-controls` for the falling meters, `beamer-svelte` components for the faders and the value fields, the parameters and the meters read as Svelte stores, used from the bun workspace
 
 ---
 

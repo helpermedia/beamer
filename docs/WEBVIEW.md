@@ -517,15 +517,16 @@ When JavaScript calls `state.set(path, value)`, the runtime updates its value an
 
 ## Packages for the Web UI
 
-A web UI can use `__BEAMER__` directly, as the `delay` example does in plain JavaScript. Three TypeScript packages in `packages/` add types and the parts that are easy to get wrong:
+A web UI can use `__BEAMER__` directly, as the `delay` example does in plain JavaScript. Four packages in `packages/` add types and the parts that are easy to get wrong:
 
 | Package | Holds | Depends on |
 |---------|-------|------------|
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
 | `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachChoices()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React |
+| `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
-A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
+A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drums`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
 ### `beamer-api`
 
@@ -548,7 +549,7 @@ A parameter has at most one open gesture: a gesture that begins while another is
 
 ### `beamer-controls`
 
-Each control is a function that takes an element of your own markup and a parameter and returns the function that detaches it. It adds the role, the ARIA attributes and the input, each change one undo step in the host. It sets a role, a `tabindex` or an `aria-label` (from the parameter's name) only where your markup has none. Detaching removes what it set. The same shape fits a Svelte action.
+Each control is a function that takes an element of your own markup and a parameter and returns the function that detaches it. It adds the role, the ARIA attributes and the input, each change one undo step in the host. It sets a role, a `tabindex` or an `aria-label` (from the parameter's name) only where your markup has none. Detaching removes what it set. The same shape is a Svelte attachment, under the components of `beamer-svelte`.
 
 - `attachDial(element, parameter, options)` for a round control and `attachSlider(element, parameter, options)` for one that moves along a line. Both get ARIA's `role="slider"` (ARIA has no role for a dial) with `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in the parameter's plain units and its text as `aria-valuetext`; a slider also gets `aria-orientation`.
   - A dial drags vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the drag for each press. Each drag is one gesture from press to release. `dialAngle(value, arcStart, arcSweep)` says where to draw the dial's pointer so an arc drag lands where the dial is drawn.
@@ -615,6 +616,22 @@ const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
 const levels = fallingMeter("levels", { read: (value) => peaksInDb(value) });
 const peaks = useReadable(levels);
 ```
+
+### `beamer-svelte`
+
+The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `Choices` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. The drums' fader:
+
+```svelte
+<Slider {parameter} thumbLength={0.1} class="group relative h-full w-6 outline-none">
+  {#snippet children({ position })}
+    <!-- The thumb, its center at `position` of the height. -->
+    <span class="absolute inset-x-0 h-[10%] bg-neutral-800" style:bottom="{(position - 0.05) * 100}%"></span>
+  {/snippet}
+</Slider>
+<ValueEntry {parameter} />
+```
+
+The objects of `beamer-api` and `fallingMeter` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$meters` for a meter. A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop.
 
 ## Asset Embedding
 

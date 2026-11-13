@@ -22,6 +22,18 @@
 //! - Sample-accurate automation (`sample_accurate_automation` in
 //!   `Config.toml`), since the levels are read once per hit
 //! - Velocity-sensitive response
+//! - A stream sender for the hits and a value sender for the level of
+//!   each output, for the editor
+//!
+//! # Editor
+//!
+//! The editor in `webview/` is Svelte, on the packages beamer-api,
+//! beamer-controls and beamer-svelte. bun and Vite build it into
+//! `webview/dist/`, which the export macro embeds. It shows a channel
+//! strip per drum, in the order of the output buses: a lamp, the fader of
+//! the level parameter with a meter of the drum's output and the output it
+//! plays through. The audio thread sends what only it knows: every hit
+//! (a stream sender) and the level of each output (a value sender).
 //!
 //! # MIDI Note Mapping (GM Standard)
 //!
@@ -63,6 +75,7 @@
 //! ```
 
 use beamer::prelude::*;
+use beamer::serde::Serialize;
 
 /// Number of voices per drum type
 const VOICES_PER_DRUM: usize = 4;
@@ -78,6 +91,20 @@ const KICK_PITCH_ENV_TAU: f64 = 0.05;
 
 /// Crash cymbal metallic oscillator frequencies (Hz).
 const CRASH_METALLIC_FREQS: [f64; 6] = [4200.0, 5850.0, 7400.0, 9800.0, 12500.0, 15800.0];
+
+/// The lowest level the editor's meters show in dB, the level parameters'
+/// lowest value too.
+const METER_FLOOR_DB: f32 = -60.0;
+
+/// How fast the held peaks of the meters fall in dB per second.
+const METER_FALL_DB_PER_SECOND: f64 = 20.0;
+
+/// The meters at rest: no output on any bus.
+const METERS_AT_REST: Meters = [METER_FLOOR_DB; 4];
+
+/// Room for the hits of two ticks of the editor (a tick is about 16 ms),
+/// more than a drummer or a sequence plays.
+const HITS_CAPACITY: usize = 256;
 
 // =============================================================================
 // Enum Types
@@ -140,13 +167,16 @@ pub struct DrumsModel {
                 range = -60.0..=6.0, kind = "db")]
     pub snare_level: FloatParameter,
 
-    #[parameter(id = "hihat_level", name = "HiHat", default = 0.0,
+    #[parameter(id = "hihat_level", name = "Hi-Hat", default = 0.0,
                 range = -60.0..=6.0, kind = "db")]
     pub hihat_level: FloatParameter,
 
     #[parameter(id = "crash_level", name = "Crash", default = 0.0,
                 range = -60.0..=6.0, kind = "db")]
     pub crash_level: FloatParameter,
+
+    /// Events for the editor. The processor's senders are made from it.
+    pub events: WebViewEventQueue,
 }
 
 impl Model for DrumsModel {
@@ -169,6 +199,9 @@ impl Model for DrumsModel {
             sample_rate: setup.hz(),
             time_counter: 0,
             render_buffers: std::array::from_fn(|_| vec![0.0; MAX_BUFFER_SIZE]),
+            hits_sender: self.events.stream_sender("hits", HITS_CAPACITY),
+            meters_sender: self.events.value_sender("meters", METERS_AT_REST),
+            meters: METERS_AT_REST,
             model: self,
         }
     }
@@ -185,6 +218,24 @@ impl Model for DrumsModel {
         }
     }
 }
+
+// =============================================================================
+// Editor
+// =============================================================================
+
+/// A drum that was hit, sent to the editor, which lights the drum's lamp.
+/// As JSON an object with the drum (0 kick, 1 snare, 2 hi-hat, 3 crash, the
+/// order of the output buses) and the velocity from 0.0 to 1.0.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(crate = "beamer::serde")]
+pub struct Hit {
+    pub drum: u8,
+    pub velocity: f32,
+}
+
+/// The held peak of each output bus in dB, at least the floor of the
+/// meters, in the order of the buses. As JSON an array of four numbers.
+pub type Meters = [f32; 4];
 
 // =============================================================================
 // Voice Architecture
@@ -268,6 +319,18 @@ pub struct DrumsProcessor {
     sample_rate: f64,
     time_counter: u64,
     render_buffers: [Vec<f64>; 4], // [kick, snare, hihat, crash]
+
+    /// Sends every hit to the editor. Sends nothing while no editor is
+    /// open.
+    hits_sender: WebViewStreamSender<Hit>,
+
+    /// Sends the meters with every block while they show something. A pause
+    /// tells the editor that the host stopped calling the plugin (Logic's
+    /// power button, Reaper's FX switch): it lets them fall on its own then.
+    meters_sender: WebViewValueSender<Meters>,
+
+    /// The meters `meters_sender` sent last.
+    meters: Meters,
 }
 
 impl DrumsProcessor {
@@ -280,6 +343,8 @@ impl DrumsProcessor {
         };
 
         let drum_idx = drum_type as usize;
+        // Tell the editor. Pushing never waits or allocates.
+        self.hits_sender.push(Hit { drum: drum_idx as u8, velocity });
         let voices = &mut self.voices[drum_idx];
 
         // Voice allocation strategy (same as synthesizer example):
@@ -335,21 +400,36 @@ impl DrumsProcessor {
             sum += sample * voice.velocity as f64;
         }
 
-        // Apply level parameter (convert dB to linear)
-        let level_db = match drum_type {
-            DrumType::Kick => self.model.kick_level.get(),
-            DrumType::Snare => self.model.snare_level.get(),
-            DrumType::Crash => self.model.crash_level.get(),
-            DrumType::HiHat => self.model.hihat_level.get(),
+        // The level parameter as a gain: -60 dB at its lowest, as its text
+        // says, not silence.
+        let level = match drum_type {
+            DrumType::Kick => &self.model.kick_level,
+            DrumType::Snare => &self.model.snare_level,
+            DrumType::Crash => &self.model.crash_level,
+            DrumType::HiHat => &self.model.hihat_level,
         };
 
-        let level_linear = if level_db <= -60.0 {
-            0.0
-        } else {
-            10.0_f64.powf(level_db / 20.0)
-        };
+        sum * level.as_linear()
+    }
 
-        sum * level_linear
+    /// Hold the peak of each output and send the meters. Each peak falls for
+    /// the length of the block, then rises to the block's own. The editor
+    /// shows the newest value it gets, so a hit between two of its frames
+    /// stays visible.
+    fn update_meters(&mut self, num_samples: usize) {
+        let fall = (METER_FALL_DB_PER_SECOND * num_samples as f64 / self.sample_rate) as f32;
+        let meters: Meters = std::array::from_fn(|bus| {
+            let peak = self.render_buffers[bus][..num_samples].iter().fold(0.0_f64, |peak, sample| peak.max(sample.abs()));
+            let block_db = if peak > 0.0 { (20.0 * peak.log10()) as f32 } else { METER_FLOOR_DB };
+            (self.meters[bus] - fall).max(block_db).max(METER_FLOOR_DB)
+        });
+        // While the meters show something they go out with every block, also
+        // when they hold still. Meters at rest send nothing, so the editor
+        // has nothing to do.
+        if meters != self.meters || meters != METERS_AT_REST {
+            self.meters = meters;
+            self.meters_sender.send(&meters);
+        }
     }
 
     /// Generic processing for any sample type.
@@ -396,6 +476,8 @@ impl DrumsProcessor {
             self.render_buffers[2][sample_idx] = hihat;
             self.render_buffers[3][sample_idx] = crash;
         }
+
+        self.update_meters(num_samples);
 
         // Write to output buses
         // Bus 0 (main) = Kick
@@ -630,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_a_note_in_the_context_starts_at_its_offset() {
-        let mut processor = Arc::new(DrumsModel::default()).prepare(SampleRate(44100.0));
+        let mut processor = prepared(DrumsModel::default());
         // The kick, on the main bus.
         let events = [MidiEvent::note_on(32, 9, 36, 1.0, 36, 0.0, 0)];
         let mut kick = vec![0.0f32; 64];
@@ -640,5 +722,98 @@ mod tests {
         processor.process(&mut buffer, &mut aux, &context);
         assert!(kick[..32].iter().all(|sample| *sample == 0.0), "silent before the note");
         assert!(kick[32..].iter().any(|sample| *sample != 0.0), "the kick sounds");
+    }
+
+    // The processor of `model` at 44.1 kHz. The queue is claimed, as a
+    // plugin instance does, so that its senders work.
+    fn prepared(model: DrumsModel) -> DrumsProcessor {
+        model.events.claim();
+        Arc::new(model).prepare(SampleRate(44100.0))
+    }
+
+    // Render one block of `samples` with `events`, the kick on the main bus
+    // and the others on three aux buses.
+    fn render(processor: &mut DrumsProcessor, events: &[MidiEvent], samples: usize) -> [Vec<f32>; 4] {
+        let mut outputs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; samples]);
+        let [kick, snare, hihat, crash] = &mut outputs;
+        let mut buffer = Buffer::new([&mut kick[..]], std::iter::empty(), 0, samples);
+        let mut aux = AuxiliaryBuffers::new(
+            Vec::<Vec<&[f32]>>::new(),
+            vec![vec![&mut snare[..]], vec![&mut hihat[..]], vec![&mut crash[..]]],
+            samples,
+        );
+        let context = ProcessContext::new(44100.0, samples, Transport::default()).with_midi_input(events);
+        processor.process(&mut buffer, &mut aux, &context);
+        outputs
+    }
+
+    #[test]
+    fn test_hit_and_meters_json_is_what_the_editor_reads() {
+        let hit = Hit { drum: 2, velocity: 0.5 };
+        assert_eq!(serde_json::to_string(&hit).unwrap(), r#"{"drum":2,"velocity":0.5}"#);
+        assert_eq!(serde_json::to_string(&METERS_AT_REST).unwrap(), "[-60.0,-60.0,-60.0,-60.0]");
+    }
+
+    #[test]
+    fn test_meters_hold_the_peak_of_each_bus_and_fall_in_silence() {
+        let mut processor = prepared(DrumsModel::default());
+        // The snare, on aux bus 0.
+        let events = [MidiEvent::note_on(0, 9, 38, 1.0, 38, 0.0, 0)];
+        render(&mut processor, &events, 512);
+        let hit = processor.meters;
+        assert!(hit[1] > -20.0, "the snare's bus shows its level: {hit:?}");
+        assert_eq!(hit[0], METER_FLOOR_DB, "the kick's bus stays at the floor");
+        // Ten blocks of 4410 samples: a second, long after the snare. The
+        // peak it held falls 20 dB.
+        for _ in 0..10 {
+            render(&mut processor, &[], 4410);
+        }
+        assert!((processor.meters[1] - (hit[1] - 20.0)).abs() < 0.5, "the peak falls 20 dB a second: {:?}", processor.meters);
+        // Three more seconds and every meter rests at the floor.
+        for _ in 0..30 {
+            render(&mut processor, &[], 4410);
+        }
+        assert_eq!(processor.meters, METERS_AT_REST);
+    }
+
+    #[test]
+    fn test_the_editor_gets_every_hit_and_the_meters_until_they_rest() {
+        let model = Arc::new(DrumsModel::default());
+        model.events.claim();
+        model.events.editor_opened();
+        let mut processor = Arc::clone(&model).prepare(SampleRate(44100.0));
+        // The snare softly, a note no drum plays and the crash.
+        let events = [
+            MidiEvent::note_on(0, 9, 38, 0.5, 38, 0.0, 0),
+            MidiEvent::note_on(0, 9, 60, 1.0, 60, 0.0, 0),
+            MidiEvent::note_on(0, 9, 49, 1.0, 49, 0.0, 0),
+        ];
+        render(&mut processor, &events, 512);
+        let script = model.events.take_script().expect("the hits and the meters go out");
+        assert!(
+            script.contains(r#"_onEvent("hits",[{"drum":1,"velocity":0.5},{"drum":3,"velocity":1.0}]);"#),
+            "{script}"
+        );
+        assert!(script.contains(r#"_onValue("meters",["#), "{script}");
+        // The meters go out once more when they come to rest, then nothing.
+        for _ in 0..50 {
+            render(&mut processor, &[], 4410);
+        }
+        let script = model.events.take_script().expect("the meters at rest go out");
+        assert!(script.contains(r#"_onValue("meters",[-60.0,-60.0,-60.0,-60.0]);"#), "{script}");
+        render(&mut processor, &[], 4410);
+        assert_eq!(model.events.take_script(), None);
+    }
+
+    #[test]
+    fn test_the_lowest_level_plays_at_minus_60_db() {
+        let events = [MidiEvent::note_on(0, 9, 36, 1.0, 36, 0.0, 0)];
+        let full = render(&mut prepared(DrumsModel::default()), &events, 512);
+        let model = DrumsModel::default();
+        model.kick_level.set(-60.0);
+        let low = render(&mut prepared(model), &events, 512);
+        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let ratio = peak(&low[0]) / peak(&full[0]);
+        assert!((ratio - 0.001).abs() < 0.0001, "-60 dB is a thousandth, not silence: {ratio}");
     }
 }
