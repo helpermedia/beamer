@@ -4136,10 +4136,11 @@ static BeamerAuEditorHost beamer_auv2_host({{COCOA_EDITOR_VIEW_CLASS}}* self) {
     };
 }
 
-/// End in the host the gestures the page left open.
-static void beamer_auv2_end_open_gestures({{COCOA_EDITOR_VIEW_CLASS}}* self) {
+/// The page goes away: end in the host the gestures it left open and end
+/// the notes it left on.
+static void beamer_auv2_page_gone({{COCOA_EDITOR_VIEW_CLASS}}* self) {
     BeamerAuEditorHost host = beamer_auv2_host(self);
-    beamer_au_editor_sync_end_open_gestures(self->_sync, &host);
+    beamer_au_editor_sync_page_gone(self->_sync, &host);
 }
 
 static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t len) {
@@ -4150,7 +4151,7 @@ static void beamer_auv2_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv2_on_page_gone(void* context) {
     {{COCOA_EDITOR_VIEW_CLASS}}* self = (__bridge {{COCOA_EDITOR_VIEW_CLASS}}*)context;
-    beamer_auv2_end_open_gestures(self);
+    beamer_auv2_page_gone(self);
 }
 
 static void beamer_auv2_on_loaded(void* context) {
@@ -4192,7 +4193,7 @@ static void beamer_auv2_on_loaded(void* context) {
 - (void)dealloc {
     [_syncTimer invalidate];
     _syncTimer = nil;
-    beamer_auv2_end_open_gestures(self);
+    beamer_auv2_page_gone(self);
     beamer_au_ipc_close_sync(&_sync);
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_webviewHandle != NULL) {

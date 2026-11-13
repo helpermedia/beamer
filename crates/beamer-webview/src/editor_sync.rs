@@ -28,7 +28,11 @@
 //! The sync also notes the gestures the web UI began and did not end. A
 //! page that goes away during a drag or a scroll never sends the end, so
 //! the wrapper ends them in the host when the editor closes or the page
-//! loads again.
+//! loads again ([`EditorSync::page_gone`]).
+//!
+//! The notes the page plays go into the plugin's [`EditorNotes`], on their
+//! way to the render. When the page goes away, the sync ends the notes it
+//! left on, also when the editor closes without a call of `page_gone`.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -38,6 +42,7 @@ use beamer_core::state_format::SavedState;
 use beamer_core::{MiddleC, ParameterId, ParameterStore, SharedModel};
 use serde_json::Value;
 
+use crate::editor_notes::EditorNotes;
 use crate::event_queue::WebViewEventQueue;
 use crate::message::PageMessage;
 use crate::model::WebViewDispatch;
@@ -98,6 +103,13 @@ pub struct EditorSync {
     /// The gestures the web UI began and did not end yet: a parameter for
     /// each begin that waits for its end.
     open_gestures: Vec<ParameterId>,
+    /// The notes the page plays on their way to the render, for a plugin
+    /// with MIDI input.
+    notes: Option<EditorNotes>,
+    /// Whether the page started a note since its notes were last ended.
+    notes_played: bool,
+    /// Whether notes the plugin cannot take were reported already.
+    reported_notes: bool,
 }
 
 /// A `State` value above this size is reported once: it is serialized and
@@ -106,12 +118,14 @@ const LARGE_STATE: usize = 1 << 20;
 
 impl EditorSync {
     /// Start keeping an editor in step. Events the plugin emits from now
-    /// on reach it. `middle_c` is the plugin's from its `Config`, which the
-    /// page gets as `__BEAMER__.middleC`.
+    /// on reach it. `notes` is where the notes of the page go, `None` for a
+    /// plugin without MIDI input. `middle_c` is the plugin's from its
+    /// `Config`, which the page gets as `__BEAMER__.middleC`.
     pub fn open(
         model: Arc<dyn SharedModel>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEventQueue>,
+        notes: Option<EditorNotes>,
         middle_c: MiddleC,
     ) -> Self {
         if let Some(events) = &events {
@@ -133,6 +147,9 @@ impl EditorSync {
             state_sum: None,
             reported_large: false,
             open_gestures: Vec::new(),
+            notes,
+            notes_played: false,
+            reported_notes: false,
         }
     }
 
@@ -169,6 +186,11 @@ impl EditorSync {
     /// The script of one frame: the parameters that changed since the last
     /// frame, then the events that wait. `None` when nothing changed.
     pub fn frame_script(&mut self) -> Option<String> {
+        // The note-offs that did not fit last time.
+        if let Some(notes) = &self.notes {
+            notes.flush();
+        }
+
         let mut script = String::new();
         let parameters = self.model.parameter_store();
 
@@ -248,15 +270,64 @@ impl EditorSync {
                 self.dispatch.dispatch_event(&name, &data);
                 None
             }
+            PageMessage::NoteOn { note, velocity, channel } => {
+                if let Some(notes) = self.notes_of_page(note, channel) {
+                    if notes.note_on(channel, note, velocity.unwrap_or(1.0)) {
+                        self.notes_played = true;
+                    } else {
+                        log::debug!(
+                            "A note of the web UI was dropped: notes wait while the host does not process the plugin."
+                        );
+                    }
+                }
+                None
+            }
+            PageMessage::NoteOff { note, velocity, channel } => {
+                if let Some(notes) = self.notes_of_page(note, channel) {
+                    notes.note_off(channel, note, velocity);
+                }
+                None
+            }
+            PageMessage::AllNotesOff => {
+                self.release_notes();
+                None
+            }
         }
     }
 
-    /// End in the host the gestures the web UI began and did not end. The
-    /// wrapper calls it when the page goes away, as the editor closes or
-    /// the page loads again: their ends will not come.
-    pub fn end_open_gestures(&mut self, host: &mut dyn HostEdits) {
+    /// The page goes away, as the editor closes, the page loads again or
+    /// its process ends: end in the host the gestures it began and did not
+    /// end. End the notes it left on as well. Their ends will not come.
+    pub fn page_gone(&mut self, host: &mut dyn HostEdits) {
         while let Some(id) = self.open_gestures.pop() {
             host.end_gesture(id);
+        }
+        self.release_notes();
+    }
+
+    /// The notes for a note of the page, or `None`, logged, when the note
+    /// does not fit MIDI or the plugin takes no notes.
+    fn notes_of_page(&mut self, note: u8, channel: u8) -> Option<&EditorNotes> {
+        if note > 127 || channel > 15 {
+            log::warn!(
+                "The web UI played note {note} on channel {channel}: a note is 0 to 127, a channel 0 to 15."
+            );
+            return None;
+        }
+        if self.notes.is_none() && !std::mem::replace(&mut self.reported_notes, true) {
+            log::warn!(
+                "The web UI plays notes, but the plugin has no MIDI input: set midi_input in its Config.toml."
+            );
+        }
+        self.notes.as_ref()
+    }
+
+    /// End the notes the page started, if it started any since the last
+    /// time.
+    fn release_notes(&mut self) {
+        if let Some(notes) = self.notes.as_ref().filter(|_| self.notes_played) {
+            notes.release_all();
+            self.notes_played = false;
         }
     }
 
@@ -401,11 +472,13 @@ fn push_entry(script: &mut String, path: &str, json: &[u8]) {
 }
 
 impl Drop for EditorSync {
-    /// The editor is gone: events no longer wait for it.
+    /// The editor is gone: events no longer wait for it and the notes of its
+    /// page end.
     fn drop(&mut self) {
         if let Some(events) = &self.events {
             events.editor_closed();
         }
+        self.release_notes();
     }
 }
 
@@ -590,7 +663,7 @@ mod tests {
 
     fn sync() -> (Arc<TwoParameters>, EditorSync) {
         let parameters = Arc::new(TwoParameters::new());
-        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
+        let sync = EditorSync::open(Arc::clone(&parameters) as Arc<dyn SharedModel>, no_dispatch(), None, None, MiddleC::C3);
         (parameters, sync)
     }
 
@@ -635,9 +708,9 @@ mod tests {
 
         // The page goes away: the latest gesture ends first.
         host.calls.clear();
-        sync.end_open_gestures(&mut host);
+        sync.page_gone(&mut host);
         assert_eq!(host.calls, ["end 20", "end 10"]);
-        sync.end_open_gestures(&mut host);
+        sync.page_gone(&mut host);
         assert_eq!(host.calls.len(), 2);
     }
 
@@ -647,7 +720,7 @@ mod tests {
         let mut host = RecordingHost { unreachable: true, ..RecordingHost::default() };
 
         message(&mut sync, &mut host, r#"{"type":"parameter:begin","id":10}"#);
-        sync.end_open_gestures(&mut host);
+        sync.page_gone(&mut host);
         assert!(host.calls.is_empty());
     }
 
@@ -702,6 +775,7 @@ mod tests {
         let sync = EditorSync::open(
             Arc::new(TwoParameters::new()),
             Arc::clone(&echo) as Arc<dyn WebViewDispatch>,
+            None,
             None,
             MiddleC::C3,
         );
@@ -783,7 +857,7 @@ mod tests {
     fn test_first_frame_sends_a_value_that_is_not_a_number() {
         let parameters = Arc::new(TwoParameters::new());
         parameters.set_normalized(10, f64::NAN);
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), None, None, MiddleC::C3);
 
         let script = sync.frame_script().expect("a first frame");
         assert!(script.contains("10:[null,null,"));
@@ -803,7 +877,7 @@ mod tests {
         let events = WebViewEventQueue::new();
         events.claim();
         let parameters = Arc::new(TwoParameters::new());
-        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), Some(events.clone()), MiddleC::C3);
+        let mut sync = EditorSync::open(parameters as Arc<dyn SharedModel>, no_dispatch(), Some(events.clone()), None, MiddleC::C3);
 
         events.emit("tick", &1);
         let script = sync.frame_script().expect("a first frame");
@@ -826,7 +900,7 @@ mod tests {
 
         // The editor ticks before its page loaded: that value reaches
         // nothing.
-        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), None, MiddleC::C3);
         assert!(sync.frame_script().is_some());
         assert_eq!(sync.frame_script(), None);
 
@@ -855,11 +929,11 @@ mod tests {
         events.claim();
 
         events.emit("before", &1);
-        let mut first = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
+        let mut first = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), None, MiddleC::C3);
         assert_eq!(first.frame_script(), None);
 
         // A second editor of the same plugin keeps the queue open.
-        let second = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), MiddleC::C3);
+        let second = EditorSync::open(Arc::new(NoParameters), no_dispatch(), Some(events.clone()), None, MiddleC::C3);
         drop(second);
         events.emit("open", &2);
         assert_eq!(
@@ -874,7 +948,7 @@ mod tests {
 
     #[test]
     fn test_init_script_names_the_plugin_format_and_middle_c() {
-        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None, MiddleC::C4);
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None, None, MiddleC::C4);
         assert_eq!(
             sync.init_script("vst3"),
             "window.__BEAMER__._onInit([],{\"pluginFormat\":\"vst3\",\"middleC\":\"C4\",\"state\":{}})"
@@ -918,7 +992,7 @@ mod tests {
 
     fn state_sync() -> (Arc<TwoStates>, EditorSync) {
         let states = Arc::new(TwoStates::default());
-        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, no_dispatch(), None, MiddleC::C3);
+        let sync = EditorSync::open(Arc::clone(&states) as Arc<dyn SharedModel>, no_dispatch(), None, None, MiddleC::C3);
         (states, sync)
     }
 
@@ -1012,5 +1086,95 @@ mod tests {
         let init = sync.init_script("vst3");
         assert!(init.contains("\"zoom\":5"));
         assert_eq!(sync.frame_script(), None);
+    }
+
+    /// A sync whose page plays into `notes`, with the receiver of the
+    /// render.
+    fn note_sync() -> (EditorSync, crate::EditorNoteReceiver) {
+        let notes = EditorNotes::new();
+        let receiver = notes.receiver().unwrap();
+        let sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None, Some(notes), MiddleC::C3);
+        (sync, receiver)
+    }
+
+    /// What the render takes: (on, channel, pitch, velocity).
+    fn rendered(receiver: &mut crate::EditorNoteReceiver) -> Vec<(bool, u8, u8, f32)> {
+        let mut buffer = beamer_core::MidiBuffer::new_boxed(0);
+        receiver.take_into(&mut buffer, true);
+        buffer
+            .iter()
+            .map(|event| match event.event {
+                beamer_core::MidiEventKind::NoteOn(on) => (true, on.channel, on.pitch, on.velocity),
+                beamer_core::MidiEventKind::NoteOff(off) => (false, off.channel, off.pitch, off.velocity),
+                other => panic!("not a note: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_notes_of_the_page_reach_the_render() {
+        let (mut sync, mut receiver) = note_sync();
+        let mut host = RecordingHost::default();
+        for json in [
+            r#"{"type":"note:on","note":36}"#,
+            r#"{"type":"note:on","note":38,"velocity":0.5,"channel":9}"#,
+            r#"{"type":"note:off","note":36,"velocity":0.25}"#,
+        ] {
+            assert_eq!(message(&mut sync, &mut host, json), None);
+        }
+        assert_eq!(rendered(&mut receiver), [(true, 0, 36, 1.0), (true, 9, 38, 0.5), (false, 0, 36, 0.25)]);
+        assert!(host.calls.is_empty());
+
+        // The page ends what it started.
+        message(&mut sync, &mut host, r#"{"type":"note:all-off"}"#);
+        let released = rendered(&mut receiver);
+        assert_eq!(released.len(), 1);
+        assert_eq!((released[0].0, released[0].1, released[0].2), (false, 9, 38));
+    }
+
+    #[test]
+    fn test_notes_the_page_left_on_end_when_it_goes_away() {
+        let (mut sync, mut receiver) = note_sync();
+        let mut host = RecordingHost::default();
+        message(&mut sync, &mut host, r#"{"type":"note:on","note":36}"#);
+        rendered(&mut receiver);
+
+        sync.page_gone(&mut host);
+        assert_eq!(rendered(&mut receiver).len(), 1);
+        // A new page plays again; the editor closes without page_gone.
+        message(&mut sync, &mut host, r#"{"type":"note:on","note":40}"#);
+        rendered(&mut receiver);
+        drop(sync);
+        let released = rendered(&mut receiver);
+        assert_eq!(released.len(), 1);
+        assert_eq!((released[0].0, released[0].2), (false, 40));
+    }
+
+    #[test]
+    fn test_a_page_that_played_nothing_releases_nothing() {
+        let notes = EditorNotes::new();
+        let mut sync = EditorSync::open(Arc::new(NoParameters), no_dispatch(), None, Some(notes.clone()), MiddleC::C3);
+        sync.page_gone(&mut RecordingHost::default());
+        drop(sync);
+        // Nothing went into the ring: a release would have taken a slot.
+        assert!(notes.receiver().is_some());
+        let mut receiver = notes.receiver().unwrap();
+        let mut buffer = beamer_core::MidiBuffer::new_boxed(0);
+        receiver.take_into(&mut buffer, true);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_notes_out_of_range_or_without_midi_input_change_nothing() {
+        let (mut playing, mut receiver) = note_sync();
+        let mut host = RecordingHost::default();
+        message(&mut playing, &mut host, r#"{"type":"note:on","note":128}"#);
+        message(&mut playing, &mut host, r#"{"type":"note:on","note":60,"channel":16}"#);
+        assert!(rendered(&mut receiver).is_empty());
+
+        let (_, mut without_midi) = sync();
+        assert_eq!(message(&mut without_midi, &mut host, r#"{"type":"note:on","note":60}"#), None);
+        assert_eq!(message(&mut without_midi, &mut host, r#"{"type":"note:all-off"}"#), None);
+        without_midi.page_gone(&mut host);
     }
 }

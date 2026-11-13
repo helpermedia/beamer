@@ -1247,9 +1247,10 @@ char* _Nullable beamer_au_editor_sync_message(BeamerAuEditorSyncHandle _Nullable
                                               const BeamerAuEditorHost* _Nonnull host);
 
 /**
- * End in the host, through `host`, the gestures the web UI began and did
- * not end: its page goes away, as the editor closes or the page loads
- * again, so their ends will not come.
+ * The page of the web UI goes away, as the editor closes, the page loads
+ * again or its process ends: end in the host, through `host`, the gestures
+ * it began and did not end. End the notes it left on as well. Their ends
+ * will not come.
  *
  * Thread Safety: Main thread.
  *
@@ -1257,8 +1258,8 @@ char* _Nullable beamer_au_editor_sync_message(BeamerAuEditorSyncHandle _Nullable
  * @param host What the editor does in the host. Its context must stay
  *             valid during the call.
  */
-void beamer_au_editor_sync_end_open_gestures(BeamerAuEditorSyncHandle _Nullable sync,
-                                             const BeamerAuEditorHost* _Nonnull host);
+void beamer_au_editor_sync_page_gone(BeamerAuEditorSyncHandle _Nullable sync,
+                                     const BeamerAuEditorHost* _Nonnull host);
 
 /**
  * The editor was closed: stop keeping events for it and free the handle.

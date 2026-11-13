@@ -1185,6 +1185,17 @@ mod tests {
         process_mode: ProcessMode,
         settings: RenderSettings,
     ) -> Box<dyn RenderBlockTrait> {
+        render_block_playing(plugin, process_mode, settings, None)
+    }
+
+    /// Prepare the plugin and create its render block, like the bridge
+    /// does, with the receiver of the editor's notes.
+    fn render_block_playing(
+        plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
+        process_mode: ProcessMode,
+        settings: RenderSettings,
+        editor_notes: Option<beamer_webview::EditorNoteReceiver>,
+    ) -> Box<dyn RenderBlockTrait> {
         let bus_config = stereo_bus_config();
         plugin
             .lock()
@@ -1204,6 +1215,8 @@ mod tests {
             FRAMES as u32,
             44100.0,
             settings,
+            editor_notes,
+            process_mode == ProcessMode::Offline,
         )
     }
 
@@ -1461,11 +1474,41 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    #[test]
+    fn test_render_call_with_notes_of_the_editor_does_not_allocate() {
+        let notes = beamer_webview::EditorNotes::new();
+        let plugin = boxed(AuProcessor::<TestModel>::new());
+        let block = render_block_playing(&plugin, ProcessMode::Realtime, ALL_SETTINGS, notes.receiver());
+        let mut input = StereoList::filled(0.5);
+        let mut output = StereoList::filled(0.0);
+        render(block.as_ref(), Some(&mut input), &mut output);
+
+        // Notes on, one again, notes off and a release, put in before the
+        // count and taken by the render calls.
+        for pitch in 0..64u8 {
+            assert!(notes.note_on(0, pitch, 1.0));
+        }
+        assert!(notes.note_on(0, 3, 0.5));
+        for pitch in 0..32u8 {
+            notes.note_off(0, pitch, None);
+        }
+        notes.release_all();
+        let allocations = allocations::count(|| {
+            render(block.as_ref(), Some(&mut input), &mut output);
+            render(block.as_ref(), Some(&mut input), &mut output);
+        });
+        assert_eq!(allocations, 0);
+    }
+
     thread_local! {
         /// What the `RecordingProcessor` saw on this thread: per process()
         /// call its length and the offsets of the MIDI events it got, which
         /// its context holds too.
         static RECORDED: std::cell::RefCell<Vec<(usize, Vec<u32>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+        /// The note IDs of the notes the `RecordingProcessor` got on this
+        /// thread, in order.
+        static RECORDED_NOTE_IDS: std::cell::RefCell<Vec<i32>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
@@ -1510,6 +1553,14 @@ mod tests {
         fn process_midi(&mut self, input: &[MidiEvent], output: &mut beamer_core::MidiBuffer) {
             for event in input {
                 self.midi_offsets.push(event.sample_offset);
+                let note_id = match event.event {
+                    beamer_core::MidiEventKind::NoteOn(on) => Some(on.note_id),
+                    beamer_core::MidiEventKind::NoteOff(off) => Some(off.note_id),
+                    _ => None,
+                };
+                if let Some(note_id) = note_id {
+                    RECORDED_NOTE_IDS.with(|ids| ids.borrow_mut().push(note_id));
+                }
                 output.push(*event);
             }
         }
@@ -1549,12 +1600,22 @@ mod tests {
     fn render_recording(
         plugin: &Arc<Mutex<Box<dyn AuPluginInstance>>>,
         settings: RenderSettings,
+        events: Vec<crate::render::AURenderEvent>,
+    ) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
+        let block = render_block_with(plugin, ProcessMode::Realtime, settings);
+        render_events(block.as_ref(), events)
+    }
+
+    /// Render a buffer with `events` through `block`. Returns what each
+    /// process() call of the recording plugin got (its length and its MIDI
+    /// offsets) and the MIDI offsets the host got back.
+    fn render_events(
+        block: &dyn RenderBlockTrait,
         mut events: Vec<crate::render::AURenderEvent>,
     ) -> (Vec<(usize, Vec<u32>)>, Vec<u32>) {
         use crate::render::test_events::link;
         use crate::render::MidiOutputSink;
 
-        let block = render_block_with(plugin, ProcessMode::Realtime, settings);
         let mut input = StereoList::filled(0.5);
         let mut output = StereoList::filled(0.0);
         let list = link(&mut events);
@@ -1596,6 +1657,83 @@ mod tests {
 
         // The host gets the output at the offsets of the whole buffer.
         assert_eq!(sent, [10, 40]);
+    }
+
+    #[test]
+    fn test_notes_of_the_editor_follow_the_host_s_at_offset_0() {
+        use crate::render::test_events::midi_event;
+        use crate::render::MidiOutputSink;
+        use beamer_core::{editor_note_id, note_id};
+
+        let notes = beamer_webview::EditorNotes::new();
+        let plugin = boxed(AuProcessor::<RecordingModel>::new());
+        let block = render_block_playing(&plugin, ProcessMode::Realtime, ALL_SETTINGS, notes.receiver());
+        RECORDED_NOTE_IDS.with(|ids| ids.borrow_mut().clear());
+        let note_ids = || RECORDED_NOTE_IDS.with(|ids| std::mem::take(&mut *ids.borrow_mut()));
+
+        // The editor plays while the host sends a note at 0 and one at 10.
+        assert!(notes.note_on(9, 36, 0.5));
+        let events = vec![midi_event(0, [0x90, 60, 100]), midi_event(10, [0x90, 62, 100])];
+        let (recorded, sent) = render_events(block.as_ref(), events);
+        assert_eq!(recorded, [(FRAMES, vec![0, 0, 10])]);
+        assert_eq!(note_ids(), [note_id(0, 0, 60), editor_note_id(9, 36), note_id(0, 0, 62)]);
+        // A plugin that passes its MIDI on sends them to the host as well.
+        assert_eq!(sent, [0, 0, 10]);
+
+        // A bypass without a MIDI output to pass them to leaves them for
+        // the next processed block: the processor gets its note-off.
+        notes.note_off(9, 36, None);
+        // SAFETY: The timestamp is valid for the call; no event list.
+        unsafe { block.pass_midi_through(&timestamp(), FRAMES as u32, std::ptr::null(), None) };
+        render_events(block.as_ref(), Vec::new());
+        assert_eq!(note_ids(), [editor_note_id(9, 36)]);
+
+        // A bypassed MIDI effect passes them through as the host's notes.
+        assert!(notes.note_on(9, 36, 0.5));
+        render_events(block.as_ref(), Vec::new());
+        note_ids();
+        notes.note_off(9, 36, None);
+        let mut sent: Vec<u32> = Vec::new();
+        let context: *mut Vec<u32> = &mut sent;
+        // SAFETY: The sink is only used during the call below, while `sent`
+        // is alive.
+        let sink = unsafe { MidiOutputSink::new(record_midi_output, context.cast()) };
+        // SAFETY: The timestamp is valid for the call; no event list.
+        unsafe { block.pass_midi_through(&timestamp(), FRAMES as u32, std::ptr::null(), Some(sink)) };
+        assert_eq!(sent, [0]);
+        assert!(note_ids().is_empty());
+
+        // A render call without samples leaves them for the next call.
+        assert!(notes.note_on(0, 38, 1.0));
+        let mut output = StereoList::filled(0.0);
+        let status = block.process(
+            &mut 0u32,
+            &timestamp(),
+            0,
+            0,
+            output.as_list(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            None,
+            None,
+        );
+        assert_eq!(status, 0);
+        assert!(note_ids().is_empty());
+        render_events(block.as_ref(), Vec::new());
+        assert_eq!(note_ids(), [editor_note_id(0, 38)]);
+
+        // An offline render plays no note of the editor but ends those that
+        // are on. The new block takes the notes once the old one is gone.
+        drop(block);
+        let receiver = notes.receiver();
+        assert!(receiver.is_some());
+        let block = render_block_playing(&plugin, ProcessMode::Offline, ALL_SETTINGS, receiver);
+        assert!(notes.note_on(0, 40, 1.0));
+        notes.note_off(0, 38, None);
+        let (recorded, _) = render_events(block.as_ref(), Vec::new());
+        assert_eq!(recorded, [(FRAMES, vec![0])]);
+        assert_eq!(note_ids(), [editor_note_id(0, 38)]);
     }
 
     #[test]
@@ -1746,6 +1884,8 @@ mod tests {
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
+            None,
+            false,
         );
 
         let mut input = StereoList64::filled(0.25);
@@ -2006,6 +2146,8 @@ mod tests {
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
+            None,
+            false,
         );
 
         // The main bus renders, then the host asks for the aux bus of the
@@ -2195,6 +2337,8 @@ mod tests {
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
+            None,
+            false,
         );
 
         let timestamp = timestamp();
@@ -2307,6 +2451,8 @@ mod tests {
             FRAMES as u32,
             44100.0,
             ALL_SETTINGS,
+            None,
+            false,
         );
 
         // The host's aux buffers hold something before the call.

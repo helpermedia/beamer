@@ -28,7 +28,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 │  beamer-webview                                                 │
 │  - Both ends of the protocol: beamer_runtime.js (the            │
 │    window.__BEAMER__ runtime), WebViewDispatch, EditorSync,     │
-│    the event queue and its senders                              │
+│    the event queue and its senders, the editor's notes          │
 │  - WKWebView on macOS, WebView2 stub on Windows                 │
 │  - Custom URL scheme handler (beamer://localhost/...)           │
 │  - Message handler (WKScriptMessageHandler)                     │
@@ -40,7 +40,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 | Crate | Role |
 |-------|------|
 | `beamer-core` | The editor settings of `Config` and the `EmbeddedAssets` types: which editor a plugin has |
-| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `parameters_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
+| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `EditorNotes` (the notes the page plays, on their way to the render), `parameters_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, `HostEdits` through the `IComponentHandler` |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and the host side of `HostEdits` (`BeamerAuEditorHost`) |
 
@@ -125,6 +125,9 @@ interface Beamer {
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
+  noteOn(note: number, velocity?: number, channel?: number): void;
+  noteOff(note: number, velocity?: number, channel?: number): void;
+  allNotesOff(): void;
 }
 
 declare const __BEAMER__: Beamer;
@@ -210,6 +213,48 @@ __BEAMER__.on("sampleLoaded", (name) => {
 ```
 
 `on()` returns an unsubscribe function. See [Events from Rust](#events-from-rust) for the Rust side. The arrays of stream senders from the audio thread arrive the same way. The values of value senders are in `__BEAMER__.values` (see [Data from the Audio Thread](#data-from-the-audio-thread)).
+
+### Notes for the Processor
+
+A page plays notes in the processor: drum pads that sound when clicked, an on-screen keyboard. The processor gets them with the host's MIDI input, so an instrument plays them with no code of its own:
+
+```javascript
+// A pad that sounds while it is held. The capture sends the pointerup
+// here also when the pointer leaves the pad.
+pad.addEventListener("pointerdown", (event) => {
+  pad.setPointerCapture(event.pointerId);
+  __BEAMER__.noteOn(36, 0.8);
+});
+pad.addEventListener("pointerup", () => __BEAMER__.noteOff(36));
+pad.addEventListener("pointercancel", () => __BEAMER__.noteOff(36));
+```
+
+| Method | Description |
+|--------|-------------|
+| `noteOn(note, velocity?, channel?)` | Start a note: a note number 0 to 127, a velocity 0 to 1 (default 1) and a channel 0 to 15 (default 0). A velocity of 0 is the smallest, not a note-off, as in MIDI 2.0 |
+| `noteOff(note, velocity?, channel?)` | End a note, with a release velocity 0 to 1 (default 64/127, MIDI's) |
+| `allNotesOff()` | End every note the page started |
+
+A note number or channel that does not fit is dropped with a warning in the console, as is a velocity that is not a number; a velocity is clamped to 0 to 1. `playNote()` of `beamer-api` plays a short note for a click that does not hold (see [Packages for the Web UI](#packages-for-the-web-ui)).
+
+What the processor gets:
+
+- **The notes are MIDI input.** `process_midi()` gets them and [`ProcessContext::midi_input()`](REFERENCE.md#midi-reference) holds them, at offset 0 of the block that takes them, after the host's events at that offset. A MIDI effect transforms them as the host's notes and a plugin with MIDI output passes them on. They are not sent to the host on their own; a host does not record them. Only a plugin with `midi_input` takes them: for any other one the page's notes are ignored and the plugin logs that once.
+- **Note IDs of their own.** A note of the editor has the ID `editor_note_id(channel, pitch)`, from -10000 up: VST3 keeps -10000 to -1000 for a plugin's own notes, which no host uses. A plugin that finds its voices by note ID keeps a note of the editor and one of the host apart, also at the same pitch.
+- **MIDI 1.0 and 2.0 alike.** They are added after the host's MIDI was read, in either protocol, as the same events.
+
+No hanging notes:
+
+- The plugin knows which notes of the editor are on, also through a reset of the processor. A note-off for a note that is not on is dropped; a note-on for a note that is on ends it first.
+- When the page goes away (the editor closes, the page loads again, its process ends), the plugin ends the notes it left on, as it ends the gestures (see [When the Page Loads Again](#when-the-page-loads-again)).
+
+When the host does not call the plugin:
+
+- The notes wait in a queue of 257 requests between the main thread and the audio thread, which takes them without a lock or allocation. A note-on goes in only while fewer than 128 wait, so that the note-off of each fits; the last place is for the release when the page goes away. A note-off that does not fit (for a note held from before the host stopped calling) is owed: it goes in with the default release velocity once there is room, checked with each note and each frame.
+- A note-on that waited longer than 500 ms is dropped when the audio thread takes it, with its note-off: a click sounds now or not at all, not in a burst when the host calls again.
+- An offline render plays no note of the editor. Nor does a render that processes nothing, such as an Audio Unit the host bypasses (a bypassed MIDI effect passes them on): the notes wait for the next processed block.
+
+Hosts process a track ahead of time in large blocks when it is not played live: Logic for a track that is not selected, Cubase with ASIO-Guard, Reaper with anticipative FX. A note from the editor of such a track sounds later than one of a selected or armed track.
 
 ### Ready Promise
 
@@ -513,6 +558,8 @@ When JavaScript calls `parameters.set(stringId, value)`:
 
 `beginEdit` and `endEdit` follow the same path, posting `parameter:begin` and `parameter:end` messages that map to the host's automation gesture APIs. The editor sync notes each gesture the host was told about and that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), it ends the gesture in the host through `HostEdits`, so the host never keeps a parameter touched.
 
+`noteOn`, `noteOff` and `allNotesOff` post `{type: "note:on", note, velocity, channel}`, `note:off` and `note:all-off`. The editor sync puts them into the plugin's `EditorNotes`, which the format wrapper's render takes into the MIDI input of the next block (see [Notes for the Processor](#notes-for-the-processor)). It notes whether the page started a note. When the page goes away, it ends them with the gestures, also when the editor closes without a word from the wrapper.
+
 When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The editor sync decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
 ## Packages for the Web UI
@@ -521,7 +568,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 
 | Package | Holds | Depends on |
 |---------|-------|------------|
-| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
+| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()`, `noteOn()`, `noteOff()`, `playNote()`, `allNotesOff()` | Nothing |
 | `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachChoices()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React |
 | `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
@@ -546,6 +593,23 @@ await mix.typeValue("-6 dB"); // the parameter's own parser
 Where a host keeps these steps differs. Reaper adds them to its undo history, Logic to the Undo and Redo of its plug-in window (not the project's undo history). Cubase keeps them in the MixConsole history for effects only and records none for instruments.
 
 A parameter has at most one open gesture: a gesture that begins while another is open ends that one first, so two controls of one parameter never overlap in the host's undo history. `stateField(path)` and `senderValue(name)` read, follow and (for a `State` field) set the other values. All three return one object per id, whose `get` and `subscribe` work detached, in the shape React's `useSyncExternalStore` and Svelte's stores expect.
+
+`noteOn(noteNumber, options)`, `noteOff()` and `allNotesOff()` play notes in the processor (see [Notes for the Processor](#notes-for-the-processor)), with `velocity` and `channel` as options. `playNote(noteNumber, { duration })` plays a short note for a click that does not hold, such as a key press on a focused pad: it starts the note and ends it after `duration` milliseconds (default 100). Playing the note again before then starts it anew; the older timer does not end the newer note.
+
+```typescript
+import { noteOff, noteOn, playNote } from "@helpermedia/beamer-api";
+
+pad.onpointerdown = (event) => {
+  pad.setPointerCapture(event.pointerId);
+  noteOn(36, { velocity: 0.8 });
+};
+pad.onpointerup = pad.onpointercancel = () => noteOff(36);
+pad.onkeydown = (event) => {
+  if (event.key !== " " || event.repeat) return;
+  event.preventDefault();
+  playNote(36);
+};
+```
 
 ### `beamer-controls`
 
@@ -696,7 +760,7 @@ A right click or Control click on the editor shows no menu from the webview in r
 
 ## When the Page Loads Again
 
-A page loads again after Reload in a debug build, `location.reload()`, a reload of a dev server, or when its process ends. The webview runs the page in a process of its own. When the system ends that process (to reclaim memory, or after a crash in the webview), Beamer loads the page again. The new page starts like the first one: it gets the parameter values and `State` fields from Rust (the init dump). The gestures the old page left open end in the host as soon as the new page replaces it or its process ends, also when Beamer does not load it again. Nothing the old page posted reaches the plugin after that. What only the page held, such as an open panel or a scroll position, is gone. Keep what has to survive in a `State` field. If the process ends again within 10 seconds, Beamer does not load the page a third time: the editor stays blank until it is opened again, so a page that ends its own process does not keep doing so in the host.
+A page loads again after Reload in a debug build, `location.reload()`, a reload of a dev server, or when its process ends. The webview runs the page in a process of its own. When the system ends that process (to reclaim memory, or after a crash in the webview), Beamer loads the page again. The new page starts like the first one: it gets the parameter values and `State` fields from Rust (the init dump). The gestures the old page left open end in the host as soon as the new page replaces it or its process ends, also when Beamer does not load it again. So do the notes it left on. Nothing the old page posted reaches the plugin after that. What only the page held, such as an open panel or a scroll position, is gone. Keep what has to survive in a `State` field. If the process ends again within 10 seconds, Beamer does not load the page a third time: the editor stays blank until it is opened again, so a page that ends its own process does not keep doing so in the host.
 
 ## Background Color
 

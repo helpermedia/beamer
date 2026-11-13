@@ -46,7 +46,7 @@ use beamer_core::midi1_translator::order_parameter_number_controllers;
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
-use beamer_webview::{WebViewDispatch, WebViewEventQueue, WebViewEvents};
+use beamer_webview::{EditorNoteReceiver, EditorNotes, WebViewDispatch, WebViewEventQueue, WebViewEvents};
 use crate::webview::WebViewConfig;
 use crate::factory::ComponentFactory;
 use crate::speakers;
@@ -858,6 +858,11 @@ where
     webview_events: Option<WebViewEventQueue>,
     /// Where the web UI's invoke calls and events go: the model.
     webview_dispatch: Arc<dyn WebViewDispatch>,
+    /// The notes the editor plays, for a plugin with an editor and MIDI
+    /// input. The editors put them in.
+    editor_notes: Option<EditorNotes>,
+    /// Takes the notes of the editor into the MIDI input of a process call.
+    editor_note_receiver: UnsafeCell<Option<EditorNoteReceiver>>,
     /// Latency in samples as the processor reported it last, 0 while unprepared.
     /// The host asks for it from its own threads while `process()` runs, so
     /// the answer must not need the processor (see `publish_timing`).
@@ -975,6 +980,9 @@ impl<P: Model> Vst3Processor<P> {
         }
         let webview_events = events.cloned();
         let webview_dispatch = Arc::clone(&model) as Arc<dyn WebViewDispatch>;
+        // The notes the editor plays are MIDI input.
+        let editor_notes = (config.midi_input && config.has_editor()).then(EditorNotes::new);
+        let editor_note_receiver = editor_notes.as_ref().and_then(EditorNotes::receiver);
 
         let known_state_generation =
             Arc::new(AtomicU64::new(beamer_core::Saved::state_generation(&*model)));
@@ -1025,6 +1033,8 @@ impl<P: Model> Vst3Processor<P> {
             host_notifier,
             webview_events,
             webview_dispatch,
+            editor_notes,
+            editor_note_receiver: UnsafeCell::new(editor_note_receiver),
             latency_samples: AtomicU32::new(0),
             tail_samples: AtomicU32::new(0),
             smoothing_reset_requested: AtomicBool::new(false),
@@ -2513,6 +2523,15 @@ impl<P: Model> IAudioProcessorTrait for Vst3Processor<P> {
         #[cfg(feature = "diagnostics")]
         self.diagnostics.state().note_midi_input(midi_input.as_slice());
 
+        // The notes of the editor follow the host's at offset 0 (the sort
+        // below keeps their order). An offline render plays none.
+        // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+        if let Some(receiver) = unsafe { (*self.editor_note_receiver.get()).as_mut() } {
+            // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
+            let offline = unsafe { *self.process_mode.get() } == ProcessModes_::kOffline as int32;
+            receiver.take_into(midi_input, !offline);
+        }
+
         // The plugin's MIDI output of this block. Clearing it also ends the
         // SysEx the host got with the previous block.
         // SAFETY: VST3 guarantees single-threaded access during process(). No aliasing.
@@ -2983,6 +3002,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
             Arc::clone(&self.component_handler),
             Arc::clone(&self.webview_dispatch),
             self.webview_events.clone(),
+            self.editor_notes.clone(),
             Arc::clone(&self.known_state_generation),
         );
         let wrapper = vst3::ComWrapper::new(view);
@@ -4471,6 +4491,83 @@ mod tests {
         assert_eq!(run(&WITH_BOTH), (1, 1));
         assert_eq!(run(&WITHOUT_INPUT), (0, 0));
         assert_eq!(run(&WITHOUT_OUTPUT), (1, 0));
+    }
+
+    #[test]
+    fn test_notes_of_the_editor_follow_the_host_s_at_offset_0() {
+        static WITH_EDITOR: Config = Config::new("Editor Notes", Category::Instrument, "Test", "ednt")
+            .with_midi_output(true)
+            .with_webview_url("http://localhost:5173");
+        let wrapper = Vst3Processor::<CcModel>::new(&WITH_EDITOR);
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            maxSamplesPerBlock: 64,
+            sampleRate: 44100.0,
+        };
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        CC_PROCESSOR_MIDI.with(|calls| calls.borrow_mut().clear());
+        let notes = wrapper.editor_notes.clone().expect("an instrument with an editor takes notes from it");
+
+        // The editor plays while the host sends a note at 0 and one at 10,
+        // with note ID 0.
+        assert!(notes.note_on(9, 36, 0.5));
+        let mut host_notes = MidiBuffer::new_boxed(0);
+        host_notes.push(beamer_core::MidiEvent::note_on(10, 0, 62, 1.0, 0, 0.0, 0));
+        host_notes.push(beamer_core::MidiEvent::note_on(0, 0, 60, 1.0, 0, 0.0, 0));
+        let host_events = [converted(&host_notes, 0), converted(&host_notes, 1)].concat();
+        let input = vst3::ComWrapper::new(Events { events: std::cell::RefCell::new(host_events) });
+        let output = vst3::ComWrapper::new(Events::default());
+        let input_list = input.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let output_list = output.to_com_ptr::<IEventList>().expect("the events are an IEventList");
+        let no_changes = std::ptr::null_mut();
+        process_with_events(&wrapper, 64, no_changes, no_changes, input_list.as_ptr(), output_list.as_ptr());
+
+        let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+        let notes_of = |events: &[beamer_core::MidiEvent<'static>]| -> Vec<(u32, u8, i32)> {
+            events
+                .iter()
+                .map(|event| match event.event {
+                    MidiEventKind::NoteOn(on) => (event.sample_offset, on.pitch, on.note_id),
+                    MidiEventKind::NoteOff(off) => (event.sample_offset, off.pitch, off.note_id),
+                    other => panic!("not a note: {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            notes_of(&received[0]),
+            [(0, 60, 0), (0, 36, beamer_core::editor_note_id(9, 36)), (10, 62, 0)]
+        );
+        // A plugin that passes its MIDI on sends them to the host as well.
+        assert_eq!(output.events.borrow().len(), 3);
+
+        // A call without samples leaves them for the next one.
+        notes.note_off(9, 36, None);
+        process_with(&wrapper, 0, std::ptr::null_mut(), std::ptr::null_mut());
+        assert_eq!(CC_PROCESSOR_MIDI.with(|calls| calls.borrow().len()), 1);
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+        assert_eq!(notes_of(&received[1]), [(0, 36, beamer_core::editor_note_id(9, 36))]);
+        assert!(matches!(received[1][0].event, MidiEventKind::NoteOff(_)));
+
+        // An offline render plays no note of the editor.
+        setup.processMode = ProcessModes_::kOffline as int32;
+        // SAFETY: The setup is valid for the call.
+        assert_eq!(unsafe { wrapper.setupProcessing(&mut setup) }, kResultOk);
+        assert!(notes.note_on(0, 40, 1.0));
+        process_with(&wrapper, 64, std::ptr::null_mut(), std::ptr::null_mut());
+        let received = CC_PROCESSOR_MIDI.with(|calls| calls.borrow().clone());
+        assert!(received[2].is_empty());
+    }
+
+    #[test]
+    fn test_only_a_plugin_with_an_editor_and_midi_input_takes_notes_from_it() {
+        static WITHOUT_EDITOR: Config = Config::new("No Editor", Category::Instrument, "Test", "noed");
+        static WITHOUT_INPUT: Config = Config::new("No Input", Category::Effect, "Test", "noin")
+            .with_webview_url("http://localhost:5173");
+        assert!(Vst3Processor::<CcModel>::new(&WITHOUT_EDITOR).editor_notes.is_none());
+        assert!(Vst3Processor::<CcModel>::new(&WITHOUT_INPUT).editor_notes.is_none());
     }
 
     #[test]

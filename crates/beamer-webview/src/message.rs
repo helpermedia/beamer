@@ -53,6 +53,32 @@ pub(crate) enum PageMessage {
         #[serde(default)]
         data: Value,
     },
+
+    /// The page started a note: a note number, a velocity from 0 to 1 and
+    /// a channel from 0 to 15. The velocity is `None` when the page left it
+    /// out, the channel 0.
+    #[serde(rename = "note:on")]
+    NoteOn {
+        note: u8,
+        #[serde(default)]
+        velocity: Option<f32>,
+        #[serde(default)]
+        channel: u8,
+    },
+
+    /// The page ended a note, with a release velocity or `None`.
+    #[serde(rename = "note:off")]
+    NoteOff {
+        note: u8,
+        #[serde(default)]
+        velocity: Option<f32>,
+        #[serde(default)]
+        channel: u8,
+    },
+
+    /// The page ended every note it started.
+    #[serde(rename = "note:all-off")]
+    AllNotesOff,
 }
 
 impl PageMessage {
@@ -112,6 +138,15 @@ mod tests {
             parse(r#"{"type":"event","name":"zoom","data":{"level":2}}"#),
             Some(PageMessage::Event { name: String::from("zoom"), data: json!({"level": 2}) })
         );
+        assert_eq!(
+            parse(r#"{"type":"note:on","note":36,"velocity":0.5,"channel":9}"#),
+            Some(PageMessage::NoteOn { note: 36, velocity: Some(0.5), channel: 9 })
+        );
+        assert_eq!(
+            parse(r#"{"type":"note:off","note":36,"velocity":0.25,"channel":9}"#),
+            Some(PageMessage::NoteOff { note: 36, velocity: Some(0.25), channel: 9 })
+        );
+        assert_eq!(parse(r#"{"type":"note:all-off"}"#), Some(PageMessage::AllNotesOff));
     }
 
     #[test]
@@ -128,6 +163,14 @@ mod tests {
             parse(r#"{"type":"event","name":"ping"}"#),
             Some(PageMessage::Event { name: String::from("ping"), data: Value::Null })
         );
+        assert_eq!(
+            parse(r#"{"type":"note:on","note":60}"#),
+            Some(PageMessage::NoteOn { note: 60, velocity: None, channel: 0 })
+        );
+        assert_eq!(
+            parse(r#"{"type":"note:off","note":60}"#),
+            Some(PageMessage::NoteOff { note: 60, velocity: None, channel: 0 })
+        );
     }
 
     #[test]
@@ -140,5 +183,9 @@ mod tests {
         assert_eq!(parse(r#"{"type":"parameter:set","id":7}"#), None);
         assert_eq!(parse(r#"{"type":"invoke","method":"getInfo"}"#), None);
         assert_eq!(parse(r#"{"type":"parameter:begin","id":-1}"#), None);
+        // A note number that is not a byte, or none.
+        assert_eq!(parse(r#"{"type":"note:on","note":60.5}"#), None);
+        assert_eq!(parse(r#"{"type":"note:on","note":256}"#), None);
+        assert_eq!(parse(r#"{"type":"note:off"}"#), None);
     }
 }

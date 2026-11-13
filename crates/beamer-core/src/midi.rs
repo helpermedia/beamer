@@ -68,6 +68,22 @@ pub const fn note_id_parts(id: NoteId) -> Option<(u8, MidiChannel, MidiNote)> {
     Some((((id >> 11) & 0x0F) as u8, ((id >> 7) & 0x0F) as u8, (id & 0x7F) as u8))
 }
 
+/// The first note ID of the notes a plugin's editor plays: VST3 keeps
+/// -10000 to -1000 for a plugin's own notes, which no host uses.
+pub const EDITOR_NOTE_ID_START: NoteId = -10000;
+
+/// The note ID of a note the plugin's editor plays:
+/// `EDITOR_NOTE_ID_START + (channel << 7 | pitch)`.
+///
+/// Apart from the IDs of the host's notes, so that a plugin that finds its
+/// voices by note ID keeps a note from the editor and one from the host
+/// apart, also at the same pitch. One ID per channel and pitch: the editor
+/// never has two notes of one pitch on at once.
+#[inline]
+pub const fn editor_note_id(channel: MidiChannel, pitch: MidiNote) -> NoteId {
+    EDITOR_NOTE_ID_START + ((((channel & 0x0F) as NoteId) << 7) | (pitch & 0x7F) as NoteId)
+}
+
 /// A MIDI note-on event.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoteOn {
@@ -2825,6 +2841,17 @@ mod tests {
         assert_eq!(note_id_parts(note_id(15, 15, 127)), Some((15, 15, 127)));
         assert_eq!(note_id_parts(-1), None);
         assert_eq!(note_id_parts(1 << 15), None);
+    }
+
+    #[test]
+    fn test_editor_note_ids_stay_in_the_range_of_a_plugin() {
+        // VST3 keeps -10000 to -1000 for a plugin's own notes.
+        assert_eq!(editor_note_id(0, 0), -10000);
+        assert_eq!(editor_note_id(0, 36), -10000 + 36);
+        assert_eq!(editor_note_id(1, 36), -10000 + 128 + 36);
+        assert_eq!(editor_note_id(15, 127), -10000 + 2047);
+        assert!(editor_note_id(15, 127) < -1000);
+        assert_eq!(note_id_parts(editor_note_id(0, 60)), None);
     }
 
     #[test]

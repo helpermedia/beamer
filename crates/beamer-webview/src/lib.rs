@@ -11,12 +11,15 @@
 //! - the [`EditorSync`] of each open editor, which keeps the page in step
 //!   with the plugin and handles the messages of the page, with the
 //!   wrapper's [`HostEdits`] for what only the host can do
+//! - the [`EditorNotes`] the page plays, on their way to the wrapper's
+//!   render through its [`EditorNoteReceiver`]
 //! - the platform-native WebView that a format wrapper embeds in the
 //!   host's view ([`platform`])
 
 use std::ffi::c_void;
 
 pub mod assets;
+pub mod editor_notes;
 pub mod editor_sync;
 mod error;
 pub mod event_queue;
@@ -30,6 +33,7 @@ pub mod stream_sender;
 pub mod value_sender;
 
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
+pub use editor_notes::{EditorNoteReceiver, EditorNotes};
 pub use editor_sync::{EditorSync, HostEdits};
 pub use error::{Result, WebViewError};
 pub use event_queue::WebViewEventQueue;

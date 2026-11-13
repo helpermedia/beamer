@@ -42,7 +42,7 @@ use beamer_core::{
     ActiveBuses, BusInfo, BusLayout, BusNegotiation, BusType, CachedBusConfig, CachedBusInfo, ChannelSet, Layout,
     ParameterId, ParameterInfo, ParameterUnit, ProcessMode, SharedModel, MAX_BUSES, MAX_CHANNELS,
 };
-use beamer_webview::{EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
+use beamer_webview::{EditorNotes, EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
 use crate::factory;
 use crate::instance::{AuPluginInstance, FactoryPresetAccess};
 use crate::render::{
@@ -629,6 +629,9 @@ pub struct BeamerInstanceHandle {
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     webview_events: Option<WebViewEventQueue>,
+    /// The notes the editor plays, for a plugin with an editor and MIDI
+    /// input. The editors put them in, the render block takes them.
+    editor_notes: Option<EditorNotes>,
     /// The model of the plugin. It stays in this one place for the life of
     /// the instance, so the functions that only need it (values, state,
     /// groups, presets) never take the plugin mutex.
@@ -664,6 +667,10 @@ impl BeamerInstanceHandle {
         // Mutex, so that those calls never need to lock it.
         let webview_dispatch = plugin.webview_dispatch();
         let webview_events = plugin.webview_events();
+        // The notes the editor plays are MIDI input.
+        let editor_notes = factory::plugin_config()
+            .filter(|config| config.midi_input && config.has_editor())
+            .map(|_| EditorNotes::new());
         let model = plugin.shared_model();
         let presets = plugin.factory_presets();
         let declared_buses = DeclaredBuses::capture(plugin.as_ref());
@@ -677,6 +684,7 @@ impl BeamerInstanceHandle {
             bus_negotiation: Mutex::new(bus_negotiation),
             webview_dispatch,
             webview_events,
+            editor_notes,
             model,
             presets,
             declared_buses,
@@ -1238,6 +1246,16 @@ fn prepare_instance(
     // The storage holds the plugin's channels.
     let plugin_bus_config = CachedBusConfig::from_active_buses(buses.accepted());
 
+    // The editor's notes go to the new block. The old one is gone: taking
+    // it out above waited for its last render call.
+    let editor_notes = handle.editor_notes.as_ref().and_then(|notes| {
+        let receiver = notes.receiver();
+        if receiver.is_none() {
+            log::warn!("The notes of the editor do not reach the new render block: another one takes them.");
+        }
+        receiver
+    });
+
     // Create the render block based on sample format.
     let render_block: Arc<dyn RenderBlockTrait> = match sample_format {
         BeamerAuSampleFormat::Float32 => {
@@ -1255,6 +1273,8 @@ fn prepare_instance(
                 max_frames,
                 sample_rate,
                 settings,
+                editor_notes,
+                rendering_offline,
             ))
         }
         BeamerAuSampleFormat::Float64 => {
@@ -1272,6 +1292,8 @@ fn prepare_instance(
                 max_frames,
                 sample_rate,
                 settings,
+                editor_notes,
+                rendering_offline,
             ))
         }
     };
@@ -3286,6 +3308,7 @@ pub extern "C" fn beamer_au_editor_sync_open(
             Arc::clone(&handle.model),
             Arc::clone(&handle.webview_dispatch),
             handle.webview_events.clone(),
+            handle.editor_notes.clone(),
             middle_c,
         );
         Box::into_raw(Box::new(BeamerAuEditorSync(sync)))
@@ -3446,9 +3469,10 @@ pub extern "C" fn beamer_au_editor_sync_message(
     result.ok().flatten().unwrap_or(ptr::null_mut())
 }
 
-/// End in the host, through `host`, the gestures the web UI began and did
-/// not end: its page goes away, as the editor closes or the page loads
-/// again, so their ends will not come.
+/// The page of the web UI goes away, as the editor closes, the page loads
+/// again or its process ends: end in the host, through `host`, the gestures
+/// it began and did not end. End the notes it left on as well. Their ends
+/// will not come.
 ///
 /// # Safety
 ///
@@ -3459,7 +3483,7 @@ pub extern "C" fn beamer_au_editor_sync_message(
 ///   nothing)
 /// - Only the main thread of the editor calls it
 #[no_mangle]
-pub extern "C" fn beamer_au_editor_sync_end_open_gestures(
+pub extern "C" fn beamer_au_editor_sync_page_gone(
     sync: *mut BeamerAuEditorSync,
     host: *const BeamerAuEditorHost,
 ) {
@@ -3474,7 +3498,7 @@ pub extern "C" fn beamer_au_editor_sync_end_open_gestures(
         // SAFETY: host validated non-null above. Caller guarantees a valid
         // host for the call.
         let host = unsafe { &*host };
-        sync.0.end_open_gestures(&mut EditorHostEdits(host));
+        sync.0.page_gone(&mut EditorHostEdits(host));
     }));
 }
 

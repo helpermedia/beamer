@@ -94,6 +94,9 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
     },
     on: (name, callback) => on(`event:${name}`, callback),
     emit: () => {},
+    noteOn: () => {},
+    noteOff: () => {},
+    allNotesOff: () => {},
   };
   globalThis.__BEAMER__ = beamer;
 

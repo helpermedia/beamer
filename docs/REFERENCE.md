@@ -1761,7 +1761,7 @@ impl Processor for ReverbProcessor {
 
 ## MIDI Reference
 
-The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure`, `ProgramChange`, `ParameterNumber`, `ParameterChange` and `ParameterNumberKind`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, values and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `note_id`, `note_id_parts`, `tuning_semitones`, `tuning_value`, the `cc`, `rpn`, `scale`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
+The basic event types (`MidiEvent`, `MidiEventKind`, `NoteOn`, `NoteOff`, `PolyPressure`, `ControlChange`, `PitchBend`, `ChannelPressure`, `ProgramChange`, `ParameterNumber`, `ParameterChange` and `ParameterNumberKind`), `MidiBuffer` and `MidiCcConfig` are in the prelude. The other event types (`NoteExpressionValue`, `NoteExpressionInt`, `NoteExpressionText`, `ChordInfo` and `ScaleInfo`) and the helpers for note expression, keyswitches, physical UI mapping, MPE, values and CCs (`NoteExpressionTypeInfo`, `NoteExpressionTypeFlags`, `KeyswitchInfo`, `PhysicalUIMap`, `MpeInputDeviceSettings`, `note_id`, `note_id_parts`, `editor_note_id`, `tuning_semitones`, `tuning_value`, the `cc`, `rpn`, `scale`, `note_expression` and `keyswitch_type` modules and the 14-bit functions) are not: import them from `beamer::core`.
 
 ### Event Types
 
@@ -1834,6 +1834,8 @@ pub struct PolyPressure {
 ```
 
 A note from MIDI input has no ID of its own: the wrappers give it `note_id(group, channel, pitch)` (`group << 11 | channel << 7 | pitch`; the group is that of a Universal MIDI Packet, otherwise 0), as does the VST3 wrapper for a host that sends -1. So one pitch on two channels is two notes; a per-note change finds its note. `note_id_parts(id)` gives the group, channel and pitch back.
+
+A note the plugin's web UI plays (see [Notes for the Processor](WEBVIEW.md#notes-for-the-processor)) has the ID `editor_note_id(channel, pitch)`: `EDITOR_NOTE_ID_START` (-10000) plus `channel << 7 | pitch`. VST3 keeps -10000 to -1000 for a plugin's own notes, which no host uses, so a note of the editor and one of the host stay apart, also at the same pitch.
 
 #### Channel Events
 
@@ -1972,6 +1974,8 @@ midi_input = true
 ```
 
 A plugin without MIDI input gets no events in `process_midi()` or in `context.midi_input()`. The MIDI a plugin without MIDI output writes is dropped.
+
+The notes the plugin's web UI plays are MIDI input as well: `process_midi()` and `context.midi_input()` get them at offset 0, after the host's events at that offset (see [Notes for the Processor](WEBVIEW.md#notes-for-the-processor)).
 
 An Audio Unit with MIDI input asks the host for MIDI 1.0 by default; `midi_protocol = "2.0"` asks for MIDI 2.0, with 16-bit velocities, 32-bit controllers, per-note controllers and note attributes. A plugin gets the same events either way (see [Values](#values), [RPN and NRPN](#rpn-and-nrpn) and [MIDI Input](#midi-input)); VST3 hosts send them whatever the setting says.
 

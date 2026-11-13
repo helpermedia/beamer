@@ -80,6 +80,9 @@ function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } =
       }),
     on: () => () => {},
     emit: () => {},
+    noteOn: () => {},
+    noteOff: () => {},
+    allNotesOff: () => {},
   };
   globalThis.__BEAMER__ = beamer;
 }

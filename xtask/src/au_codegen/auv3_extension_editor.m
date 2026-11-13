@@ -44,7 +44,7 @@
 - (void)_startSyncTimer;
 - (void)_sendFrame;
 - (void)_connectWrapper:({{WRAPPER_CLASS}}*)wrapper;
-- (void)_endOpenGestures;
+- (void)_pageGone;
 @end
 
 /// Tell the host that a gesture on a parameter began (touch) or ended
@@ -118,7 +118,10 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
         return;
     }
     // The view can load before the audio unit is connected. Keep the
-    // message for it, so that a call of the page is answered then.
+    // message for it, so that a call of the page is answered then. Not a
+    // note: it would sound late, or without its end when the list is full.
+    static const char notePrefix[] = "{\"type\":\"note:";
+    if (len >= sizeof notePrefix - 1 && memcmp(json, notePrefix, sizeof notePrefix - 1) == 0) return;
     if (!ext->_earlyMessages) ext->_earlyMessages = [NSMutableArray new];
     if (ext->_earlyMessages.count < BEAMER_AUV3_EXT_MAX_EARLY_MESSAGES) {
         [ext->_earlyMessages addObject:[NSData dataWithBytes:json length:len]];
@@ -127,7 +130,7 @@ static void beamer_auv3_ext_on_message(void* context, const uint8_t* json, size_
 
 static void beamer_auv3_ext_on_page_gone(void* context) {
     {{EXTENSION_CLASS}}* ext = (__bridge {{EXTENSION_CLASS}}*)context;
-    [ext _endOpenGestures];
+    [ext _pageGone];
     // The messages it kept for the audio unit came from the page that is
     // gone: its calls must not settle those of the next page.
     ext->_earlyMessages = nil;
@@ -266,13 +269,13 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     }
 }
 
-// End in the host the gestures the page left open: it goes away, so their
-// ends will not come. Only gestures on the audio unit of the editor sync
-// are open.
-- (void)_endOpenGestures {
+// The page goes away: end in the host the gestures it left open and end
+// the notes it left on, since their ends will not come. Only gestures on
+// the audio unit of the editor sync are open.
+- (void)_pageGone {
     if (_syncWrapper != (__bridge const void*)_wrapper) return;
     BeamerAuEditorHost host = beamer_auv3_ext_host(self);
-    beamer_au_editor_sync_end_open_gestures(_sync, &host);
+    beamer_au_editor_sync_page_gone(_sync, &host);
 }
 
 - (void)viewDidDisappear {
@@ -280,7 +283,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
 
     [_syncTimer invalidate];
     _syncTimer = nil;
-    [self _endOpenGestures];
+    [self _pageGone];
     beamer_au_ipc_close_sync(&_sync);
     _webviewLoaded = NO;
     // The page that posted them goes away with its WebView.
@@ -296,7 +299,7 @@ static void beamer_auv3_ext_on_loaded(void* context) {
     // Safety net in case -viewDidDisappear was not called
     [_syncTimer invalidate];
     _syncTimer = nil;
-    [self _endOpenGestures];
+    [self _pageGone];
     beamer_au_ipc_close_sync(&_sync);
 
     if (_webviewHandle != NULL) {

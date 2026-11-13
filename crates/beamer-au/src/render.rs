@@ -45,6 +45,7 @@ use beamer_core::{
     CrossfadeCurve, Midi1Translator, MidiBuffer, MidiEvent, MidiProtocol, MidiEventKind, ProcessContext, ProcessWarning, Sample, SharedModel,
     MAX_BUSES, MAX_CHANNELS,
 };
+use beamer_webview::EditorNoteReceiver;
 
 
 // =============================================================================
@@ -1086,6 +1087,13 @@ pub struct RenderBlock<S: Sample> {
     sysex7: UnsafeCell<SysEx7Assembler>,
     /// Pre-allocated parameter event buffer for zero-allocation parameter automation
     parameter_events: UnsafeCell<ParameterEventBuffer>,
+    /// Takes the notes of the editor into the MIDI input of a render call,
+    /// for a plugin with an editor and MIDI input. The render thread uses
+    /// it.
+    editor_notes: UnsafeCell<Option<EditorNoteReceiver>>,
+    /// Whether the host renders offline: the editor's notes do not play
+    /// then.
+    rendering_offline: bool,
     /// Current sample rate for ProcessContext
     sample_rate: f64,
     /// What the plugin's config says about rendering.
@@ -1198,6 +1206,9 @@ impl<S: RenderSample> RenderBlock<S> {
     /// * `max_frames` - Maximum frames per render call
     /// * `sample_rate` - Current sample rate in Hz
     /// * `settings` - What the plugin's config says about rendering
+    /// * `editor_notes` - The receiver of the editor's notes, for a plugin
+    ///   with an editor and MIDI input
+    /// * `rendering_offline` - Whether the host renders offline
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
@@ -1209,6 +1220,8 @@ impl<S: RenderSample> RenderBlock<S> {
         max_frames: u32,
         sample_rate: f64,
         settings: RenderSettings,
+        editor_notes: Option<EditorNoteReceiver>,
+        rendering_offline: bool,
     ) -> Self {
         let aux_input_bus_count = storage.aux_input_bus_count();
         let sample_type_size = std::mem::size_of::<S>();
@@ -1277,6 +1290,8 @@ impl<S: RenderSample> RenderBlock<S> {
             midi1_translator: UnsafeCell::new(Midi1Translator::new()),
             sysex7: UnsafeCell::new(SysEx7Assembler::new(settings.midi_input_sysex_bytes())),
             parameter_events: UnsafeCell::new(ParameterEventBuffer::new()),
+            editor_notes: UnsafeCell::new(editor_notes),
+            rendering_offline,
             sample_rate,
             settings,
             buses,
@@ -1835,6 +1850,13 @@ impl<S: RenderSample> RenderBlock<S> {
         let has_channels = storage.output_channel_count() > 0 || !storage.main_inputs.is_empty();
         let render_samples = if has_channels && prepared { num_samples } else { 0 };
 
+        // The notes of the editor follow the host's at offset 0 (the sort
+        // keeps their order). A call that renders nothing leaves them for
+        // the next one: process() would not see them.
+        if render_samples > 0 && self.take_editor_notes(midi_buffer) {
+            midi_buffer.events_mut().sort_by_offset();
+        }
+
         #[cfg(feature = "diagnostics")]
         if render_samples > 0 {
             // SAFETY: The render thread, one call at a time.
@@ -2005,6 +2027,18 @@ impl<S: RenderSample> RenderBlock<S> {
         }
     }
 
+    /// Add the notes the editor played to the MIDI input of this call, at
+    /// offset 0. An offline render plays none. Returns whether any were
+    /// added.
+    fn take_editor_notes(&self, midi_buffer: &mut MidiBuffer) -> bool {
+        let before = midi_buffer.len();
+        // SAFETY: The render thread, one call at a time.
+        if let Some(receiver) = unsafe { (*self.editor_notes.get()).as_mut() } {
+            receiver.take_into(midi_buffer, !self.rendering_offline);
+        }
+        midi_buffer.len() > before
+    }
+
     fn send_midi_output(&self, midi_output: &MidiBuffer, sink: Option<MidiOutputSink>) {
         #[cfg(feature = "diagnostics")]
         if let Some(diagnostics) = self.shared.diagnostics() {
@@ -2113,6 +2147,12 @@ impl<S: RenderSample> RenderBlockTrait for RenderBlock<S> {
         #[cfg(feature = "diagnostics")]
         if let Some(diagnostics) = self.shared.diagnostics() {
             diagnostics.state().note_midi_input(midi_buffer.as_slice());
+        }
+        // A bypassed MIDI effect passes the editor's notes on as the host's.
+        // Any other plugin leaves them for its next processed block, so
+        // that its processor gets the note-offs of the notes it plays.
+        if midi_output.is_some() && self.settings.midi_output {
+            self.take_editor_notes(midi_buffer);
         }
         midi_buffer.events_mut().sort_by_offset();
         midi1_translator.translate(midi_buffer);
@@ -2298,6 +2338,8 @@ impl RenderSettings {
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
+/// * `editor_notes` - The receiver of the editor's notes, if any
+/// * `rendering_offline` - Whether the host renders offline
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_render_block_f32(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
@@ -2309,6 +2351,8 @@ pub(crate) fn create_render_block_f32(
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
+    editor_notes: Option<EditorNoteReceiver>,
+    rendering_offline: bool,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f32>::new(
         plugin,
@@ -2320,6 +2364,8 @@ pub(crate) fn create_render_block_f32(
         max_frames,
         sample_rate,
         settings,
+        editor_notes,
+        rendering_offline,
     ))
 }
 
@@ -2340,6 +2386,8 @@ pub(crate) fn create_render_block_f32(
 /// * `max_frames` - Maximum frames per render call
 /// * `sample_rate` - Current sample rate in Hz
 /// * `settings` - What the plugin's config says about rendering
+/// * `editor_notes` - The receiver of the editor's notes, if any
+/// * `rendering_offline` - Whether the host renders offline
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_render_block_f64(
     plugin: Arc<Mutex<Box<dyn AuPluginInstance>>>,
@@ -2351,6 +2399,8 @@ pub(crate) fn create_render_block_f64(
     max_frames: u32,
     sample_rate: f64,
     settings: RenderSettings,
+    editor_notes: Option<EditorNoteReceiver>,
+    rendering_offline: bool,
 ) -> Box<dyn RenderBlockTrait> {
     Box::new(RenderBlock::<f64>::new(
         plugin,
@@ -2362,6 +2412,8 @@ pub(crate) fn create_render_block_f64(
         max_frames,
         sample_rate,
         settings,
+        editor_notes,
+        rendering_offline,
     ))
 }
 
@@ -2451,8 +2503,12 @@ pub(crate) mod test_events {
         events[0].as_ptr().cast()
     }
 
-    /// Link the events into the list form the host passes to render.
+    /// Link the events into the list form the host passes to render: null
+    /// for no events.
     pub(crate) fn link(events: &mut [AURenderEvent]) -> *const AURenderEvent {
+        if events.is_empty() {
+            return std::ptr::null();
+        }
         for i in 1..events.len() {
             let next: *const AURenderEvent = &events[i];
             events[i - 1].head.next = next;

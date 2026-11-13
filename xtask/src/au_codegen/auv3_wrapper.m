@@ -452,7 +452,7 @@ typedef struct {
 - (void)_editorHidden:(NSView*)view;
 - (void)_editorResized:(NSView*)view;
 - (void)_editorGone:(const void*)view;
-- (void)_endOpenGestures;
+- (void)_pageGone;
 @end
 
 // =============================================================================
@@ -791,7 +791,7 @@ static void beamer_auv3_on_message(void* context, const uint8_t* json, size_t le
 
 static void beamer_auv3_on_page_gone(void* context) {
     {{WRAPPER_CLASS}}* self = (__bridge {{WRAPPER_CLASS}}*)context;
-    [self _endOpenGestures];
+    [self _pageGone];
 }
 
 static void beamer_auv3_on_loaded(void* context) {
@@ -2004,7 +2004,7 @@ static void beamer_auv3_on_loaded(void* context) {
 - (void)_closeEditor {
     [_syncTimer invalidate];
     _syncTimer = nil;
-    [self _endOpenGestures];
+    [self _pageGone];
     beamer_au_ipc_close_sync(&_sync);
     if (_webviewHandle != NULL) {
         beamer_webview_destroy(_webviewHandle);
@@ -2012,11 +2012,11 @@ static void beamer_auv3_on_loaded(void* context) {
     }
 }
 
-// End in the host the gestures the page left open: it goes away, so their
-// ends will not come.
-- (void)_endOpenGestures {
+// The page goes away: end in the host the gestures it left open and end
+// the notes it left on, since their ends will not come.
+- (void)_pageGone {
     BeamerAuEditorHost host = beamer_auv3_host(self);
-    beamer_au_editor_sync_end_open_gestures(_sync, &host);
+    beamer_au_editor_sync_page_gone(_sync, &host);
 }
 
 // The view of the editor entered a window: build the WebView again if

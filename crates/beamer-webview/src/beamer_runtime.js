@@ -29,6 +29,27 @@
     if (nativeHandler) nativeHandler.postMessage(JSON.stringify(msg));
   }
 
+  // Post a note for the processor: a note number 0 to 127 and a channel 0
+  // to 15 (0 when left out). A velocity left out is the plugin's default;
+  // one given is clamped to 0 to 1. A note that does not fit is dropped
+  // with a warning.
+  function postNote(type, note, velocity, channel) {
+    if (channel === undefined) channel = 0;
+    var fits = Number.isInteger(note) && note >= 0 && note <= 127
+      && Number.isInteger(channel) && channel >= 0 && channel <= 15
+      && (velocity === undefined || (typeof velocity === "number" && velocity === velocity));
+    if (!fits) {
+      console.warn("Beamer: " + type + " needs a note 0 to 127, a channel 0 to 15 and a velocity 0 to 1, not",
+        note, channel, velocity);
+      return;
+    }
+    // `type` stays the first key: the AUv3 extension tells a note by the
+    // start of the JSON before its audio unit connects.
+    var msg = {type:type, note:note, channel:channel};
+    if (velocity !== undefined) msg.velocity = Math.min(1, Math.max(0, velocity));
+    post(msg);
+  }
+
   // Call a listener of the UI. Native code delivers several changes and
   // events in one script, so a listener that throws must not stop the
   // delivery of what comes after it.
@@ -217,6 +238,20 @@
 
     emit: function(name, data) {
       post({type:"event", name:name, data:data});
+    },
+
+    // Notes for the processor, which gets them with the host's MIDI input.
+    noteOn: function(note, velocity, channel) {
+      postNote("note:on", note, velocity, channel);
+    },
+
+    noteOff: function(note, velocity, channel) {
+      postNote("note:off", note, velocity, channel);
+    },
+
+    allNotesOff: function() {
+      // `type` first, as in postNote.
+      post({type:"note:all-off"});
     },
 
     _onInit: function(parameters, info) {

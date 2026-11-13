@@ -8,7 +8,7 @@ use std::sync::Arc;
 use beamer_core::{Config, MiddleC, ParameterId, SharedModel, Size};
 use beamer_webview::platform::PlatformWebView;
 pub use beamer_webview::WebViewConfig;
-use beamer_webview::{EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
+use beamer_webview::{EditorNotes, EditorSync, HostEdits, WebViewDispatch, WebViewEventQueue};
 use vst3::Steinberg::Vst::{IComponentHandler2, IComponentHandler2Trait};
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef};
@@ -30,6 +30,8 @@ struct IpcContext {
     dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
     events: Option<WebViewEventQueue>,
+    /// Where the notes of the page go, for a plugin with MIDI input.
+    notes: Option<EditorNotes>,
     /// The name of MIDI note 60 in the plugin's note names, for the page.
     middle_c: MiddleC,
     /// The `state_generation()` of the model that the host knows
@@ -52,21 +54,22 @@ impl IpcContext {
             Arc::clone(&self.model),
             Arc::clone(&self.dispatch),
             self.events.clone(),
+            self.notes.clone(),
             self.middle_c,
         ));
     }
 
     /// Stop keeping the web UI in step: the view no longer shows an editor.
     fn close_sync(&mut self) {
-        self.end_open_gestures();
+        self.page_gone();
         self.sync = None;
     }
 
-    /// End in the host the gestures the page began and did not end: the
-    /// page goes away, so their ends will not come.
-    fn end_open_gestures(&mut self) {
+    /// The page goes away: end in the host the gestures it began and did
+    /// not end and end the notes it left on. Their ends will not come.
+    fn page_gone(&mut self) {
         if let Some(sync) = self.sync.as_mut() {
-            sync.end_open_gestures(&mut HandlerEdits(&self.handler));
+            sync.page_gone(&mut HandlerEdits(&self.handler));
         }
     }
 
@@ -161,6 +164,7 @@ impl WebViewPlugView {
     /// the name of middle C. `component_handler` is the controller's slot
     /// for the host's handler, so that the view always calls the handler the
     /// host set last.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: WebViewConfig<'static>,
         plugin: &'static Config,
@@ -168,6 +172,7 @@ impl WebViewPlugView {
         component_handler: Arc<ComponentHandler>,
         dispatch: Arc<dyn WebViewDispatch>,
         events: Option<WebViewEventQueue>,
+        notes: Option<EditorNotes>,
         known_state_generation: Arc<AtomicU64>,
     ) -> Self {
         let size = Size::new(plugin.editor_width, plugin.editor_height);
@@ -182,6 +187,7 @@ impl WebViewPlugView {
                 handler: component_handler,
                 dispatch,
                 events,
+                notes,
                 middle_c: plugin.middle_c,
                 known_state_generation,
                 sync: None,
@@ -223,7 +229,8 @@ unsafe extern "C-unwind" fn on_message(context: *mut c_void, json: *const u8, le
     }
 }
 
-/// Page gone callback: ends the gestures the page that is gone left open.
+/// Page gone callback: ends the gestures and notes the page that is gone
+/// left open.
 unsafe extern "C-unwind" fn on_page_gone(context: *mut c_void) {
     if context.is_null() {
         return;
@@ -231,7 +238,7 @@ unsafe extern "C-unwind" fn on_page_gone(context: *mut c_void) {
 
     // SAFETY: context is a valid IpcContext pointer (set in attached()).
     let ipc = unsafe { &mut *(context as *mut IpcContext) };
-    ipc.end_open_gestures();
+    ipc.page_gone();
 }
 
 /// Loaded callback: sends the parameter init dump when the page finishes loading.
@@ -668,6 +675,7 @@ mod tests {
             handler: Arc::new(ComponentHandler::new()),
             dispatch: Arc::new(NoDispatch),
             events,
+            notes: None,
             middle_c: MiddleC::C3,
             known_state_generation: Arc::new(AtomicU64::new(0)),
             sync: None,

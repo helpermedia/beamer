@@ -101,7 +101,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
 
     use beamer_au::bridge::{
         beamer_au_create_instance, beamer_au_destroy_instance, beamer_au_editor_sync_close,
-        beamer_au_editor_sync_end_open_gestures, beamer_au_editor_sync_frame_script,
+        beamer_au_editor_sync_page_gone, beamer_au_editor_sync_frame_script,
         beamer_au_editor_sync_init_script, beamer_au_editor_sync_message, beamer_au_editor_sync_open,
         beamer_au_free_string, BeamerAuEditorHost, BeamerAuEditorSync,
     };
@@ -202,7 +202,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     edits.borrow_mut().clear();
     let begin = format!(r#"{{"type":"parameter:begin","id":{gain}}}"#);
     assert_eq!(message(editor, &begin), None);
-    beamer_au_editor_sync_end_open_gestures(editor, &host);
+    beamer_au_editor_sync_page_gone(editor, &host);
     assert_eq!(*edits.borrow(), [format!("begin {gain}"), format!("end {gain}")]);
 
     // A method the plugin does not know.
@@ -242,7 +242,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     assert!(beamer_au_editor_sync_open(std::ptr::null_mut()).is_null());
     assert_eq!(text(beamer_au_editor_sync_frame_script(std::ptr::null_mut())), None);
     assert_eq!(message(std::ptr::null_mut(), &set), None);
-    beamer_au_editor_sync_end_open_gestures(std::ptr::null_mut(), &host);
+    beamer_au_editor_sync_page_gone(std::ptr::null_mut(), &host);
     beamer_au_editor_sync_close(std::ptr::null_mut());
     assert!(edits.borrow().is_empty());
 }

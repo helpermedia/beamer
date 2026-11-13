@@ -505,6 +505,10 @@ impl<'a> ProcessContext<'a> {
     /// before it, sorted by sample offset, with offsets from the first
     /// sample of this call. Empty for a plugin without MIDI input.
     ///
+    /// The notes the plugin's web UI plays are here as well, at offset 0
+    /// after the host's events there, with note IDs from
+    /// [`editor_note_id`](crate::editor_note_id).
+    ///
     /// An instrument plays its notes from here, at their offsets. A SysEx
     /// payload is borrowed for this call only.
     ///

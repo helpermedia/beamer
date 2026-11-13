@@ -76,6 +76,7 @@
 | | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
 | | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
+| | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in an example: `noteOn`, `noteOff` and `playNote` reach `midi_input()`; drum pads will play them |
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |

@@ -73,6 +73,17 @@ export interface Beamer {
   /** Events the plugin emits and the arrays of its stream senders. */
   on(event: string, callback: (data: unknown) => void): () => void;
   emit(event: string, data?: unknown): void;
+  /**
+   * Start a note in the processor, which gets it with the host's MIDI
+   * input: a note number 0 to 127, a velocity 0 to 1 (default 1) and a
+   * channel 0 to 15 (default 0). A velocity of 0 is the smallest, not a
+   * note-off. A note that does not fit is dropped with a warning.
+   */
+  noteOn(note: number, velocity?: number, channel?: number): void;
+  /** End a note, with a release velocity 0 to 1 (default 64/127). */
+  noteOff(note: number, velocity?: number, channel?: number): void;
+  /** End every note the page started. */
+  allNotesOff(): void;
 }
 
 declare global {

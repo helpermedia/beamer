@@ -88,6 +88,9 @@ export function install(ready = true): void {
     invoke: async () => null,
     on: (name, callback) => on(`event:${name}`, callback),
     emit: () => {},
+    noteOn: () => {},
+    noteOff: () => {},
+    allNotesOff: () => {},
   };
   globalThis.__BEAMER__ = beamer;
   push.init = () => {

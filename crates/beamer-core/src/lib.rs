@@ -87,7 +87,7 @@ pub use logging::LogLevel;
 pub use error::{PluginError, PluginResult};
 pub use midi::{
     // Basic types
-    cc, note_id, note_id_parts, scale, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent,
+    cc, editor_note_id, note_id, note_id_parts, scale, EDITOR_NOTE_ID_START, ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent,
     MidiEventKind, MidiEventsMut, MidiNote, NoteId, NoteOff, NoteOn, PitchBend, PolyPressure, ProgramChange,
     // Advanced VST3 events
     tuning_semitones, tuning_value, ChordInfo, NoteExpressionInt, NoteExpressionText, NoteExpressionValue,

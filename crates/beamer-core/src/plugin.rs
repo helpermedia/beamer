@@ -780,6 +780,8 @@ pub trait Processor: Send + 'static {
     /// example at automation points) and then calls this before each of
     /// them. Events of a host call without samples (a VST3 host flushes
     /// parameter changes that way) come with the next call, at offset 0.
+    /// The notes the plugin's web UI plays come at offset 0 too, after the
+    /// host's events there.
     /// Plugins can transform events and add them to the output buffer, pass
     /// them through unchanged or consume them entirely.
     ///
