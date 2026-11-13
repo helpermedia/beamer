@@ -2,10 +2,10 @@
 export const KEYBOARD_FOCUS = "data-keyboard-focus";
 
 // Whether the page's last input came from the keyboard, so that focus can
-// tell Tab from a click. Listened for once per page, before any element
+// tell Tab from a click. Listened for once per document, before any element
 // handles the input.
 let keyboardInput = false;
-let inputListened = false;
+const listened = new WeakSet<Document>();
 
 // A modifier on its own or a shortcut is no keyboard navigation.
 function isNavigation(event: KeyboardEvent): boolean {
@@ -14,8 +14,8 @@ function isNavigation(event: KeyboardEvent): boolean {
 }
 
 function listenForInput(): void {
-  if (inputListened) return;
-  inputListened = true;
+  if (listened.has(document)) return;
+  listened.add(document);
   document.addEventListener(
     "keydown",
     (event) => {
