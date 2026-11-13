@@ -1480,78 +1480,65 @@ static void beamer_auv3_on_loaded(void* context) {
         }];
     }
 
-    NSMutableDictionary<NSNumber*, NSDictionary*>* groupInfoMap = [[NSMutableDictionary alloc] init];
+    // The groups by ID with their names and parents.
+    NSMutableDictionary<NSNumber*, NSString*>* groupNames = [[NSMutableDictionary alloc] init];
+    NSMutableDictionary<NSNumber*, NSNumber*>* groupParents = [[NSMutableDictionary alloc] init];
     for (uint32_t i = 1; i < groupCount; i++) {
         BeamerAuGroupInfo ginfo;
         if (beamer_au_get_group_info(_rustInstance, i, &ginfo)) {
-            NSString* gname = [NSString stringWithUTF8String:ginfo.name];
-            groupInfoMap[@(ginfo.id)] = @{
-                @"name": gname,
-                @"parentId": @(ginfo.parent_id)
-            };
+            groupNames[@(ginfo.id)] = [NSString stringWithUTF8String:ginfo.name];
+            groupParents[@(ginfo.id)] = @(ginfo.parent_id);
         }
     }
 
-    NSMutableDictionary<NSNumber*, AUParameterGroup*>* groupNodes = [[NSMutableDictionary alloc] init];
-    NSMutableDictionary<NSNumber*, NSMutableArray<AUParameterNode*>*>* groupChildren = [[NSMutableDictionary alloc] init];
-
-    groupChildren[@0] = [[NSMutableArray alloc] init];
-    for (NSNumber* gid in groupInfoMap) {
-        groupChildren[gid] = [[NSMutableArray alloc] init];
-    }
-
+    // The groups are one level deep: Apple's generic view controller
+    // crashes on a group inside a group. A nested group is a group of its own, named by
+    // the path of the group names ("LFO / Envelope"); a group without
+    // parameters of its own is left out. The root's children follow the
+    // parameter list, which follows the declaration: a parameter where it
+    // is, a group where its first parameter is. A parameter of a group that
+    // is not listed goes under the root.
+    NSMutableArray* rootOrder = [[NSMutableArray alloc] init];
+    NSMutableDictionary<NSNumber*, NSMutableArray<AUParameterNode*>*>* groupParameters = [[NSMutableDictionary alloc] init];
     for (NSDictionary* entry in parameterEntries) {
         NSNumber* gid = entry[@"groupId"];
-        NSMutableArray* children = groupChildren[gid];
-        if (children == nil) {
-            children = groupChildren[@0];
+        if (groupNames[gid] == nil) {
+            [rootOrder addObject:entry[@"parameter"]];
+            continue;
         }
-        [children addObject:entry[@"parameter"]];
+        if (groupParameters[gid] == nil) {
+            groupParameters[gid] = [[NSMutableArray alloc] init];
+            [rootOrder addObject:gid];
+        }
+        [groupParameters[gid] addObject:entry[@"parameter"]];
     }
 
-    NSMutableSet<NSNumber*>* remaining = [NSMutableSet setWithArray:groupInfoMap.allKeys];
-    while (remaining.count > 0) {
-        BOOL madeProgress = NO;
-        for (NSNumber* gid in [remaining copy]) {
-            NSDictionary* ginfo = groupInfoMap[gid];
-            NSNumber* parentId = ginfo[@"parentId"];
-
-            if ([parentId intValue] == 0 || groupNodes[parentId] != nil) {
-                NSString* gname = ginfo[@"name"];
-                // Part of the key paths of the parameters in the group: when the group
-                // ID changes, hosts lose what they recorded for those parameters.
-                NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
-
-                AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
-                                                                                name:gname
-                                                                            children:groupChildren[gid]];
-                groupNodes[gid] = group;
-                [groupChildren[parentId] addObject:group];
-
-                [remaining removeObject:gid];
-                madeProgress = YES;
-            }
+    NSMutableArray<AUParameterNode*>* rootChildren = [[NSMutableArray alloc] initWithCapacity:rootOrder.count];
+    for (id item in rootOrder) {
+        if (![item isKindOfClass:[NSNumber class]]) {
+            [rootChildren addObject:item];
+            continue;
         }
-
-        if (!madeProgress && remaining.count > 0) {
-            for (NSNumber* gid in remaining) {
-                NSDictionary* ginfo = groupInfoMap[gid];
-                NSString* gname = ginfo[@"name"];
-                // Part of the key paths of the parameters in the group: when the group
-                // ID changes, hosts lose what they recorded for those parameters.
-                NSString* gidentifier = [NSString stringWithFormat:@"group_%d", [gid intValue]];
-
-                AUParameterGroup* group = [AUParameterTree createGroupWithIdentifier:gidentifier
-                                                                                name:gname
-                                                                            children:groupChildren[gid]];
-                groupNodes[gid] = group;
-                [groupChildren[@0] addObject:group];
-            }
-            break;
+        NSNumber* gid = item;
+        // The names of the parents lead; a loop of parents ends where it
+        // comes back.
+        NSString* name = groupNames[gid];
+        NSMutableSet<NSNumber*>* seen = [NSMutableSet setWithObject:gid];
+        NSNumber* parentId = groupParents[gid];
+        while (groupNames[parentId] != nil && ![seen containsObject:parentId]) {
+            [seen addObject:parentId];
+            name = [NSString stringWithFormat:@"%@ / %@", groupNames[parentId], name];
+            parentId = groupParents[parentId];
         }
+        // Part of the key paths of the parameters in the group: when the group
+        // ID changes, hosts lose what they recorded for those parameters.
+        NSString* identifier = [NSString stringWithFormat:@"group_%d", gid.intValue];
+        [rootChildren addObject:[AUParameterTree createGroupWithIdentifier:identifier
+                                                                       name:name
+                                                                   children:groupParameters[gid]]];
     }
 
-    _parameterTree = [AUParameterTree createTreeWithChildren:groupChildren[@0]];
+    _parameterTree = [AUParameterTree createTreeWithChildren:rootChildren];
     [self setupParameterCallbacks];
 }
 
