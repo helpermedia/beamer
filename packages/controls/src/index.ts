@@ -7,6 +7,7 @@
 export { attachDial } from "./dial.js";
 export { attachSlider } from "./slider.js";
 export { thumbPosition } from "./thumb-position.js";
+export { dialAngle } from "./dial-angle.js";
 export type { DialDrag, DialOptions, InputOptions, ResetGesture, SliderOptions, SliderOrientation } from "./gestures.js";
 export { attachSwitch } from "./switch.js";
 export { attachChoices } from "./choices.js";

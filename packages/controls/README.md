@@ -36,6 +36,7 @@ React effect (see [`beamer-react`](../react)).
 | `attachDial(element, parameter, options)` | A dial: a round control | `role="slider"`, `tabindex="0"`, `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in plain units, `aria-valuetext` with the unit |
 | `attachSlider(element, parameter, options)` | A slider: a control along a line, upright or lying | The same and `aria-orientation` |
 | `thumbPosition(value, thumbLength)` | Nothing; where to draw a slider's thumb: its center as a part of the length from the low end | |
+| `dialAngle(value, arcStart, arcSweep)` | Nothing; where a dial points: degrees clockwise on screen from the right of its center | |
 | `attachSwitch(button, parameter)` | A switch for an on and off parameter | `role="switch"`, `aria-checked` |
 | `attachChoices(container, parameter)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
 | `attachValueEntry(input, parameter, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
@@ -59,7 +60,9 @@ Both get ARIA's `role="slider"`: ARIA has no role of its own for a dial.
   element's center. When the pointer passes through the gap between the
   arc's ends, the value waits at the end it left until the pointer comes
   back to that side. A function can pick the drag for each press, such as
-  the arc on a dial's handle and vertical elsewhere.
+  the arc on a dial's handle and vertical elsewhere. Draw the dial's
+  pointer at `dialAngle(value, arcStart, arcSweep)`, so that an arc drag
+  lands where the dial is drawn.
 - **Drag of a slider:** along its `orientation`, upright by default. A
   press on the track brings the thumb to the pointer and a press on the
   thumb grabs it where it is pressed. The thumb then follows the pointer,

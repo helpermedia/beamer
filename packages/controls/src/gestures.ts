@@ -91,10 +91,16 @@ export interface Track {
   thumbLength: number;
 }
 
+/** Where a dial's arc starts by default, in degrees clockwise from the right: the lower left. */
+export const DEFAULT_ARC_START = 135;
+
+/** The degrees of a dial's arc by default, open at the bottom. */
+export const DEFAULT_ARC_SWEEP = 270;
+
 const DEFAULTS: Required<DialOptions> = {
   drag: "vertical",
-  arcStart: 135,
-  arcSweep: 270,
+  arcStart: DEFAULT_ARC_START,
+  arcSweep: DEFAULT_ARC_SWEEP,
   arcDeadZone: 5,
   dragStep: 1 / 200,
   fineFactor: 0.1,

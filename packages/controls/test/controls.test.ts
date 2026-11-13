@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { KEYBOARD_FOCUS, attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition } from "../src/index";
+import { KEYBOARD_FOCUS, attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition, dialAngle } from "../src/index";
 import { installRuntime } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -147,6 +147,15 @@ test("a press on the thumb grabs it where it is pressed", () => {
   pointer(upright, "pointerup");
   // No jump on the press; 10 pixels up are an eighth of the travel.
   expect(runtime.calls).toEqual(["begin gain", "set gain 0.625", "end gain"]);
+});
+
+test("dialAngle points along the arc", () => {
+  expect(dialAngle(0)).toBe(135);
+  expect(dialAngle(1)).toBe(405);
+  expect(dialAngle(0.5, 90, 180)).toBe(180);
+  // A value past the ends points at the end.
+  expect(dialAngle(-1)).toBe(135);
+  expect(dialAngle(2, 0, 300)).toBe(300);
 });
 
 test("thumbPosition puts the thumb's center within the travel", () => {
