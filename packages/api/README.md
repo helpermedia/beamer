@@ -3,8 +3,10 @@
 The base package for the web UI of a [Beamer](https://github.com/helpermedia/beamer)
 plugin: typed access to the plugin's parameters, `State` fields and values
 from the audio thread. Everything else builds on it:
-[`beamer-controls`](../controls) for unstyled controls and
-[`beamer-react`](../react) for React components. It has no dependencies.
+[`beamer-controls`](../controls) for unstyled controls,
+[`beamer-react`](../react) for React components and
+[`beamer-svelte`](../svelte) for Svelte components. It has no
+dependencies.
 
 A web UI does not need this package. The plugin injects `__BEAMER__` into
 every editor. Plain JavaScript can use it directly (see the delay

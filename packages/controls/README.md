@@ -26,8 +26,9 @@ const detachField = attachValueEntry(document.querySelector<HTMLInputElement>("#
 ```
 
 Each attach function takes the element, the parameter and its options. It
-returns the function that detaches it: the shape of a Svelte action or a
-React effect (see [`beamer-react`](../react)).
+returns the function that detaches it: the shape of a Svelte attachment or
+a React effect, under the components of [`beamer-svelte`](../svelte) and
+[`beamer-react`](../react).
 
 ## Controls
 

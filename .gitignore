@@ -24,3 +24,5 @@ docs/plans/
 node_modules/
 examples/*/webview/dist/
 packages/*/dist/
+# The working copy of svelte-package.
+.svelte-kit/

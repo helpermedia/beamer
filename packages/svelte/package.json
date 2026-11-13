@@ -1,0 +1,47 @@
+{
+  "name": "@helpermedia/beamer-svelte",
+  "version": "0.2.4",
+  "description": "Unstyled Svelte components for the web UI of a Beamer plugin",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/helpermedia/beamer.git",
+    "directory": "packages/svelte"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "svelte": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "svelte": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "svelte-package -i src -o dist",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.test.json --fail-on-warnings",
+    "test": "bun test --conditions=source --conditions=browser"
+  },
+  "dependencies": {
+    "@helpermedia/beamer-api": "workspace:*",
+    "@helpermedia/beamer-controls": "workspace:*"
+  },
+  "peerDependencies": {
+    "svelte": ">=5.29"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^21.0.4",
+    "@sveltejs/package": "^3.0.1",
+    "@types/bun": "^1.3.0",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.7",
+    "typescript": "^6.0.3"
+  }
+}
