@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { openValueEntry } from "@helpermedia/beamer-controls";
 import type { DialDrag } from "@helpermedia/beamer-controls";
-import { useDial, useParameter, useValueEntry } from "@helpermedia/beamer-react";
+import { Dial as DialControl, ValueEntry, useParameter } from "@helpermedia/beamer-react";
 
 interface DialProps {
   parameterId: string;
@@ -44,7 +44,7 @@ function describeArc(startAngle: number, endAngle: number): string {
 
 const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 
-// A dial for plugin parameters.
+// A dial for plugin parameters: the look over beamer-react's Dial.
 //
 // Input comes from beamer-controls:
 //   - Grab handle: the handle follows the pointer around the arc.
@@ -75,18 +75,9 @@ function Dial({ parameterId, size = 64, label, className }: DialProps) {
     setGrabbed(onHandle);
     return onHandle ? "arc" : "vertical";
   };
-  // Double-click is for typing a value, so a modifier click resets.
-  useDial(svgRef, parameter, {
-    drag: pickDrag,
-    arcStart: ARC_START_DEGREES,
-    arcSweep: ARC_SWEEP_DEGREES,
-    reset: ["modifier-click"],
-  });
-
   const displayLabel = label ?? info?.name ?? parameterId;
 
   const valueRef = useRef<HTMLInputElement>(null);
-  useValueEntry(valueRef, parameter, { open: "double-click" });
   const typeValue = () => {
     if (valueRef.current) openValueEntry(valueRef.current);
   };
@@ -122,56 +113,62 @@ function Dial({ parameterId, size = 64, label, className }: DialProps) {
         {displayLabel}
       </span>
 
-      <svg
-        ref={svgRef}
-        viewBox="0 0 64 64"
-        width={size}
-        height={size}
+      {/* Double-click is for typing a value, so a modifier click resets. */}
+      <DialControl
+        parameter={parameter}
+        drag={pickDrag}
+        arcStart={ARC_START_DEGREES}
+        arcSweep={ARC_SWEEP_DEGREES}
+        reset={["modifier-click"]}
         aria-label={label}
         className="group cursor-default outline-none"
+        style={{ width: size, height: size }}
         onDoubleClick={typeValue}
         onLostPointerCapture={() => setGrabbed(false)}
       >
-        <path
-          d={trackPath}
-          className="fill-none stroke-gray-700 group-data-[keyboard-focus]:stroke-gray-500"
-          strokeWidth={4}
-          strokeLinecap="round"
-        />
-        {valuePath && (
+        <svg ref={svgRef} viewBox="0 0 64 64" width={size} height={size}>
           <path
-            d={valuePath}
-            className="fill-none stroke-current"
+            d={trackPath}
+            className="fill-none stroke-gray-700 group-data-[keyboard-focus]:stroke-gray-500"
             strokeWidth={4}
-            strokeLinecap={bipolarCenter !== null ? "butt" : "round"}
+            strokeLinecap="round"
           />
-        )}
-        {bipolarCenter !== null && (() => {
-          const ca = ARC_START - bipolarCenter * ARC_SWEEP;
-          const on = polarToCartesian(ca);
-          // Center tick extending equally above and below the track.
-          const dx = on.x - CX;
-          const dy = on.y - CY;
-          const len = Math.sqrt(dx * dx + dy * dy);
-          const unit = { x: dx / len, y: dy / len };
-          const start = { x: on.x + unit.x * 4, y: on.y + unit.y * 4 };
-          const end = { x: on.x - unit.x * 4, y: on.y - unit.y * 4 };
-          return (
-            <line
-              x1={start.x} y1={start.y}
-              x2={end.x} y2={end.y}
-              className="stroke-gray-500"
-              strokeWidth={1.5}
-              strokeLinecap="round"
+          {valuePath && (
+            <path
+              d={valuePath}
+              className="fill-none stroke-current"
+              strokeWidth={4}
+              strokeLinecap={bipolarCenter !== null ? "butt" : "round"}
             />
-          );
-        })()}
-        <circle cx={dotPos.x} cy={dotPos.y} r={4} className={`pointer-events-none ${grabbed ? "fill-cyan-300" : "fill-current"}`} />
-      </svg>
+          )}
+          {bipolarCenter !== null && (() => {
+            const ca = ARC_START - bipolarCenter * ARC_SWEEP;
+            const on = polarToCartesian(ca);
+            // Center tick extending equally above and below the track.
+            const dx = on.x - CX;
+            const dy = on.y - CY;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const unit = { x: dx / len, y: dy / len };
+            const start = { x: on.x + unit.x * 4, y: on.y + unit.y * 4 };
+            const end = { x: on.x - unit.x * 4, y: on.y - unit.y * 4 };
+            return (
+              <line
+                x1={start.x} y1={start.y}
+                x2={end.x} y2={end.y}
+                className="stroke-gray-500"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+              />
+            );
+          })()}
+          <circle cx={dotPos.x} cy={dotPos.y} r={4} className={`pointer-events-none ${grabbed ? "fill-cyan-300" : "fill-current"}`} />
+        </svg>
+      </DialControl>
 
-      <input
+      <ValueEntry
+        parameter={parameter}
+        open="double-click"
         ref={valueRef}
-        type="text"
         aria-label={label === undefined ? undefined : `${label} value`}
         className="w-full text-xs font-mono tabular-nums text-center border-0 outline-none rounded px-1 py-0.5 text-current bg-transparent cursor-text data-[typing]:text-black data-[typing]:bg-white"
       />

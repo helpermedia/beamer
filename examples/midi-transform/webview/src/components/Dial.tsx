@@ -1,5 +1,4 @@
-import { useRef } from "react";
-import { useParameter, useDial } from "@helpermedia/beamer-react";
+import { Dial as DialControl, useParameter } from "@helpermedia/beamer-react";
 import ValueText from "./ValueText";
 
 // The arc of a dial in degrees clockwise from the right, as the gestures
@@ -38,39 +37,43 @@ interface DialProps {
   unused?: boolean;
 }
 
-// A dial for a continuous parameter, from beamer-controls:
-// drag up and down (finer with shift), scroll, arrow keys once focused and
-// double click to reset. A click on the value types one.
+// A dial for a continuous parameter: the look over beamer-react's Dial,
+// which brings the input: drag up and down (finer with shift), scroll,
+// arrow keys once focused and double click to reset. A click on the value
+// types one.
 function Dial({ parameterId, label, detail, unused = false }: DialProps) {
-  const { parameter, value, info } = useParameter(parameterId);
-  const svgRef = useRef<SVGSVGElement>(null);
-  useDial(svgRef, parameter);
-
+  const { parameter, info } = useParameter(parameterId);
   const name = label ?? info?.name ?? parameterId;
-  const angle = ARC_START + value * ARC_SWEEP;
-  const [x0, y0] = pointAt(angle, 7);
-  const [x1, y1] = pointAt(angle, 14);
 
   return (
     <div className="control flex w-21 flex-col items-center" data-unused={unused ? "" : undefined}>
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${SIZE} ${SIZE}`}
+      <DialControl
+        parameter={parameter}
+        arcStart={ARC_START}
+        arcSweep={ARC_SWEEP}
         aria-label={label}
         className="group size-12 outline-none"
       >
-        <path
-          d={TRACK}
-          className="fill-none stroke-neutral-800 group-data-[keyboard-focus]:stroke-neutral-600"
-          strokeWidth={3}
-          strokeLinecap="round"
-        />
-        {value > 0.001 && (
-          <path d={ringPath(value)} className="fill-none stroke-brand-blue" strokeWidth={3} strokeLinecap="round" />
-        )}
-        <circle cx={CENTER} cy={CENTER} r={16} className="fill-neutral-800 stroke-neutral-700" strokeWidth={1} />
-        <line x1={x0} y1={y0} x2={x1} y2={y1} className="stroke-paper" strokeWidth={2.5} strokeLinecap="round" />
-      </svg>
+        {({ value, angle }) => {
+          const [x0, y0] = pointAt(angle, 7);
+          const [x1, y1] = pointAt(angle, 14);
+          return (
+            <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="size-full">
+              <path
+                d={TRACK}
+                className="fill-none stroke-neutral-800 group-data-[keyboard-focus]:stroke-neutral-600"
+                strokeWidth={3}
+                strokeLinecap="round"
+              />
+              {value > 0.001 && (
+                <path d={ringPath(value)} className="fill-none stroke-brand-blue" strokeWidth={3} strokeLinecap="round" />
+              )}
+              <circle cx={CENTER} cy={CENTER} r={16} className="fill-neutral-800 stroke-neutral-700" strokeWidth={1} />
+              <line x1={x0} y1={y0} x2={x1} y2={y1} className="stroke-paper" strokeWidth={2.5} strokeLinecap="round" />
+            </svg>
+          );
+        }}
+      </DialControl>
       <span className={`mt-1 text-[0.6875rem] ${unused ? "text-neutral-600" : "text-neutral-400"}`}>{name}</span>
       <ValueText parameter={parameter} label={label} />
       {detail !== undefined && <span className="h-3.5 text-[0.625rem] leading-3.5 text-neutral-500">{detail}</span>}

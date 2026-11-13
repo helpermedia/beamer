@@ -1,5 +1,4 @@
-import { useRef } from "react";
-import { useChoices, useParameter } from "@helpermedia/beamer-react";
+import { Choices as ChoicesControl, useParameter } from "@helpermedia/beamer-react";
 
 interface ChoicesProps {
   parameterId: string;
@@ -9,25 +8,25 @@ interface ChoicesProps {
 }
 
 // A button for each choice of an enum parameter, a radio group through
-// beamer-controls. The names come from the parameter, so they match what
-// the host shows, unless `labels` gives others.
+// beamer-react's Choices. The names come from the parameter, so they match
+// what the host shows, unless `labels` gives others.
 function Choices({ parameterId, labels }: ChoicesProps) {
   const { parameter } = useParameter(parameterId);
-  const ref = useRef<HTMLDivElement>(null);
-  useChoices(ref, parameter);
 
   return (
-    <div ref={ref} className="flex gap-0.5 rounded-lg bg-well p-0.5 ring-1 ring-neutral-800 ring-inset">
-      {(labels ?? parameter.choices()).map((name) => (
-        <button
-          key={name}
-          type="button"
-          className="flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium tabular-nums text-neutral-400 outline-none hover:text-paper data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-brand-blue aria-checked:bg-brand-blue aria-checked:text-white"
-        >
-          {name}
-        </button>
-      ))}
-    </div>
+    <ChoicesControl parameter={parameter} className="flex gap-0.5 rounded-lg bg-well p-0.5 ring-1 ring-neutral-800 ring-inset">
+      {({ choices }) =>
+        (labels ?? choices).map((name) => (
+          <button
+            key={name}
+            type="button"
+            className="flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium tabular-nums text-neutral-400 outline-none hover:text-paper data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-brand-blue aria-checked:bg-brand-blue aria-checked:text-white"
+          >
+            {name}
+          </button>
+        ))
+      }
+    </ChoicesControl>
   );
 }
 

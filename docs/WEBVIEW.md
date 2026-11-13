@@ -523,7 +523,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 |---------|-------|------------|
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
 | `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachChoices()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
-| `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-controls`, React |
+| `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React |
 
 A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
@@ -551,7 +551,7 @@ A parameter has at most one open gesture: a gesture that begins while another is
 Each control is a function that takes an element of your own markup and a parameter and returns the function that detaches it. It adds the role, the ARIA attributes and the input, each change one undo step in the host. It sets a role, a `tabindex` or an `aria-label` (from the parameter's name) only where your markup has none. Detaching removes what it set. The same shape fits a Svelte action.
 
 - `attachDial(element, parameter, options)` for a round control and `attachSlider(element, parameter, options)` for one that moves along a line. Both get ARIA's `role="slider"` (ARIA has no role for a dial) with `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in the parameter's plain units and its text as `aria-valuetext`; a slider also gets `aria-orientation`.
-  - A dial drags vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the drag for each press. Each drag is one gesture from press to release.
+  - A dial drags vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the drag for each press. Each drag is one gesture from press to release. `dialAngle(value, arcStart, arcSweep)` says where to draw the dial's pointer so an arc drag lands where the dial is drawn.
   - A slider moves along its `orientation`, upright by default. A press on the track brings the thumb to the pointer and a press on the thumb grabs it; the thumb then follows the pointer, ten times finer with Shift. `thumbLength` (a part of the element's length, below 1) keeps the pointer on the spot of the thumb it pressed; `thumbPosition(value, thumbLength)` says where to draw the thumb so the drawing and the drag agree. `orientation` is the direction on screen.
   - The wheel by distance, capped per event so that a mouse notch moves about as far in every browser engine, corrected for natural scrolling. A scroll is one gesture until the wheel rests.
   - Arrow keys, Page Up and Page Down, Home and End once the element has focus; a discrete parameter moves one choice per key.
@@ -564,6 +564,39 @@ Each control is a function that takes an element of your own markup and a parame
 
 ### `beamer-react`
 
+Unstyled components, one per control. Each renders one element with the control of `beamer-controls` on it and hands what it shows to its children, as markup or as a function. The look stays yours: the class names you give and the drawing inside. The parameter goes in as `parameter`, the control's options as props of their own names; other props (`className`, `style`, `aria-*`, events) and a `ref` go to the element.
+
+| Component | Renders | Hands to its children |
+|-----------|---------|-----------------------|
+| `Dial` | A `<div>` with `attachDial` | `value`, `angle` (where it points, `dialAngle`), `text` |
+| `Slider` | A `<div>` with `attachSlider`, the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
+| `Switch` | A `<button>` with `attachSwitch` | `checked` |
+| `Choices` | A `<div>` with `attachChoices`; its children are the choices in order | `choices` (the names), `checked` (the index) |
+| `ValueEntry` | An `<input>` with `attachValueEntry` | |
+
+The compressor's dial draws a ring with a blue arc up to the value and a pointer inside the `<div>` of `Dial` (`Ring` and `Pointer` stand for its SVG), with the value field under it:
+
+```tsx
+function CompressorDial({ parameterId }: { parameterId: string }) {
+  const { parameter } = useParameter(parameterId);
+  return (
+    <div className="flex flex-col items-center">
+      <Dial parameter={parameter} className="group size-12 outline-none">
+        {({ value, angle }) => (
+          <svg viewBox="0 0 48 48" className="size-full">
+            <Ring part={value} />
+            <Pointer degrees={angle} />
+          </svg>
+        )}
+      </Dial>
+      <ValueEntry parameter={parameter} className="text-center" />
+    </div>
+  );
+}
+```
+
+The hooks:
+
 | Hook | Returns |
 |------|---------|
 | `useParameter(id)` | `{ parameter, value, displayText, text, info }`: the handle for changes and what to show |
@@ -571,26 +604,8 @@ Each control is a function that takes an element of your own markup and a parame
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
 | `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
-| `useDial(ref, parameter, options)`, `useSlider(ref, parameter, options)`, `useSwitch(ref, parameter)`, `useChoices(ref, parameter)`, `useValueEntry(ref, parameter, options)` | Attach a control of `beamer-controls` to an element while mounted |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
-
-The `webview-demo` dial uses them like this:
-
-```tsx
-function Dial({ parameterId }: { parameterId: string }) {
-  const { parameter, value } = useParameter(parameterId);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const valueRef = useRef<HTMLInputElement>(null);
-  // The arc on the handle, vertical elsewhere (onHandle tests the press
-  // against the handle's position). Double-click is for typing a value,
-  // so only a modifier click resets.
-  const pickDrag = (event: PointerEvent) => (onHandle(event) ? "arc" : "vertical");
-  useDial(svgRef, parameter, { drag: pickDrag, reset: ["modifier-click"] });
-  useValueEntry(valueRef, parameter, { open: "double-click" });
-  // Draw the arc from `value` in the <svg ref={svgRef}>, then the
-  // <input ref={valueRef}> for the value.
-}
-```
+| `useDial(ref, parameter, options)`, `useSlider(ref, parameter, options)`, `useSwitch(ref, parameter)`, `useChoices(ref, parameter)`, `useValueEntry(ref, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while mounted: the layer under the components |
 
 The demo's pan law and output meter:
 

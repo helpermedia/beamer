@@ -1,7 +1,7 @@
 {
   "name": "@helpermedia/beamer-react",
   "version": "0.2.4",
-  "description": "React hooks for the web UI of a Beamer plugin",
+  "description": "Unstyled React components and hooks for the web UI of a Beamer plugin",
   "private": true,
   "type": "module",
   "license": "MIT",

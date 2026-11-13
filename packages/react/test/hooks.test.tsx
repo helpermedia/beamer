@@ -1,6 +1,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { Beamer, BeamerParameterInfo } from "@helpermedia/beamer-api";
+import { calls, install, push } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
@@ -14,90 +14,6 @@ const { useChoices, useDial, useEvent, useParameter, useReadable, useReady, useS
 // React warns outside its test environment unless told it is one.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// What reached the host, in order.
-let calls: string[];
-// What the plugin pushes: a parameter change, a State change, a value, an event.
-let push: {
-  parameter(value: number, text: string): void;
-  state(value: string): void;
-  value(levels: { peak: number }): void;
-  event(data: unknown): void;
-};
-
-function install() {
-  calls = [];
-  const listeners: Record<string, Array<(value: unknown) => void>> = {};
-  const on = (key: string, callback: (value: unknown) => void) => {
-    (listeners[key] ??= []).push(callback);
-    return () => {
-      listeners[key] = listeners[key].filter((f) => f !== callback);
-    };
-  };
-  const emit = (key: string, value: unknown) => listeners[key]?.forEach((callback) => callback(value));
-  const mix = { value: 0.5, text: "50" };
-  let panLaw = "linear";
-  let levels: { peak: number } | undefined;
-  const info: BeamerParameterInfo = {
-    id: 3, stringId: "mix", name: "Mix", value: 0.5, plainValue: 0.5, displayText: "50", format: "percent",
-    defaultValue: 0.25, min: 0, max: 1, units: "%", steps: 0, valueTexts: [],
-  };
-  const beamer: Beamer = {
-    ready: Promise.resolve(),
-    pluginFormat: "vst3",
-    middleC: "C3",
-    parameters: {
-      get: () => mix.value,
-      getPlain: () => mix.value,
-      getDisplayText: () => mix.text,
-      set: (_id, value) => {
-        mix.value = value;
-        calls.push(`set ${value}`);
-      },
-      beginEdit: () => calls.push("begin"),
-      endEdit: () => calls.push("end"),
-      on: (id, callback) => on(`parameter:${id}`, callback as (value: unknown) => void),
-      all: () => [info],
-      info: (id) => (id === "mix" ? info : undefined),
-    },
-    state: {
-      get: <T,>() => panLaw as T,
-      set: (_path, value) => {
-        panLaw = String(value);
-        calls.push(`state ${value}`);
-        emit("state:pan_law", panLaw);
-      },
-      on: <T,>(path: string, callback: (value: T) => void) => on(`state:${path}`, callback as (value: unknown) => void),
-      ids: () => ["pan_law"],
-    },
-    values: {
-      get: <T,>() => levels as T,
-      on: <T,>(name: string, callback: (value: T) => void) => on(`value:${name}`, callback as (value: unknown) => void),
-    },
-    invoke: async () => null,
-    on: (name, callback) => on(`event:${name}`, callback),
-    emit: () => {},
-  };
-  globalThis.__BEAMER__ = beamer;
-  push = {
-    parameter(value, text) {
-      mix.value = value;
-      mix.text = text;
-      emit("parameter:mix", value);
-    },
-    state(value) {
-      panLaw = value;
-      emit("state:pan_law", value);
-    },
-    value(next) {
-      levels = next;
-      emit("value:levels", next);
-    },
-    event(data) {
-      emit("event:history", data);
-    },
-  };
-}
-
 function render(element: React.ReactNode) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -106,7 +22,7 @@ function render(element: React.ReactNode) {
   return { container, unmount: () => act(() => root.unmount()) };
 }
 
-beforeEach(install);
+beforeEach(() => install());
 
 test("useParameter follows the value and the text the plugin answers with", () => {
   function Dial() {
@@ -193,7 +109,7 @@ test("useDial attaches while mounted", () => {
   });
   expect(calls).toEqual(["begin", "set 0.51", "end"]);
   unmount();
-  calls = [];
+  calls.length = 0;
   element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
   expect(calls).toEqual([]);
   expect(element.hasAttribute("role")).toBe(false);

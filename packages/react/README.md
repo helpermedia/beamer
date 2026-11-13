@@ -1,30 +1,37 @@
 # @helpermedia/beamer-react
 
-React hooks for the web UI of a [Beamer](https://github.com/helpermedia/beamer)
-plugin, on top of [`beamer-api`](../api) and [`beamer-controls`](../controls).
-Each one follows the plugin through `useSyncExternalStore` or an effect, so
-a component renders again when the host changes a value.
+Unstyled components and hooks for the web UI of a
+[Beamer](https://github.com/helpermedia/beamer) plugin, on top of
+[`beamer-api`](../api) and [`beamer-controls`](../controls). Each one
+follows the plugin through `useSyncExternalStore` or an effect, so a
+component renders again when the host changes a value.
 
 ## Example
 
 ```tsx
-import { useRef } from "react";
-import { useDial, useParameter, useStateField, useValueEntry } from "@helpermedia/beamer-react";
+import { Dial, ValueEntry, useParameter, useStateField } from "@helpermedia/beamer-react";
 
 function MixDial() {
-  const dial = useRef<SVGSVGElement>(null);
-  const field = useRef<HTMLInputElement>(null);
-  const { parameter, value } = useParameter("mix");
-  // A dial: drag, scroll, arrow keys and double click to reset.
-  useDial(dial, parameter);
-  // The value, a click to type one.
-  useValueEntry(field, parameter);
+  const { parameter } = useParameter("mix");
   return (
     <div>
-      <svg ref={dial} viewBox="0 0 64 64">
-        {/* Draw the dial from `value`. */}
-      </svg>
-      <input ref={field} />
+      {/* Drag, scroll, arrow keys and double click to reset. */}
+      <Dial parameter={parameter} className="size-16">
+        {({ angle }) => (
+          <svg viewBox="0 0 64 64">
+            {/* A pointer from the center at `angle`. */}
+            <line
+              x1={32}
+              y1={32}
+              x2={32 + 24 * Math.cos((angle * Math.PI) / 180)}
+              y2={32 + 24 * Math.sin((angle * Math.PI) / 180)}
+              stroke="currentColor"
+            />
+          </svg>
+        )}
+      </Dial>
+      {/* The value, a click to type one. */}
+      <ValueEntry parameter={parameter} />
     </div>
   );
 }
@@ -39,7 +46,46 @@ function PanLawButton() {
 }
 ```
 
+## Components
+
+Each component renders one element with a control of `beamer-controls`:
+the role, the ARIA attributes and the input. They draw nothing: the look
+is yours, in the class names you give and the markup you put inside. Each
+takes the parameter as `parameter` and the control's options as props.
+Other props (`className`, `style`, `aria-*`, events) and a `ref` go to the
+element.
+
+| Component | Renders | Hands to its children |
+|-----------|---------|-----------------------|
+| `Dial` | A `<div>` with `attachDial` | `value`, `angle` (where it points, `dialAngle`), `text` |
+| `Slider` | A `<div>` with `attachSlider`: the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
+| `Switch` | A `<button>` with `attachSwitch` | `checked` |
+| `Choices` | A `<div>` with `attachChoices` | `choices` (the names), `checked` (the index) |
+| `ValueEntry` | An `<input>` with `attachValueEntry` | |
+
+Children are either markup or a function of what the control shows:
+
+```tsx
+<Slider parameter={level} thumbLength={0.1} className="h-48 w-8">
+  {({ position }) => (
+    <svg className="size-full">
+      <rect y={`${(1 - position) * 100 - 5}%`} height="10%" width="100%" />
+    </svg>
+  )}
+</Slider>
+```
+
+Draw a dial or a slider inside its `<div>`, filling it: the drag measures
+the `<div>`. The children of `Choices` are its choices, one button each
+in order, the first for the lowest value; a checked one has
+`aria-checked="true"`. A `drag` or `text` function may be a new one on
+every render: the newest is called. The value field owns its text, so it
+takes no `value`.
+
 ## Hooks
+
+The hooks under the components are there too, for a control on an element
+of your own (`ref`).
 
 | Hook | Returns |
 |------|---------|
