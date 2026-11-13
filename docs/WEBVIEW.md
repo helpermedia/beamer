@@ -75,7 +75,7 @@ The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any
 ### TypeScript Declaration
 
 ```typescript
-interface BeamerParamInfo {
+interface BeamerParameterInfo {
   id: number;
   stringId: string;
   name: string;
@@ -91,7 +91,7 @@ interface BeamerParamInfo {
   valueTexts: string[];
 }
 
-interface BeamerParams {
+interface BeamerParameters {
   get(stringId: string): number;
   getPlain(stringId: string): number;
   getDisplayText(stringId: string): string;
@@ -99,8 +99,8 @@ interface BeamerParams {
   beginEdit(stringId: string): void;
   endEdit(stringId: string): void;
   on(stringId: string, callback: (value: number) => void): () => void;
-  all(): BeamerParamInfo[];
-  info(stringId: string): BeamerParamInfo | undefined;
+  all(): BeamerParameterInfo[];
+  info(stringId: string): BeamerParameterInfo | undefined;
 }
 
 interface BeamerState {
@@ -119,7 +119,7 @@ interface Beamer {
   readonly ready: Promise<void>;
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   readonly middleC: "C3" | "C4" | null;
-  readonly params: BeamerParams;
+  readonly parameters: BeamerParameters;
   readonly state: BeamerState;
   readonly values: BeamerValues;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;
@@ -136,17 +136,17 @@ All parameter methods use string identifiers: the `id` from the `#[parameter(id 
 
 | Method | Description |
 |--------|-------------|
-| `params.get(stringId)` | Get the current normalized value (0.0 - 1.0) |
-| `params.getPlain(stringId)` | Get the current value in plain units (e.g. dB) |
-| `params.getDisplayText(stringId)` | Get the current value as formatted by the parameter, without the unit |
-| `params.set(stringId, value)` | Set the normalized value and notify the host |
-| `params.beginEdit(stringId)` | Start an automation gesture (call before a drag) |
-| `params.endEdit(stringId)` | End an automation gesture (call after a drag) |
-| `params.on(stringId, callback)` | Subscribe to value changes. Returns an unsubscribe function. |
-| `params.info(stringId)` | Get the full `BeamerParamInfo` object for a parameter |
-| `params.all()` | Get an array of all `BeamerParamInfo` objects |
+| `parameters.get(stringId)` | Get the current normalized value (0.0 - 1.0) |
+| `parameters.getPlain(stringId)` | Get the current value in plain units (e.g. dB) |
+| `parameters.getDisplayText(stringId)` | Get the current value as formatted by the parameter, without the unit |
+| `parameters.set(stringId, value)` | Set the normalized value and notify the host |
+| `parameters.beginEdit(stringId)` | Start an automation gesture (call before a drag) |
+| `parameters.endEdit(stringId)` | End an automation gesture (call after a drag) |
+| `parameters.on(stringId, callback)` | Subscribe to value changes. Returns an unsubscribe function. |
+| `parameters.info(stringId)` | Get the full `BeamerParameterInfo` object for a parameter |
+| `parameters.all()` | Get an array of all `BeamerParameterInfo` objects |
 
-Subscriptions registered before `ready` resolves are queued, attached once the init dump arrives and called with the value it brings. The unsubscribe function returned by `params.on()` works in both cases.
+Subscriptions registered before `ready` resolves are queued, attached once the init dump arrives and called with the value it brings. The unsubscribe function returned by `parameters.on()` works in both cases.
 
 ### State Methods
 
@@ -188,11 +188,11 @@ A call does not wait for `ready`: the plugin answers it while the parameters are
 
 If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")` and an override ends its `match` the same way. Catch the rejection where a method may be missing.
 
-One method is built in and never reaches the model: `_beamer/paramTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
+One method is built in and never reaches the model: `_beamer/parameterTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
 
 ```javascript
-const info = __BEAMER__.params.info("gain");
-const normalized = await __BEAMER__.invoke("_beamer/paramTextToNormalized", info.id, "-6");
+const info = __BEAMER__.parameters.info("gain");
+const normalized = await __BEAMER__.invoke("_beamer/parameterTextToNormalized", info.id, "-6");
 ```
 
 ### Custom Events
@@ -217,7 +217,7 @@ __BEAMER__.on("sampleLoaded", (name) => {
 
 ```javascript
 await __BEAMER__.ready;
-// All params.get() calls now return real values.
+// All parameters.get() calls now return real values.
 ```
 
 ### Plugin Format
@@ -477,7 +477,7 @@ Each entry corresponds to a `ParameterInitEntry`:
 | `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
 | `valueTexts` | `string[]` | The display text of each value of a discrete parameter, from the lowest up: the choices of an enum parameter, `Off` and `On` for a boolean one. Value `i` has the normalized value `i / steps`. Empty for a continuous parameter and for one with more than 128 values |
 
-The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `params.get()` and `state.get()`.
+The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `parameters.get()` and `state.get()`.
 
 ### 60 Hz Polling
 
@@ -486,7 +486,7 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 1. Iterates over all parameters
 2. Compares each normalized value against a cached snapshot
 3. For any parameter whose value changed, appends its normalized value, plain value and display text to a delta object
-4. Calls `window.__BEAMER__._onParams({id: [normalized, plain, displayText], ...})` with only the changed entries
+4. Calls `window.__BEAMER__._onParameters({id: [normalized, plain, displayText], ...})` with only the changed entries
 5. If a `State` field was set since the last tick, calls `window.__BEAMER__._onState({path: value, ...})` with the fields that changed. The sum of their generations tells whether any did, so a tick without a change reads no field
 6. Delivers the events the plugin emitted since the last tick, one `window.__BEAMER__._onEvent(name, data)` call per event (see [Events from Rust](#events-from-rust))
 7. Delivers what the audio thread sent through its senders since the last tick, one call per sender that has something: `_onValue(name, data)` with the newest value of a value sender, which the runtime keeps in `__BEAMER__.values`, or `_onEvent(name, data)` with an array of the values of a stream sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). After the init dump, each value sender sends its current value again
@@ -494,24 +494,24 @@ Alongside the init dump, a repeating timer fires at 60 Hz on the main thread. It
 The delta format is a plain object mapping numeric parameter IDs to those three values:
 
 ```javascript
-window.__BEAMER__._onParams({0: [0.72, -8.16, "-8.2"], 1: [0.35, -0.3, "L 30"]})
+window.__BEAMER__._onParameters({0: [0.72, -8.16, "-8.2"], 1: [0.35, -0.3, "L 30"]})
 ```
 
-The runtime updates its internal map and fires all registered `params.on()` callbacks for the affected parameters. A value that is not a finite number arrives as `null`.
+The runtime updates its internal map and fires all registered `parameters.on()` callbacks for the affected parameters. A value that is not a finite number arrives as `null`.
 
 Nothing counts as sent when an editor opens, so its first tick sends all values, covering any changes between the init dump and the first tick.
 
 ### JS-to-Rust Flow
 
-When JavaScript calls `params.set(stringId, value)`:
+When JavaScript calls `parameters.set(stringId, value)`:
 
 1. The runtime updates its local cache immediately
-2. Posts a `{type: "param:set", id, value}` message via `WKScriptMessageHandler`
+2. Posts a `{type: "parameter:set", id, value}` message via `WKScriptMessageHandler`
 3. The format wrapper hands the message to its `EditorSync`, which reads the messages of the page for every format and calls `ParameterStore::set_normalized()` on the parameter
 4. The wrapper tells the host through its `HostEdits`: `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
-5. The editor sync sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParams`, so the display text updates without waiting for the next poll tick
+5. The editor sync sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParameters`, so the display text updates without waiting for the next poll tick
 
-`beginEdit` and `endEdit` follow the same path, posting `param:begin` and `param:end` messages that map to the host's automation gesture APIs. The editor sync notes each gesture the host was told about and that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), it ends the gesture in the host through `HostEdits`, so the host never keeps a parameter touched.
+`beginEdit` and `endEdit` follow the same path, posting `parameter:begin` and `parameter:end` messages that map to the host's automation gesture APIs. The editor sync notes each gesture the host was told about and that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), it ends the gesture in the host through `HostEdits`, so the host never keeps a parameter touched.
 
 When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The editor sync decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
@@ -521,7 +521,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 
 | Package | Holds | Depends on |
 |---------|-------|------------|
-| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `param()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
+| `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()` | Nothing |
 | `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachChoices()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
 | `@helpermedia/beamer-react` | React hooks on top of both | `beamer-api`, `beamer-controls`, React |
 
@@ -529,13 +529,13 @@ A web UI with controls of its own needs only `beamer-api`. The packages draw not
 
 ### `beamer-api`
 
-`param(id)` is a parameter: its value, plain value and text with the unit, the choices of an enum and the changes. Every change goes to the host as a gesture, which the host records as one undo step:
+`parameter(id)` is a parameter: its value, plain value and text with the unit, the choices of an enum and the changes. Every change goes to the host as a gesture, which the host records as one undo step:
 
 ```typescript
-import { param, ready } from "@helpermedia/beamer-api";
+import { parameter, ready } from "@helpermedia/beamer-api";
 
 await ready();
-const mix = param("mix");
+const mix = parameter("mix");
 mix.subscribe(() => (label.textContent = mix.text()));
 mix.edit(0.5);       // begin, set, end
 mix.reset();         // the default value as one gesture
@@ -550,15 +550,15 @@ A parameter has at most one open gesture: a gesture that begins while another is
 
 Each control is a function that takes an element of your own markup and a parameter and returns the function that detaches it. It adds the role, the ARIA attributes and the input, each change one undo step in the host. It sets a role, a `tabindex` or an `aria-label` (from the parameter's name) only where your markup has none. Detaching removes what it set. The same shape fits a Svelte action.
 
-- `attachDial(element, param, options)` for a round control and `attachSlider(element, param, options)` for one that moves along a line. Both get ARIA's `role="slider"` (ARIA has no role for a dial) with `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in the parameter's plain units and its text as `aria-valuetext`; a slider also gets `aria-orientation`.
+- `attachDial(element, parameter, options)` for a round control and `attachSlider(element, parameter, options)` for one that moves along a line. Both get ARIA's `role="slider"` (ARIA has no role for a dial) with `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in the parameter's plain units and its text as `aria-valuetext`; a slider also gets `aria-orientation`.
   - A dial drags vertical (the default), horizontal or both, ten times finer with Shift, from the value at the press, so a discrete parameter that the host snaps to a step does not stick. Or along an arc: the value jumps to the pointer and follows it around the element's center. A function can pick the drag for each press. Each drag is one gesture from press to release.
   - A slider moves along its `orientation`, upright by default. A press on the track brings the thumb to the pointer and a press on the thumb grabs it; the thumb then follows the pointer, ten times finer with Shift. `thumbLength` (a part of the element's length, below 1) keeps the pointer on the spot of the thumb it pressed; `thumbPosition(value, thumbLength)` says where to draw the thumb so the drawing and the drag agree. `orientation` is the direction on screen.
   - The wheel by distance, capped per event so that a mouse notch moves about as far in every browser engine, corrected for natural scrolling. A scroll is one gesture until the wheel rests.
   - Arrow keys, Page Up and Page Down, Home and End once the element has focus; a discrete parameter moves one choice per key.
   - Reset by double-click or by a click with Command or Control held.
-- `attachSwitch(button, param)` for an on and off parameter: `role="switch"` and `aria-checked`, each click one undo step.
-- `attachChoices(container, param)` for an enum: a radio group of the container's children in order, `aria-checked` on the one the parameter is at, arrow keys that check the next or previous choice, one tab stop.
-- `attachValueEntry(input, param, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openValueEntry(input)` opens it from elsewhere.
+- `attachSwitch(button, parameter)` for an on and off parameter: `role="switch"` and `aria-checked`, each click one undo step.
+- `attachChoices(container, parameter)` for an enum: a radio group of the container's children in order, `aria-checked` on the one the parameter is at, arrow keys that check the next or previous choice, one tab stop.
+- `attachValueEntry(input, parameter, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openValueEntry(input)` opens it from elsewhere.
 - Every control has the `data-keyboard-focus` attribute while it has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
 - `fallingMeter(sender, { read })` follows a value sender of meter levels. When no value comes for 300 ms (the host stopped calling the plugin), the levels fall on their own at 20 dB a second, each towards its rest. The plugin sends the levels with every block while they show something.
 
@@ -566,27 +566,27 @@ Each control is a function that takes an element of your own markup and a parame
 
 | Hook | Returns |
 |------|---------|
-| `useParam(id)` | `{ param, value, displayText, text, info }`: the handle for changes and what to show |
+| `useParameter(id)` | `{ parameter, value, displayText, text, info }`: the handle for changes and what to show |
 | `useStateField(path)` | `[value, set]` for a `State` field, like `useState` |
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
 | `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
-| `useDial(ref, param, options)`, `useSlider(ref, param, options)`, `useSwitch(ref, param)`, `useChoices(ref, param)`, `useValueEntry(ref, param, options)` | Attach a control of `beamer-controls` to an element while mounted |
+| `useDial(ref, parameter, options)`, `useSlider(ref, parameter, options)`, `useSwitch(ref, parameter)`, `useChoices(ref, parameter)`, `useValueEntry(ref, parameter, options)` | Attach a control of `beamer-controls` to an element while mounted |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
 
 The `webview-demo` dial uses them like this:
 
 ```tsx
-function Dial({ paramId }: { paramId: string }) {
-  const { param, value } = useParam(paramId);
+function Dial({ parameterId }: { parameterId: string }) {
+  const { parameter, value } = useParameter(parameterId);
   const svgRef = useRef<SVGSVGElement>(null);
   const valueRef = useRef<HTMLInputElement>(null);
   // The arc on the handle, vertical elsewhere (onHandle tests the press
   // against the handle's position). Double-click is for typing a value,
   // so only a modifier click resets.
   const pickDrag = (event: PointerEvent) => (onHandle(event) ? "arc" : "vertical");
-  useDial(svgRef, param, { drag: pickDrag, reset: ["modifier-click"] });
-  useValueEntry(valueRef, param, { open: "double-click" });
+  useDial(svgRef, parameter, { drag: pickDrag, reset: ["modifier-click"] });
+  useValueEntry(valueRef, parameter, { open: "double-click" });
   // Draw the arc from `value` in the <svg ref={svgRef}>, then the
   // <input ref={valueRef}> for the value.
 }

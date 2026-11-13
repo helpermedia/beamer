@@ -1,5 +1,5 @@
 import { runtime } from "./runtime.js";
-import type { Beamer, BeamerParamInfo } from "./types.js";
+import type { Beamer, BeamerParameterInfo } from "./types.js";
 import type { Readable } from "./stores.js";
 
 /**
@@ -14,10 +14,10 @@ import type { Readable } from "./stores.js";
  * do nothing. `get` and `subscribe` work detached from the handle, as
  * React's `useSyncExternalStore` and Svelte call them.
  */
-export interface Param extends Readable<number> {
+export interface Parameter extends Readable<number> {
   readonly id: string;
   /** What the runtime knows of it, undefined before `ready` or for an unknown id. */
-  readonly info: BeamerParamInfo | undefined;
+  readonly info: BeamerParameterInfo | undefined;
   /** The normalized value (0 to 1). */
   readonly get: () => number;
   /** Call `callback` with the value now and on every change. Returns the function that unsubscribes. */
@@ -63,7 +63,7 @@ function clamp(normalized: number): number {
   return Math.min(1, Math.max(0, normalized));
 }
 
-class ParamHandle implements Param {
+class ParameterHandle implements Parameter {
   #open = false;
   #onInterrupt: (() => void) | null = null;
   // How many gestures began, so that a typed value can tell whether one
@@ -75,23 +75,23 @@ class ParamHandle implements Param {
     readonly beamer: Beamer,
   ) {}
 
-  get info(): BeamerParamInfo | undefined {
-    return this.beamer.params.info(this.id);
+  get info(): BeamerParameterInfo | undefined {
+    return this.beamer.parameters.info(this.id);
   }
 
-  readonly get = (): number => this.beamer.params.get(this.id);
+  readonly get = (): number => this.beamer.parameters.get(this.id);
 
   readonly subscribe = (callback: (value: number) => void): (() => void) => {
     callback(this.get());
-    return this.beamer.params.on(this.id, callback);
+    return this.beamer.parameters.on(this.id, callback);
   };
 
   plain(): number {
-    return this.beamer.params.getPlain(this.id);
+    return this.beamer.parameters.getPlain(this.id);
   }
 
   displayText(): string {
-    return this.beamer.params.getDisplayText(this.id);
+    return this.beamer.parameters.getDisplayText(this.id);
   }
 
   text(): string {
@@ -109,7 +109,7 @@ class ParamHandle implements Param {
       this.end();
       interrupted?.();
     }
-    this.beamer.params.beginEdit(this.id);
+    this.beamer.parameters.beginEdit(this.id);
     this.#gestures += 1;
     this.#open = true;
     this.#onInterrupt = onInterrupt ?? null;
@@ -117,14 +117,14 @@ class ParamHandle implements Param {
 
   set(normalized: number): void {
     if (!this.info) return;
-    this.beamer.params.set(this.id, clamp(normalized));
+    this.beamer.parameters.set(this.id, clamp(normalized));
   }
 
   end(): void {
     if (!this.#open) return;
     this.#open = false;
     this.#onInterrupt = null;
-    this.beamer.params.endEdit(this.id);
+    this.beamer.parameters.endEdit(this.id);
   }
 
   edit(normalized: number): void {
@@ -145,7 +145,7 @@ class ParamHandle implements Param {
     const gestures = this.#gestures;
     let normalized: unknown;
     try {
-      normalized = await this.beamer.invoke("_beamer/paramTextToNormalized", info.id, text);
+      normalized = await this.beamer.invoke("_beamer/parameterTextToNormalized", info.id, text);
     } catch {
       return false;
     }
@@ -181,10 +181,10 @@ class ParamHandle implements Param {
 
 // One handle per parameter, so that all controls of a parameter share its
 // gesture. Kept per runtime: a page that gets a new runtime starts afresh.
-const handles = new WeakMap<Beamer, Map<string, ParamHandle>>();
+const handles = new WeakMap<Beamer, Map<string, ParameterHandle>>();
 
 /** The parameter with the string id `id`. */
-export function param(id: string): Param {
+export function parameter(id: string): Parameter {
   const beamer = runtime();
   let byId = handles.get(beamer);
   if (!byId) {
@@ -193,7 +193,7 @@ export function param(id: string): Param {
   }
   let handle = byId.get(id);
   if (!handle) {
-    handle = new ParamHandle(id, beamer);
+    handle = new ParameterHandle(id, beamer);
     byId.set(id, handle);
   }
   return handle;

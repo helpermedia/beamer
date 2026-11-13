@@ -1,6 +1,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { param } from "@helpermedia/beamer-api";
+import { parameter } from "@helpermedia/beamer-api";
 import { KEYBOARD_FOCUS, attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition } from "../src/index";
 import { installRuntime } from "./runtime";
 
@@ -36,7 +36,7 @@ function pointer(target: Element, type: string, init: PointerEventInit = {}) {
 test("a dial has its role, tab stop and ARIA values in plain units", () => {
   setup();
   const dial = element("div");
-  const detach = attachDial(dial, param("gain"));
+  const detach = attachDial(dial, parameter("gain"));
   expect(dial.getAttribute("role")).toBe("slider");
   expect(dial.getAttribute("tabindex")).toBe("0");
   expect(dial.getAttribute("aria-label")).toBe("Gain");
@@ -55,7 +55,7 @@ test("a dial follows the host and keeps the author's own role and label", () => 
   const dial = element("div");
   dial.setAttribute("aria-label", "Output");
   dial.setAttribute("tabindex", "-1");
-  const detach = attachDial(dial, param("gain"));
+  const detach = attachDial(dial, parameter("gain"));
   runtime.push("gain", 1);
   expect(dial.getAttribute("aria-valuenow")).toBe("0");
   expect(dial.getAttribute("aria-valuetext")).toBe("0.0 dB");
@@ -67,7 +67,7 @@ test("a dial follows the host and keeps the author's own role and label", () => 
 test("a label the author sets or removes later wins over the fallback", () => {
   const runtime = setup();
   const dial = element("div");
-  const detach = attachDial(dial, param("gain"));
+  const detach = attachDial(dial, parameter("gain"));
   expect(dial.getAttribute("aria-label")).toBe("Gain");
   // A framework renders a label of its own after the control attached.
   dial.setAttribute("aria-label", "Output");
@@ -88,7 +88,7 @@ test("a dial gets its label and values once the parameters arrive", () => {
   const runtime = setup(false);
   const dial = element("div");
   dial.setAttribute("aria-labelledby", "gain-label");
-  attachDial(dial, param("gain"));
+  attachDial(dial, parameter("gain"));
   expect(dial.hasAttribute("aria-valuenow")).toBe(false);
   runtime.init();
   expect(dial.getAttribute("aria-valuenow")).toBe("-30");
@@ -98,7 +98,7 @@ test("a dial gets its label and values once the parameters arrive", () => {
 test("a dial takes the gestures and their options", () => {
   const runtime = setup();
   const dial = element("div");
-  attachDial(dial, param("gain"), { keyStep: 0.25, reset: ["modifier-click"] });
+  attachDial(dial, parameter("gain"), { keyStep: 0.25, reset: ["modifier-click"] });
   key(dial, "ArrowUp");
   pointer(dial, "pointerdown", { metaKey: true });
   expect(runtime.calls).toEqual(["begin gain", "set gain 0.75", "end gain", "begin gain", "set gain 1", "end gain"]);
@@ -117,7 +117,7 @@ function slider(orientation: "vertical" | "horizontal" = "vertical") {
 test("a slider is upright by default", () => {
   setup();
   const upright = slider();
-  const detach = attachSlider(upright, param("gain"));
+  const detach = attachSlider(upright, parameter("gain"));
   expect(upright.getAttribute("role")).toBe("slider");
   expect(upright.getAttribute("aria-orientation")).toBe("vertical");
   detach();
@@ -127,7 +127,7 @@ test("a slider is upright by default", () => {
 test("a press on the track brings the thumb to the pointer, which it then follows", () => {
   const runtime = setup();
   const upright = slider();
-  attachSlider(upright, param("gain"));
+  attachSlider(upright, parameter("gain"));
   pointer(upright, "pointerdown", { clientX: 10, clientY: 25 });
   pointer(upright, "pointermove", { clientX: 30, clientY: 60 });
   // Past the end the thumb stops there.
@@ -141,7 +141,7 @@ test("a press on the thumb grabs it where it is pressed", () => {
   const upright = slider();
   // A thumb of 20 pixels: its center travels 80, from 90 up to 10. At 0.5
   // it is at 50.
-  attachSlider(upright, param("gain"), { thumbLength: 0.2 });
+  attachSlider(upright, parameter("gain"), { thumbLength: 0.2 });
   pointer(upright, "pointerdown", { clientX: 10, clientY: 55 });
   pointer(upright, "pointermove", { clientX: 10, clientY: 45 });
   pointer(upright, "pointerup");
@@ -164,7 +164,7 @@ test("thumbPosition puts the thumb's center within the travel", () => {
 test("a press where thumbPosition draws the thumb grabs it", () => {
   const runtime = setup();
   const upright = slider();
-  attachSlider(upright, param("gain"), { thumbLength: 0.3 });
+  attachSlider(upright, parameter("gain"), { thumbLength: 0.3 });
   runtime.push("gain", 0.8);
   // The thumb's center in screen pixels, from the top of the 100 pixel
   // slider.
@@ -179,7 +179,7 @@ test("a press where thumbPosition draws the thumb grabs it", () => {
 test("shift moves a slider finer, without a jump when it is released", () => {
   const runtime = setup();
   const upright = slider();
-  attachSlider(upright, param("gain"));
+  attachSlider(upright, parameter("gain"));
   pointer(upright, "pointerdown", { clientX: 10, clientY: 50 });
   pointer(upright, "pointermove", { clientX: 10, clientY: 40, shiftKey: true });
   pointer(upright, "pointermove", { clientX: 10, clientY: 30 });
@@ -191,7 +191,7 @@ test("shift moves a slider finer, without a jump when it is released", () => {
 test("a lying slider follows the pointer to the right", () => {
   const runtime = setup();
   const lying = slider("horizontal");
-  attachSlider(lying, param("gain"), { orientation: "horizontal" });
+  attachSlider(lying, parameter("gain"), { orientation: "horizontal" });
   expect(lying.getAttribute("aria-orientation")).toBe("horizontal");
   pointer(lying, "pointerdown", { clientX: 25, clientY: 10 });
   pointer(lying, "pointermove", { clientX: 80, clientY: 0 });
@@ -203,7 +203,7 @@ test("a slider without a size to measure moves by distance", () => {
   const runtime = setup();
   const unmeasured = element("div");
   unmeasured.setPointerCapture = () => {};
-  attachSlider(unmeasured, param("gain"), { dragStep: 1 / 100 });
+  attachSlider(unmeasured, parameter("gain"), { dragStep: 1 / 100 });
   pointer(unmeasured, "pointerdown", { clientX: 0, clientY: 100 });
   pointer(unmeasured, "pointermove", { clientX: 0, clientY: 90 });
   pointer(unmeasured, "pointerup");
@@ -214,7 +214,7 @@ test("focus from Tab shows as keyboard focus, focus from a click does not", () =
   setup();
   const dial = element("div");
   dial.setPointerCapture = () => {};
-  const detach = attachDial(dial, param("gain"));
+  const detach = attachDial(dial, parameter("gain"));
   // Tab: a key, then the focus moves to the element.
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
   dial.focus();
@@ -237,7 +237,7 @@ test("modifier keys and shortcuts do not show keyboard focus", () => {
   setup();
   const dial = element("div");
   dial.setPointerCapture = () => {};
-  attachDial(dial, param("gain"));
+  attachDial(dial, parameter("gain"));
   pointer(dial, "pointerdown", { clientY: 10 });
   pointer(dial, "pointerup");
   for (const init of [{ key: "Shift", shiftKey: true }, { key: "z", metaKey: true }]) {
@@ -254,7 +254,7 @@ test("a switch flips with each click, one undo step each", () => {
   const runtime = setup();
   const button = element("button");
   button.textContent = "Bypass";
-  const detach = attachSwitch(button, param("bypass"));
+  const detach = attachSwitch(button, parameter("bypass"));
   expect(button.getAttribute("role")).toBe("switch");
   expect(button.getAttribute("aria-checked")).toBe("false");
   expect(button.hasAttribute("aria-label")).toBe(false);
@@ -284,7 +284,7 @@ test("choices are a radio group with one tab stop on the checked choice", async 
   setup();
   const group = element("div");
   const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, param("mode"));
+  attachChoices(group, parameter("mode"));
   expect(group.getAttribute("role")).toBe("radiogroup");
   expect(group.getAttribute("aria-label")).toBe("Mode");
   expect(buttons.map((button) => button.getAttribute("role"))).toEqual(["radio", "radio", "radio"]);
@@ -296,7 +296,7 @@ test("a click sets a choice, a click on the checked one sets nothing", () => {
   const runtime = setup();
   const group = element("div");
   const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, param("mode"));
+  attachChoices(group, parameter("mode"));
   buttons[2].click();
   buttons[2].click();
   expect(runtime.calls).toEqual(["begin mode", "set mode 1", "end mode"]);
@@ -308,7 +308,7 @@ test("arrow keys check the next choice, move the focus and wrap", () => {
   const runtime = setup();
   const group = element("div");
   const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, param("mode"));
+  attachChoices(group, parameter("mode"));
   buttons[0].focus();
   key(buttons[0], "ArrowRight");
   expect(document.activeElement).toBe(buttons[1]);
@@ -326,7 +326,7 @@ test("arrow keys check the next choice, move the focus and wrap", () => {
 test("choices rendered later get their roles, removed ones lose them", async () => {
   const runtime = setup(false);
   const group = element("div");
-  const detach = attachChoices(group, param("mode"));
+  const detach = attachChoices(group, parameter("mode"));
   runtime.init();
   const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
   // The observer reports after the change.
@@ -343,7 +343,7 @@ test("choices rendered later get their roles, removed ones lose them", async () 
 test("a value field shows the value and opens on a click with the text selected", () => {
   setup();
   const input = element("input");
-  attachValueEntry(input, param("gain"));
+  attachValueEntry(input, parameter("gain"));
   expect(input.readOnly).toBe(true);
   expect(input.value).toBe("-30.0 dB");
   expect(input.getAttribute("aria-label")).toBe("Gain value");
@@ -360,7 +360,7 @@ test("Enter sets the typed value and keeps the focus", async () => {
   const runtime = setup();
   runtime.parsed.set("-12", 0.8);
   const input = element("input");
-  attachValueEntry(input, param("gain"));
+  attachValueEntry(input, parameter("gain"));
   input.click();
   input.value = "-12";
   key(input, "Enter");
@@ -376,7 +376,7 @@ test("Enter sets the typed value and keeps the focus", async () => {
 test("a click elsewhere sets the typed value, Escape and an unchanged text set nothing", () => {
   const runtime = setup();
   const input = element("input");
-  attachValueEntry(input, param("gain"));
+  attachValueEntry(input, parameter("gain"));
   input.click();
   input.value = "-6";
   input.blur();
@@ -393,7 +393,7 @@ test("a click elsewhere sets the typed value, Escape and an unchanged text set n
 test("Enter or Space opens a closed field, keys of an input method are left alone", () => {
   setup();
   const input = element("input");
-  attachValueEntry(input, param("gain"));
+  attachValueEntry(input, parameter("gain"));
   input.focus();
   key(input, " ");
   expect(input.readOnly).toBe(false);
@@ -408,7 +408,7 @@ test("Enter or Space opens a closed field, keys of an input method are left alon
 test("a value field can open on a double click or from script, with a text of its own", () => {
   setup();
   const input = element("input");
-  const detach = attachValueEntry(input, param("gain"), { open: "double-click", text: (gain) => `[${gain.displayText()}]` });
+  const detach = attachValueEntry(input, parameter("gain"), { open: "double-click", text: (gain) => `[${gain.displayText()}]` });
   expect(input.value).toBe("[-30.0]");
   input.click();
   expect(input.readOnly).toBe(true);

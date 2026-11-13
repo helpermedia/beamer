@@ -1,8 +1,8 @@
 import { useRef } from "react";
-import { useChoices, useParam } from "@helpermedia/beamer-react";
+import { useChoices, useParameter } from "@helpermedia/beamer-react";
 
 interface ChoicesProps {
-  paramId: string;
+  parameterId: string;
   // Names for the choices in place of the parameter's own, from the lowest
   // value up: for an on and off parameter shown as two choices.
   labels?: string[];
@@ -12,14 +12,14 @@ interface ChoicesProps {
 // beamer-controls. The names come from the parameter, so they match what
 // the host shows, unless `labels` gives others. Each button is as wide as
 // its name, with the room left over shared.
-function Choices({ paramId, labels }: ChoicesProps) {
-  const { param } = useParam(paramId);
+function Choices({ parameterId, labels }: ChoicesProps) {
+  const { parameter } = useParameter(parameterId);
   const ref = useRef<HTMLDivElement>(null);
-  useChoices(ref, param);
+  useChoices(ref, parameter);
 
   return (
     <div ref={ref} className="flex gap-0.5 rounded-lg bg-well p-0.5 ring-1 ring-neutral-800 ring-inset">
-      {(labels ?? param.choices()).map((name) => (
+      {(labels ?? parameter.choices()).map((name) => (
         <button
           key={name}
           type="button"

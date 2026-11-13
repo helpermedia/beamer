@@ -1,6 +1,6 @@
 // The delay's editor, on `__BEAMER__` alone: no framework, no build step.
 //
-// The parameters come from `__BEAMER__.params`. The host's tempo and the
+// The parameters come from `__BEAMER__.parameters`. The host's tempo and the
 // output channels come from the processor's value sender "status" (see
 // `Status` in `src/lib.rs`). From both the editor works out the delay time
 // in effect, so it follows a dial at once, also while the host is stopped
@@ -9,7 +9,7 @@
 import { choices, dial } from "./controls.js";
 import { drawEchoes, WINDOW_MS } from "./echoes.js";
 
-const params = __BEAMER__.params;
+const parameters = __BEAMER__.parameters;
 
 // The length of each sync mode in beats, in the order of `SyncMode` in
 // `src/lib.rs`. Free has none: the time parameter sets the delay.
@@ -23,7 +23,7 @@ const FALLBACK_TEMPO = 120;
 
 // The index of the choice an enum parameter is at.
 function choice(id) {
-    return Math.round(params.get(id) * params.info(id).steps);
+    return Math.round(parameters.get(id) * parameters.info(id).steps);
 }
 
 function formatNumber(value) {
@@ -35,10 +35,10 @@ function delay(status) {
     const index = choice("sync_mode");
     const beats = SYNC_BEATS[index];
     if (beats === null) {
-        return { ms: params.getPlain("time"), source: "Free time" };
+        return { ms: parameters.getPlain("time"), source: "Free time" };
     }
 
-    const note = params.info("sync_mode").valueTexts[index];
+    const note = parameters.info("sync_mode").valueTexts[index];
     const tempo = status.tempo ?? FALLBACK_TEMPO;
     const ms = (60000 / tempo) * beats;
     let source = `${note} at ${formatNumber(tempo)} BPM`;
@@ -80,8 +80,8 @@ async function start() {
 
             drawEchoes(strip, {
                 delayMs: ms,
-                feedback: params.getPlain("feedback"),
-                mix: params.getPlain("mix"),
+                feedback: parameters.getPlain("feedback"),
+                mix: parameters.getPlain("mix"),
                 pingPong: choice("stereo_mode") === PING_PONG,
                 outputChannels: status.outputChannels,
             });
@@ -89,7 +89,7 @@ async function start() {
     }
 
     for (const id of ["sync_mode", "stereo_mode", "time", "feedback", "mix"]) {
-        params.on(id, update);
+        parameters.on(id, update);
     }
     __BEAMER__.values.on("status", update);
     new ResizeObserver(update).observe(strip);

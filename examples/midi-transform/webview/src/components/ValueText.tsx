@@ -1,10 +1,10 @@
 import { useRef } from "react";
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { useValueEntry } from "@helpermedia/beamer-react";
 import { withMinus } from "../format";
 
 interface ValueTextProps {
-  param: Param;
+  parameter: Parameter;
   // The name of the control, for the label of the field, when it is not
   // the parameter's own.
   label?: string;
@@ -15,9 +15,9 @@ interface ValueTextProps {
 // parameter's own parser, so "-12", "-12 dB" and "250ms" all work. Escape
 // leaves the value as it was. A text left as it was sets nothing, so no
 // undo step.
-function ValueText({ param, label }: ValueTextProps) {
+function ValueText({ parameter, label }: ValueTextProps) {
   const ref = useRef<HTMLInputElement>(null);
-  useValueEntry(ref, param, { text: (shown) => withMinus(shown.text()) });
+  useValueEntry(ref, parameter, { text: (shown) => withMinus(shown.text()) });
 
   return (
     <input

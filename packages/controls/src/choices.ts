@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { Attributes } from "./attributes.js";
 import { trackKeyboardFocus } from "./focus.js";
 
@@ -25,7 +25,7 @@ import { trackKeyboardFocus } from "./focus.js";
  *
  * Returns the function that detaches it and removes what it set.
  */
-export function attachChoices(container: HTMLElement, target: Param): () => void {
+export function attachChoices(container: HTMLElement, target: Parameter): () => void {
   const attributes = new Attributes();
   attributes.fallback(container, "role", "radiogroup");
 

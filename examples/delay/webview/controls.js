@@ -1,10 +1,10 @@
-// Controls on `__BEAMER__.params`: a dial for a continuous parameter and a
+// Controls on `__BEAMER__.parameters`: a dial for a continuous parameter and a
 // row of buttons for the choices of an enum parameter. Each change is a
 // gesture of its own (beginEdit, set, endEdit), so the host records it as
 // one undo step. A drag is one gesture from press to release. So is a
 // scroll, until the wheel rests.
 
-const params = __BEAMER__.params;
+const parameters = __BEAMER__.parameters;
 
 // Normalized change per pixel of a drag, normal and with shift held.
 const DRAG_STEP = 1 / 200;
@@ -29,15 +29,15 @@ function clamp(normalized) {
 
 // Set a parameter as one gesture.
 function edit(id, normalized) {
-    params.beginEdit(id);
-    params.set(id, clamp(normalized));
-    params.endEdit(id);
+    parameters.beginEdit(id);
+    parameters.set(id, clamp(normalized));
+    parameters.endEdit(id);
 }
 
 // The value with its unit, as the host shows it.
 function valueText(id) {
-    const units = params.info(id).units;
-    const text = params.getDisplayText(id);
+    const units = parameters.info(id).units;
+    const text = parameters.getDisplayText(id);
     if (!units) return text;
     return units === "%" ? text + units : `${text} ${units}`;
 }
@@ -60,7 +60,7 @@ function arcPath(part) {
 // fine steps), scroll, use the arrow keys or double click to reset. A click
 // on the value lets the user type one, which the parameter itself parses.
 export function dial(container, id) {
-    const info = params.info(id);
+    const info = parameters.info(id);
     container.className = "dial";
     container.innerHTML = `
         <svg viewBox="0 0 52 52" tabindex="0" role="slider"
@@ -78,7 +78,7 @@ export function dial(container, id) {
     let text = container.querySelector(".dial-text");
 
     function render() {
-        const value = params.get(id);
+        const value = parameters.get(id);
         valueArc.setAttribute("d", arcPath(value));
         const [x, y] = pointOnArc(ARC_START + value * ARC_SWEEP);
         dot.setAttribute("cx", CENTER + (x - CENTER) * 0.55);
@@ -95,7 +95,7 @@ export function dial(container, id) {
         if (wheelRest === null) return;
         clearTimeout(wheelRest);
         wheelRest = null;
-        params.endEdit(id);
+        parameters.endEdit(id);
     }
 
     // Dragging: one gesture from press to release. Each move adds to the
@@ -108,18 +108,18 @@ export function dial(container, id) {
         settleWheel();
         svg.setPointerCapture(event.pointerId);
         lastY = event.clientY;
-        params.beginEdit(id);
+        parameters.beginEdit(id);
     });
     svg.addEventListener("pointermove", (event) => {
         if (lastY === null) return;
         const step = event.shiftKey ? FINE_DRAG_STEP : DRAG_STEP;
-        params.set(id, clamp(params.get(id) + (lastY - event.clientY) * step));
+        parameters.set(id, clamp(parameters.get(id) + (lastY - event.clientY) * step));
         lastY = event.clientY;
     });
     const release = () => {
         if (lastY === null) return;
         lastY = null;
-        params.endEdit(id);
+        parameters.endEdit(id);
     };
     svg.addEventListener("pointerup", release);
     svg.addEventListener("pointercancel", release);
@@ -148,21 +148,21 @@ export function dial(container, id) {
         // that scrolling up raises the value as on a hardware dial.
         const delta = event.webkitDirectionInvertedFromDevice ? -raw : raw;
         if (wheelRest === null) {
-            params.beginEdit(id);
+            parameters.beginEdit(id);
         } else {
             clearTimeout(wheelRest);
         }
         const step = event.shiftKey ? FINE_DRAG_STEP : DRAG_STEP;
-        params.set(id, clamp(params.get(id) - delta * step));
+        parameters.set(id, clamp(parameters.get(id) - delta * step));
         wheelRest = setTimeout(() => {
             wheelRest = null;
-            params.endEdit(id);
+            parameters.endEdit(id);
         }, WHEEL_REST_MS);
     }, { passive: false });
 
     svg.addEventListener("keydown", (event) => {
         const step = event.shiftKey ? FINE_STEP : STEP;
-        const value = params.get(id);
+        const value = parameters.get(id);
         const next = {
             ArrowUp: value + step,
             ArrowRight: value + step,
@@ -185,7 +185,7 @@ export function dial(container, id) {
         settleWheel();
         const input = document.createElement("input");
         input.className = "dial-text";
-        input.value = params.getDisplayText(id);
+        input.value = parameters.getDisplayText(id);
         input.setAttribute("aria-label", `${info.name} value`);
         const button = text;
         let done = false;
@@ -195,7 +195,7 @@ export function dial(container, id) {
             if (commit) {
                 // The parameter's own parser: null when the text is no value.
                 const normalized = await __BEAMER__.invoke(
-                    "_beamer/paramTextToNormalized", info.id, input.value,
+                    "_beamer/parameterTextToNormalized", info.id, input.value,
                 );
                 if (normalized !== null) edit(id, normalized);
             }
@@ -216,7 +216,7 @@ export function dial(container, id) {
     }
     text.addEventListener("click", startTyping);
 
-    params.on(id, render);
+    parameters.on(id, render);
     render();
 
     return {
@@ -231,7 +231,7 @@ export function dial(container, id) {
 // A button for each choice of the enum parameter `id` in `container`. The
 // names come from the parameter (`valueTexts`), so they match the host.
 export function choices(container, id) {
-    const info = params.info(id);
+    const info = parameters.info(id);
     const buttons = info.valueTexts.map((name, index) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -243,12 +243,12 @@ export function choices(container, id) {
     });
 
     function render() {
-        const selected = Math.round(params.get(id) * info.steps);
+        const selected = Math.round(parameters.get(id) * info.steps);
         buttons.forEach((button, index) => {
             button.setAttribute("aria-checked", String(index === selected));
         });
     }
 
-    params.on(id, render);
+    parameters.on(id, render);
     render();
 }

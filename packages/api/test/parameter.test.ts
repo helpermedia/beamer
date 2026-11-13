@@ -1,13 +1,13 @@
 import { beforeEach, expect, test } from "bun:test";
-import { param, senderValue, stateField } from "../src/index";
-import type { Beamer, BeamerParamInfo } from "../src/types";
+import { parameter, senderValue, stateField } from "../src/index";
+import type { Beamer, BeamerParameterInfo } from "../src/types";
 
 // What reached the host, in order.
 let calls: string[];
 // Listeners the runtime holds, by parameter id.
 let listeners: Record<string, Array<(value: number) => void>>;
 
-function info(stringId: string, extra: Partial<BeamerParamInfo> = {}): BeamerParamInfo {
+function info(stringId: string, extra: Partial<BeamerParameterInfo> = {}): BeamerParameterInfo {
   return {
     id: stringId.length,
     stringId,
@@ -31,7 +31,7 @@ function info(stringId: string, extra: Partial<BeamerParamInfo> = {}): BeamerPar
 function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } = {}) {
   calls = [];
   listeners = {};
-  const infos: Record<string, BeamerParamInfo> =
+  const infos: Record<string, BeamerParameterInfo> =
     options.ready === false
       ? {}
       : {
@@ -43,7 +43,7 @@ function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } =
     ready: Promise.resolve(),
     pluginFormat: "auv3",
     middleC: "C3",
-    params: {
+    parameters: {
       get: (id) => (infos[id] ? values[id] : 0),
       getPlain: (id) => (infos[id] ? values[id] : 0),
       getDisplayText: (id) => (infos[id] ? String(Math.round(values[id] * 100)) : ""),
@@ -87,13 +87,13 @@ function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } =
 beforeEach(() => install());
 
 test("an edit is one gesture with a clamped value", () => {
-  param("mix").edit(1.5);
+  parameter("mix").edit(1.5);
   expect(calls).toEqual(["begin mix", "set mix 1", "end mix"]);
 });
 
 test("a gesture that begins ends the open one and tells its owner", () => {
   let interrupted = false;
-  const mix = param("mix");
+  const mix = parameter("mix");
   mix.begin(() => {
     interrupted = true;
   });
@@ -104,19 +104,19 @@ test("a gesture that begins ends the open one and tells its owner", () => {
 });
 
 test("ending without an open gesture sends nothing", () => {
-  param("mix").end();
+  parameter("mix").end();
   expect(calls).toEqual([]);
 });
 
 test("controls of one parameter share its handle, a new runtime gets new ones", () => {
-  const first = param("mix");
-  expect(param("mix")).toBe(first);
+  const first = parameter("mix");
+  expect(parameter("mix")).toBe(first);
   install();
-  expect(param("mix")).not.toBe(first);
+  expect(parameter("mix")).not.toBe(first);
 });
 
 test("get and subscribe work detached, as React and Svelte call them", () => {
-  const { get, subscribe } = param("mix");
+  const { get, subscribe } = parameter("mix");
   expect(get()).toBe(0.5);
   const seen: number[] = [];
   const unsubscribe = subscribe((value) => seen.push(value));
@@ -128,16 +128,16 @@ test("get and subscribe work detached, as React and Svelte call them", () => {
 });
 
 test("reset sets the default value", () => {
-  param("mix").reset();
+  parameter("mix").reset();
   expect(calls).toEqual(["begin mix", "set mix 0.25", "end mix"]);
 });
 
 test("the text has the unit, without a space before a percent sign", () => {
-  expect(param("mix").text()).toBe("50%");
+  expect(parameter("mix").text()).toBe("50%");
 });
 
 test("a discrete parameter knows its choices", () => {
-  const sync = param("sync_mode");
+  const sync = parameter("sync_mode");
   expect(sync.choices()).toEqual(["Free", "1/4", "1/8", "1/16", "1/32"]);
   expect(sync.choice()).toBe(2);
   sync.choose(4);
@@ -145,19 +145,19 @@ test("a discrete parameter knows its choices", () => {
 });
 
 test("a continuous parameter has no choices to pick", () => {
-  expect(() => param("mix").choice()).toThrow("continuous");
-  expect(() => param("mix").choose(1)).toThrow("continuous");
+  expect(() => parameter("mix").choice()).toThrow("continuous");
+  expect(() => parameter("mix").choose(1)).toThrow("continuous");
 });
 
 test("a typed value goes through the parameter's parser", async () => {
-  expect(await param("mix").typeValue("75")).toBe(true);
-  expect(calls).toEqual(["invoke _beamer/paramTextToNormalized 3 75", "begin mix", "set mix 0.75", "end mix"]);
+  expect(await parameter("mix").typeValue("75")).toBe(true);
+  expect(calls).toEqual(["invoke _beamer/parameterTextToNormalized 3 75", "begin mix", "set mix 0.75", "end mix"]);
 });
 
 test("a gesture that begins while a typed value is read wins", async () => {
   let answer: (normalized: number) => void = () => {};
   install({ invoke: () => new Promise((resolve) => (answer = resolve)) });
-  const mix = param("mix");
+  const mix = parameter("mix");
   const typed = mix.typeValue("75");
   // A drag starts as the text field loses the focus.
   mix.begin();
@@ -170,20 +170,20 @@ test("a gesture that begins while a typed value is read wins", async () => {
 
 test("text that is no value changes nothing", async () => {
   install({ invoke: async () => null });
-  expect(await param("mix").typeValue("loud")).toBe(false);
-  expect(await param("mix").typeValue("  ")).toBe(false);
+  expect(await parameter("mix").typeValue("loud")).toBe(false);
+  expect(await parameter("mix").typeValue("  ")).toBe(false);
   expect(calls).toEqual([]);
 });
 
 test("a typed value the plugin cannot read changes nothing", async () => {
   install({ invoke: () => Promise.reject("unknown method") });
-  expect(await param("mix").typeValue("75")).toBe(false);
+  expect(await parameter("mix").typeValue("75")).toBe(false);
   expect(calls).toEqual([]);
 });
 
 test("before ready a parameter reads as empty and ignores changes", async () => {
   install({ ready: false });
-  const mix = param("mix");
+  const mix = parameter("mix");
   expect(mix.info).toBeUndefined();
   expect([mix.get(), mix.text(), mix.choices(), mix.choice()]).toEqual([0, "", [], 0]);
   mix.reset();
@@ -210,5 +210,5 @@ test("state fields and sender values read the runtime, one object per name", () 
 
 test("without a runtime the error explains why", () => {
   globalThis.__BEAMER__ = undefined;
-  expect(() => param("mix")).toThrow("outside a plugin editor");
+  expect(() => parameter("mix")).toThrow("outside a plugin editor");
 });

@@ -159,7 +159,7 @@ A line with the plugin's name and the Beamer logo, then the delay time in effect
 - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
 - A web UI in plain HTML, CSS and JavaScript modules, working on `__BEAMER__` directly
 - A `WebViewValueSender` that sends the host's tempo from the audio thread only when it changes
-- Dials with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/paramTextToNormalized`)
+- Dials with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/parameterTextToNormalized`)
 - Buttons for the choices of an enum parameter, named by its `valueTexts`
 
 ---

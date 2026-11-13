@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { openValueEntry } from "@helpermedia/beamer-controls";
 import type { DialDrag } from "@helpermedia/beamer-controls";
-import { useDial, useParam, useValueEntry } from "@helpermedia/beamer-react";
+import { useDial, useParameter, useValueEntry } from "@helpermedia/beamer-react";
 
 interface DialProps {
-  paramId: string;
+  parameterId: string;
   size?: number;
   label?: string;
   className?: string;
@@ -55,8 +55,8 @@ const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 //   - Cmd+click or Ctrl+click: reset to default.
 // Double-click on the dial or its value types a value, which the parameter
 // itself parses.
-function Dial({ paramId, size = 64, label, className }: DialProps) {
-  const { param, value, info } = useParam(paramId);
+function Dial({ parameterId, size = 64, label, className }: DialProps) {
+  const { parameter, value, info } = useParameter(parameterId);
 
   const svgRef = useRef<SVGSVGElement>(null);
   // Whether the handle is held, to light it up.
@@ -70,23 +70,23 @@ function Dial({ paramId, size = 64, label, className }: DialProps) {
     const ctm = svg?.getScreenCTM();
     if (!svg || !ctm) return "vertical";
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse());
-    const handle = polarToCartesian(ARC_START - param.get() * ARC_SWEEP);
+    const handle = polarToCartesian(ARC_START - parameter.get() * ARC_SWEEP);
     const onHandle = Math.hypot(point.x - handle.x, point.y - handle.y) <= HANDLE_HIT_RADIUS;
     setGrabbed(onHandle);
     return onHandle ? "arc" : "vertical";
   };
   // Double-click is for typing a value, so a modifier click resets.
-  useDial(svgRef, param, {
+  useDial(svgRef, parameter, {
     drag: pickDrag,
     arcStart: ARC_START_DEGREES,
     arcSweep: ARC_SWEEP_DEGREES,
     reset: ["modifier-click"],
   });
 
-  const displayLabel = label ?? info?.name ?? paramId;
+  const displayLabel = label ?? info?.name ?? parameterId;
 
   const valueRef = useRef<HTMLInputElement>(null);
-  useValueEntry(valueRef, param, { open: "double-click" });
+  useValueEntry(valueRef, parameter, { open: "double-click" });
   const typeValue = () => {
     if (valueRef.current) openValueEntry(valueRef.current);
   };

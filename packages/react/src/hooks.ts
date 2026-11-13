@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { RefObject } from "react";
-import { param, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
-import type { BeamerParamInfo, Param, Readable } from "@helpermedia/beamer-api";
+import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
+import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
 import { attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
 import type { DialDrag, DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
 
 /** A parameter as a component shows it. */
-export interface ParamView {
-  /** The handle, for changes: `param.edit()`, `param.reset()`, `param.typeValue()`. */
-  param: Param;
+export interface ParameterView {
+  /** The handle, for changes: `parameter.edit()`, `parameter.reset()`, `parameter.typeValue()`. */
+  parameter: Parameter;
   /** The normalized value (0 to 1). */
   value: number;
   /** The value as the parameter formats it, without the unit. */
@@ -16,21 +16,21 @@ export interface ParamView {
   /** The value with its unit, as a host shows it. */
   text: string;
   /** What the runtime knows of it, undefined before `ready`. */
-  info: BeamerParamInfo | undefined;
+  info: BeamerParameterInfo | undefined;
 }
 
 /**
  * The parameter with the string id `id`. The component renders again when
  * the value or its text changes, also when the host automates it.
  */
-export function useParam(id: string): ParamView {
-  const handle = param(id);
+export function useParameter(id: string): ParameterView {
+  const handle = parameter(id);
   const value = useSyncExternalStore(handle.subscribe, handle.get);
   // The text can change while the normalized value stays, when the plugin
   // answers an edit, so it has a snapshot of its own.
   const displayText = useSyncExternalStore(handle.subscribe, () => handle.displayText());
   const info = useSyncExternalStore(handle.subscribe, () => handle.info);
-  return { param: handle, value, displayText, text: handle.text(), info };
+  return { parameter: handle, value, displayText, text: handle.text(), info };
 }
 
 /**
@@ -106,7 +106,7 @@ function useAttached<E extends Element>(ref: RefObject<E | null>, attach: (eleme
  */
 export function useDial(
   ref: RefObject<HTMLElement | SVGElement | null>,
-  target: Param,
+  target: Parameter,
   options: DialOptions = {},
 ): void {
   const latest = useRef(options);
@@ -140,7 +140,7 @@ export function useDial(
  */
 export function useSlider(
   ref: RefObject<HTMLElement | SVGElement | null>,
-  target: Param,
+  target: Parameter,
   options: SliderOptions = {},
 ): void {
   // The options are plain values, so their text tells a change from a new
@@ -157,7 +157,7 @@ export function useSlider(
  * Make the button in `ref` a switch for `target` while the component is
  * mounted: `attachSwitch` of beamer-controls.
  */
-export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Param): void {
+export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Parameter): void {
   const attach = useCallback((button: HTMLButtonElement) => attachSwitch(button, target), [target]);
   useAttached(ref, attach);
 }
@@ -167,7 +167,7 @@ export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Para
  * is mounted, one choice per child: `attachChoices` of beamer-controls.
  * Children rendered later, once the choices are known, count too.
  */
-export function useChoices(ref: RefObject<HTMLElement | null>, target: Param): void {
+export function useChoices(ref: RefObject<HTMLElement | null>, target: Parameter): void {
   const attach = useCallback((container: HTMLElement) => attachChoices(container, target), [target]);
   useAttached(ref, attach);
 }
@@ -180,7 +180,7 @@ export function useChoices(ref: RefObject<HTMLElement | null>, target: Param): v
  */
 export function useValueEntry(
   ref: RefObject<HTMLInputElement | null>,
-  target: Param,
+  target: Parameter,
   options: ValueEntryOptions = {},
 ): void {
   const latest = useRef(options);
@@ -190,7 +190,7 @@ export function useValueEntry(
     (input: HTMLInputElement) =>
       attachValueEntry(input, target, {
         open,
-        text: (param) => latest.current.text?.(param) ?? param.text(),
+        text: (shown) => latest.current.text?.(shown) ?? shown.text(),
       }),
     [target, open],
   );

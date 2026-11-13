@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { noteName } from "@helpermedia/beamer-api";
-import { useParam, useReady } from "@helpermedia/beamer-react";
+import { useParameter, useReady } from "@helpermedia/beamer-react";
 // The Beamer logo for dark grounds, a copy of docs/branding/beamer-on-dark.svg
 // so that the example works on its own.
 import beamerLogo from "./beamer-logo.svg";
@@ -48,18 +48,18 @@ function ccRows(cc: Cc | null) {
 function App() {
   const ready = useReady();
   const passed = useSyncExternalStore(subscribeTransformed, transformed);
-  const noteEnabled = useParam("note/enabled");
-  const noteMode = useParam("note/mode");
-  const transpose = useParam("note/transpose");
-  const inputNote = useParam("note/input");
-  const outputNote = useParam("note/output");
-  const velocity = useParam("note/velocity");
-  const ccEnabled = useParam("cc/enabled");
-  const ccMode = useParam("cc/mode");
-  const inputCc = useParam("cc/input");
-  const outputCc = useParam("cc/output");
-  const scale = useParam("cc/scale");
-  const bypass = useParam("bypass");
+  const noteEnabled = useParameter("note/enabled");
+  const noteMode = useParameter("note/mode");
+  const transpose = useParameter("note/transpose");
+  const inputNote = useParameter("note/input");
+  const outputNote = useParameter("note/output");
+  const velocity = useParameter("note/velocity");
+  const ccEnabled = useParameter("cc/enabled");
+  const ccMode = useParameter("cc/mode");
+  const inputCc = useParameter("cc/input");
+  const outputCc = useParameter("cc/output");
+  const scale = useParameter("cc/scale");
+  const bypass = useParameter("bypass");
 
   // The parameters arrive with `ready`. Until then the panel stays empty.
   if (!ready) return null;
@@ -68,18 +68,18 @@ function App() {
   // not run the processor.
   const notes: NoteSettings = {
     enabled: noteEnabled.value >= 0.5,
-    mode: noteMode.param.choice(),
-    transpose: transpose.param.plain(),
-    inputNote: inputNote.param.plain(),
-    outputNote: outputNote.param.plain(),
-    velocityScale: velocity.param.plain(),
+    mode: noteMode.parameter.choice(),
+    transpose: transpose.parameter.plain(),
+    inputNote: inputNote.parameter.plain(),
+    outputNote: outputNote.parameter.plain(),
+    velocityScale: velocity.parameter.plain(),
   };
   const ccs: CcSettings = {
     enabled: ccEnabled.value >= 0.5,
-    mode: ccMode.param.choice(),
-    inputCc: inputCc.param.plain(),
-    outputCc: outputCc.param.plain(),
-    valueScale: scale.param.plain(),
+    mode: ccMode.parameter.choice(),
+    inputCc: inputCc.parameter.plain(),
+    outputCc: outputCc.parameter.plain(),
+    valueScale: scale.parameter.plain(),
   };
   // The editor has no bypass switch: the host's own sets the bypass
   // parameter. The displays dim while it is on.
@@ -102,17 +102,17 @@ function App() {
       <main className="mx-auto my-auto flex h-[29.25rem] w-[47.5rem] shrink-0 flex-col px-5 pt-4 pb-4">
         <section aria-label="Notes" className="flex flex-col gap-2.5">
           <div className="flex items-center gap-3">
-            <Switch paramId="note/enabled" label="Notes" />
+            <Switch parameterId="note/enabled" label="Notes" />
             <div className="flex-1">
-              <Choices paramId="note/mode" />
+              <Choices parameterId="note/mode" />
             </div>
           </div>
           <KeyboardMap settings={notes} held={passed.held} lit={lit} />
           <div className="flex items-start">
-            <Dial paramId="note/transpose" unused={!usesTranspose(notes)} />
-            <Dial paramId="note/input" label="Input" unused={!usesNoteRemap(notes)} />
-            <Dial paramId="note/output" label="Output" unused={!usesNoteRemap(notes)} />
-            <Dial paramId="note/velocity" unused={!notes.enabled} />
+            <Dial parameterId="note/transpose" unused={!usesTranspose(notes)} />
+            <Dial parameterId="note/input" label="Input" unused={!usesNoteRemap(notes)} />
+            <Dial parameterId="note/output" label="Output" unused={!usesNoteRemap(notes)} />
+            <Dial parameterId="note/velocity" unused={!notes.enabled} />
             <div className="ml-auto">
               <Readout columns={["Note", "Velocity"]} rows={noteRows(passed.lastNote)} />
             </div>
@@ -123,15 +123,15 @@ function App() {
           <CcCurve settings={ccs} last={passed.lastCc} lit={lit} />
           <div className="flex flex-1 flex-col gap-2.5">
             <div className="flex items-center gap-3">
-              <Switch paramId="cc/enabled" label="CCs" />
+              <Switch parameterId="cc/enabled" label="CCs" />
               <div className="flex-1">
-                <Choices paramId="cc/mode" />
+                <Choices parameterId="cc/mode" />
               </div>
             </div>
             <div className="flex items-start">
-              <Dial paramId="cc/input" label="Input" detail={ccName(inputCc.param.plain())} unused={!remapsCc(ccs)} />
-              <Dial paramId="cc/output" label="Output" detail={ccName(outputCc.param.plain())} unused={!remapsCc(ccs)} />
-              <Dial paramId="cc/scale" detail="" unused={!usesCcScale(ccs)} />
+              <Dial parameterId="cc/input" label="Input" detail={ccName(inputCc.parameter.plain())} unused={!remapsCc(ccs)} />
+              <Dial parameterId="cc/output" label="Output" detail={ccName(outputCc.parameter.plain())} unused={!remapsCc(ccs)} />
+              <Dial parameterId="cc/scale" detail="" unused={!usesCcScale(ccs)} />
               <div className="ml-auto">
                 <Readout columns={["CC", "Value"]} rows={ccRows(passed.lastCc)} />
               </div>

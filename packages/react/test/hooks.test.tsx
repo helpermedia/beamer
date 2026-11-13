@@ -1,6 +1,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { Beamer, BeamerParamInfo } from "@helpermedia/beamer-api";
+import type { Beamer, BeamerParameterInfo } from "@helpermedia/beamer-api";
 
 beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
@@ -8,7 +8,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, useRef } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useChoices, useDial, useEvent, useParam, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
+const { useChoices, useDial, useEvent, useParameter, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
   await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
@@ -18,7 +18,7 @@ const { useChoices, useDial, useEvent, useParam, useReadable, useReady, useSende
 let calls: string[];
 // What the plugin pushes: a parameter change, a State change, a value, an event.
 let push: {
-  param(value: number, text: string): void;
+  parameter(value: number, text: string): void;
   state(value: string): void;
   value(levels: { peak: number }): void;
   event(data: unknown): void;
@@ -37,7 +37,7 @@ function install() {
   const mix = { value: 0.5, text: "50" };
   let panLaw = "linear";
   let levels: { peak: number } | undefined;
-  const info: BeamerParamInfo = {
+  const info: BeamerParameterInfo = {
     id: 3, stringId: "mix", name: "Mix", value: 0.5, plainValue: 0.5, displayText: "50", format: "percent",
     defaultValue: 0.25, min: 0, max: 1, units: "%", steps: 0, valueTexts: [],
   };
@@ -45,7 +45,7 @@ function install() {
     ready: Promise.resolve(),
     pluginFormat: "vst3",
     middleC: "C3",
-    params: {
+    parameters: {
       get: () => mix.value,
       getPlain: () => mix.value,
       getDisplayText: () => mix.text,
@@ -55,7 +55,7 @@ function install() {
       },
       beginEdit: () => calls.push("begin"),
       endEdit: () => calls.push("end"),
-      on: (id, callback) => on(`param:${id}`, callback as (value: unknown) => void),
+      on: (id, callback) => on(`parameter:${id}`, callback as (value: unknown) => void),
       all: () => [info],
       info: (id) => (id === "mix" ? info : undefined),
     },
@@ -79,10 +79,10 @@ function install() {
   };
   globalThis.__BEAMER__ = beamer;
   push = {
-    param(value, text) {
+    parameter(value, text) {
       mix.value = value;
       mix.text = text;
-      emit("param:mix", value);
+      emit("parameter:mix", value);
     },
     state(value) {
       panLaw = value;
@@ -108,17 +108,17 @@ function render(element: React.ReactNode) {
 
 beforeEach(install);
 
-test("useParam follows the value and the text the plugin answers with", () => {
+test("useParameter follows the value and the text the plugin answers with", () => {
   function Dial() {
-    const { value, text } = useParam("mix");
+    const { value, text } = useParameter("mix");
     return <span>{`${value} ${text}`}</span>;
   }
   const { container, unmount } = render(<Dial />);
   expect(container.textContent).toBe("0.5 50%");
   // The text can change without the value: it renders anyway.
-  act(() => push.param(0.5, "50.0"));
+  act(() => push.parameter(0.5, "50.0"));
   expect(container.textContent).toBe("0.5 50.0%");
-  act(() => push.param(0.8, "80"));
+  act(() => push.parameter(0.8, "80"));
   expect(container.textContent).toBe("0.8 80%");
   unmount();
 });
@@ -180,8 +180,8 @@ test("useReady turns true once the runtime is ready", async () => {
 test("useDial attaches while mounted", () => {
   function Dial() {
     const ref = useRef<HTMLDivElement>(null);
-    const { param } = useParam("mix");
-    useDial(ref, param);
+    const { parameter } = useParameter("mix");
+    useDial(ref, parameter);
     return <div ref={ref} />;
   }
   const { container, unmount } = render(<Dial />);
@@ -203,8 +203,8 @@ test("useDial calls the newest drag function for each press", () => {
   const picked: string[] = [];
   function Dial({ tag }: { tag: string }) {
     const ref = useRef<HTMLDivElement>(null);
-    const { param } = useParam("mix");
-    useDial(ref, param, {
+    const { parameter } = useParameter("mix");
+    useDial(ref, parameter, {
       drag: () => {
         picked.push(tag);
         return "horizontal";
@@ -233,9 +233,9 @@ test("useSwitch and useChoices attach to the markup", () => {
   function Controls() {
     const onOff = useRef<HTMLButtonElement>(null);
     const group = useRef<HTMLDivElement>(null);
-    const { param } = useParam("mix");
-    useSwitch(onOff, param);
-    useChoices(group, param);
+    const { parameter } = useParameter("mix");
+    useSwitch(onOff, parameter);
+    useChoices(group, parameter);
     return (
       <>
         <button ref={onOff}>Mix</button>
@@ -256,8 +256,8 @@ test("useSwitch and useChoices attach to the markup", () => {
 test("useValueEntry shows the text of the newest function", () => {
   function Field({ prefix }: { prefix: string }) {
     const ref = useRef<HTMLInputElement>(null);
-    const { param } = useParam("mix");
-    useValueEntry(ref, param, { text: (mix) => `${prefix}${mix.text()}` });
+    const { parameter } = useParameter("mix");
+    useValueEntry(ref, parameter, { text: (mix) => `${prefix}${mix.text()}` });
     return <input ref={ref} />;
   }
   const container = document.createElement("div");
@@ -268,7 +268,7 @@ test("useValueEntry shows the text of the newest function", () => {
   expect(input.value).toBe("a 50%");
   expect(input.readOnly).toBe(true);
   act(() => root.render(<Field prefix="b " />));
-  act(() => push.param(0.8, "80"));
+  act(() => push.parameter(0.8, "80"));
   expect(input.value).toBe("b 80%");
   act(() => root.unmount());
 });
@@ -301,8 +301,8 @@ test("useReadable follows a readable", () => {
 test("useSlider attaches an upright slider and follows its orientation", () => {
   function Slider({ orientation }: { orientation: "vertical" | "horizontal" }) {
     const ref = useRef<HTMLDivElement>(null);
-    const { param } = useParam("mix");
-    useSlider(ref, param, { orientation });
+    const { parameter } = useParameter("mix");
+    useSlider(ref, parameter, { orientation });
     return <div ref={ref} />;
   }
   const container = document.createElement("div");

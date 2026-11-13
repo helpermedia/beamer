@@ -6,7 +6,7 @@ export {
   useChoices,
   useDial,
   useEvent,
-  useParam,
+  useParameter,
   useReadable,
   useReady,
   useSenderValue,
@@ -15,4 +15,4 @@ export {
   useSwitch,
   useValueEntry,
 } from "./hooks.js";
-export type { ParamView } from "./hooks.js";
+export type { ParameterView } from "./hooks.js";

@@ -98,8 +98,8 @@ function App() {
       </p>
 
       <div className="flex gap-6">
-        <Dial paramId="gain" size={80} />
-        <Dial paramId="pan" size={80} />
+        <Dial parameterId="gain" size={80} />
+        <Dial parameterId="pan" size={80} />
       </div>
 
       <button

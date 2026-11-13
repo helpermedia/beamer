@@ -2,7 +2,7 @@
 // page of its editor before any page code runs. See docs/WEBVIEW.md.
 
 /** What the runtime knows of a parameter. */
-export interface BeamerParamInfo {
+export interface BeamerParameterInfo {
   /** Numeric id, a hash of the string id, for host calls. */
   id: number;
   /** The `id` of the `#[parameter]` attribute, behind the names of nested groups. */
@@ -29,7 +29,7 @@ export interface BeamerParamInfo {
   valueTexts: string[];
 }
 
-export interface BeamerParams {
+export interface BeamerParameters {
   get(stringId: string): number;
   getPlain(stringId: string): number;
   getDisplayText(stringId: string): string;
@@ -37,8 +37,8 @@ export interface BeamerParams {
   beginEdit(stringId: string): void;
   endEdit(stringId: string): void;
   on(stringId: string, callback: (value: number) => void): () => void;
-  all(): BeamerParamInfo[];
-  info(stringId: string): BeamerParamInfo | undefined;
+  all(): BeamerParameterInfo[];
+  info(stringId: string): BeamerParameterInfo | undefined;
 }
 
 export interface BeamerState {
@@ -66,7 +66,7 @@ export interface Beamer {
   readonly pluginFormat: "vst3" | "auv2" | "auv3" | null;
   /** The name of MIDI note 60 in the plugin's note names, set before `ready` resolves. */
   readonly middleC: "C3" | "C4" | null;
-  readonly params: BeamerParams;
+  readonly parameters: BeamerParameters;
   readonly state: BeamerState;
   readonly values: BeamerValues;
   invoke(method: string, ...args: unknown[]): Promise<unknown>;

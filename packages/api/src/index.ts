@@ -4,14 +4,14 @@
 
 export type {
   Beamer,
-  BeamerParamInfo,
-  BeamerParams,
+  BeamerParameterInfo,
+  BeamerParameters,
   BeamerState,
   BeamerValues,
 } from "./types.js";
 export { ready, runtime } from "./runtime.js";
-export { param } from "./param.js";
-export type { Param } from "./param.js";
+export { parameter } from "./parameter.js";
+export type { Parameter } from "./parameter.js";
 export { senderValue, stateField } from "./stores.js";
 export { noteName } from "./notes.js";
 export type { Readable, StateField } from "./stores.js";

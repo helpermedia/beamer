@@ -1,6 +1,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { BeamerParamInfo, Param } from "@helpermedia/beamer-api";
+import type { BeamerParameterInfo, Parameter } from "@helpermedia/beamer-api";
 import { angleAround, arcPosition, attachGestures, boundedOffset, dragPixels, keyValue, wheelPixels } from "../src/gestures";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -9,17 +9,17 @@ afterAll(() => GlobalRegistrator.unregister());
 // A parameter that records what reached the host and keeps one gesture
 // open at a time, like the one of beamer-api. With `steps` it snaps every
 // value to a step, as a host echoes a discrete parameter.
-function fakeParam(value: number, steps = 0) {
+function fakeParameter(value: number, steps = 0) {
   const calls: string[] = [];
   let open: (() => void) | null | undefined;
   const snap = (normalized: number) => (steps > 0 ? Math.round(normalized * steps) / steps : normalized);
-  const param = {
-    info: { steps, defaultValue: 0.25 } as BeamerParamInfo,
+  const parameter = {
+    info: { steps, defaultValue: 0.25 } as BeamerParameterInfo,
     get: () => value,
     begin(onInterrupt?: () => void) {
       if (open !== undefined) {
         const interrupted = open;
-        param.end();
+        parameter.end();
         interrupted?.();
       }
       open = onInterrupt ?? null;
@@ -35,15 +35,15 @@ function fakeParam(value: number, steps = 0) {
       calls.push("end");
     },
     edit(normalized: number) {
-      param.begin();
-      param.set(normalized);
-      param.end();
+      parameter.begin();
+      parameter.set(normalized);
+      parameter.end();
     },
     reset() {
-      param.edit(0.25);
+      parameter.edit(0.25);
     },
   };
-  return { param: param as unknown as Param, calls };
+  return { parameter: parameter as unknown as Parameter, calls };
 }
 
 function dial() {
@@ -125,8 +125,8 @@ test("an offset stops at the ends", () => {
 
 test("shift makes a drag ten times finer", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { clientY: 100 });
   pointer(element, "pointermove", { clientY: 80, shiftKey: true });
   pointer(element, "pointerup");
@@ -135,8 +135,8 @@ test("shift makes a drag ten times finer", () => {
 
 test("a drag is one gesture from the value at the press", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { clientY: 100 });
   pointer(element, "pointermove", { clientY: 80 });
   pointer(element, "pointerup", { clientY: 80 });
@@ -146,8 +146,8 @@ test("a drag is one gesture from the value at the press", () => {
 test("a drag on a discrete parameter does not stick on the snapped value", () => {
   const element = dial();
   // Four steps: 0, 0.25, 0.5, 0.75, 1.
-  const { param, calls } = fakeParam(0.5, 4);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5, 4);
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { clientY: 100 });
   // Each move is less than a step; together they pass one.
   for (const y of [90, 80, 70, 60, 50]) pointer(element, "pointermove", { clientY: y });
@@ -157,8 +157,8 @@ test("a drag on a discrete parameter does not stick on the snapped value", () =>
 
 test("a click focuses the control, a right click does nothing", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { button: 2 });
   expect(calls).toEqual([]);
   pointer(element, "pointerdown", { clientY: 10 });
@@ -168,8 +168,8 @@ test("a click focuses the control, a right click does nothing", () => {
 
 test("a scroll is one gesture until the wheel rests", async () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { wheelRestMs: 20 });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { wheelRestMs: 20 });
   for (let i = 0; i < 3; i++) {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, cancelable: true }));
   }
@@ -180,8 +180,8 @@ test("a scroll is one gesture until the wheel rests", async () => {
 
 test("a key during a scroll ends the scroll first", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { wheelRestMs: 1000 });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { wheelRestMs: 1000 });
   element.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, cancelable: true }));
   element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
   expect(calls).toEqual(["begin", "set 0.550", "end", "begin", "set 0.560", "end"]);
@@ -189,24 +189,24 @@ test("a key during a scroll ends the scroll first", () => {
 
 test("a key moves a discrete parameter one choice", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5, 4);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5, 4);
+  attachGestures(element, parameter);
   element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
   expect(calls).toEqual(["begin", "set 0.750", "end"]);
 });
 
 test("a modifier click resets with Command or Control", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { reset: ["modifier-click"] });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
 });
 
 test("by default a double click resets, a modifier click does not", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter);
   // A Command click is a drag that does not move.
   pointer(element, "pointerdown", { metaKey: true });
   pointer(element, "pointerup", {});
@@ -218,11 +218,11 @@ test("by default a double click resets, a modifier click does not", () => {
 
 test("both resets together", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { reset: ["double-click", "modifier-click"] });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { reset: ["double-click", "modifier-click"] });
   element.dispatchEvent(new MouseEvent("dblclick"));
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
-  param.set(0.5);
+  parameter.set(0.5);
   calls.length = 0;
   pointer(element, "pointerdown", { metaKey: true });
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
@@ -230,16 +230,16 @@ test("both resets together", () => {
 
 test("an option given as undefined keeps its default", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { reset: undefined, dragStep: undefined });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { reset: undefined, dragStep: undefined });
   element.dispatchEvent(new MouseEvent("dblclick"));
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
 });
 
 test("an empty reset list turns reset off", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { reset: [] });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { reset: [] });
   element.dispatchEvent(new MouseEvent("dblclick"));
   pointer(element, "pointerdown", { ctrlKey: true });
   pointer(element, "pointerup", {});
@@ -248,8 +248,8 @@ test("an empty reset list turns reset off", () => {
 
 test("an arc drag jumps to the pointer and follows it", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.2);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.2);
+  attachGestures(element, parameter, { drag: "arc" });
   // Straight up is the middle of the arc.
   pointer(element, "pointerdown", at(-90));
   pointer(element, "pointermove", at(0));
@@ -259,8 +259,8 @@ test("an arc drag jumps to the pointer and follows it", () => {
 
 test("an arc drag through the gap waits at the end, then follows the pointer again", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { drag: "arc" });
   pointer(element, "pointerdown", at(0));
   // Into the gap near the end, across it to the start, then back.
   pointer(element, "pointermove", at(60));
@@ -273,8 +273,8 @@ test("an arc drag through the gap waits at the end, then follows the pointer aga
 
 test("a parked value sends nothing until the pointer is back, also after a full turn", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { drag: "arc" });
   pointer(element, "pointerdown", at(30));
   // Past the end into the gap, on through it and once around over the top.
   for (const degrees of [60, 100, 140, 200, 260, 320, 0]) pointer(element, "pointermove", at(degrees));
@@ -286,9 +286,9 @@ test("a parked value sends nothing until the pointer is back, also after a full 
 
 test("an arc of another sweep parks and follows the same way", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.5);
+  const { parameter, calls } = fakeParameter(0.5);
   // From the left (180) clockwise over the top to the right (0).
-  attachGestures(element, param, { drag: "arc", arcStart: 180, arcSweep: 180 });
+  attachGestures(element, parameter, { drag: "arc", arcStart: 180, arcSweep: 180 });
   pointer(element, "pointerdown", at(-90));
   pointer(element, "pointermove", at(-10));
   // Through the gap below to the start, then back.
@@ -301,8 +301,8 @@ test("an arc of another sweep parks and follows the same way", () => {
 
 test("a fast flick within the arc follows the pointer", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter, { drag: "arc" });
   // From near the end over the top to near the start, 170 degrees at once.
   pointer(element, "pointerdown", at(10));
   pointer(element, "pointermove", at(-160));
@@ -312,8 +312,8 @@ test("a fast flick within the arc follows the pointer", () => {
 
 test("after a press at the center the first move jumps to the pointer", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.1);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.1);
+  attachGestures(element, parameter, { drag: "arc" });
   pointer(element, "pointerdown", { clientX: 50, clientY: 50 });
   pointer(element, "pointermove", at(-90));
   pointer(element, "pointerup", at(-90));
@@ -322,8 +322,8 @@ test("after a press at the center the first move jumps to the pointer", () => {
 
 test("an arc drag ignores the pointer at the center", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.3);
-  attachGestures(element, param, { drag: "arc" });
+  const { parameter, calls } = fakeParameter(0.3);
+  attachGestures(element, parameter, { drag: "arc" });
   pointer(element, "pointerdown", { clientX: 51, clientY: 51 });
   pointer(element, "pointermove", { clientX: 52, clientY: 49 });
   pointer(element, "pointerup");
@@ -332,9 +332,9 @@ test("an arc drag ignores the pointer at the center", () => {
 
 test("the drag mode can be picked for each press", () => {
   const element = arcDial();
-  const { param, calls } = fakeParam(0.5);
+  const { parameter, calls } = fakeParameter(0.5);
   // On the top half the arc, below it vertical.
-  attachGestures(element, param, { drag: (event) => (event.clientY < 50 ? "arc" : "vertical") });
+  attachGestures(element, parameter, { drag: (event) => (event.clientY < 50 ? "arc" : "vertical") });
   pointer(element, "pointerdown", { clientX: 50, clientY: 80 });
   pointer(element, "pointermove", { clientX: 50, clientY: 60 });
   pointer(element, "pointerup");
@@ -346,8 +346,8 @@ test("the drag mode can be picked for each press", () => {
 test("detaching ends an open drag and gives the element its touch action back", () => {
   const element = dial();
   element.style.touchAction = "pan-y";
-  const { param, calls } = fakeParam(0.5);
-  const detach = attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  const detach = attachGestures(element, parameter);
   expect(element.style.touchAction).toBe("none");
   pointer(element, "pointerdown", { clientY: 100 });
   detach();
@@ -358,10 +358,10 @@ test("detaching ends an open drag and gives the element its touch action back", 
 
 test("the context menu of a Control click ends the drag it began", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
+  const { parameter, calls } = fakeParameter(0.5);
   // Without the modifier click reset (the default), a Control click begins
   // a drag.
-  attachGestures(element, param);
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { clientY: 100, ctrlKey: true });
   const menu = new MouseEvent("contextmenu", { cancelable: true });
   element.dispatchEvent(menu);
@@ -372,8 +372,8 @@ test("the context menu of a Control click ends the drag it began", () => {
 
 test("a Control click that resets shows no context menu", () => {
   const element = dial();
-  const { param } = fakeParam(0.5);
-  attachGestures(element, param, { reset: ["modifier-click"] });
+  const { parameter } = fakeParameter(0.5);
+  attachGestures(element, parameter, { reset: ["modifier-click"] });
   pointer(element, "pointerdown", { ctrlKey: true });
   const menu = new MouseEvent("contextmenu", { cancelable: true });
   element.dispatchEvent(menu);
@@ -382,8 +382,8 @@ test("a Control click that resets shows no context menu", () => {
 
 test("keys with Command, Control or Alt are left to the page", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  attachGestures(element, parameter);
   for (const modifier of ["metaKey", "ctrlKey", "altKey"]) {
     element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true, [modifier]: true }));
   }
@@ -392,9 +392,9 @@ test("keys with Command, Control or Alt are left to the page", () => {
 
 test("input before the parameter is known is ignored", () => {
   const element = dial();
-  const { param, calls } = fakeParam(0.5);
-  (param as { info: unknown }).info = undefined;
-  attachGestures(element, param);
+  const { parameter, calls } = fakeParameter(0.5);
+  (parameter as { info: unknown }).info = undefined;
+  attachGestures(element, parameter);
   pointer(element, "pointerdown", { clientY: 100 });
   element.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, cancelable: true }));
   expect(calls).toEqual([]);

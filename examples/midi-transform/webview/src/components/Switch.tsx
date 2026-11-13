@@ -1,8 +1,8 @@
 import { useRef } from "react";
-import { useParam, useSwitch } from "@helpermedia/beamer-react";
+import { useParameter, useSwitch } from "@helpermedia/beamer-react";
 
 interface SwitchProps {
-  paramId: string;
+  parameterId: string;
   // The text on the switch, the parameter's own name by default.
   label?: string;
 }
@@ -10,11 +10,11 @@ interface SwitchProps {
 // A switch for an on and off parameter, with a light that is blue while
 // it is on. beamer-controls makes the button a switch: each click is one
 // undo step.
-function Switch({ paramId, label }: SwitchProps) {
-  const { param, info } = useParam(paramId);
+function Switch({ parameterId, label }: SwitchProps) {
+  const { parameter, info } = useParameter(parameterId);
   const ref = useRef<HTMLButtonElement>(null);
-  useSwitch(ref, param);
-  const name = label ?? info?.name ?? paramId;
+  useSwitch(ref, parameter);
+  const name = label ?? info?.name ?? parameterId;
 
   return (
     <button

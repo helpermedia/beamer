@@ -1,9 +1,9 @@
-import type { Beamer, BeamerParamInfo } from "@helpermedia/beamer-api";
+import type { Beamer, BeamerParameterInfo } from "@helpermedia/beamer-api";
 
 // A parameter of the stand-in runtime: its info and a text for each
 // normalized value.
-export interface FakeParam {
-  info: Partial<BeamerParamInfo> & { stringId: string };
+export interface FakeParameter {
+  info: Partial<BeamerParameterInfo> & { stringId: string };
   text?: (normalized: number) => string;
 }
 
@@ -16,17 +16,17 @@ export interface FakeRuntime {
   send(name: string, value: unknown): void;
   // Before `ready`: the parameters are not known yet.
   init(): void;
-  // What `_beamer/paramTextToNormalized` answers, by text.
+  // What `_beamer/parameterTextToNormalized` answers, by text.
   parsed: Map<string, number>;
 }
 
 /**
- * Install a stand-in for `__BEAMER__` with the parameters `params`. The
+ * Install a stand-in for `__BEAMER__` with the given `parameters`. The
  * runtime notifies a parameter's subscribers on every change, as the real
  * one does. With `ready = false` the parameters stay unknown until
  * `init()`.
  */
-export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
+export function installRuntime(parameters: FakeParameter[], ready = true): FakeRuntime {
   const calls: string[] = [];
   const listeners: Record<string, Array<(value: unknown) => void>> = {};
   const on = (key: string, callback: (value: unknown) => void) => {
@@ -39,8 +39,8 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
   let known = ready;
   const values = new Map<string, unknown>();
   const byId = new Map(
-    params.map(({ info, text }) => {
-      const full: BeamerParamInfo = {
+    parameters.map(({ info, text }) => {
+      const full: BeamerParameterInfo = {
         id: 1, name: info.stringId, value: 0, plainValue: 0, displayText: "", format: "float",
         defaultValue: 0, min: 0, max: 1, units: "", steps: 0, valueTexts: [], ...info,
       };
@@ -58,7 +58,7 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
     ready: Promise.resolve(),
     pluginFormat: "vst3",
     middleC: "C3",
-    params: {
+    parameters: {
       get: (id) => (known ? entry(id).value : 0),
       getPlain: (id) => {
         if (!known) return 0;
@@ -69,11 +69,11 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
       set: (id, value) => {
         entry(id).value = value;
         calls.push(`set ${id} ${Number(value.toFixed(3))}`);
-        emit(`param:${id}`, value);
+        emit(`parameter:${id}`, value);
       },
       beginEdit: (id) => calls.push(`begin ${id}`),
       endEdit: (id) => calls.push(`end ${id}`),
-      on: (id, callback) => on(`param:${id}`, callback as (value: unknown) => void),
+      on: (id, callback) => on(`parameter:${id}`, callback as (value: unknown) => void),
       all: () => (known ? [...byId.values()].map(({ info }) => info) : []),
       info: (id) => (known ? byId.get(id)?.info : undefined),
     },
@@ -88,7 +88,7 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
       on: <T,>(name: string, callback: (value: T) => void) => on(`value:${name}`, callback as (value: unknown) => void),
     },
     invoke: async (method, _id, text) => {
-      if (method !== "_beamer/paramTextToNormalized") return null;
+      if (method !== "_beamer/parameterTextToNormalized") return null;
       calls.push(`parse ${text}`);
       return parsed.get(String(text)) ?? null;
     },
@@ -102,7 +102,7 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
     parsed,
     push(id, value) {
       entry(id).value = value;
-      emit(`param:${id}`, value);
+      emit(`parameter:${id}`, value);
     },
     send(name, value) {
       values.set(name, value);
@@ -110,7 +110,7 @@ export function installRuntime(params: FakeParam[], ready = true): FakeRuntime {
     },
     init() {
       known = true;
-      for (const [id, { value }] of byId) emit(`param:${id}`, value);
+      for (const [id, { value }] of byId) emit(`parameter:${id}`, value);
     },
   };
 }

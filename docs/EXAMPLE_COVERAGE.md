@@ -74,12 +74,12 @@
 | | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Config.toml editor config |
 | | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
-| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | __BEAMER__.params, synced at 60 Hz |
+| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
 | | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
-| | Typed values (`_beamer/paramTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Dial value text (delay, compressor, midi-transform, WebView Demo) |
+| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | Dial value text (delay, compressor, midi-transform, WebView Demo) |
 | | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | From the bun workspace, read from source by Vite |
 
 **Legend:**

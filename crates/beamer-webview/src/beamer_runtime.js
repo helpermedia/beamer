@@ -1,9 +1,9 @@
 (function() {
   // The maps by name, id or path have no prototype, so that a name such as
   // "constructor" or "toString" is a name like any other.
-  var paramMap = Object.create(null);
-  var paramById = Object.create(null);
-  var pendingParamSubs = Object.create(null);
+  var parameterMap = Object.create(null);
+  var parameterById = Object.create(null);
+  var pendingParameterSubs = Object.create(null);
   // State fields by path: {value, json, listeners}. `json` is the value as
   // canonical text, to tell a change from a value the UI has already.
   var stateMap = Object.create(null);
@@ -105,42 +105,42 @@
     // (`middle_c` in Config.toml). Set before `ready` resolves.
     middleC: null,
 
-    params: {
+    parameters: {
       get: function(stringId) {
-        var p = paramMap[stringId];
+        var p = parameterMap[stringId];
         return p ? p.value : 0;
       },
       getPlain: function(stringId) {
-        var p = paramMap[stringId];
+        var p = parameterMap[stringId];
         return p ? p.plainValue : 0;
       },
       getDisplayText: function(stringId) {
-        var p = paramMap[stringId];
+        var p = parameterMap[stringId];
         return p ? p.displayText : "";
       },
       set: function(stringId, value) {
-        var p = paramMap[stringId];
+        var p = parameterMap[stringId];
         if (!p) return;
         p.value = value;
         p.info.value = value;
-        post({type:"param:set", id:p.id, value:value});
+        post({type:"parameter:set", id:p.id, value:value});
       },
       beginEdit: function(stringId) {
-        var p = paramMap[stringId];
-        if (p) post({type:"param:begin", id:p.id});
+        var p = parameterMap[stringId];
+        if (p) post({type:"parameter:begin", id:p.id});
       },
       endEdit: function(stringId) {
-        var p = paramMap[stringId];
-        if (p) post({type:"param:end", id:p.id});
+        var p = parameterMap[stringId];
+        if (p) post({type:"parameter:end", id:p.id});
       },
       on: function(stringId, cb) {
-        return subscribe(paramMap, pendingParamSubs, stringId, cb);
+        return subscribe(parameterMap, pendingParameterSubs, stringId, cb);
       },
       all: function() {
-        return Object.values(paramMap).map(function(p) { return p.info; });
+        return Object.values(parameterMap).map(function(p) { return p.info; });
       },
       info: function(stringId) {
-        var p = paramMap[stringId];
+        var p = parameterMap[stringId];
         return p ? p.info : undefined;
       }
     },
@@ -219,22 +219,22 @@
       post({type:"event", name:name, data:data});
     },
 
-    _onInit: function(params, info) {
+    _onInit: function(parameters, info) {
       if (info && info.pluginFormat) {
         window.__BEAMER__.pluginFormat = info.pluginFormat;
       }
       if (info && info.middleC) {
         window.__BEAMER__.middleC = info.middleC;
       }
-      params.forEach(function(p) {
-        var pending = pendingParamSubs[p.stringId] || [];
-        delete pendingParamSubs[p.stringId];
+      parameters.forEach(function(p) {
+        var pending = pendingParameterSubs[p.stringId] || [];
+        delete pendingParameterSubs[p.stringId];
         var entry = {
           id: p.id, value: p.value, plainValue: p.plainValue,
           displayText: p.displayText, listeners: pending, info: p
         };
-        paramMap[p.stringId] = entry;
-        paramById[p.id] = entry;
+        parameterMap[p.stringId] = entry;
+        parameterById[p.id] = entry;
         // A listener that subscribed before the value existed hears it now.
         pending.forEach(function(cb) { notify(cb, p.value); });
       });
@@ -254,9 +254,9 @@
       for (var path in changed) applyState(path, changed[path]);
     },
 
-    _onParams: function(changed) {
+    _onParameters: function(changed) {
       for (var id in changed) {
-        var entry = paramById[id];
+        var entry = parameterById[id];
         if (entry) {
           var tuple = changed[id];
           entry.value = tuple[0];

@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useParam, useDial } from "@helpermedia/beamer-react";
+import { useParameter, useDial } from "@helpermedia/beamer-react";
 import ValueText from "./ValueText";
 
 // The arc of a dial in degrees clockwise from the right, as the gestures
@@ -28,7 +28,7 @@ function ringPath(part: number): string {
 const TRACK = ringPath(1);
 
 interface DialProps {
-  paramId: string;
+  parameterId: string;
   // The name under the dial, the parameter's own name by default.
   label?: string;
 }
@@ -36,12 +36,12 @@ interface DialProps {
 // A dial for a continuous parameter, from beamer-controls:
 // drag up and down (finer with shift), scroll, arrow keys once focused and
 // double click to reset. A click on the value types one.
-function Dial({ paramId, label }: DialProps) {
-  const { param, value, info } = useParam(paramId);
+function Dial({ parameterId, label }: DialProps) {
+  const { parameter, value, info } = useParameter(parameterId);
   const svgRef = useRef<SVGSVGElement>(null);
-  useDial(svgRef, param);
+  useDial(svgRef, parameter);
 
-  const name = label ?? info?.name ?? paramId;
+  const name = label ?? info?.name ?? parameterId;
   const angle = ARC_START + value * ARC_SWEEP;
   const [x0, y0] = pointAt(angle, 7);
   const [x1, y1] = pointAt(angle, 14);
@@ -67,7 +67,7 @@ function Dial({ paramId, label }: DialProps) {
         <line x1={x0} y1={y0} x2={x1} y2={y1} className="stroke-paper" strokeWidth={2.5} strokeLinecap="round" />
       </svg>
       <span className="mt-1 text-[0.6875rem] text-neutral-400">{name}</span>
-      <ValueText param={param} label={label} />
+      <ValueText parameter={parameter} label={label} />
     </div>
   );
 }

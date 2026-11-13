@@ -11,12 +11,12 @@ own needs only that one.
 ## Example
 
 ```ts
-import { param, ready } from "@helpermedia/beamer-api";
+import { parameter, ready } from "@helpermedia/beamer-api";
 import { attachDial, attachValueEntry } from "@helpermedia/beamer-controls";
 
 await ready();
 
-const mix = param("mix");
+const mix = parameter("mix");
 
 // Drag, scroll, arrow keys and double click to reset.
 const detachDial = attachDial(document.querySelector<SVGElement>("#mix")!, mix);
@@ -33,12 +33,12 @@ React effect (see [`beamer-react`](../react)).
 
 | Function | Makes the element | Sets |
 |----------|-------------------|------|
-| `attachDial(element, param, options)` | A dial: a round control | `role="slider"`, `tabindex="0"`, `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in plain units, `aria-valuetext` with the unit |
-| `attachSlider(element, param, options)` | A slider: a control along a line, upright or lying | The same and `aria-orientation` |
+| `attachDial(element, parameter, options)` | A dial: a round control | `role="slider"`, `tabindex="0"`, `aria-valuenow`, `aria-valuemin` and `aria-valuemax` in plain units, `aria-valuetext` with the unit |
+| `attachSlider(element, parameter, options)` | A slider: a control along a line, upright or lying | The same and `aria-orientation` |
 | `thumbPosition(value, thumbLength)` | Nothing; where to draw a slider's thumb: its center as a part of the length from the low end | |
-| `attachSwitch(button, param)` | A switch for an on and off parameter | `role="switch"`, `aria-checked` |
-| `attachChoices(container, param)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
-| `attachValueEntry(input, param, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
+| `attachSwitch(button, parameter)` | A switch for an on and off parameter | `role="switch"`, `aria-checked` |
+| `attachChoices(container, parameter)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
+| `attachValueEntry(input, parameter, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
 | `openValueEntry(input)` | Opens an attached field, for a double click on its dial | |
 
 A control sets a role, a tabindex or an `aria-label` (from the parameter's
@@ -103,12 +103,12 @@ the button is a button. Its text is its name.
 ### Choices
 
 The container's element children are the choices, the first for the
-lowest value: the names from `param.choices()`, or names of your own (an
-on and off parameter shown as two choices). Children rendered later, once
-the choices are known, count too. A click sets a choice, a click on the
-checked one sets nothing. The arrow keys check the next or previous choice
-and move the focus there, from the last back to the first. Only the
-checked child is in the tab order.
+lowest value: the names from the parameter's `choices()`, or names of your
+own (an on and off parameter shown as two choices). Children rendered
+later, once the choices are known, count too. A click sets a choice, a
+click on the checked one sets nothing. The arrow keys check the next or
+previous choice and move the focus there, from the last back to the
+first. Only the checked child is in the tab order.
 
 ### Value field
 

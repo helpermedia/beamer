@@ -1,4 +1,4 @@
-import { useParam, useReady } from "@helpermedia/beamer-react";
+import { useParameter, useReady } from "@helpermedia/beamer-react";
 // The Beamer logo for dark grounds, a copy of docs/branding/beamer-on-dark.svg
 // so that the example works on its own.
 import beamerLogo from "./beamer-logo.svg";
@@ -27,12 +27,12 @@ function latencyText(lookaheadMs: number, lookaheadText: string, status: Status 
 function App() {
   const ready = useReady();
   const status = useStatus();
-  const threshold = useParam("threshold");
-  const ratio = useParam("ratio");
-  const softKnee = useParam("knee");
-  const makeup = useParam("makeup");
-  const lookahead = useParam("lookahead");
-  const bypass = useParam("bypass");
+  const threshold = useParameter("threshold");
+  const ratio = useParameter("ratio");
+  const softKnee = useParameter("knee");
+  const makeup = useParameter("makeup");
+  const lookahead = useParameter("lookahead");
+  const bypass = useParameter("bypass");
   // The layout of a tall window, the same query as `portrait:` in the
   // classes and the scale in index.css.
   const portrait = useMediaQuery("(orientation: portrait)");
@@ -43,10 +43,10 @@ function App() {
   // The curve follows the parameters at once, also while the host does not
   // run the processor.
   const curve: Curve = {
-    thresholdDb: threshold.param.plain(),
-    ratio: ratioOf(ratio.param.choices()[ratio.param.choice()]),
+    thresholdDb: threshold.parameter.plain(),
+    ratio: ratioOf(ratio.parameter.choices()[ratio.parameter.choice()]),
     kneeDb: softKnee.value >= 0.5 ? SOFT_KNEE_DB : 0,
-    makeupDb: makeup.param.plain(),
+    makeupDb: makeup.parameter.plain(),
   };
   // The editor has no bypass switch: the host's own sets the bypass
   // parameter (a VST3 host, an Audio Unit host that uses the bypass
@@ -80,34 +80,34 @@ function App() {
             // switches, each row the full width. Auto makeup sits on the
             // right, under the makeup dial.
             <div className="flex flex-col gap-5">
-              <Choices paramId="ratio" />
+              <Choices parameterId="ratio" />
               <div className="grid grid-cols-5 justify-items-center">
-                <Dial paramId="threshold" />
-                <Dial paramId="attack" />
-                <Dial paramId="release" />
-                <Dial paramId="lookahead" />
-                <Dial paramId="makeup" label="Makeup" />
+                <Dial parameterId="threshold" />
+                <Dial parameterId="attack" />
+                <Dial parameterId="release" />
+                <Dial parameterId="lookahead" />
+                <Dial parameterId="makeup" label="Makeup" />
               </div>
               <div className="flex items-center justify-between">
-                <Switch paramId="knee" label="Soft knee" />
+                <Switch parameterId="knee" label="Soft knee" />
                 <AutoMakeup gainFirst />
               </div>
             </div>
           ) : (
             <div className="ml-4 grid flex-1 grid-cols-3 content-between justify-items-center">
-              <Dial paramId="threshold" />
+              <Dial parameterId="threshold" />
               <div className="col-span-2 flex w-full flex-col justify-center gap-2.5">
-                <Choices paramId="ratio" />
+                <Choices parameterId="ratio" />
                 <div>
-                  <Switch paramId="knee" label="Soft knee" />
+                  <Switch parameterId="knee" label="Soft knee" />
                 </div>
               </div>
 
-              <Dial paramId="attack" />
-              <Dial paramId="release" />
-              <Dial paramId="lookahead" />
+              <Dial parameterId="attack" />
+              <Dial parameterId="release" />
+              <Dial parameterId="lookahead" />
 
-              <Dial paramId="makeup" label="Makeup" />
+              <Dial parameterId="makeup" label="Makeup" />
               <div className="col-span-2 flex w-full items-center">
                 <AutoMakeup />
               </div>
@@ -122,10 +122,10 @@ function App() {
               hears. */}
           <div className="flex items-center gap-2.5">
             <span className="text-[0.6875rem] text-neutral-400">Sidechain</span>
-            <Choices paramId="sidechain" labels={["Internal", "External"]} />
+            <Choices parameterId="sidechain" labels={["Internal", "External"]} />
           </div>
           <p className="text-neutral-500 tabular-nums">
-            {latencyText(lookahead.param.plain(), lookahead.text, status)}
+            {latencyText(lookahead.parameter.plain(), lookahead.text, status)}
           </p>
         </footer>
       </main>

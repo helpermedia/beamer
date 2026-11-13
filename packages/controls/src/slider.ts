@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import type { SliderOptions } from "./gestures.js";
 import { attachSliderRole } from "./slider-role.js";
 
@@ -29,7 +29,7 @@ import { attachSliderRole } from "./slider-role.js";
  *
  * Returns the function that detaches it and removes what it set.
  */
-export function attachSlider(element: HTMLElement | SVGElement, target: Param, options: SliderOptions = {}): () => void {
+export function attachSlider(element: HTMLElement | SVGElement, target: Parameter, options: SliderOptions = {}): () => void {
   const { orientation = "vertical", thumbLength = 0, ...input } = options;
   return attachSliderRole(element, target, input, { orientation, thumbLength });
 }

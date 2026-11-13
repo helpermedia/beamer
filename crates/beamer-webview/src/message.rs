@@ -13,15 +13,15 @@ use serde_json::Value;
 #[serde(tag = "type")]
 pub(crate) enum PageMessage {
     /// The page set a parameter to a normalized value.
-    #[serde(rename = "param:set")]
+    #[serde(rename = "parameter:set")]
     SetParameter { id: ParameterId, value: f64 },
 
     /// The page began a gesture on a parameter: a drag or a scroll.
-    #[serde(rename = "param:begin")]
+    #[serde(rename = "parameter:begin")]
     BeginGesture { id: ParameterId },
 
     /// The page ended a gesture on a parameter.
-    #[serde(rename = "param:end")]
+    #[serde(rename = "parameter:end")]
     EndGesture { id: ParameterId },
 
     /// The page set a `State` field, known by its path. A value the page
@@ -85,15 +85,15 @@ mod tests {
     #[test]
     fn test_messages_of_the_runtime_are_read() {
         assert_eq!(
-            parse(r#"{"type":"param:set","id":7,"value":0.25}"#),
+            parse(r#"{"type":"parameter:set","id":7,"value":0.25}"#),
             Some(PageMessage::SetParameter { id: 7, value: 0.25 })
         );
         assert_eq!(
-            parse(r#"{"type":"param:begin","id":7}"#),
+            parse(r#"{"type":"parameter:begin","id":7}"#),
             Some(PageMessage::BeginGesture { id: 7 })
         );
         assert_eq!(
-            parse(r#"{"type":"param:end","id":7}"#),
+            parse(r#"{"type":"parameter:end","id":7}"#),
             Some(PageMessage::EndGesture { id: 7 })
         );
         assert_eq!(
@@ -134,11 +134,11 @@ mod tests {
     fn test_other_messages_are_refused() {
         // Not JSON, no type, a type the runtime does not send, a missing
         // field and a parameter id out of range.
-        assert_eq!(parse("param:set"), None);
+        assert_eq!(parse("parameter:set"), None);
         assert_eq!(parse(r#"{"id":7,"value":0.5}"#), None);
-        assert_eq!(parse(r#"{"type":"param:reset","id":7}"#), None);
-        assert_eq!(parse(r#"{"type":"param:set","id":7}"#), None);
+        assert_eq!(parse(r#"{"type":"parameter:reset","id":7}"#), None);
+        assert_eq!(parse(r#"{"type":"parameter:set","id":7}"#), None);
         assert_eq!(parse(r#"{"type":"invoke","method":"getInfo"}"#), None);
-        assert_eq!(parse(r#"{"type":"param:begin","id":-1}"#), None);
+        assert_eq!(parse(r#"{"type":"parameter:begin","id":-1}"#), None);
     }
 }

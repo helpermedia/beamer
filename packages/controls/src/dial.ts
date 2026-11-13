@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import type { DialOptions } from "./gestures.js";
 import { attachSliderRole } from "./slider-role.js";
 
@@ -21,6 +21,6 @@ import { attachSliderRole } from "./slider-role.js";
  *
  * Returns the function that detaches it and removes what it set.
  */
-export function attachDial(element: HTMLElement | SVGElement, target: Param, options: DialOptions = {}): () => void {
+export function attachDial(element: HTMLElement | SVGElement, target: Parameter, options: DialOptions = {}): () => void {
   return attachSliderRole(element, target, options);
 }

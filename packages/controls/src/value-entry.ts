@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { Attributes } from "./attributes.js";
 import { trackKeyboardFocus } from "./focus.js";
 
@@ -6,9 +6,9 @@ import { trackKeyboardFocus } from "./focus.js";
 export interface ValueEntryOptions {
   /**
    * The text the closed field shows, called whenever the value changes.
-   * Default the value with its unit, `param.text()`.
+   * Default the value with its unit, `parameter.text()`.
    */
-  text?: (param: Param) => string;
+  text?: (parameter: Parameter) => string;
   /** What opens the field with the pointer: a click (the default) or a double click. */
   open?: "click" | "double-click";
 }
@@ -38,8 +38,8 @@ const ATTRIBUTE_TYPING = "data-typing";
  * Returns the function that detaches it; an open field closes without
  * setting what was typed.
  */
-export function attachValueEntry(input: HTMLInputElement, target: Param, options: ValueEntryOptions = {}): () => void {
-  const text = options.text ?? ((param: Param) => param.text());
+export function attachValueEntry(input: HTMLInputElement, target: Parameter, options: ValueEntryOptions = {}): () => void {
+  const text = options.text ?? ((parameter: Parameter) => parameter.text());
   const attributes = new Attributes();
   const readOnly = input.readOnly;
   input.readOnly = true;

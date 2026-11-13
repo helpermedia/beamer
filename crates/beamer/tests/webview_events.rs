@@ -176,16 +176,16 @@ fn test_au_delivers_the_queue_of_its_instance() {
     // The first frame sends every parameter, then nothing changed.
     assert_eq!(
         text(beamer_au_editor_sync_frame_script(editor)),
-        Some(format!("window.__BEAMER__._onParams({{{gain}:[0.0,0.0,\"0.00\"]}});"))
+        Some(format!("window.__BEAMER__._onParameters({{{gain}:[0.0,0.0,\"0.00\"]}});"))
     );
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
 
     // A value the web UI sets reaches the plugin and the host. It is
     // answered and not sent again.
-    let set = format!(r#"{{"type":"param:set","id":{gain},"value":0.5}}"#);
+    let set = format!(r#"{{"type":"parameter:set","id":{gain},"value":0.5}}"#);
     assert_eq!(
         message(editor, &set),
-        Some(format!("window.__BEAMER__._onParams({{{gain}:[0.5,0.5,\"0.50\"]}});"))
+        Some(format!("window.__BEAMER__._onParameters({{{gain}:[0.5,0.5,\"0.50\"]}});"))
     );
     assert_eq!(*edits.borrow(), [format!("set {gain} 0.5")]);
     assert_eq!(text(beamer_au_editor_sync_frame_script(editor)), None);
@@ -200,7 +200,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     // A gesture the page left open ends in the host when the page goes
     // away.
     edits.borrow_mut().clear();
-    let begin = format!(r#"{{"type":"param:begin","id":{gain}}}"#);
+    let begin = format!(r#"{{"type":"parameter:begin","id":{gain}}}"#);
     assert_eq!(message(editor, &begin), None);
     beamer_au_editor_sync_end_open_gestures(editor, &host);
     assert_eq!(*edits.borrow(), [format!("begin {gain}"), format!("end {gain}")]);

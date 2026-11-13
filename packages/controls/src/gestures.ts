@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { thumbPart, valueAtThumbPosition } from "./thumb-position.js";
 
 /**
@@ -224,7 +224,7 @@ export function boundedOffset(start: number, offset: number): number {
  */
 export function attachGestures(
   element: HTMLElement | SVGElement,
-  target: Param,
+  target: Parameter,
   options: DialOptions = {},
   track?: Track,
 ): () => void {

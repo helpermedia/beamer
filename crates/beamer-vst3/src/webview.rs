@@ -859,10 +859,10 @@ mod tests {
 
         // The editor closes during a drag of parameter 2.
         ipc.open_sync();
-        message(&mut ipc, r#"{"type":"param:begin","id":1}"#);
-        message(&mut ipc, r#"{"type":"param:begin","id":2}"#);
-        message(&mut ipc, r#"{"type":"param:set","id":2,"value":0.5}"#);
-        message(&mut ipc, r#"{"type":"param:end","id":1}"#);
+        message(&mut ipc, r#"{"type":"parameter:begin","id":1}"#);
+        message(&mut ipc, r#"{"type":"parameter:begin","id":2}"#);
+        message(&mut ipc, r#"{"type":"parameter:set","id":2,"value":0.5}"#);
+        message(&mut ipc, r#"{"type":"parameter:end","id":1}"#);
         ipc.close_sync();
         assert_eq!(edits(), ["begin 1", "begin 2", "set 2 0.5", "end 1", "end 2"]);
         // The drop of the view after removed() ends nothing again.
@@ -872,7 +872,7 @@ mod tests {
         // The page loads again during a scroll: it ends when the new page
         // commits.
         ipc.open_sync();
-        message(&mut ipc, r#"{"type":"param:begin","id":3}"#);
+        message(&mut ipc, r#"{"type":"parameter:begin","id":3}"#);
         // SAFETY: the context is a valid IpcContext.
         unsafe { on_page_gone(&mut ipc as *mut IpcContext as *mut c_void) };
         assert_eq!(edits(), ["begin 3", "end 3"]);
@@ -892,7 +892,7 @@ mod tests {
 
         // The host sets its handler during the drag: it never heard the
         // begin, so it hears no end either.
-        message(&mut ipc, r#"{"type":"param:begin","id":1}"#);
+        message(&mut ipc, r#"{"type":"parameter:begin","id":1}"#);
         // SAFETY: handler is a valid COM pointer and the test is one thread.
         unsafe { ipc.handler.set(handler) };
         ipc.close_sync();

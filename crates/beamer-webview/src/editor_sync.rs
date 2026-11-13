@@ -46,7 +46,7 @@ use crate::parameter_dump::parameters_to_init_json;
 /// The built-in invoke method that turns the text a user typed into a
 /// normalized value, with the parameter's own parser. It never reaches the
 /// plugin.
-const PARAMETER_TEXT_TO_NORMALIZED: &str = "_beamer/paramTextToNormalized";
+const PARAMETER_TEXT_TO_NORMALIZED: &str = "_beamer/parameterTextToNormalized";
 
 /// What a format wrapper does in the host when the web UI edits a
 /// parameter.
@@ -181,7 +181,7 @@ impl EditorSync {
                 continue;
             }
             *last = Some(value.to_bits());
-            script.push_str(if any { "," } else { "window.__BEAMER__._onParams({" });
+            script.push_str(if any { "," } else { "window.__BEAMER__._onParameters({" });
             any = true;
             write_parameter(&mut script, parameters, id, value);
         }
@@ -290,7 +290,7 @@ impl EditorSync {
             *last = Some(value.to_bits());
         }
 
-        let mut script = String::from("window.__BEAMER__._onParams({");
+        let mut script = String::from("window.__BEAMER__._onParameters({");
         write_parameter(&mut script, parameters, id, value);
         script.push_str("});");
         script
@@ -409,7 +409,7 @@ impl Drop for EditorSync {
     }
 }
 
-/// Write the entry of one parameter of `_onParams`:
+/// Write the entry of one parameter of `_onParameters`:
 /// `id:[normalized,plain,"display text"]`.
 fn write_parameter(script: &mut String, parameters: &dyn ParameterStore, id: ParameterId, value: f64) {
     let plain = parameters.normalized_to_plain(id, value);
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(
             sync.frame_script().as_deref(),
             Some(
-                "window.__BEAMER__._onParams({10:[0.5,1.0,\"say \\\"0.5\\\" \\\\ now\"],\
+                "window.__BEAMER__._onParameters({10:[0.5,1.0,\"say \\\"0.5\\\" \\\\ now\"],\
                  20:[0.0,null,\"0\"]});"
             )
         );
@@ -610,7 +610,7 @@ mod tests {
         parameters.set_normalized(20, 1.0);
         assert_eq!(
             sync.frame_script().as_deref(),
-            Some("window.__BEAMER__._onParams({20:[1.0,null,\"1\"]});")
+            Some("window.__BEAMER__._onParameters({20:[1.0,null,\"1\"]});")
         );
         assert_eq!(sync.frame_script(), None);
     }
@@ -623,11 +623,11 @@ mod tests {
         // Two begins on one parameter wait for two ends. An end without a
         // begin reaches the host and changes nothing else.
         for json in [
-            r#"{"type":"param:begin","id":10}"#,
-            r#"{"type":"param:begin","id":20}"#,
-            r#"{"type":"param:begin","id":10}"#,
-            r#"{"type":"param:end","id":10}"#,
-            r#"{"type":"param:end","id":30}"#,
+            r#"{"type":"parameter:begin","id":10}"#,
+            r#"{"type":"parameter:begin","id":20}"#,
+            r#"{"type":"parameter:begin","id":10}"#,
+            r#"{"type":"parameter:end","id":10}"#,
+            r#"{"type":"parameter:end","id":30}"#,
         ] {
             assert_eq!(message(&mut sync, &mut host, json), None);
         }
@@ -646,7 +646,7 @@ mod tests {
         let (_, mut sync) = sync();
         let mut host = RecordingHost { unreachable: true, ..RecordingHost::default() };
 
-        message(&mut sync, &mut host, r#"{"type":"param:begin","id":10}"#);
+        message(&mut sync, &mut host, r#"{"type":"parameter:begin","id":10}"#);
         sync.end_open_gestures(&mut host);
         assert!(host.calls.is_empty());
     }
@@ -658,8 +658,8 @@ mod tests {
         let mut host = RecordingHost::default();
 
         assert_eq!(
-            message(&mut sync, &mut host, r#"{"type":"param:set","id":20,"value":0.75}"#).as_deref(),
-            Some("window.__BEAMER__._onParams({20:[0.75,null,\"0.75\"]});")
+            message(&mut sync, &mut host, r#"{"type":"parameter:set","id":20,"value":0.75}"#).as_deref(),
+            Some("window.__BEAMER__._onParameters({20:[0.75,null,\"0.75\"]});")
         );
         assert_eq!(parameters.get_normalized(20), 0.75);
         assert_eq!(host.calls, ["set 20 0.75"]);
@@ -672,7 +672,7 @@ mod tests {
         let (parameters, mut sync) = sync();
         let mut host = RecordingHost::default();
 
-        assert_eq!(message(&mut sync, &mut host, r#"{"type":"param:set","id":20}"#), None);
+        assert_eq!(message(&mut sync, &mut host, r#"{"type":"parameter:set","id":20}"#), None);
         assert_eq!(message(&mut sync, &mut host, "not json"), None);
         assert_eq!(parameters.get_normalized(20), 0.0);
         assert!(host.calls.is_empty());
@@ -730,7 +730,7 @@ mod tests {
         let mut host = RecordingHost::default();
         let mut invoke = |args: &str| {
             let json = format!(
-                r#"{{"type":"invoke","method":"_beamer/paramTextToNormalized","args":{args},"callId":1}}"#
+                r#"{{"type":"invoke","method":"_beamer/parameterTextToNormalized","args":{args},"callId":1}}"#
             );
             message(&mut sync, &mut host, &json)
         };
@@ -761,7 +761,7 @@ mod tests {
         parameters.set_normalized(10, 0.3);
         assert_eq!(
             sync.parameter_script(10),
-            "window.__BEAMER__._onParams({10:[0.3,0.6,\"say \\\"0.3\\\" \\\\ now\"]});"
+            "window.__BEAMER__._onParameters({10:[0.3,0.6,\"say \\\"0.3\\\" \\\\ now\"]});"
         );
         assert_eq!(sync.frame_script(), None);
     }
@@ -774,7 +774,7 @@ mod tests {
         parameters.set_normalized(20, f64::NAN);
         assert_eq!(
             sync.frame_script().as_deref(),
-            Some("window.__BEAMER__._onParams({20:[null,null,\"NaN\"]});")
+            Some("window.__BEAMER__._onParameters({20:[null,null,\"NaN\"]});")
         );
         assert_eq!(sync.frame_script(), None);
     }
@@ -794,7 +794,7 @@ mod tests {
         let (_parameters, mut sync) = sync();
         assert_eq!(
             sync.parameter_script(99),
-            "window.__BEAMER__._onParams({99:[0.0,0.0,\"0\"]});"
+            "window.__BEAMER__._onParameters({99:[0.0,0.0,\"0\"]});"
         );
     }
 
@@ -807,7 +807,7 @@ mod tests {
 
         events.emit("tick", &1);
         let script = sync.frame_script().expect("a first frame");
-        assert!(script.starts_with("window.__BEAMER__._onParams({"));
+        assert!(script.starts_with("window.__BEAMER__._onParameters({"));
         assert!(script.ends_with("});window.__BEAMER__._onEvent(\"tick\",1);"));
 
         events.emit("tock", &2);

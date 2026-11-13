@@ -87,8 +87,8 @@ The VST3 wrapper uses COM (Component Object Model) interfaces implemented direct
 │    ┌──────────────┐            │         ┌──────────────────┐   │
 │    │              │            │         │                  │   │
 │    │  Processor   │◄───────────┼────────►│  EditController  │   │
-│    │  (DSP code)  │  shared    │         │                  │   │
-│    │              │  params    │         └────────┬─────────┘   │
+│    │  (DSP code)  │ shared     │         │                  │   │
+│    │              │ parameters │         └────────┬─────────┘   │
 │    └──────────────┘            │                  │             │
 │                                │                  │ IPlugView   │
 │                                │         ┌────────▼─────────┐   │
@@ -472,7 +472,7 @@ While both formats share the same `beamer-core` abstractions, they differ signif
 | **SysEx Input** | ✓ (AUv2 at the start of the next render call) | ✓ |
 | **SysEx Output** | ✓ | ✓ |
 | **Parameter Sync** | Push (AUv3 implementor blocks, AUv2 event queue) | Pull (COM methods) |
-| **Param Automation** | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` |
+| **Parameter Automation** | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` | Per block, or sample-accurate (sub-blocks) with `sample_accurate_automation` |
 | **Bus Switching** | AUv2: element count or 0-channel format, at Initialize; AUv3: buses stay on | `activateBus()`, at `setupProcessing()` or `setActive(true)` |
 | **Audio Buffers** | `AudioBufferList` | `float**` arrays |
 | **f64 Conversion** | Pre-allocated | Pre-allocated |

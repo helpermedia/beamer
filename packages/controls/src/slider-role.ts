@@ -1,4 +1,4 @@
-import type { Param } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { Attributes } from "./attributes.js";
 import { trackKeyboardFocus } from "./focus.js";
 import { attachGestures } from "./gestures.js";
@@ -24,7 +24,7 @@ function ariaNumber(value: number, min: number, max: number): string {
  */
 export function attachSliderRole(
   element: HTMLElement | SVGElement,
-  target: Param,
+  target: Parameter,
   options: DialOptions,
   track?: Track,
 ): () => void {
