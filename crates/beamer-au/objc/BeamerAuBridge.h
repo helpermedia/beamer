@@ -274,7 +274,8 @@ typedef enum {
 #define BEAMER_AU_MAX_GROUP_NAME_LENGTH 128
 
 /**
- * Parameter group metadata for building hierarchical AUParameterTree.
+ * Parameter group metadata for the AUv3 parameter tree and the AUv2
+ * parameter clumps.
  *
  * Groups organize parameters into folders in the DAW's parameter list.
  * Groups can be nested via parent_id references to form a tree structure.
@@ -880,7 +881,8 @@ uint32_t beamer_au_get_group_count(BeamerAuInstanceHandle _Nullable instance);
  * Get information about a parameter group by index.
  *
  * Index 0 returns the root group (id=0, name="", parent_id=0).
- * Used to build hierarchical AUParameterTree with AUParameterGroup nodes.
+ * The AUv3 wrapper builds its AUParameterGroup nodes from the groups, the
+ * AUv2 wrapper its parameter clumps.
  *
  * Thread Safety: Can be called from any thread.
  *

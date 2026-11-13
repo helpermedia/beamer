@@ -267,7 +267,8 @@ impl Default for BeamerAuParameterInfo {
     }
 }
 
-/// Parameter group metadata for building hierarchical AUParameterTree.
+/// Parameter group metadata for the AUv3 parameter tree and the AUv2
+/// parameter clumps.
 ///
 /// Matches `BeamerAuGroupInfo` in header.
 #[repr(C)]
@@ -2159,7 +2160,8 @@ pub extern "C" fn beamer_au_get_group_count(instance: BeamerAuInstanceHandle) ->
 /// Get information about a parameter group by index.
 ///
 /// Index 0 returns the root group (id=0, name="", parent_id=0).
-/// Used to build hierarchical AUParameterTree with AUParameterGroup nodes.
+/// The AUv3 wrapper builds its AUParameterGroup nodes from the groups, the
+/// AUv2 wrapper its parameter clumps.
 ///
 /// # Safety
 ///

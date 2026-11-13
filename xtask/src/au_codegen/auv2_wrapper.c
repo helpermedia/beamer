@@ -250,6 +250,14 @@ typedef struct BeamerAuv2Instance {
     int32_t currentPresetIndex;        // -1 = no preset, >=0 = factory preset index
     CFStringRef currentPresetName;     // Current preset name for ClassInfo round-trip
 
+    // The parameter groups as clumps. A clump's id is the position of its
+    // group in the plugin's list, as a VST3 unit's: index 0 is the root,
+    // which is no clump. A nested group's name is the path of the group
+    // names, "Osc 1 / Envelope", as clumps do not nest.
+    int32_t* clumpGroupIds;
+    CFStringRef* clumpNames;
+    uint32_t clumpCount;
+
     // MIDI input for the next render call. MIDIEvent adds to it, from the
     // render thread or from another thread.
     EventSlot midiSlots[BEAMER_AU_MAX_MIDI_EVENTS];
@@ -1018,6 +1026,61 @@ static CFStringRef BeamerAuv2CopyDeclaredName(BeamerAuv2Instance* inst, bool isI
     return string ? string : (CFStringRef)CFRetain(CFSTR(""));
 }
 
+// The clumps of the plugin's parameter groups, in the order it lists
+// them. A group's name follows its parent's when the parent is listed
+// before it, as the generated lists do.
+static void BeamerAuv2BuildClumps(BeamerAuv2Instance* inst) {
+    uint32_t count = beamer_au_get_group_count(inst->rustInstance);
+    inst->clumpCount = 0;
+    inst->clumpGroupIds = count > 0 ? (int32_t*)calloc(count, sizeof(int32_t)) : NULL;
+    inst->clumpNames = count > 0 ? (CFStringRef*)calloc(count, sizeof(CFStringRef)) : NULL;
+    if (!inst->clumpGroupIds || !inst->clumpNames) {
+        free(inst->clumpGroupIds);
+        free(inst->clumpNames);
+        inst->clumpGroupIds = NULL;
+        inst->clumpNames = NULL;
+        return;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        BeamerAuGroupInfo info;
+        memset(&info, 0, sizeof(info));
+        if (!beamer_au_get_group_info(inst->rustInstance, i, &info)) {
+            continue;
+        }
+        uint32_t clump = inst->clumpCount++;
+        inst->clumpGroupIds[clump] = info.id;
+        CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, info.name, kCFStringEncodingUTF8);
+        if (!name) {
+            name = (CFStringRef)CFRetain(CFSTR(""));
+        }
+        // The parent's name leads, unless the parent is the root.
+        for (uint32_t parent = 1; parent < clump; parent++) {
+            if (inst->clumpGroupIds[parent] == info.parent_id) {
+                CFStringRef joined = CFStringCreateWithFormat(
+                    kCFAllocatorDefault, NULL, CFSTR("%@ / %@"), inst->clumpNames[parent], name);
+                if (joined) {
+                    CFRelease(name);
+                    name = joined;
+                }
+                break;
+            }
+        }
+        inst->clumpNames[clump] = name;
+    }
+}
+
+// The clump of a parameter's group, 0 (none) for the root or a group the
+// plugin does not list.
+static UInt32 BeamerAuv2ClumpOf(BeamerAuv2Instance* inst, int32_t groupId) {
+    for (uint32_t clump = 1; clump < inst->clumpCount; clump++) {
+        if (inst->clumpGroupIds[clump] == groupId) {
+            return clump;
+        }
+    }
+    return kAudioUnitClumpID_System;
+}
+
 static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
     BeamerAuv2Instance* inst = (BeamerAuv2Instance*)self;
     inst->componentInstance = ci;
@@ -1140,6 +1203,8 @@ static OSStatus BeamerAuv2Open(void* self, AudioComponentInstance ci) {
         inst->presetStorage = NULL;
     }
 
+    BeamerAuv2BuildClumps(inst);
+
     return noErr;
 }
 
@@ -1206,6 +1271,12 @@ static OSStatus BeamerAuv2Close(void* self) {
         free(inst->presetStorage);
         inst->presetStorage = NULL;
     }
+
+    for (uint32_t i = 0; i < inst->clumpCount; i++) {
+        CFRelease(inst->clumpNames[i]);
+    }
+    free(inst->clumpNames);
+    free(inst->clumpGroupIds);
 
     pthread_mutex_destroy(&inst->listenerMutex);
     pthread_mutex_destroy(&inst->renderNotifyMutex);
@@ -1466,6 +1537,12 @@ static OSStatus BeamerAuv2GetPropertyInfo(void* self, AudioUnitPropertyID propID
                 return noErr;
             }
             return kAudioUnitErr_InvalidScope;
+
+        // The name of a clump (the struct names the clump), in any scope.
+        case kAudioUnitProperty_ParameterClumpName:
+            if (outDataSize) *outDataSize = sizeof(AudioUnitParameterNameInfo);
+            if (outWritable) *outWritable = false;
+            return noErr;
 
         // Parameter value strings (for indexed parameters).
         case kAudioUnitProperty_ParameterValueStrings:
@@ -1868,6 +1945,12 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                         auInfo->flags |= kAudioUnitParameterFlag_IsHighResolution;
                     }
 
+                    UInt32 clump = BeamerAuv2ClumpOf(inst, bInfo.group_id);
+                    if (clump != kAudioUnitClumpID_System) {
+                        auInfo->flags |= kAudioUnitParameterFlag_HasClump;
+                        auInfo->clumpID = clump;
+                    }
+
                     // Map unit type
                     auInfo->unit = bInfo.unit_type;
 
@@ -1887,6 +1970,26 @@ static OSStatus BeamerAuv2GetProperty(void* self, AudioUnitPropertyID propID,
                 }
             }
             return kAudioUnitErr_InvalidParameter;
+        }
+
+        case kAudioUnitProperty_ParameterClumpName: {
+            if (!outData || !ioDataSize || *ioDataSize < sizeof(AudioUnitParameterNameInfo)) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            AudioUnitParameterNameInfo* clumpName = (AudioUnitParameterNameInfo*)outData;
+            UInt32 clump = clumpName->inID;
+            clumpName->outName = NULL;
+            // Clump 0 is no clump.
+            if (clump == kAudioUnitClumpID_System) {
+                return kAudioUnitErr_InvalidPropertyValue;
+            }
+            if (clump >= inst->clumpCount) {
+                return kAudioUnitErr_PropertyNotInUse;
+            }
+            // The host releases the name.
+            clumpName->outName = (CFStringRef)CFRetain(inst->clumpNames[clump]);
+            *ioDataSize = sizeof(AudioUnitParameterNameInfo);
+            return noErr;
         }
 
         case kAudioUnitProperty_ParameterValueStrings: {
