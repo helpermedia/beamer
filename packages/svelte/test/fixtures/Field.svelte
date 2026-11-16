@@ -14,4 +14,4 @@
   $effect(() => onRef?.(ref));
 </script>
 
-<ValueEntry {parameter} {open} text={(shown) => `${prefix}${shown.text()}`} class="field" bind:ref />
+<ValueEntry {parameter} {open} text={(target) => `${prefix}${target.text()}`} class="field" bind:ref />

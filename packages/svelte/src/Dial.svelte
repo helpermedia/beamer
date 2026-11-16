@@ -12,7 +12,7 @@
   import { dialAngle } from "@helpermedia/beamer-controls";
   import type { DialDrag, DialOptions } from "@helpermedia/beamer-controls";
   import { dial } from "./attachments.js";
-  import { shown } from "./shown.js";
+  import { parameterView } from "./parameter-view.js";
   import type { DialState } from "./types.js";
 
   type Props = DialOptions &
@@ -42,7 +42,7 @@
     ...rest
   }: Props = $props();
 
-  const view = $derived(shown(parameter));
+  const view = $derived(parameterView(parameter));
   // The drag is picked for each press from the newest `drag`, so a new
   // function does not attach the dial again.
   const pickDrag = (event: PointerEvent): DialDrag => (typeof drag === "function" ? drag(event) : (drag ?? "vertical"));

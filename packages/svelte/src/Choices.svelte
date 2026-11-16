@@ -11,7 +11,7 @@
   import type { HTMLAttributes } from "svelte/elements";
   import type { Parameter } from "@helpermedia/beamer-api";
   import { choices } from "./attachments.js";
-  import { shown } from "./shown.js";
+  import { parameterView } from "./parameter-view.js";
   import type { ChoicesState } from "./types.js";
 
   type Props = Omit<HTMLAttributes<HTMLDivElement>, "children"> & {
@@ -24,7 +24,7 @@
 
   let { parameter, children, ref = $bindable(null), ...rest }: Props = $props();
 
-  const view = $derived(shown(parameter));
+  const view = $derived(parameterView(parameter));
   const attach = $derived(choices(parameter));
   // The choices and the checked one (`parameter.choice()` from the value),
   // none before `ready` or for a continuous parameter.

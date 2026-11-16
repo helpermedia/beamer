@@ -9,7 +9,7 @@
   import type { HTMLButtonAttributes } from "svelte/elements";
   import type { Parameter } from "@helpermedia/beamer-api";
   import { onOffSwitch } from "./attachments.js";
-  import { shown } from "./shown.js";
+  import { parameterView } from "./parameter-view.js";
   import type { SwitchState } from "./types.js";
 
   type Props = Omit<HTMLButtonAttributes, "children" | "type"> & {
@@ -22,7 +22,7 @@
 
   let { parameter, children, ref = $bindable(null), ...rest }: Props = $props();
 
-  const view = $derived(shown(parameter));
+  const view = $derived(parameterView(parameter));
   const attach = $derived(onOffSwitch(parameter));
 </script>
 

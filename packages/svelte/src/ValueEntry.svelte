@@ -22,7 +22,7 @@
 
   // The newest `text` shows at the next change of the value, so a new
   // function does not attach the field again, which would close it.
-  const showText = (shown: Parameter): string => (text ? text(shown) : shown.text());
+  const showText = (target: Parameter): string => (text ? text(target) : target.text());
   const attach = $derived(valueEntry(parameter, { text: showText, open }));
 </script>
 

@@ -20,6 +20,7 @@ const { default: SwitchName } = await import("./fixtures/SwitchName.svelte");
 const { default: ChoiceButtons } = await import("./fixtures/ChoiceButtons.svelte");
 const { default: Field } = await import("./fixtures/Field.svelte");
 const { default: StoreText } = await import("./fixtures/StoreText.svelte");
+const { default: ViewFields } = await import("./fixtures/ViewFields.svelte");
 
 // The parameters of the stand-in runtime: a percentage and three choices.
 const PARAMETERS = [
@@ -296,4 +297,26 @@ test("unmounting detaches the controls", () => {
   // Detaching removes what the control set.
   expect(element.hasAttribute("role")).toBe(false);
   expect(element.hasAttribute("aria-valuenow")).toBe(false);
+});
+
+test("a view follows a new text for the same value and the parameters that arrive with ready", () => {
+  // The plugin's text for the value, which its answer to an edit can change.
+  let answer = "1.0";
+  const host = installRuntime([{ info: { stringId: "time", name: "Time", units: "s", value: 0.5, displayText: "1.0" }, text: () => answer }], false);
+  const seen: Record<string, unknown> = {};
+  render(ViewFields, { parameter: parameter("time"), record: (field: string, value: unknown) => (seen[field] = value) });
+  expect(seen).toEqual({ handle: true, value: 0, displayText: "", text: "", info: undefined });
+
+  host.init();
+  flushSync();
+  expect(seen).toEqual({ handle: true, value: 0.5, displayText: "1.0", text: "1.0 s", info: { name: "Time", displayText: "1.0" } });
+
+  // The plugin answers with a new text for the same value, as the runtime
+  // does: the info first, then the subscribers.
+  answer = "1.00";
+  const info = parameter("time").info;
+  if (info) info.displayText = "1.00";
+  host.push("time", 0.5);
+  flushSync();
+  expect(seen).toEqual({ handle: true, value: 0.5, displayText: "1.00", text: "1.00 s", info: { name: "Time", displayText: "1.00" } });
 });

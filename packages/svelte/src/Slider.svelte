@@ -13,7 +13,7 @@
   import { thumbPosition } from "@helpermedia/beamer-controls";
   import type { SliderOptions } from "@helpermedia/beamer-controls";
   import { slider } from "./attachments.js";
-  import { shown } from "./shown.js";
+  import { parameterView } from "./parameter-view.js";
   import type { SliderState } from "./types.js";
 
   type Props = SliderOptions &
@@ -41,7 +41,7 @@
     ...rest
   }: Props = $props();
 
-  const view = $derived(shown(parameter));
+  const view = $derived(parameterView(parameter));
   // The options are plain values, so their text tells a change from a new
   // object or array with the same content.
   const options = $derived(
