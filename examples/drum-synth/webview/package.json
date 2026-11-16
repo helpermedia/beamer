@@ -1,5 +1,5 @@
 {
-  "name": "drums-web-ui",
+  "name": "drum-synth-web-ui",
   "private": true,
   "type": "module",
   "scripts": {

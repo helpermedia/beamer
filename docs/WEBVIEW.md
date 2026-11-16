@@ -573,7 +573,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React |
 | `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
-A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drums`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
+A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drum-synth`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
 ### `beamer-api`
 
@@ -683,7 +683,7 @@ const peaks = useReadable(levels);
 
 ### `beamer-svelte`
 
-The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `Choices` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. The drums' fader:
+The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `Choices` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. The drum synth's fader:
 
 ```svelte
 <Slider {parameter} thumbLength={0.1} class="group relative h-full w-6 outline-none">

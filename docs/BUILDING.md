@@ -267,7 +267,7 @@ stress test never finishes: macOS hands the render block an event list in
 which a MIDI event points to itself. AUv3 instruments of other vendors
 hang the same way, so this is not a bug in the plugin. Effects pass. Run
 the stress test of an AUv3 instrument out of process with `-oop`, here
-for the drums example:
+for the drum-synth example:
 
 ```bash
 auval -strict -stress 20 -v aumu drum Bmer -oop

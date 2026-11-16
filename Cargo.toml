@@ -13,7 +13,7 @@ members = [
     "examples/delay",
     "examples/synthesizer",
     "examples/midi-transform",
-    "examples/drums",
+    "examples/drum-synth",
     "examples/webview-demo",
     "xtask",
 ]

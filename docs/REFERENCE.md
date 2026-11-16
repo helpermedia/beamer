@@ -527,7 +527,7 @@ A plugin that reads parameters at events, such as a setting applied to each note
 - A change that leaves a parameter at the value it holds splits nothing, such as a value that rounds to the step a discrete parameter is already at.
 - The cost is an extra pair of calls for each change at its own sample while automation moves: an AU parameter event, a VST3 jump or a VST3 point inside the block. Without automation a block runs as one call either way.
 
-The `drums` and `midi-transform` examples set it.
+The `drum-synth` and `midi-transform` examples set it.
 
 #### Flat Parameter Grouping
 
@@ -2497,7 +2497,7 @@ The `manufacturer_code` and `plugin_code` fields in `Config.toml` are the 4-char
 
 #### Multi-Output Instruments
 
-An instrument with several output buses (like the drums example) shows up in Logic's instrument menu with a multi-output variant of its own bus count ("Multi-Output (4xMono)"); the **+** of the instrument's channel strip adds a strip for each further output. Such an instrument or generator reports no channel capabilities in AU and its buses list no channel layouts: hosts see the buses of its default layout, the first in `LAYOUTS`. Other entries of `LAYOUTS` are not announced to hosts; a host reaches them only by setting a bus format itself. With channel capabilities Logic offers 25 outputs for an AUv3 with several and fails to load it.
+An instrument with several output buses (like the drum-synth example) shows up in Logic's instrument menu with a multi-output variant of its own bus count ("Multi-Output (4xMono)"); the **+** of the instrument's channel strip adds a strip for each further output. Such an instrument or generator reports no channel capabilities in AU and its buses list no channel layouts: hosts see the buses of its default layout, the first in `LAYOUTS`. Other entries of `LAYOUTS` are not announced to hosts; a host reaches them only by setting a bus format itself. With channel capabilities Logic offers 25 outputs for an AUv3 with several and fails to load it.
 
 ### VST3
 

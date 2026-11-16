@@ -16,7 +16,7 @@
 <!-- The bar spans the window; its content lines up with the panel. -->
 <header class="h-[3.25rem] shrink-0 border-b border-neutral-800 bg-bar">
   <div class="mx-auto flex h-full w-[35rem] items-center justify-between px-5">
-    <h1 class="text-[0.9375rem] font-semibold tracking-tight">Drums</h1>
+    <h1 class="text-[0.9375rem] font-semibold tracking-tight">Drum Synth</h1>
     <img src={beamerLogo} alt="Beamer" class="h-3.5" />
   </div>
 </header>

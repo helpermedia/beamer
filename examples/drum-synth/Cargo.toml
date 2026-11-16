@@ -1,5 +1,5 @@
 [package]
-name = "drums"
+name = "drum-synth"
 description = "Example drum synthesizer demonstrating multi-output buses in the Beamer framework"
 version.workspace = true
 edition.workspace = true

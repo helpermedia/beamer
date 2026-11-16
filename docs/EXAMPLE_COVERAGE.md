@@ -3,13 +3,13 @@
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
 **Last Updated:** 2026-11-13
-**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drums, webview-demo
+**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drum-synth, webview-demo
 
 ---
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drums | WebView Demo | Notes |
+| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drum Synth | WebView Demo | Notes |
 |-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|--------------|-------|
 | **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
 | | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
@@ -38,13 +38,13 @@
 | **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish), delayed by the latency, warm-up |
 | | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drums uses mono |
-| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Mono layouts, 4 mono outputs (drums) |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drum Synth uses mono |
+| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Mono layouts, 4 mono outputs (drum-synth) |
 | | Several layouts (`LAYOUTS`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono and stereo, mono to stereo (delay), mono sidechain (compressor) |
 | | Wildcard layouts (`Any`, `MATCHED`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
 | | Surround and ambisonic sets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
 | | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 mono aux buses (drums) |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 mono aux buses (drum-synth) |
 | **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |
 | | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Delay tempo sync |
@@ -67,9 +67,9 @@
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
-| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drums) |
-| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per output (drums) |
-| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drums) |
+| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drum-synth) |
+| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per output (drum-synth) |
+| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drum-synth) |
 | | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
 | | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Config.toml editor config |
 | | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Prevents white flash |
@@ -80,8 +80,8 @@
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
-| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Value text of dials and faders (delay, compressor, midi-transform, drums, WebView Demo) |
-| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drums with `beamer-svelte` instead of `beamer-react` |
+| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Value text of dials and faders (delay, compressor, midi-transform, drum-synth, WebView Demo) |
+| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drum-synth with `beamer-svelte` instead of `beamer-react` |
 | | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders and value fields as Svelte components, parameters and meters as Svelte stores |
 
 **Legend:**
@@ -188,7 +188,7 @@
 **Goal:** Test multiple aux buses with stereo outputs and complex routing
 
 **Features to test:**
-- ✅ `AuxOutput` - Multiple output buses (mono tested in drums, stereo needed)
+- ✅ `AuxOutput` - Multiple output buses (mono tested in drum-synth, stereo needed)
 - ✅ Multiple aux input/output buses
 - ✅ Complex bus routing
 - ✅ `output_bus_info()` - Custom output configuration
@@ -198,7 +198,7 @@
 - Route/mix any input to any output
 - Demonstrates complex bus configurations with stereo aux buses
 - Gain control per route
-- **Note:** Mono aux outputs already tested in drums example
+- **Note:** Mono aux outputs already tested in the drum-synth example
 
 **Files to create:**
 - `examples/router/src/lib.rs`

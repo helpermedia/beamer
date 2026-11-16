@@ -1,13 +1,14 @@
-//! Beamer Drums - Example drum synthesizer demonstrating multi-output buses.
+//! Beamer Drum Synth - Example drum synthesizer demonstrating multi-output
+//! buses.
 //!
 //! # Two-Struct Pattern
 //!
 //! Beamer plugins use two structs:
 //!
-//! 1. **`DrumsModel`** - What every thread shares, marked with
+//! 1. **`DrumSynthModel`** - What every thread shares, marked with
 //!    `#[beamer::model]` and implementing `Model`: its parameters, how the
 //!    host sees it and how it creates the processor.
-//! 2. **`DrumsProcessor`** - What the audio thread owns, created by
+//! 2. **`DrumSynthProcessor`** - What the audio thread owns, created by
 //!    `prepare()`, implements `Processor`
 //!
 //! # Features Demonstrated
@@ -158,7 +159,7 @@ enum EnvelopeStage {
 /// parameters are fixed internally. Only the output levels are exposed.
 #[beamer::export]
 #[beamer::model]
-pub struct DrumsModel {
+pub struct DrumSynthModel {
     #[parameter(id = "kick_level", name = "Kick", default = 0.0,
                 range = -60.0..=6.0, kind = "db")]
     pub kick_level: FloatParameter,
@@ -179,22 +180,22 @@ pub struct DrumsModel {
     pub events: WebViewEventQueue,
 }
 
-impl Model for DrumsModel {
+impl Model for DrumSynthModel {
     type Setup = SampleRate;
-    type Processor = DrumsProcessor;
+    type Processor = DrumSynthProcessor;
     // No audio input, a mono output each for kick, snare, hi-hat and crash.
     const LAYOUTS: &'static [Layout] = &[Layout {
         inputs: &[],
         outputs: &[BusLayout::MONO; 4],
     }];
 
-    fn prepare(self: Arc<Self>, setup: SampleRate) -> DrumsProcessor {
+    fn prepare(self: Arc<Self>, setup: SampleRate) -> DrumSynthProcessor {
         // Initialize voice pools (4 voices per drum type)
         let voices: [[DrumVoice; VOICES_PER_DRUM]; 4] = std::array::from_fn(|drum_idx| {
             std::array::from_fn(|voice_idx| DrumVoice::new(DRUM_TYPES[drum_idx], voice_idx))
         });
 
-        DrumsProcessor {
+        DrumSynthProcessor {
             voices,
             sample_rate: setup.hz(),
             time_counter: 0,
@@ -313,8 +314,8 @@ impl DrumVoice {
 const MAX_BUFFER_SIZE: usize = 8192;
 
 /// Runtime processor implementing the Processor trait.
-pub struct DrumsProcessor {
-    model: Arc<DrumsModel>,
+pub struct DrumSynthProcessor {
+    model: Arc<DrumSynthModel>,
     voices: [[DrumVoice; VOICES_PER_DRUM]; 4], // [drum_type][voice_index]
     sample_rate: f64,
     time_counter: u64,
@@ -333,7 +334,7 @@ pub struct DrumsProcessor {
     meters: Meters,
 }
 
-impl DrumsProcessor {
+impl DrumSynthProcessor {
     /// Handle MIDI note-on event.
     fn handle_note_on(&mut self, note_id: i32, pitch: u8, velocity: f32) {
         // Map MIDI note to drum type
@@ -512,7 +513,7 @@ impl DrumsProcessor {
     }
 }
 
-impl Processor for DrumsProcessor {
+impl Processor for DrumSynthProcessor {
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
     }
@@ -553,7 +554,7 @@ fn process_envelope(voice: &mut DrumVoice, attack_ms: f64, decay_ms: f64, sample
 }
 
 /// Synthesize kick drum.
-fn synthesize_kick(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64) -> f64 {
+fn synthesize_kick(voice: &mut DrumVoice, _model: &DrumSynthModel, sample_rate: f64) -> f64 {
     let pitch_hz = 55.0;
     let pitch_env_amount = 0.5;
     let tone = 0.4;
@@ -587,7 +588,7 @@ fn synthesize_kick(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64)
 }
 
 /// Synthesize snare drum.
-fn synthesize_snare(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64) -> f64 {
+fn synthesize_snare(voice: &mut DrumVoice, _model: &DrumSynthModel, sample_rate: f64) -> f64 {
     let tune_hz = 180.0;
     let tone = 0.6;
     let snap = 0.5;
@@ -616,7 +617,7 @@ fn synthesize_snare(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64
 }
 
 /// Synthesize crash cymbal.
-fn synthesize_crash(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64) -> f64 {
+fn synthesize_crash(voice: &mut DrumVoice, _model: &DrumSynthModel, sample_rate: f64) -> f64 {
     let tone = 0.6;
 
     process_envelope(voice, 2.0, 1500.0, sample_rate);
@@ -638,7 +639,7 @@ fn synthesize_crash(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64
 }
 
 /// Synthesize hi-hat.
-fn synthesize_hihat(voice: &mut DrumVoice, _model: &DrumsModel, sample_rate: f64) -> f64 {
+fn synthesize_hihat(voice: &mut DrumVoice, _model: &DrumSynthModel, sample_rate: f64) -> f64 {
     let tone = 0.8;
 
     process_envelope(voice, 0.5, 40.0, sample_rate);
@@ -712,7 +713,7 @@ mod tests {
 
     #[test]
     fn test_a_note_in_the_context_starts_at_its_offset() {
-        let mut processor = prepared(DrumsModel::default());
+        let mut processor = prepared(DrumSynthModel::default());
         // The kick, on the main bus.
         let events = [MidiEvent::note_on(32, 9, 36, 1.0, 36, 0.0, 0)];
         let mut kick = vec![0.0f32; 64];
@@ -726,14 +727,14 @@ mod tests {
 
     // The processor of `model` at 44.1 kHz. The queue is claimed, as a
     // plugin instance does, so that its senders work.
-    fn prepared(model: DrumsModel) -> DrumsProcessor {
+    fn prepared(model: DrumSynthModel) -> DrumSynthProcessor {
         model.events.claim();
         Arc::new(model).prepare(SampleRate(44100.0))
     }
 
     // Render one block of `samples` with `events`, the kick on the main bus
     // and the others on three aux buses.
-    fn render(processor: &mut DrumsProcessor, events: &[MidiEvent], samples: usize) -> [Vec<f32>; 4] {
+    fn render(processor: &mut DrumSynthProcessor, events: &[MidiEvent], samples: usize) -> [Vec<f32>; 4] {
         let mut outputs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; samples]);
         let [kick, snare, hihat, crash] = &mut outputs;
         let mut buffer = Buffer::new([&mut kick[..]], std::iter::empty(), 0, samples);
@@ -756,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_meters_hold_the_peak_of_each_bus_and_fall_in_silence() {
-        let mut processor = prepared(DrumsModel::default());
+        let mut processor = prepared(DrumSynthModel::default());
         // The snare, on aux bus 0.
         let events = [MidiEvent::note_on(0, 9, 38, 1.0, 38, 0.0, 0)];
         render(&mut processor, &events, 512);
@@ -778,7 +779,7 @@ mod tests {
 
     #[test]
     fn test_the_editor_gets_every_hit_and_the_meters_until_they_rest() {
-        let model = Arc::new(DrumsModel::default());
+        let model = Arc::new(DrumSynthModel::default());
         model.events.claim();
         model.events.editor_opened();
         let mut processor = Arc::clone(&model).prepare(SampleRate(44100.0));
@@ -808,8 +809,8 @@ mod tests {
     #[test]
     fn test_the_lowest_level_plays_at_minus_60_db() {
         let events = [MidiEvent::note_on(0, 9, 36, 1.0, 36, 0.0, 0)];
-        let full = render(&mut prepared(DrumsModel::default()), &events, 512);
-        let model = DrumsModel::default();
+        let full = render(&mut prepared(DrumSynthModel::default()), &events, 512);
+        let model = DrumSynthModel::default();
         model.kick_level.set(-60.0);
         let low = render(&mut prepared(model), &events, 512);
         let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));

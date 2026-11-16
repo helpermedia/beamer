@@ -182,7 +182,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "drums"
+name = "drum-synth"
 version = "0.2.4"
 dependencies = [
  "beamer",

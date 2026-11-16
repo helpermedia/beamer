@@ -223,7 +223,7 @@ Each preset starts from the defaults with `reset_parameters()`, so it sounds the
 
 ---
 
-### [Drums](drums/)
+### [Drum Synth](drum-synth/)
 
 MIDI-triggered drum synthesizer with multi-output buses and an editor in Svelte. Each drum type routes to its own mono output bus for independent mixing in the DAW.
 
