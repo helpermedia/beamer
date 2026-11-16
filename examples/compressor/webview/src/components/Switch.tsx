@@ -16,7 +16,7 @@ function Switch({ parameterId, label }: SwitchProps) {
   return (
     <SwitchControl
       parameter={parameter}
-      className="group flex items-center gap-2 rounded-lg bg-well px-2.5 py-1.5 text-xs font-medium text-paper ring-1 ring-neutral-800 ring-inset outline-none hover:bg-neutral-800 data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-offset-2 data-[keyboard-focus]:outline-brand-blue"
+      className="group flex items-center gap-2 rounded-lg bg-well px-2.5 py-1.5 text-xs font-medium text-paper ring-1 ring-neutral-800 ring-inset outline-none hover:bg-neutral-800 data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-solid data-[keyboard-focus]:outline-offset-2 data-[keyboard-focus]:outline-brand-blue"
     >
       <span
         aria-hidden="true"

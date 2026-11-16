@@ -20,7 +20,7 @@ function Choices({ parameterId, labels }: ChoicesProps) {
           <button
             key={name}
             type="button"
-            className="flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium tabular-nums text-neutral-400 outline-none hover:text-paper data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-brand-blue aria-checked:bg-brand-blue aria-checked:text-white"
+            className="flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium tabular-nums text-neutral-400 outline-none hover:text-paper data-[keyboard-focus]:outline-2 data-[keyboard-focus]:outline-solid data-[keyboard-focus]:outline-brand-blue aria-checked:bg-brand-blue aria-checked:text-white"
           >
             {name}
           </button>
