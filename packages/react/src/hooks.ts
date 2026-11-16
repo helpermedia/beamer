@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 import type { RefObject } from "react";
 import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
 import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
@@ -60,9 +60,8 @@ export function useSenderValue<T>(name: string): T | undefined {
 export function useEvent(name: string, handler: (data: unknown) => void): void {
   // The newest handler, so that a handler defined in the component's body
   // does not subscribe again on every render.
-  const latest = useRef(handler);
-  latest.current = handler;
-  useEffect(() => runtime().on(name, (data) => latest.current(data)), [name]);
+  const onEvent = useEffectEvent(handler);
+  useEffect(() => runtime().on(name, (data) => onEvent(data)), [name]);
 }
 
 /** Whether the plugin's parameters and State fields have arrived. */
@@ -88,49 +87,37 @@ export function useReadable<T>(readable: Readable<T>): T {
   return useSyncExternalStore(readable.subscribe, readable.get);
 }
 
-// Attach a control to the element in `ref` while the component is
-// mounted, again whenever `attach` changes.
-function useAttached<E extends Element>(ref: RefObject<E | null>, attach: (element: E) => () => void): void {
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    return attach(element);
-  }, [ref, attach]);
-}
+// The hooks below attach a control to the element in `ref` while the
+// component is mounted, each in an effect of its own. A dial and a value
+// field need that: a function that may be a new one on every render is an
+// Effect Event, which only the effect of its own hook may call. The others
+// have the same shape.
 
 /**
  * Make the element in `ref` a dial for `target` while the component is
  * mounted: `attachDial` of beamer-controls. It attaches again when the
- * parameter or an option changes. A `drag` function may be a new one on
- * every render: the newest is called for each press.
+ * parameter or an option other than `drag` changes. The newest `drag`, a
+ * fixed one or a function, is read for each press, so a new one does not
+ * end a running drag.
  */
 export function useDial(
   ref: RefObject<HTMLElement | SVGElement | null>,
   target: Parameter,
   options: DialOptions = {},
 ): void {
-  const latest = useRef(options);
-  latest.current = options;
-  const picksDrag = typeof options.drag === "function";
+  const { drag, ...others } = options;
   // The other options are plain values, so their text tells a change from
-  // a new object with the same options. JSON leaves a function out.
-  const key = JSON.stringify(options);
-  const attach = useCallback(
-    (element: HTMLElement | SVGElement) => {
-      const settings = JSON.parse(key) as DialOptions;
-      if (picksDrag) {
-        // The newest options may have switched to a fixed drag before the
-        // dial attaches again.
-        settings.drag = (event: PointerEvent): DialDrag => {
-          const drag = latest.current.drag;
-          return typeof drag === "function" ? drag(event) : (drag ?? "vertical");
-        };
-      }
-      return attachDial(element, target, settings);
-    },
-    [target, key, picksDrag],
-  );
-  useAttached(ref, attach);
+  // a new object with the same options.
+  const key = JSON.stringify(others);
+  // The drag of the newest options, picked for each press.
+  const pickDrag = useEffectEvent((event: PointerEvent): DialDrag => {
+    return typeof drag === "function" ? drag(event) : (drag ?? "vertical");
+  });
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    return attachDial(element, target, { ...(JSON.parse(key) as DialOptions), drag: (event) => pickDrag(event) });
+  }, [ref, target, key]);
 }
 
 /**
@@ -146,11 +133,11 @@ export function useSlider(
   // The options are plain values, so their text tells a change from a new
   // object with the same options.
   const key = JSON.stringify(options);
-  const attach = useCallback(
-    (element: HTMLElement | SVGElement) => attachSlider(element, target, JSON.parse(key) as SliderOptions),
-    [target, key],
-  );
-  useAttached(ref, attach);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    return attachSlider(element, target, JSON.parse(key) as SliderOptions);
+  }, [ref, target, key]);
 }
 
 /**
@@ -158,8 +145,11 @@ export function useSlider(
  * mounted: `attachSwitch` of beamer-controls.
  */
 export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Parameter): void {
-  const attach = useCallback((button: HTMLButtonElement) => attachSwitch(button, target), [target]);
-  useAttached(ref, attach);
+  useEffect(() => {
+    const button = ref.current;
+    if (!button) return;
+    return attachSwitch(button, target);
+  }, [ref, target]);
 }
 
 /**
@@ -168,8 +158,11 @@ export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Para
  * Children rendered later, once the choices are known, count too.
  */
 export function useChoices(ref: RefObject<HTMLElement | null>, target: Parameter): void {
-  const attach = useCallback((container: HTMLElement) => attachChoices(container, target), [target]);
-  useAttached(ref, attach);
+  useEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    return attachChoices(container, target);
+  }, [ref, target]);
 }
 
 /**
@@ -183,16 +176,12 @@ export function useValueEntry(
   target: Parameter,
   options: ValueEntryOptions = {},
 ): void {
-  const latest = useRef(options);
-  latest.current = options;
   const open = options.open;
-  const attach = useCallback(
-    (input: HTMLInputElement) =>
-      attachValueEntry(input, target, {
-        open,
-        text: (shown) => latest.current.text?.(shown) ?? shown.text(),
-      }),
-    [target, open],
-  );
-  useAttached(ref, attach);
+  // The text of the newest options.
+  const shownText = useEffectEvent((shown: Parameter): string => options.text?.(shown) ?? shown.text());
+  useEffect(() => {
+    const input = ref.current;
+    if (!input) return;
+    return attachValueEntry(input, target, { open, text: (shown) => shownText(shown) });
+  }, [ref, target, open]);
 }

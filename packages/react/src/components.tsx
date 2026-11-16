@@ -60,8 +60,9 @@ export type DialProps = DialOptions &
  * A dial for `parameter`: a `<div>` with the input of `attachDial` (drag,
  * wheel, keys, reset) and ARIA's slider role. Draw the dial inside it,
  * filling it: the drag measures the `<div>`. The dial's options are props;
- * other props go to the `<div>`. A `drag` function may be a new one on
- * every render.
+ * other props go to the `<div>`. The newest `drag`, a fixed one or a
+ * function, is read for each press, so it may be a new one on every
+ * render.
  */
 export function Dial({
   parameter,
@@ -246,8 +247,8 @@ export type ValueEntryProps = ValueEntryOptions &
  * Closed it shows the value (`text`, the value with its unit by default), a
  * click (or a double click, with `open: "double-click"`) opens it to type
  * one. The field owns its text and whether it is read-only. A `text`
- * function may be a new one on every render. Other props go to the `<input>`; its `ref` can open it with
- * `openValueEntry`.
+ * function may be a new one on every render. Other props go to the
+ * `<input>`; its `ref` can open it with `openValueEntry`.
  */
 export function ValueEntry({ parameter, ref, text, open, ...rest }: ValueEntryProps) {
   const element = useElement(ref);

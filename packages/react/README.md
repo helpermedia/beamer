@@ -102,8 +102,10 @@ of your own (`ref`).
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter` |
 
 A control attaches again when its parameter or an option changes. A
-`drag` or `text` function may be a new one on every render: the newest is
-called. Give the input of `useValueEntry` no `value`: the field sets its
-text itself.
+dial's `drag` and a value field's `text` are the exceptions: the newest
+`drag`, a fixed one or a function, is read for each press and the newest
+`text` function is called, so a new one on every render ends no drag and
+closes no open field. Give the input of `useValueEntry` no `value`: the
+field sets its text itself.
 
-React 19 or later is a peer dependency.
+React 19.2 or later is a peer dependency.

@@ -34,7 +34,7 @@
     "@helpermedia/beamer-controls": "workspace:*"
   },
   "peerDependencies": {
-    "react": ">=19"
+    "react": ">=19.2"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^21.0.4",
