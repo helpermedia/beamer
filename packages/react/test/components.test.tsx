@@ -9,7 +9,7 @@ beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
 
 // React reads the DOM globals when it loads, so it loads after happy-dom.
-const { act, createRef } = await import("react");
+const { act, createRef, useEffect, useLayoutEffect, useRef } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { Choices, Dial, Slider, Switch, ValueEntry } = await import("../src/index");
 
@@ -25,6 +25,12 @@ function mount() {
     render: (element: React.ReactNode) => act(() => root.render(element)),
     unmount: () => act(() => root.unmount()),
   };
+}
+
+// Whether two lists hold the very same items. `toEqual` compares elements
+// by what they look like, so two empty divs would count as equal.
+function same(seen: readonly unknown[], expected: readonly unknown[]): boolean {
+  return seen.length === expected.length && seen.every((item, index) => item === expected[index]);
 }
 
 beforeEach(() => install());
@@ -288,6 +294,120 @@ test("a ref that changes gets the element, the old one lets go", () => {
   expect(second.current).toBe(button as HTMLButtonElement);
   unmount();
   expect(second.current).toBeNull();
+});
+
+test("a ref holds the element in the first commit, for a layout effect of the parent", () => {
+  const seen: Array<Element | null> = [];
+  function Parent() {
+    const dial = useRef<HTMLDivElement>(null);
+    const slider = useRef<HTMLDivElement>(null);
+    const onOff = useRef<HTMLButtonElement>(null);
+    const choices = useRef<HTMLDivElement>(null);
+    const field = useRef<HTMLInputElement>(null);
+    useLayoutEffect(() => {
+      seen.push(dial.current, slider.current, onOff.current, choices.current, field.current);
+    }, []);
+    return (
+      <>
+        <Dial parameter={parameter("mix")} ref={dial} />
+        <Slider parameter={parameter("mix")} ref={slider} />
+        <Switch parameter={parameter("mix")} ref={onOff} />
+        <Choices parameter={parameter("mode")} ref={choices} />
+        <ValueEntry parameter={parameter("mix")} ref={field} />
+      </>
+    );
+  }
+  const { container, render, unmount } = mount();
+  render(<Parent />);
+  expect(same(seen, [...container.children])).toBe(true);
+  expect(seen.length).toBe(5);
+  unmount();
+});
+
+test("the controls are attached when an effect of the parent runs on mount", () => {
+  const roles: Array<string | null> = [];
+  function Parent() {
+    const dial = useRef<HTMLDivElement>(null);
+    const field = useRef<HTMLInputElement>(null);
+    useEffect(() => {
+      roles.push(dial.current?.getAttribute("role") ?? null);
+      // A field that opens as soon as it mounts.
+      if (field.current) openValueEntry(field.current);
+    }, []);
+    return (
+      <>
+        <Dial parameter={parameter("mix")} ref={dial} />
+        <ValueEntry parameter={parameter("mix")} ref={field} />
+      </>
+    );
+  }
+  const { container, render, unmount } = mount();
+  render(<Parent />);
+  expect(roles).toEqual(["slider"]);
+  const input = container.querySelector("input") as HTMLInputElement;
+  expect(input.readOnly).toBe(false);
+  expect(input.hasAttribute("data-typing")).toBe(true);
+  unmount();
+});
+
+test("a callback ref gets the element once and null when it goes", () => {
+  const seen: Array<Element | null> = [];
+  const ref = (node: HTMLDivElement | null) => {
+    seen.push(node);
+  };
+  const { container, render, unmount } = mount();
+  render(<Dial parameter={parameter("mix")} ref={ref} />);
+  const element = container.firstElementChild;
+  expect(same(seen, [element])).toBe(true);
+  // Renders in between leave it alone.
+  act(() => push.parameter(0.8, "80"));
+  render(<Dial parameter={parameter("mix")} ref={ref} className="dial" />);
+  expect(same(seen, [element])).toBe(true);
+  unmount();
+  expect(same(seen, [element, null])).toBe(true);
+});
+
+test("a callback ref with a cleanup gets the element once, then its cleanup runs", () => {
+  const seen: Array<Element | string | null> = [];
+  const ref = (node: HTMLInputElement | null) => {
+    seen.push(node);
+    return () => {
+      seen.push("cleanup");
+    };
+  };
+  const { container, render, unmount } = mount();
+  render(<ValueEntry parameter={parameter("mix")} ref={ref} />);
+  const input = container.firstElementChild;
+  expect(same(seen, [input])).toBe(true);
+  // Renders in between leave it alone.
+  act(() => push.parameter(0.8, "80"));
+  render(<ValueEntry parameter={parameter("mix")} ref={ref} className="field" />);
+  expect(same(seen, [input])).toBe(true);
+  // The cleanup stands in for the call with null.
+  unmount();
+  expect(same(seen, [input, "cleanup"])).toBe(true);
+});
+
+test("a ref that is a new function on every render ends no drag", () => {
+  const seen: Array<Element | null> = [];
+  const { container, render, unmount } = mount();
+  const dial = () => <Dial parameter={parameter("mix")} drag="horizontal" ref={(node) => void seen.push(node)} />;
+  render(dial());
+  const element = container.firstElementChild as HTMLElement;
+  element.setPointerCapture = () => {};
+  act(() => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, button: 0, clientX: 10 }));
+  });
+  render(dial());
+  // The old function lets go and the new one gets the element, as on any
+  // element. The control stays where it is.
+  expect(same(seen, [element, null, element])).toBe(true);
+  act(() => {
+    element.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: 30 }));
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1 }));
+  });
+  expect(calls).toEqual(["begin", "set 0.6", "end"]);
+  unmount();
 });
 
 test("event props reach the element", () => {

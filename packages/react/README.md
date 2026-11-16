@@ -85,7 +85,29 @@ takes no `value`.
 ## Hooks
 
 The hooks under the components are there too, for a control on an element
-of your own (`ref`).
+of your own. A control hook takes the element itself, not a ref: hold it
+in state and give the setter to the element as its `ref`.
+
+```tsx
+function GainDial() {
+  const { parameter } = useParameter("gain");
+  const [dial, setDial] = useState<SVGSVGElement | null>(null);
+  useDial(dial, parameter, { drag: "arc" });
+  return <svg ref={setDial} viewBox="0 0 48 48" />;
+}
+```
+
+The control follows the element: it attaches when the element appears,
+detaches when it goes (the state is null again) and moves when another
+one takes its place, also while the component stays mounted. The element
+is yours for other things too, such as measuring it or `openValueEntry`.
+The control attaches in the hook's effect, one render after the element
+mounts, so an effect of your own that needs the control (one that opens
+the field with `openValueEntry`) comes after the call of the hook.
+
+Give each element a state of its own: two elements cannot share a setter.
+`ref.current` of a ref object is no substitute: a hook that gets it sees
+the element only if the component happens to render again.
 
 | Hook | Returns |
 |------|---------|
@@ -94,15 +116,16 @@ of your own (`ref`).
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
 | `useEvent(name, handler)` | Nothing; calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
-| `useDial(ref, parameter, options)` | Nothing; makes the element a dial (`attachDial`) while mounted |
-| `useSlider(ref, parameter, options)` | Nothing; makes the element a slider (`attachSlider`) while mounted |
-| `useSwitch(ref, parameter)` | Nothing; makes the button a switch (`attachSwitch`) while mounted |
-| `useChoices(ref, parameter)` | Nothing; makes the element's children a radio group (`attachChoices`) while mounted |
-| `useValueEntry(ref, parameter, options)` | Nothing; makes the input the value field (`attachValueEntry`) while mounted |
+| `useDial(element, parameter, options)` | Nothing; makes the element a dial (`attachDial`) while it is there |
+| `useSlider(element, parameter, options)` | Nothing; makes the element a slider (`attachSlider`) while it is there |
+| `useSwitch(button, parameter)` | Nothing; makes the button a switch (`attachSwitch`) while it is there |
+| `useChoices(container, parameter)` | Nothing; makes the container's children a radio group (`attachChoices`) while it is there |
+| `useValueEntry(input, parameter, options)` | Nothing; makes the input the value field (`attachValueEntry`) while it is there |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter` |
 
-A control attaches again when its parameter or an option changes. A
-dial's `drag` and a value field's `text` are the exceptions: the newest
+A control attaches again when its element, its parameter or an option
+changes, not on a render that changes none of them. A dial's `drag` and a
+value field's `text` are the exceptions among the options: the newest
 `drag`, a fixed one or a function, is read for each press and the newest
 `text` function is called, so a new one on every render ends no drag and
 closes no open field. Give the input of `useValueEntry` no `value`: the

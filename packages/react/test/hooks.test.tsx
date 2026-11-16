@@ -7,7 +7,7 @@ beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
 
 // React reads the DOM globals when it loads, so it loads after happy-dom.
-const { act, useRef } = await import("react");
+const { act, useState } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useChoices, useDial, useEvent, useParameter, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
   await import("../src/index");
@@ -101,10 +101,10 @@ test("useReady turns true once the runtime is ready", async () => {
 
 test("useDial attaches while mounted", () => {
   function Dial() {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useDial(ref, parameter);
-    return <div ref={ref} />;
+    useDial(element, parameter);
+    return <div ref={setElement} />;
   }
   const { container, unmount } = render(<Dial />);
   const element = container.firstElementChild as HTMLElement;
@@ -121,18 +121,96 @@ test("useDial attaches while mounted", () => {
   expect(element.hasAttribute("role")).toBe(false);
 });
 
+// Press a key on `element`: whether a dial took it.
+function pressesArrowUp(element: Element): boolean {
+  calls.length = 0;
+  act(() => {
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", cancelable: true }));
+  });
+  return calls.length > 0;
+}
+
+test("useDial attaches to an element that mounts after the component", () => {
+  function Dial({ shown }: { shown: boolean }) {
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
+    const { parameter } = useParameter("mix");
+    useDial(element, parameter);
+    return <section>{shown && <div ref={setElement} />}</section>;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Dial shown={false} />));
+  expect(container.querySelector("div")).toBeNull();
+  act(() => root.render(<Dial shown={true} />));
+  const element = container.querySelector("div") as HTMLElement;
+  expect(element.getAttribute("role")).toBe("slider");
+  expect(pressesArrowUp(element)).toBe(true);
+  expect(calls).toEqual(["begin", "set 0.51", "end"]);
+  act(() => root.unmount());
+});
+
+test("useDial detaches from an element that goes while the component stays", () => {
+  function Dial({ shown }: { shown: boolean }) {
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
+    const { parameter } = useParameter("mix");
+    useDial(element, parameter);
+    return <section>{shown && <div ref={setElement} />}</section>;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Dial shown={true} />));
+  const element = container.querySelector("div") as HTMLElement;
+  expect(element.getAttribute("role")).toBe("slider");
+  act(() => root.render(<Dial shown={false} />));
+  expect(container.querySelector("section")).not.toBeNull();
+  expect(element.hasAttribute("role")).toBe(false);
+  expect(pressesArrowUp(element)).toBe(false);
+  // It attaches again to the element that comes back, a new one.
+  act(() => root.render(<Dial shown={true} />));
+  const next = container.querySelector("div") as HTMLElement;
+  expect(next).not.toBe(element);
+  expect(next.getAttribute("role")).toBe("slider");
+  expect(pressesArrowUp(next)).toBe(true);
+  act(() => root.unmount());
+});
+
+test("useDial moves to the element that replaces its own", () => {
+  function Dial({ name }: { name: string }) {
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
+    const { parameter } = useParameter("mix");
+    useDial(element, parameter);
+    return <div key={name} ref={setElement} />;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Dial name="first" />));
+  const first = container.firstElementChild as HTMLElement;
+  expect(first.getAttribute("role")).toBe("slider");
+  act(() => root.render(<Dial name="second" />));
+  const second = container.firstElementChild as HTMLElement;
+  expect(second).not.toBe(first);
+  expect(second.getAttribute("role")).toBe("slider");
+  expect(pressesArrowUp(second)).toBe(true);
+  expect(first.hasAttribute("role")).toBe(false);
+  expect(pressesArrowUp(first)).toBe(false);
+  act(() => root.unmount());
+});
+
 test("useDial calls the newest drag function for each press", () => {
   const picked: string[] = [];
   function Dial({ tag }: { tag: string }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useDial(ref, parameter, {
+    useDial(element, parameter, {
       drag: () => {
         picked.push(tag);
         return "horizontal";
       },
     });
-    return <div ref={ref} tabIndex={0} />;
+    return <div ref={setElement} tabIndex={0} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -154,15 +232,15 @@ test("useDial calls the newest drag function for each press", () => {
 test("useDial keeps a running drag across a render", () => {
   const picked: string[] = [];
   function Dial({ tag }: { tag: string }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useDial(ref, parameter, {
+    useDial(element, parameter, {
       drag: () => {
         picked.push(tag);
         return "horizontal";
       },
     });
-    return <div ref={ref} tabIndex={0} />;
+    return <div ref={setElement} tabIndex={0} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -185,10 +263,10 @@ test("useDial keeps a running drag across a render", () => {
 
 test("useDial reads the newest drag for each press, a fixed one or a function", () => {
   function Dial({ drag }: { drag?: DialDrag | (() => DialDrag) }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useDial(ref, parameter, { drag });
-    return <div ref={ref} tabIndex={0} />;
+    useDial(element, parameter, { drag });
+    return <div ref={setElement} tabIndex={0} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -224,10 +302,10 @@ test("useDial reads the newest drag for each press, a fixed one or a function", 
 
 test("useDial keeps a running drag when the drag changes", () => {
   function Dial({ drag }: { drag: DialDrag }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useDial(ref, parameter, { drag });
-    return <div ref={ref} tabIndex={0} />;
+    useDial(element, parameter, { drag });
+    return <div ref={setElement} tabIndex={0} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -250,17 +328,38 @@ test("useDial keeps a running drag when the drag changes", () => {
   act(() => root.unmount());
 });
 
+test("useChoices attaches to a form that has a control named current", () => {
+  function Group() {
+    const [form, setForm] = useState<HTMLFormElement | null>(null);
+    const { parameter } = useParameter("mode");
+    useChoices(form, parameter);
+    // A form has each control as a property of its name.
+    return (
+      <form ref={setForm}>
+        <button type="button" name="previous" />
+        <button type="button" name="current" />
+      </form>
+    );
+  }
+  const { container, unmount } = render(<Group />);
+  const form = container.firstElementChild as HTMLFormElement;
+  expect("current" in form).toBe(true);
+  expect(form.getAttribute("role")).toBe("radiogroup");
+  expect([...form.children].map((button) => button.getAttribute("role"))).toEqual(["radio", "radio"]);
+  unmount();
+});
+
 test("useSwitch and useChoices attach to the markup", () => {
   function Controls() {
-    const onOff = useRef<HTMLButtonElement>(null);
-    const group = useRef<HTMLDivElement>(null);
+    const [onOff, setOnOff] = useState<HTMLButtonElement | null>(null);
+    const [group, setGroup] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
     useSwitch(onOff, parameter);
     useChoices(group, parameter);
     return (
       <>
-        <button ref={onOff}>Mix</button>
-        <div ref={group} />
+        <button ref={setOnOff}>Mix</button>
+        <div ref={setGroup} />
       </>
     );
   }
@@ -276,10 +375,10 @@ test("useSwitch and useChoices attach to the markup", () => {
 
 test("useValueEntry shows the text of the newest function", () => {
   function Field({ prefix }: { prefix: string }) {
-    const ref = useRef<HTMLInputElement>(null);
+    const [element, setElement] = useState<HTMLInputElement | null>(null);
     const { parameter } = useParameter("mix");
-    useValueEntry(ref, parameter, { text: (mix) => `${prefix}${mix.text()}` });
-    return <input ref={ref} />;
+    useValueEntry(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
+    return <input ref={setElement} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -296,10 +395,10 @@ test("useValueEntry shows the text of the newest function", () => {
 
 test("useValueEntry keeps an open field open across a render", () => {
   function Field({ prefix }: { prefix: string }) {
-    const ref = useRef<HTMLInputElement>(null);
+    const [element, setElement] = useState<HTMLInputElement | null>(null);
     const { parameter } = useParameter("mix");
-    useValueEntry(ref, parameter, { text: (mix) => `${prefix}${mix.text()}` });
-    return <input ref={ref} />;
+    useValueEntry(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
+    return <input ref={setElement} />;
   }
   const container = document.createElement("div");
   document.body.append(container);
@@ -350,10 +449,10 @@ test("useReadable follows a readable", () => {
 
 test("useSlider attaches an upright slider and follows its orientation", () => {
   function Slider({ orientation }: { orientation: "vertical" | "horizontal" }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const [element, setElement] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
-    useSlider(ref, parameter, { orientation });
-    return <div ref={ref} />;
+    useSlider(element, parameter, { orientation });
+    return <div ref={setElement} />;
   }
   const container = document.createElement("div");
   document.body.append(container);

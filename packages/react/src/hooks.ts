@@ -87,23 +87,52 @@ export function useReadable<T>(readable: Readable<T>): T {
   return useSyncExternalStore(readable.subscribe, readable.get);
 }
 
-// The hooks below attach a control to the element in `ref` while the
-// component is mounted, each in an effect of its own. A dial and a value
-// field need that: a function that may be a new one on every render is an
-// Effect Event, which only the effect of its own hook may call. The others
-// have the same shape.
+// The hooks below attach a control to an element, each in an effect of its
+// own. The caller holds the element in state and hands it over as it is,
+// null while there is none:
+//
+//     const [dial, setDial] = useState<SVGSVGElement | null>(null);
+//     useDial(dial, parameter);
+//     return <svg ref={setDial} />;
+//
+// The element is a dependency of the effect, so the control follows it: it
+// attaches when the element appears, detaches when it goes and moves when
+// another one takes its place, also while the component stays mounted. A
+// dial and a value field need the effect: a function that may be a new one
+// on every render is an Effect Event, which only the effect of its own
+// hook may call. The others have the same shape.
+//
+// Each hook is a thin layer over an inner one (`useDialControl` under
+// `useDial`), which also takes the ref that holds the element. That is for
+// the components alone: each renders its one element for as long as it is
+// mounted, so its ref holds the element whenever the effect runs. The
+// control then attaches in the commit that mounts the element, before the
+// effects of a parent run. With the element in state it would attach one
+// render later, after them.
 
 /**
- * Make the element in `ref` a dial for `target` while the component is
- * mounted: `attachDial` of beamer-controls. It attaches again when the
- * parameter or an option other than `drag` changes. The newest `drag`, a
- * fixed one or a function, is read for each press, so a new one does not
- * end a running drag.
+ * Where an inner control hook finds its element: the element itself, null
+ * while there is none, or the ref that holds it.
  */
-export function useDial(
-  ref: RefObject<HTMLElement | SVGElement | null>,
+export type ElementSource<E extends Element> = E | null | RefObject<E | null>;
+
+// A ref object is told by what it lacks. An element can have a `current`
+// of its own: a form has one for a control of that name.
+function isRef<E extends Element>(source: E | RefObject<E | null>): source is RefObject<E | null> {
+  return !("nodeType" in source);
+}
+
+// The element of `source` now. Read in an effect, never while rendering.
+function elementOf<E extends Element>(source: ElementSource<E>): E | null {
+  if (source === null) return null;
+  return isRef(source) ? source.current : source;
+}
+
+/** `useDial` for an element or, in the Dial component, the ref that holds it. */
+export function useDialControl(
+  source: ElementSource<HTMLElement | SVGElement>,
   target: Parameter,
-  options: DialOptions = {},
+  options: DialOptions,
 ): void {
   const { drag, ...others } = options;
   // The other options are plain values, so their text tells a change from
@@ -114,74 +143,125 @@ export function useDial(
     return typeof drag === "function" ? drag(event) : (drag ?? "vertical");
   });
   useEffect(() => {
-    const element = ref.current;
+    const element = elementOf(source);
     if (!element) return;
     return attachDial(element, target, { ...(JSON.parse(key) as DialOptions), drag: (event) => pickDrag(event) });
-  }, [ref, target, key]);
+  }, [source, target, key]);
 }
 
 /**
- * Make the element in `ref` a slider for `target` while the component is
- * mounted: `attachSlider` of beamer-controls. It attaches again when the
- * parameter or an option changes.
+ * Make `element` a dial for `target` while it is there: `attachDial` of
+ * beamer-controls. Hold the element in state (`ref={setElement}`), null
+ * while there is none. It attaches again when the element, the parameter
+ * or an option other than `drag` changes. The newest `drag`, a fixed one
+ * or a function, is read for each press, so a new one does not end a
+ * running drag.
  */
-export function useSlider(
-  ref: RefObject<HTMLElement | SVGElement | null>,
+export function useDial(
+  element: HTMLElement | SVGElement | null,
   target: Parameter,
-  options: SliderOptions = {},
+  options: DialOptions = {},
+): void {
+  useDialControl(element, target, options);
+}
+
+/** `useSlider` for an element or, in the Slider component, the ref that holds it. */
+export function useSliderControl(
+  source: ElementSource<HTMLElement | SVGElement>,
+  target: Parameter,
+  options: SliderOptions,
 ): void {
   // The options are plain values, so their text tells a change from a new
   // object with the same options.
   const key = JSON.stringify(options);
   useEffect(() => {
-    const element = ref.current;
+    const element = elementOf(source);
     if (!element) return;
     return attachSlider(element, target, JSON.parse(key) as SliderOptions);
-  }, [ref, target, key]);
+  }, [source, target, key]);
 }
 
 /**
- * Make the button in `ref` a switch for `target` while the component is
- * mounted: `attachSwitch` of beamer-controls.
+ * Make `element` a slider for `target` while it is there: `attachSlider`
+ * of beamer-controls. Hold the element in state (`ref={setElement}`), null
+ * while there is none. It attaches again when the element, the parameter
+ * or an option changes.
  */
-export function useSwitch(ref: RefObject<HTMLButtonElement | null>, target: Parameter): void {
+export function useSlider(
+  element: HTMLElement | SVGElement | null,
+  target: Parameter,
+  options: SliderOptions = {},
+): void {
+  useSliderControl(element, target, options);
+}
+
+/** `useSwitch` for a button or, in the Switch component, the ref that holds it. */
+export function useSwitchControl(source: ElementSource<HTMLButtonElement>, target: Parameter): void {
   useEffect(() => {
-    const button = ref.current;
+    const button = elementOf(source);
     if (!button) return;
     return attachSwitch(button, target);
-  }, [ref, target]);
+  }, [source, target]);
 }
 
 /**
- * Make the element in `ref` a radio group for `target` while the component
- * is mounted, one choice per child: `attachChoices` of beamer-controls.
- * Children rendered later, once the choices are known, count too.
+ * Make `button` a switch for `target` while it is there: `attachSwitch` of
+ * beamer-controls. Hold the button in state (`ref={setButton}`), null
+ * while there is none. It attaches again when the button or the parameter
+ * changes.
  */
-export function useChoices(ref: RefObject<HTMLElement | null>, target: Parameter): void {
+export function useSwitch(button: HTMLButtonElement | null, target: Parameter): void {
+  useSwitchControl(button, target);
+}
+
+/** `useChoices` for a container or, in the Choices component, the ref that holds it. */
+export function useChoicesControl(source: ElementSource<HTMLElement>, target: Parameter): void {
   useEffect(() => {
-    const container = ref.current;
+    const container = elementOf(source);
     if (!container) return;
     return attachChoices(container, target);
-  }, [ref, target]);
+  }, [source, target]);
 }
 
 /**
- * Make the input in `ref` the value field of `target` while the component
- * is mounted: `attachValueEntry` of beamer-controls. The field owns its
- * text, so give the input no `value`. A `text` function may be a new one
- * on every render: the newest is called when the value changes.
+ * Make `container` a radio group for `target` while it is there, one
+ * choice per child: `attachChoices` of beamer-controls. Hold the container
+ * in state (`ref={setContainer}`), null while there is none. It attaches
+ * again when the container or the parameter changes. Children rendered
+ * later, once the choices are known, count too.
  */
-export function useValueEntry(
-  ref: RefObject<HTMLInputElement | null>,
+export function useChoices(container: HTMLElement | null, target: Parameter): void {
+  useChoicesControl(container, target);
+}
+
+/** `useValueEntry` for an input or, in the ValueEntry component, the ref that holds it. */
+export function useValueEntryControl(
+  source: ElementSource<HTMLInputElement>,
   target: Parameter,
-  options: ValueEntryOptions = {},
+  options: ValueEntryOptions,
 ): void {
   const open = options.open;
   // The text of the newest options.
   const shownText = useEffectEvent((shown: Parameter): string => options.text?.(shown) ?? shown.text());
   useEffect(() => {
-    const input = ref.current;
+    const input = elementOf(source);
     if (!input) return;
     return attachValueEntry(input, target, { open, text: (shown) => shownText(shown) });
-  }, [ref, target, open]);
+  }, [source, target, open]);
+}
+
+/**
+ * Make `input` the value field of `target` while it is there:
+ * `attachValueEntry` of beamer-controls. Hold the input in state
+ * (`ref={setInput}`), null while there is none. It attaches again when the
+ * input, the parameter or `open` changes. The field owns its text, so give
+ * the input no `value`. A `text` function may be a new one on every
+ * render: the newest is called when the value changes.
+ */
+export function useValueEntry(
+  input: HTMLInputElement | null,
+  target: Parameter,
+  options: ValueEntryOptions = {},
+): void {
+  useValueEntryControl(input, target, options);
 }

@@ -670,7 +670,7 @@ The hooks:
 | `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
-| `useDial(ref, parameter, options)`, `useSlider(ref, parameter, options)`, `useSwitch(ref, parameter)`, `useChoices(ref, parameter)`, `useValueEntry(ref, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while mounted: the layer under the components |
+| `useDial(element, parameter, options)`, `useSlider(element, parameter, options)`, `useSwitch(button, parameter)`, `useChoices(container, parameter)`, `useValueEntry(input, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while it is there: the layer under the components. Each takes the element itself, held in state (`const [dial, setDial] = useState<SVGSVGElement \| null>(null)`, `ref={setDial}`), null while there is none |
 
 The demo's pan law and output meter:
 

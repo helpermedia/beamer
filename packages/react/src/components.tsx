@@ -3,7 +3,7 @@ import type { ComponentPropsWithoutRef, ReactNode, Ref } from "react";
 import type { Parameter } from "@helpermedia/beamer-api";
 import { dialAngle, thumbPosition } from "@helpermedia/beamer-controls";
 import type { DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
-import { useChoices, useDial, useSlider, useSwitch, useValueEntry } from "./hooks.js";
+import { useChoicesControl, useDialControl, useSliderControl, useSwitchControl, useValueEntryControl } from "./hooks.js";
 
 // Unstyled components: each renders one element of its own, with the role,
 // the ARIA attributes and the input of a control of beamer-controls. It
@@ -28,7 +28,10 @@ function useShown(parameter: Parameter) {
   return { value, text, info };
 }
 
-// The component's own element, also in the caller's `ref`.
+// The component's own element, also in the caller's `ref`. The control
+// hook reads it from this ref in its effect: the component renders its one
+// element for as long as it is mounted, so the control attaches in the
+// commit that mounts it, before the effects of a parent run.
 function useElement<E extends Element>(ref: Ref<E> | undefined) {
   const element = useRef<E>(null);
   useImperativeHandle(ref, () => element.current as E, []);
@@ -82,7 +85,7 @@ export function Dial({
   ...rest
 }: DialProps) {
   const element = useElement(ref);
-  useDial(element, parameter, {
+  useDialControl(element, parameter, {
     drag,
     arcStart,
     arcSweep,
@@ -148,7 +151,7 @@ export function Slider({
   ...rest
 }: SliderProps) {
   const element = useElement(ref);
-  useSlider(element, parameter, {
+  useSliderControl(element, parameter, {
     orientation,
     thumbLength,
     dragStep,
@@ -188,7 +191,7 @@ export type SwitchProps = Omit<ComponentPropsWithoutRef<"button">, "children" | 
  */
 export function Switch({ parameter, children, ref, ...rest }: SwitchProps) {
   const element = useElement(ref);
-  useSwitch(element, parameter);
+  useSwitchControl(element, parameter);
   const { value } = useShown(parameter);
   return (
     <button {...rest} type="button" ref={element}>
@@ -223,7 +226,7 @@ export type ChoicesProps = Omit<ComponentPropsWithoutRef<"div">, "children"> & {
  */
 export function Choices({ parameter, children, ref, ...rest }: ChoicesProps) {
   const element = useElement(ref);
-  useChoices(element, parameter);
+  useChoicesControl(element, parameter);
   const { info } = useShown(parameter);
   const discrete = (info?.steps ?? 0) > 0;
   return (
@@ -252,6 +255,6 @@ export type ValueEntryProps = ValueEntryOptions &
  */
 export function ValueEntry({ parameter, ref, text, open, ...rest }: ValueEntryProps) {
   const element = useElement(ref);
-  useValueEntry(element, parameter, { text, open });
+  useValueEntryControl(element, parameter, { text, open });
   return <input {...rest} type="text" ref={element} />;
 }
