@@ -1,5 +1,5 @@
-//! Beamer Drum Synth - Example drum synthesizer demonstrating multi-output
-//! buses.
+//! Beamer Drum Synth - Example drum synthesizer: a stereo instrument whose
+//! drums can each go to an output of their own.
 //!
 //! # Two-Struct Pattern
 //!
@@ -13,70 +13,81 @@
 //!
 //! # Features Demonstrated
 //!
-//! - **Multi-output auxiliary buses**
-//! - 4 mono output buses: Kick, Snare, Crash, Hi-Hat
-//! - GM MIDI drum note mapping (notes 36, 38, 42, 49)
+//! - **Multi-output auxiliary buses**: four stereo outputs, Output 1 the
+//!   main one with every drum mixed, Outputs 2 to 4 off until the host
+//!   turns them on
+//! - Routing per drum: an output parameter sends a drum to any of the four
+//!   outputs, as drum instruments do, so each drum can have one of its
+//!   own. A drum sent to an output the host does not use is not heard,
+//!   until the host turns that output on
+//! - A pan parameter per drum (`kind = "pan"`), which places it in the
+//!   stereo picture with an equal power pan law: hi-hat and crash start a
+//!   little to the sides
+//! - GM MIDI drum note mapping (notes 36, 38, 42, 49), also played from the
+//!   editor's pads
 //! - 16-voice polyphony (4 voices per drum type)
 //! - Individual synthesis algorithm per drum type
 //! - A level parameter per drum
+//! - A setting of the editor in a `State` field: the tab it shows, saved
+//!   with the project
 //! - Sample-accurate MIDI note triggering
 //! - Sample-accurate automation (`sample_accurate_automation` in
-//!   `Config.toml`), since the levels are read once per hit
+//!   `Config.toml`), since the routes and the pans are read once per call
 //! - Velocity-sensitive response
 //! - A stream sender for the hits and a value sender for the level of
-//!   each output, for the editor
+//!   each drum, for the editor
 //!
 //! # Editor
 //!
 //! The editor in `webview/` is Svelte, on the packages beamer-api,
 //! beamer-controls and beamer-svelte. bun and Vite build it into
-//! `webview/dist/`, which the export macro embeds. It shows a channel
-//! strip per drum, in the order of the output buses: a lamp, the fader of
-//! the level parameter with a meter of the drum's output and the output it
-//! plays through. The audio thread sends what only it knows: every hit
-//! (a stream sender) and the level of each output (a value sender).
+//! `webview/dist/`, which the export macro embeds. It has two tabs. Pads:
+//! a pad per drum that flashes on each hit and plays the drum when pressed
+//! (notes from the editor). Mixer: a channel strip per drum with a light
+//! that flashes on each hit, the balance (the pan parameter), the fader of
+//! the level parameter with a meter of the drum and the output it plays
+//! through. The editor keeps the tab it shows in the `State` field `tab`.
+//! The audio thread sends what only it knows: every hit (a stream sender)
+//! and the level of each drum (a value sender).
 //!
 //! # MIDI Note Mapping (GM Standard)
 //!
-//! | MIDI Note | Name         | Drum Type | Output Bus |
-//! |-----------|--------------|-----------|------------|
-//! | 36 (C1)   | Kick Drum    | Kick      | Bus 0      |
-//! | 38 (D1)   | Snare        | Snare     | Bus 1      |
-//! | 42 (F#1)  | Closed Hat   | Hi-Hat    | Bus 2      |
-//! | 49 (C#2)  | Crash Cymbal | Crash     | Bus 3      |
+//! | MIDI Note | Name         | Drum Type |
+//! |-----------|--------------|-----------|
+//! | 36 (C1)   | Kick Drum    | Kick      |
+//! | 38 (D1)   | Snare        | Snare     |
+//! | 42 (F#1)  | Closed Hat   | Hi-Hat    |
+//! | 49 (C#2)  | Crash Cymbal | Crash     |
 //!
-//! # Multi-Output Bus Routing Pattern
+//! # Multi-Output Bus Pattern
 //!
-//! **CRITICAL**: Bus 0 is the main bus (accessed via `Buffer`), buses 1+ are auxiliary
-//! (accessed via `AuxiliaryBuffers`).
+//! Bus 0 is the main bus (accessed via `Buffer`), buses 1 and up are
+//! auxiliary (accessed via `AuxiliaryBuffers`). An aux output is off until
+//! the host turns it on; while it is off, `aux.output()` gives `None`.
 //!
 //! ```ignore
-//! // Configuration: no input, four mono outputs.
+//! // No input, four stereo outputs.
 //! const LAYOUTS: &'static [Layout] = &[Layout {
 //!     inputs: &[],
-//!     outputs: &[BusLayout::MONO; 4],
+//!     outputs: &[BusLayout::STEREO; 4],
 //! }];
 //! fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
 //!     match index {
-//!         // Main bus.
-//!         0 => Some(BusInfo::main("Kick")),
-//!         // Aux buses 0 to 2.
-//!         1 => Some(BusInfo::aux("Snare")),
-//!         2 => Some(BusInfo::aux("Hi-Hat")),
-//!         3 => Some(BusInfo::aux("Crash")),
+//!         0 => Some(BusInfo::main("Output 1")),
+//!         // Aux buses start off.
+//!         1 => Some(BusInfo::aux("Output 2")),
+//!         // ... and so on up to "Output 4".
 //!         _ => None,
 //!     }
 //! }
 //!
-//! // Processing
-//! let kick_out = buffer.channel(0); // Main bus
-//! let snare_out = aux.output(0).unwrap().output(0); // Aux bus 0
-//! let hihat_out = aux.output(1).unwrap().output(0); // Aux bus 1
-//! let crash_out = aux.output(2).unwrap().output(0); // Aux bus 2
+//! // Processing: the main bus, then aux bus 0 (the second output).
+//! let left = buffer.channel(0);
+//! if let Some(mut out2) = aux.output(0) { let left = out2.output(0); }
 //! ```
 
 use beamer::prelude::*;
-use beamer::serde::Serialize;
+use beamer::serde::{Deserialize, Serialize};
 
 /// Number of voices per drum type
 const VOICES_PER_DRUM: usize = 4;
@@ -90,6 +101,10 @@ const TWO_PI: f64 = 2.0 * PI;
 /// Kick pitch envelope time constant (seconds)
 const KICK_PITCH_ENV_TAU: f64 = 0.05;
 
+/// The number of output buses: the main output and three more, one for
+/// each drum.
+const OUTPUTS: usize = 4;
+
 /// Crash cymbal metallic oscillator frequencies (Hz).
 const CRASH_METALLIC_FREQS: [f64; 6] = [4200.0, 5850.0, 7400.0, 9800.0, 12500.0, 15800.0];
 
@@ -100,7 +115,7 @@ const METER_FLOOR_DB: f32 = -60.0;
 /// How fast the held peaks of the meters fall in dB per second.
 const METER_FALL_DB_PER_SECOND: f64 = 20.0;
 
-/// The meters at rest: no output on any bus.
+/// The meters at rest: no drum sounds.
 const METERS_AT_REST: Meters = [METER_FLOOR_DB; 4];
 
 /// Room for the hits of two ticks of the editor (a tick is about 16 ms),
@@ -141,6 +156,33 @@ impl DrumType {
     }
 }
 
+/// The output a drum plays through: Output 1 (the main output) to Output
+/// 4, named as the buses are.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, EnumParameter)]
+pub enum Output {
+    #[default]
+    #[name = "Output 1"]
+    Output1,
+    #[name = "Output 2"]
+    Output2,
+    #[name = "Output 3"]
+    Output3,
+    #[name = "Output 4"]
+    Output4,
+}
+
+impl Output {
+    /// The index of the output bus, 0 for the main output.
+    fn bus(self) -> usize {
+        match self {
+            Output::Output1 => 0,
+            Output::Output2 => 1,
+            Output::Output3 => 2,
+            Output::Output4 => 3,
+        }
+    }
+}
+
 /// ADSR envelope stage (percussion uses only Attack-Decay).
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum EnvelopeStage {
@@ -153,43 +195,90 @@ enum EnvelopeStage {
 // Model
 // =============================================================================
 
-/// Plugin model - just output levels for each drum.
+/// The tab the editor shows: the pads or the mixer. A setting of the editor,
+/// not a parameter: a host does not automate it. It is saved with the
+/// project, so the editor opens on the tab it was left on.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "beamer::serde", rename_all = "snake_case")]
+pub enum Tab {
+    #[default]
+    Pads,
+    Mixer,
+}
+
+/// Plugin model: a level, a pan and an output for each drum. The levels
+/// start at -6 dB, which leaves the main mix of all four drums under full
+/// scale. The pans start where the drums sit in the stereo picture: kick
+/// and snare in the middle, the hi-hat a little to the right and the crash
+/// a little to the left, as the audience sees a drummer at a right-handed
+/// kit.
 ///
 /// This example focuses on demonstrating multi-output buses, so synthesis
-/// parameters are fixed internally. Only the output levels are exposed.
+/// parameters are fixed internally. Only the levels, the pans and the
+/// routing are exposed.
 #[beamer::export]
 #[beamer::model]
 pub struct DrumSynthModel {
-    #[parameter(id = "kick_level", name = "Kick", default = 0.0,
+    #[parameter(id = "kick_level", name = "Kick", default = -6.0,
                 range = -60.0..=6.0, kind = "db")]
     pub kick_level: FloatParameter,
 
-    #[parameter(id = "snare_level", name = "Snare", default = 0.0,
+    #[parameter(id = "snare_level", name = "Snare", default = -6.0,
                 range = -60.0..=6.0, kind = "db")]
     pub snare_level: FloatParameter,
 
-    #[parameter(id = "hihat_level", name = "Hi-Hat", default = 0.0,
+    #[parameter(id = "hihat_level", name = "Hi-Hat", default = -6.0,
                 range = -60.0..=6.0, kind = "db")]
     pub hihat_level: FloatParameter,
 
-    #[parameter(id = "crash_level", name = "Crash", default = 0.0,
+    #[parameter(id = "crash_level", name = "Crash", default = -6.0,
                 range = -60.0..=6.0, kind = "db")]
     pub crash_level: FloatParameter,
+
+    #[parameter(id = "kick_pan", name = "Kick Pan", default = 0.0, kind = "pan")]
+    pub kick_pan: FloatParameter,
+
+    #[parameter(id = "snare_pan", name = "Snare Pan", default = 0.0, kind = "pan")]
+    pub snare_pan: FloatParameter,
+
+    #[parameter(id = "hihat_pan", name = "Hi-Hat Pan", default = 0.3, kind = "pan")]
+    pub hihat_pan: FloatParameter,
+
+    #[parameter(id = "crash_pan", name = "Crash Pan", default = -0.3, kind = "pan")]
+    pub crash_pan: FloatParameter,
+
+    #[parameter(id = "kick_output", name = "Kick Output")]
+    pub kick_output: EnumParameter<Output>,
+
+    #[parameter(id = "snare_output", name = "Snare Output")]
+    pub snare_output: EnumParameter<Output>,
+
+    #[parameter(id = "hihat_output", name = "Hi-Hat Output")]
+    pub hihat_output: EnumParameter<Output>,
+
+    #[parameter(id = "crash_output", name = "Crash Output")]
+    pub crash_output: EnumParameter<Output>,
+
+    /// The tab the editor shows, saved with the project under the id
+    /// "tab". The editor reads and sets it; the processor never does.
+    #[state(id = "tab")]
+    pub tab: State<Tab>,
 
     /// Events for the editor. The processor's senders are made from it.
     pub events: WebViewEventQueue,
 }
 
 impl Model for DrumSynthModel {
-    type Setup = SampleRate;
+    type Setup = (SampleRate, MaxBufferSize);
     type Processor = DrumSynthProcessor;
-    // No audio input, a mono output each for kick, snare, hi-hat and crash.
+    // No audio input, four stereo outputs: the main output and three more
+    // that start off.
     const LAYOUTS: &'static [Layout] = &[Layout {
         inputs: &[],
-        outputs: &[BusLayout::MONO; 4],
+        outputs: &[BusLayout::STEREO; OUTPUTS],
     }];
 
-    fn prepare(self: Arc<Self>, setup: SampleRate) -> DrumSynthProcessor {
+    fn prepare(self: Arc<Self>, (sample_rate, max_buffer_size): (SampleRate, MaxBufferSize)) -> DrumSynthProcessor {
         // Initialize voice pools (4 voices per drum type)
         let voices: [[DrumVoice; VOICES_PER_DRUM]; 4] = std::array::from_fn(|drum_idx| {
             std::array::from_fn(|voice_idx| DrumVoice::new(DRUM_TYPES[drum_idx], voice_idx))
@@ -197,9 +286,9 @@ impl Model for DrumSynthModel {
 
         DrumSynthProcessor {
             voices,
-            sample_rate: setup.hz(),
+            sample_rate: sample_rate.hz(),
             time_counter: 0,
-            render_buffers: std::array::from_fn(|_| vec![0.0; MAX_BUFFER_SIZE]),
+            render_buffers: std::array::from_fn(|_| vec![0.0; max_buffer_size.0]),
             hits_sender: self.events.stream_sender("hits", HITS_CAPACITY),
             meters_sender: self.events.value_sender("meters", METERS_AT_REST),
             meters: METERS_AT_REST,
@@ -209,12 +298,12 @@ impl Model for DrumSynthModel {
 
     fn output_bus_info(&self, index: usize) -> Option<BusInfo> {
         match index {
-            // Main bus.
-            0 => Some(BusInfo::main("Kick")),
-            // Aux buses 0 to 2.
-            1 => Some(BusInfo::aux("Snare")),
-            2 => Some(BusInfo::aux("Hi-Hat")),
-            3 => Some(BusInfo::aux("Crash")),
+            // The main bus and the aux buses, named as the choices of the
+            // output parameters. The aux buses start off.
+            0 => Some(BusInfo::main("Output 1")),
+            1 => Some(BusInfo::aux("Output 2")),
+            2 => Some(BusInfo::aux("Output 3")),
+            3 => Some(BusInfo::aux("Output 4")),
             _ => None,
         }
     }
@@ -224,9 +313,10 @@ impl Model for DrumSynthModel {
 // Editor
 // =============================================================================
 
-/// A drum that was hit, sent to the editor, which lights the drum's lamp.
-/// As JSON an object with the drum (0 kick, 1 snare, 2 hi-hat, 3 crash, the
-/// order of the output buses) and the velocity from 0.0 to 1.0.
+/// A drum that was hit, sent to the editor, which flashes the drum's pad
+/// and the light of its strip.
+/// As JSON an object with the drum (0 kick, 1 snare, 2 hi-hat, 3 crash) and
+/// the velocity from 0.0 to 1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(crate = "beamer::serde")]
 pub struct Hit {
@@ -234,8 +324,8 @@ pub struct Hit {
     pub velocity: f32,
 }
 
-/// The held peak of each output bus in dB, at least the floor of the
-/// meters, in the order of the buses. As JSON an array of four numbers.
+/// The held peak of each drum in dB, at least the floor of the meters, in
+/// the order of the drums. As JSON an array of four numbers.
 pub type Meters = [f32; 4];
 
 // =============================================================================
@@ -310,16 +400,14 @@ impl DrumVoice {
 // Processor
 // =============================================================================
 
-/// Maximum expected buffer size for pre-allocation (covers all common DAW configs).
-const MAX_BUFFER_SIZE: usize = 8192;
-
 /// Runtime processor implementing the Processor trait.
 pub struct DrumSynthProcessor {
     model: Arc<DrumSynthModel>,
     voices: [[DrumVoice; VOICES_PER_DRUM]; 4], // [drum_type][voice_index]
     sample_rate: f64,
     time_counter: u64,
-    render_buffers: [Vec<f64>; 4], // [kick, snare, hihat, crash]
+    /// The render of each drum in the block, in the order of `DRUM_TYPES`.
+    render_buffers: [Vec<f64>; 4],
 
     /// Sends every hit to the editor. Sends nothing while no editor is
     /// open.
@@ -413,16 +501,55 @@ impl DrumSynthProcessor {
         sum * level.as_linear()
     }
 
-    /// Hold the peak of each output and send the meters. Each peak falls for
+    /// The output bus each drum plays through, as its output parameter
+    /// chooses. A drum sent to a bus the host has off is not heard.
+    fn routes(&self) -> [usize; 4] {
+        [
+            self.model.kick_output.get(),
+            self.model.snare_output.get(),
+            self.model.hihat_output.get(),
+            self.model.crash_output.get(),
+        ]
+        .map(Output::bus)
+    }
+
+    /// The gain of each drum on the left and the right channel, as its pan
+    /// parameter places it.
+    fn drum_gains(&self) -> [[f64; 2]; 4] {
+        [
+            self.model.kick_pan.get(),
+            self.model.snare_pan.get(),
+            self.model.hihat_pan.get(),
+            self.model.crash_pan.get(),
+        ]
+        .map(pan_gains)
+    }
+
+    /// Mix the drums that play through `bus` into `out`, the channel
+    /// `channel` (0 left, 1 right) of it, each at its gain on that channel.
+    /// Every bus is stereo.
+    fn mix_into<S: Sample>(&self, out: &mut [S], routes: &[usize; 4], gains: &[[f64; 2]; 4], bus: usize, channel: usize, num_samples: usize) {
+        for (i, sample) in out[..num_samples].iter_mut().enumerate() {
+            let mut sum = 0.0;
+            for (drum, route) in routes.iter().enumerate() {
+                if *route == bus {
+                    sum += self.render_buffers[drum][i] * gains[drum][channel];
+                }
+            }
+            *sample = S::from_f64(sum);
+        }
+    }
+
+    /// Hold the peak of each drum and send the meters. Each peak falls for
     /// the length of the block, then rises to the block's own. The editor
     /// shows the newest value it gets, so a hit between two of its frames
     /// stays visible.
     fn update_meters(&mut self, num_samples: usize) {
         let fall = (METER_FALL_DB_PER_SECOND * num_samples as f64 / self.sample_rate) as f32;
-        let meters: Meters = std::array::from_fn(|bus| {
-            let peak = self.render_buffers[bus][..num_samples].iter().fold(0.0_f64, |peak, sample| peak.max(sample.abs()));
+        let meters: Meters = std::array::from_fn(|drum| {
+            let peak = self.render_buffers[drum][..num_samples].iter().fold(0.0_f64, |peak, sample| peak.max(sample.abs()));
             let block_db = if peak > 0.0 { (20.0 * peak.log10()) as f32 } else { METER_FLOOR_DB };
-            (self.meters[bus] - fall).max(block_db).max(METER_FLOOR_DB)
+            (self.meters[drum] - fall).max(block_db).max(METER_FLOOR_DB)
         });
         // While the meters show something they go out with every block, also
         // when they hold still. Meters at rest send nothing, so the editor
@@ -444,9 +571,9 @@ impl DrumSynthProcessor {
         // The MIDI of this call, sorted by sample offset.
         let events = context.midi_input();
 
-        // Clear pre-allocated render buffers (no heap allocation)
+        // Clear the render buffers, made for the host's largest block in
+        // `prepare()`, so nothing is allocated here.
         for buf in &mut self.render_buffers {
-            buf.resize(num_samples, 0.0);
             buf[..num_samples].fill(0.0);
         }
 
@@ -480,40 +607,33 @@ impl DrumSynthProcessor {
 
         self.update_meters(num_samples);
 
-        // Write to output buses
-        // Bus 0 (main) = Kick
-        let kick_out = buffer.channel(0);
-        for (i, sample) in self.render_buffers[0][..num_samples].iter().enumerate() {
-            kick_out[i] = S::from_f64(*sample);
+        // Mix each drum into the output it plays through: the main bus,
+        // then the aux buses the host has on. The routes and the pans are
+        // read once per call; with sample-accurate automation a change in
+        // the block starts a call of its own.
+        // Every output is written, also one no drum plays through.
+        let routes = self.routes();
+        let gains = self.drum_gains();
+        for channel in 0..2 {
+            self.mix_into(buffer.channel(channel), &routes, &gains, 0, channel, num_samples);
         }
-
-        // Bus 1 (aux 0) = Snare
-        if let Some(mut snare_bus) = aux.output(0) {
-            let snare_out = snare_bus.output(0);
-            for (i, sample) in self.render_buffers[1][..num_samples].iter().enumerate() {
-                snare_out[i] = S::from_f64(*sample);
-            }
-        }
-
-        // Bus 2 (aux 1) = Hi-Hat
-        if let Some(mut hihat_bus) = aux.output(1) {
-            let hihat_out = hihat_bus.output(0);
-            for (i, sample) in self.render_buffers[2][..num_samples].iter().enumerate() {
-                hihat_out[i] = S::from_f64(*sample);
-            }
-        }
-
-        // Bus 3 (aux 2) = Crash
-        if let Some(mut crash_bus) = aux.output(2) {
-            let crash_out = crash_bus.output(0);
-            for (i, sample) in self.render_buffers[3][..num_samples].iter().enumerate() {
-                crash_out[i] = S::from_f64(*sample);
+        for bus in 1..OUTPUTS {
+            if let Some(mut output) = aux.output(bus - 1) {
+                for channel in 0..2 {
+                    self.mix_into(output.output(channel), &routes, &gains, bus, channel, num_samples);
+                }
             }
         }
     }
 }
 
 impl Processor for DrumSynthProcessor {
+    // The f64 path is native: a host that processes in f64 gets
+    // `process_f64()` without a conversion.
+    fn supports_double_precision(&self) -> bool {
+        true
+    }
+
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &ProcessContext) {
         self.process_generic(buffer, aux, context);
     }
@@ -668,6 +788,17 @@ fn synthesize_hihat(voice: &mut DrumVoice, _model: &DrumSynthModel, sample_rate:
 // Low-Level DSP Primitives
 // =============================================================================
 
+/// The gains of a mono source at `pan` (-1 left to 1 right) on the left
+/// and the right channel, equal in power across the picture and 1.0 each in
+/// the middle, so a drum in the middle keeps its level on both channels.
+/// Both sides take the sine of mirrored angles, so the middle is the same
+/// on both and each end leaves the other side exactly silent (a cosine of
+/// pi/2 would leave a rounding error).
+fn pan_gains(pan: f64) -> [f64; 2] {
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * PI / 4.0;
+    [std::f64::consts::SQRT_2 * (std::f64::consts::FRAC_PI_2 - angle).sin(), std::f64::consts::SQRT_2 * angle.sin()]
+}
+
 /// Sum 6 inharmonic square-wave oscillators for metallic cymbal character.
 #[inline]
 fn metallic_oscillators(phases: &mut [f64; 6], freqs: &[f64; 6], sample_rate: f64) -> f64 {
@@ -716,36 +847,191 @@ mod tests {
         let mut processor = prepared(DrumSynthModel::default());
         // The kick, on the main bus.
         let events = [MidiEvent::note_on(32, 9, 36, 1.0, 36, 0.0, 0)];
-        let mut kick = vec![0.0f32; 64];
-        let mut buffer = Buffer::new([&mut kick[..]], std::iter::empty(), 0, 64);
-        let mut aux = AuxiliaryBuffers::empty();
-        let context = ProcessContext::new(44100.0, 64, Transport::default()).with_midi_input(&events);
-        processor.process(&mut buffer, &mut aux, &context);
-        assert!(kick[..32].iter().all(|sample| *sample == 0.0), "silent before the note");
-        assert!(kick[32..].iter().any(|sample| *sample != 0.0), "the kick sounds");
+        let [[left, _], ..] = render(&mut processor, &events, 64);
+        assert!(left[..32].iter().all(|sample| *sample == 0.0), "silent before the note");
+        assert!(left[32..].iter().any(|sample| *sample != 0.0), "the kick sounds");
     }
+
+    // Which outputs a test's host has on: the main output only, as a host
+    // starts, or all four.
+    const MAIN_ONLY: [bool; OUTPUTS] = [true, false, false, false];
+    const ALL_ON: [bool; OUTPUTS] = [true; OUTPUTS];
 
     // The processor of `model` at 44.1 kHz. The queue is claimed, as a
     // plugin instance does, so that its senders work.
     fn prepared(model: DrumSynthModel) -> DrumSynthProcessor {
         model.events.claim();
-        Arc::new(model).prepare(SampleRate(44100.0))
+        Arc::new(model).prepare((SampleRate(44100.0), MaxBufferSize(4410)))
     }
 
-    // Render one block of `samples` with `events`, the kick on the main bus
-    // and the others on three aux buses.
-    fn render(processor: &mut DrumSynthProcessor, events: &[MidiEvent], samples: usize) -> [Vec<f32>; 4] {
-        let mut outputs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; samples]);
-        let [kick, snare, hihat, crash] = &mut outputs;
-        let mut buffer = Buffer::new([&mut kick[..]], std::iter::empty(), 0, samples);
-        let mut aux = AuxiliaryBuffers::new(
-            Vec::<Vec<&[f32]>>::new(),
-            vec![vec![&mut snare[..]], vec![&mut hihat[..]], vec![&mut crash[..]]],
-            samples,
-        );
+    // Render one block of `samples` with `events` into the stereo outputs
+    // `on`, by bus and channel, as a wrapper does: an output that is off has
+    // no channels. The buffers start full of 1.0, so a channel the
+    // processor leaves unwritten shows.
+    fn render_into(processor: &mut DrumSynthProcessor, events: &[MidiEvent], samples: usize, on: [bool; OUTPUTS]) -> [[Vec<f32>; 2]; OUTPUTS] {
+        let mut outputs: [[Vec<f32>; 2]; OUTPUTS] = std::array::from_fn(|_| [vec![1.0; samples], vec![1.0; samples]]);
+        let [main, aux_outputs @ ..] = &mut outputs;
+        let [main_left, main_right] = main;
+        let mut buffer = Buffer::new([&mut main_left[..], &mut main_right[..]], std::iter::empty(), 0, samples);
+        let aux_channels: Vec<Vec<&mut [f32]>> = aux_outputs
+            .iter_mut()
+            .zip(&on[1..])
+            .map(|([left, right], on)| if *on { vec![&mut left[..], &mut right[..]] } else { Vec::new() })
+            .collect();
+        let mut aux = AuxiliaryBuffers::new(Vec::<Vec<&[f32]>>::new(), aux_channels, samples);
         let context = ProcessContext::new(44100.0, samples, Transport::default()).with_midi_input(events);
         processor.process(&mut buffer, &mut aux, &context);
         outputs
+    }
+
+    fn render(processor: &mut DrumSynthProcessor, events: &[MidiEvent], samples: usize) -> [[Vec<f32>; 2]; OUTPUTS] {
+        render_into(processor, events, samples, MAIN_ONLY)
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+    }
+
+    // The peak of both channels of an output.
+    fn bus_peak([left, right]: &[Vec<f32>; 2]) -> f32 {
+        peak(left).max(peak(right))
+    }
+
+    // The note-ons of the four drums at the start of a block.
+    const ALL_DRUMS: [MidiEvent<'static>; 4] = [
+        MidiEvent::note_on(0, 9, 36, 1.0, 36, 0.0, 0),
+        MidiEvent::note_on(0, 9, 38, 1.0, 38, 0.0, 0),
+        MidiEvent::note_on(0, 9, 42, 1.0, 42, 0.0, 0),
+        MidiEvent::note_on(0, 9, 49, 1.0, 49, 0.0, 0),
+    ];
+
+    #[test]
+    fn test_every_drum_plays_on_the_main_output_by_default() {
+        let outputs = render_into(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS, 512, ALL_ON);
+        assert!(peak(&outputs[0][0]) > 0.1 && peak(&outputs[0][1]) > 0.1, "the main output sounds");
+        for output in &outputs[1..] {
+            assert_eq!(bus_peak(output), 0.0, "the other outputs are written silent");
+        }
+    }
+
+    #[test]
+    fn test_a_drum_goes_to_the_output_it_is_routed_to() {
+        let model = DrumSynthModel::default();
+        model.snare_output.set(Output::Output3);
+        model.crash_output.set(Output::Output3);
+        let outputs = render_into(&mut prepared(model), &[ALL_DRUMS[1], ALL_DRUMS[3]], 512, ALL_ON);
+        assert!(peak(&outputs[2][0]) > 0.01 && peak(&outputs[2][1]) > 0.01, "Output 3 has the snare and the crash on both sides");
+        for bus in [0, 1, 3] {
+            assert_eq!(bus_peak(&outputs[bus]), 0.0, "output {bus} is silent");
+        }
+    }
+
+    #[test]
+    fn test_a_drum_routed_to_an_output_that_is_off_is_not_heard() {
+        let model = DrumSynthModel::default();
+        // Output 2 is off, Output 3 is on.
+        model.kick_output.set(Output::Output2);
+        model.snare_output.set(Output::Output3);
+        let on = [true, false, true, false];
+        let outputs = render_into(&mut prepared(model), &ALL_DRUMS[..2], 512, on);
+        assert_eq!(bus_peak(&outputs[0]), 0.0, "the kick does not play on the main output");
+        assert!(bus_peak(&outputs[2]) > 0.1, "the snare plays on Output 3, which is on");
+    }
+
+    #[test]
+    fn test_the_hi_hat_sits_right_the_crash_left_and_the_kick_in_the_middle() {
+        let [[left, right], ..] = render(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS[2..3], 512);
+        assert!(peak(&right) > peak(&left) * 1.3, "the hi-hat is louder on the right");
+        let [[left, right], ..] = render(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS[3..], 512);
+        assert!(peak(&left) > peak(&right) * 1.3, "the crash is louder on the left");
+        let [[left, right], ..] = render(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS[..1], 512);
+        assert!(peak(&left) > 0.1, "the kick sounds");
+        assert_eq!(left, right, "the kick is the same on both sides");
+    }
+
+    #[test]
+    fn test_the_pan_parameters_start_where_the_drums_sit() {
+        let model = DrumSynthModel::default();
+        let pans = [&model.kick_pan, &model.snare_pan, &model.hihat_pan, &model.crash_pan];
+        let texts = pans.map(|pan| pan.display_normalized(pan.get_normalized()));
+        assert_eq!(texts, ["C", "C", "R 30", "L 30"]);
+        for pan in pans {
+            assert_eq!((pan.normalized_to_plain(0.0), pan.normalized_to_plain(1.0)), (-1.0, 1.0), "{}", pan.info().name);
+        }
+    }
+
+    #[test]
+    fn test_a_pan_parameter_moves_its_drum_on_every_output() {
+        // The kick hard right on the main output.
+        let model = DrumSynthModel::default();
+        model.kick_pan.set(1.0);
+        let [[left, right], ..] = render(&mut prepared(model), &ALL_DRUMS[..1], 512);
+        assert_eq!(peak(&left), 0.0, "nothing of the kick on the left");
+        assert!(peak(&right) > 0.1, "the kick on the right");
+        // The snare hard left on Output 2, the hi-hat moved to the middle.
+        let model = DrumSynthModel::default();
+        model.snare_pan.set(-1.0);
+        model.snare_output.set(Output::Output2);
+        model.hihat_pan.set(0.0);
+        let outputs = render_into(&mut prepared(model), &ALL_DRUMS[1..3], 512, ALL_ON);
+        assert!(peak(&outputs[1][0]) > 0.1, "the snare on the left of Output 2");
+        assert_eq!(peak(&outputs[1][1]), 0.0, "nothing of the snare on the right of Output 2");
+        assert!(peak(&outputs[0][0]) > 0.01, "the hi-hat sounds on the main output");
+        assert_eq!(outputs[0][0], outputs[0][1], "the hi-hat is the same on both sides");
+    }
+
+    #[test]
+    fn test_the_tab_is_saved_as_the_editor_reads_it() {
+        let model = DrumSynthModel::default();
+        assert_eq!(model.tab.save().unwrap(), br#""pads""#, "the editor opens on the pads");
+        model.tab.load(br#""mixer""#).unwrap();
+        assert_eq!(*model.tab.get(), Tab::Mixer);
+        assert!(model.tab.load(br#""drums""#).is_err(), "a tab the editor does not have");
+        assert_eq!(*model.tab.get(), Tab::Mixer, "is ignored");
+    }
+
+    #[test]
+    fn test_the_pan_law_keeps_the_power_and_the_middle_at_full_level() {
+        // Both sides take the sine of the same angle in the middle, so they
+        // are equal exactly; the value is 1.0 up to the platform's sine.
+        let [left, right] = pan_gains(0.0);
+        assert_eq!(left, right);
+        assert!((left - 1.0).abs() < 1e-12, "{left}");
+        assert_eq!(pan_gains(-1.0), [std::f64::consts::SQRT_2, 0.0]);
+        assert_eq!(pan_gains(1.0), [0.0, std::f64::consts::SQRT_2]);
+        for pan in [-1.0, -0.3, 0.3, 0.7, 1.0] {
+            let [left, right] = pan_gains(pan);
+            assert!((left * left + right * right - 2.0).abs() < 1e-9, "equal power at {pan}");
+            let [mirror_left, mirror_right] = pan_gains(-pan);
+            assert!((left - mirror_right).abs() < 1e-9 && (right - mirror_left).abs() < 1e-9, "-{pan} mirrors {pan}");
+        }
+    }
+
+    #[test]
+    fn test_the_f64_path_renders_as_the_f32_path() {
+        let mut processor = prepared(DrumSynthModel::default());
+        assert!(processor.supports_double_precision());
+        let samples = 512;
+        let mut main = [vec![1.0_f64; samples], vec![1.0_f64; samples]];
+        let [left, right] = &mut main;
+        let mut buffer = Buffer::new([&mut left[..], &mut right[..]], std::iter::empty(), 0, samples);
+        let aux_channels: Vec<Vec<&mut [f64]>> = (1..OUTPUTS).map(|_| Vec::new()).collect();
+        let mut aux = AuxiliaryBuffers::new(Vec::<Vec<&[f64]>>::new(), aux_channels, samples);
+        let context = ProcessContext::new(44100.0, samples, Transport::default()).with_midi_input(&ALL_DRUMS);
+        processor.process_f64(&mut buffer, &mut aux, &context);
+        let [[f32_left, f32_right], ..] = render(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS, samples);
+        for (f64_channel, f32_channel) in [(&main[0], &f32_left), (&main[1], &f32_right)] {
+            assert!(f32_channel.iter().any(|sample| *sample != 0.0), "the drums sound");
+            for (a, b) in f64_channel.iter().zip(f32_channel) {
+                assert!((*a as f32 - b).abs() < 1e-6, "{a} against {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_the_main_mix_of_all_drums_stays_under_full_scale_at_the_defaults() {
+        let outputs = render(&mut prepared(DrumSynthModel::default()), &ALL_DRUMS, 4096);
+        assert!(bus_peak(&outputs[0]) < 1.0, "peak {}", bus_peak(&outputs[0]));
     }
 
     #[test]
@@ -756,14 +1042,14 @@ mod tests {
     }
 
     #[test]
-    fn test_meters_hold_the_peak_of_each_bus_and_fall_in_silence() {
+    fn test_meters_hold_the_peak_of_each_drum_and_fall_in_silence() {
         let mut processor = prepared(DrumSynthModel::default());
-        // The snare, on aux bus 0.
+        // The snare.
         let events = [MidiEvent::note_on(0, 9, 38, 1.0, 38, 0.0, 0)];
         render(&mut processor, &events, 512);
         let hit = processor.meters;
-        assert!(hit[1] > -20.0, "the snare's bus shows its level: {hit:?}");
-        assert_eq!(hit[0], METER_FLOOR_DB, "the kick's bus stays at the floor");
+        assert!(hit[1] > -20.0, "the snare's meter shows its level: {hit:?}");
+        assert_eq!(hit[0], METER_FLOOR_DB, "the kick's meter stays at the floor");
         // Ten blocks of 4410 samples: a second, long after the snare. The
         // peak it held falls 20 dB.
         for _ in 0..10 {
@@ -782,7 +1068,7 @@ mod tests {
         let model = Arc::new(DrumSynthModel::default());
         model.events.claim();
         model.events.editor_opened();
-        let mut processor = Arc::clone(&model).prepare(SampleRate(44100.0));
+        let mut processor = Arc::clone(&model).prepare((SampleRate(44100.0), MaxBufferSize(4410)));
         // The snare softly, a note no drum plays and the crash.
         let events = [
             MidiEvent::note_on(0, 9, 38, 0.5, 38, 0.0, 0),
@@ -809,12 +1095,13 @@ mod tests {
     #[test]
     fn test_the_lowest_level_plays_at_minus_60_db() {
         let events = [MidiEvent::note_on(0, 9, 36, 1.0, 36, 0.0, 0)];
-        let full = render(&mut prepared(DrumSynthModel::default()), &events, 512);
+        let model = DrumSynthModel::default();
+        model.kick_level.set(0.0);
+        let full = render(&mut prepared(model), &events, 512);
         let model = DrumSynthModel::default();
         model.kick_level.set(-60.0);
         let low = render(&mut prepared(model), &events, 512);
-        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        let ratio = peak(&low[0]) / peak(&full[0]);
+        let ratio = peak(&low[0][0]) / peak(&full[0][0]);
         assert!((ratio - 0.001).abs() < 0.0001, "-60 dB is a thousandth, not silence: {ratio}");
     }
 }

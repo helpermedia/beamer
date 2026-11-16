@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-11-13
+**Last Updated:** 2026-11-16
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drum-synth, webview-demo
 
 ---
@@ -14,7 +14,7 @@
 | **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
 | | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
 | | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | Waveform, sync, ratio |
+| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | Waveform, sync, ratio, the output of each drum |
 | **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Feedback, mix, cutoff |
 | | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
 | **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
@@ -26,9 +26,10 @@
 | | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
 | | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
 | | Note Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Note numbers as names ("C3") via kind = "note_number", middle_c in Config.toml |
+| | Pan Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Stereo position ("L 30", "C", "R 30") via kind = "pan": the pan (WebView Demo), the balance of each drum (drum-synth) |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
 | | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
-| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Saved state beyond parameters, read on the audio thread |
+| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Saved state beyond parameters: read on the audio thread (pan law), a setting of the editor (the drum synth's tab) |
 | | Hand-written `Default` (`no_default`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Covered by docs (REFERENCE.md) and tests; no example needs it |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
@@ -38,13 +39,13 @@
 | **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish), delayed by the latency, warm-up |
 | | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
 | | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Drum Synth uses mono |
-| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Mono layouts, 4 mono outputs (drum-synth) |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default layout |
+| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono layouts |
 | | Several layouts (`LAYOUTS`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono and stereo, mono to stereo (delay), mono sidechain (compressor) |
 | | Wildcard layouts (`Any`, `MATCHED`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
 | | Surround and ambisonic sets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
 | | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 mono aux buses (drum-synth) |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 stereo aux buses that start off, a drum routed to any output (drum-synth) |
 | **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |
 | | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Delay tempo sync |
@@ -68,21 +69,22 @@
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
 | | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drum-synth) |
-| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per output (drum-synth) |
+| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per drum (drum-synth) |
 | | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drum-synth) |
 | | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
 | | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Config.toml editor config |
 | | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
 | | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
-| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | __BEAMER__.state (pan law) |
-| | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in an example: `noteOn`, `noteOff` and `playNote` reach `midi_input()`; drum pads will play them |
+| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | __BEAMER__.state (pan law), `stateField` as a Svelte store (the tab the drum synth's editor shows) |
+| | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | The drum synth's pads play their drum with `playNote`, which reaches `midi_input()` |
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
-| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform) |
+| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform), outputs with names of their own (drum-synth) |
 | | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Value text of dials and faders (delay, compressor, midi-transform, drum-synth, WebView Demo) |
 | | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drum-synth with `beamer-svelte` instead of `beamer-react` |
-| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders and value fields as Svelte components, parameters and meters as Svelte stores |
+| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders, balance sliders, value fields and output choices as Svelte components, parameters, meters and a `State` field as Svelte stores |
+| | Horizontal slider (`orientation`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | The balance of each drum, a lying slider with the thumb at `position` |
 
 **Legend:**
 - ✅ Tested/Used
@@ -188,7 +190,7 @@
 **Goal:** Test multiple aux buses with stereo outputs and complex routing
 
 **Features to test:**
-- ✅ `AuxOutput` - Multiple output buses (mono tested in drum-synth, stereo needed)
+- ✅ `AuxOutput` - Multiple output buses (stereo tested in drum-synth)
 - ✅ Multiple aux input/output buses
 - ✅ Complex bus routing
 - ✅ `output_bus_info()` - Custom output configuration
@@ -198,7 +200,7 @@
 - Route/mix any input to any output
 - Demonstrates complex bus configurations with stereo aux buses
 - Gain control per route
-- **Note:** Mono aux outputs already tested in the drum-synth example
+- **Note:** Stereo aux outputs and routing per source already tested in the drum-synth example
 
 **Files to create:**
 - `examples/router/src/lib.rs`

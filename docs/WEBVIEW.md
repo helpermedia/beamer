@@ -683,7 +683,7 @@ const peaks = useReadable(levels);
 
 ### `beamer-svelte`
 
-The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `Choices` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. The drum synth's fader:
+The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `Choices` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. A fader:
 
 ```svelte
 <Slider {parameter} thumbLength={0.1} class="group relative h-full w-6 outline-none">

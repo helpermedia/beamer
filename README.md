@@ -95,7 +95,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | Example | Description |
 |---------|-------------|
 | **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
-| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Drum synthesizer with multi-output buses and an editor |
+| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Stereo drum synthesizer whose drums can each go to an output of their own, with an editor |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation and an editor |
 
 ### WebView Editor
@@ -106,7 +106,7 @@ See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTU
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Editor in plain HTML and JavaScript, without a build step |
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Editor in React with a live transfer curve and meters from the audio thread |
 | **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | Editor in React with a note map that lights up the notes passing through, streamed from the audio thread |
-| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Editor in Svelte with a fader and an output meter per drum and a lamp for every hit |
+| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Editor in Svelte in two tabs: pads that play the drums and a mixer with the balance, the fader, the meter and the output of each drum |
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 

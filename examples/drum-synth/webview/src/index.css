@@ -28,13 +28,13 @@
   --font-sans: "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* The editor scales with its window: the design of 560 x 460 pixels at a
+/* The editor scales with its window: the design of 560 x 500 pixels at a
    rem of 16 px (`editor_size` in Config.toml). The rem follows the window
    by its width or its height, whichever leaves less room, so the panel
    keeps its proportions and stays whole. Sizes are in rem or in parts of
-   a strip's height. */
+   a fader's height. */
 html {
-  font-size: min(100vw / 35, 100vh / 28.75);
+  font-size: min(100vw / 35, 100vh / 31.25);
 }
 
 html,

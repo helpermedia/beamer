@@ -2497,7 +2497,7 @@ The `manufacturer_code` and `plugin_code` fields in `Config.toml` are the 4-char
 
 #### Multi-Output Instruments
 
-An instrument with several output buses (like the drum-synth example) shows up in Logic's instrument menu with a multi-output variant of its own bus count ("Multi-Output (4xMono)"); the **+** of the instrument's channel strip adds a strip for each further output. Such an instrument or generator reports no channel capabilities in AU and its buses list no channel layouts: hosts see the buses of its default layout, the first in `LAYOUTS`. Other entries of `LAYOUTS` are not announced to hosts; a host reaches them only by setting a bus format itself. With channel capabilities Logic offers 25 outputs for an AUv3 with several and fails to load it.
+An instrument with several output buses (like the drum-synth example) shows up in Logic's instrument menu with a multi-output variant of its own bus count and width; the **+** of the instrument's channel strip adds a strip for each further output. Such an instrument or generator reports no channel capabilities in AU and its buses list no channel layouts: hosts see the buses of its default layout, the first in `LAYOUTS`. Other entries of `LAYOUTS` are not announced to hosts; a host reaches them only by setting a bus format itself. With channel capabilities Logic offers 25 outputs for an AUv3 with several and fails to load it.
 
 ### VST3
 

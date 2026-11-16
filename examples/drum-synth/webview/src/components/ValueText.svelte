@@ -8,7 +8,7 @@
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
   import { ValueEntry } from "@helpermedia/beamer-svelte";
-  import { withMinus } from "./format";
+  import { withMinus } from "../format";
 
   let { parameter }: { parameter: Parameter } = $props();
 </script>

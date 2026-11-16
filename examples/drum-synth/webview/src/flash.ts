@@ -3,8 +3,9 @@ import { runtime } from "@helpermedia/beamer-api";
 
 // The hits from the stream sender "hits" (`Hit` in src/lib.rs): each drum
 // that was hit, with its velocity, in arrays of what arrived since the
-// last tick. A hit is an event, not a state: the lamp flashes and fades on
-// its own, so nothing waits for the host when it stops calling the plugin.
+// last tick, also the hits of the pads. A hit is an event, not a state: the
+// light flashes and fades on its own, so nothing waits for the host when
+// it stops calling the plugin.
 
 // How long a flash takes to fade, in ms.
 const FADE_MS = 250;
@@ -30,9 +31,9 @@ function loudestHit(hits: unknown, drum: number): number {
 /**
  * Flash the element on each hit of `drum`, as bright as the hit is loud,
  * then fade it. Several hits in one tick flash once, at the loudest. With
- * reduced motion the lamp shows for the same time without the fade.
+ * reduced motion the light shows for the same time without the fade.
  */
-export function lamp(drum: number): Attachment<HTMLElement> {
+export function flash(drum: number): Attachment<HTMLElement> {
   return (element) =>
     runtime().on("hits", (hits) => {
       const velocity = loudestHit(hits, drum);

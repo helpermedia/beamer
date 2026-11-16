@@ -225,16 +225,15 @@ Each preset starts from the defaults with `reset_parameters()`, so it sounds the
 
 ### [Drum Synth](drum-synth/)
 
-MIDI-triggered drum synthesizer with multi-output buses and an editor in Svelte. Each drum type routes to its own mono output bus for independent mixing in the DAW.
+MIDI-triggered drum synthesizer with an editor in Svelte. It is a stereo instrument: by default every drum plays through the main output (Output 1), mixed. Like commercial drum instruments, it can send each drum to an output of its own for independent mixing in the DAW.
 
 **Parameters:**
 
 | Parameter | Description |
 |-----------|-------------|
-| **Kick** | Kick output level (-60 to +6 dB) |
-| **Snare** | Snare output level (-60 to +6 dB) |
-| **Hi-Hat** | Hi-hat output level (-60 to +6 dB) |
-| **Crash** | Crash cymbal output level (-60 to +6 dB) |
+| **Kick**, **Snare**, **Hi-Hat**, **Crash** | The level of each drum (-60 to +6 dB) |
+| **Kick Pan**, **Snare Pan**, **Hi-Hat Pan**, **Crash Pan** | Where each drum sits in the stereo picture (L 100 to R 100): kick and snare in the middle, the hi-hat at R 30 and the crash at L 30 to start with, as the audience sees a drummer at a right-handed kit |
+| **Kick Output**, **Snare Output**, **Hi-Hat Output**, **Crash Output** | The output each drum plays through: Output 1 (the default) to Output 4 |
 
 **MIDI Note Mapping (GM Standard):**
 
@@ -245,22 +244,28 @@ MIDI-triggered drum synthesizer with multi-output buses and an editor in Svelte.
 | 42 (F#1) | Hi-Hat |
 | 49 (C#2) | Crash |
 
+**Outputs:** four stereo outputs, Output 1 to Output 4, enough to give each drum one of its own. Output 1 is the main output; the three others start off: turn one on in the host (Logic: the Multi Output version of the plugin and the + on its channel strip; Cubase: the outputs in the VST Instruments rack; Reaper: the plugin's pin connector) and send a drum there. A drum sent to an output the host does not use is not heard. Each drum keeps its pan on any output.
+
 **Editor:**
 
-A bar with the plugin's name and the Beamer logo, then a channel strip per drum in the order of the output buses. Each strip has a lamp that flashes on every hit, as bright as the hit is loud, the drum's name and note, a fader for its level on a scale in dB with a meter of its output beside it, the level as a value to type and the output the drum plays through. A line under the strips says why only the kick sounds until the host's extra outputs are on. When the host stops calling the plugin (a power button, an FX switch) the meters fall on their own; the lamps fade on their own anyway. The editor scales with its window and has the look of the Beamer brand. Built with Svelte, Vite and Tailwind, the first example in Svelte.
+A bar with the plugin's name, two tabs and the Beamer logo. **Pads** has a big pad per drum, with its name and note, that plays the drum when pressed (or on Space or Enter once focused) and flashes on every hit, as bright as the hit is loud. **Mixer** has a channel strip per drum: its name with a light that flashes on every hit, the balance as a small horizontal slider, a fader for its level on a scale in dB with a meter of the drum beside it, the level as a value to type and the output it plays through. The tabs follow the ARIA tabs pattern (one tab stop, the arrow keys move between them). The editor remembers the tab it shows in a `State` field saved with the project and opens on Pads in a new one. When the host stops calling the plugin (a power button, an FX switch) the meters fall on their own; the pads and the lights fade on their own anyway. The editor scales with its window and has the look of the Beamer brand. Built with Svelte, Vite and Tailwind, the first example in Svelte.
 
 **Demonstrates:**
-- Multi-output auxiliary buses (`LAYOUTS`, `output_bus_info()`, `AuxiliaryBuffers`)
-- Mono buses via `BusLayout::MONO`, named with `BusInfo::main()` and `BusInfo::aux()`
+- Multi-output auxiliary buses (`LAYOUTS`, `output_bus_info()`, `AuxiliaryBuffers`): a stereo main output and three stereo aux outputs that start off
+- `MaxBufferSize` in the setup, so the render buffers fit the host's largest block
+- Routing per source with an `EnumParameter` per drum
+- A pan parameter per drum (`kind = "pan"`), read by an equal power pan law that places each mono drum in the stereo picture
+- A setting of the editor in a `State` field (`#[state]`): the tab it shows, read and set in the web UI with `stateField`
 - MIDI input from the `instrument` category, without any setting
-- Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the levels are read once per hit
+- Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the routes and the pans are read once per call
 - Sample-accurate note triggering from `context.midi_input()` in `process()`
 - 16-voice polyphony (4 per drum type) with oldest-note stealing
 - Per-drum synthesis algorithms (sine, triangle, noise, metallic oscillators)
 - Velocity-sensitive response
 - Generic f32/f64 processing
-- A stream sender with every hit and a value sender with the held peak of each output, from the audio thread
-- The packages for web UIs: `beamer-controls` for the falling meters, `beamer-svelte` components for the faders and the value fields, the parameters and the meters read as Svelte stores, used from the bun workspace
+- A stream sender with every hit and a value sender with the held peak of each drum, from the audio thread
+- Notes from the web UI: the pads play their drum with `playNote` from beamer-api
+- The packages for web UIs: `beamer-controls` for the falling meters, `beamer-svelte` components for the faders, the balance sliders (`orientation="horizontal"`), the value fields and the output choices, the parameters, the meters and the `State` field read as Svelte stores, used from the bun workspace
 
 ---
 
