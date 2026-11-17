@@ -60,7 +60,7 @@ element.
 | `Dial` | A `<div>` with `attachDial` | `value`, `angle` (where it points, `dialAngle`), `text` |
 | `Slider` | A `<div>` with `attachSlider`: the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
 | `Switch` | A `<button>` with `attachSwitch` | `checked` |
-| `Choices` | A `<div>` with `attachChoices` | `choices` (the names), `checked` (the index) |
+| `RadioGroup` | A `<div>` with `attachRadioGroup` | `choices` (the names), `checked` (the index) |
 | `ValueEntry` | An `<input>` with `attachValueEntry` | |
 
 Children are either markup or a function of what the control shows:
@@ -76,8 +76,8 @@ Children are either markup or a function of what the control shows:
 ```
 
 Draw a dial or a slider inside its `<div>`, filling it: the drag measures
-the `<div>`. The children of `Choices` are its choices, one button each
-in order, the first for the lowest value; a checked one has
+the `<div>`. The children of `RadioGroup` are its radios, one button per
+choice in order, the first for the lowest value; a checked one has
 `aria-checked="true"`. A `drag` or `text` function may be a new one on
 every render: the newest is called. The value field owns its text, so it
 takes no `value`.
@@ -119,7 +119,7 @@ the element only if the component happens to render again.
 | `useDial(element, parameter, options)` | Nothing; makes the element a dial (`attachDial`) while it is there |
 | `useSlider(element, parameter, options)` | Nothing; makes the element a slider (`attachSlider`) while it is there |
 | `useSwitch(button, parameter)` | Nothing; makes the button a switch (`attachSwitch`) while it is there |
-| `useChoices(container, parameter)` | Nothing; makes the container's children a radio group (`attachChoices`) while it is there |
+| `useRadioGroup(container, parameter)` | Nothing; makes the container's children a radio group (`attachRadioGroup`) while it is there |
 | `useValueEntry(input, parameter, options)` | Nothing; makes the input the value field (`attachValueEntry`) while it is there |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter` |
 

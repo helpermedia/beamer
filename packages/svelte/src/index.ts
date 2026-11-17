@@ -4,9 +4,9 @@
 // `children` snippet. The stores of beamer-api follow Svelte's store
 // contract, so `$parameter` and a `fallingMeter` work as they are.
 
-export { default as Choices } from "./Choices.svelte";
 export { default as Dial } from "./Dial.svelte";
+export { default as RadioGroup } from "./RadioGroup.svelte";
 export { default as Slider } from "./Slider.svelte";
 export { default as Switch } from "./Switch.svelte";
 export { default as ValueEntry } from "./ValueEntry.svelte";
-export type { ChoicesState, DialState, SliderState, SwitchState } from "./types.js";
+export type { DialState, RadioGroupState, SliderState, SwitchState } from "./types.js";

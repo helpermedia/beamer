@@ -3,10 +3,10 @@
 // React's useSyncExternalStore or an effect.
 
 export {
-  useChoices,
   useDial,
   useEvent,
   useParameter,
+  useRadioGroup,
   useReadable,
   useReady,
   useSenderValue,
@@ -16,12 +16,12 @@ export {
   useValueEntry,
 } from "./hooks.js";
 export type { ParameterView } from "./hooks.js";
-export { Choices, Dial, Slider, Switch, ValueEntry } from "./components.js";
+export { Dial, RadioGroup, Slider, Switch, ValueEntry } from "./components.js";
 export type {
-  ChoicesProps,
-  ChoicesState,
   DialProps,
   DialState,
+  RadioGroupProps,
+  RadioGroupState,
   SliderProps,
   SliderState,
   SwitchProps,

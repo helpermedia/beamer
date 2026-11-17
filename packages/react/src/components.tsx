@@ -3,7 +3,7 @@ import type { ComponentPropsWithoutRef, ReactNode, Ref } from "react";
 import type { Parameter } from "@helpermedia/beamer-api";
 import { dialAngle, thumbPosition } from "@helpermedia/beamer-controls";
 import type { DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
-import { useChoicesControl, useDialControl, useSliderControl, useSwitchControl, useValueEntryControl } from "./hooks.js";
+import { useDialControl, useRadioGroupControl, useSliderControl, useSwitchControl, useValueEntryControl } from "./hooks.js";
 
 // Unstyled components: each renders one element of its own, with the role,
 // the ARIA attributes and the input of a control of beamer-controls. It
@@ -201,32 +201,32 @@ export function Switch({ parameter, children, ref, ...rest }: SwitchProps) {
 }
 
 /** What a radio group hands to its children. */
-export interface ChoicesState {
+export interface RadioGroupState {
   /** The display text of each choice, from the lowest value up. */
   choices: string[];
   /** The index of the checked choice, -1 before `ready` or for a continuous parameter. */
   checked: number;
 }
 
-export type ChoicesProps = Omit<ComponentPropsWithoutRef<"div">, "children"> & {
+export type RadioGroupProps = Omit<ComponentPropsWithoutRef<"div">, "children"> & {
   parameter: Parameter;
   /**
    * One button per choice, the first for the lowest value: names of the
    * parameter's choices or names of one's own.
    */
-  children?: Children<ChoicesState>;
+  children?: Children<RadioGroupState>;
   ref?: Ref<HTMLDivElement>;
 };
 
 /**
  * A radio group for the discrete `parameter`: a `<div>` with
- * `attachChoices`. Its children are the choices in order, made radios
- * (`aria-checked` on the checked one, arrow keys, one tab stop). Other
- * props go to the `<div>`.
+ * `attachRadioGroup`. Its children become its radios, one per choice in
+ * order (`aria-checked` on the checked one, arrow keys, one tab stop).
+ * Other props go to the `<div>`.
  */
-export function Choices({ parameter, children, ref, ...rest }: ChoicesProps) {
+export function RadioGroup({ parameter, children, ref, ...rest }: RadioGroupProps) {
   const element = useElement(ref);
-  useChoicesControl(element, parameter);
+  useRadioGroupControl(element, parameter);
   const { info } = useShown(parameter);
   const discrete = (info?.steps ?? 0) > 0;
   return (

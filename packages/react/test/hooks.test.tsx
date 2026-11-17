@@ -9,7 +9,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, useState } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useChoices, useDial, useEvent, useParameter, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
+const { useDial, useEvent, useParameter, useRadioGroup, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
   await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
@@ -328,11 +328,11 @@ test("useDial keeps a running drag when the drag changes", () => {
   act(() => root.unmount());
 });
 
-test("useChoices attaches to a form that has a control named current", () => {
+test("useRadioGroup attaches to a form that has a control named current", () => {
   function Group() {
     const [form, setForm] = useState<HTMLFormElement | null>(null);
     const { parameter } = useParameter("mode");
-    useChoices(form, parameter);
+    useRadioGroup(form, parameter);
     // A form has each control as a property of its name.
     return (
       <form ref={setForm}>
@@ -349,13 +349,13 @@ test("useChoices attaches to a form that has a control named current", () => {
   unmount();
 });
 
-test("useSwitch and useChoices attach to the markup", () => {
+test("useSwitch and useRadioGroup attach to the markup", () => {
   function Controls() {
     const [onOff, setOnOff] = useState<HTMLButtonElement | null>(null);
     const [group, setGroup] = useState<HTMLDivElement | null>(null);
     const { parameter } = useParameter("mix");
     useSwitch(onOff, parameter);
-    useChoices(group, parameter);
+    useRadioGroup(group, parameter);
     return (
       <>
         <button ref={setOnOff}>Mix</button>

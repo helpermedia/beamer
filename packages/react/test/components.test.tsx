@@ -11,7 +11,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, createRef, useEffect, useLayoutEffect, useRef } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { Choices, Dial, Slider, Switch, ValueEntry } = await import("../src/index");
+const { Dial, RadioGroup, Slider, Switch, ValueEntry } = await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -126,10 +126,10 @@ test("Switch is a button that flips the value and shows whether it is on", () =>
   unmount();
 });
 
-test("Choices makes its buttons a radio group and hands the choices", () => {
+test("RadioGroup makes its buttons radios and hands the choices", () => {
   const { container, render, unmount } = mount();
   render(
-    <Choices parameter={parameter("mode")}>
+    <RadioGroup parameter={parameter("mode")}>
       {({ choices, checked }) =>
         choices.map((name, index) => (
           <button key={name} type="button" data-checked={index === checked ? "" : undefined}>
@@ -137,7 +137,7 @@ test("Choices makes its buttons a radio group and hands the choices", () => {
           </button>
         ))
       }
-    </Choices>,
+    </RadioGroup>,
   );
   const group = container.firstElementChild as HTMLElement;
   const buttons = [...group.children] as HTMLButtonElement[];
@@ -171,7 +171,7 @@ test("ValueEntry is an input that shows the value and opens to type one", () => 
 test("the components render again when the parameters arrive with ready", () => {
   install(false);
   const dial: DialState[] = [];
-  const choices: Array<{ choices: string[]; checked: number }> = [];
+  const radioGroup: Array<{ choices: string[]; checked: number }> = [];
   const { render, unmount } = mount();
   render(
     <>
@@ -181,19 +181,19 @@ test("the components render again when the parameters arrive with ready", () => 
           return null;
         }}
       </Dial>
-      <Choices parameter={parameter("mode")}>
+      <RadioGroup parameter={parameter("mode")}>
         {(state) => {
-          choices.push(state);
+          radioGroup.push(state);
           return null;
         }}
-      </Choices>
+      </RadioGroup>
     </>,
   );
   expect(dial.at(-1)?.text).toBe("");
-  expect(choices.at(-1)).toEqual({ choices: [], checked: -1 });
+  expect(radioGroup.at(-1)).toEqual({ choices: [], checked: -1 });
   act(() => push.init());
   expect(dial.at(-1)).toEqual({ value: 0.5, angle: 270, text: "50%" });
-  expect(choices.at(-1)).toEqual({ choices: ["A", "B", "C"], checked: 1 });
+  expect(radioGroup.at(-1)).toEqual({ choices: ["A", "B", "C"], checked: 1 });
   unmount();
 });
 
@@ -223,16 +223,16 @@ test("a new text for the same value reaches the drawing", () => {
   unmount();
 });
 
-test("Choices of a continuous parameter has no choices and none checked", () => {
+test("RadioGroup of a continuous parameter has no choices and none checked", () => {
   let seen: { choices: string[]; checked: number } | undefined;
   const { render, unmount } = mount();
   render(
-    <Choices parameter={parameter("mix")}>
+    <RadioGroup parameter={parameter("mix")}>
       {(state) => {
         seen = state;
         return null;
       }}
-    </Choices>,
+    </RadioGroup>,
   );
   expect(seen).toEqual({ choices: [], checked: -1 });
   unmount();
@@ -302,17 +302,17 @@ test("a ref holds the element in the first commit, for a layout effect of the pa
     const dial = useRef<HTMLDivElement>(null);
     const slider = useRef<HTMLDivElement>(null);
     const onOff = useRef<HTMLButtonElement>(null);
-    const choices = useRef<HTMLDivElement>(null);
+    const radioGroup = useRef<HTMLDivElement>(null);
     const field = useRef<HTMLInputElement>(null);
     useLayoutEffect(() => {
-      seen.push(dial.current, slider.current, onOff.current, choices.current, field.current);
+      seen.push(dial.current, slider.current, onOff.current, radioGroup.current, field.current);
     }, []);
     return (
       <>
         <Dial parameter={parameter("mix")} ref={dial} />
         <Slider parameter={parameter("mix")} ref={slider} />
         <Switch parameter={parameter("mix")} ref={onOff} />
-        <Choices parameter={parameter("mode")} ref={choices} />
+        <RadioGroup parameter={parameter("mode")} ref={radioGroup} />
         <ValueEntry parameter={parameter("mix")} ref={field} />
       </>
     );

@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react
 import type { RefObject } from "react";
 import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
 import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
-import { attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
+import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
 import type { DialDrag, DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
 
 /** A parameter as a component shows it. */
@@ -214,24 +214,24 @@ export function useSwitch(button: HTMLButtonElement | null, target: Parameter): 
   useSwitchControl(button, target);
 }
 
-/** `useChoices` for a container or, in the Choices component, the ref that holds it. */
-export function useChoicesControl(source: ElementSource<HTMLElement>, target: Parameter): void {
+/** `useRadioGroup` for a container or, in the RadioGroup component, the ref that holds it. */
+export function useRadioGroupControl(source: ElementSource<HTMLElement>, target: Parameter): void {
   useEffect(() => {
     const container = elementOf(source);
     if (!container) return;
-    return attachChoices(container, target);
+    return attachRadioGroup(container, target);
   }, [source, target]);
 }
 
 /**
  * Make `container` a radio group for `target` while it is there, one
- * choice per child: `attachChoices` of beamer-controls. Hold the container
- * in state (`ref={setContainer}`), null while there is none. It attaches
- * again when the container or the parameter changes. Children rendered
- * later, once the choices are known, count too.
+ * choice per child: `attachRadioGroup` of beamer-controls. Hold the
+ * container in state (`ref={setContainer}`), null while there is none. It
+ * attaches again when the container or the parameter changes. Children
+ * rendered later, once the choices are known, count too.
  */
-export function useChoices(container: HTMLElement | null, target: Parameter): void {
-  useChoicesControl(container, target);
+export function useRadioGroup(container: HTMLElement | null, target: Parameter): void {
+  useRadioGroupControl(container, target);
 }
 
 /** `useValueEntry` for an input or, in the ValueEntry component, the ref that holds it. */

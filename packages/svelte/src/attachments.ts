@@ -1,7 +1,7 @@
 import { untrack } from "svelte";
 import type { Attachment } from "svelte/attachments";
 import type { Parameter } from "@helpermedia/beamer-api";
-import { attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
+import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
 import type { DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
 
 // The controls of beamer-controls as attachments, the layer under the
@@ -26,9 +26,9 @@ export function onOffSwitch(parameter: Parameter): Attachment<HTMLButtonElement>
   return (button) => untrack(() => attachSwitch(button, parameter));
 }
 
-/** `attachChoices` as an attachment. */
-export function choices(parameter: Parameter): Attachment<HTMLElement> {
-  return (container) => untrack(() => attachChoices(container, parameter));
+/** `attachRadioGroup` as an attachment. */
+export function radioGroup(parameter: Parameter): Attachment<HTMLElement> {
+  return (container) => untrack(() => attachRadioGroup(container, parameter));
 }
 
 /** `attachValueEntry` as an attachment. */

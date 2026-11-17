@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { KEYBOARD_FOCUS, attachChoices, attachDial, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition, dialAngle } from "../src/index";
+import { KEYBOARD_FOCUS, attachDial, attachRadioGroup, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition, dialAngle } from "../src/index";
 import { installRuntime } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -280,7 +280,7 @@ test("a switch flips with each click, one undo step each", () => {
   expect(runtime.calls).toHaveLength(6);
 });
 
-function choiceButtons(group: HTMLElement, names: string[]) {
+function radioButtons(group: HTMLElement, names: string[]) {
   for (const name of names) {
     const button = document.createElement("button");
     button.textContent = name;
@@ -289,11 +289,11 @@ function choiceButtons(group: HTMLElement, names: string[]) {
   return [...group.children] as HTMLButtonElement[];
 }
 
-test("choices are a radio group with one tab stop on the checked choice", async () => {
+test("a radio group has one tab stop, on the checked radio", async () => {
   setup();
   const group = element("div");
-  const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, parameter("mode"));
+  const buttons = radioButtons(group, ["Peak", "RMS", "Hold"]);
+  attachRadioGroup(group, parameter("mode"));
   expect(group.getAttribute("role")).toBe("radiogroup");
   expect(group.getAttribute("aria-label")).toBe("Mode");
   expect(buttons.map((button) => button.getAttribute("role"))).toEqual(["radio", "radio", "radio"]);
@@ -304,8 +304,8 @@ test("choices are a radio group with one tab stop on the checked choice", async 
 test("a click sets a choice, a click on the checked one sets nothing", () => {
   const runtime = setup();
   const group = element("div");
-  const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, parameter("mode"));
+  const buttons = radioButtons(group, ["Peak", "RMS", "Hold"]);
+  attachRadioGroup(group, parameter("mode"));
   buttons[2].click();
   buttons[2].click();
   expect(runtime.calls).toEqual(["begin mode", "set mode 1", "end mode"]);
@@ -316,8 +316,8 @@ test("a click sets a choice, a click on the checked one sets nothing", () => {
 test("arrow keys check the next choice, move the focus and wrap", () => {
   const runtime = setup();
   const group = element("div");
-  const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
-  attachChoices(group, parameter("mode"));
+  const buttons = radioButtons(group, ["Peak", "RMS", "Hold"]);
+  attachRadioGroup(group, parameter("mode"));
   buttons[0].focus();
   key(buttons[0], "ArrowRight");
   expect(document.activeElement).toBe(buttons[1]);
@@ -332,12 +332,12 @@ test("arrow keys check the next choice, move the focus and wrap", () => {
   expect(document.activeElement).toBe(buttons[2]);
 });
 
-test("choices rendered later get their roles, removed ones lose them", async () => {
+test("radios rendered later get their roles, removed ones lose them", async () => {
   const runtime = setup(false);
   const group = element("div");
-  const detach = attachChoices(group, parameter("mode"));
+  const detach = attachRadioGroup(group, parameter("mode"));
   runtime.init();
-  const buttons = choiceButtons(group, ["Peak", "RMS", "Hold"]);
+  const buttons = radioButtons(group, ["Peak", "RMS", "Hold"]);
   // The observer reports after the change.
   await Promise.resolve();
   expect(buttons.map((button) => button.getAttribute("role"))).toEqual(["radio", "radio", "radio"]);

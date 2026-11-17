@@ -39,7 +39,7 @@ a React effect, under the components of [`beamer-svelte`](../svelte) and
 | `thumbPosition(value, thumbLength)` | Nothing; where to draw a slider's thumb: its center as a part of the length from the low end | |
 | `dialAngle(value, arcStart, arcSweep)` | Nothing; where a dial points: degrees clockwise on screen from the right of its center | |
 | `attachSwitch(button, parameter)` | A switch for an on and off parameter | `role="switch"`, `aria-checked` |
-| `attachChoices(container, parameter)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
+| `attachRadioGroup(container, parameter)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
 | `attachValueEntry(input, parameter, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
 | `openValueEntry(input)` | Opens an attached field, for a double click on its dial | |
 
@@ -49,7 +49,7 @@ what it set. While a control has focus from the keyboard (Tab, or keys
 after a click) it has the `data-keyboard-focus` attribute, for a focus
 style. Use it instead of `:focus-visible`, which WebKit also shows after a
 click, since a dial or a slider focuses itself from script on a press.
-Style a checked switch or choice with `[aria-checked="true"]`.
+Style a checked switch or radio with `[aria-checked="true"]`.
 
 ### Dial and slider
 
@@ -104,15 +104,16 @@ reset.
 Each click flips the value as one undo step, also from Space or Enter, as
 the button is a button. Its text is its name.
 
-### Choices
+### Radio group
 
-The container's element children are the choices, the first for the
-lowest value: the names from the parameter's `choices()`, or names of your
-own (an on and off parameter shown as two choices). Children rendered
-later, once the choices are known, count too. A click sets a choice, a
-click on the checked one sets nothing. The arrow keys check the next or
-previous choice and move the focus there, from the last back to the
-first. Only the checked child is in the tab order.
+The container's element children are its radios, one per choice, the
+first for the lowest value. Their names come from the parameter's
+`choices()` or are your own (an on and off parameter shown as two
+choices). Children rendered later, once the choices are known, count
+too. A click sets a choice, a click on the checked one sets nothing. The
+arrow keys check the next or previous choice and move the focus there,
+from the last back to the first. Only the checked child is in the tab
+order.
 
 ### Value field
 

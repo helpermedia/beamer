@@ -1,4 +1,4 @@
-import { Choices as ChoicesControl, useParameter } from "@helpermedia/beamer-react";
+import { RadioGroup, useParameter } from "@helpermedia/beamer-react";
 
 interface ChoicesProps {
   parameterId: string;
@@ -8,13 +8,13 @@ interface ChoicesProps {
 }
 
 // A button for each choice of an enum parameter, a radio group through
-// beamer-react's Choices. The names come from the parameter, so they match
-// what the host shows, unless `labels` gives others.
+// beamer-react's RadioGroup. The names come from the parameter, so they
+// match what the host shows, unless `labels` gives others.
 function Choices({ parameterId, labels }: ChoicesProps) {
   const { parameter } = useParameter(parameterId);
 
   return (
-    <ChoicesControl parameter={parameter} className="flex gap-0.5 rounded-lg bg-well p-0.5 ring-1 ring-neutral-800 ring-inset">
+    <RadioGroup parameter={parameter} className="flex gap-0.5 rounded-lg bg-well p-0.5 ring-1 ring-neutral-800 ring-inset">
       {({ choices }) =>
         (labels ?? choices).map((name) => (
           <button
@@ -26,7 +26,7 @@ function Choices({ parameterId, labels }: ChoicesProps) {
           </button>
         ))
       }
-    </ChoicesControl>
+    </RadioGroup>
   );
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "@helpermedia/beamer-controls",
   "version": "0.2.4",
-  "description": "Unstyled controls for the web UI of a Beamer plugin: dial, slider, switch, choices, value field and meter",
+  "description": "Unstyled controls for the web UI of a Beamer plugin: dial, slider, switch, radio group, value field and meter",
   "private": true,
   "type": "module",
   "license": "MIT",

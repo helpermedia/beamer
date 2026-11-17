@@ -36,7 +36,7 @@ markup you put inside.
 | `Dial` | A `<div>` with `attachDial` | `value`, `angle` (where it points, `dialAngle`), `text` |
 | `Slider` | A `<div>` with `attachSlider`: the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
 | `Switch` | A `<button>` with `attachSwitch` | `checked` |
-| `Choices` | A `<div>` with `attachChoices` | `choices` (the names), `checked` (the index) |
+| `RadioGroup` | A `<div>` with `attachRadioGroup` | `choices` (the names), `checked` (the index) |
 | `ValueEntry` | An `<input>` with `attachValueEntry` | |
 
 Each takes the parameter as `parameter` and the control's options as
@@ -48,8 +48,8 @@ read when it is needed, so a new one does not attach the control again
 (which would close an open value field).
 
 Draw a dial or a slider inside its `<div>`, filling it: the drag measures
-the `<div>`. The children of `Choices` are its choices, one button each in
-order, the first for the lowest value; a checked one has
+the `<div>`. The children of `RadioGroup` are its radios, one button per
+choice in order, the first for the lowest value; a checked one has
 `aria-checked="true"`. Text between them does not count. The value field
 owns its text and whether it is read-only, so it takes neither.
 

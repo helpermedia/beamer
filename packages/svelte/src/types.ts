@@ -34,7 +34,7 @@ export interface SwitchState {
 }
 
 /** What a radio group hands to its children. */
-export interface ChoicesState {
+export interface RadioGroupState {
   /** The display text of each choice, from the lowest value up. */
   choices: string[];
   /** The index of the checked choice, -1 before `ready` or for a continuous parameter. */

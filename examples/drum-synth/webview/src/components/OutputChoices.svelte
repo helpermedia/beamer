@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
-  import { Choices } from "@helpermedia/beamer-svelte";
+  import { RadioGroup } from "@helpermedia/beamer-svelte";
 
   let { parameter }: { parameter: Parameter } = $props();
 
@@ -19,7 +19,7 @@
   ];
 </script>
 
-<Choices {parameter} class="flex w-full gap-0.5 rounded-md bg-panel p-0.5 ring-1 ring-neutral-800 ring-inset">
+<RadioGroup {parameter} class="flex w-full gap-0.5 rounded-md bg-panel p-0.5 ring-1 ring-neutral-800 ring-inset">
   {#snippet children()}
     {#each OUTPUTS as [text, label] (text)}
       <button
@@ -31,4 +31,4 @@
       </button>
     {/each}
   {/snippet}
-</Choices>
+</RadioGroup>

@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
 import { fallingMeter, openValueEntry } from "@helpermedia/beamer-controls";
 import type { Component } from "svelte";
-import type { ChoicesState, DialState, SliderState } from "../src/index";
+import type { DialState, RadioGroupState, SliderState } from "../src/index";
 import { installRuntime } from "../../controls/test/runtime";
 import type { FakeRuntime } from "../../controls/test/runtime";
 import "./svelte";
@@ -17,7 +17,7 @@ const { default: Harness, control } = await import("./fixtures/Harness.svelte");
 const { default: DialDrawing } = await import("./fixtures/DialDrawing.svelte");
 const { default: SliderDrawing } = await import("./fixtures/SliderDrawing.svelte");
 const { default: SwitchName } = await import("./fixtures/SwitchName.svelte");
-const { default: ChoiceButtons } = await import("./fixtures/ChoiceButtons.svelte");
+const { default: RadioGroupButtons } = await import("./fixtures/RadioGroupButtons.svelte");
 const { default: Field } = await import("./fixtures/Field.svelte");
 const { default: StoreText } = await import("./fixtures/StoreText.svelte");
 const { default: ViewFields } = await import("./fixtures/ViewFields.svelte");
@@ -183,9 +183,9 @@ test("a bound ref gets the element and children can be plain markup", () => {
   expect(button.textContent?.trim()).toBe("Mix");
 });
 
-test("Choices makes its buttons a radio group and hands the choices", () => {
+test("RadioGroup makes its buttons radios and hands the choices", () => {
   const host = install();
-  const target = render(ChoiceButtons, { parameter: parameter("mode") });
+  const target = render(RadioGroupButtons, { parameter: parameter("mode") });
   const group = target.firstElementChild as HTMLElement;
   const buttons = [...group.children] as HTMLButtonElement[];
   expect(group.getAttribute("role")).toBe("radiogroup");
@@ -199,25 +199,25 @@ test("Choices makes its buttons a radio group and hands the choices", () => {
   expect(buttons[2].getAttribute("aria-checked")).toBe("true");
 });
 
-test("Choices of a continuous parameter has no choices and none checked", () => {
+test("RadioGroup of a continuous parameter has no choices and none checked", () => {
   install();
-  const seen: ChoicesState[] = [];
-  render(ChoiceButtons, { parameter: parameter("mix"), record: (state: ChoicesState) => seen.push(state) });
+  const seen: RadioGroupState[] = [];
+  render(RadioGroupButtons, { parameter: parameter("mix"), record: (state: RadioGroupState) => seen.push(state) });
   expect(seen.at(-1)).toEqual({ choices: [], checked: -1 });
 });
 
 test("the components render again when the parameters arrive with ready", () => {
   const host = install(false);
   const dial: DialState[] = [];
-  const choices: ChoicesState[] = [];
+  const radioGroup: RadioGroupState[] = [];
   render(DialDrawing, { parameter: parameter("mix"), record: (state: DialState) => dial.push(state) });
-  render(ChoiceButtons, { parameter: parameter("mode"), record: (state: ChoicesState) => choices.push(state) });
+  render(RadioGroupButtons, { parameter: parameter("mode"), record: (state: RadioGroupState) => radioGroup.push(state) });
   expect(dial.at(-1)?.text).toBe("");
-  expect(choices.at(-1)).toEqual({ choices: [], checked: -1 });
+  expect(radioGroup.at(-1)).toEqual({ choices: [], checked: -1 });
   host.init();
   flushSync();
   expect(dial.at(-1)).toEqual({ value: 0.5, angle: 270, text: "50%" });
-  expect(choices.at(-1)).toEqual({ choices: ["A", "B", "C"], checked: 1 });
+  expect(radioGroup.at(-1)).toEqual({ choices: ["A", "B", "C"], checked: 1 });
 });
 
 test("ValueEntry shows the newest text and opens without closing on a new one", () => {

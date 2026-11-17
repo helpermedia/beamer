@@ -25,7 +25,7 @@ import { trackKeyboardFocus } from "./focus.js";
  *
  * Returns the function that detaches it and removes what it set.
  */
-export function attachChoices(container: HTMLElement, target: Parameter): () => void {
+export function attachRadioGroup(container: HTMLElement, target: Parameter): () => void {
   const attributes = new Attributes();
   attributes.fallback(container, "role", "radiogroup");
 
