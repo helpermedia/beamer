@@ -2,8 +2,8 @@ import { useImperativeHandle, useRef, useSyncExternalStore } from "react";
 import type { ComponentPropsWithoutRef, ReactNode, Ref } from "react";
 import type { Parameter } from "@helpermedia/beamer-api";
 import { dialAngle, thumbPosition } from "@helpermedia/beamer-controls";
-import type { DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
-import { useDialControl, useRadioGroupControl, useSliderControl, useSwitchControl, useValueEntryControl } from "./hooks.js";
+import type { DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
+import { useDialControl, useRadioGroupControl, useSliderControl, useSwitchControl, useTextFieldControl } from "./hooks.js";
 
 // Unstyled components: each renders one element of its own, with the role,
 // the ARIA attributes and the input of a control of beamer-controls. It
@@ -239,22 +239,22 @@ export function RadioGroup({ parameter, children, ref, ...rest }: RadioGroupProp
   );
 }
 
-export type ValueEntryProps = ValueEntryOptions &
+export type TextFieldProps = TextFieldOptions &
   Omit<ComponentPropsWithoutRef<"input">, "children" | "value" | "defaultValue" | "type" | "readOnly"> & {
     parameter: Parameter;
     ref?: Ref<HTMLInputElement>;
   };
 
 /**
- * The value field of `parameter`: an `<input>` with `attachValueEntry`.
+ * The text field of `parameter`: an `<input>` with `attachTextField`.
  * Closed it shows the value (`text`, the value with its unit by default), a
  * click (or a double click, with `open: "double-click"`) opens it to type
  * one. The field owns its text and whether it is read-only. A `text`
  * function may be a new one on every render. Other props go to the
- * `<input>`; its `ref` can open it with `openValueEntry`.
+ * `<input>`; its `ref` can open it with `openTextField`.
  */
-export function ValueEntry({ parameter, ref, text, open, ...rest }: ValueEntryProps) {
+export function TextField({ parameter, ref, text, open, ...rest }: TextFieldProps) {
   const element = useElement(ref);
-  useValueEntryControl(element, parameter, { text, open });
+  useTextFieldControl(element, parameter, { text, open });
   return <input {...rest} type="text" ref={element} />;
 }

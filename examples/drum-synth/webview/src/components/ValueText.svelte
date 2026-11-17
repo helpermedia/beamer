@@ -1,5 +1,5 @@
 <!--
-  The value of a control, beamer-svelte's ValueEntry in the family look: a
+  The value of a control, beamer-svelte's TextField in the family look: a
   field that opens on a click. Enter or a click elsewhere sets what the user
   typed, read by the parameter's own parser, so "-12" and "-12 dB" both
   work. Escape leaves the value as it was. A text left as it was sets
@@ -7,13 +7,13 @@
 -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
-  import { ValueEntry } from "@helpermedia/beamer-svelte";
+  import { TextField } from "@helpermedia/beamer-svelte";
   import { withMinus } from "../format";
 
   let { parameter }: { parameter: Parameter } = $props();
 </script>
 
-<ValueEntry
+<TextField
   {parameter}
   text={(shown) => withMinus(shown.text())}
   title="Type a value"

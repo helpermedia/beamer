@@ -3,7 +3,7 @@
 Unstyled controls for the web UI of a
 [Beamer](https://github.com/helpermedia/beamer) plugin. Each one makes an
 element of your own markup a dial, a slider, a switch, a radio group or a
-value field for a parameter: the role, the ARIA attributes and the input,
+text field for a parameter: the role, the ARIA attributes and the input,
 each change one undo step in the host. They draw nothing: the look stays in
 your web UI. Builds on [`beamer-api`](../api). A web UI with controls of its
 own needs only that one.
@@ -12,7 +12,7 @@ own needs only that one.
 
 ```ts
 import { parameter, ready } from "@helpermedia/beamer-api";
-import { attachDial, attachValueEntry } from "@helpermedia/beamer-controls";
+import { attachDial, attachTextField } from "@helpermedia/beamer-controls";
 
 await ready();
 
@@ -22,7 +22,7 @@ const mix = parameter("mix");
 const detachDial = attachDial(document.querySelector<SVGElement>("#mix")!, mix);
 
 // The value; a click opens it to type one.
-const detachField = attachValueEntry(document.querySelector<HTMLInputElement>("#mix-value")!, mix);
+const detachField = attachTextField(document.querySelector<HTMLInputElement>("#mix-value")!, mix);
 ```
 
 Each attach function takes the element, the parameter and its options. It
@@ -40,8 +40,8 @@ a React effect, under the components of [`beamer-svelte`](../svelte) and
 | `dialAngle(value, arcStart, arcSweep)` | Nothing; where a dial points: degrees clockwise on screen from the right of its center | |
 | `attachSwitch(button, parameter)` | A switch for an on and off parameter | `role="switch"`, `aria-checked` |
 | `attachRadioGroup(container, parameter)` | A radio group of its children, one per choice in order | `role="radiogroup"`, on each child `role="radio"`, `aria-checked` and a tabindex |
-| `attachValueEntry(input, parameter, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
-| `openValueEntry(input)` | Opens an attached field, for a double click on its dial | |
+| `attachTextField(input, parameter, options)` | The field that shows the value and takes a typed one | `readonly` while closed, `data-typing` while open |
+| `openTextField(input)` | Opens an attached field, for a double click on its dial | |
 
 A control sets a role, a tabindex or an `aria-label` (from the parameter's
 name) only where your markup has none, so your own stay. Detaching removes
@@ -115,7 +115,7 @@ arrow keys check the next or previous choice and move the focus there,
 from the last back to the first. Only the checked child is in the tab
 order.
 
-### Value field
+### Text field
 
 Closed, the input is read-only and shows the value with its unit, or what
 `text` returns. A click (or a double click, with `open: "double-click"`),

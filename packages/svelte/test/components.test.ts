@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { fallingMeter, openValueEntry } from "@helpermedia/beamer-controls";
+import { fallingMeter, openTextField } from "@helpermedia/beamer-controls";
 import type { Component } from "svelte";
 import type { DialState, RadioGroupState, SliderState } from "../src/index";
 import { installRuntime } from "../../controls/test/runtime";
@@ -220,7 +220,7 @@ test("the components render again when the parameters arrive with ready", () => 
   expect(radioGroup.at(-1)).toEqual({ choices: ["A", "B", "C"], checked: 1 });
 });
 
-test("ValueEntry shows the newest text and opens without closing on a new one", () => {
+test("TextField shows the newest text and opens without closing on a new one", () => {
   const host = install();
   let input: HTMLInputElement | null = null;
   render(Field, { parameter: parameter("mix"), prefix: "a ", onRef: (field: HTMLInputElement | null) => (input = field) });
@@ -229,7 +229,7 @@ test("ValueEntry shows the newest text and opens without closing on a new one", 
   expect(field.className).toBe("field");
   expect(field.readOnly).toBe(true);
   expect(field.value).toBe("a 50%");
-  openValueEntry(field);
+  openTextField(field);
   expect(field.readOnly).toBe(false);
   // A new text function leaves the open field open.
   control.set({ prefix: "b " });
@@ -241,7 +241,7 @@ test("ValueEntry shows the newest text and opens without closing on a new one", 
   expect(field.value).toBe("b 80%");
 });
 
-test("ValueEntry opens on a double click when asked to", () => {
+test("TextField opens on a double click when asked to", () => {
   install();
   const target = render(Field, { parameter: parameter("mix"), open: "double-click" });
   const field = target.firstElementChild as HTMLInputElement;

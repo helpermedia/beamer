@@ -9,7 +9,7 @@ component renders again when the host changes a value.
 ## Example
 
 ```tsx
-import { Dial, ValueEntry, useParameter, useStateField } from "@helpermedia/beamer-react";
+import { Dial, TextField, useParameter, useStateField } from "@helpermedia/beamer-react";
 
 function MixDial() {
   const { parameter } = useParameter("mix");
@@ -31,7 +31,7 @@ function MixDial() {
         )}
       </Dial>
       {/* The value, a click to type one. */}
-      <ValueEntry parameter={parameter} />
+      <TextField parameter={parameter} />
     </div>
   );
 }
@@ -61,7 +61,7 @@ element.
 | `Slider` | A `<div>` with `attachSlider`: the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
 | `Switch` | A `<button>` with `attachSwitch` | `checked` |
 | `RadioGroup` | A `<div>` with `attachRadioGroup` | `choices` (the names), `checked` (the index) |
-| `ValueEntry` | An `<input>` with `attachValueEntry` | |
+| `TextField` | An `<input>` with `attachTextField` | |
 
 Children are either markup or a function of what the control shows:
 
@@ -79,7 +79,7 @@ Draw a dial or a slider inside its `<div>`, filling it: the drag measures
 the `<div>`. The children of `RadioGroup` are its radios, one button per
 choice in order, the first for the lowest value; a checked one has
 `aria-checked="true"`. A `drag` or `text` function may be a new one on
-every render: the newest is called. The value field owns its text, so it
+every render: the newest is called. The text field owns its text, so it
 takes no `value`.
 
 ## Hooks
@@ -100,10 +100,10 @@ function GainDial() {
 The control follows the element: it attaches when the element appears,
 detaches when it goes (the state is null again) and moves when another
 one takes its place, also while the component stays mounted. The element
-is yours for other things too, such as measuring it or `openValueEntry`.
+is yours for other things too, such as measuring it or `openTextField`.
 The control attaches in the hook's effect, one render after the element
 mounts, so an effect of your own that needs the control (one that opens
-the field with `openValueEntry`) comes after the call of the hook.
+the field with `openTextField`) comes after the call of the hook.
 
 Give each element a state of its own: two elements cannot share a setter.
 `ref.current` of a ref object is no substitute: a hook that gets it sees
@@ -120,15 +120,15 @@ the element only if the component happens to render again.
 | `useSlider(element, parameter, options)` | Nothing; makes the element a slider (`attachSlider`) while it is there |
 | `useSwitch(button, parameter)` | Nothing; makes the button a switch (`attachSwitch`) while it is there |
 | `useRadioGroup(container, parameter)` | Nothing; makes the container's children a radio group (`attachRadioGroup`) while it is there |
-| `useValueEntry(input, parameter, options)` | Nothing; makes the input the value field (`attachValueEntry`) while it is there |
+| `useTextField(input, parameter, options)` | Nothing; makes the input the text field (`attachTextField`) while it is there |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter` |
 
 A control attaches again when its element, its parameter or an option
 changes, not on a render that changes none of them. A dial's `drag` and a
-value field's `text` are the exceptions among the options: the newest
+text field's `text` are the exceptions among the options: the newest
 `drag`, a fixed one or a function, is read for each press and the newest
 `text` function is called, so a new one on every render ends no drag and
-closes no open field. Give the input of `useValueEntry` no `value`: the
+closes no open field. Give the input of `useTextField` no `value`: the
 field sets its text itself.
 
 React 19.2 or later is a peer dependency.

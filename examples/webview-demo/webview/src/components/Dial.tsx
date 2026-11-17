@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import { openValueEntry } from "@helpermedia/beamer-controls";
+import { openTextField } from "@helpermedia/beamer-controls";
 import type { DialDrag } from "@helpermedia/beamer-controls";
-import { Dial as DialControl, ValueEntry, useParameter } from "@helpermedia/beamer-react";
+import { Dial as DialControl, TextField, useParameter } from "@helpermedia/beamer-react";
 
 interface DialProps {
   parameterId: string;
@@ -79,7 +79,7 @@ function Dial({ parameterId, size = 64, label, className }: DialProps) {
 
   const valueRef = useRef<HTMLInputElement>(null);
   const typeValue = () => {
-    if (valueRef.current) openValueEntry(valueRef.current);
+    if (valueRef.current) openTextField(valueRef.current);
   };
 
   const endAngle = ARC_START - value * ARC_SWEEP;
@@ -165,7 +165,7 @@ function Dial({ parameterId, size = 64, label, className }: DialProps) {
         </svg>
       </DialControl>
 
-      <ValueEntry
+      <TextField
         parameter={parameter}
         open="double-click"
         ref={valueRef}

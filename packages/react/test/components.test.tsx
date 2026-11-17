@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { openValueEntry } from "@helpermedia/beamer-controls";
+import { openTextField } from "@helpermedia/beamer-controls";
 import type { DialState, SliderState } from "../src/index";
 import { calls, install, push } from "./runtime";
 
@@ -11,7 +11,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, createRef, useEffect, useLayoutEffect, useRef } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { Dial, RadioGroup, Slider, Switch, ValueEntry } = await import("../src/index");
+const { Dial, RadioGroup, Slider, Switch, TextField } = await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -152,17 +152,17 @@ test("RadioGroup makes its buttons radios and hands the choices", () => {
   unmount();
 });
 
-test("ValueEntry is an input that shows the value and opens to type one", () => {
+test("TextField is an input that shows the value and opens to type one", () => {
   const ref = createRef<HTMLInputElement>();
   const { container, render, unmount } = mount();
-  render(<ValueEntry parameter={parameter("mix")} ref={ref} text={(mix) => `= ${mix.text()}`} className="field" />);
+  render(<TextField parameter={parameter("mix")} ref={ref} text={(mix) => `= ${mix.text()}`} className="field" />);
   const input = container.firstElementChild as HTMLInputElement;
   expect(ref.current).toBe(input);
   expect(input.type).toBe("text");
   expect(input.className).toBe("field");
   expect(input.readOnly).toBe(true);
   expect(input.value).toBe("= 50%");
-  act(() => openValueEntry(input));
+  act(() => openTextField(input));
   expect(input.readOnly).toBe(false);
   expect(input.value).toBe("50");
   unmount();
@@ -268,7 +268,7 @@ test("the options stay off the element", () => {
         wheelRestMs={200}
         reset={[]}
       />
-      <ValueEntry parameter={parameter("mix")} text={(mix) => mix.text()} open="double-click" />
+      <TextField parameter={parameter("mix")} text={(mix) => mix.text()} open="double-click" />
     </>,
   );
   // What the controls set, nothing of the options.
@@ -313,7 +313,7 @@ test("a ref holds the element in the first commit, for a layout effect of the pa
         <Slider parameter={parameter("mix")} ref={slider} />
         <Switch parameter={parameter("mix")} ref={onOff} />
         <RadioGroup parameter={parameter("mode")} ref={radioGroup} />
-        <ValueEntry parameter={parameter("mix")} ref={field} />
+        <TextField parameter={parameter("mix")} ref={field} />
       </>
     );
   }
@@ -332,12 +332,12 @@ test("the controls are attached when an effect of the parent runs on mount", () 
     useEffect(() => {
       roles.push(dial.current?.getAttribute("role") ?? null);
       // A field that opens as soon as it mounts.
-      if (field.current) openValueEntry(field.current);
+      if (field.current) openTextField(field.current);
     }, []);
     return (
       <>
         <Dial parameter={parameter("mix")} ref={dial} />
-        <ValueEntry parameter={parameter("mix")} ref={field} />
+        <TextField parameter={parameter("mix")} ref={field} />
       </>
     );
   }
@@ -376,12 +376,12 @@ test("a callback ref with a cleanup gets the element once, then its cleanup runs
     };
   };
   const { container, render, unmount } = mount();
-  render(<ValueEntry parameter={parameter("mix")} ref={ref} />);
+  render(<TextField parameter={parameter("mix")} ref={ref} />);
   const input = container.firstElementChild;
   expect(same(seen, [input])).toBe(true);
   // Renders in between leave it alone.
   act(() => push.parameter(0.8, "80"));
-  render(<ValueEntry parameter={parameter("mix")} ref={ref} className="field" />);
+  render(<TextField parameter={parameter("mix")} ref={ref} className="field" />);
   expect(same(seen, [input])).toBe(true);
   // The cleanup stands in for the call with null.
   unmount();
@@ -423,9 +423,9 @@ test("event props reach the element", () => {
   unmount();
 });
 
-test("ValueEntry opens on a double click when asked to", () => {
+test("TextField opens on a double click when asked to", () => {
   const { container, render, unmount } = mount();
-  render(<ValueEntry parameter={parameter("mix")} open="double-click" />);
+  render(<TextField parameter={parameter("mix")} open="double-click" />);
   const input = container.firstElementChild as HTMLInputElement;
   act(() => input.click());
   expect(input.readOnly).toBe(true);

@@ -9,7 +9,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, useState } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useDial, useEvent, useParameter, useRadioGroup, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useValueEntry } =
+const { useDial, useEvent, useParameter, useRadioGroup, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useTextField } =
   await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
@@ -373,11 +373,11 @@ test("useSwitch and useRadioGroup attach to the markup", () => {
   unmount();
 });
 
-test("useValueEntry shows the text of the newest function", () => {
+test("useTextField shows the text of the newest function", () => {
   function Field({ prefix }: { prefix: string }) {
     const [element, setElement] = useState<HTMLInputElement | null>(null);
     const { parameter } = useParameter("mix");
-    useValueEntry(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
+    useTextField(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
     return <input ref={setElement} />;
   }
   const container = document.createElement("div");
@@ -393,11 +393,11 @@ test("useValueEntry shows the text of the newest function", () => {
   act(() => root.unmount());
 });
 
-test("useValueEntry keeps an open field open across a render", () => {
+test("useTextField keeps an open field open across a render", () => {
   function Field({ prefix }: { prefix: string }) {
     const [element, setElement] = useState<HTMLInputElement | null>(null);
     const { parameter } = useParameter("mix");
-    useValueEntry(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
+    useTextField(element, parameter, { text: (mix) => `${prefix}${mix.text()}` });
     return <input ref={setElement} />;
   }
   const container = document.createElement("div");

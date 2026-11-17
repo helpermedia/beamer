@@ -8,5 +8,5 @@ export { default as Dial } from "./Dial.svelte";
 export { default as RadioGroup } from "./RadioGroup.svelte";
 export { default as Slider } from "./Slider.svelte";
 export { default as Switch } from "./Switch.svelte";
-export { default as ValueEntry } from "./ValueEntry.svelte";
+export { default as TextField } from "./TextField.svelte";
 export type { DialState, RadioGroupState, SliderState, SwitchState } from "./types.js";

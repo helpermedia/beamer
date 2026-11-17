@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { KEYBOARD_FOCUS, attachDial, attachRadioGroup, attachSlider, attachSwitch, attachValueEntry, openValueEntry, thumbPosition, dialAngle } from "../src/index";
+import { KEYBOARD_FOCUS, attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField, openTextField, thumbPosition, dialAngle } from "../src/index";
 import { installRuntime } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -349,10 +349,10 @@ test("radios rendered later get their roles, removed ones lose them", async () =
   expect(group.hasAttribute("role")).toBe(false);
 });
 
-test("a value field shows the value and opens on a click with the text selected", () => {
+test("a text field shows the value and opens on a click with the text selected", () => {
   setup();
   const input = element("input");
-  attachValueEntry(input, parameter("gain"));
+  attachTextField(input, parameter("gain"));
   expect(input.readOnly).toBe(true);
   expect(input.value).toBe("-30.0 dB");
   expect(input.getAttribute("aria-label")).toBe("Gain value");
@@ -369,7 +369,7 @@ test("Enter sets the typed value and keeps the focus", async () => {
   const runtime = setup();
   runtime.parsed.set("-12", 0.8);
   const input = element("input");
-  attachValueEntry(input, parameter("gain"));
+  attachTextField(input, parameter("gain"));
   input.click();
   input.value = "-12";
   key(input, "Enter");
@@ -385,7 +385,7 @@ test("Enter sets the typed value and keeps the focus", async () => {
 test("a click elsewhere sets the typed value, Escape and an unchanged text set nothing", () => {
   const runtime = setup();
   const input = element("input");
-  attachValueEntry(input, parameter("gain"));
+  attachTextField(input, parameter("gain"));
   input.click();
   input.value = "-6";
   input.blur();
@@ -402,7 +402,7 @@ test("a click elsewhere sets the typed value, Escape and an unchanged text set n
 test("Enter or Space opens a closed field, keys of an input method are left alone", () => {
   setup();
   const input = element("input");
-  attachValueEntry(input, parameter("gain"));
+  attachTextField(input, parameter("gain"));
   input.focus();
   key(input, " ");
   expect(input.readOnly).toBe(false);
@@ -414,17 +414,17 @@ test("Enter or Space opens a closed field, keys of an input method are left alon
   expect(input.readOnly).toBe(false);
 });
 
-test("a value field can open on a double click or from script, with a text of its own", () => {
+test("a text field can open on a double click or from script, with a text of its own", () => {
   setup();
   const input = element("input");
-  const detach = attachValueEntry(input, parameter("gain"), { open: "double-click", text: (gain) => `[${gain.displayText()}]` });
+  const detach = attachTextField(input, parameter("gain"), { open: "double-click", text: (gain) => `[${gain.displayText()}]` });
   expect(input.value).toBe("[-30.0]");
   input.click();
   expect(input.readOnly).toBe(true);
   input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   expect(input.readOnly).toBe(false);
   key(input, "Escape");
-  openValueEntry(input);
+  openTextField(input);
   expect(input.readOnly).toBe(false);
   // Detaching closes the field without setting what was typed.
   detach();

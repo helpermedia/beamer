@@ -81,7 +81,7 @@ A bar with the plugin's name and the Beamer logo, then the transfer curve: thres
 - dB-domain envelope processing
 - Two value senders from the audio thread: the meters (held peaks that fall by 20 dB a second, sent with every block until they rest, so that the editor lets them fall on its own when the host stops calling the plugin) and the status (sample rate, whether the detector keys on the sidechain), whose first value `prepare()` sets
 - An editor that works out from the parameters what it can (the transfer curve, the latency in samples), so it follows a dial at once, also while the host does not run the processor
-- The packages for web UIs: `beamer-controls` for the dials (vertical drag, wheel, keys, double click to reset), the value fields, the switches, the radio groups and the falling meters, `beamer-react` components for them and hooks for the parameters and sender values, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the dials (vertical drag, wheel, keys, double click to reset), the text fields, the switches, the radio groups and the falling meters, `beamer-react` components for them and hooks for the parameters and sender values, used from the bun workspace
 - Enum choices from the parameter (`valueTexts`) as buttons for the ratio, from which the editor also reads the ratio for its curve
 
 ---
@@ -265,7 +265,7 @@ A bar with the plugin's name, two tabs and the Beamer logo. **Pads** has a big p
 - Generic f32/f64 processing
 - A stream sender with every hit and a value sender with the held peak of each drum, from the audio thread
 - Notes from the web UI: the pads play their drum with `playNote` from beamer-api
-- The packages for web UIs: `beamer-controls` for the falling meters, `beamer-svelte` components for the faders, the balance sliders (`orientation="horizontal"`), the value fields and the radio groups for the outputs, the parameters, the meters and the `State` field read as Svelte stores, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the falling meters, `beamer-svelte` components for the faders, the balance sliders (`orientation="horizontal"`), the text fields and the radio groups for the outputs, the parameters, the meters and the `State` field read as Svelte stores, used from the bun workspace
 
 ---
 
@@ -327,7 +327,7 @@ A bar with the plugin's name and the Beamer logo, then a section for notes and o
 - Sample-accurate automation (`sample_accurate_automation` in `Config.toml`), since the settings apply to each note
 - A stream sender from the audio thread with every note and CC as it came in and went out, for an editor that needs all of them (a value sender would keep only the newest)
 - An editor that works out the note map and the CC curve from the parameters, with the same rules as the processor, so it follows a dial at once
-- The packages for web UIs: `beamer-controls` for the dials, the value fields, the switches and the radio groups, `beamer-react` components for them and hooks for the parameters, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the dials, the text fields, the switches and the radio groups, `beamer-react` components for them and hooks for the parameters, used from the bun workspace
 
 ---
 
@@ -354,7 +354,7 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
-- The packages for web UIs: `beamer-controls` for the dials (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), the value fields and the falling output meter, `beamer-react` components for them and hooks for the parameters and the `State` field, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the dials (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), the text fields and the falling output meter, `beamer-react` components for them and hooks for the parameters and the `State` field, used from the bun workspace
 - A dial drawn in SVG inside beamer-react's `Dial`, which brings its input
 - Bipolar arc rendering for the pan dial
 - DAW undo grouping: each drag, scroll, key, reset or typed value is one undo step

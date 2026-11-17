@@ -2,8 +2,8 @@ import type { Parameter } from "@helpermedia/beamer-api";
 import { Attributes } from "./attributes.js";
 import { trackKeyboardFocus } from "./focus.js";
 
-/** How a value field shows the value and opens for typing. */
-export interface ValueEntryOptions {
+/** How a text field shows the value and opens for typing. */
+export interface TextFieldOptions {
   /**
    * The text the closed field shows, called whenever the value changes.
    * Default the value with its unit, `parameter.text()`.
@@ -13,7 +13,7 @@ export interface ValueEntryOptions {
   open?: "click" | "double-click";
 }
 
-// The function that opens each attached field, for `openValueEntry`.
+// The function that opens each attached field, for `openTextField`.
 const openers = new WeakMap<HTMLInputElement, () => void>();
 
 const ATTRIBUTE_TYPING = "data-typing";
@@ -38,7 +38,7 @@ const ATTRIBUTE_TYPING = "data-typing";
  * Returns the function that detaches it; an open field closes without
  * setting what was typed.
  */
-export function attachValueEntry(input: HTMLInputElement, target: Parameter, options: ValueEntryOptions = {}): () => void {
+export function attachTextField(input: HTMLInputElement, target: Parameter, options: TextFieldOptions = {}): () => void {
   const text = options.text ?? ((parameter: Parameter) => parameter.text());
   const attributes = new Attributes();
   const readOnly = input.readOnly;
@@ -112,10 +112,10 @@ export function attachValueEntry(input: HTMLInputElement, target: Parameter, opt
 }
 
 /**
- * Open the value field `input` for typing, as a click on it would, for
+ * Open the text field `input` for typing, as a click on it would, for
  * another way in such as a double click on the dial next to it. Does
- * nothing for a field that `attachValueEntry` did not attach.
+ * nothing for a field that `attachTextField` did not attach.
  */
-export function openValueEntry(input: HTMLInputElement): void {
+export function openTextField(input: HTMLInputElement): void {
   openers.get(input)?.();
 }

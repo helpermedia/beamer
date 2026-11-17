@@ -2,8 +2,8 @@ import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react
 import type { RefObject } from "react";
 import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
 import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
-import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachValueEntry } from "@helpermedia/beamer-controls";
-import type { DialDrag, DialOptions, SliderOptions, ValueEntryOptions } from "@helpermedia/beamer-controls";
+import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField } from "@helpermedia/beamer-controls";
+import type { DialDrag, DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 
 /** A parameter as a component shows it. */
 export interface ParameterView {
@@ -98,7 +98,7 @@ export function useReadable<T>(readable: Readable<T>): T {
 // The element is a dependency of the effect, so the control follows it: it
 // attaches when the element appears, detaches when it goes and moves when
 // another one takes its place, also while the component stays mounted. A
-// dial and a value field need the effect: a function that may be a new one
+// dial and a text field need the effect: a function that may be a new one
 // on every render is an Effect Event, which only the effect of its own
 // hook may call. The others have the same shape.
 //
@@ -234,11 +234,11 @@ export function useRadioGroup(container: HTMLElement | null, target: Parameter):
   useRadioGroupControl(container, target);
 }
 
-/** `useValueEntry` for an input or, in the ValueEntry component, the ref that holds it. */
-export function useValueEntryControl(
+/** `useTextField` for an input or, in the TextField component, the ref that holds it. */
+export function useTextFieldControl(
   source: ElementSource<HTMLInputElement>,
   target: Parameter,
-  options: ValueEntryOptions,
+  options: TextFieldOptions,
 ): void {
   const open = options.open;
   // The text of the newest options.
@@ -246,22 +246,22 @@ export function useValueEntryControl(
   useEffect(() => {
     const input = elementOf(source);
     if (!input) return;
-    return attachValueEntry(input, target, { open, text: (shown) => shownText(shown) });
+    return attachTextField(input, target, { open, text: (shown) => shownText(shown) });
   }, [source, target, open]);
 }
 
 /**
- * Make `input` the value field of `target` while it is there:
- * `attachValueEntry` of beamer-controls. Hold the input in state
+ * Make `input` the text field of `target` while it is there:
+ * `attachTextField` of beamer-controls. Hold the input in state
  * (`ref={setInput}`), null while there is none. It attaches again when the
  * input, the parameter or `open` changes. The field owns its text, so give
  * the input no `value`. A `text` function may be a new one on every
  * render: the newest is called when the value changes.
  */
-export function useValueEntry(
+export function useTextField(
   input: HTMLInputElement | null,
   target: Parameter,
-  options: ValueEntryOptions = {},
+  options: TextFieldOptions = {},
 ): void {
-  useValueEntryControl(input, target, options);
+  useTextFieldControl(input, target, options);
 }

@@ -13,10 +13,10 @@ export {
   useSlider,
   useStateField,
   useSwitch,
-  useValueEntry,
+  useTextField,
 } from "./hooks.js";
 export type { ParameterView } from "./hooks.js";
-export { Dial, RadioGroup, Slider, Switch, ValueEntry } from "./components.js";
+export { Dial, RadioGroup, Slider, Switch, TextField } from "./components.js";
 export type {
   DialProps,
   DialState,
@@ -26,5 +26,5 @@ export type {
   SliderState,
   SwitchProps,
   SwitchState,
-  ValueEntryProps,
+  TextFieldProps,
 } from "./components.js";

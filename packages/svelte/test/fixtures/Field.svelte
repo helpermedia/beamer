@@ -1,7 +1,7 @@
-<!-- A value field with an optional prefix in its text. -->
+<!-- A text field with an optional prefix in its text. -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
-  import { ValueEntry } from "../../src/index";
+  import { TextField } from "../../src/index";
 
   let {
     parameter,
@@ -14,4 +14,4 @@
   $effect(() => onRef?.(ref));
 </script>
 
-<ValueEntry {parameter} {open} text={(target) => `${prefix}${target.text()}`} class="field" bind:ref />
+<TextField {parameter} {open} text={(target) => `${prefix}${target.text()}`} class="field" bind:ref />

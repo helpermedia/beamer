@@ -569,7 +569,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | Package | Holds | Depends on |
 |---------|-------|------------|
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()`, `noteOn()`, `noteOff()`, `playNote()`, `allNotesOff()` | Nothing |
-| `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachRadioGroup()` and `attachValueEntry()`, plus `fallingMeter()` | `beamer-api` |
+| `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachRadioGroup()` and `attachTextField()`, plus `fallingMeter()` | `beamer-api` |
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React 19.2 or later |
 | `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
@@ -623,7 +623,7 @@ Each control is a function that takes an element of your own markup and a parame
   - Reset by double-click or by a click with Command or Control held.
 - `attachSwitch(button, parameter)` for an on and off parameter: `role="switch"` and `aria-checked`, each click one undo step.
 - `attachRadioGroup(container, parameter)` for an enum: a radio group of the container's children, one radio per choice in order, `aria-checked` on the one the parameter is at, arrow keys that check the next or previous choice, one tab stop.
-- `attachValueEntry(input, parameter, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openValueEntry(input)` opens it from elsewhere.
+- `attachTextField(input, parameter, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openTextField(input)` opens it from elsewhere.
 - Every control has the `data-keyboard-focus` attribute while it has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
 - `fallingMeter(sender, { read })` follows a value sender of meter levels. When no value comes for 300 ms (the host stopped calling the plugin), the levels fall on their own at 20 dB a second, each towards its rest. The plugin sends the levels with every block while they show something.
 
@@ -637,9 +637,9 @@ Unstyled components, one per control. Each renders one element with the control 
 | `Slider` | A `<div>` with `attachSlider`, the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
 | `Switch` | A `<button>` with `attachSwitch` | `checked` |
 | `RadioGroup` | A `<div>` with `attachRadioGroup`; its children are its radios, one per choice in order | `choices` (the names), `checked` (the index) |
-| `ValueEntry` | An `<input>` with `attachValueEntry` | |
+| `TextField` | An `<input>` with `attachTextField` | |
 
-The compressor's dial draws a ring with a blue arc up to the value and a pointer inside the `<div>` of `Dial` (`Ring` and `Pointer` stand for its SVG), with the value field under it:
+The compressor's dial draws a ring with a blue arc up to the value and a pointer inside the `<div>` of `Dial` (`Ring` and `Pointer` stand for its SVG), with the text field under it:
 
 ```tsx
 function CompressorDial({ parameterId }: { parameterId: string }) {
@@ -654,7 +654,7 @@ function CompressorDial({ parameterId }: { parameterId: string }) {
           </svg>
         )}
       </Dial>
-      <ValueEntry parameter={parameter} className="text-center" />
+      <TextField parameter={parameter} className="text-center" />
     </div>
   );
 }
@@ -670,7 +670,7 @@ The hooks:
 | `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
 | `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
-| `useDial(element, parameter, options)`, `useSlider(element, parameter, options)`, `useSwitch(button, parameter)`, `useRadioGroup(container, parameter)`, `useValueEntry(input, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while it is there: the layer under the components. Each takes the element itself, held in state (`const [dial, setDial] = useState<SVGSVGElement \| null>(null)`, `ref={setDial}`), null while there is none |
+| `useDial(element, parameter, options)`, `useSlider(element, parameter, options)`, `useSwitch(button, parameter)`, `useRadioGroup(container, parameter)`, `useTextField(input, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while it is there: the layer under the components. Each takes the element itself, held in state (`const [dial, setDial] = useState<SVGSVGElement \| null>(null)`, `ref={setDial}`), null while there is none |
 
 The demo's pan law and output meter:
 
@@ -683,7 +683,7 @@ const peaks = useReadable(levels);
 
 ### `beamer-svelte`
 
-The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `RadioGroup` and `ValueEntry`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. A fader:
+The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `RadioGroup` and `TextField`, each rendering the same element, with the same props. What a component shows reaches its `children` snippet. Other props go to the element and `bind:ref` gives it. A fader:
 
 ```svelte
 <Slider {parameter} thumbLength={0.1} class="group relative h-full w-6 outline-none">
@@ -692,7 +692,7 @@ The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `RadioGroup` 
     <span class="absolute inset-x-0 h-[10%] bg-neutral-800" style:bottom="{(position - 0.05) * 100}%"></span>
   {/snippet}
 </Slider>
-<ValueEntry {parameter} />
+<TextField {parameter} />
 ```
 
 The objects of `beamer-api` and `fallingMeter` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$meters` for a meter. A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop.

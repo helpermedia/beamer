@@ -13,7 +13,7 @@ markup you put inside.
 ```svelte
 <script lang="ts">
   import { parameter } from "@helpermedia/beamer-api";
-  import { Slider, ValueEntry } from "@helpermedia/beamer-svelte";
+  import { Slider, TextField } from "@helpermedia/beamer-svelte";
 
   const level = parameter("level");
 </script>
@@ -26,7 +26,7 @@ markup you put inside.
 </Slider>
 
 <!-- The value, a click to type one. -->
-<ValueEntry parameter={level} />
+<TextField parameter={level} />
 ```
 
 ## Components
@@ -37,7 +37,7 @@ markup you put inside.
 | `Slider` | A `<div>` with `attachSlider`: the track | `value`, `position` (the thumb's center, `thumbPosition`), `text` |
 | `Switch` | A `<button>` with `attachSwitch` | `checked` |
 | `RadioGroup` | A `<div>` with `attachRadioGroup` | `choices` (the names), `checked` (the index) |
-| `ValueEntry` | An `<input>` with `attachValueEntry` | |
+| `TextField` | An `<input>` with `attachTextField` | |
 
 Each takes the parameter as `parameter` and the control's options as
 props (`drag`, `arcStart`, `orientation`, `thumbLength`, `reset`, `text`,
@@ -45,13 +45,15 @@ props (`drag`, `arcStart`, `orientation`, `thumbLength`, `reset`, `text`,
 to the element; `bind:ref` gives the element. A control attaches again
 when its parameter or an option changes. A `drag` or `text` function is
 read when it is needed, so a new one does not attach the control again
-(which would close an open value field).
+(which would close an open text field).
 
 Draw a dial or a slider inside its `<div>`, filling it: the drag measures
 the `<div>`. The children of `RadioGroup` are its radios, one button per
 choice in order, the first for the lowest value; a checked one has
-`aria-checked="true"`. Text between them does not count. The value field
-owns its text and whether it is read-only, so it takes neither.
+`aria-checked="true"`. Text between them does not count.
+
+The text field owns its text and whether it is read-only, so it takes
+neither.
 
 ## Stores
 
