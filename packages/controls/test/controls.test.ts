@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { KEYBOARD_FOCUS, attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField, openTextField, thumbPosition, dialAngle } from "../src/index";
+import { KEYBOARD_FOCUS_ATTRIBUTE, attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField, openTextField, thumbPosition, dialAngle } from "../src/index";
 import { installRuntime } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -227,19 +227,19 @@ test("focus from Tab shows as keyboard focus, focus from a click does not", () =
   // Tab: a key, then the focus moves to the element.
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
   dial.focus();
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(true);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(true);
   dial.blur();
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(false);
   // A press focuses it without the attribute.
   pointer(dial, "pointerdown", { clientY: 10 });
   expect(document.activeElement).toBe(dial);
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(false);
   pointer(dial, "pointerup");
   // Keys after the click show it.
   key(dial, "ArrowUp");
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(true);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(true);
   detach();
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(false);
 });
 
 test("modifier keys and shortcuts do not show keyboard focus", () => {
@@ -252,11 +252,11 @@ test("modifier keys and shortcuts do not show keyboard focus", () => {
   for (const init of [{ key: "Shift", shiftKey: true }, { key: "z", metaKey: true }]) {
     dial.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
   }
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(false);
   // Nor does focus that comes after them.
   dial.blur();
   dial.focus();
-  expect(dial.hasAttribute(KEYBOARD_FOCUS)).toBe(false);
+  expect(dial.hasAttribute(KEYBOARD_FOCUS_ATTRIBUTE)).toBe(false);
 });
 
 test("a switch flips with each click, one undo step each", () => {

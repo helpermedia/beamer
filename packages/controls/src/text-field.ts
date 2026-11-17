@@ -16,7 +16,7 @@ export interface TextFieldOptions {
 // The function that opens each attached field, for `openTextField`.
 const openers = new WeakMap<HTMLInputElement, () => void>();
 
-const ATTRIBUTE_TYPING = "data-typing";
+const TYPING_ATTRIBUTE = "data-typing";
 
 /**
  * Make `input` the field that shows the value of `target` and takes a
@@ -58,7 +58,7 @@ export function attachTextField(input: HTMLInputElement, target: Parameter, opti
     typing = true;
     opened = target.displayText();
     input.readOnly = false;
-    input.setAttribute(ATTRIBUTE_TYPING, "");
+    input.setAttribute(TYPING_ATTRIBUTE, "");
     input.value = opened;
     input.focus();
     input.select();
@@ -69,7 +69,7 @@ export function attachTextField(input: HTMLInputElement, target: Parameter, opti
     if (!typing) return;
     typing = false;
     input.readOnly = true;
-    input.removeAttribute(ATTRIBUTE_TYPING);
+    input.removeAttribute(TYPING_ATTRIBUTE);
     show();
     if (typed !== null && typed.trim() !== opened.trim()) void target.typeValue(typed);
   };

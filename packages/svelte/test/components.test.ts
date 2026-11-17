@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
-import { fallingMeter, openTextField } from "@helpermedia/beamer-controls";
+import { fallingLevels, openTextField } from "@helpermedia/beamer-controls";
 import type { Component } from "svelte";
 import type { DialState, RadioGroupState, SliderState } from "../src/index";
 import { installRuntime } from "../../controls/test/runtime";
@@ -274,11 +274,11 @@ test("the options stay off the element", () => {
   expect(names.filter((name) => !allowed.includes(name))).toEqual([]);
 });
 
-test("a parameter and a falling meter read as Svelte stores", () => {
+test("a parameter and falling levels read as Svelte stores", () => {
   const host = install();
   host.send("level", 3);
-  const meter = fallingMeter("level", { read: (value) => (typeof value === "number" ? value : 0) });
-  const target = render(StoreText, { parameter: parameter("mix"), meter });
+  const levels = fallingLevels("level", { read: (value) => (typeof value === "number" ? value : 0) });
+  const target = render(StoreText, { parameter: parameter("mix"), levels });
   expect(target.textContent).toBe("0.5 3");
   host.push("mix", 0.25);
   host.send("level", 5);

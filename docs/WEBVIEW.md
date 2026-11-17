@@ -569,7 +569,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | Package | Holds | Depends on |
 |---------|-------|------------|
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()`, `noteOn()`, `noteOff()`, `playNote()`, `allNotesOff()` | Nothing |
-| `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachRadioGroup()` and `attachTextField()`, plus `fallingMeter()` | `beamer-api` |
+| `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachRadioGroup()` and `attachTextField()`, plus `fallingLevels()` | `beamer-api` |
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React 19.2 or later |
 | `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
@@ -625,7 +625,7 @@ Each control is a function that takes an element of your own markup and a parame
 - `attachRadioGroup(container, parameter)` for an enum: a radio group of the container's children, one radio per choice in order, `aria-checked` on the one the parameter is at, arrow keys that check the next or previous choice, one tab stop.
 - `attachTextField(input, parameter, options)` for a value to type: read-only while closed, a click (or a double click) opens it with the `data-typing` attribute, Enter or a click elsewhere sets the text through the parameter's own parser, Escape keeps the value, an unchanged text sets nothing. `openTextField(input)` opens it from elsewhere.
 - Every control has the `data-keyboard-focus` attribute while it has focus from the keyboard (Tab, or keys after a click), for a focus style that a click does not show.
-- `fallingMeter(sender, { read })` follows a value sender of meter levels. When no value comes for 300 ms (the host stopped calling the plugin), the levels fall on their own at 20 dB a second, each towards its rest. The plugin sends the levels with every block while they show something.
+- `fallingLevels(sender, { read })` follows a value sender of meter levels. When no value comes for 300 ms (the host stopped calling the plugin), the levels fall on their own at 20 dB a second, each towards its rest. The plugin sends the levels with every block while they show something.
 
 ### `beamer-react`
 
@@ -667,9 +667,9 @@ The hooks:
 | `useParameter(id)` | `{ parameter, value, displayText, text, info }`: the handle for changes and what to show |
 | `useStateField(path)` | `[value, set]` for a `State` field, like `useState` |
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
-| `useEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
+| `usePluginEvent(name, handler)` | Calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
-| `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter()` |
+| `useReadable(readable)` | The newest value of a `Readable`, such as the levels of `fallingLevels()` |
 | `useDial(element, parameter, options)`, `useSlider(element, parameter, options)`, `useSwitch(button, parameter)`, `useRadioGroup(container, parameter)`, `useTextField(input, parameter, options)` | Attach a control of `beamer-controls` to an element of your own while it is there: the layer under the components. Each takes the element itself, held in state (`const [dial, setDial] = useState<SVGSVGElement \| null>(null)`, `ref={setDial}`), null while there is none |
 
 The demo's pan law and output meter:
@@ -677,7 +677,7 @@ The demo's pan law and output meter:
 ```tsx
 const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
 // Made once, when the module loads: the levels in dB, falling on their own.
-const levels = fallingMeter("levels", { read: (value) => peaksInDb(value) });
+const levels = fallingLevels("levels", { read: (value) => peaksInDb(value) });
 const peaks = useReadable(levels);
 ```
 
@@ -695,7 +695,7 @@ The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `RadioGroup` 
 <TextField {parameter} />
 ```
 
-The objects of `beamer-api` and `fallingMeter` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$meters` for a meter. A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop.
+The objects of `beamer-api` and `fallingLevels` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$levels` for the levels of `fallingLevels`. A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop.
 
 ## Asset Embedding
 

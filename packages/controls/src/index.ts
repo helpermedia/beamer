@@ -1,8 +1,8 @@
 // Unstyled controls for the web UI of a Beamer plugin: attach functions
 // that make the author's own elements a dial, a slider, a switch, a radio
 // group or a text field for a parameter, with roles, ARIA and input, each
-// change one undo step in the host. And a meter that falls on its own.
-// They draw nothing.
+// change one undo step in the host. And meter levels that fall on their
+// own. The controls draw nothing.
 
 export { attachDial } from "./dial.js";
 export { attachSlider } from "./slider.js";
@@ -13,6 +13,6 @@ export { attachSwitch } from "./switch.js";
 export { attachRadioGroup } from "./radio-group.js";
 export { attachTextField, openTextField } from "./text-field.js";
 export type { TextFieldOptions } from "./text-field.js";
-export { fallingMeter } from "./meter.js";
-export type { FallingMeterOptions, MeterLevels } from "./meter.js";
-export { KEYBOARD_FOCUS } from "./focus.js";
+export { fallingLevels } from "./falling-levels.js";
+export type { FallingLevelsOptions, MeterLevels } from "./falling-levels.js";
+export { KEYBOARD_FOCUS_ATTRIBUTE } from "./focus.js";

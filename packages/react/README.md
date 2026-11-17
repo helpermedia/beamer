@@ -114,14 +114,14 @@ the element only if the component happens to render again.
 | `useParameter(id)` | `{ parameter, value, displayText, text, info }`: the handle for changes and what to show |
 | `useStateField(path)` | `[value, set]` for a `State` field, like `useState` |
 | `useSenderValue(name)` | The newest value of a value sender from the audio thread |
-| `useEvent(name, handler)` | Nothing; calls `handler` with each event or stream array while mounted |
+| `usePluginEvent(name, handler)` | Nothing; calls `handler` with each event or stream array while mounted |
 | `useReady()` | Whether parameters and state have arrived |
 | `useDial(element, parameter, options)` | Nothing; makes the element a dial (`attachDial`) while it is there |
 | `useSlider(element, parameter, options)` | Nothing; makes the element a slider (`attachSlider`) while it is there |
 | `useSwitch(button, parameter)` | Nothing; makes the button a switch (`attachSwitch`) while it is there |
 | `useRadioGroup(container, parameter)` | Nothing; makes the container's children a radio group (`attachRadioGroup`) while it is there |
 | `useTextField(input, parameter, options)` | Nothing; makes the input the text field (`attachTextField`) while it is there |
-| `useReadable(readable)` | The newest value of a `Readable`, such as a `fallingMeter` |
+| `useReadable(readable)` | The newest value of a `Readable`, such as the levels of `fallingLevels` |
 
 A control attaches again when its element, its parameter or an option
 changes, not on a render that changes none of them. A dial's `drag` and a

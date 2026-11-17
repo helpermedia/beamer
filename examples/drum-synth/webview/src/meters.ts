@@ -1,4 +1,4 @@
-import { fallingMeter } from "@helpermedia/beamer-controls";
+import { fallingLevels } from "@helpermedia/beamer-controls";
 
 // The level of each drum as the meters show it: the values of the value
 // sender "meters" (`Meters` in src/lib.rs), the held peak of each drum in
@@ -25,4 +25,4 @@ function read(value: unknown): number[] {
 }
 
 // The meters, falling from the last value once no value comes for 300 ms.
-export const meters = fallingMeter("meters", { read, fallPerSecond: FALL_DB_PER_SECOND });
+export const meters = fallingLevels("meters", { read, fallPerSecond: FALL_DB_PER_SECOND });

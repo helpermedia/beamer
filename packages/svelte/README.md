@@ -57,7 +57,7 @@ neither.
 
 ## Stores
 
-The objects of `beamer-api` and `fallingMeter` follow Svelte's store
+The objects of `beamer-api` and `fallingLevels` follow Svelte's store
 contract (`subscribe` calls back at once and returns the function that
 unsubscribes), so a component reads them with `$` as they are, also with
 runes:
@@ -65,10 +65,10 @@ runes:
 ```svelte
 <script lang="ts">
   import { parameter } from "@helpermedia/beamer-api";
-  import { fallingMeter } from "@helpermedia/beamer-controls";
+  import { fallingLevels } from "@helpermedia/beamer-controls";
 
   const mix = parameter("mix");
-  const levels = fallingMeter("levels", { read: (value) => (typeof value === "number" ? value : -60) });
+  const levels = fallingLevels("levels", { read: (value) => (typeof value === "number" ? value : -60) });
 </script>
 
 <p>{$mix} {$levels}</p>

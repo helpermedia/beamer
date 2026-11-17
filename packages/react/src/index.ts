@@ -4,8 +4,8 @@
 
 export {
   useDial,
-  useEvent,
   useParameter,
+  usePluginEvent,
   useRadioGroup,
   useReadable,
   useReady,

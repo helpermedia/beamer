@@ -1,5 +1,5 @@
 /** The attribute a control has while it has focus from the keyboard. */
-export const KEYBOARD_FOCUS = "data-keyboard-focus";
+export const KEYBOARD_FOCUS_ATTRIBUTE = "data-keyboard-focus";
 
 // Whether the page's last input came from the keyboard, so that focus can
 // tell Tab from a click. Listened for once per document, before any element
@@ -38,9 +38,9 @@ export function trackKeyboardFocus(root: HTMLElement | SVGElement): () => void {
   let marked: Element | null = null;
   const mark = (element: Element | null) => {
     if (marked === element) return;
-    marked?.removeAttribute(KEYBOARD_FOCUS);
+    marked?.removeAttribute(KEYBOARD_FOCUS_ATTRIBUTE);
     marked = element;
-    marked?.setAttribute(KEYBOARD_FOCUS, "");
+    marked?.setAttribute(KEYBOARD_FOCUS_ATTRIBUTE, "");
   };
   const onFocusIn = (event: Event) => {
     if (keyboardInput) mark(event.target as Element);

@@ -1,6 +1,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { fallingMeter } from "../src/index";
+import { fallingLevels } from "../src/index";
 import { installRuntime } from "./runtime";
 
 beforeAll(() => GlobalRegistrator.register());
@@ -25,18 +25,18 @@ function read(value: unknown): Meters {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("a meter reads at rest before the first subscriber, without the runtime", () => {
+test("the levels read at rest before the first subscriber, without the runtime", () => {
   globalThis.__BEAMER__ = undefined;
-  const meters = fallingMeter("meters", { read });
+  const meters = fallingLevels("meters", { read });
   expect(meters.get()).toEqual({ levelDb: FLOOR_DB, reductionDb: 0, makeupDb: 0 });
   // The same object until it changes.
   expect(meters.get()).toBe(meters.get());
 });
 
-test("a meter shows each value at once and the value held when it opens", () => {
+test("the levels show each value at once and the value the sender held before", () => {
   const runtime = installRuntime([]);
   runtime.send("meters", { levelDb: -12, reductionDb: 3, makeupDb: 1 });
-  const meters = fallingMeter("meters", { read, waitMs: 1000 });
+  const meters = fallingLevels("meters", { read, waitMs: 1000 });
   const seen: Meters[] = [];
   const unsubscribe = meters.subscribe((levels) => seen.push(levels));
   expect(seen).toEqual([{ levelDb: -12, reductionDb: 3, makeupDb: 1 }]);
@@ -45,9 +45,9 @@ test("a meter shows each value at once and the value held when it opens", () => 
   unsubscribe();
 });
 
-test("without values a meter waits, then falls towards each rest from either side", async () => {
+test("without values the levels wait, then fall towards each rest from either side", async () => {
   const runtime = installRuntime([]);
-  const meters = fallingMeter("meters", { read, waitMs: 20, fallPerSecond: 1000 });
+  const meters = fallingLevels("meters", { read, waitMs: 20, fallPerSecond: 1000 });
   const unsubscribe = meters.subscribe(() => {});
   runtime.send("meters", { levelDb: -20, reductionDb: 30, makeupDb: -40 });
   await sleep(10);
@@ -65,7 +65,7 @@ test("without values a meter waits, then falls towards each rest from either sid
 
 test("a new value stops the fall", async () => {
   const runtime = installRuntime([]);
-  const meters = fallingMeter("level", { read: (value) => (typeof value === "number" ? value : FLOOR_DB), waitMs: 10, fallPerSecond: 100 });
+  const meters = fallingLevels("level", { read: (value) => (typeof value === "number" ? value : FLOOR_DB), waitMs: 10, fallPerSecond: 100 });
   const unsubscribe = meters.subscribe(() => {});
   runtime.send("level", -10);
   await sleep(60);
@@ -77,7 +77,7 @@ test("a new value stops the fall", async () => {
 
 test("levels per channel fall as an array", async () => {
   const runtime = installRuntime([]);
-  const meters = fallingMeter("peaks", {
+  const meters = fallingLevels("peaks", {
     read: (value) => (Array.isArray(value) ? value.map(Number) : [FLOOR_DB, FLOOR_DB]),
     waitMs: 10,
     fallPerSecond: 10000,
@@ -91,7 +91,7 @@ test("levels per channel fall as an array", async () => {
 
 test("the last subscriber leaving stops following the sender", () => {
   const runtime = installRuntime([]);
-  const meters = fallingMeter("level", { read: (value) => (typeof value === "number" ? value : FLOOR_DB) });
+  const meters = fallingLevels("level", { read: (value) => (typeof value === "number" ? value : FLOOR_DB) });
   const unsubscribe = meters.subscribe(() => {});
   runtime.send("level", -10);
   unsubscribe();

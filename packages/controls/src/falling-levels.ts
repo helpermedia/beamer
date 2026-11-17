@@ -8,8 +8,8 @@ import type { Readable } from "@helpermedia/beamer-api";
  */
 export type MeterLevels<T> = number | readonly number[] | { readonly [K in keyof T]: number };
 
-/** How a falling meter reads its sender and falls. */
-export interface FallingMeterOptions<T extends MeterLevels<T>> {
+/** How falling levels read their sender and fall. */
+export interface FallingLevelsOptions<T extends MeterLevels<T>> {
   /**
    * The levels in what the sender sent, each a finite number. Called with
    * undefined for the levels at rest, where each one falls to: the floor
@@ -20,7 +20,7 @@ export interface FallingMeterOptions<T extends MeterLevels<T>> {
   /** How far a level falls in a second, in its own unit. Default 20 (dB). */
   fallPerSecond?: number;
   /**
-   * How long the meter waits for a value before it falls on its own, in
+   * How long the levels wait for a value before they fall on their own, in
    * ms. Default 300, longer than the longest block a host renders (8192
    * samples at 44.1 kHz last 186 ms).
    */
@@ -45,12 +45,12 @@ function everyLevel<T extends MeterLevels<T>>(levels: T, rest: T, test: (level: 
 }
 
 /**
- * A meter on the value sender `sender` that falls on its own when no value
- * comes. A plugin sends its meters from the audio thread with every block
- * while they show something. When nothing comes for `waitMs`, the host
- * stopped calling the plugin (a host's bypass or power button, a host that
- * rests while stopped). The meter then falls at `fallPerSecond` from the
- * last value, each level towards its rest. Match the rate to how the
+ * The levels of the value sender `sender`, which fall on their own when no
+ * value comes. A plugin sends its meters from the audio thread with every
+ * block while they show something. When nothing comes for `waitMs`, the
+ * host stopped calling the plugin (a host's bypass or power button, a host
+ * that rests while stopped). The levels then fall at `fallPerSecond` from
+ * the last value, each towards its rest. Match the rate to how the
  * processor lets its held peaks fall.
  *
  * Returns a `Readable` of the levels as shown, the same object until they
@@ -60,14 +60,14 @@ function everyLevel<T extends MeterLevels<T>>(levels: T, rest: T, test: (level: 
  * holds when the first subscriber comes counts as fresh, so an editor that
  * opens while the host does not call the plugin shows it until it falls.
  */
-export function fallingMeter<T extends MeterLevels<T>>(sender: string, options: FallingMeterOptions<T>): Readable<T> {
+export function fallingLevels<T extends MeterLevels<T>>(sender: string, options: FallingLevelsOptions<T>): Readable<T> {
   const fallPerSecond = options.fallPerSecond ?? 20;
   const waitMs = options.waitMs ?? 300;
   let rest: T | undefined;
   const restLevels = (): T => (rest ??= options.read(undefined));
 
   let shown: T | undefined;
-  // The last value that arrived and when the meter began to fall from it.
+  // The last value that arrived and when the levels began to fall from it.
   let last: T | undefined;
   let fallingSince = 0;
   let wait: ReturnType<typeof setTimeout> | undefined;

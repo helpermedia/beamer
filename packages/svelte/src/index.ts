@@ -2,7 +2,8 @@
 // beamer-api and beamer-controls. Each one renders one element with a
 // control of beamer-controls on it and hands what it shows to its
 // `children` snippet. The stores of beamer-api follow Svelte's store
-// contract, so `$parameter` and a `fallingMeter` work as they are.
+// contract, so `$parameter` and the levels of `fallingLevels` work as
+// they are.
 
 export { default as Dial } from "./Dial.svelte";
 export { default as RadioGroup } from "./RadioGroup.svelte";

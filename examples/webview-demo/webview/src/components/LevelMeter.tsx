@@ -1,4 +1,4 @@
-import { fallingMeter } from "@helpermedia/beamer-controls";
+import { fallingLevels } from "@helpermedia/beamer-controls";
 import { useReadable } from "@helpermedia/beamer-react";
 import { FLOOR_DB, dbPosition, levelDb } from "../levels";
 
@@ -20,7 +20,7 @@ function read(value: unknown): [number, number] {
 // something. When they stop, the host stopped calling the plugin (its
 // bypass, a host that rests while stopped): the meter falls on its own
 // after 300 ms, at the 20 dB a second of the processor's held peaks.
-const levels = fallingMeter("levels", { read, fallPerSecond: 20 });
+const levels = fallingLevels("levels", { read, fallPerSecond: 20 });
 
 // The output meter, one bar per channel.
 export default function LevelMeter() {

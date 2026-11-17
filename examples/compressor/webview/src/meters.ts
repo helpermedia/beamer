@@ -1,4 +1,4 @@
-import { fallingMeter } from "@helpermedia/beamer-controls";
+import { fallingLevels } from "@helpermedia/beamer-controls";
 
 // The meters as the editor shows them: the values of the value sender
 // "meters" (`Meters` in src/lib.rs), which the audio thread sends with
@@ -39,4 +39,4 @@ function read(value: unknown): Meters {
 }
 
 // The meters, falling from the last value once no value comes for 300 ms.
-export const meters = fallingMeter("meters", { read, fallPerSecond: FALL_DB_PER_SECOND });
+export const meters = fallingLevels("meters", { read, fallPerSecond: FALL_DB_PER_SECOND });

@@ -9,7 +9,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // React reads the DOM globals when it loads, so it loads after happy-dom.
 const { act, useState } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useDial, useEvent, useParameter, useRadioGroup, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useTextField } =
+const { useDial, useParameter, usePluginEvent, useRadioGroup, useReadable, useReady, useSenderValue, useSlider, useStateField, useSwitch, useTextField } =
   await import("../src/index");
 
 // React warns outside its test environment unless told it is one.
@@ -69,10 +69,10 @@ test("useSenderValue shows the newest value", () => {
   unmount();
 });
 
-test("useEvent calls the newest handler and stops on unmount", () => {
+test("usePluginEvent calls the newest handler and stops on unmount", () => {
   const seen: unknown[] = [];
   function History({ tag }: { tag: string }) {
-    useEvent("history", (data) => seen.push(`${tag} ${data}`));
+    usePluginEvent("history", (data) => seen.push(`${tag} ${data}`));
     return null;
   }
   const container = document.createElement("div");

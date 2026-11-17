@@ -57,7 +57,7 @@ export function useSenderValue<T>(name: string): T | undefined {
  * arrays of its stream senders. Events that come before the component
  * mounts are not kept.
  */
-export function useEvent(name: string, handler: (data: unknown) => void): void {
+export function usePluginEvent(name: string, handler: (data: unknown) => void): void {
   // The newest handler, so that a handler defined in the component's body
   // does not subscribe again on every render.
   const onEvent = useEffectEvent(handler);
@@ -80,8 +80,8 @@ export function useReady(): boolean {
 }
 
 /**
- * The newest value of `readable`, such as a meter of beamer-controls
- * (`fallingMeter`). The component renders again when it changes.
+ * The newest value of `readable`, such as the levels of beamer-controls'
+ * `fallingLevels`. The component renders again when it changes.
  */
 export function useReadable<T>(readable: Readable<T>): T {
   return useSyncExternalStore(readable.subscribe, readable.get);

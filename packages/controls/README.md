@@ -127,22 +127,22 @@ focus stays in the field. A gesture that begins while the plugin reads the
 text (a drag on the dial that took the focus) wins: the typed value is
 dropped.
 
-## Meter
+## Meter levels
 
 ```ts
-import { fallingMeter } from "@helpermedia/beamer-controls";
+import { fallingLevels } from "@helpermedia/beamer-controls";
 
 const FLOOR_DB = -60;
 
 // The levels in dB from what the sender sends, the floor for undefined.
-const levels = fallingMeter("levels", {
+const levels = fallingLevels("levels", {
   read: (value) => (typeof value === "number" ? Math.max(FLOOR_DB, value) : FLOOR_DB),
 });
 
 levels.subscribe((db) => drawBar(db));
 ```
 
-`fallingMeter(sender, options)` follows a value sender of meter levels: one
+`fallingLevels(sender, options)` follows a value sender of meter levels: one
 number, one per channel (an array) or one per name (an object). A plugin
 sends its meters with every block while they show something. When nothing
 comes for 300 ms, the host stopped calling the plugin (its bypass, a host

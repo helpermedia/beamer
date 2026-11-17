@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { runtime } from "@helpermedia/beamer-api";
-import { useEvent, useReady, useStateField } from "@helpermedia/beamer-react";
+import { usePluginEvent, useReady, useStateField } from "@helpermedia/beamer-react";
 import LevelHistory from "./components/LevelHistory";
 import LevelMeter from "./components/LevelMeter";
 import Dial from "./components/Dial";
@@ -54,7 +54,7 @@ function App() {
   const showSampleRate = (rate: unknown) => {
     if (typeof rate === "number" && rate > 0) setSampleRate(rate);
   };
-  useEvent("sampleRate", showSampleRate);
+  usePluginEvent("sampleRate", showSampleRate);
   useEffect(() => {
     let mounted = true;
     runtime()
