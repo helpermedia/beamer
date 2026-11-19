@@ -1,4 +1,5 @@
-import { useMeters } from "../hooks/usePluginValues";
+import { useReadable } from "@helpermedia/beamer-react";
+import { meters } from "../meters";
 
 // The most reduction the meter shows in dB.
 const RANGE_DB = 24;
@@ -24,7 +25,7 @@ interface ReductionMeterProps {
 // The gain reduction in dB, falling from the top in blue (what the
 // compressor does), with its value below.
 function ReductionMeter({ lit }: ReductionMeterProps) {
-  const { reductionDb } = useMeters();
+  const { reductionDb } = useReadable(meters);
   const bar = yAt(reductionDb) - TOP;
 
   return (

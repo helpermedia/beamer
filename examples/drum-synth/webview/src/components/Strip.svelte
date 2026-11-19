@@ -9,8 +9,8 @@
   import type { Drum } from "../drums";
   import { flash } from "../flash";
   import Level from "./Level.svelte";
-  import OutputChoices from "./OutputChoices.svelte";
-  import ValueText from "./ValueText.svelte";
+  import Output from "./Output.svelte";
+  import TextField from "./TextField.svelte";
 
   let { drum, index, level }: { drum: Drum; index: number; level: number } = $props();
 
@@ -43,11 +43,11 @@
   </div>
 
   <div class="mt-2 w-full">
-    <ValueText parameter={levelParameter} />
+    <TextField parameter={levelParameter} />
   </div>
 
   <p class="mt-2 text-[0.625rem] text-neutral-500">Output</p>
   <div class="mt-1 w-full">
-    <OutputChoices parameter={outputParameter} />
+    <Output parameter={outputParameter} />
   </div>
 </section>

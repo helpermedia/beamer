@@ -1,11 +1,8 @@
-import { useReadable, useSenderValue } from "@helpermedia/beamer-react";
-import { meters } from "../meters";
-import type { Meters } from "../meters";
+import { useSenderValue } from "@helpermedia/beamer-react";
 
-// What the audio thread sends through its value senders: the status
-// (`Status` in src/lib.rs) and the meters, which ../meters.ts follows. The
-// shape of what arrives is the caller's claim, so each field is checked as
-// it is read.
+// The status the audio thread sends through the value sender "status"
+// (`Status` in src/lib.rs). The shape of what arrives is the caller's
+// claim, so each field is checked as it is read.
 
 export interface Status {
   // The sample rate the host prepared the plugin for.
@@ -26,10 +23,4 @@ export function useStatus(): Status | null {
     sampleRate: finite(status.sampleRate, 0),
     keyedOnSidechain: status.keyedOnSidechain === true,
   };
-}
-
-// The meters as the editor shows them, at rest until the host prepared
-// the plugin. They fall on their own once the host stops calling it.
-export function useMeters(): Meters {
-  return useReadable(meters);
 }

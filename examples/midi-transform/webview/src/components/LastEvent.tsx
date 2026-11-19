@@ -1,4 +1,4 @@
-interface ReadoutProps {
+interface LastEventProps {
   // The names of the two columns.
   columns: [string, string];
   // The values in and out, null before anything passed.
@@ -6,7 +6,7 @@ interface ReadoutProps {
 }
 
 // The last note or CC as it came in and went out, in a small table.
-function Readout({ columns, rows }: ReadoutProps) {
+function LastEvent({ columns, rows }: LastEventProps) {
   const cell = "px-2 py-0.5 text-left";
   const value = (text: string | undefined) => (
     <td className={`${cell} font-medium tabular-nums ${text === undefined ? "text-neutral-600" : "text-paper"}`}>
@@ -39,4 +39,4 @@ function Readout({ columns, rows }: ReadoutProps) {
   );
 }
 
-export default Readout;
+export default LastEvent;

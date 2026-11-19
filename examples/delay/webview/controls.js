@@ -1,8 +1,8 @@
 // Controls on `__BEAMER__.parameters`: a dial for a continuous parameter and a
-// row of buttons for the choices of an enum parameter. Each change is a
-// gesture of its own (beginEdit, set, endEdit), so the host records it as
-// one undo step. A drag is one gesture from press to release. So is a
-// scroll, until the wheel rests.
+// radio group for an enum parameter, a button for each of its choices. Each
+// change is a gesture of its own (beginEdit, set, endEdit), so the host
+// records it as one undo step. A drag is one gesture from press to release.
+// So is a scroll, until the wheel rests.
 
 const parameters = __BEAMER__.parameters;
 
@@ -228,9 +228,10 @@ export function dial(container, id) {
     };
 }
 
-// A button for each choice of the enum parameter `id` in `container`. The
-// names come from the parameter (`valueTexts`), so they match the host.
-export function choices(container, id) {
+// A radio group in `container`: a button for each choice of the enum
+// parameter `id`. The names come from the parameter (`valueTexts`), so they
+// match the host.
+export function radioGroup(container, id) {
     const info = parameters.info(id);
     const buttons = info.valueTexts.map((name, index) => {
         const button = document.createElement("button");

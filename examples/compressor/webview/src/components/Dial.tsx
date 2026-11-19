@@ -1,5 +1,5 @@
 import { Dial as DialControl, useParameter } from "@helpermedia/beamer-react";
-import ValueText from "./ValueText";
+import TextField from "./TextField";
 
 // The arc of a dial in degrees clockwise from the right, as the gestures
 // count them: 270, open at the bottom.
@@ -70,7 +70,7 @@ function Dial({ parameterId, label }: DialProps) {
         }}
       </DialControl>
       <span className="mt-1 text-[0.6875rem] text-neutral-400">{name}</span>
-      <ValueText parameter={parameter} label={label} />
+      <TextField parameter={parameter} label={label} />
     </div>
   );
 }

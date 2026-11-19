@@ -1,6 +1,6 @@
 import { fallingLevels } from "@helpermedia/beamer-controls";
 import { useReadable } from "@helpermedia/beamer-react";
-import { FLOOR_DB, dbPosition, levelDb } from "../levels";
+import { FLOOR_DB, dbPosition, levelDb } from "../decibels";
 
 // What the plugin sends: the held peak of each channel, linear. A level
 // that was not a finite number arrives as null.

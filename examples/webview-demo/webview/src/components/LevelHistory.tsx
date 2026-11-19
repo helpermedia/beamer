@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { runtime } from "@helpermedia/beamer-api";
-import { meterPosition } from "../levels";
+import { meterPosition } from "../decibels";
 
 // How many points the history shows. The plugin pushes one every 10 ms
 // (HISTORY_POINTS_PER_SECOND in lib.rs), so this is 3 seconds.

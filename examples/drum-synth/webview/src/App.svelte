@@ -63,7 +63,7 @@
   <div class="mx-auto flex h-full w-[35rem] items-center px-5">
     <h1 class="text-[0.9375rem] font-semibold tracking-tight">Drum Synth</h1>
     <!-- The tabs come with the `State` field, so they never show the wrong one first. A segmented
-         control in a well, as the output choices, so that they read as a control, not as a title. -->
+         control in a well, as each strip's output, so that they read as a control, not as a title. -->
     {#await ready() then}
       <div role="tablist" aria-label="View" class="ml-6 flex gap-0.5 rounded-md bg-panel p-0.5 ring-1 ring-neutral-800 ring-inset">
         {#each TABS as { id, label }, index (id)}

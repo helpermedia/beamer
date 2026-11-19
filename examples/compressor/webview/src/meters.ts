@@ -38,5 +38,7 @@ function read(value: unknown): Meters {
   };
 }
 
-// The meters, falling from the last value once no value comes for 300 ms.
+// The meters, at rest until the host prepared the plugin and falling from
+// the last value once no value comes for 300 ms. Components read them with
+// `useReadable(meters)`.
 export const meters = fallingLevels("meters", { read, fallPerSecond: FALL_DB_PER_SECOND });

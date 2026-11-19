@@ -3,16 +3,16 @@ import { useParameter, useReady } from "@helpermedia/beamer-react";
 // so that the example works on its own.
 import beamerLogo from "./beamer-logo.svg";
 import AutoMakeup from "./components/AutoMakeup";
-import Choices from "./components/Choices";
 import Dial from "./components/Dial";
+import RadioGroup from "./components/RadioGroup";
 import ReductionMeter from "./components/ReductionMeter";
 import Switch from "./components/Switch";
 import TransferCurve from "./components/TransferCurve";
 import { ratioOf, SOFT_KNEE_DB } from "./curve";
 import type { Curve } from "./curve";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { useStatus } from "./hooks/usePluginValues";
-import type { Status } from "./hooks/usePluginValues";
+import { useStatus } from "./hooks/useStatus";
+import type { Status } from "./hooks/useStatus";
 
 // The latency the lookahead adds, in samples as the processor counts them
 // (`ms_to_samples()` in src/lib.rs) once the sample rate is known.
@@ -80,7 +80,7 @@ function App() {
             // switches, each row the full width. Auto makeup sits on the
             // right, under the makeup dial.
             <div className="flex flex-col gap-5">
-              <Choices parameterId="ratio" />
+              <RadioGroup parameterId="ratio" />
               <div className="grid grid-cols-5 justify-items-center">
                 <Dial parameterId="threshold" />
                 <Dial parameterId="attack" />
@@ -97,7 +97,7 @@ function App() {
             <div className="ml-4 grid flex-1 grid-cols-3 content-between justify-items-center">
               <Dial parameterId="threshold" />
               <div className="col-span-2 flex w-full flex-col justify-center gap-2.5">
-                <Choices parameterId="ratio" />
+                <RadioGroup parameterId="ratio" />
                 <div>
                   <Switch parameterId="knee" label="Soft knee" />
                 </div>
@@ -122,7 +122,7 @@ function App() {
               hears. */}
           <div className="flex items-center gap-2.5">
             <span className="text-[0.6875rem] text-neutral-400">Sidechain</span>
-            <Choices parameterId="sidechain" labels={["Internal", "External"]} />
+            <RadioGroup parameterId="sidechain" labels={["Internal", "External"]} />
           </div>
           <p className="text-neutral-500 tabular-nums">
             {latencyText(lookahead.parameter.plain(), lookahead.text, status)}

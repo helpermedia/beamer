@@ -6,7 +6,7 @@
 // in effect, so it follows a dial at once, also while the host is stopped
 // and does not run the processor.
 
-import { choices, dial } from "./controls.js";
+import { dial, radioGroup } from "./controls.js";
 import { drawEchoes, WINDOW_MS } from "./echoes.js";
 
 const parameters = __BEAMER__.parameters;
@@ -56,8 +56,8 @@ async function start() {
     const sourceText = document.getElementById("delay-source");
     const strip = document.getElementById("echoes");
 
-    choices(document.getElementById("stereo-mode"), "stereo_mode");
-    choices(document.getElementById("sync-mode"), "sync_mode");
+    radioGroup(document.getElementById("stereo-mode"), "stereo_mode");
+    radioGroup(document.getElementById("sync-mode"), "sync_mode");
     const time = dial(document.getElementById("time"), "time");
     dial(document.getElementById("feedback"), "feedback");
     dial(document.getElementById("mix"), "mix");

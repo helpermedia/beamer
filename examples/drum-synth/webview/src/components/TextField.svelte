@@ -1,19 +1,19 @@
 <!--
-  The value of a control, beamer-svelte's TextField in the family look: a
-  field that opens on a click. Enter or a click elsewhere sets what the user
-  typed, read by the parameter's own parser, so "-12" and "-12 dB" both
-  work. Escape leaves the value as it was. A text left as it was sets
-  nothing, so no undo step.
+  The text field of a control: the look over beamer-svelte's TextField,
+  which shows the value and opens on a click. Enter or a click elsewhere
+  sets what the user typed, read by the parameter's own parser, so "-12"
+  and "-12 dB" both work. Escape leaves the value as it was. A text left
+  as it was sets nothing, so no undo step.
 -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
-  import { TextField } from "@helpermedia/beamer-svelte";
+  import { TextField as TextFieldControl } from "@helpermedia/beamer-svelte";
   import { withMinus } from "../format";
 
   let { parameter }: { parameter: Parameter } = $props();
 </script>
 
-<TextField
+<TextFieldControl
   {parameter}
   text={(shown) => withMinus(shown.text())}
   title="Type a value"

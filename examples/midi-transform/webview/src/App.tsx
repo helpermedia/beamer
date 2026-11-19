@@ -5,10 +5,10 @@ import { useParameter, useReady } from "@helpermedia/beamer-react";
 // so that the example works on its own.
 import beamerLogo from "./beamer-logo.svg";
 import CcCurve from "./components/CcCurve";
-import Choices from "./components/Choices";
-import KeyboardMap from "./components/KeyboardMap";
 import Dial from "./components/Dial";
-import Readout from "./components/Readout";
+import KeyboardMap from "./components/KeyboardMap";
+import LastEvent from "./components/LastEvent";
+import RadioGroup from "./components/RadioGroup";
 import Switch from "./components/Switch";
 import { ccName, remapsCc, usesCcScale, usesNoteRemap, usesTranspose } from "./transform";
 import type { CcSettings, NoteSettings } from "./transform";
@@ -104,7 +104,7 @@ function App() {
           <div className="flex items-center gap-3">
             <Switch parameterId="note/enabled" label="Notes" />
             <div className="flex-1">
-              <Choices parameterId="note/mode" />
+              <RadioGroup parameterId="note/mode" />
             </div>
           </div>
           <KeyboardMap settings={notes} held={passed.held} lit={lit} />
@@ -114,7 +114,7 @@ function App() {
             <Dial parameterId="note/output" label="Output" unused={!usesNoteRemap(notes)} />
             <Dial parameterId="note/velocity" unused={!notes.enabled} />
             <div className="ml-auto">
-              <Readout columns={["Note", "Velocity"]} rows={noteRows(passed.lastNote)} />
+              <LastEvent columns={["Note", "Velocity"]} rows={noteRows(passed.lastNote)} />
             </div>
           </div>
         </section>
@@ -125,7 +125,7 @@ function App() {
             <div className="flex items-center gap-3">
               <Switch parameterId="cc/enabled" label="CCs" />
               <div className="flex-1">
-                <Choices parameterId="cc/mode" />
+                <RadioGroup parameterId="cc/mode" />
               </div>
             </div>
             <div className="flex items-start">
@@ -133,7 +133,7 @@ function App() {
               <Dial parameterId="cc/output" label="Output" detail={ccName(outputCc.parameter.plain())} unused={!remapsCc(ccs)} />
               <Dial parameterId="cc/scale" detail="" unused={!usesCcScale(ccs)} />
               <div className="ml-auto">
-                <Readout columns={["CC", "Value"]} rows={ccRows(passed.lastCc)} />
+                <LastEvent columns={["CC", "Value"]} rows={ccRows(passed.lastCc)} />
               </div>
             </div>
           </div>

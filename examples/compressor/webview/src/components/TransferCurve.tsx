@@ -1,8 +1,8 @@
 import { useMemo } from "react";
+import { useReadable } from "@helpermedia/beamer-react";
 import { outputDb } from "../curve";
 import type { Curve } from "../curve";
-import { useMeters } from "../hooks/usePluginValues";
-import { FLOOR_DB } from "../meters";
+import { FLOOR_DB, meters } from "../meters";
 import { withMinus } from "../format";
 
 // The display shows levels from the floor of the meters to 0 dB on both
@@ -78,7 +78,7 @@ interface TransferCurveProps {
 // signal is paper (the curve, the level and its dot), what the compressor
 // does is blue (the threshold and the area it turns down).
 function TransferCurve({ curve, thresholdText, keyedOnSidechain, lit }: TransferCurveProps) {
-  const { keyDb } = useMeters();
+  const { keyDb } = useReadable(meters);
   // The meters render the display at every frame; the paths change only
   // with the parameters.
   const { thresholdDb, ratio, kneeDb, makeupDb } = curve;

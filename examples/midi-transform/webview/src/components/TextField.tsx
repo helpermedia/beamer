@@ -1,22 +1,22 @@
 import type { Parameter } from "@helpermedia/beamer-api";
-import { TextField } from "@helpermedia/beamer-react";
+import { TextField as TextFieldControl } from "@helpermedia/beamer-react";
 import { withMinus } from "../format";
 
-interface ValueTextProps {
+interface TextFieldProps {
   parameter: Parameter;
   // The name of the control, for the label of the field, when it is not
   // the parameter's own.
   label?: string;
 }
 
-// The value of a control, beamer-react's TextField: a field that opens on a
-// click. Enter or a click elsewhere sets what the user typed, read by the
-// parameter's own parser, so "-12", "-12 dB" and "250ms" all work. Escape
-// leaves the value as it was. A text left as it was sets nothing, so no
-// undo step.
-function ValueText({ parameter, label }: ValueTextProps) {
+// The text field of a control: the look over beamer-react's TextField,
+// which shows the value and opens on a click. Enter or a click elsewhere
+// sets what the user typed, read by the parameter's own parser, so "-12",
+// "-12 dB" and "250ms" all work. Escape leaves the value as it was. A text
+// left as it was sets nothing, so no undo step.
+function TextField({ parameter, label }: TextFieldProps) {
   return (
-    <TextField
+    <TextFieldControl
       parameter={parameter}
       text={(shown) => withMinus(shown.text())}
       title="Type a value"
@@ -26,4 +26,4 @@ function ValueText({ parameter, label }: ValueTextProps) {
   );
 }
 
-export default ValueText;
+export default TextField;

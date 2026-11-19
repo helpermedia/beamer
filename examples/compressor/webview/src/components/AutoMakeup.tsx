@@ -1,5 +1,5 @@
-import { useParameter } from "@helpermedia/beamer-react";
-import { useMeters } from "../hooks/usePluginValues";
+import { useParameter, useReadable } from "@helpermedia/beamer-react";
+import { meters } from "../meters";
 import Switch from "./Switch";
 import { withMinus } from "../format";
 
@@ -14,7 +14,7 @@ interface AutoMakeupProps {
 // thread sends it.
 function AutoMakeup({ gainFirst = false }: AutoMakeupProps) {
   const { value } = useParameter("auto_makeup");
-  const { autoMakeupDb } = useMeters();
+  const { autoMakeupDb } = useReadable(meters);
 
   return (
     <div className={`flex items-center gap-3 ${gainFirst ? "flex-row-reverse" : ""}`}>
