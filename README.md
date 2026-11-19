@@ -1,6 +1,6 @@
 <img src="docs/branding/beamer-banner.png" alt="Beamer" width="1600">
 
-Beamer is a Rust framework for building Audio Unit (AU) and VST3 audio plugins.
+Beamer is a Rust framework for building Audio Unit (AU) and VST audio plugins.
 
 Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS; Windows planned) through modern web UI from a single codebase.
 
@@ -17,96 +17,40 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 
 ## Quick Start
 
-```rust
-use beamer::prelude::*;
+You need a current stable Rust (from [rustup](https://rustup.rs)) and on macOS the Xcode Command Line Tools (`xcode-select --install`). [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md#prerequisites) lists all prerequisites.
 
-// 1. Model - what every thread shares. It holds the parameters,
-//    describes the plugin to the host and lives as long as the plugin
-//    instance.
-#[beamer::export]
-#[beamer::model]
-struct GainModel {
-    #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
-    gain: FloatParameter,
-}
-
-impl Model for GainModel {
-    // A plain gain needs no setup. Use SampleRate for delays and
-    // MaxBufferSize for FFT.
-    type Setup = ();
-    type Processor = GainProcessor;
-
-    fn prepare(self: Arc<Self>, _: ()) -> GainProcessor {
-        GainProcessor { model: self }
-    }
-}
-
-// 2. Processor - what the audio thread owns. It shares the model with the
-//    host and the UI.
-struct GainProcessor {
-    model: Arc<GainModel>,
-}
-
-impl Processor for GainProcessor {
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &ProcessContext) {
-        let gain = self.model.gain.as_linear() as f32;
-        // The buffer is processed in place: each channel holds its input.
-        for channel in buffer.channels_mut() {
-            for sample in channel {
-                *sample *= gain;
-            }
-        }
-    }
-}
+```bash
+git clone https://github.com/helpermedia/beamer.git
+cd beamer
+cargo xtask bundle gain --auv3 --vst3 --release --install
 ```
 
-**Config.toml** (place in crate root next to Cargo.toml):
-```toml
-name = "My Gain Plugin"
-category = "effect"
-subcategories = ["dynamics"]
-manufacturer_code = "Manu"
-plugin_code = "gain"
-vendor = "My Company"
-url = "https://example.com"
-email = "support@example.com"
-log_level = "warn"
-```
+This builds the gain example as an AUv3 and a VST3 and installs both. Rescan the plugins in your DAW and load **Beamer Gain**.
 
-## Plugin Structure
-
-A Beamer plugin is two structs: the **Model** that every thread shares and the **Processor** that the audio thread owns. The model holds the parameters, the `State` fields that are saved with them and everything else the host, the UI and the audio thread use. The framework keeps it in one `Arc` for the life of the plugin instance. When the audio setup is known, the framework calls `prepare(setup)` on the model to create the Processor, ensuring audio buffers are properly allocated before `process()` runs. When the setup changes, it drops the Processor and prepares a new one. Nested groups of parameters are structs marked with `#[beamer::group]`.
-
-See [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md#plugin-lifecycle) for detailed rationale.
+[GETTING_STARTED.md](https://github.com/helpermedia/beamer/blob/main/docs/GETTING_STARTED.md) takes it from there: a plugin of your own, its Rust side and an editor as a web page.
 
 ## Examples
 
 ### Effects
 
-| Example | Description |
-|---------|-------------|
-| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin |
-| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with sidechain input and an editor |
-| **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode and an editor |
+| Example&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Description | Editor |
+|---------|-------------|--------|
+| **[gain](https://github.com/helpermedia/beamer/tree/main/examples/gain)** | Simple stereo gain plugin | - |
+| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with sidechain input, a live transfer curve and meters from the audio thread | React |
+| **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ | - |
+| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode | Plain HTML and JavaScript |
+
+<p><a href="https://github.com/helpermedia/beamer/blob/main/examples/README.md#delay"><img src="docs/screenshots/delay.png" alt="The editor of Delay" width="480"></a></p>
 
 ### Instruments & MIDI
 
-| Example | Description |
-|---------|-------------|
-| **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter |
-| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Stereo drum synthesizer whose drums can each go to an output of their own, with an editor |
-| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation and an editor |
+| Example&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Description | Editor |
+|---------|-------------|--------|
+| **[synthesizer](https://github.com/helpermedia/beamer/tree/main/examples/synthesizer)** | 8-voice polyphonic synth with ADSR and filter | - |
+| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Stereo drum synthesizer whose drums can each go to an output of their own, with pads that play them and a mixer | Svelte |
+| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | MIDI effect for note/CC transformation, with a note map that lights up the notes passing through | React |
 
-### WebView Editor
-
-| Example | Description |
-|---------|-------------|
-| **[webview-demo](https://github.com/helpermedia/beamer/tree/main/examples/webview-demo)** | Web-based plugin editor with React |
-| **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Editor in plain HTML and JavaScript, without a build step |
-| **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Editor in React with a live transfer curve and meters from the audio thread |
-| **[midi-transform](https://github.com/helpermedia/beamer/tree/main/examples/midi-transform)** | Editor in React with a note map that lights up the notes passing through, streamed from the audio thread |
-| **[drum-synth](https://github.com/helpermedia/beamer/tree/main/examples/drum-synth)** | Editor in Svelte in two tabs: pads that play the drums and a mixer with the balance, the fader, the meter and the output of each drum |
+<p><a href="https://github.com/helpermedia/beamer/blob/main/examples/README.md#midi-transform"><img src="docs/screenshots/midi-transform.png" alt="The editor of MIDI Transform" width="480"></a></p>
 
 See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for detailed documentation on each plugin.
 
@@ -127,6 +71,7 @@ See the [examples](https://github.com/helpermedia/beamer/tree/main/examples) for
 
 ## Documentation
 
+- [GETTING_STARTED.md](https://github.com/helpermedia/beamer/blob/main/docs/GETTING_STARTED.md) - A plugin of your own, from the Rust side to an editor
 - [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [ARCHITECTURE.md](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md) - Design decisions, threading model, guarantees
 - [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - API reference: configuration, parameters, traits, MIDI and format notes
@@ -144,7 +89,7 @@ Contributions for testing and fixes on Windows are welcome.
 
 ## Crates
 
-| Crate | Description |
+| Crate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Description |
 |-------|-------------|
 | `beamer` | Main facade crate (re-exports everything) |
 | `beamer-core` | Platform-agnostic traits and types |
@@ -153,14 +98,6 @@ Contributions for testing and fixes on Windows are welcome.
 | `beamer-au` | AU wrapper (macOS) - AUv2 and AUv3 via shared C-ABI bridge |
 | `beamer-vst3` | VST3 wrapper implementation |
 | `beamer-webview` | WebView editor (WKWebView, IPC, asset serving) |
-
-## Building & Installation
-
-```bash
-cargo xtask bundle gain --auv3 --vst3 --release --install
-```
-
-See [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) for prerequisites, formats, options and testing.
 
 ## License
 

@@ -1,8 +1,22 @@
 # Examples
 
-Working Beamer plugins demonstrating framework features.
+Working Audio Unit and VST plugins built with Beamer. Each one builds as AUv2, AUv3 and VST3 and demonstrates a set of framework features.
 
 **For a comprehensive feature coverage matrix and roadmap for future examples, see [docs/EXAMPLE_COVERAGE.md](../docs/EXAMPLE_COVERAGE.md).**
+
+## Editors
+
+Five of the examples have a web UI as their editor:
+
+| Example | Editor built with |
+|---------|-------------------|
+| [Compressor](#compressor) | React, Vite and Tailwind |
+| [Delay](#delay) | Plain HTML, CSS and JavaScript, without a build step |
+| [Drum Synth](#drum-synth) | Svelte, Vite and Tailwind |
+| [MIDI Transform](#midi-transform) | React, Vite and Tailwind |
+| [WebView Demo](#webview-demo) | React, Vite and Tailwind |
+
+Gain, Equalizer and Synthesizer have none: hosts show their parameters in a generic view of their own.
 
 ## Running Examples
 
@@ -65,6 +79,8 @@ Feed-forward compressor with soft/hard knee, lookahead, sidechain input and an e
 - **Sidechain ducking**: Enable sidechain, route kick to sidechain input, high ratio, fast attack/release
 
 **Editor:**
+
+<p><img src="../docs/screenshots/compressor.png" alt="The editor of Compressor" width="760"></p>
 
 A bar with the plugin's name and the Beamer logo, then the transfer curve: threshold, knee, ratio and makeup from the parameters, the area the compressor turns down in blue, the level the detector keys on as a bar along the input axis and as a dot on the curve. Beside it a gain reduction meter, then dials, buttons and switches for every parameter but the bypass, which the host's own bypass sets. Below them the choice of an internal or external sidechain and the latency of the lookahead in samples. The curve's input axis says which of the two the compressor hears. The displays dim while the plugin is bypassed. The editor scales with its window, side by side in a wide one and the displays above the controls in a tall one. It has the look of the Beamer brand (ink, paper and one blue, the font Inter, embedded from fontsource with no request to the internet). Built with React, Vite and Tailwind.
 
@@ -142,6 +158,8 @@ Tempo-synced delay for stereo and mono tracks with ping-pong mode, factory prese
 - **Ambient**: Long 750ms delay with high feedback for textures
 
 **Editor:**
+
+<p><img src="../docs/screenshots/delay.png" alt="The editor of Delay" width="600"></p>
 
 A line with the plugin's name and the Beamer logo, then the delay time in effect and where it comes from (free or a note value at the host's tempo), the echoes of a short sound over time (fading by the feedback, alternating sides in ping-pong mode), buttons for the sync and stereo modes and dials for time, feedback and mix. The files in `webview/` are embedded as they are: no package manager, no build step.
 
@@ -248,6 +266,8 @@ MIDI-triggered drum synthesizer with an editor in Svelte. It is a stereo instrum
 
 **Editor:**
 
+<p><img src="../docs/screenshots/drum-synth.png" alt="The editor of Drum Synth" width="560"></p>
+
 A bar with the plugin's name, two tabs and the Beamer logo. **Pads** has a big pad per drum, with its name and note, that plays the drum when pressed (or on Space or Enter once focused) and flashes on every hit, as bright as the hit is loud. **Mixer** has a channel strip per drum: its name with a light that flashes on every hit, the balance as a small horizontal slider, a fader for its level on a scale in dB with a meter of the drum beside it, the level as a value to type and the output it plays through. The tabs follow the ARIA tabs pattern (one tab stop, the arrow keys move between them). The editor remembers the tab it shows in a `State` field saved with the project and opens on Pads in a new one. When the host stops calling the plugin (a power button, an FX switch) the meters fall on their own; the pads and the lights fade on their own anyway. The editor scales with its window and has the look of the Beamer brand. Built with Svelte, Vite and Tailwind, the first example in Svelte.
 
 **Demonstrates:**
@@ -311,6 +331,8 @@ A **Bypass** parameter passes all MIDI through unchanged.
 - **Remap + Scale** - Remap CC number AND scale value
 
 **Editor:**
+
+<p><img src="../docs/screenshots/midi-transform.png" alt="The editor of MIDI Transform" width="760"></p>
 
 A bar with the plugin's name and the Beamer logo, then a section for notes and one for CCs, each with its switch and its modes. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Dials the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The editor scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
 

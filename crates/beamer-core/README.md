@@ -27,7 +27,7 @@ Most plugins should use `#[beamer::model]`. For advanced scenarios like dynamic 
 ## Documentation
 
 See the [main repository](https://github.com/helpermedia/beamer) for:
-- [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
+- [Getting Started](https://github.com/helpermedia/beamer/blob/main/docs/GETTING_STARTED.md)
 - [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
 - [Architecture Documentation](https://github.com/helpermedia/beamer/blob/main/ARCHITECTURE.md)
 

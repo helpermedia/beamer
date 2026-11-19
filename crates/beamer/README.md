@@ -1,6 +1,6 @@
 # Beamer
 
-Beamer is a Rust framework for building Audio Unit (AU) and VST3 audio plugins.
+Beamer is a Rust framework for building Audio Unit (AU) and VST audio plugins.
 
 Named after the beams connecting notes in sheet music and from Dutch where "beamer" means projector. Beamer projects your DSP logic onto AU (macOS) and VST3 (macOS; Windows planned) through modern web UI from a single codebase.
 
@@ -57,13 +57,13 @@ vst3 = ["beamer/vst3"]
 - **State persistence** - Automatic preset/state save and restore, also for data beyond parameters
 - **Factory presets in code** - `Model::PRESETS` of typed `Preset::new(name, |m| ...)` closures, checked by the compiler
 - **Sample-accurate automation** - Opt in with `sample_accurate_automation = true` in Config.toml
-- **WebView editor** - Web-based plugin editors with WKWebView, bidirectional IPC, realtime-safe data from the audio thread (meters, streams) and built-in React/Vite tooling (macOS)
+- **WebView editor** - Web-based plugin editors with WKWebView, bidirectional IPC, realtime-safe data from the audio thread (meters, streams) and packages for React and Svelte web UIs (macOS)
 
 ## Getting Started
 
 The crate documentation starts with a complete gain plugin. The [main repository](https://github.com/helpermedia/beamer) has the rest:
 
-- [Quick Start](https://github.com/helpermedia/beamer#quick-start) - A plugin with its Config.toml
+- [GETTING_STARTED.md](https://github.com/helpermedia/beamer/blob/main/docs/GETTING_STARTED.md) - A plugin of your own, from the Rust side to an editor
 - [Examples](https://github.com/helpermedia/beamer/tree/main/examples) - Effects, instruments, MIDI and web UI editors
 - [BUILDING.md](https://github.com/helpermedia/beamer/blob/main/docs/BUILDING.md) - Build, install and test plugins
 - [REFERENCE.md](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md) - API reference: configuration, parameters, traits, MIDI and format notes

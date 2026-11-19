@@ -33,7 +33,7 @@ Use `beamer-au` directly only if you're:
 ## Documentation
 
 See the [main repository](https://github.com/helpermedia/beamer) for:
-- [Getting Started Guide](https://github.com/helpermedia/beamer#quick-start)
+- [Getting Started](https://github.com/helpermedia/beamer/blob/main/docs/GETTING_STARTED.md)
 - [API Reference](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md)
 
 ## License
