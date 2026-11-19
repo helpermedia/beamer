@@ -1,7 +1,9 @@
 [package]
 name = "beamer"
-description = "Audio plugin (AU, VST3) framework for Rust"
+description = "Audio Unit (AU) and VST audio plugin framework for Rust"
 readme = "README.md"
+keywords = ["audio", "plugin", "au", "vst", "vst3"]
+categories = ["multimedia::audio"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

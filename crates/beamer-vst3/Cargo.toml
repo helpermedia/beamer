@@ -2,6 +2,8 @@
 name = "beamer-vst3"
 description = "VST3 implementation layer for the Beamer audio plugin framework"
 readme = "README.md"
+keywords = ["audio", "plugin", "vst", "vst3", "music"]
+categories = ["multimedia::audio"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
