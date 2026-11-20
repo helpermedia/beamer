@@ -285,7 +285,7 @@ A bar with the plugin's name, two tabs and the Beamer logo. **Pads** has a big p
 - Generic f32/f64 processing
 - A stream sender with every hit and a value sender with the held peak of each drum, from the audio thread
 - Notes from the web UI: the pads play their drum with `playNote` from beamer-api
-- The packages for web UIs: `beamer-controls` for the falling levels of the meters, `beamer-svelte` components for the faders, the balance sliders (`orientation="horizontal"`), the text fields and the radio groups for the outputs, the parameters, the meters and the `State` field read as Svelte stores, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the falling levels of the meters, `beamer-svelte` components for the faders, the balance sliders (`orientation="horizontal"`), the text fields and the radio groups for the outputs, a parameter view for the strips' names and the range of each level, the meters and the `State` field read as Svelte stores, used from the bun workspace
 
 ---
 

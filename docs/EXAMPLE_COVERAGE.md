@@ -83,7 +83,7 @@
 | | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform), outputs with names of their own (drum-synth) |
 | | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Text fields of dials and faders (delay, compressor, midi-transform, drum-synth, WebView Demo) |
 | | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drum-synth with `beamer-svelte` instead of `beamer-react` |
-| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders, balance sliders, text fields and radio groups for the outputs as Svelte components, parameters, meters and a `State` field as Svelte stores |
+| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders, balance sliders, text fields and radio groups for the outputs as Svelte components, a parameter view for the strips' names and the levels' ranges, meters and a `State` field as Svelte stores |
 | | Horizontal slider (`orientation`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | The balance of each drum, a lying slider with the thumb at `position` |
 
 **Legend:**

@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { parameter } from "@helpermedia/beamer-api";
+  import { parameterView } from "@helpermedia/beamer-svelte";
   import Balance from "./Balance.svelte";
   import type { Drum } from "../drums";
   import { flash } from "../flash";
@@ -17,9 +18,10 @@
   const levelParameter = $derived(parameter(drum.levelParameterId));
   const panParameter = $derived(parameter(drum.panParameterId));
   const outputParameter = $derived(parameter(drum.outputParameterId));
-  // The level parameter's name is the drum's. The strips render after
-  // `ready`, so the name is known.
-  const name = $derived(levelParameter.info?.name ?? drum.levelParameterId);
+  // The level parameter's name is the drum's, known once the parameters
+  // arrive with `ready`.
+  const levelView = $derived(parameterView(levelParameter));
+  const name = $derived(levelView.info?.name ?? drum.levelParameterId);
 </script>
 
 <section aria-label={name} class="flex w-30 flex-col items-center rounded-lg bg-well px-2 pt-2 pb-2.5 ring-1 ring-neutral-800 ring-inset">

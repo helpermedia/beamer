@@ -14,7 +14,7 @@
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
   import { thumbPosition } from "@helpermedia/beamer-controls";
-  import { Slider } from "@helpermedia/beamer-svelte";
+  import { parameterView, Slider } from "@helpermedia/beamer-svelte";
   import { withMinus } from "../format";
   import { FLOOR_DB } from "../meters";
   import { atMostSameParity, measureDevicePixels, sameParity } from "../pixels";
@@ -72,9 +72,11 @@
   // The marks of the scale in dB.
   const TICKS = [6, 0, -12, -24, -36, -48, -60];
 
-  // The level's range in dB, from the parameter (-60 to +6).
-  const min = $derived(parameter.info?.min ?? FLOOR_DB);
-  const max = $derived(parameter.info?.max ?? 6);
+  // The level's range in dB, from the parameter (-60 to +6) once it
+  // arrives with `ready`.
+  const view = $derived(parameterView(parameter));
+  const min = $derived(view.info?.min ?? FLOOR_DB);
+  const max = $derived(view.info?.max ?? 6);
 
   // Where a level in dB sits along the track, as a part of its height from
   // the bottom: where the slider puts the thumb's center for it. The level
