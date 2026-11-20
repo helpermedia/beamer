@@ -6,18 +6,18 @@ import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextFie
 import type { DialDrag, DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 import type { FunctionKeys, NoKeyLeft } from "./option-keys.js";
 
-/** A parameter as a component shows it. */
+/** A parameter as a component shows it, for one render. */
 export interface ParameterView {
   /** The handle, for changes: `parameter.edit()`, `parameter.reset()`, `parameter.typeValue()`. */
-  parameter: Parameter;
+  readonly parameter: Parameter;
   /** The normalized value (0 to 1). */
-  value: number;
+  readonly value: number;
   /** The value as the parameter formats it, without the unit. */
-  displayText: string;
+  readonly displayText: string;
   /** The value with its unit, as a host shows it. */
-  text: string;
+  readonly text: string;
   /** What the runtime knows of it, undefined before `ready`. */
-  info: BeamerParameterInfo | undefined;
+  readonly info: BeamerParameterInfo | undefined;
 }
 
 /**

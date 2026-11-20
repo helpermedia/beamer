@@ -1,8 +1,8 @@
 <!-- Reports each field of a parameter's view from an effect of its own. -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
-  import { parameterView } from "../../src/parameter-view";
-  import type { ParameterView } from "../../src/parameter-view";
+  import { parameterView } from "../../src/index";
+  import type { ParameterView } from "../../src/index";
 
   let { parameter, record }: { parameter: Parameter; record: (field: string, value: unknown) => void } = $props();
 

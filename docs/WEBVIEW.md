@@ -571,7 +571,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | `@helpermedia/beamer-api` | Types for `__BEAMER__`, `parameter()`, `stateField()`, `senderValue()`, `ready()`, `noteName()`, `noteOn()`, `noteOff()`, `playNote()`, `allNotesOff()` | Nothing |
 | `@helpermedia/beamer-controls` | Unstyled controls on your own elements: `attachDial()`, `attachSlider()`, `attachSwitch()`, `attachRadioGroup()` and `attachTextField()`, plus `fallingLevels()` | `beamer-api` |
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React 19.2 or later |
-| `@helpermedia/beamer-svelte` | Unstyled Svelte components on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
+| `@helpermedia/beamer-svelte` | Unstyled Svelte components and a parameter view on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
 A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drum-synth`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
@@ -695,7 +695,21 @@ The same five components for Svelte 5: `Dial`, `Slider`, `Switch`, `RadioGroup` 
 <TextField {parameter} />
 ```
 
-The objects of `beamer-api` and `fallingLevels` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$levels` for the levels of `fallingLevels`. A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop.
+`parameterView(parameter)` is what a parameter shows, the counterpart of `useParameter`: the same `parameter`, `value`, `displayText`, `text` and `info`, each but the handle a reactive read. A readout follows a new text for the same value (the plugin answers an edit) and the info that arrives with `ready`. For a parameter that is a prop, a `$derived` makes a new view when the prop changes. Read the fields from the view; a field taken out of it keeps the value it had then:
+
+```svelte
+<script lang="ts">
+  import type { Parameter } from "@helpermedia/beamer-api";
+  import { parameterView } from "@helpermedia/beamer-svelte";
+
+  let { parameter }: { parameter: Parameter } = $props();
+  const view = $derived(parameterView(parameter));
+</script>
+
+<p>{view.info?.name}: {view.text}</p>
+```
+
+The objects of `beamer-api` and `fallingLevels` follow Svelte's store contract, so a component reads them with `$`, runes or not: `{$mix}` for a parameter's normalized value, `$levels` for the levels of `fallingLevels`. `$mix` is the value alone: `{mix.text()}` in the markup reads the text once, at the first render, also beside `$mix`, so a readout reads the text from a view. A `State` field is a writable store (`$tab = "mixer"` sets it). A store is a variable at the top of a component, a prop included, so a component in an `{#each}` takes its parameter as a prop; a view also works per item with `{@const}`. Events from the plugin need nothing of `beamer-svelte`: `$effect(() => runtime().on("hits", onHit))` follows them while the component is mounted.
 
 ## Asset Embedding
 

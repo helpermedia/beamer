@@ -14,7 +14,7 @@ beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
 
 // Svelte reads the DOM globals when it loads, so it loads after happy-dom.
-const { flushSync, mount, unmount } = await import("svelte");
+const { flushSync, mount, tick, unmount } = await import("svelte");
 const { default: Harness, control } = await import("./fixtures/Harness.svelte");
 const { Dial, Slider, TextField } = await import("../src/index");
 const { default: DialDrawing } = await import("./fixtures/DialDrawing.svelte");
@@ -24,6 +24,7 @@ const { default: RadioGroupButtons } = await import("./fixtures/RadioGroupButton
 const { default: Field } = await import("./fixtures/Field.svelte");
 const { default: StoreText } = await import("./fixtures/StoreText.svelte");
 const { default: ViewFields } = await import("./fixtures/ViewFields.svelte");
+const { default: ViewList } = await import("./fixtures/ViewList.svelte");
 
 // The parameters of the stand-in runtime: a percentage and three choices.
 const PARAMETERS = [
@@ -44,11 +45,16 @@ function render(component: Component<any>, props: Record<string, unknown>): HTML
   return target;
 }
 
-afterEach(() => {
+// Unmount what the test rendered. A view lets go of its parameter in a
+// microtask (on Svelte 5.29 one that `flushSync` does not run), so a test
+// of a view awaits `tick` after it.
+function unmountAll() {
   for (const app of mounted) unmount(app);
   mounted = [];
   flushSync();
-});
+}
+
+afterEach(unmountAll);
 
 function install(ready = true): FakeRuntime {
   return installRuntime(PARAMETERS, ready);
@@ -315,9 +321,7 @@ test("unmounting detaches the controls", () => {
   const target = render(DialDrawing, { parameter: parameter("mix"), record: () => {} });
   const element = target.firstElementChild as HTMLElement;
   expect(element.getAttribute("role")).toBe("slider");
-  for (const app of mounted) unmount(app);
-  mounted = [];
-  flushSync();
+  unmountAll();
   // Detaching removes what the control set.
   expect(element.hasAttribute("role")).toBe(false);
   expect(element.hasAttribute("aria-valuenow")).toBe(false);
@@ -343,4 +347,70 @@ test("a view follows a new text for the same value and the parameters that arriv
   host.push("time", 0.5);
   flushSync();
   expect(seen).toEqual({ handle: true, value: 0.5, displayText: "1.00", text: "1.00 s", info: { name: "Time", displayText: "1.00" } });
+});
+
+// Count the runtime's live listeners per parameter from now on.
+function countListeners(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const parameters = globalThis.__BEAMER__!.parameters;
+  const on = parameters.on;
+  parameters.on = (id, callback) => {
+    counts[id] = (counts[id] ?? 0) + 1;
+    const off = on(id, callback);
+    return () => {
+      counts[id] -= 1;
+      off();
+    };
+  };
+  return counts;
+}
+
+test("a view of a parameter prop follows the new parameter and lets the old one go", async () => {
+  const host = install();
+  const listeners = countListeners();
+  const seen: Array<[string, unknown]> = [];
+  const record = (field: string, value: unknown) => seen.push([field, value]);
+  render(ViewFields, { parameter: parameter("mix"), record });
+  expect(Object.fromEntries(seen)).toMatchObject({ handle: true, value: 0.5, text: "50%" });
+  expect(listeners).toEqual({ mix: 1 });
+
+  control.set({ parameter: parameter("gain") });
+  flushSync();
+  await tick();
+  expect(Object.fromEntries(seen)).toMatchObject({ handle: true, value: 0.2, displayText: "2.0", text: "2.0 dB" });
+  expect(listeners).toEqual({ mix: 0, gain: 1 });
+
+  // A change of the old parameter reaches no field, one of the new does.
+  seen.length = 0;
+  host.push("mix", 0.8);
+  flushSync();
+  expect(seen).toEqual([]);
+  host.push("gain", 0.3);
+  flushSync();
+  expect(Object.fromEntries(seen)).toMatchObject({ value: 0.3, text: "3.0 dB" });
+
+  unmountAll();
+  await tick();
+  expect(listeners).toEqual({ mix: 0, gain: 0 });
+});
+
+test("a view made per item of an each block follows its parameter while the item is there", async () => {
+  const host = install();
+  const listeners = countListeners();
+  const target = render(ViewList, { parameters: [parameter("mix"), parameter("gain")] });
+  expect(target.textContent).toBe("50%2.0 dB");
+  expect(listeners).toEqual({ mix: 1, gain: 1 });
+  host.push("gain", 0.25);
+  flushSync();
+  expect(target.textContent).toBe("50%2.5 dB");
+
+  control.set({ parameters: [parameter("mix")] });
+  flushSync();
+  await tick();
+  expect(target.textContent).toBe("50%");
+  expect(listeners).toEqual({ mix: 1, gain: 0 });
+
+  unmountAll();
+  await tick();
+  expect(listeners).toEqual({ mix: 0, gain: 0 });
 });

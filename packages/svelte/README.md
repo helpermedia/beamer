@@ -55,6 +55,36 @@ choice in order, the first for the lowest value; a checked one has
 The text field owns its text and whether it is read-only, so it takes
 neither.
 
+## Parameter view
+
+`parameterView(parameter)` is what a parameter shows, the counterpart of
+`useParameter` in `beamer-react`: `parameter` (the handle, for changes),
+`value` (normalized), `displayText`, `text` (with the unit) and `info`.
+Each field but the handle is a reactive read, so a readout follows a new
+text for the same value (the plugin answers an edit) and the info that
+arrives with `ready`:
+
+```svelte
+<script lang="ts">
+  import type { Parameter } from "@helpermedia/beamer-api";
+  import { parameterView } from "@helpermedia/beamer-svelte";
+
+  let { parameter }: { parameter: Parameter } = $props();
+
+  // A new view when the prop becomes another parameter.
+  const view = $derived(parameterView(parameter));
+</script>
+
+<p>{view.info?.name}: {view.text}</p>
+```
+
+Read the fields from the view: a field taken out of it
+(`const { text } = view`) keeps the value it had then. The view needs no
+variable at the top of a component, so it also works per item of an
+`{#each}` with `{@const view = parameterView(item)}` or in a `.svelte.ts`
+module. There a `$derived` over it that is read outside an effect (in an
+event handler, say) keeps following the parameter for good.
+
 ## Stores
 
 The objects of `beamer-api` and `fallingLevels` follow Svelte's store
@@ -74,10 +104,30 @@ runes:
 <p>{$mix} {$levels}</p>
 ```
 
+`$mix` is the normalized value alone. `{mix.text()}` in the markup reads
+the text once, at the first render: it keeps that text, also beside
+`$mix`. `{mix.info?.name}` misses the info that arrives with `ready`.
+Read both from a parameter view.
+
+A `State` field is a writable store: `$tab = "mixer"` sets it as
+`tab.set("mixer")` does. The plugin answers with the value in effect.
+
 A store must be a variable at the top of a component (a prop counts), so
 a component in an `{#each}` takes the parameter as a prop. Name none of
 them after a rune (`props`, `state`, `derived`, `effect`): `$props` is
 the rune, not the store. Outside a component, Svelte's
 `fromStore` makes one reactive.
+
+## From `beamer-react`
+
+| `beamer-react` | `beamer-svelte` |
+|----------------|-----------------|
+| `useParameter(id)` | `parameterView(parameter(id))` |
+| `useStateField(path)` | `$field` to read, `$field = value` or `field.set(value)` to set |
+| `useSenderValue(name)` | `$value` of `senderValue(name)` |
+| `useReadable(readable)` | `$readable` |
+| `useReady()` | `{#await ready() then}` |
+| `usePluginEvent(name, handler)` | `$effect(() => runtime().on(name, handler))`: `on` returns the function that unsubscribes |
+| The components | The same five, with the same props |
 
 Svelte 5.29 or later is a peer dependency (attachments).

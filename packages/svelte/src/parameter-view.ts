@@ -16,12 +16,25 @@ export interface ParameterView {
 }
 
 /**
- * `parameter` as a component shows it. The value, the display text, the
- * text and the info are reactive reads: a template, an effect or a
- * `$derived` that reads one follows the parameter while it runs. The text
- * can change while the value stays (the plugin answers an edit), the info
- * arrives with `ready`; both count as a change. A read outside an effect
- * returns the value now.
+ * `parameter` as a component shows it, beamer-react's `useParameter` for
+ * Svelte. The value, the display text, the text and the info are reactive
+ * reads: a template, an effect or a `$derived` that reads one follows the
+ * parameter while it runs. The text can change while the value stays (the
+ * plugin answers an edit), the info arrives with `ready`; both count as a
+ * change. A read outside an effect returns the value now, so read the
+ * fields from the view: a field taken out of it (`const { text } = view`)
+ * keeps the value it had then.
+ *
+ * For a parameter that is a prop, make the view in a `$derived`, which
+ * makes a new one when the prop changes:
+ *
+ *     const view = $derived(parameterView(parameter));
+ *
+ * Unlike a store it needs no variable at the top of a component: it also
+ * works per item of an `{#each}` with `{@const view = parameterView(item)}`
+ * or in a `.svelte.ts` module. There a `$derived` over it that is read
+ * outside an effect (in an event handler, say) keeps following the
+ * parameter for good.
  */
 export function parameterView(parameter: Parameter): ParameterView {
   const follow = createSubscriber((update) => {
