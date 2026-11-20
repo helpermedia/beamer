@@ -1,7 +1,9 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { openTextField } from "@helpermedia/beamer-controls";
+import type { DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 import type { DialState, SliderState } from "../src/index";
 import { calls, install, push } from "./runtime";
 
@@ -239,36 +241,41 @@ test("RadioGroup of a continuous parameter has no choices and none checked", () 
 });
 
 test("the options stay off the element", () => {
+  // Every option is set, so a new one has to be added here too.
+  const dialOptions = {
+    drag: "arc",
+    arcStart: 90,
+    arcSweep: 180,
+    arcDeadZone: 4,
+    dragStep: 0.01,
+    fineFactor: 0.2,
+    keyStep: 0.02,
+    pageStep: 0.2,
+    wheelCap: 8,
+    wheelRestMs: 200,
+    reset: ["modifier-click"],
+  } satisfies Required<DialOptions>;
+  const sliderOptions = {
+    orientation: "horizontal",
+    thumbLength: 0.1,
+    dragStep: 0.01,
+    fineFactor: 0.2,
+    keyStep: 0.02,
+    pageStep: 0.2,
+    wheelCap: 8,
+    wheelRestMs: 200,
+    reset: [],
+  } satisfies Required<SliderOptions>;
+  const textFieldOptions = {
+    text: (mix: Parameter) => mix.text(),
+    open: "double-click",
+  } satisfies Required<TextFieldOptions>;
   const { container, render, unmount } = mount();
   render(
     <>
-      <Dial
-        parameter={parameter("mix")}
-        drag="arc"
-        arcStart={90}
-        arcSweep={180}
-        arcDeadZone={4}
-        dragStep={0.01}
-        fineFactor={0.2}
-        keyStep={0.02}
-        pageStep={0.2}
-        wheelCap={8}
-        wheelRestMs={200}
-        reset={["modifier-click"]}
-      />
-      <Slider
-        parameter={parameter("mix")}
-        orientation="horizontal"
-        thumbLength={0.1}
-        dragStep={0.01}
-        fineFactor={0.2}
-        keyStep={0.02}
-        pageStep={0.2}
-        wheelCap={8}
-        wheelRestMs={200}
-        reset={[]}
-      />
-      <TextField parameter={parameter("mix")} text={(mix) => mix.text()} open="double-click" />
+      <Dial parameter={parameter("mix")} {...dialOptions} />
+      <Slider parameter={parameter("mix")} {...sliderOptions} />
+      <TextField parameter={parameter("mix")} {...textFieldOptions} />
     </>,
   );
   // What the controls set, nothing of the options.
@@ -427,6 +434,20 @@ test("TextField opens on a double click when asked to", () => {
   const { container, render, unmount } = mount();
   render(<TextField parameter={parameter("mix")} open="double-click" />);
   const input = container.firstElementChild as HTMLInputElement;
+  act(() => input.click());
+  expect(input.readOnly).toBe(true);
+  act(() => {
+    input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  expect(input.readOnly).toBe(false);
+  unmount();
+});
+
+test("TextField attaches again when open changes", () => {
+  const { container, render, unmount } = mount();
+  render(<TextField parameter={parameter("mix")} />);
+  const input = container.firstElementChild as HTMLInputElement;
+  render(<TextField parameter={parameter("mix")} open="double-click" />);
   act(() => input.click());
   expect(input.readOnly).toBe(true);
   act(() => {

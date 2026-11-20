@@ -4,6 +4,7 @@ import type { Parameter } from "@helpermedia/beamer-api";
 import { dialAngle, thumbPosition } from "@helpermedia/beamer-controls";
 import type { DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 import { useDialControl, useRadioGroupControl, useSliderControl, useSwitchControl, useTextFieldControl } from "./hooks.js";
+import type { EveryKeyOf, NoKeyLeft } from "./option-keys.js";
 
 // Unstyled components: each renders one element of its own, with the role,
 // the ARIA attributes and the input of a control of beamer-controls. It
@@ -84,6 +85,8 @@ export function Dial({
   reset,
   ...rest
 }: DialProps) {
+  // Every option is taken above, none goes to the `<div>`.
+  type _OptionsTaken = NoKeyLeft<Extract<keyof typeof rest, keyof DialOptions>>;
   const element = useElement(ref);
   useDialControl(element, parameter, {
     drag,
@@ -97,7 +100,7 @@ export function Dial({
     wheelCap,
     wheelRestMs,
     reset,
-  });
+  } satisfies EveryKeyOf<DialOptions>);
   const { value, text } = useShown(parameter);
   return (
     <div {...rest} ref={element}>
@@ -150,6 +153,8 @@ export function Slider({
   reset,
   ...rest
 }: SliderProps) {
+  // Every option is taken above, none goes to the `<div>`.
+  type _OptionsTaken = NoKeyLeft<Extract<keyof typeof rest, keyof SliderOptions>>;
   const element = useElement(ref);
   useSliderControl(element, parameter, {
     orientation,
@@ -161,7 +166,7 @@ export function Slider({
     wheelCap,
     wheelRestMs,
     reset,
-  });
+  } satisfies EveryKeyOf<SliderOptions>);
   const { value, text } = useShown(parameter);
   return (
     <div {...rest} ref={element}>
@@ -254,7 +259,9 @@ export type TextFieldProps = TextFieldOptions &
  * `<input>`; its `ref` can open it with `openTextField`.
  */
 export function TextField({ parameter, ref, text, open, ...rest }: TextFieldProps) {
+  // Every option is taken above, none goes to the `<input>`.
+  type _OptionsTaken = NoKeyLeft<Extract<keyof typeof rest, keyof TextFieldOptions>>;
   const element = useElement(ref);
-  useTextFieldControl(element, parameter, { text, open });
+  useTextFieldControl(element, parameter, { text, open } satisfies EveryKeyOf<TextFieldOptions>);
   return <input {...rest} type="text" ref={element} />;
 }

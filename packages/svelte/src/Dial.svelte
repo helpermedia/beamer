@@ -12,6 +12,7 @@
   import { dialAngle } from "@helpermedia/beamer-controls";
   import type { DialDrag, DialOptions } from "@helpermedia/beamer-controls";
   import { dial } from "./attachments.js";
+  import type { EveryKeyOf, FunctionKeys, NoKeyLeft } from "./option-keys.js";
   import { parameterView } from "./parameter-view.js";
   import type { DialState } from "./types.js";
 
@@ -41,6 +42,8 @@
     reset,
     ...rest
   }: Props = $props();
+  // Every option is taken above, none goes to the `<div>`.
+  type _OptionsTaken = NoKeyLeft<Extract<keyof typeof rest, keyof DialOptions>>;
 
   const view = $derived(parameterView(parameter));
   // The drag is picked for each press from the newest `drag`, so a new
@@ -48,8 +51,21 @@
   const pickDrag = (event: PointerEvent): DialDrag => (typeof drag === "function" ? drag(event) : (drag ?? "vertical"));
   // The other options are plain values, so their text tells a change from
   // a new object or array with the same content.
+  type OtherOptions = Omit<DialOptions, "drag">;
+  type _OthersPlain = NoKeyLeft<FunctionKeys<OtherOptions>>;
   const options = $derived(
-    JSON.stringify({ arcStart, arcSweep, arcDeadZone, dragStep, fineFactor, keyStep, pageStep, wheelCap, wheelRestMs, reset }),
+    JSON.stringify({
+      arcStart,
+      arcSweep,
+      arcDeadZone,
+      dragStep,
+      fineFactor,
+      keyStep,
+      pageStep,
+      wheelCap,
+      wheelRestMs,
+      reset,
+    } satisfies EveryKeyOf<OtherOptions>),
   );
   const attach = $derived(dial(parameter, { ...(JSON.parse(options) as DialOptions), drag: pickDrag }));
 </script>

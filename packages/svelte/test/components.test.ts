@@ -1,7 +1,9 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { parameter } from "@helpermedia/beamer-api";
+import type { Parameter } from "@helpermedia/beamer-api";
 import { fallingLevels, openTextField } from "@helpermedia/beamer-controls";
+import type { DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 import type { Component } from "svelte";
 import type { DialState, RadioGroupState, SliderState } from "../src/index";
 import { installRuntime } from "../../controls/test/runtime";
@@ -14,6 +16,7 @@ afterAll(() => GlobalRegistrator.unregister());
 // Svelte reads the DOM globals when it loads, so it loads after happy-dom.
 const { flushSync, mount, unmount } = await import("svelte");
 const { default: Harness, control } = await import("./fixtures/Harness.svelte");
+const { Dial, Slider, TextField } = await import("../src/index");
 const { default: DialDrawing } = await import("./fixtures/DialDrawing.svelte");
 const { default: SliderDrawing } = await import("./fixtures/SliderDrawing.svelte");
 const { default: SwitchName } = await import("./fixtures/SwitchName.svelte");
@@ -253,9 +256,8 @@ test("TextField opens on a double click when asked to", () => {
 
 test("the options stay off the element", () => {
   install();
-  const target = render(DialDrawing, {
-    parameter: parameter("mix"),
-    record: () => {},
+  // Every option is set, so a new one has to be added here too.
+  const dialOptions = {
     drag: "arc",
     arcStart: 90,
     arcSweep: 180,
@@ -267,11 +269,33 @@ test("the options stay off the element", () => {
     wheelCap: 8,
     wheelRestMs: 200,
     reset: ["modifier-click"],
-  });
-  const element = target.firstElementChild as HTMLElement;
-  const allowed = ["role", "tabindex", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext", "style"];
-  const names = [...element.attributes].map((attribute) => attribute.name);
-  expect(names.filter((name) => !allowed.includes(name))).toEqual([]);
+  } satisfies Required<DialOptions>;
+  const sliderOptions = {
+    orientation: "horizontal",
+    thumbLength: 0.1,
+    dragStep: 0.01,
+    fineFactor: 0.2,
+    keyStep: 0.02,
+    pageStep: 0.2,
+    wheelCap: 8,
+    wheelRestMs: 200,
+    reset: [],
+  } satisfies Required<SliderOptions>;
+  const textFieldOptions = {
+    text: (mix: Parameter) => mix.text(),
+    open: "double-click",
+  } satisfies Required<TextFieldOptions>;
+  const elements = [
+    render(Dial, { parameter: parameter("mix"), ...dialOptions }),
+    render(Slider, { parameter: parameter("mix"), ...sliderOptions }),
+    render(TextField, { parameter: parameter("mix"), ...textFieldOptions }),
+  ].map((target) => target.firstElementChild as HTMLElement);
+  // What the controls set, nothing of the options.
+  const allowed = ["role", "tabindex", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext", "aria-orientation", "style", "type", "readonly"];
+  for (const element of elements) {
+    const names = [...element.attributes].map((attribute) => attribute.name);
+    expect(names.filter((name) => !allowed.includes(name))).toEqual([]);
+  }
 });
 
 test("a parameter and falling levels read as Svelte stores", () => {

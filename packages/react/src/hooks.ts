@@ -4,6 +4,7 @@ import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia
 import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
 import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField } from "@helpermedia/beamer-controls";
 import type { DialDrag, DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
+import type { FunctionKeys, NoKeyLeft } from "./option-keys.js";
 
 /** A parameter as a component shows it. */
 export interface ParameterView {
@@ -137,6 +138,7 @@ export function useDialControl(
   const { drag, ...others } = options;
   // The other options are plain values, so their text tells a change from
   // a new object with the same options.
+  type _OthersPlain = NoKeyLeft<FunctionKeys<typeof others>>;
   const key = JSON.stringify(others);
   // The drag of the newest options, picked for each press.
   const pickDrag = useEffectEvent((event: PointerEvent): DialDrag => {
@@ -173,6 +175,7 @@ export function useSliderControl(
 ): void {
   // The options are plain values, so their text tells a change from a new
   // object with the same options.
+  type _OptionsPlain = NoKeyLeft<FunctionKeys<typeof options>>;
   const key = JSON.stringify(options);
   useEffect(() => {
     const element = elementOf(source);
@@ -240,23 +243,27 @@ export function useTextFieldControl(
   target: Parameter,
   options: TextFieldOptions,
 ): void {
-  const open = options.open;
+  const { text, ...others } = options;
+  // The other options are plain values, so their text tells a change from
+  // a new object with the same options.
+  type _OthersPlain = NoKeyLeft<FunctionKeys<typeof others>>;
+  const key = JSON.stringify(others);
   // The text of the newest options.
-  const shownText = useEffectEvent((shown: Parameter): string => options.text?.(shown) ?? shown.text());
+  const shownText = useEffectEvent((shown: Parameter): string => text?.(shown) ?? shown.text());
   useEffect(() => {
     const input = elementOf(source);
     if (!input) return;
-    return attachTextField(input, target, { open, text: (shown) => shownText(shown) });
-  }, [source, target, open]);
+    return attachTextField(input, target, { ...(JSON.parse(key) as TextFieldOptions), text: (shown) => shownText(shown) });
+  }, [source, target, key]);
 }
 
 /**
  * Make `input` the text field of `target` while it is there:
  * `attachTextField` of beamer-controls. Hold the input in state
  * (`ref={setInput}`), null while there is none. It attaches again when the
- * input, the parameter or `open` changes. The field owns its text, so give
- * the input no `value`. A `text` function may be a new one on every
- * render: the newest is called when the value changes.
+ * input, the parameter or an option other than `text` changes. The field
+ * owns its text, so give the input no `value`. A `text` function may be a
+ * new one on every render: the newest is called when the value changes.
  */
 export function useTextField(
   input: HTMLInputElement | null,

@@ -1,5 +1,6 @@
 import type { Parameter } from "@helpermedia/beamer-api";
-import type { SliderOptions } from "./gestures.js";
+import type { InputOptions, SliderOptions } from "./gestures.js";
+import type { NoKeyLeft } from "./option-keys.js";
 import { attachSliderRole } from "./slider-role.js";
 
 /**
@@ -31,5 +32,8 @@ import { attachSliderRole } from "./slider-role.js";
  */
 export function attachSlider(element: HTMLElement | SVGElement, target: Parameter, options: SliderOptions = {}): () => void {
   const { orientation = "vertical", thumbLength = 0, ...input } = options;
+  // Every option of the slider's own is taken above, the input that every
+  // control shares is left.
+  type _TrackTaken = NoKeyLeft<Exclude<keyof typeof input, keyof InputOptions>>;
   return attachSliderRole(element, target, input, { orientation, thumbLength });
 }

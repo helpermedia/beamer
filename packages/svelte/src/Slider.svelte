@@ -13,6 +13,7 @@
   import { thumbPosition } from "@helpermedia/beamer-controls";
   import type { SliderOptions } from "@helpermedia/beamer-controls";
   import { slider } from "./attachments.js";
+  import type { EveryKeyOf, FunctionKeys, NoKeyLeft } from "./option-keys.js";
   import { parameterView } from "./parameter-view.js";
   import type { SliderState } from "./types.js";
 
@@ -40,12 +41,25 @@
     reset,
     ...rest
   }: Props = $props();
+  // Every option is taken above, none goes to the `<div>`.
+  type _OptionsTaken = NoKeyLeft<Extract<keyof typeof rest, keyof SliderOptions>>;
 
   const view = $derived(parameterView(parameter));
   // The options are plain values, so their text tells a change from a new
   // object or array with the same content.
+  type _OptionsPlain = NoKeyLeft<FunctionKeys<SliderOptions>>;
   const options = $derived(
-    JSON.stringify({ orientation, thumbLength, dragStep, fineFactor, keyStep, pageStep, wheelCap, wheelRestMs, reset }),
+    JSON.stringify({
+      orientation,
+      thumbLength,
+      dragStep,
+      fineFactor,
+      keyStep,
+      pageStep,
+      wheelCap,
+      wheelRestMs,
+      reset,
+    } satisfies EveryKeyOf<SliderOptions>),
   );
   const attach = $derived(slider(parameter, JSON.parse(options) as SliderOptions));
 </script>
