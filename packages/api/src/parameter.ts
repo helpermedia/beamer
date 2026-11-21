@@ -1,4 +1,5 @@
 import { runtime } from "./runtime.js";
+import type { ParameterId } from "./model-types.js";
 import type { Beamer, BeamerParameterInfo } from "./types.js";
 import type { Readable } from "./stores.js";
 
@@ -15,7 +16,7 @@ import type { Readable } from "./stores.js";
  * React's `useSyncExternalStore` and Svelte call them.
  */
 export interface Parameter extends Readable<number> {
-  readonly id: string;
+  readonly id: ParameterId;
   /** What the runtime knows of it, undefined before `ready` or for an unknown id. */
   readonly info: BeamerParameterInfo | undefined;
   /** The normalized value (0 to 1). */
@@ -71,7 +72,7 @@ class ParameterHandle implements Parameter {
   #gestures = 0;
 
   constructor(
-    readonly id: string,
+    readonly id: ParameterId,
     readonly beamer: Beamer,
   ) {}
 
@@ -184,7 +185,7 @@ class ParameterHandle implements Parameter {
 const handles = new WeakMap<Beamer, Map<string, ParameterHandle>>();
 
 /** The parameter with the string id `id`. */
-export function parameter(id: string): Parameter {
+export function parameter(id: ParameterId): Parameter {
   const beamer = runtime();
   let byId = handles.get(beamer);
   if (!byId) {

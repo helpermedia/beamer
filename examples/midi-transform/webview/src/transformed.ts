@@ -158,7 +158,7 @@ export function subscribeTransformed(listener: () => void): () => void {
   listeners.add(listener);
   if (!unsubscribe) {
     const stopEvents = runtime().on("transformed", arrive);
-    const stopPressed = senderValue<unknown>("pressed").subscribe(arrivePressed);
+    const stopPressed = senderValue("pressed").subscribe(arrivePressed);
     unsubscribe = () => {
       stopEvents();
       stopPressed();

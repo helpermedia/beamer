@@ -39,7 +39,7 @@ function App() {
 
   // The pan law follows the plugin, also when a host changes it behind
   // the UI by loading a project.
-  const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
+  const [panLaw, setPanLaw] = useStateField("pan_law");
 
   const [sampleRate, setSampleRate] = useState<number | null>(null);
 
@@ -68,7 +68,10 @@ function App() {
     };
   }, []);
 
-  const togglePanLaw = () => setPanLaw(panLaw === "linear" ? "constant_power" : "linear");
+  const togglePanLaw = () => {
+    const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
+    setPanLaw(next);
+  };
 
   return (
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">

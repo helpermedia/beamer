@@ -26,7 +26,7 @@
 
   // The tab the editor shows, kept in the `State` field "tab" and saved
   // with the project. Pads before `ready` and for a value it does not know.
-  const tab = stateField<Tab>("tab");
+  const tab = stateField("tab");
   const shown: Tab = $derived(TABS.find(({ id }) => id === $tab)?.id ?? "pads");
 
   // The tab buttons in order, to move the focus between them.

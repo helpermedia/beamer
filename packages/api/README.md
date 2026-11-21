@@ -46,6 +46,36 @@ document.querySelector("#reset")!.addEventListener("click", () => mix.reset());
 | `playNote(noteNumber, options)` | A short note: on now, off after `duration` milliseconds (default 100) |
 | `allNotesOff()` | End every note the page started |
 | Types | `Beamer`, `BeamerParameterInfo` and the rest of `__BEAMER__` |
+| Model types | `ModelTypes` and the ids and values built from it: `ParameterId`, `StatePath` and `StateValue`, `ValueSenderName` and `SenderValue`, `PluginEventName` and `PluginEventData`, `PageEventName` and `PageEventArguments`, `MethodName`, `MethodArguments` and `MethodResult` |
+
+Every function that takes an id takes it as one of these types. A page
+augments the empty `ModelTypes` interface with the model's names and value
+types; each id is then one the model declares and each value has its
+type, so a typo is a compile error:
+
+```ts
+import { stateField } from "@helpermedia/beamer-api";
+
+declare module "@helpermedia/beamer-api" {
+  interface ModelTypes {
+    parameters: "mix" | "time";
+    state: { pan_law: "constant_power" | "linear" };
+    values: { levels: { peak: [number, number] } };
+  }
+}
+
+stateField("pan_law").set("linear");
+// Error: "pan_lwa" is no State path of the model.
+stateField("pan_lwa");
+```
+
+The file that holds the declaration must be a module (it imports or
+exports something); in a script, `declare module` replaces beamer-api's
+types instead of adding to them. A section the page does not declare stays
+loose: any name, values `unknown`. An empty section (`{}`, `never` for the
+parameters) allows no name.
+Events and stream senders share their names: a page that declares
+`events` or `streams` gets the other as empty.
 
 Each parameter has at most one open gesture: a gesture that begins while
 another is open ends that one first, so two controls of one parameter never

@@ -6,7 +6,7 @@
   ],
   "scripts": {
     "build": "bun run --filter './packages/*' build",
-    "typecheck": "bun run --filter './packages/*' typecheck",
+    "check": "bun run --filter './packages/*' check",
     "test": "bun test --conditions=source --conditions=browser packages"
   }
 }

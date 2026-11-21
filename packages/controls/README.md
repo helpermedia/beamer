@@ -147,8 +147,9 @@ number, one per channel (an array) or one per name (an object). A plugin
 sends its meters with every block while they show something. When nothing
 comes for 300 ms, the host stopped calling the plugin (its bypass, a host
 that rests while stopped). The levels then fall on their own at 20 dB a
-second, each towards its rest. `read` checks what arrives and gives the
-levels at rest for undefined: the floor for a level in dB, 0 for a gain
+second, each towards its rest. `read` takes what arrives (typed by the
+page's `ModelTypes`, see beamer-api, or `unknown` without them) and gives
+the levels at rest for undefined: the floor for a level in dB, 0 for a gain
 reduction. `fallPerSecond` and `waitMs` set the rate and the wait; match
 the rate to how the processor lets its held peaks fall.
 

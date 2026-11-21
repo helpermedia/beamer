@@ -1,4 +1,5 @@
 import { runtime } from "./runtime.js";
+import type { SenderValue, StatePath, StateValue, ValueSenderName } from "./model-types.js";
 import type { Beamer } from "./types.js";
 
 /**
@@ -43,16 +44,16 @@ function cached<V extends object>(cache: WeakMap<Beamer, Map<string, object>>, k
 }
 
 /** The `State` field at `path`. Undefined before `ready`. */
-export function stateField<T>(path: string): StateField<T> {
-  return cached(stateFields, path, (beamer): StateField<T> => {
-    const get = () => beamer.state.get<T>(path);
+export function stateField<P extends StatePath>(path: P): StateField<StateValue<P>> {
+  return cached(stateFields, path, (beamer): StateField<StateValue<P>> => {
+    const get = () => beamer.state.get(path);
     return {
       get,
-      subscribe: (callback: (value: T | undefined) => void) => {
+      subscribe: (callback: (value: StateValue<P> | undefined) => void) => {
         callback(get());
-        return beamer.state.on<T>(path, callback);
+        return beamer.state.on(path, callback);
       },
-      set: (value: T) => beamer.state.set(path, value),
+      set: (value: StateValue<P>) => beamer.state.set(path, value),
     };
   });
 }
@@ -61,14 +62,14 @@ export function stateField<T>(path: string): StateField<T> {
  * The newest value of the value sender `name`, which the plugin sends from
  * the audio thread. Undefined before the first one.
  */
-export function senderValue<T>(name: string): Readable<T | undefined> {
-  return cached(senderValues, name, (beamer): Readable<T | undefined> => {
-    const get = () => beamer.values.get<T>(name);
+export function senderValue<N extends ValueSenderName>(name: N): Readable<SenderValue<N> | undefined> {
+  return cached(senderValues, name, (beamer): Readable<SenderValue<N> | undefined> => {
+    const get = () => beamer.values.get(name);
     return {
       get,
-      subscribe: (callback: (value: T | undefined) => void) => {
+      subscribe: (callback: (value: SenderValue<N> | undefined) => void) => {
         callback(get());
-        return beamer.values.on<T>(name, callback);
+        return beamer.values.on(name, callback);
       },
     };
   });

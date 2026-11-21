@@ -74,10 +74,12 @@ The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any
 
 ### TypeScript Declaration
 
+`@helpermedia/beamer-api` (see [Packages for the Web UI](#packages-for-the-web-ui)) declares these types. The ids and values follow its `ModelTypes` interface, which a page augments with the model's parameter ids, `State` paths, sender names, events and methods. A section the page does not declare stays loose: any name is accepted and values are `unknown`. Events and stream senders share their names, so a page that declares one of the two gets the other as empty. Without any declaration, `ParameterId`, `StatePath`, `ValueSenderName`, `PluginEventName`, `PageEventName` and `MethodName` are plain strings.
+
 ```typescript
 interface BeamerParameterInfo {
   id: number;
-  stringId: string;
+  stringId: ParameterId;
   name: string;
   value: number;
   plainValue: number;
@@ -92,27 +94,27 @@ interface BeamerParameterInfo {
 }
 
 interface BeamerParameters {
-  get(stringId: string): number;
-  getPlain(stringId: string): number;
-  getDisplayText(stringId: string): string;
-  set(stringId: string, value: number): void;
-  beginEdit(stringId: string): void;
-  endEdit(stringId: string): void;
-  on(stringId: string, callback: (value: number) => void): () => void;
+  get(stringId: ParameterId): number;
+  getPlain(stringId: ParameterId): number;
+  getDisplayText(stringId: ParameterId): string;
+  set(stringId: ParameterId, value: number): void;
+  beginEdit(stringId: ParameterId): void;
+  endEdit(stringId: ParameterId): void;
+  on(stringId: ParameterId, callback: (value: number) => void): () => void;
   all(): BeamerParameterInfo[];
-  info(stringId: string): BeamerParameterInfo | undefined;
+  info(stringId: ParameterId): BeamerParameterInfo | undefined;
 }
 
 interface BeamerState {
-  get<T = unknown>(path: string): T | undefined;
-  set(path: string, value: unknown): void;
-  on<T = unknown>(path: string, callback: (value: T) => void): () => void;
-  ids(): string[];
+  get<P extends StatePath>(path: P): StateValue<P> | undefined;
+  set<P extends StatePath>(path: P, value: StateValue<P>): void;
+  on<P extends StatePath>(path: P, callback: (value: StateValue<P>) => void): () => void;
+  ids(): StatePath[];
 }
 
 interface BeamerValues {
-  get<T = unknown>(name: string): T | undefined;
-  on<T = unknown>(name: string, callback: (value: T) => void): () => void;
+  get<N extends ValueSenderName>(name: N): SenderValue<N> | undefined;
+  on<N extends ValueSenderName>(name: N, callback: (value: SenderValue<N>) => void): () => void;
 }
 
 interface Beamer {
@@ -122,9 +124,9 @@ interface Beamer {
   readonly parameters: BeamerParameters;
   readonly state: BeamerState;
   readonly values: BeamerValues;
-  invoke(method: string, ...args: unknown[]): Promise<unknown>;
-  on(event: string, callback: (data: unknown) => void): () => void;
-  emit(event: string, data?: unknown): void;
+  invoke<M extends MethodName>(method: M, ...args: MethodArguments<M>): Promise<MethodResult<M>>;
+  on<N extends PluginEventName>(event: N, callback: (data: PluginEventData<N>) => void): () => void;
+  emit<N extends PageEventName>(event: N, ...data: PageEventArguments<N>): void;
   noteOn(note: number, velocity?: number, channel?: number): void;
   noteOff(note: number, velocity?: number, channel?: number): void;
   allNotesOff(): void;
@@ -162,7 +164,7 @@ The `State` fields of the model (see [State Beyond Parameters](REFERENCE.md#stat
 | `state.on(path, callback)` | Subscribe to changes, also those behind the UI's back (a loaded project, a handler that sets the field). Returns an unsubscribe function |
 | `state.ids()` | Get the paths of all `State` fields. Empty before `ready` |
 
-The type parameter of `get` and `on` is the caller's claim, not a check: `state.get<PanLaw>("pan_law")`. Listeners are called only when the value differs from the one the UI has, compared as JSON with the keys of objects sorted. Subscriptions before `ready` are queued as with parameters.
+The value's type comes from the page's `ModelTypes` (see [TypeScript Declaration](#typescript-declaration)); without it the value is `unknown` and the page checks its shape. Listeners are called only when the value differs from the one the UI has, compared as JSON with the keys of objects sorted. Subscriptions before `ready` are queued as with parameters.
 
 Every `State` field is visible to the web UI and can be set by it. Keep data that the UI must not see or change in a `Handover` field instead. A large value (a wavetable, a sample) is turned into JSON and sent with every change; above 1 MB the plugin logs a warning, once per open editor.
 
@@ -175,7 +177,7 @@ The values that the plugin's value senders send from the audio thread (see [Data
 | `values.get(name)` | Get the last value. The same object until a new one arrives, so it works with React's `useSyncExternalStore`. `undefined` before the first |
 | `values.on(name, callback)` | Subscribe to the values that arrive from now on. The one that arrived already is `values.get(name)`. Returns an unsubscribe function |
 
-The type parameter of `get` and `on` is the caller's claim, not a check: `values.get<Levels>("levels")`.
+The value's type comes from the page's `ModelTypes`, as for `State` fields; without it the value is `unknown`.
 
 ### Invoke
 
@@ -410,7 +412,7 @@ self.history.push(self.window_peak);
 meter.show(__BEAMER__.values.get("levels")?.peak);
 __BEAMER__.values.on("levels", ({ peak }) => meter.show(peak));
 // In React, read it with useSenderValue (see Packages for the Web UI).
-const levels = useSenderValue<Levels>("levels");
+const levels = useSenderValue("levels");
 // A stream sender: an array with every value since the last tick.
 __BEAMER__.on("history", (points) => history.append(points));
 ```
@@ -642,7 +644,7 @@ Unstyled components, one per control. Each renders one element with the control 
 The compressor's dial draws a ring with a blue arc up to the value and a pointer inside the `<div>` of `Dial` (`Ring` and `Pointer` stand for its SVG), with the text field under it:
 
 ```tsx
-function CompressorDial({ parameterId }: { parameterId: string }) {
+function CompressorDial({ parameterId }: { parameterId: ParameterId }) {
   const { parameter } = useParameter(parameterId);
   return (
     <div className="flex flex-col items-center">
@@ -675,7 +677,7 @@ The hooks:
 The demo's pan law and output meter:
 
 ```tsx
-const [panLaw, setPanLaw] = useStateField<PanLaw>("pan_law");
+const [panLaw, setPanLaw] = useStateField("pan_law");
 // Made once, when the module loads: the levels in dB, falling on their own.
 const levels = fallingLevels("levels", { read: (value) => peaksInDb(value) });
 const peaks = useReadable(levels);

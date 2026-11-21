@@ -1,12 +1,28 @@
 // Types of `__BEAMER__`, the runtime that a Beamer plugin injects into the
-// page of its editor before any page code runs. See docs/WEBVIEW.md.
+// page of its editor before any page code runs. See docs/WEBVIEW.md. Ids
+// and values follow the model's types (model-types.ts).
+
+import type {
+  MethodArguments,
+  MethodName,
+  MethodResult,
+  PageEventArguments,
+  PageEventName,
+  ParameterId,
+  PluginEventData,
+  PluginEventName,
+  SenderValue,
+  StatePath,
+  StateValue,
+  ValueSenderName,
+} from "./model-types.js";
 
 /** What the runtime knows of a parameter. */
 export interface BeamerParameterInfo {
   /** Numeric id, a hash of the string id, for host calls. */
   id: number;
   /** The `id` of the `#[parameter]` attribute, behind the names of nested groups. */
-  stringId: string;
+  stringId: ParameterId;
   name: string;
   /** Current normalized value (0 to 1). */
   value: number;
@@ -30,33 +46,33 @@ export interface BeamerParameterInfo {
 }
 
 export interface BeamerParameters {
-  get(stringId: string): number;
-  getPlain(stringId: string): number;
-  getDisplayText(stringId: string): string;
-  set(stringId: string, value: number): void;
-  beginEdit(stringId: string): void;
-  endEdit(stringId: string): void;
-  on(stringId: string, callback: (value: number) => void): () => void;
+  get(stringId: ParameterId): number;
+  getPlain(stringId: ParameterId): number;
+  getDisplayText(stringId: ParameterId): string;
+  set(stringId: ParameterId, value: number): void;
+  beginEdit(stringId: ParameterId): void;
+  endEdit(stringId: ParameterId): void;
+  on(stringId: ParameterId, callback: (value: number) => void): () => void;
   all(): BeamerParameterInfo[];
-  info(stringId: string): BeamerParameterInfo | undefined;
+  info(stringId: ParameterId): BeamerParameterInfo | undefined;
 }
 
 export interface BeamerState {
   /** The value the UI knows, the same object until it changes. */
-  get<T = unknown>(path: string): T | undefined;
+  get<P extends StatePath>(path: P): StateValue<P> | undefined;
   /** Set a value; the plugin answers with the value in effect. */
-  set(path: string, value: unknown): void;
+  set<P extends StatePath>(path: P, value: StateValue<P>): void;
   /** Subscribe to changes, also those behind the UI's back. */
-  on<T = unknown>(path: string, callback: (value: T) => void): () => void;
+  on<P extends StatePath>(path: P, callback: (value: StateValue<P>) => void): () => void;
   /** The paths of all State fields, empty before `ready`. */
-  ids(): string[];
+  ids(): StatePath[];
 }
 
 export interface BeamerValues {
   /** The last value of a value sender, the same object until a new one arrives. */
-  get<T = unknown>(name: string): T | undefined;
+  get<N extends ValueSenderName>(name: N): SenderValue<N> | undefined;
   /** Subscribe to the values that arrive from now on. */
-  on<T = unknown>(name: string, callback: (value: T) => void): () => void;
+  on<N extends ValueSenderName>(name: N, callback: (value: SenderValue<N>) => void): () => void;
 }
 
 export interface Beamer {
@@ -69,10 +85,12 @@ export interface Beamer {
   readonly parameters: BeamerParameters;
   readonly state: BeamerState;
   readonly values: BeamerValues;
-  invoke(method: string, ...args: unknown[]): Promise<unknown>;
+  /** Call a method of the plugin with its arguments, in order. */
+  invoke<M extends MethodName>(method: M, ...args: MethodArguments<M>): Promise<MethodResult<M>>;
   /** Events the plugin emits and the arrays of its stream senders. */
-  on(event: string, callback: (data: unknown) => void): () => void;
-  emit(event: string, data?: unknown): void;
+  on<N extends PluginEventName>(event: N, callback: (data: PluginEventData<N>) => void): () => void;
+  /** Send an event to the plugin. */
+  emit<N extends PageEventName>(event: N, ...data: PageEventArguments<N>): void;
   /**
    * Start a note in the processor, which gets it with the host's MIDI
    * input: a note number 0 to 127, a velocity 0 to 1 (default 1) and a

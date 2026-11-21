@@ -41,11 +41,12 @@ test("useParameter follows the value and the text the plugin answers with", () =
 });
 
 test("useStateField reads and sets a State field", () => {
-  let setPanLaw: (value: string) => void = () => {};
+  let setPanLaw: (value: unknown) => void = () => {};
   function PanLaw() {
-    const [panLaw, set] = useStateField<string>("pan_law");
+    // Without a generated file the value is unknown.
+    const [panLaw, set] = useStateField("pan_law");
     setPanLaw = set;
-    return <span>{panLaw}</span>;
+    return <span>{String(panLaw)}</span>;
   }
   const { container, unmount } = render(<PanLaw />);
   expect(container.textContent).toBe("linear");
@@ -59,7 +60,8 @@ test("useStateField reads and sets a State field", () => {
 
 test("useSenderValue shows the newest value", () => {
   function Meter() {
-    const levels = useSenderValue<{ peak: number }>("levels");
+    // Without a generated file the value is unknown.
+    const levels = useSenderValue("levels") as { peak: number } | undefined;
     return <span>{levels ? levels.peak : "none"}</span>;
   }
   const { container, unmount } = render(<Meter />);

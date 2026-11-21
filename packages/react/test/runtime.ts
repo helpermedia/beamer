@@ -72,18 +72,18 @@ export function install(ready = true): void {
       info: (id) => (known ? infos[id] : undefined),
     },
     state: {
-      get: <T,>() => panLaw as T,
+      get: () => panLaw,
       set: (_path, value) => {
         panLaw = String(value);
         calls.push(`state ${value}`);
         emit("state:pan_law", panLaw);
       },
-      on: <T,>(path: string, callback: (value: T) => void) => on(`state:${path}`, callback as (value: unknown) => void),
+      on: (path, callback) => on(`state:${path}`, callback),
       ids: () => ["pan_law"],
     },
     values: {
-      get: <T,>() => levels as T,
-      on: <T,>(name: string, callback: (value: T) => void) => on(`value:${name}`, callback as (value: unknown) => void),
+      get: () => levels,
+      on: (name, callback) => on(`value:${name}`, callback),
     },
     invoke: async () => null,
     on: (name, callback) => on(`event:${name}`, callback),

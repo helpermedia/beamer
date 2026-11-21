@@ -1,5 +1,5 @@
 import { senderValue } from "@helpermedia/beamer-api";
-import type { Readable } from "@helpermedia/beamer-api";
+import type { Readable, SenderValue, ValueSenderName } from "@helpermedia/beamer-api";
 
 /**
  * The levels of a meter: one, one per channel or one per name. `T` is the
@@ -8,15 +8,19 @@ import type { Readable } from "@helpermedia/beamer-api";
  */
 export type MeterLevels<T> = number | readonly number[] | { readonly [K in keyof T]: number };
 
-/** How falling levels read their sender and fall. */
-export interface FallingLevelsOptions<T extends MeterLevels<T>> {
+/**
+ * How falling levels read their sender and fall. `V` is the type of the
+ * sender's value: the model's type with the page's generated file, unknown
+ * without it.
+ */
+export interface FallingLevelsOptions<T extends MeterLevels<T>, V = unknown> {
   /**
    * The levels in what the sender sent, each a finite number. Called with
    * undefined for the levels at rest, where each one falls to: the floor
-   * of a level in dB, 0 for a gain reduction. What arrives is the
-   * sender's claim, so check its shape here.
+   * of a level in dB, 0 for a gain reduction. Without the page's generated
+   * file the value is unknown, so check its shape here.
    */
-  read: (value: unknown) => T;
+  read: (value: V | undefined) => T;
   /** How far a level falls in a second, in its own unit. Default 20 (dB). */
   fallPerSecond?: number;
   /**
@@ -60,7 +64,10 @@ function everyLevel<T extends MeterLevels<T>>(levels: T, rest: T, test: (level: 
  * holds when the first subscriber comes counts as fresh, so an editor that
  * opens while the host does not call the plugin shows it until it falls.
  */
-export function fallingLevels<T extends MeterLevels<T>>(sender: string, options: FallingLevelsOptions<T>): Readable<T> {
+export function fallingLevels<N extends ValueSenderName, T extends MeterLevels<T>>(
+  sender: N,
+  options: FallingLevelsOptions<T, SenderValue<N>>,
+): Readable<T> {
   const fallPerSecond = options.fallPerSecond ?? 20;
   const waitMs = options.waitMs ?? 300;
   let rest: T | undefined;
@@ -94,7 +101,7 @@ export function fallingLevels<T extends MeterLevels<T>>(sender: string, options:
     show(levels);
     frame = atRest(levels) ? 0 : requestAnimationFrame(fall);
   };
-  const arrive = (value: unknown) => {
+  const arrive = (value: SenderValue<N> | undefined) => {
     stopFalling();
     const levels = options.read(value);
     last = levels;
@@ -109,7 +116,7 @@ export function fallingLevels<T extends MeterLevels<T>>(sender: string, options:
   return {
     get,
     subscribe: (callback: (levels: T) => void) => {
-      if (!unsubscribe) unsubscribe = senderValue<unknown>(sender).subscribe(arrive);
+      if (!unsubscribe) unsubscribe = senderValue(sender).subscribe(arrive);
       listeners.add(callback);
       callback(get());
       return () => {

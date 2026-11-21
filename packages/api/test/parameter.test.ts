@@ -63,13 +63,13 @@ function install(options: { ready?: boolean; invoke?: () => Promise<unknown> } =
       info: (id) => infos[id],
     },
     state: {
-      get: <T>() => "linear" as T,
+      get: () => "linear",
       set: (path, value) => calls.push(`state ${path} ${value}`),
       on: () => () => {},
       ids: () => ["pan_law"],
     },
     values: {
-      get: <T>() => ({ peak: [0.5, 0.25] }) as T,
+      get: () => ({ peak: [0.5, 0.25] }),
       on: () => () => {},
     },
     invoke:
@@ -200,15 +200,17 @@ test("before ready a parameter reads as empty and ignores changes", async () => 
 });
 
 test("state fields and sender values read the runtime, one object per name", () => {
-  const panLaw = stateField<string>("pan_law");
-  expect(stateField<string>("pan_law")).toBe(panLaw);
+  const panLaw = stateField("pan_law");
+  expect(stateField("pan_law")).toBe(panLaw);
   expect(panLaw.get()).toBe("linear");
   panLaw.set("constant_power");
   expect(calls).toEqual(["state pan_law constant_power"]);
   const seen: unknown[] = [];
   panLaw.subscribe((value) => seen.push(value));
   expect(seen).toEqual(["linear"]);
-  expect(senderValue<{ peak: number[] }>("levels").get()?.peak).toEqual([0.5, 0.25]);
+  // Without a generated file the value is unknown.
+  const levels = senderValue("levels").get() as { peak: number[] } | undefined;
+  expect(levels?.peak).toEqual([0.5, 0.25]);
 });
 
 test("without a runtime the error explains why", () => {

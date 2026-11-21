@@ -84,8 +84,8 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
       ids: () => [],
     },
     values: {
-      get: <T,>(name: string) => values.get(name) as T,
-      on: <T,>(name: string, callback: (value: T) => void) => on(`value:${name}`, callback as (value: unknown) => void),
+      get: (name) => values.get(name),
+      on: (name, callback) => on(`value:${name}`, callback),
     },
     invoke: async (method, _id, text) => {
       if (method !== "_beamer/parameterTextToNormalized") return null;

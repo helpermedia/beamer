@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.test.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["../../src", ".", "../../../api/test/typed/full/model-types.ts"],
+  "exclude": []
+}

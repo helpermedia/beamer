@@ -17,7 +17,7 @@ function finite(value: unknown, fallback: number): number {
 
 // The status, null until the host prepared the plugin.
 export function useStatus(): Status | null {
-  const status = useSenderValue<Partial<Status>>("status");
+  const status = useSenderValue("status") as Partial<Status> | undefined;
   if (typeof status !== "object" || status === null) return null;
   return {
     sampleRate: finite(status.sampleRate, 0),

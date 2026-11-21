@@ -26,7 +26,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "svelte-package -i src -o dist",
-    "typecheck": "svelte-check --tsconfig ./tsconfig.test.json --fail-on-warnings",
+    "check": "svelte-check --tsconfig ./tsconfig.test.json --fail-on-warnings && svelte-check --tsconfig ./test/typed/tsconfig.json --fail-on-warnings",
     "test": "bun test --conditions=source --conditions=browser"
   },
   "dependencies": {

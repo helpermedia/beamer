@@ -12,5 +12,8 @@
   "include": [
     "src",
     "test"
+  ],
+  "exclude": [
+    "test/typed"
   ]
 }

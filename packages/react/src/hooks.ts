@@ -1,7 +1,18 @@
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 import type { RefObject } from "react";
 import { parameter, ready, runtime, senderValue, stateField } from "@helpermedia/beamer-api";
-import type { BeamerParameterInfo, Parameter, Readable } from "@helpermedia/beamer-api";
+import type {
+  BeamerParameterInfo,
+  Parameter,
+  ParameterId,
+  PluginEventData,
+  PluginEventName,
+  Readable,
+  SenderValue,
+  StatePath,
+  StateValue,
+  ValueSenderName,
+} from "@helpermedia/beamer-api";
 import { attachDial, attachRadioGroup, attachSlider, attachSwitch, attachTextField } from "@helpermedia/beamer-controls";
 import type { DialDrag, DialOptions, SliderOptions, TextFieldOptions } from "@helpermedia/beamer-controls";
 import type { FunctionKeys, NoKeyLeft } from "./option-keys.js";
@@ -24,7 +35,7 @@ export interface ParameterView {
  * The parameter with the string id `id`. The component renders again when
  * the value or its text changes, also when the host automates it.
  */
-export function useParameter(id: string): ParameterView {
+export function useParameter(id: ParameterId): ParameterView {
   const handle = parameter(id);
   const value = useSyncExternalStore(handle.subscribe, handle.get);
   // The text can change while the normalized value stays, when the plugin
@@ -38,8 +49,8 @@ export function useParameter(id: string): ParameterView {
  * The `State` field at `path` and the function that sets it, like
  * `useState`. The value is undefined before `ready`.
  */
-export function useStateField<T>(path: string): [T | undefined, (value: T) => void] {
-  const field = stateField<T>(path);
+export function useStateField<P extends StatePath>(path: P): [StateValue<P> | undefined, (value: StateValue<P>) => void] {
+  const field = stateField(path);
   const value = useSyncExternalStore(field.subscribe, field.get);
   return [value, field.set];
 }
@@ -48,8 +59,8 @@ export function useStateField<T>(path: string): [T | undefined, (value: T) => vo
  * The newest value of the value sender `name`, which the plugin sends from
  * the audio thread. Undefined before the first one.
  */
-export function useSenderValue<T>(name: string): T | undefined {
-  const value = senderValue<T>(name);
+export function useSenderValue<N extends ValueSenderName>(name: N): SenderValue<N> | undefined {
+  const value = senderValue(name);
   return useSyncExternalStore(value.subscribe, value.get);
 }
 
@@ -58,7 +69,7 @@ export function useSenderValue<T>(name: string): T | undefined {
  * arrays of its stream senders. Events that come before the component
  * mounts are not kept.
  */
-export function usePluginEvent(name: string, handler: (data: unknown) => void): void {
+export function usePluginEvent<N extends PluginEventName>(name: N, handler: (data: PluginEventData<N>) => void): void {
   // The newest handler, so that a handler defined in the component's body
   // does not subscribe again on every render.
   const onEvent = useEffectEvent(handler);

@@ -37,7 +37,8 @@ function MixDial() {
 }
 
 function PanLawButton() {
-  const [panLaw, setPanLaw] = useStateField<"linear" | "constant_power">("pan_law");
+  // Typed by the page's ModelTypes (see beamer-api), unknown without them.
+  const [panLaw, setPanLaw] = useStateField("pan_law");
   return (
     <button onClick={() => setPanLaw(panLaw === "linear" ? "constant_power" : "linear")}>
       {panLaw}
