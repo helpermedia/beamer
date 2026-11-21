@@ -873,7 +873,7 @@ pub trait Model: Saved + Default + 'static {
 }
 ```
 
-`#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example). The answers to the web UI's `invoke()` calls and events are in a trait of their own, `WebViewHandler` (see [WEBVIEW.md](WEBVIEW.md#answering-the-web-ui)).
+`#[beamer::model]` implements the supertraits (all but `Default` with `no_default`); the plugin writes `impl Model` (see [Two-Struct Pattern](#two-struct-pattern) for a complete example). The answers to the web UI's `invoke()` calls and events are methods in an impl block marked `#[beamer::handler]`, which generates `WebViewHandler` (see [WEBVIEW.md](WEBVIEW.md#answering-the-web-ui)).
 
 `prepare()` gets the model's `Arc`. The processor keeps it, or only the readers and values it needs. Take readers before `self` moves into the processor: `Processor { pan_law: self.pan_law.reader(), model: self }`, in that order; the other order does not compile. The model keeps answering the host while audio runs. Its methods are called from host threads, never from the audio thread (the functions of its factory presets may be). Several host threads may use it at the same time: a model is `Sync`. Every method other than `prepare()` takes `&self`, also the ones that change something, such as `on_midi_learn()`: they keep what they change in a `State` field of the model, an atomic or a `Mutex`.
 

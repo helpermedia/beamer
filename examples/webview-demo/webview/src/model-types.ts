@@ -25,6 +25,16 @@ export interface Levels {
   peak: [number, number];
 }
 
+/** What the editor's About box shows. */
+export interface Info {
+  /** The plugin's name. */
+  name: string;
+  /** The plugin's version. */
+  version: string;
+  /** The framework it is built with. */
+  framework: string;
+}
+
 declare module "@helpermedia/beamer-api" {
   interface ModelTypes {
     parameters: "gain" | "pan";
@@ -40,5 +50,10 @@ declare module "@helpermedia/beamer-api" {
     events: {
       sampleRate: number;
     };
+    methods: {
+      info: { arguments: []; result: Info };
+      sampleRate: { arguments: []; result: number };
+    };
+    pageEvents: {};
   }
 }

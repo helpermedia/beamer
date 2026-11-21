@@ -3,6 +3,8 @@
 //! - `#[beamer::model]` marks the model of a plugin: the struct every thread
 //!   shares, with its parameters, `State` fields and event queue.
 //! - `#[beamer::group]` marks a nested group of a model.
+//! - `#[beamer::handler]` marks the impl block whose methods answer the web
+//!   UI's `invoke()` calls and page events.
 //! - `#[beamer::export]` exports the model as a plugin, with its
 //!   `Config.toml`.
 //! - `#[derive(EnumParameter)]` makes an enum the value of an
@@ -57,6 +59,7 @@ use proc_macro::TokenStream;
 mod codegen;
 mod config_file;
 mod enum_parameter;
+mod handler;
 mod init;
 mod ir;
 mod model_attribute;
@@ -171,6 +174,64 @@ mod validate;
 #[proc_macro_attribute]
 pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
     model_attribute::expand(model_attribute::Kind::Model, attr.into(), item.into()).into()
+}
+
+/// Answer the web UI from an impl block of the model: `invoke()` calls and
+/// the events the page emits.
+///
+/// Generates `WebViewHandler` from the methods marked with an attribute,
+/// with their types in the page's model types. Methods without one stay
+/// helpers of the block.
+///
+/// - `#[method(id = "...")]`: the page calls it with
+///   `invoke("id", ...arguments)`. The arguments after `&self` are the
+///   positional arguments of `invoke()`, read with serde into owned values.
+///   The result is what the promise resolves to; a `Result` rejects it with
+///   the error's text.
+/// - `#[page_event(id = "...")]`: the page sends it with
+///   `emit("id", data)`. Its one argument after `&self` is the data, none
+///   for an event without data. It returns nothing.
+///
+/// The ids are written as the page writes them (camelCase). Each type of an
+/// argument, a result or an event's data needs `TypeScript`
+/// (`#[derive(TypeScript)]` next to `Serialize` and `Deserialize`) for a
+/// page with generated model types. Both are called on the main thread,
+/// never on the audio thread.
+///
+/// A `Result` is written `Result<T, E>` in the signature, so that the
+/// page's types read `T` from it: under another name (an alias) it still
+/// rejects the promise, but the page's types cannot see its value. A
+/// `#[cfg]` on a marked function applies to its answer and its types too.
+/// On a generic model the block's bounds are the struct's own: the
+/// dispatch does not find a handler that holds for some types only.
+///
+/// # Example
+///
+/// ```ignore
+/// #[beamer::handler]
+/// impl SamplerModel {
+///     /// The name of the loaded sample.
+///     #[method(id = "sampleName")]
+///     fn sample_name(&self) -> String {
+///         (*self.sample_name.get()).clone()
+///     }
+///
+///     /// Load the sample at `path`.
+///     #[method(id = "loadSample")]
+///     fn load_sample(&self, path: String) -> Result<(), String> {
+///         self.loader.load(&path)
+///     }
+///
+///     /// A pad the page played.
+///     #[page_event(id = "padHit")]
+///     fn pad_hit(&self, hit: PadHit) {
+///         self.pads.push(hit);
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    handler::expand(attr.into(), item.into()).into()
 }
 
 /// Mark a struct as a nested group of a model: a part of it that the host

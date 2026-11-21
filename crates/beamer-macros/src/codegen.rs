@@ -912,7 +912,7 @@ fn type_script_if_any(field_type: &syn::Type) -> TokenStream {
 }
 
 /// The first type parameter of `generics` that `ty` names, as a string.
-fn named_type_parameter(ty: &syn::Type, generics: &syn::Generics) -> Option<String> {
+pub(crate) fn named_type_parameter(ty: &syn::Type, generics: &syn::Generics) -> Option<String> {
     fn find(tokens: proc_macro2::TokenStream, names: &[String]) -> Option<String> {
         tokens.into_iter().find_map(|token| match token {
             proc_macro2::TokenTree::Ident(ident) => {
@@ -1043,6 +1043,12 @@ fn generate_webview_dispatch_impl(ir: &ModelIR) -> TokenStream {
                 #[allow(unused_imports)]
                 use ::beamer::webview::__private::{Implemented as _, Missing as _};
                 (&::beamer::webview::__private::ModelRef(self)).event(name, data);
+            }
+
+            fn dispatch_describe_handler(types: &mut ::beamer::webview::ModelTypes) {
+                #[allow(unused_imports)]
+                use ::beamer::webview::__private::{Described as _, Undescribed as _};
+                (&::beamer::webview::__private::HandlerOf::<Self>::new()).describe(types);
             }
         }
     }

@@ -76,7 +76,7 @@ The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any
 
 `@helpermedia/beamer-api` (see [Packages for the Web UI](#packages-for-the-web-ui)) declares these types. The ids and values follow its `ModelTypes` interface, which a page augments with the model's parameter ids, `State` paths, sender names, events and methods. A section the page does not declare stays loose: any name is accepted and values are `unknown`. Events and stream senders share their names, so a page that declares one of the two gets the other as empty. Without any declaration, `ParameterId`, `StatePath`, `ValueSenderName`, `PluginEventName`, `PageEventName` and `MethodName` are plain strings.
 
-A plugin with a `webview/package.json` gets the declaration generated from its model, in `webview/src/model-types.ts`: the parameter ids, the `State` fields, the senders and the events, each with the TypeScript of the type it carries (`#[derive(TypeScript)]` next to `Serialize`). `cargo xtask bundle` writes the file before it builds the page, `cargo xtask model-types <plugin>` writes it on its own and `cargo test` fails while it differs from the model. Commit it with the change of the model.
+A plugin with a `webview/package.json` gets the declaration generated from its model, in `webview/src/model-types.ts`: the parameter ids, the `State` fields, the senders and the events, each with the TypeScript of the type it carries (`#[derive(TypeScript)]` next to `Serialize`). A model with `#[beamer::handler]` adds its methods and page events (see [Answering the Web UI](#answering-the-web-ui)). `cargo xtask bundle` writes the file before it builds the page, `cargo xtask model-types <plugin>` writes it on its own and `cargo test` fails while it differs from the model. Commit it with the change of the model.
 
 ```typescript
 interface BeamerParameterInfo {
@@ -183,17 +183,17 @@ The value's type comes from the page's `ModelTypes`, as for `State` fields; with
 
 ### Invoke
 
-`invoke()` sends a request to `on_invoke()` of the model's `WebViewHandler` (see [Answering the Web UI](#answering-the-web-ui)) and returns a Promise:
+`invoke()` calls a method of the model (see [Answering the Web UI](#answering-the-web-ui)) and returns a Promise:
 
 ```javascript
-const info = await __BEAMER__.invoke("getInfo");
+const info = await __BEAMER__.invoke("info");
 console.log(info.name);   // "Beamer WebView Demo"
 console.log(info.version); // The version from Cargo.toml
 ```
 
 A call does not wait for `ready`: the plugin answers it while the parameters are still on their way, so a page can ask for what it shows as soon as it starts. The demo asks for its version and the sample rate that way.
 
-If `on_invoke()` returns `Err(message)`, the Promise rejects with that message string. A method the plugin does not know rejects too: the default `on_invoke()` answers every call with `Err("unknown method: ...")` and an override ends its `match` the same way. Catch the rejection where a method may be missing.
+If the method returns `Err(error)`, the Promise rejects with the error's text. A method the plugin does not know rejects too, with `"unknown method: ..."`, as do arguments that do not fit the method. With the page's generated model types, a name or an argument that does not fit is a compile error of the page instead.
 
 One method is built in and never reaches the model: `_beamer/parameterTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
 
@@ -207,10 +207,10 @@ const normalized = await __BEAMER__.invoke("_beamer/parameterTextToNormalized", 
 Events provide fire-and-forget communication in both directions:
 
 ```javascript
-// JS to Rust, handled by WebViewHandler::on_event
-__BEAMER__.emit("myEvent", { some: "data" });
+// JS to Rust, handled by a #[page_event] method of the model
+__BEAMER__.emit("padHit", { pad: 0, velocity: 0.8 });
 
-// Rust to JS, sent with WebViewEventQueue::emit
+// Rust to JS, sent with WebViewEvent::emit
 __BEAMER__.on("sampleLoaded", (name) => {
   showSample(name);
 });
@@ -310,7 +310,7 @@ pub struct WebViewDemoModel {
 The model's methods can then send the event. So can every other thread that holds the model's `Arc`, except the audio thread. A value of the wrong type does not compile:
 
 ```rust
-// In a method of the model, such as prepare(), or in its WebViewHandler.
+// In a method of the model, such as prepare(), or in its handler.
 self.sample_rate_event.emit(&48000.0);
 ```
 
@@ -343,7 +343,7 @@ The web UI asks once and then follows the event:
 
 ```javascript
 const unsubscribe = __BEAMER__.on("sampleRate", (rate) => show(rate));
-show(await __BEAMER__.invoke("getSampleRate"));
+show(await __BEAMER__.invoke("sampleRate"));
 ```
 
 ## Data from the Audio Thread
@@ -444,47 +444,76 @@ What to know about senders:
 
 ## Answering the Web UI
 
-A model answers `invoke()` calls and custom events from JavaScript with the two methods of `WebViewHandler`, which a plugin implements when its web UI uses them. Parameter and `State` synchronization are automatic and do not go through them.
+A model answers `invoke()` calls and the events the page emits with methods in an impl block marked `#[beamer::handler]`. Parameter and `State` synchronization are automatic and do not go through them.
 
 ```rust
-pub trait WebViewHandler {
-    fn on_invoke(
-        &self,
-        method: &str,
-        args: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
-        Err(format!("unknown method: {method}"))
+#[beamer::handler]
+impl SamplerModel {
+    /// The name of the loaded sample.
+    #[method(id = "sampleName")]
+    fn sample_name(&self) -> String {
+        (*self.sample_name.get()).clone()
     }
 
-    fn on_event(&self, name: &str, data: &serde_json::Value) {}
+    /// Load the sample at `path`.
+    #[method(id = "loadSample")]
+    fn load_sample(&self, path: String) -> Result<(), String> {
+        self.loader.load(&path)
+    }
+
+    /// A pad the page played.
+    #[page_event(id = "padHit")]
+    fn pad_hit(&self, hit: PadHit) {
+        self.pads.push(hit);
+    }
 }
 ```
 
-`#[beamer::model]` generates the `WebViewDispatch` through which the format wrappers call the handler. A model without a `WebViewHandler` rejects every call as an unknown method and ignores the events. A hand-written model (without `#[beamer::model]`) adds an empty `impl WebViewDispatch for MyModel {}`, which does the same, or forwards its methods to its handler. A generic model implements `WebViewHandler` for every type the struct takes, with no bounds beyond the struct's own: the dispatch does not find an impl for one type only.
+```javascript
+const name = await __BEAMER__.invoke("sampleName");
+await __BEAMER__.invoke("loadSample", "/samples/kick.wav");
+__BEAMER__.emit("padHit", { pad: 0, velocity: 0.8 });
+```
 
-Both methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows. Host threads may use the model at the same time, so what these methods change is a value that is safe to share: a `State` field, a `Handover`, an atomic or a `Mutex`. The model cannot reach the processor. Data the audio thread produces for the web UI goes through a sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). Data it produces for the model goes through a value the processor writes without locking, such as an atomic.
+- **`#[method(id = "...")]`:** the page calls it with `invoke("id", ...arguments)`. The arguments after `&self` are the positional arguments of `invoke()`, read with serde into owned values (`String`, not `&str`). What the method returns is what the Promise resolves to (`null` for nothing). A `Result` rejects the Promise with the error's text.
+- **`#[page_event(id = "...")]`:** the page sends it with `emit("id", data)`. The one argument after `&self` is the data, none for an event without data. It returns nothing: the page does not wait. Data that does not read is logged and dropped.
+- **The ids** are written as the page writes them, camelCase as `sampleRate`, so a search finds both ends. A method without an attribute is a helper of the block that the page cannot reach.
+- **The types** of the arguments, results and data go into the page's model types (see [TypeScript Declaration](#typescript-declaration)), so `invoke()` and `emit()` are checked like every other name: each type needs `#[derive(TypeScript)]` next to `Serialize` and `Deserialize`.
+
+The attribute generates `WebViewHandler`. The format wrappers reach it through the `WebViewDispatch` that `#[beamer::model]` generates. A model without a handler rejects every call as an unknown method and ignores the events. A handler can also be written by hand: `on_invoke(method, args)` and `on_event(name, data)` match on the names. Its methods are not in the page's model types, so the page's `invoke()` and `emit()` stay loose. A hand-written model (without `#[beamer::model]`) adds an empty `impl WebViewDispatch for MyModel {}`, which rejects every call, or forwards its methods to its handler. The handler of a generic model holds for every type the struct takes, with no bounds beyond the struct's own: the dispatch does not find an impl for one type only.
+
+The methods are called on the main thread. The model lives as long as the plugin instance and holds the parameters and `State` fields, so its methods can answer with anything the plugin knows. Host threads may use the model at the same time, so what these methods change is a value that is safe to share: a `State` field, a `Handover`, an atomic or a `Mutex`. The model cannot reach the processor. Data the audio thread produces for the web UI goes through a sender (see [Data from the Audio Thread](#data-from-the-audio-thread)). Data it produces for the model goes through a value the processor writes without locking, such as an atomic.
 
 ### Example (from `webview-demo`)
 
-Here the model answers with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
+Here the model answers with its name and version and with the sample rate the host runs at, which the plugin keeps in a `Handover` field: it is neither saved nor a parameter, so the web UI asks for it.
 
 ```rust
-impl WebViewHandler for WebViewDemoModel {
-    fn on_invoke(
-        &self,
-        method: &str,
-        _args: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
-        match method {
-            "getInfo" => Ok(serde_json::json!({
-                "name": "Beamer WebView Demo",
-                "version": env!("CARGO_PKG_VERSION"),
-                "framework": "Beamer",
-            })),
-            // 0 before the host prepared the plugin.
-            "getSampleRate" => Ok(serde_json::json!(*self.sample_rate.get())),
-            _ => Err(format!("unknown method: {method}")),
+/// What the editor's About box shows.
+#[derive(Debug, Clone, Copy, Serialize, TypeScript)]
+#[serde(crate = "beamer::serde")]
+pub struct Info {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub framework: &'static str,
+}
+
+#[beamer::handler]
+impl WebViewDemoModel {
+    /// The plugin's name and version, for the About box.
+    #[method(id = "info")]
+    fn info(&self) -> Info {
+        Info {
+            name: "Beamer WebView Demo",
+            version: env!("CARGO_PKG_VERSION"),
+            framework: "Beamer",
         }
+    }
+
+    /// The sample rate of the host, 0 before it prepared the plugin.
+    #[method(id = "sampleRate")]
+    fn sample_rate(&self) -> f64 {
+        *self.sample_rate.get()
     }
 }
 ```
@@ -492,12 +521,12 @@ impl WebViewHandler for WebViewDemoModel {
 On the JavaScript side the UI asks for the value when it opens:
 
 ```javascript
-const rate = await __BEAMER__.invoke("getSampleRate");
+const rate = await __BEAMER__.invoke("sampleRate");
 ```
 
-The demo then follows the sample rate through an event (see [Events from Rust](#events-from-rust)).
+The demo then follows the sample rate through an event of the same name (see [Events from Rust](#events-from-rust)).
 
-A `State` field does not need `on_invoke()` at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
+A `State` field needs no method at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
 
 ## Parameter Synchronization
 

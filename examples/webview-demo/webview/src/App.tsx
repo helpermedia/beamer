@@ -1,30 +1,25 @@
 import { useEffect, useState } from "react";
 import { runtime } from "@helpermedia/beamer-api";
+import type { Info } from "./model-types";
 import { usePluginEvent, useReady, useStateField } from "@helpermedia/beamer-react";
 import LevelHistory from "./components/LevelHistory";
 import LevelMeter from "./components/LevelMeter";
 import Dial from "./components/Dial";
 
-interface PluginInfo {
-  name: string;
-  version: string;
-  framework: string;
-}
-
 function App() {
   const [showAbout, setShowAbout] = useState(false);
-  const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
+  const [pluginInfo, setPluginInfo] = useState<Info | null>(null);
 
   // Ask for the name and version when the editor opens. A call needs no
   // `ready`: the plugin answers it while the parameters are on their way.
   useEffect(() => {
     let mounted = true;
     runtime()
-      .invoke("getInfo")
-      .then((result) => {
-        if (mounted) setPluginInfo(result as PluginInfo);
+      .invoke("info")
+      .then((info) => {
+        if (mounted) setPluginInfo(info);
       })
-      .catch((error) => console.error("getInfo failed:", error));
+      .catch((error) => console.error("info failed:", error));
     return () => {
       mounted = false;
     };
@@ -47,18 +42,18 @@ function App() {
 
   // Ask for the sample rate when the editor opens, then follow the event
   // the plugin sends whenever the host prepares it again.
-  const showSampleRate = (rate: unknown) => {
-    if (typeof rate === "number" && rate > 0) setSampleRate(rate);
+  const showSampleRate = (rate: number) => {
+    if (rate > 0) setSampleRate(rate);
   };
   usePluginEvent("sampleRate", showSampleRate);
   useEffect(() => {
     let mounted = true;
     runtime()
-      .invoke("getSampleRate")
+      .invoke("sampleRate")
       .then((rate) => {
         if (mounted) showSampleRate(rate);
       })
-      .catch((error) => console.error("getSampleRate failed:", error));
+      .catch((error) => console.error("sampleRate failed:", error));
     return () => {
       mounted = false;
     };

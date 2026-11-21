@@ -7,8 +7,10 @@ This crate provides procedural macros that generate boilerplate code for plugins
 - **`#[beamer::export]`**: Reads `Config.toml` at compile time and generates plugin configuration and format-specific entry points
 - **`#[beamer::model]`**: Marks the model of a plugin (the struct every thread shares) and generates its parameter traits, host integration, state persistence and `Default` implementation
 - **`#[beamer::group]`**: Marks a nested group of a model, with the same code generation
+- **`#[beamer::handler]`**: Marks the impl block of the model whose methods answer the web UI's `invoke()` calls (`#[method(id)]`) and page events (`#[page_event(id)]`)
 - **`#[derive(EnumParameter)]`**: Generates enum parameter variants with display names
-- **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`, `State` fields with `#[state(id)]` and nested groups with `#[nested(group)]`
+- **`#[derive(TypeScript)]`**: Gives a type the TypeScript of what `serde_json` writes for it, for the web UI's generated model types
+- **Declarative attributes**: Configure parameters with `#[parameter(id, name, default, range, kind)]`, `State` fields with `#[state(id)]`, the web UI's senders and events with `#[value(id)]`, `#[stream(id)]` and `#[event(id)]`, nested groups with `#[nested(group)]`
 - **Compile-time validation**: Equal or colliding parameter ids are compile errors, as are unknown keys and invalid values in `Config.toml`
 
 ## Usage

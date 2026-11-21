@@ -67,7 +67,7 @@
 | | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
 | | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** (macOS only) | WebViewHandler (on_invoke / on_event) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
+| **Editor** (macOS only) | `#[beamer::handler]` (methods) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
 | | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drum-synth) |
 | | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per drum (drum-synth) |
 | | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drum-synth) |

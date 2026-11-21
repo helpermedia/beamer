@@ -3,8 +3,8 @@
 //! A plugin whose page is built with a `webview/package.json` gets the ids
 //! and value types of its model as TypeScript, in
 //! `webview/src/model-types.ts`: the parameter ids, the `State` fields,
-//! the senders and the events, each with the type of what it carries. The
-//! file augments `ModelTypes` of the beamer-api package, so a typo in an
+//! the senders and the events, each with the type of what it carries. A
+//! `#[beamer::handler]` adds its methods and page events. The file augments `ModelTypes` of the beamer-api package, so a typo in an
 //! id is a compile error in the page and a value has the model's type.
 //!
 //! `#[beamer::export]` adds a test to such a plugin that calls [`check`]:
@@ -19,7 +19,7 @@ use beamer_core::ParameterStore;
 use beamer_utils::web_ui::{MODEL_TYPES_NOTE, MODEL_TYPES_PATH, WRITE_MODEL_TYPES_VAR};
 
 use crate::fields::{WebViewEvent, WebViewStream, WebViewValue};
-use crate::model::WebViewFields;
+use crate::model::{WebViewDispatch, WebViewFields};
 use crate::type_script::{after, TsType, TypeScriptTypes};
 
 /// The type a field of the model carries to the page: the value of a
@@ -70,6 +70,54 @@ pub struct ModelTypes {
     values: Vec<Entry>,
     streams: Vec<Entry>,
     events: Vec<Entry>,
+    // The methods and page events of a `#[beamer::handler]`, `None` for a
+    // model without one: the page's `invoke` and `emit` stay loose then.
+    methods: Option<Vec<Method>>,
+    page_events: Option<Vec<Entry>>,
+}
+
+/// A method of the handler with the types of its arguments and result.
+struct Method {
+    name: String,
+    arguments: Vec<Entry>,
+    result: Entry,
+}
+
+/// A method being described: [`ModelTypes::method`] returns it, the
+/// arguments follow in order, then the result.
+pub struct MethodTypes<'a> {
+    types: &'a mut ModelTypes,
+    name: String,
+    arguments: Vec<Entry>,
+}
+
+impl MethodTypes<'_> {
+    /// Add the next argument, as [`ModelTypes::state`] adds a field.
+    pub fn argument(
+        mut self,
+        rust_type: &'static str,
+        type_parameter: Option<&'static str>,
+        type_script: impl FnOnce(&mut TypeScriptTypes) -> Option<TsType>,
+    ) -> Self {
+        let path = format!("argument {}", self.arguments.len() + 1);
+        let type_script = type_script(&mut self.types.types);
+        self.arguments.push(Entry { path, rust_type, type_parameter, type_script });
+        self
+    }
+
+    /// Add the result (what the page's promise resolves to). The method is
+    /// complete then.
+    pub fn result(
+        self,
+        rust_type: &'static str,
+        type_parameter: Option<&'static str>,
+        type_script: impl FnOnce(&mut TypeScriptTypes) -> Option<TsType>,
+    ) {
+        let type_script = type_script(&mut self.types.types);
+        let result = Entry { path: String::from("result"), rust_type, type_parameter, type_script };
+        let method = Method { name: self.name, arguments: self.arguments, result };
+        self.types.methods.get_or_insert_with(Vec::new).push(method);
+    }
 }
 
 impl Default for ModelTypes {
@@ -88,6 +136,8 @@ impl ModelTypes {
             values: Vec::new(),
             streams: Vec::new(),
             events: Vec::new(),
+            methods: None,
+            page_events: None,
         }
     }
 
@@ -150,9 +200,38 @@ impl ModelTypes {
         self.events.push(Entry { path: name, rust_type, type_parameter, type_script });
     }
 
+    /// Mark the model as one with a `#[beamer::handler]`: the file gets its
+    /// `methods` and `pageEvents` sections, empty ones too.
+    pub fn handler(&mut self) {
+        self.methods.get_or_insert_with(Vec::new);
+        self.page_events.get_or_insert_with(Vec::new);
+    }
+
+    /// Describe a method of the handler, `name` as the page invokes it.
+    pub fn method(&mut self, name: &str) -> MethodTypes<'_> {
+        self.handler();
+        MethodTypes { types: self, name: name.to_string(), arguments: Vec::new() }
+    }
+
+    /// Add an event `name` that the page emits to the handler, with the
+    /// type of its data (`()` for none), as [`state`](Self::state) does.
+    pub fn page_event(
+        &mut self,
+        name: String,
+        rust_type: &'static str,
+        type_parameter: Option<&'static str>,
+        type_script: impl FnOnce(&mut TypeScriptTypes) -> Option<TsType>,
+    ) {
+        self.handler();
+        let type_script = type_script(&mut self.types);
+        if let Some(page_events) = &mut self.page_events {
+            page_events.push(Entry { path: name, rust_type, type_parameter, type_script });
+        }
+    }
+
     /// The model's types as the page's `model-types.ts`, or what keeps
-    /// them from being written: a sender or event whose type has no
-    /// TypeScript, two Rust types under one TypeScript name.
+    /// them from being written: a sender, event, method or page event whose
+    /// type has no TypeScript, two Rust types under one TypeScript name.
     pub fn render(&self, package: &str) -> Result<String, Vec<String>> {
         let mut errors: Vec<String> = self.types.errors().to_vec();
         let lacking = |kind: &str, entries: &[Entry], errors: &mut Vec<String>| {
@@ -175,6 +254,15 @@ impl ModelTypes {
         lacking("value sender", &self.values, &mut errors);
         lacking("stream sender", &self.streams, &mut errors);
         lacking("event", &self.events, &mut errors);
+        for method in self.methods.iter().flatten() {
+            let entries = method.arguments.iter().chain(std::iter::once(&method.result));
+            for entry in entries.filter(|entry| entry.type_script.is_none()) {
+                errors.push(method_lacking(&method.name, entry));
+            }
+        }
+        for entry in self.page_events.iter().flatten().filter(|entry| entry.type_script.is_none()) {
+            errors.push(read_lacking(&format!("The page event `{}` carries", entry.path), "", entry));
+        }
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -201,6 +289,12 @@ impl ModelTypes {
         out.push_str(&render_section("values", &self.values));
         out.push_str(&render_section("streams", &self.streams));
         out.push_str(&render_section("events", &self.events));
+        if let Some(methods) = &self.methods {
+            out.push_str(&render_methods(methods));
+        }
+        if let Some(page_events) = &self.page_events {
+            out.push_str(&render_section("pageEvents", page_events));
+        }
         out.push_str("  }\n}\n");
         Ok(out)
     }
@@ -261,6 +355,76 @@ fn render_section(section: &str, entries: &[Entry]) -> String {
     out
 }
 
+/// The error of a method's argument or result without TypeScript.
+fn method_lacking(method: &str, entry: &Entry) -> String {
+    if entry.path != "result" {
+        return read_lacking(&format!("The method `{method}` takes"), &format!(" as its {}", entry.path), entry);
+    }
+    // A `Result` under another name: the page's types see the `Result`.
+    if entry.rust_type.starts_with("core::result::Result<") && entry.type_parameter.is_none() {
+        return format!(
+            "The method `{method}` returns `{}` under another name. Write `Result<T, E>` in \
+             its signature, so that the page's promise gets the type of `T`.",
+            entry.rust_type
+        );
+    }
+    match entry.type_parameter {
+        Some(parameter) => format!(
+            "The method `{method}` returns `{}`, whose TypeScript the model cannot see: its types \
+             need #[derive(TypeScript)] and the type parameter `{parameter}` a `TypeScript` bound.",
+            entry.rust_type
+        ),
+        None => format!(
+            "The method `{method}` returns `{}`, which has no #[derive(TypeScript)]: derive it \
+             next to `Serialize`.",
+            entry.rust_type
+        ),
+    }
+}
+
+/// The error of a type the handler reads from the page without TypeScript,
+/// between `what` (such as "The page event `padHit` carries") and `after`.
+fn read_lacking(what: &str, after: &str, entry: &Entry) -> String {
+    match entry.type_parameter {
+        Some(parameter) => format!(
+            "{what} `{}`{after}, whose TypeScript the model cannot see: its types need \
+             #[derive(TypeScript)] and the type parameter `{parameter}` a `TypeScript` bound.",
+            entry.rust_type
+        ),
+        None => format!(
+            "{what} `{}`{after}, which has no #[derive(TypeScript)]: derive it next to `Deserialize`.",
+            entry.rust_type
+        ),
+    }
+}
+
+/// The `methods` section: each method's arguments as a tuple and its
+/// result, `{}` when it has none.
+fn render_methods(methods: &[Method]) -> String {
+    if methods.is_empty() {
+        return "    methods: {};\n".to_string();
+    }
+    let mut out = "    methods: {\n".to_string();
+    for method in methods {
+        // Every type is there: one that is missing is an error.
+        let type_of = |entry: &Entry| entry.type_script.clone().unwrap_or(TsType::Keyword("unknown"));
+        let ty = TsType::Object(vec![
+            crate::type_script::__private::field(
+                "arguments",
+                None,
+                false,
+                TsType::Tuple(method.arguments.iter().map(type_of).collect()),
+            ),
+            crate::type_script::__private::field("result", None, false, type_of(&method.result)),
+        ]);
+        let head = format!("      {}:", property_name(&method.name));
+        out.push_str(&after(&head, &ty, 6, 1));
+        out.push_str(";\n");
+    }
+    out.push_str("    };\n");
+    out
+}
+
 /// A name as a TypeScript property: as it is when it is an identifier,
 /// quoted otherwise (a path with a slash).
 fn property_name(name: &str) -> String {
@@ -288,7 +452,7 @@ fn json_string(text: &str) -> String {
 /// panics when the model's types cannot be written.
 pub fn check<M>(manifest_dir: &str, package: &str)
 where
-    M: Default + ParameterStore + WebViewFields,
+    M: Default + ParameterStore + WebViewFields + WebViewDispatch,
 {
     let mut types = ModelTypes::new();
     // The parameter ids in the order of the init dump, from the model the
@@ -299,7 +463,8 @@ where
             types.parameter(&info.string_id);
         }
     }
-    M::describe_model_types(&mut types, "");
+    <M as WebViewFields>::describe_model_types(&mut types, "");
+    <M as WebViewDispatch>::dispatch_describe_handler(&mut types);
 
     let rendered = match types.render(package) {
         Ok(rendered) => rendered,

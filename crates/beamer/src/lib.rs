@@ -135,7 +135,7 @@ pub use beamer_macros::EnumParameter;
 #[cfg(feature = "derive")]
 pub use beamer_macros::export;
 #[cfg(feature = "derive")]
-pub use beamer_macros::{group, model};
+pub use beamer_macros::{group, handler, model};
 #[cfg(feature = "derive")]
 pub use beamer_macros::TypeScript;
 
@@ -148,6 +148,11 @@ pub mod type_script_refusals;
 #[cfg(feature = "derive")]
 #[doc(hidden)]
 pub mod webview_field_errors;
+
+// The errors of `#[beamer::handler]`, as doc tests.
+#[cfg(feature = "derive")]
+#[doc(hidden)]
+pub mod handler_errors;
 
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///

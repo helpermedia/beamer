@@ -11,7 +11,7 @@ Named after the beams connecting notes in sheet music and from Dutch where "beam
 `beamer` is the one dependency a plugin needs. It brings the framework's crates together under one path:
 
 - `beamer::prelude::*` imports the traits and types a plugin works with, from `beamer-core` (model, processor, parameters, buffers, MIDI, state) and `beamer-webview` (the web UI's events and handler)
-- `#[beamer::model]`, `#[beamer::group]`, `#[beamer::export]` and `#[derive(EnumParameter)]` come from `beamer-macros`
+- `#[beamer::model]`, `#[beamer::group]`, `#[beamer::handler]`, `#[beamer::export]`, `#[derive(EnumParameter)]` and `#[derive(TypeScript)]` come from `beamer-macros`
 - The format wrappers `beamer-au` and `beamer-vst3` come in through features
 - The crates themselves stay reachable as `beamer::core` and `beamer::webview`
 

@@ -371,8 +371,8 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 | **Pan law** | Constant power or linear, set in the web UI and saved with the project |
 
 **Demonstrates:**
-- `WebViewHandler::on_invoke()` on the model for request/response calls from JavaScript
-- `WebViewEventQueue` for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
+- `#[beamer::handler]` on the model for request/response calls from JavaScript, typed in the page's generated model types
+- A `WebViewEvent` field for events from Rust to JavaScript: the editor shows the host's sample rate and follows it
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time

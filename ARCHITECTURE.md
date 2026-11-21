@@ -151,7 +151,7 @@ beamer/
 ├── crates/
 │   ├── beamer/              # Main crate (re-exports)
 │   ├── beamer-core/         # Plugin traits, MIDI types, buffers
-│   ├── beamer-macros/       # Proc macros (#[beamer::export], #[beamer::model], #[beamer::group], #[derive(EnumParameter)])
+│   ├── beamer-macros/       # Proc macros (#[beamer::export], #[beamer::model], #[beamer::group], #[beamer::handler], #[derive(EnumParameter)], #[derive(TypeScript)])
 │   ├── beamer-utils/        # Shared utilities (zero deps)
 │   ├── beamer-au/           # Audio Unit wrapper implementation (macOS)
 │   ├── beamer-vst3/         # VST3 wrapper implementation
@@ -174,7 +174,7 @@ beamer/
 |-------|---------|
 | `beamer` | Facade crate, re-exports public API via `prelude` |
 | `beamer-core` | Platform-agnostic traits (`Model`, `Processor`, `Saved`), buffer types, MIDI types, `Config` |
-| `beamer-macros` | Attribute macros: `#[beamer::model]`, `#[beamer::group]` and `#[beamer::export]` (reads Config.toml). Derive macro: `#[derive(EnumParameter)]` |
+| `beamer-macros` | Attribute macros: `#[beamer::model]`, `#[beamer::group]`, `#[beamer::handler]` and `#[beamer::export]` (reads Config.toml). Derive macros: `#[derive(EnumParameter)]` and `#[derive(TypeScript)]` |
 | `beamer-utils` | Internal utilities shared between crates (zero external deps) |
 | `beamer-au` | Audio Unit (AUv2 and AUv3) integration via hybrid ObjC/Rust architecture, C-ABI bridge (macOS only) |
 | `beamer-vst3` | VST3 SDK integration, COM interfaces, host communication |

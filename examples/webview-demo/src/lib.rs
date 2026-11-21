@@ -48,6 +48,18 @@ pub struct Levels {
     pub peak: [f32; 2],
 }
 
+/// What the editor's About box shows.
+#[derive(Debug, Clone, Copy, Serialize, TypeScript)]
+#[serde(crate = "beamer::serde")]
+pub struct Info {
+    /// The plugin's name.
+    pub name: &'static str,
+    /// The plugin's version.
+    pub version: &'static str,
+    /// The framework it is built with.
+    pub framework: &'static str,
+}
+
 /// Everything the plugin knows, shared by the host, the web UI and the
 /// audio thread for the life of the instance.
 ///
@@ -73,7 +85,7 @@ pub struct WebViewDemoModel {
     pub sample_rate: Handover<f64>,
 
     /// The sample rate, emitted whenever the host prepares the plugin. An
-    /// editor that opens later asks with `invoke("getSampleRate")`.
+    /// editor that opens later asks with `invoke("sampleRate")`.
     #[event(id = "sampleRate")]
     pub sample_rate_event: WebViewEvent<f64>,
 
@@ -125,24 +137,24 @@ impl Model for WebViewDemoModel {
     }
 }
 
-impl WebViewHandler for WebViewDemoModel {
-    /// Handles `__BEAMER__.invoke()` calls from JavaScript.
-    fn on_invoke(
-        &self,
-        method: &str,
-        _args: &[serde_json::Value],
-    ) -> Result<serde_json::Value, String> {
-        match method {
-            "getInfo" => Ok(serde_json::json!({
-                "name": "Beamer WebView Demo",
-                "version": env!("CARGO_PKG_VERSION"),
-                "framework": "Beamer",
-            })),
-            // The sample rate of the host, 0 before it prepared the plugin.
-            // An open editor then follows it through the "sampleRate" event.
-            "getSampleRate" => Ok(serde_json::json!(*self.sample_rate.get())),
-            _ => Err(format!("unknown method: {method}")),
+// The answers to the web UI's `invoke()` calls.
+#[beamer::handler]
+impl WebViewDemoModel {
+    /// The plugin's name and version, for the About box.
+    #[method(id = "info")]
+    fn info(&self) -> Info {
+        Info {
+            name: "Beamer WebView Demo",
+            version: env!("CARGO_PKG_VERSION"),
+            framework: "Beamer",
         }
+    }
+
+    /// The sample rate of the host, 0 before it prepared the plugin. An
+    /// open editor then follows it through the "sampleRate" event.
+    #[method(id = "sampleRate")]
+    fn sample_rate(&self) -> f64 {
+        *self.sample_rate.get()
     }
 }
 

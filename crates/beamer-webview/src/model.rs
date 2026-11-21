@@ -4,8 +4,8 @@
 //!   that the web UI knows: the queue of events, the declared senders and
 //!   events, the ids and types the page's model types list.
 //! - [`WebViewHandler`] answers `__BEAMER__.invoke()` calls and custom
-//!   events from JavaScript. A plugin implements it when its web UI uses
-//!   them.
+//!   events from JavaScript. `#[beamer::handler]` on an impl block of the
+//!   model generates it when the web UI uses them.
 //! - [`WebViewDispatch`] is how the format wrappers reach the handler.
 //!
 //! `#[beamer::model]` generates `WebViewFields` and `WebViewDispatch`,
@@ -64,19 +64,23 @@ pub trait WebViewFields {
 /// How a model answers its web UI: `__BEAMER__.invoke()` calls and custom
 /// events from JavaScript.
 ///
-/// A plugin whose web UI calls `invoke()` or emits events implements it for
-/// its model:
+/// `#[beamer::handler]` on an impl block of the model generates it from the
+/// methods marked `#[method(id = "...")]` and `#[page_event(id = "...")]`,
+/// with their types in the page's model types:
 ///
 /// ```ignore
-/// impl WebViewHandler for SamplerModel {
-///     fn on_invoke(&self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
-///         match method {
-///             "getSampleName" => Ok(serde_json::json!(*self.sample_name.get())),
-///             _ => Err(format!("unknown method: {method}")),
-///         }
+/// #[beamer::handler]
+/// impl SamplerModel {
+///     /// The name of the loaded sample.
+///     #[method(id = "sampleName")]
+///     fn sample_name(&self) -> String {
+///         (*self.sample_name.get()).clone()
 ///     }
 /// }
 /// ```
+///
+/// A hand-written impl matches on the names. Its methods are not in the
+/// page's model types, so the page's `invoke()` and `emit()` stay loose.
 ///
 /// Both methods are called on the main thread, never on the audio thread.
 ///
@@ -107,6 +111,16 @@ pub trait WebViewHandler {
     fn on_event(&self, name: &str, data: &Value) {
         let _ = (name, data);
     }
+
+    /// Add the methods and page events with their types to `types`.
+    /// `#[beamer::handler]` generates it. The default adds nothing, which
+    /// leaves the page's `invoke()` and `emit()` loose.
+    fn describe_handler(types: &mut ModelTypes)
+    where
+        Self: Sized,
+    {
+        let _ = types;
+    }
 }
 
 /// The web UI's way into a plugin, for the format wrappers: its
@@ -127,10 +141,20 @@ pub trait WebViewDispatch: Send + Sync {
     fn dispatch_event(&self, name: &str, data: &Value) {
         let _ = (name, data);
     }
+
+    /// Add the methods and page events of the plugin's handler to `types`,
+    /// for the page's model types. Nothing for a model without one.
+    fn dispatch_describe_handler(types: &mut ModelTypes)
+    where
+        Self: Sized,
+    {
+        let _ = types;
+    }
 }
 
 /// The answer to an invoke call of a method the plugin does not know.
-fn unknown_method(method: &str) -> String {
+#[doc(hidden)]
+pub fn unknown_method(method: &str) -> String {
     format!("unknown method: {method}")
 }
 
@@ -148,12 +172,127 @@ impl WebViewDispatch for NoParameters {}
 /// it is compiled.
 #[doc(hidden)]
 pub mod __private {
+    use std::marker::PhantomData;
+
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serde_json::Value;
 
-    use super::{unknown_method, WebViewHandler};
+    pub use super::unknown_method;
+    use super::WebViewHandler;
+    use crate::model_types::ModelTypes;
 
     /// A model on its way to its handler.
     pub struct ModelRef<'a, T>(pub &'a T);
+
+    /// The type of a model on its way to the description of its handler,
+    /// chosen as [`ModelRef`] is.
+    pub struct HandlerOf<T>(PhantomData<fn() -> T>);
+
+    impl<T> HandlerOf<T> {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            Self(PhantomData)
+        }
+    }
+
+    /// The description of a model's handler.
+    pub trait Described {
+        fn describe(&self, types: &mut ModelTypes);
+    }
+
+    impl<T: WebViewHandler> Described for HandlerOf<T> {
+        fn describe(&self, types: &mut ModelTypes) {
+            T::describe_handler(types);
+        }
+    }
+
+    /// Nothing to describe for a model without a handler.
+    pub trait Undescribed {
+        fn describe(&self, types: &mut ModelTypes) {
+            let _ = types;
+        }
+    }
+
+    impl<T> Undescribed for &HandlerOf<T> {}
+
+    /// The answer to a call with the wrong number of arguments.
+    pub fn check_argument_count(method: &str, expected: usize, args: &[Value]) -> Result<(), String> {
+        if args.len() == expected {
+            Ok(())
+        } else {
+            let arguments = if expected == 1 { "argument" } else { "arguments" };
+            Err(format!("method {method:?} takes {expected} {arguments}, got {}", args.len()))
+        }
+    }
+
+    /// The argument at `index` of a call of `method`, read with serde.
+    pub fn argument<T: DeserializeOwned>(method: &str, index: usize, value: &Value) -> Result<T, String> {
+        T::deserialize(value).map_err(|error| format!("argument {} of method {method:?}: {error}", index + 1))
+    }
+
+    /// The data of the page event `name`, read with serde. Data that does
+    /// not read is logged. The event is dropped then.
+    pub fn page_event_data<T: DeserializeOwned>(name: &str, data: &Value) -> Option<T> {
+        match T::deserialize(data) {
+            Ok(data) => Some(data),
+            Err(error) => {
+                log::error!("The data of the page event {name:?} does not read: {error}");
+                None
+            }
+        }
+    }
+
+    /// What a method returned, on its way to the page. `(&Answer(result))
+    /// .answer(..)` takes [`AnswerResult`] for a `Result`, whatever its name,
+    /// and [`AnswerValue`] for any other value, one reference further.
+    pub struct Answer<T>(pub T);
+
+    /// The answer of a method that returns a `Result`: its value, or its
+    /// error's text, which rejects the page's promise.
+    pub trait AnswerResult {
+        fn answer(&self, method: &str, reported: &std::sync::atomic::AtomicBool) -> Result<Value, String>;
+    }
+
+    impl<T: Serialize, E: std::fmt::Display> AnswerResult for Answer<Result<T, E>> {
+        fn answer(&self, method: &str, reported: &std::sync::atomic::AtomicBool) -> Result<Value, String> {
+            match &self.0 {
+                Ok(value) => answer(method, value, reported),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+    }
+
+    /// The answer of a method that returns a value.
+    pub trait AnswerValue {
+        fn answer(&self, method: &str, reported: &std::sync::atomic::AtomicBool) -> Result<Value, String>;
+    }
+
+    impl<T: Serialize> AnswerValue for &Answer<T> {
+        fn answer(&self, method: &str, reported: &std::sync::atomic::AtomicBool) -> Result<Value, String> {
+            answer(method, &self.0, reported)
+        }
+    }
+
+    /// The answer of `method` to the page. Debug builds report a number
+    /// JSON does not hold as it is, once per method (`reported`).
+    fn answer<T: Serialize + ?Sized>(
+        method: &str,
+        result: &T,
+        reported: &std::sync::atomic::AtomicBool,
+    ) -> Result<Value, String> {
+        #[cfg(debug_assertions)]
+        if !reported.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(found) = beamer_core::json_check::unfaithful_number(result) {
+                if !reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    beamer_core::json_check::report(&format!("The method {method:?}"), &found);
+                }
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = reported;
+        serde_json::to_value(result).map_err(|error| format!("the result of method {method:?}: {error}"))
+    }
 
     /// The way to the handler of a model that has one.
     pub trait Implemented {
