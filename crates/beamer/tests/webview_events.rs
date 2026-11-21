@@ -1,5 +1,5 @@
-//! Events from Rust to the web UI: what a plugin emits into the queue of
-//! its model reaches the editor through the format wrappers.
+//! Events from Rust to the web UI: what a plugin emits through the events
+//! its model declares reaches the editor through the format wrappers.
 
 #![cfg(feature = "derive")]
 
@@ -21,6 +21,14 @@ fn last_events() -> WebViewEventQueue {
         .expect("a model was created on this thread")
 }
 
+/// An event named `name` connected to `events`, as `#[beamer::model]`
+/// connects a declared one: for the queue of an instance a wrapper holds.
+fn event<T>(name: &str, events: &WebViewEventQueue) -> WebViewEvent<T> {
+    let mut event = WebViewEvent::default();
+    event.connect(name.to_string(), events);
+    event
+}
+
 /// A model that notes its queue when it is created, so that a test finds
 /// the queue of the instance a wrapper just created. Its `Default` is
 /// written by hand for that.
@@ -32,6 +40,12 @@ struct EventsModel {
     #[state(id = "zoom")]
     zoom: State<u32>,
 
+    #[event(id = "ready")]
+    ready: WebViewEvent<String>,
+
+    #[value(id = "level")]
+    level: WebViewValue<f32>,
+
     events: WebViewEventQueue,
 }
 
@@ -40,6 +54,8 @@ impl Default for EventsModel {
         let mut model = Self {
             gain: FloatParameter::new("Gain", 0.0, 0.0..=1.0),
             zoom: State::default(),
+            ready: WebViewEvent::default(),
+            level: WebViewValue::default(),
             events: WebViewEventQueue::default(),
         };
         model.assign_ids("");
@@ -68,7 +84,7 @@ fn test_queue_in_the_model_starts_empty() {
     let model = EventsModel::default();
 
     // No wrapper took this queue, so nothing is kept.
-    model.events.emit("lost", &1);
+    model.ready.emit(&"lost".to_string());
     assert_eq!(model.events.take_script(), None);
 }
 
@@ -78,13 +94,13 @@ fn test_vst3_delivers_the_queue_of_its_instance() {
     let events = last_events();
 
     // Before an editor is open, events are dropped.
-    events.emit("early", &1);
+    event("early", &events).emit(&1);
     assert_eq!(events.take_script(), None);
 
     // What the view does when it is attached, on its timer and when it is
     // removed.
     events.editor_opened();
-    events.emit("ready", &"now");
+    event("ready", &events).emit(&"now");
     assert_eq!(
         events.take_script().as_deref(),
         Some("window.__BEAMER__._onEvent(\"ready\",\"now\");")
@@ -165,7 +181,7 @@ fn test_au_delivers_the_queue_of_its_instance() {
     let gain = EventsModel::default().gain.id();
 
     // Before an editor is open, events are dropped.
-    events.emit("early", &1);
+    event("early", &events).emit(&1);
 
     let editor = beamer_au_editor_sync_open(instance);
     assert!(!editor.is_null());
@@ -211,8 +227,8 @@ fn test_au_delivers_the_queue_of_its_instance() {
         Some(r#"window.__BEAMER__._onResult(2,{"err":"unknown method: getInfo"});"#)
     );
 
-    events.emit("ready", &"now");
-    events.emit("count", &2);
+    event("ready", &events).emit(&"now");
+    event("count", &events).emit(&2);
     assert_eq!(
         text(beamer_au_editor_sync_frame_script(editor)).as_deref(),
         Some(
@@ -225,14 +241,14 @@ fn test_au_delivers_the_queue_of_its_instance() {
     // A closed editor gets nothing. The next one starts with the
     // parameters.
     beamer_au_editor_sync_close(editor);
-    events.emit("between", &3);
+    event("between", &events).emit(&3);
     let editor = beamer_au_editor_sync_open(instance);
     let first = text(beamer_au_editor_sync_frame_script(editor)).expect("a first frame");
     assert!(!first.contains("between"));
 
     // A host may destroy the instance before the editor is gone.
     beamer_au_destroy_instance(instance);
-    events.emit("after", &4);
+    event("after", &events).emit(&4);
     assert!(text(beamer_au_editor_sync_frame_script(editor)).is_some());
     beamer_au_editor_sync_close(editor);
 
@@ -267,13 +283,42 @@ struct QuietModel {
 #[test]
 fn test_derive_finds_the_queue_by_its_type() {
     let model = EventsModel::default();
-    let found = WebViewEvents::webview_events(&model).expect("the queue is found");
+    let found = WebViewFields::webview_queue(&model).expect("the queue is found");
     assert!(std::ptr::eq(found, &model.events));
 
     // Also in a nested model.
     let outer = OuterModel::default();
-    let found = WebViewEvents::webview_events(&outer).expect("the nested queue is found");
+    let found = WebViewFields::webview_queue(&outer).expect("the nested queue is found");
     assert!(std::ptr::eq(found, &outer.inner.events));
 
-    assert!(WebViewEvents::webview_events(&QuietModel::default()).is_none());
+    assert!(WebViewFields::webview_queue(&QuietModel::default()).is_none());
+}
+
+#[test]
+fn test_the_model_connects_its_declared_events_and_senders() {
+    // A hand-written `Default` connects them with `assign_ids("")`.
+    let model = EventsModel::default();
+    assert_eq!(model.ready.name(), "ready");
+    assert_eq!(model.level.name(), "level");
+
+    // In a nested group they get the group's field name in front.
+    let outer = OuterModel::default();
+    assert_eq!(outer.inner.ready.name(), "inner/ready");
+    assert_eq!(outer.inner.level.name(), "inner/level");
+
+    // What the declared event emits reaches an open editor of the queue.
+    model.events.claim();
+    model.events.editor_opened();
+    model.ready.emit(&"now".to_string());
+    assert_eq!(
+        model.events.take_script().as_deref(),
+        Some("window.__BEAMER__._onEvent(\"ready\",\"now\");")
+    );
+
+    // And so does the value of a sender made from the declared field.
+    let mut level = model.level.sender(0.0);
+    level.send(&0.5);
+    let script = model.events.take_script().expect("the value goes out");
+    assert!(script.contains("\"level\""), "{script}");
+    model.events.editor_closed();
 }

@@ -1,7 +1,8 @@
 import { Switch as SwitchControl, useParameter } from "@helpermedia/beamer-react";
+import type { ParameterId } from "@helpermedia/beamer-api";
 
 interface SwitchProps {
-  parameterId: string;
+  parameterId: ParameterId;
   // The text on the switch, the parameter's own name by default.
   label?: string;
 }

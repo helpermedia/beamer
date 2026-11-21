@@ -13,6 +13,8 @@ allocation-check = ["beamer-core/allocation-check"]
 
 [dependencies]
 beamer-core = { workspace = true }
+# Where the page's model types live, shared with the export macro and xtask.
+beamer-utils = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -14,6 +14,28 @@ pub const DEV_URL_VAR: &str = "BEAMER_DEV_URL";
 /// expanded again when the web UI's files come, go or change places.
 pub const STAMP_VAR: &str = "BEAMER_WEB_UI_STAMP";
 
+/// Where the model's types for a typed web UI live, relative to the
+/// package: the page's own TypeScript, which augments `ModelTypes` of
+/// beamer-api. The export macro adds a test that compares the file with
+/// the model; a package with `webview/package.json` has a typed web UI.
+pub const MODEL_TYPES_PATH: &str = "webview/src/model-types.ts";
+
+/// Environment variable that makes the export macro's test write
+/// [`MODEL_TYPES_PATH`] instead of comparing it with the model. Set by
+/// `cargo xtask model-types` and `cargo xtask bundle`.
+pub const WRITE_MODEL_TYPES_VAR: &str = "BEAMER_WRITE_MODEL_TYPES";
+
+/// How a line of the model's types starts that the generator wants the
+/// author to read, such as a `State` field whose type has no TypeScript.
+/// xtask prints these lines when it writes the file.
+pub const MODEL_TYPES_NOTE: &str = "// Note: ";
+
+/// Whether the package in `package_dir` has a typed web UI: a web build
+/// with `webview/package.json`, whose page gets the model's types.
+pub fn has_typed_web_ui(package_dir: &Path) -> bool {
+    package_dir.join("webview").join("package.json").is_file()
+}
+
 /// The web UI of a plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebUi {

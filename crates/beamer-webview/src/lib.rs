@@ -13,6 +13,8 @@
 //!   wrapper's [`HostEdits`] for what only the host can do
 //! - the [`EditorNotes`] the page plays, on their way to the wrapper's
 //!   render through its [`EditorNoteReceiver`]
+//! - the TypeScript of the Rust types a page receives ([`TypeScript`]),
+//!   for the file that describes a model to its web UI
 //! - the platform-native WebView that a format wrapper embeds in the
 //!   host's view ([`platform`])
 
@@ -24,12 +26,15 @@ pub mod editor_sync;
 mod error;
 pub mod event_queue;
 mod ffi;
+pub mod fields;
 mod message;
 pub mod mime;
 pub mod model;
+pub mod model_types;
 pub mod parameter_dump;
 pub mod platform;
 pub mod stream_sender;
+pub mod type_script;
 pub mod value_sender;
 
 pub use assets::{EmbeddedAsset, EmbeddedAssets};
@@ -37,11 +42,14 @@ pub use editor_notes::{EditorNoteReceiver, EditorNotes};
 pub use editor_sync::{EditorSync, HostEdits};
 pub use error::{Result, WebViewError};
 pub use event_queue::WebViewEventQueue;
+pub use fields::{WebViewEvent, WebViewStream, WebViewValue};
 #[doc(hidden)]
 pub use model::__private;
-pub use model::{WebViewDispatch, WebViewEvents, WebViewHandler};
+pub use model::{WebViewDispatch, WebViewFields, WebViewHandler};
+pub use model_types::ModelTypes;
 pub use parameter_dump::parameters_to_init_json;
 pub use stream_sender::WebViewStreamSender;
+pub use type_script::{TsType, TypeScript, TypeScriptTypes};
 pub use value_sender::WebViewValueSender;
 
 // Re-export serde_json so plugins can answer the web UI without adding

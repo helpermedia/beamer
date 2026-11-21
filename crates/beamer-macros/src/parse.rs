@@ -9,13 +9,13 @@ use syn::{Data, DeriveInput, Field, Fields, LitStr};
 use beamer_utils::fnv1a_32;
 use crate::ir::{
     FieldIR, NestedFieldIR, ParameterAttributes, ParameterDefault, ParameterFieldIR, ParameterKind, ParameterType,
-    ModelIR, RangeSpec, SmoothingSpec, SmoothingStyle, StateFieldIR,
+    ModelIR, RangeSpec, SmoothingSpec, SmoothingStyle, StateFieldIR, WebViewFieldIR, WebViewFieldKind,
 };
 use crate::range_eval;
 
 /// The field attributes the macros read: a field is a parameter, a nested
-/// group or a `State` field.
-pub const FIELD_ATTRIBUTES: [&str; 3] = ["parameter", "nested", "state"];
+/// group, a `State` field, a sender or an event for the web UI.
+pub const FIELD_ATTRIBUTES: [&str; 6] = ["parameter", "nested", "state", "value", "stream", "event"];
 
 /// Parse a `DeriveInput` into our intermediate representation.
 ///
@@ -68,7 +68,9 @@ pub fn parse(input: DeriveInput, macro_name: &str) -> syn::Result<ModelIR> {
     {
         return Err(syn::Error::new_spanned(
             &input,
-            format!("{macro_name} requires at least one #[parameter], #[nested] or #[state] field"),
+            format!(
+                "{macro_name} requires at least one #[parameter], #[nested], #[state], #[value], #[stream] or #[event] field"
+            ),
         ));
     }
 
@@ -94,7 +96,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
     if kinds > 1 {
         return Err(syn::Error::new_spanned(
             field,
-            "a field can have only one of #[parameter], #[nested] and #[state]",
+            "a field can have only one of #[parameter], #[nested], #[state], #[value], #[stream] and #[event]",
         ));
     }
 
@@ -107,6 +109,11 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
         }
         if attr.path().is_ident("state") {
             return parse_state_field(field, attr).map(|s| FieldIR::State(Box::new(s)));
+        }
+        for kind in WebViewFieldKind::ALL {
+            if attr.path().is_ident(kind.attribute()) {
+                return parse_webview_field(field, attr, kind).map(|w| FieldIR::WebView(Box::new(w)));
+            }
         }
     }
 
@@ -129,6 +136,18 @@ fn parse_field(field: &Field) -> syn::Result<FieldIR> {
             return Err(syn::Error::new_spanned(
                 field,
                 "State field is missing #[state(id = \"...\")] attribute",
+            ));
+        }
+        // A sender or an event without the attribute has no name and no
+        // queue.
+        if let Some(kind) = WebViewFieldKind::ALL.into_iter().find(|kind| kind.type_name() == type_name) {
+            return Err(syn::Error::new_spanned(
+                field,
+                format!(
+                    "{} field is missing #[{}(id = \"...\")] attribute",
+                    type_name,
+                    kind.attribute()
+                ),
             ));
         }
     }
@@ -196,7 +215,60 @@ fn parse_state_field(field: &Field, attr: &syn::Attribute) -> syn::Result<StateF
 
     Ok(StateFieldIR {
         field_name,
+        field_type: field.ty.clone(),
         string_id,
+        span: attr.span(),
+    })
+}
+
+/// Parse a field with `#[value(id = "...")]`, `#[stream(id = "...")]` or
+/// `#[event(id = "...")]`.
+fn parse_webview_field(field: &Field, attr: &syn::Attribute, kind: WebViewFieldKind) -> syn::Result<WebViewFieldIR> {
+    let field_name = field
+        .ident
+        .clone()
+        .ok_or_else(|| syn::Error::new_spanned(field, "expected named field"))?;
+    let attribute = kind.attribute();
+
+    if extract_type_name(&field.ty).as_deref() != Some(kind.type_name()) {
+        return Err(syn::Error::new_spanned(
+            &field.ty,
+            format!("#[{attribute}] can only be used on {}<T> fields", kind.type_name()),
+        ));
+    }
+
+    let mut id: Option<String> = None;
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("id") {
+            let value: LitStr = meta.value()?.parse()?;
+            id = Some(value.value());
+            Ok(())
+        } else {
+            Err(meta.error("unknown attribute. Expected: id"))
+        }
+    })?;
+
+    let id = id.ok_or_else(|| {
+        syn::Error::new_spanned(
+            attr,
+            format!("#[{attribute}] on field `{field_name}` requires an id: #[{attribute}(id = \"...\")]"),
+        )
+    })?;
+
+    // In a nested group the name gets the group's field name in front, so
+    // the id is one segment of the path.
+    if id.is_empty() || id.contains('/') {
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!("{attribute} id '{id}' must not be empty and cannot contain '/' (it separates the names of nested groups)"),
+        ));
+    }
+
+    Ok(WebViewFieldIR {
+        field_name,
+        field_type: field.ty.clone(),
+        kind,
+        id,
         span: attr.span(),
     })
 }

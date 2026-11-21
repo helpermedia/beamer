@@ -194,7 +194,16 @@ pub struct MidiTransformModel {
     #[nested(group = "CC Transform")]
     pub cc: CcTransformGroup,
 
-    /// Events for the editor. The processor's sender is made from it.
+    /// Every note and CC as it came in and went out, sent from the audio
+    /// thread.
+    #[stream(id = "transformed")]
+    pub transformed: WebViewStream<Transformed>,
+
+    /// How many keys are down, sent from the audio thread while any is.
+    #[value(id = "pressed")]
+    pub pressed: WebViewValue<u32>,
+
+    /// The queue the senders above deliver through.
     pub events: WebViewEventQueue,
 }
 
@@ -206,8 +215,8 @@ impl Model for MidiTransformModel {
 
     fn prepare(self: Arc<Self>, _: ()) -> MidiTransformProcessor {
         MidiTransformProcessor {
-            transformed_sender: self.events.stream_sender("transformed", TRANSFORMED_CAPACITY),
-            pressed_sender: self.events.value_sender("pressed", 0),
+            transformed_sender: self.transformed.sender(TRANSFORMED_CAPACITY),
+            pressed_sender: self.pressed.sender(0),
             model: self,
             held_notes: [[None; 128]; 16],
             pressed_keys: [0; 16],
@@ -224,7 +233,7 @@ impl Model for MidiTransformModel {
 /// which lights up the notes that sound and shows the last CC. As JSON an
 /// object with its `type` ("noteOn", "noteOff", "cc" or "reset") and the
 /// fields in camelCase.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TypeScript)]
 #[serde(
     crate = "beamer::serde",
     tag = "type",

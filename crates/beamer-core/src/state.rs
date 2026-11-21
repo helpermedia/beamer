@@ -68,6 +68,9 @@ pub struct State<T> {
     value: Handover<T>,
     /// The value this state was created with, which `reset()` goes back to.
     initial: Arc<T>,
+    /// Whether a float that is not finite was reported already.
+    #[cfg(debug_assertions)]
+    number_reported: std::sync::atomic::AtomicBool,
 }
 
 impl<T> State<T>
@@ -82,7 +85,12 @@ where
     pub fn new(value: T) -> Self {
         let initial = Arc::new(value);
         let value = Handover::new_shared(Arc::clone(&initial));
-        Self { value, initial }
+        Self {
+            value,
+            initial,
+            #[cfg(debug_assertions)]
+            number_reported: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     /// Get the current value.
@@ -149,7 +157,18 @@ where
             "State::save()",
             crate::audio_thread::READ_THROUGH_A_READER,
         );
-        serde_json::to_vec(&*self.get()).map_err(|error| error.to_string())
+        let value = self.get();
+        // A float that is not finite is saved as null, which does not load
+        // back. It reaches the page as null where it expects a number.
+        #[cfg(debug_assertions)]
+        if !self.number_reported.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(found) = crate::json_check::non_finite_float(&*value) {
+                if !self.number_reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    crate::json_check::report_saved(std::any::type_name::<T>(), &found);
+                }
+            }
+        }
+        serde_json::to_vec(&*value).map_err(|error| error.to_string())
     }
 
     /// Set the value from saved JSON.

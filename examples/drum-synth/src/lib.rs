@@ -198,7 +198,7 @@ enum EnvelopeStage {
 /// The tab the editor shows: the pads or the mixer. A setting of the editor,
 /// not a parameter: a host does not automate it. It is saved with the
 /// project, so the editor opens on the tab it was left on.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TypeScript)]
 #[serde(crate = "beamer::serde", rename_all = "snake_case")]
 pub enum Tab {
     #[default]
@@ -264,7 +264,16 @@ pub struct DrumSynthModel {
     #[state(id = "tab")]
     pub tab: State<Tab>,
 
-    /// Events for the editor. The processor's senders are made from it.
+    /// Every drum that was hit, sent from the audio thread: the editor
+    /// flashes its pad and the light of its strip.
+    #[stream(id = "hits")]
+    pub hits: WebViewStream<Hit>,
+
+    /// The held peak of each drum, sent from the audio thread.
+    #[value(id = "meters")]
+    pub meters: WebViewValue<Meters>,
+
+    /// The queue the senders above deliver through.
     pub events: WebViewEventQueue,
 }
 
@@ -289,8 +298,8 @@ impl Model for DrumSynthModel {
             sample_rate: sample_rate.hz(),
             time_counter: 0,
             render_buffers: std::array::from_fn(|_| vec![0.0; max_buffer_size.0]),
-            hits_sender: self.events.stream_sender("hits", HITS_CAPACITY),
-            meters_sender: self.events.value_sender("meters", METERS_AT_REST),
+            hits_sender: self.hits.sender(HITS_CAPACITY),
+            meters_sender: self.meters.sender(METERS_AT_REST),
             meters: METERS_AT_REST,
             model: self,
         }
@@ -317,7 +326,7 @@ impl Model for DrumSynthModel {
 /// and the light of its strip.
 /// As JSON an object with the drum (0 kick, 1 snare, 2 hi-hat, 3 crash) and
 /// the velocity from 0.0 to 1.0.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TypeScript)]
 #[serde(crate = "beamer::serde")]
 pub struct Hit {
     pub drum: u8,

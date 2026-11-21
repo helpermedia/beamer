@@ -689,18 +689,26 @@ mod tests {
         ipc.sync.as_mut().and_then(EditorSync::frame_script)
     }
 
+    /// An event of the plugin named `name`, connected to `events` as
+    /// `#[beamer::model]` connects a declared one.
+    fn event(name: &str, events: &WebViewEventQueue) -> beamer_webview::WebViewEvent<i32> {
+        let mut event = beamer_webview::WebViewEvent::default();
+        event.connect(name.to_string(), events);
+        event
+    }
+
     #[test]
     fn test_view_opens_and_closes_the_event_queue_once() {
         let events = WebViewEventQueue::new();
         events.claim();
         let mut ipc = context(Some(events.clone()));
 
-        events.emit("before", &1);
+        event("before", &events).emit(&1);
         assert_eq!(frame(&mut ipc), None);
 
         // attached(), then a timer tick.
         ipc.open_sync();
-        events.emit("open", &2);
+        event("open", &events).emit(&2);
         assert_eq!(
             frame(&mut ipc).as_deref(),
             Some("window.__BEAMER__._onEvent(\"open\",2);")
@@ -709,7 +717,7 @@ mod tests {
         // removed(), then the drop of the view.
         ipc.close_sync();
         ipc.close_sync();
-        events.emit("closed", &3);
+        event("closed", &events).emit(&3);
         assert_eq!(frame(&mut ipc), None);
 
         // A second view of the same plugin was not closed by the first.
@@ -717,7 +725,7 @@ mod tests {
         second.open_sync();
         ipc.open_sync();
         ipc.sync = None;
-        events.emit("second", &4);
+        event("second", &events).emit(&4);
         assert!(frame(&mut second).is_some());
     }
 

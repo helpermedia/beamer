@@ -42,9 +42,7 @@ export default function LevelHistory({ width = 240, height = 64 }: LevelHistoryP
     draw();
 
     return runtime().on("history", (data) => {
-      if (!Array.isArray(data)) return;
-      // A point that was not a finite number arrives as null.
-      const fresh = data.slice(-POINTS).map((point) => Number(point) || 0);
+      const fresh = data.slice(-POINTS);
       points.copyWithin(0, fresh.length);
       points.set(fresh, POINTS - fresh.length);
       draw();

@@ -7,6 +7,7 @@
 mod auv2;
 mod auv3;
 mod build;
+mod model_types;
 mod util;
 mod vst3;
 
@@ -113,6 +114,10 @@ fn main() {
         }
         "log" => {
             log_command(&args);
+            return;
+        }
+        "model-types" => {
+            model_types_command(&args);
             return;
         }
         "bundle" => {
@@ -257,6 +262,45 @@ fn uninstall_command(args: &[String]) {
     }
 }
 
+fn model_types_command(args: &[String]) {
+    let package = match args.get(2) {
+        Some(package) if !package.starts_with('-') => package,
+        _ => {
+            print_error("model-types command requires a package name");
+            print_usage();
+            std::process::exit(1);
+        }
+    };
+    let verbose = match &args[3..] {
+        [] => false,
+        [flag] if flag == "--verbose" || flag == "-v" => true,
+        [arg, ..] => {
+            print_error(&format!("unexpected argument '{}'", arg));
+            print_usage();
+            std::process::exit(1);
+        }
+    };
+    let result = get_workspace_root().and_then(|workspace_root| {
+        let package_info = util::find_package(package, &workspace_root)?;
+        if !beamer_utils::web_ui::has_typed_web_ui(&package_info.dir) {
+            return Err(format!("{} has no typed web UI (webview/package.json)", package));
+        }
+        model_types::write(
+            package,
+            &package_info.dir,
+            &workspace_root,
+            build::current_target(),
+            None,
+            build::debug_rustflags().as_deref(),
+            verbose,
+        )
+    });
+    if let Err(e) = result {
+        print_error(&e);
+        std::process::exit(1);
+    }
+}
+
 fn log_command(args: &[String]) {
     let package = match args.get(2) {
         Some(package) if !package.starts_with('-') => package,
@@ -337,6 +381,8 @@ fn print_usage() {
     eprintln!("  generate-uuid                 Generate a new UUID for plugin identification");
     eprintln!("  bundle <package> [options]    Build and bundle a plugin");
     eprintln!("  uninstall <package> [formats] Remove an installed plugin");
+    eprintln!("  model-types <package> [-v]    Write the model's types into the plugin's typed page");
+    eprintln!("                                (webview/src/model-types.ts); bundle writes them too");
     eprintln!("  log <package> [--last <time>] Show the log messages of a plugin as they come (macOS),");
     eprintln!("                                or those of the last 30s, 10m, 2h or 1d");
     eprintln!();
@@ -388,6 +434,7 @@ fn print_usage() {
     eprintln!("  cargo xtask uninstall gain                                # Every format");
     eprintln!("  cargo xtask uninstall gain --auv3                         # AUv3 only");
     eprintln!("  cargo xtask bundle compressor --auv2 --install --diagnostics");
+    eprintln!("  cargo xtask model-types compressor                        # Its page's types");
     eprintln!("  cargo xtask log gain                                      # Its log messages");
     eprintln!("  cargo xtask log compressor --last 10m                     # Those of the last 10 minutes");
 }
@@ -418,8 +465,33 @@ fn bundle(config: &BundleConfig) -> Result<(), String> {
         build::clean_build_caches(&workspace_root, config)?;
     }
 
-    // Build webview assets (must happen before cargo build so dist/ exists for proc macro)
-    build::build_webview(&package_info.dir, config.verbose)?;
+    // Write the model's types into a typed page first: its check reads
+    // them. A test build for this machine, sharing a debug bundle's
+    // artifacts.
+    let first_format = if config.build_auv2 || config.build_auv2_separate || config.build_auv3 {
+        build::Format::Auv2
+    } else {
+        build::Format::Vst3
+    };
+    model_types::write(
+        &config.package,
+        &package_info.dir,
+        &workspace_root,
+        build::current_target(),
+        Some(first_format.feature()),
+        build::debug_rustflags().as_deref(),
+        config.verbose,
+    )?;
+
+    // Build webview assets (must happen before cargo build so dist/ exists
+    // for proc macro). With a dev server the page is not embedded, so its
+    // check reports errors without failing the bundle.
+    let check = if std::env::var_os(beamer_utils::web_ui::DEV_URL_VAR).is_some() {
+        model_types::CheckMode::Report
+    } else {
+        model_types::CheckMode::Fail
+    };
+    build::build_webview(&package_info.dir, check, config.verbose)?;
 
     // The export macro finds the web UI by the same rule. Its stamp goes to
     // the build, so that a web UI that changed expands the plugin again.

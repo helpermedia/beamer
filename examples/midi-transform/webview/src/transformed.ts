@@ -1,11 +1,11 @@
 import { runtime, senderValue } from "@helpermedia/beamer-api";
+import type { Transformed as Passed } from "./model-types";
 
 // What passes through the plugin, from the stream sender "transformed"
-// (`Transformed` in src/lib.rs): every note and CC as it came in and as it
-// went out, in arrays of what arrived since the last tick. This store
+// (`Transformed` in model-types.ts): every note and CC as it came in and as
+// it went out, in arrays of what arrived since the last tick. This store
 // keeps what the displays show: the notes that sound and the last note
-// and CC. The shape of what arrives is the caller's claim, so each field
-// is checked.
+// and CC.
 //
 // While keys are down the processor sends their number with every block
 // through the value sender "pressed". When it stops coming, the host
@@ -71,76 +71,49 @@ function waitForProcessor(): void {
   if (current.held.size > 0) wait = setTimeout(endNotes, WAIT_MS);
 }
 
-function midiNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 127 ? value : null;
-}
-
-function unit(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-}
-
 function key(channel: number, pitch: number): string {
   return `${channel}:${pitch}`;
 }
 
 // The state after one event. Returns `state` itself when the event changes
-// nothing or is not one this store reads.
-function apply(state: Transformed, event: unknown): Transformed {
-  if (typeof event !== "object" || event === null) return state;
-  const fields = event as Record<string, unknown>;
-  const channel = midiNumber(fields.channel) ?? 0;
-
-  switch (fields.type) {
+// nothing.
+function apply(state: Transformed, event: Passed): Transformed {
+  switch (event.type) {
     case "noteOn": {
-      const pitch = midiNumber(fields.pitch);
-      if (pitch === null) return state;
-      const note: Note = {
-        pitch,
-        outPitch: midiNumber(fields.outPitch),
-        velocity: unit(fields.velocity),
-        outVelocity: unit(fields.outVelocity),
-      };
+      const { pitch, outPitch, velocity, outVelocity } = event;
+      const note: Note = { pitch, outPitch, velocity, outVelocity };
       const held = new Map(state.held);
-      held.set(key(channel, pitch), note);
+      held.set(key(event.channel, pitch), note);
       return { ...state, held, lastNote: note };
     }
     case "noteOff": {
-      const pitch = midiNumber(fields.pitch);
-      if (pitch === null || !state.held.has(key(channel, pitch))) return state;
+      const noteKey = key(event.channel, event.pitch);
+      if (!state.held.has(noteKey)) return state;
       const held = new Map(state.held);
-      held.delete(key(channel, pitch));
+      held.delete(noteKey);
       return { ...state, held };
     }
     case "cc": {
-      const controller = midiNumber(fields.controller);
-      if (controller === null) return state;
-      const cc: Cc = {
-        controller,
-        value: unit(fields.value),
-        outController: midiNumber(fields.outController) ?? controller,
-        outValue: unit(fields.outValue),
-      };
+      const { channel, controller, value, outController, outValue } = event;
+      const cc: Cc = { controller, value, outController, outValue };
       let held = state.held;
-      if (ENDS_NOTES.includes(cc.outController)) {
+      if (ENDS_NOTES.includes(outController)) {
         held = new Map([...held].filter(([noteKey]) => !noteKey.startsWith(`${channel}:`)));
       }
       return { ...state, held, lastCc: cc };
     }
     case "reset":
       return state.held.size > 0 ? { ...state, held: new Map() } : state;
-    default:
-      return state;
   }
 }
 
-function arrive(events: unknown): void {
-  if (!Array.isArray(events)) return;
+function arrive(events: Passed[]): void {
   show(events.reduce<Transformed>(apply, current));
   waitForProcessor();
 }
 
 // The number of keys that are down, from the processor.
-function arrivePressed(pressed: unknown): void {
+function arrivePressed(pressed: number | undefined): void {
   if (pressed === 0) endNotes();
   waitForProcessor();
 }

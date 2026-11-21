@@ -29,7 +29,7 @@ use beamer::serde::{Deserialize, Serialize};
 ///
 /// This is a setting and not a parameter: a host does not automate it. The
 /// model keeps it in a `State` field.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, TypeScript)]
 #[serde(crate = "beamer::serde", rename_all = "snake_case")]
 pub enum PanLaw {
     /// Equal loudness across the stereo field (-3 dB at the center).
@@ -40,7 +40,7 @@ pub enum PanLaw {
 }
 
 /// The output level as the meter shows it.
-#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, TypeScript)]
 #[serde(crate = "beamer::serde")]
 pub struct Levels {
     /// The held peak of each channel, linear. Not in dB: the infinity of
@@ -72,8 +72,22 @@ pub struct WebViewDemoModel {
     /// Not saved and not a parameter: the web UI shows it.
     pub sample_rate: Handover<f64>,
 
-    /// Events for the web UI. What is emitted here reaches the editor
-    /// while it is open. The processor's senders are made from it too.
+    /// The sample rate, emitted whenever the host prepares the plugin. An
+    /// editor that opens later asks with `invoke("getSampleRate")`.
+    #[event(id = "sampleRate")]
+    pub sample_rate_event: WebViewEvent<f64>,
+
+    /// The held peak of each channel, sent from the audio thread.
+    #[value(id = "levels")]
+    pub levels: WebViewValue<Levels>,
+
+    /// One point of the output history per 10 ms, sent from the audio
+    /// thread.
+    #[stream(id = "history")]
+    pub history: WebViewStream<f32>,
+
+    /// The queue the event and the senders above deliver through while an
+    /// editor is open.
     pub events: WebViewEventQueue,
 }
 
@@ -87,19 +101,19 @@ impl Model for WebViewDemoModel {
         // never on the audio thread, so emitting is fine here.
         let sample_rate = setup.hz();
         self.sample_rate.set(sample_rate);
-        self.events.emit("sampleRate", &sample_rate);
+        self.sample_rate_event.emit(&sample_rate);
 
         WebViewDemoProcessor {
             // The audio thread's end of the state field. Taken before the
             // model moves into the processor.
             pan_law: self.pan_law.reader(),
             // The meter shows the newest level only.
-            levels: self.events.value_sender("levels", Levels::default()),
+            levels: self.levels.sender(Levels::default()),
             // The history needs every point. About two arrive between two
             // ticks of the editor. Room for 64 is 640 ms: an editor whose main
             // thread is busy for a moment (a project that loads, a heavy
             // redraw) loses nothing.
-            history: self.events.stream_sender("history", 64),
+            history: self.history.sender(64),
             peaks: [0.0; 2],
             // A held peak falls by 20 dB a second.
             release_per_sample: 10f32.powf(-1.0 / sample_rate as f32),

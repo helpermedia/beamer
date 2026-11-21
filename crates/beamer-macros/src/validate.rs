@@ -9,6 +9,7 @@ use crate::ir::{FieldIR, ParameterDefault, ParameterFieldIR, ParameterKind, Para
 /// Validate the IR for semantic correctness.
 pub fn validate(ir: &ModelIR) -> syn::Result<()> {
     check_unique_string_ids(ir)?;
+    check_unique_webview_ids(ir)?;
     check_one_event_queue(ir)?;
     check_no_hash_collisions(ir)?;
     check_no_group_id_collisions(ir)?;
@@ -37,7 +38,7 @@ fn check_unique_string_ids(ir: &ModelIR) -> syn::Result<()> {
                 state.span,
                 "state",
             ),
-            FieldIR::Nested(_) | FieldIR::Other(_) | FieldIR::EventQueue(_) => continue,
+            FieldIR::Nested(_) | FieldIR::Other(_) | FieldIR::EventQueue(_) | FieldIR::WebView(_) => continue,
         };
         if let Some(first_field) = seen.get(id) {
             return Err(syn::Error::new(
@@ -51,6 +52,30 @@ fn check_unique_string_ids(ir: &ModelIR) -> syn::Result<()> {
         seen.insert(id, field_name);
     }
 
+    Ok(())
+}
+
+/// Check that the senders and events of the struct have names of their
+/// own.
+///
+/// They share one namespace in the web UI: a value, a stream and an event
+/// are each one name there. Parameters and `State` fields have namespaces
+/// of their own.
+fn check_unique_webview_ids(ir: &ModelIR) -> syn::Result<()> {
+    let mut seen: HashMap<&str, &syn::Ident> = HashMap::new();
+    for field in ir.webview_fields() {
+        if let Some(first_field) = seen.get(field.id.as_str()) {
+            return Err(syn::Error::new(
+                field.span,
+                format!(
+                    "Duplicate web UI name \"{}\": already used by field `{}`. A value, a stream \
+                     and an event are each one name in the web UI.",
+                    field.id, first_field
+                ),
+            ));
+        }
+        seen.insert(field.id.as_str(), &field.field_name);
+    }
     Ok(())
 }
 

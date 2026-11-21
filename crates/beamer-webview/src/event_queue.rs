@@ -1,13 +1,13 @@
 //! Events from Rust to the web UI.
 //!
-//! A [`WebViewEventQueue`] holds named events for the plugin's editor.
-//! Rust code puts events in with [`emit()`](WebViewEventQueue::emit).
-//! JavaScript receives them with `__BEAMER__.on("name", callback)`.
+//! A [`WebViewEventQueue`] holds the events and the senders' values for
+//! the plugin's editor until the editor's next tick delivers them.
 //!
-//! The queue lives in the model, which every thread of a plugin
-//! instance shares, as a field without an attribute. `#[beamer::model]`
-//! finds it by its type, also in a nested group. The format wrappers
-//! take it from there:
+//! The queue lives in the model, which every thread of a plugin instance
+//! shares, as a field without an attribute. `#[beamer::model]` finds it by
+//! its type, also in a nested group. It connects the model's declared
+//! events and senders to it (see [`fields`](crate::fields)). The format
+//! wrappers take it from there:
 //!
 //! ```ignore
 //! #[beamer::model]
@@ -15,11 +15,15 @@
 //!     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
 //!     gain: FloatParameter,
 //!
+//!     /// The name of the sample that finished loading.
+//!     #[event(id = "sampleLoaded")]
+//!     sample_loaded: WebViewEvent<String>,
+//!
 //!     events: WebViewEventQueue,
 //! }
 //!
 //! // On a host or UI thread, or on a thread the plugin started:
-//! model.events.emit("sampleLoaded", &"kick.wav");
+//! model.sample_loaded.emit(&"kick.wav".to_string());
 //! ```
 //!
 //! ```js
@@ -36,10 +40,10 @@
 //!
 //! # Threads
 //!
-//! `emit()` turns the data into JSON and takes a lock, so it is for host
-//! and UI threads and for threads the plugin starts. It must not be called
-//! on the audio thread. The audio thread sends through a sender that the
-//! plugin creates from the queue in `prepare()`: a
+//! Emitting turns the data into JSON and takes a lock, so it is for host
+//! and UI threads and for threads the plugin starts. It must not happen on
+//! the audio thread. The audio thread sends through a sender that the
+//! plugin creates from a declared field in `prepare()`: a
 //! [`WebViewValueSender`] for the newest value, such as a meter, or a
 //! [`WebViewStreamSender`] for every value in order, such as a scrolling
 //! history. [`is_editor_open()`](WebViewEventQueue::is_editor_open) tells it
@@ -94,7 +98,17 @@ impl WebViewEventQueue {
         Self::default()
     }
 
-    /// Send a named event to the web UI.
+    /// A queue that drops what it gets without a report, for a field that
+    /// reported already that it is not connected.
+    #[cfg(not(debug_assertions))]
+    pub(crate) fn reported() -> Self {
+        let queue = Self::default();
+        queue.shared.reported.store(true, Ordering::Release);
+        queue
+    }
+
+    /// Send a named event to the web UI: what
+    /// [`WebViewEvent::emit()`](crate::WebViewEvent::emit) does.
     ///
     /// `data` can be anything that serializes to JSON. JavaScript receives
     /// it as the argument of the callbacks registered with
@@ -103,9 +117,9 @@ impl WebViewEventQueue {
     /// The event is dropped while no editor is open. Not for the audio
     /// thread: this allocates and takes a lock.
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn emit(&self, name: &str, data: &impl Serialize) {
+    pub(crate) fn emit(&self, name: &str, data: &impl Serialize) {
         beamer_core::audio_thread::assert_not_in_process(
-            "WebViewEventQueue::emit()",
+            "WebViewEvent::emit()",
             "Data from the audio thread needs a lock-free channel to the editor.",
         );
         if !self.shared.claimed.load(Ordering::Acquire) {
@@ -150,26 +164,24 @@ impl WebViewEventQueue {
         self.shared.editors.load(Ordering::Acquire) > 0
     }
 
-    /// Create a sender of the newest value for the audio thread.
+    /// Create a sender of the newest value for the audio thread: what
+    /// [`WebViewValue::sender()`](crate::WebViewValue::sender) does.
     ///
-    /// Call this in `prepare()` and keep the sender in the processor. The
-    /// web UI reads the value with `__BEAMER__.values.get(name)` and
+    /// The web UI reads the value with `__BEAMER__.values.get(name)` and
     /// listens to it with `__BEAMER__.values.on(name, callback)`. `initial`
-    /// is the value before the first send; it also sets the memory a value
-    /// fills (the length of a `Vec`, for example). See
-    /// [`WebViewValueSender`].
+    /// is the value before the first send. See [`WebViewValueSender`].
     ///
     /// Takes a lock and allocates: not for the audio thread. The name of
     /// each sender and event is its own: two senders with the same name
     /// are a mistake, as is an event with the name of a sender. Debug
     /// builds panic.
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn value_sender<T>(&self, name: &str, initial: T) -> WebViewValueSender<T>
+    pub(crate) fn value_sender<T>(&self, name: &str, initial: T) -> WebViewValueSender<T>
     where
         T: Clone + Serialize + Send + 'static,
     {
         beamer_core::audio_thread::assert_not_in_process(
-            "WebViewEventQueue::value_sender()",
+            "WebViewValue::sender()",
             "Create senders in prepare() and keep them in the processor.",
         );
         let (sender, end) = value_link(json_string(name), initial);
@@ -177,11 +189,11 @@ impl WebViewEventQueue {
         sender
     }
 
-    /// Create a sender of a stream of values for the audio thread.
+    /// Create a sender of a stream of values for the audio thread: what
+    /// [`WebViewStream::sender()`](crate::WebViewStream::sender) does.
     ///
-    /// Call this in `prepare()` and keep the sender in the processor. At
-    /// each tick the web UI receives every value pushed since the last one
-    /// as an array, the argument of the callbacks registered with
+    /// At each tick the web UI receives every value pushed since the last
+    /// one as an array, the argument of the callbacks registered with
     /// `__BEAMER__.on(name, callback)`. `capacity` is how many values wait
     /// at most; more are dropped. See [`WebViewStreamSender`].
     ///
@@ -194,12 +206,12 @@ impl WebViewEventQueue {
     ///
     /// When `capacity` is 0.
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn stream_sender<T>(&self, name: &str, capacity: usize) -> WebViewStreamSender<T>
+    pub(crate) fn stream_sender<T>(&self, name: &str, capacity: usize) -> WebViewStreamSender<T>
     where
         T: Copy + Serialize + Send + 'static,
     {
         beamer_core::audio_thread::assert_not_in_process(
-            "WebViewEventQueue::stream_sender()",
+            "WebViewStream::sender()",
             "Create senders in prepare() and keep them in the processor.",
         );
         let (sender, end) = stream_link(json_string(name), capacity, self.clone());

@@ -252,7 +252,7 @@ pub trait AuPluginInstance: Send + 'static {
     /// Returns the plugin's queue of events for the web UI.
     ///
     /// Returns `None` if the plugin sends no events.
-    fn webview_events(&self) -> Option<WebViewEventQueue> {
+    fn webview_queue(&self) -> Option<WebViewEventQueue> {
         None
     }
 

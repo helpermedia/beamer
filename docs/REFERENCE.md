@@ -203,7 +203,7 @@ pub struct GainModel {
 `#[beamer::model]` (and `#[beamer::group]` for a nested group) generates:
 - `Parameters` trait implementation (count, iter, by_id, groups, smoothing), which also makes the struct a `ParameterStore` for the host
 - `Saved` trait implementation (parameters and `State` fields, saving and loading)
-- `WebViewEvents` trait implementation (where the event queue of the web UI is)
+- `WebViewFields` trait implementation (where the event queue of the web UI is, the connection of the declared senders and events to it, the page's model types)
 - `WebViewDispatch` trait implementation, `#[beamer::model]` only: passes the web UI's `invoke()` calls and events to the model's `WebViewHandler` when it has one (see [WEBVIEW.md](WEBVIEW.md#answering-the-web-ui))
 - `ParameterGroups` trait implementation (parameter groups)
 - `Default` implementation (`State` fields and fields without an attribute get their own default)
@@ -217,7 +217,7 @@ The generated `Default` takes every parameter from its attribute, so each one ne
 - `BoolParameter`: `name` and `default`, or only `bypass`.
 - `EnumParameter`: `name`. Its default is the variant marked `#[default]`, or else the first.
 
-A model or group needs at least one `#[parameter]`, `#[nested]` or `#[state]` field, or the attribute reports a compile error.
+A model or group needs at least one `#[parameter]`, `#[nested]`, `#[state]`, `#[value]`, `#[stream]` or `#[event]` field, or the attribute reports a compile error.
 
 A field cannot have `#[cfg]`: the attribute runs before `#[cfg]` is applied to the fields, so put the whole struct behind the `#[cfg]` instead.
 
@@ -773,7 +773,7 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewEvents`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewEvents` is for a struct without a queue; a struct with a `WebViewEventQueue` returns it from `webview_events()`. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewFields`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewFields` is for a struct without a queue or declared senders and events; a struct with a `WebViewEventQueue` returns it from `webview_queue()`; one with declared fields connects them in `connect_webview()`. Its `describe_model_types()` lists the `State` fields, senders and events with their types for the page's generated model types (see [TypeScript Declaration](WEBVIEW.md#typescript-declaration)). The default lists none, so a page with generated model types can name none of them: list each with `types.state(join_path(prefix, "pan_law"), std::any::type_name::<PanLaw>(), None, |types| Some(PanLaw::type_script(types)))`. `types.value()`, `types.stream()` and `types.event()` take the same arguments. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
 
 Every `Parameters` is also a `ParameterStore`: the parameters as the host sees them, looked up through `Parameters`. A store that keeps values without parameter objects implements `ParameterStore` directly. For a `Parameters`, `info(index)` walks the parameters and allocates. It is for listing them on host and editor threads, never per frame or on the audio thread. `info_by_id()` looks one up through `by_id()` and does not allocate. The trait and the metadata it returns:
 

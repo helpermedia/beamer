@@ -118,8 +118,8 @@ fn test_model_lists_the_parameters_of_its_groups() {
 fn test_model_finds_its_event_queue() {
     let model = SamplerModel::default();
 
-    assert!(WebViewEvents::webview_events(&model).is_some());
-    assert!(WebViewEvents::webview_events(&LayerGroup::default()).is_none());
+    assert!(WebViewFields::webview_queue(&model).is_some());
+    assert!(WebViewFields::webview_queue(&LayerGroup::default()).is_none());
 }
 
 #[test]

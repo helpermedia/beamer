@@ -280,7 +280,7 @@ impl ParameterGroups for ClashingParameters {}
 
 impl Saved for ClashingParameters {}
 
-impl WebViewEvents for ClashingParameters {}
+impl WebViewFields for ClashingParameters {}
 
 impl Parameters for ClashingParameters {
     fn count(&self) -> usize {

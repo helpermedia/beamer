@@ -1,14 +1,16 @@
+import type { ParameterId } from "@helpermedia/beamer-api";
+
 // The drums as the processor has them (`DrumType` in src/lib.rs): one pad
 // and one strip each. The processor maps each GM note to its drum; the
 // editor mirrors that table.
 
 export interface Drum {
   // The string id of the drum's level parameter. Its name is the drum's.
-  levelParameterId: string;
+  levelParameterId: ParameterId;
   // The string id of the drum's pan parameter, its balance.
-  panParameterId: string;
+  panParameterId: ParameterId;
   // The string id of the parameter that picks the drum's output.
-  outputParameterId: string;
+  outputParameterId: ParameterId;
   // The MIDI note that plays it, as General MIDI places it.
   note: number;
 }

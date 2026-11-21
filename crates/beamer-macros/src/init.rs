@@ -281,10 +281,28 @@ pub fn export_impl(model: syn::Ident) -> Result<TokenStream, String> {
     // File dependency tracking: include_str! tells cargo to re-run when the file changes.
     let config_path_str = config_path.to_string_lossy().to_string();
 
+    // A typed web UI gets a test that compares its model types with the
+    // model, or writes them for `cargo xtask model-types`.
+    let model_types_test = web_ui::has_typed_web_ui(std::path::Path::new(&manifest_dir)).then(|| {
+        quote! {
+            #[cfg(test)]
+            mod __beamer_model_types {
+                #[test]
+                fn model_types_match_the_model() {
+                    ::beamer::webview::model_types::check::<super::#model>(
+                        env!("CARGO_MANIFEST_DIR"),
+                        env!("CARGO_PKG_NAME"),
+                    );
+                }
+            }
+        }
+    });
+
     Ok(quote! {
         const _: &str = include_str!(#config_path_str);
         #config_tokens
         ::beamer::export_plugin!(CONFIG, #model);
+        #model_types_test
     })
 }
 

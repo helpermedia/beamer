@@ -1,7 +1,8 @@
 import { fallingLevels } from "@helpermedia/beamer-controls";
+import type { Meters } from "./model-types";
 
 // The meters as the editor shows them: the values of the value sender
-// "meters" (`Meters` in src/lib.rs), which the audio thread sends with
+// "meters" (`Meters` in model-types.ts), which the audio thread sends with
 // every block while they show something. When no value comes for a while,
 // the host stopped calling the plugin (Logic's power button, Reaper's FX
 // switch, a host that rests while stopped). The meters then fall on their
@@ -14,28 +15,14 @@ export const FLOOR_DB = -60;
 // src/lib.rs.
 const FALL_DB_PER_SECOND = 20;
 
-export interface Meters {
-  // The held peak of the level the detector keys on in dB.
-  keyDb: number;
-  // The held gain reduction in dB, a positive number.
-  reductionDb: number;
-  // The auto makeup gain in effect in dB.
-  autoMakeupDb: number;
-}
+// The meters at rest: no signal and no reduction.
+const REST: Meters = { keyDb: FLOOR_DB, reductionDb: 0, autoMakeupDb: 0 };
 
-function finite(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-// A value as it arrives, or the meters at rest for undefined. Its shape is
-// the caller's claim, so each field is checked.
-function read(value: unknown): Meters {
-  const meters = (typeof value === "object" && value !== null ? value : {}) as Partial<Meters>;
-  return {
-    keyDb: Math.max(FLOOR_DB, finite(meters.keyDb, FLOOR_DB)),
-    reductionDb: Math.max(0, finite(meters.reductionDb, 0)),
-    autoMakeupDb: finite(meters.autoMakeupDb, 0),
-  };
+// The meters as they arrive, the key's level at least at the floor and the
+// reduction at least 0, or the meters at rest for undefined.
+function read(value: Meters | undefined): Meters {
+  if (!value) return REST;
+  return { ...value, keyDb: Math.max(FLOOR_DB, value.keyDb), reductionDb: Math.max(0, value.reductionDb) };
 }
 
 // The meters, at rest until the host prepared the plugin and falling from

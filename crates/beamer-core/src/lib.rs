@@ -42,6 +42,8 @@ pub mod config;
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
 pub mod handover;
+#[doc(hidden)]
+pub mod json_check;
 pub mod host_notifier;
 pub mod logging;
 pub mod error;

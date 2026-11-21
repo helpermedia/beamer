@@ -40,7 +40,7 @@ Building and bundling plugins with a web UI is covered in [BUILDING.md](BUILDING
 | Crate | Role |
 |-------|------|
 | `beamer-core` | The editor settings of `Config` and the `EmbeddedAssets` types: which editor a plugin has |
-| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, `WebViewValueSender` and `WebViewStreamSender` (its senders for the audio thread), `WebViewEvents` (where the model's queue is), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `EditorNotes` (the notes the page plays, on their way to the render), `parameters_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
+| `beamer-webview` | Both ends of the protocol: the injected `beamer_runtime.js`, `WebViewHandler` (the model's answers to `invoke()` calls and events), the `WebViewDispatch` that `#[beamer::model]` generates for the wrappers to call it through, `WebViewEventQueue`, the declared fields `WebViewValue`, `WebViewStream` and `WebViewEvent`, `WebViewValueSender` and `WebViewStreamSender` (the senders for the audio thread), `WebViewFields` (where the model's queue is, the connection of its fields, the model's types), `TypeScript` and `ModelTypes` (the page's model types), `EditorSync` (the scripts of the init dump and of each frame, the messages of the page), `EditorNotes` (the notes the page plays, on their way to the render), `parameters_to_init_json()`. Also platform WebView creation, custom URL scheme and C-ABI bridge |
 | `beamer-vst3` | `WebViewPlugView` (IPlugView impl), 60 Hz sync timer, `HostEdits` through the `IComponentHandler` |
 | `beamer-au` | C-ABI bridge for the generated Objective-C wrappers, which hold the AU view classes, 60 Hz sync timer and the host side of `HostEdits` (`BeamerAuEditorHost`) |
 
@@ -75,6 +75,8 @@ The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any
 ### TypeScript Declaration
 
 `@helpermedia/beamer-api` (see [Packages for the Web UI](#packages-for-the-web-ui)) declares these types. The ids and values follow its `ModelTypes` interface, which a page augments with the model's parameter ids, `State` paths, sender names, events and methods. A section the page does not declare stays loose: any name is accepted and values are `unknown`. Events and stream senders share their names, so a page that declares one of the two gets the other as empty. Without any declaration, `ParameterId`, `StatePath`, `ValueSenderName`, `PluginEventName`, `PageEventName` and `MethodName` are plain strings.
+
+A plugin with a `webview/package.json` gets the declaration generated from its model, in `webview/src/model-types.ts`: the parameter ids, the `State` fields, the senders and the events, each with the TypeScript of the type it carries (`#[derive(TypeScript)]` next to `Serialize`). `cargo xtask bundle` writes the file before it builds the page, `cargo xtask model-types <plugin>` writes it on its own and `cargo test` fails while it differs from the model. Commit it with the change of the model.
 
 ```typescript
 interface BeamerParameterInfo {
@@ -288,7 +290,7 @@ noteName(60); // "C3", or "C4" for a plugin with middle_c = "C4"
 
 ## Events from Rust
 
-A `WebViewEventQueue` holds named events for the editor. Keep one as a field of the model, without an attribute. `#[beamer::model]` finds it by its type, also in a nested group. The framework takes it when the plugin instance is created:
+An event is a field of the model with `#[event(id = "...")]`, a `WebViewEvent<T>` typed by its data. The id is the name the page knows it by; in a nested group the group's field name comes in front (`layer/loaded`). The events and senders of a model share one namespace. They deliver through a `WebViewEventQueue`, which the model keeps as a field without an attribute. `#[beamer::model]` finds the queue by its type, also in a nested group. It connects the declared events and senders to it when it assigns the ids. The framework takes it when the plugin instance is created:
 
 ```rust
 #[beamer::export]
@@ -297,15 +299,19 @@ pub struct WebViewDemoModel {
     #[parameter(id = "gain", name = "Gain", default = 0.0, range = -60.0..=12.0, kind = "db")]
     pub gain: FloatParameter,
 
+    /// The sample rate, whenever the host prepares the plugin.
+    #[event(id = "sampleRate")]
+    pub sample_rate_event: WebViewEvent<f64>,
+
     pub events: WebViewEventQueue,
 }
 ```
 
-The model's methods can then send an event. So can every other thread that holds the model's `Arc`, except the audio thread. The data can be anything that serializes to JSON:
+The model's methods can then send the event. So can every other thread that holds the model's `Arc`, except the audio thread. A value of the wrong type does not compile:
 
 ```rust
 // In a method of the model, such as prepare(), or in its WebViewHandler.
-self.events.emit("sampleRate", &48000.0);
+self.sample_rate_event.emit(&48000.0);
 ```
 
 ```javascript
@@ -318,7 +324,7 @@ What to know about events:
 - **Not on the audio thread.** `emit()` allocates and takes a lock. It is for host and UI threads and for threads the plugin starts. In debug builds, a call from `process()` panics. For data from the audio thread see [Data from the Audio Thread](#data-from-the-audio-thread).
 - **At most 1024 events wait.** When the editor does not take them fast enough, the oldest are dropped. The limit counts events, not bytes, so keep the data of an event small.
 - **A listener that throws does not stop the others.** The error goes to the console of the WebView.
-- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. A queue of the model itself is the plugin's, also when a nested group with a queue comes before it in field order. Without one, the first nested group in field order that has a queue provides it. The other queues are not delivered. The attribute knows the field by the name of its type, so a type alias, a renamed import or a wrapper such as `Option` hides it. A queue the framework does not know reports so once, at the first event emitted into it or the first sender created from it, on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewEvents::webview_events()`.
+- **One queue per plugin.** Two `WebViewEventQueue` fields in one struct are a compile error. A queue of the model itself is the plugin's, also when a nested group with a queue comes before it in field order. Without one, the first nested group in field order that has a queue provides it. The other queues are not delivered. The attribute knows the field by the name of its type, so a type alias, a renamed import or a wrapper such as `Option` hides it. A queue the framework does not know reports so once, at the first event emitted into it or the first sender created from it, on standard error and through the `log` crate. A hand-written model or group (without `#[beamer::model]` or `#[beamer::group]`) returns its queue from `WebViewFields::webview_queue()` and connects its declared fields in `WebViewFields::connect_webview()`.
 
 ### Example (from `webview-demo`)
 
@@ -328,7 +334,7 @@ The demo shows the sample rate the host runs at. `prepare()` is called on a host
 fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
     let sample_rate = setup.hz();
     self.sample_rate.set(sample_rate);
-    self.events.emit("sampleRate", &sample_rate);
+    self.sample_rate_event.emit(&sample_rate);
     // ...
 }
 ```
@@ -342,12 +348,13 @@ show(await __BEAMER__.invoke("getSampleRate"));
 
 ## Data from the Audio Thread
 
-The audio thread cannot emit: `emit()` serializes and takes a lock. It sends through a sender instead, which the model creates from its `WebViewEventQueue` in `prepare()` and moves into the processor. Sending never waits, allocates or frees memory. There are two kinds:
+The audio thread cannot emit: `emit()` serializes and takes a lock. It sends through a sender instead. The model declares it as a field, `#[value(id = "...")]` on a `WebViewValue<T>` or `#[stream(id = "...")]` on a `WebViewStream<T>`; `prepare()` makes the sender from that field and moves it into the processor. Sending never waits, allocates or frees memory. There are two kinds:
 
 | | `WebViewValueSender<T>` | `WebViewStreamSender<T>` |
 |---|---|---|
 | For | A value the web UI shows as it is now: a meter, a gain reduction, a spectrum | Values the web UI needs all of, in order: a scrolling history, a scope, the notes played |
-| Created with | `events.value_sender(name, initial)` | `events.stream_sender(name, capacity)` |
+| Declared as | `#[value(id = "...")]` on a `WebViewValue<T>` | `#[stream(id = "...")]` on a `WebViewStream<T>` |
+| Created with | `field.sender(initial)` in `prepare()` | `field.sender(capacity)` in `prepare()` |
 | Sent with | `send(&value)` or `send_with(\|value\| ...)` | `push(value)` or `push_slice(&values)` |
 | JavaScript reads it with | `__BEAMER__.values.get(name)` and `values.on(name, callback)` | `__BEAMER__.on(name, callback)`, like the events of `emit()` |
 | JavaScript receives | The newest value, at most once per tick | An array of every value since the last tick, oldest first |
@@ -371,13 +378,20 @@ pub struct Levels {
     pub peak: [f32; 2],
 }
 
+// In the model:
+#[value(id = "levels")]
+pub levels: WebViewValue<Levels>,
+
+#[stream(id = "history")]
+pub history: WebViewStream<f32>,
+
 fn prepare(self: Arc<Self>, setup: SampleRate) -> WebViewDemoProcessor {
     // ...
     WebViewDemoProcessor {
         // The meter shows the newest level only.
-        levels: self.events.value_sender("levels", Levels::default()),
+        levels: self.levels.sender(Levels::default()),
         // The history needs every point: 100 a second, room for 640 ms.
-        history: self.events.stream_sender("history", 64),
+        history: self.history.sender(64),
         // ...
         model: self,
     }
@@ -424,7 +438,7 @@ What to know about senders:
 - **A value sender keeps the last value only.** What happened between two ticks is lost unless the plugin holds it: a meter holds its peaks with a decay instead of sending the peak of each block. `send()` copies with `clone_from`, which does not allocate for a `Vec` of the same length as the initial value. `send_with()` fills the value in place; what the closure finds there is an older value, so it has to write the whole value.
 - **A stream needs room for two ticks or more.** A tick comes about every 16 ms. When the ring is full, the newest values are dropped: `push()` returns `false`, `push_slice()` returns how many fit. Room for a few hundred milliseconds lets an editor whose main thread is busy for a moment (a project that loads, a heavy redraw) lose nothing.
 - **A stream starts with the editor.** A push while no editor is open is dropped. When the first editor opens, values left from before are skipped.
-- **JSON as for `emit()`.** Values that are not finite numbers (NaN, infinity) arrive as `null`, so send a level as a linear value and convert it to dB in JavaScript. serde serializes arrays of up to 32 elements (a longer one does not compile), so a spectrum is a `Vec<f32>` in a value sender.
+- **JSON as for `emit()`.** Values that are not finite numbers (NaN, infinity) arrive as `null`, so send a level as a linear value and convert it to dB in JavaScript. An integer beyond 2^53 arrives rounded. The page's model types promise a `number` for both, so debug builds report the first such number of each sender and event once, with its place in the value (`-inf at .peak[1]`), on standard error and through the `log` crate. A `State` field reports a float that is not finite when it is saved. serde serializes arrays of up to 32 elements (a longer one does not compile), so a spectrum is a `Vec<f32>` in a value sender.
 - **One name per sender.** A name is one thing in the web UI: an event, a value or a stream. In debug builds a second sender with the name of a living one panics, as does an `emit()` with the name of a living sender.
 - **One editor.** With two windows of one plugin instance open, each event, value and stream value reaches one of them. The hosts tried open one window per instance.
 

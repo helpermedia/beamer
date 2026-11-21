@@ -6,13 +6,14 @@
 //! editor (about 60 times a second) every value pushed since the last tick
 //! is delivered as one array, oldest first.
 //!
-//! The plugin creates the sender in `prepare()` from the queue of its model
-//! and keeps it in the processor. Pushing takes no lock, never allocates and
-//! never frees memory:
+//! The model declares it as a field, `#[stream(id = "history")]` on a
+//! [`WebViewStream`](crate::WebViewStream). The plugin creates the sender
+//! from that field in `prepare()` and keeps it in the processor. Pushing
+//! takes no lock, never allocates and never frees memory:
 //!
 //! ```ignore
 //! // In prepare(), room for 1024 values between two ticks:
-//! ScopeProcessor { history: self.events.stream_sender("history", 1024), model: self }
+//! ScopeProcessor { history: self.history.sender(1024), model: self }
 //!
 //! // In process(), once per block:
 //! self.history.push(block_peak);
@@ -85,7 +86,7 @@ impl<T> Ring<T> {
 /// The audio thread's end of a stream of values for the web UI.
 ///
 /// Created by
-/// [`WebViewEventQueue::stream_sender()`](crate::WebViewEventQueue::stream_sender)
+/// [`WebViewStream::sender()`](crate::WebViewStream::sender)
 /// in `prepare()` and owned by the processor. See the
 /// [module documentation](self).
 pub struct WebViewStreamSender<T> {
@@ -141,6 +142,9 @@ struct StreamEnd<T> {
     name_json: String,
     /// Whether values that cannot be JSON were reported already.
     reported: bool,
+    /// Whether a number JSON does not hold as it is was reported already.
+    #[cfg(debug_assertions)]
+    number_reported: bool,
 }
 
 impl<T: Copy + Serialize + Send + 'static> SenderEnd for StreamEnd<T> {
@@ -194,6 +198,13 @@ impl<T: Copy + Serialize + Send + 'static> SenderEnd for StreamEnd<T> {
         // Hand the slots back to the sender.
         ring.read.store(write, Ordering::Release);
 
+        #[cfg(debug_assertions)]
+        if !self.number_reported {
+            if let Some(found) = beamer_core::json_check::unfaithful_number(&values) {
+                self.number_reported = true;
+                beamer_core::json_check::report(&format!("The stream sender {}", self.name_json), &found);
+            }
+        }
         match serde_json::to_string(&values) {
             Ok(json) => push_event(script, &self.name_json, &json),
             Err(error) => {
@@ -225,6 +236,8 @@ where
         ring: Arc::downgrade(&ring),
         name_json,
         reported: false,
+        #[cfg(debug_assertions)]
+        number_reported: false,
     };
     (WebViewStreamSender { ring, queue, write: 0 }, Box::new(end))
 }
@@ -449,7 +462,7 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "WebViewEventQueue::stream_sender() was called in process()")]
+    #[should_panic(expected = "WebViewStream::sender() was called in process()")]
     fn test_creating_a_sender_in_process_panics() {
         let events = open_queue();
         let _scope = beamer_core::ProcessScope::enter();

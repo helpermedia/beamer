@@ -7,6 +7,7 @@
 -->
 <script lang="ts">
   import { parameter, ready, stateField } from "@helpermedia/beamer-api";
+  import type { ParameterId } from "@helpermedia/beamer-api";
   // The Beamer logo for dark grounds, a copy of
   // docs/branding/beamer-on-dark.svg so that the example works on its own.
   import beamerLogo from "./beamer-logo.svg";
@@ -14,10 +15,7 @@
   import { meters } from "./meters";
   import Pad from "./components/Pad.svelte";
   import Strip from "./components/Strip.svelte";
-
-  // A tab as the `State` field holds it: the variants of `Tab` in
-  // src/lib.rs in JSON.
-  type Tab = "pads" | "mixer";
+  import type { Tab } from "./model-types";
 
   const TABS: { id: Tab; label: string }[] = [
     { id: "pads", label: "Pads" },
@@ -25,9 +23,9 @@
   ];
 
   // The tab the editor shows, kept in the `State` field "tab" and saved
-  // with the project. Pads before `ready` and for a value it does not know.
+  // with the project. Pads before `ready`.
   const tab = stateField("tab");
-  const shown: Tab = $derived(TABS.find(({ id }) => id === $tab)?.id ?? "pads");
+  const shown: Tab = $derived($tab ?? "pads");
 
   // The tab buttons in order, to move the focus between them.
   const buttons: HTMLButtonElement[] = $state([]);
@@ -55,7 +53,7 @@
   }
 
   // The name of a drum: its level parameter's. Read after `ready`.
-  const nameOf = (levelParameterId: string) => parameter(levelParameterId).info?.name ?? levelParameterId;
+  const nameOf = (levelParameterId: ParameterId) => parameter(levelParameterId).info?.name ?? levelParameterId;
 </script>
 
 <!-- The bar spans the window; its content lines up with the panel. -->

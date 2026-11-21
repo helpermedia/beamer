@@ -94,7 +94,7 @@ impl Ratio {
 
 /// What the editor needs to know of the processor, sent from the audio
 /// thread.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TypeScript)]
 #[serde(crate = "beamer::serde", rename_all = "camelCase")]
 pub struct Status {
     /// The sample rate the host prepared the plugin for, which turns the
@@ -106,7 +106,7 @@ pub struct Status {
 }
 
 /// The levels as the editor's meters show them.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TypeScript)]
 #[serde(crate = "beamer::serde", rename_all = "camelCase")]
 pub struct Meters {
     /// The held peak of the level the detector keys on (the main input or
@@ -232,7 +232,16 @@ pub struct CompressorModel {
     // Editor
     // =========================================================================
 
-    /// Events for the editor. The processor's senders are made from it.
+    /// What the editor needs to know of the processor, sent from the audio
+    /// thread.
+    #[value(id = "status")]
+    pub status: WebViewValue<Status>,
+
+    /// The levels the editor's meters show, sent from the audio thread.
+    #[value(id = "meters")]
+    pub meters: WebViewValue<Meters>,
+
+    /// The queue the senders above deliver through.
     pub events: WebViewEventQueue,
 }
 
@@ -305,9 +314,9 @@ impl Model for CompressorModel {
             max_lookahead_samples,
             sample_rate: sample_rate.hz(),
             has_sidechain,
-            status_sender: self.events.value_sender("status", status),
+            status_sender: self.status.sender(status),
             status,
-            meters_sender: self.events.value_sender("meters", Meters::REST),
+            meters_sender: self.meters.sender(Meters::REST),
             meters: Meters::REST,
             model: self,
         };

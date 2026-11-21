@@ -22,7 +22,7 @@ Use `beamer-core` directly only if you're:
 
 ## Advanced: Manual Implementation
 
-Most plugins should use `#[beamer::model]`. For advanced scenarios like dynamic parameter counts or custom storage strategies, a model can implement `Parameters`, `ParameterGroups`, `Saved` and `Default` by hand, with the web UI traits `WebViewEvents` and `WebViewDispatch` of `beamer-webview`. Empty impls of `ParameterGroups`, `Saved`, `WebViewEvents` and `WebViewDispatch` are enough for a model without groups, `State` fields, an event queue or answers to its web UI. See [Low-Level Traits](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#low-level-traits).
+Most plugins should use `#[beamer::model]`. For advanced scenarios like dynamic parameter counts or custom storage strategies, a model can implement `Parameters`, `ParameterGroups`, `Saved` and `Default` by hand, with the web UI traits `WebViewFields` and `WebViewDispatch` of `beamer-webview`. Empty impls of `ParameterGroups`, `Saved`, `WebViewFields` and `WebViewDispatch` are enough for a model without groups, `State` fields, an event queue or answers to its web UI. See [Low-Level Traits](https://github.com/helpermedia/beamer/blob/main/docs/REFERENCE.md#low-level-traits).
 
 ## Documentation
 

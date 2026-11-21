@@ -7,6 +7,8 @@
 //!   `Config.toml`.
 //! - `#[derive(EnumParameter)]` makes an enum the value of an
 //!   `EnumParameter`.
+//! - `#[derive(TypeScript)]` gives a type the TypeScript of what
+//!   `serde_json` writes for it, for the web UI.
 //!
 //! # Declarative Parameters
 //!
@@ -60,6 +62,7 @@ mod ir;
 mod model_attribute;
 mod parse;
 mod range_eval;
+mod type_script;
 mod validate;
 
 /// Mark a struct as the model of a plugin: what every thread of a plugin
@@ -71,8 +74,9 @@ mod validate;
 ///   host
 /// - the `Saved` trait implementation (parameters and `State` fields,
 ///   saving and loading)
-/// - the `WebViewEvents` trait implementation (where the event queue of
-///   the web UI is)
+/// - the `WebViewFields` trait implementation (where the event queue of
+///   the web UI is, the connection of the declared senders and events to
+///   it and the ids and types of the page's model types)
 /// - the `WebViewDispatch` trait implementation, which passes the calls and
 ///   events of the web UI to the model's `WebViewHandler` when it has one
 /// - the `ParameterGroups` trait implementation
@@ -113,6 +117,15 @@ mod validate;
 /// ## `#[state(id = "...")]`
 /// A `State<T>` field: a value that is saved with the plugin state under
 /// this id. Ids share one namespace with parameter ids.
+///
+/// ## `#[value(id = "...")]`, `#[stream(id = "...")]`, `#[event(id = "...")]`
+/// A sender or an event for the web UI: a `WebViewValue<T>` for the newest
+/// value from the audio thread, a `WebViewStream<T>` for every value in
+/// order, a `WebViewEvent<T>` for a notification from a host or UI thread.
+/// The id is the name the page knows it by, behind the names of the nested
+/// fields it sits in. The three share one namespace of their own. The
+/// model connects them to its `WebViewEventQueue` when it assigns the ids;
+/// `prepare()` makes the senders from them (`self.meters.sender(initial)`).
 ///
 /// ## Other fields
 /// A `WebViewEventQueue` field is the event queue of the web UI. A field
@@ -229,6 +242,77 @@ pub fn derive_enum_parameter(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
     match enum_parameter::derive_enum_parameter_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive macro for the `TypeScript` trait: the TypeScript type of what
+/// `serde_json` writes for a struct or enum, for the file that describes a
+/// model to its web UI.
+///
+/// The derive reads the serde attributes with serde's own parser, so
+/// renames, `skip`, `flatten`, `transparent` and the four representations
+/// of an enum (externally tagged, `tag`, `tag` with `content`, `untagged`)
+/// come out as serde writes them. A field with `skip_serializing_if` is
+/// optional (`name?: T`). A type without generics becomes a named
+/// declaration with its doc comments as JSDoc; a generic type is written
+/// inline at each use and needs `TypeScript` for its type parameters.
+///
+/// # Attributes
+///
+/// - `#[type_script(rename = "Name")]` on the type: the TypeScript name,
+///   the Rust name by default. Two Rust types under one name are an error
+///   of the generated file.
+/// - `#[type_script(type = "...")]` on the type or a field: TypeScript
+///   written by hand in place of the derived type.
+/// - `#[type_script(crate = "path")]` on the type: the path of
+///   beamer-webview, `::beamer::webview` by default.
+///
+/// # Refused serde attributes
+///
+/// The web UI sends back the values it gets, so Rust has to read every
+/// value it writes. The derive refuses a different name per direction
+/// (`rename(deserialize = ...)`, `rename_all(deserialize = ...)`),
+/// `skip_serializing` or `skip_serializing_if` without `default` and
+/// `skip_deserializing` (`skip` is fine). An `Option` field with
+/// `skip_serializing_if = "Option::is_none"` needs no `default`: serde
+/// reads a missing `Option` as `None`. A tuple type keeps its length, so
+/// its fields take no `skip_serializing_if`. It also refuses the attributes
+/// that change the shape where it cannot see it (`with`,
+/// `serialize_with`, `deserialize_with`, `getter`, `into`, `from`,
+/// `try_from`, `remote`), unless `#[type_script(type = "...")]` is on that
+/// field or type.
+///
+/// # Example
+///
+/// ```ignore
+/// use beamer::prelude::*;
+/// use beamer::serde::Serialize;
+///
+/// /// The levels as the editor's meters show them.
+/// #[derive(Serialize, TypeScript)]
+/// #[serde(crate = "beamer::serde", rename_all = "camelCase")]
+/// pub struct Meters {
+///     /// The held gain reduction in dB, a positive number.
+///     pub reduction_db: f32,
+/// }
+/// ```
+///
+/// declares
+///
+/// ```ts
+/// /** The levels as the editor's meters show them. */
+/// export interface Meters {
+///   /** The held gain reduction in dB, a positive number. */
+///   reductionDb: number;
+/// }
+/// ```
+#[proc_macro_derive(TypeScript, attributes(type_script))]
+pub fn derive_type_script(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+
+    match type_script::derive_type_script_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

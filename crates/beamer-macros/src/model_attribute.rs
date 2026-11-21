@@ -1,6 +1,6 @@
 //! The `#[beamer::model]` and `#[beamer::group]` attributes.
 //!
-//! Both generate `Parameters`, `Saved`, `WebViewEvents`, `ParameterGroups`
+//! Both generate `Parameters`, `Saved`, `WebViewFields`, `ParameterGroups`
 //! and `Default`. `model` marks the model of a plugin and also generates
 //! `WebViewDispatch`, `group` a nested part of it that the host shows as a
 //! group.

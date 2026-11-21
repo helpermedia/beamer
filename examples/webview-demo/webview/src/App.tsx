@@ -11,10 +11,6 @@ interface PluginInfo {
   framework: string;
 }
 
-// State beyond parameters: the plugin keeps the pan law in a State field,
-// which serde writes as one of these strings.
-type PanLaw = "constant_power" | "linear";
-
 function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
@@ -68,10 +64,7 @@ function App() {
     };
   }, []);
 
-  const togglePanLaw = () => {
-    const next: PanLaw = panLaw === "linear" ? "constant_power" : "linear";
-    setPanLaw(next);
-  };
+  const togglePanLaw = () => setPanLaw(panLaw === "linear" ? "constant_power" : "linear");
 
   return (
     <div className="relative flex flex-col items-center justify-center h-screen bg-slate-900 text-white font-sans select-none">

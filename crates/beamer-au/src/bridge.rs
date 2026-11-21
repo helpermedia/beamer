@@ -628,7 +628,7 @@ pub struct BeamerInstanceHandle {
     /// locks the plugin mutex for it.
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The plugin's queue of events for the web UI, if it has one.
-    webview_events: Option<WebViewEventQueue>,
+    webview_queue: Option<WebViewEventQueue>,
     /// The notes the editor plays, for a plugin with an editor and MIDI
     /// input. The editors put them in, the render block takes them.
     editor_notes: Option<EditorNotes>,
@@ -666,7 +666,7 @@ impl BeamerInstanceHandle {
         // Capture what host threads ask for before wrapping the plugin in the
         // Mutex, so that those calls never need to lock it.
         let webview_dispatch = plugin.webview_dispatch();
-        let webview_events = plugin.webview_events();
+        let webview_queue = plugin.webview_queue();
         // The notes the editor plays are MIDI input.
         let editor_notes = factory::plugin_config()
             .filter(|config| config.midi_input && config.has_editor())
@@ -683,7 +683,7 @@ impl BeamerInstanceHandle {
             bus_config: Mutex::new(None),
             bus_negotiation: Mutex::new(bus_negotiation),
             webview_dispatch,
-            webview_events,
+            webview_queue,
             editor_notes,
             model,
             presets,
@@ -3307,7 +3307,7 @@ pub extern "C" fn beamer_au_editor_sync_open(
         let sync = EditorSync::open(
             Arc::clone(&handle.model),
             Arc::clone(&handle.webview_dispatch),
-            handle.webview_events.clone(),
+            handle.webview_queue.clone(),
             handle.editor_notes.clone(),
             middle_c,
         );

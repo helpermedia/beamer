@@ -1,4 +1,5 @@
 import { Dial as DialControl, useParameter } from "@helpermedia/beamer-react";
+import type { ParameterId } from "@helpermedia/beamer-api";
 import TextField from "./TextField";
 
 // The arc of a dial in degrees clockwise from the right, as the gestures
@@ -27,7 +28,7 @@ function ringPath(part: number): string {
 const TRACK = ringPath(1);
 
 interface DialProps {
-  parameterId: string;
+  parameterId: ParameterId;
   // The name under the dial, the parameter's own name by default.
   label?: string;
   // A line under the value, such as the name of a CC.

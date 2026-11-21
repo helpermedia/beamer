@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
+import type { ParameterId } from "@helpermedia/beamer-api";
 import { openTextField } from "@helpermedia/beamer-controls";
 import type { DialDrag } from "@helpermedia/beamer-controls";
 import { Dial as DialControl, TextField, useParameter } from "@helpermedia/beamer-react";
 
 interface DialProps {
-  parameterId: string;
+  parameterId: ParameterId;
   size?: number;
   label?: string;
   className?: string;

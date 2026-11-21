@@ -191,13 +191,15 @@ pub enum FieldIR {
     Nested(Box<NestedFieldIR>),
     /// A `State` field that is saved with the plugin state.
     State(Box<StateFieldIR>),
+    /// A sender or an event the struct declares for the web UI.
+    WebView(Box<WebViewFieldIR>),
     /// A field without an attribute. It is not part of the parameters or
     /// the saved state. The generated `Default` initializes it with its
     /// own default.
     Other(syn::Ident),
     /// A `WebViewEventQueue` field: the plugin's queue of events for the
     /// web UI, which the format wrappers find through
-    /// `WebViewEvents::webview_events`. Initialized like `Other`.
+    /// `WebViewFields::webview_queue`. Initialized like `Other`.
     EventQueue(syn::Ident),
 }
 
@@ -205,8 +207,68 @@ pub enum FieldIR {
 pub struct StateFieldIR {
     /// Field name (e.g., `sample_path`).
     pub field_name: syn::Ident,
+    /// Field type (e.g., `State<PathBuf>`), for the page's model types.
+    pub field_type: syn::Type,
     /// The id the value is saved under.
     pub string_id: String,
+    /// Span for error reporting.
+    pub span: Span,
+}
+
+/// What a field declares for the web UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebViewFieldKind {
+    /// `#[value(id = "...")]` on a `WebViewValue<T>`.
+    Value,
+    /// `#[stream(id = "...")]` on a `WebViewStream<T>`.
+    Stream,
+    /// `#[event(id = "...")]` on a `WebViewEvent<T>`.
+    Event,
+}
+
+impl WebViewFieldKind {
+    /// Every kind, in the order of the attributes.
+    pub const ALL: [WebViewFieldKind; 3] = [Self::Value, Self::Stream, Self::Event];
+
+    /// The name of the field attribute.
+    pub fn attribute(self) -> &'static str {
+        match self {
+            Self::Value => "value",
+            Self::Stream => "stream",
+            Self::Event => "event",
+        }
+    }
+
+    /// The name of the field type.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Value => "WebViewValue",
+            Self::Stream => "WebViewStream",
+            Self::Event => "WebViewEvent",
+        }
+    }
+
+    /// The method of `beamer::webview::ModelTypes` that lists it.
+    pub fn model_types_method(self) -> &'static str {
+        match self {
+            Self::Value => "value",
+            Self::Stream => "stream",
+            Self::Event => "event",
+        }
+    }
+}
+
+/// A field with `#[value]`, `#[stream]` or `#[event]`: a sender or an
+/// event for the web UI.
+pub struct WebViewFieldIR {
+    /// Field name (e.g., `meters`).
+    pub field_name: syn::Ident,
+    /// Field type (e.g., `WebViewValue<Meters>`).
+    pub field_type: syn::Type,
+    /// What the field declares.
+    pub kind: WebViewFieldKind,
+    /// The name the page knows it by, before the names of nested groups.
+    pub id: String,
     /// Span for error reporting.
     pub span: Span,
 }
@@ -279,6 +341,14 @@ impl ModelIR {
     pub fn event_queue_fields(&self) -> impl Iterator<Item = &syn::Ident> {
         self.fields.iter().filter_map(|f| match f {
             FieldIR::EventQueue(field) => Some(field),
+            _ => None,
+        })
+    }
+
+    /// Iterate over the senders and events for the web UI.
+    pub fn webview_fields(&self) -> impl Iterator<Item = &WebViewFieldIR> {
+        self.fields.iter().filter_map(|f| match f {
+            FieldIR::WebView(w) => Some(w.as_ref()),
             _ => None,
         })
     }

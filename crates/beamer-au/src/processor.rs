@@ -38,7 +38,7 @@ use beamer_core::{
     AuxiliaryBuffers, Buffer, Model,
     MidiBuffer, MidiEvent, MidiEventsMut, Preset, ProcessContext, ProcessMode, Processor, SharedModel, MAX_AUX_BUSES,
 };
-use beamer_webview::{WebViewDispatch, WebViewEventQueue, WebViewEvents};
+use beamer_webview::{WebViewDispatch, WebViewEventQueue, WebViewFields};
 
 /// Generic AU processor wrapper.
 ///
@@ -54,7 +54,7 @@ where
 {
     state: AuState<P>,
     /// The plugin's queue of events for the web UI, if its model has one.
-    webview_events: Option<WebViewEventQueue>,
+    webview_queue: Option<WebViewEventQueue>,
     /// Where the web UI's invoke calls and events go: the model.
     webview_dispatch: Arc<dyn WebViewDispatch>,
 }
@@ -70,7 +70,7 @@ where
     /// for audio processing.
     pub fn new() -> Self
     where
-        P: WebViewEvents + WebViewDispatch,
+        P: WebViewFields + WebViewDispatch,
     {
         let mut model = P::default();
         // Note names follow the plugin's middle C.
@@ -80,7 +80,7 @@ where
         let model = Arc::new(model);
 
         // Taking the queue here marks it as delivered by this instance.
-        let events = WebViewEvents::webview_events(&*model).cloned();
+        let events = WebViewFields::webview_queue(&*model).cloned();
         if let Some(events) = &events {
             events.claim();
         }
@@ -88,7 +88,7 @@ where
 
         Self {
             state: AuState::with_model(model),
-            webview_events: events,
+            webview_queue: events,
             webview_dispatch,
         }
     }
@@ -96,7 +96,7 @@ where
 
 impl<P> Default for AuProcessor<P>
 where
-    P: Model + WebViewEvents + WebViewDispatch,
+    P: Model + WebViewFields + WebViewDispatch,
 {
     fn default() -> Self {
         Self::new()
@@ -440,8 +440,8 @@ where
         Arc::clone(&self.webview_dispatch)
     }
 
-    fn webview_events(&self) -> Option<WebViewEventQueue> {
-        self.webview_events.clone()
+    fn webview_queue(&self) -> Option<WebViewEventQueue> {
+        self.webview_queue.clone()
     }
 
     fn factory_presets(&self) -> FactoryPresetAccess {
@@ -482,7 +482,7 @@ pub type AuProcessorFactory = fn() -> Box<dyn AuPluginInstance>;
 /// This is used by the export_au! macro.
 pub fn create_processor_factory<P>() -> Box<dyn AuPluginInstance>
 where
-    P: Model + WebViewEvents + WebViewDispatch,
+    P: Model + WebViewFields + WebViewDispatch,
 {
     Box::new(AuProcessor::<P>::new())
 }

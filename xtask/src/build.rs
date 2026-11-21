@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::util::{combine_or_rename_binaries, to_au_bundle_name, to_auv2_component_name, to_separate_auv2_component_name, to_vst3_bundle_name, to_vst3_executable_name, Arch, AuNames, PathExt, MACOS_DEPLOYMENT_TARGET, MACOS_MIN_VERSION_FLAG};
+use crate::model_types::{check_script, CheckMode};
 use crate::BundleConfig;
 
 /// The format a plugin library is built for.
@@ -23,7 +24,7 @@ pub enum Format {
 
 impl Format {
     /// The cargo feature of the plugin crate that selects the format.
-    fn feature(self) -> &'static str {
+    pub fn feature(self) -> &'static str {
         match self {
             Format::Auv2 | Format::Auv3 => "au",
             Format::Vst3 => "vst3",
@@ -296,6 +297,17 @@ fn user_rustflags(encoded: Option<&str>, plain: Option<&str>) -> Vec<String> {
     flags.into_iter().filter(|flag| !flag.is_empty()).map(String::from).collect()
 }
 
+/// The compiler flags of a debug plugin build for `CARGO_ENCODED_RUSTFLAGS`:
+/// the user's own. Other builds of the plugin crate pass them to share the
+/// artifacts of a debug bundle.
+pub fn debug_rustflags() -> Option<String> {
+    let user = user_rustflags(
+        std::env::var("CARGO_ENCODED_RUSTFLAGS").ok().as_deref(),
+        std::env::var("RUSTFLAGS").ok().as_deref(),
+    );
+    encode_rustflags(&user, &[])
+}
+
 /// Join the compiler flags of a plugin build for `CARGO_ENCODED_RUSTFLAGS`.
 ///
 /// The user's flags come first, so that xtask's flags win where rustc takes
@@ -475,14 +487,22 @@ fn plugin_build_command(
         }
     }
 
-    // Build the library for the same minimum macOS version as the parts of
-    // the bundle that clang compiles. The compiler's own default differs per
-    // architecture.
+    set_deployment_target(&mut cmd, target);
+
+    Ok(cmd)
+}
+
+/// Build for the same minimum macOS version as the parts of the bundle that
+/// clang compiles, on an Apple target. The compiler's own default differs
+/// per architecture.
+///
+/// Every cargo command that shares the plugin's artifacts sets it: a
+/// different value builds every crate with C code or Apple frameworks
+/// again.
+pub fn set_deployment_target(cmd: &mut Command, target: &str) {
     if target.ends_with("-apple-darwin") {
         cmd.env("MACOSX_DEPLOYMENT_TARGET", MACOS_DEPLOYMENT_TARGET);
     }
-
-    Ok(cmd)
 }
 
 /// Build for a single architecture (native, arm64, or x86_64).
@@ -1071,10 +1091,12 @@ fn detect_package_manager(webview_dir: &Path) -> (&'static str, &'static [&'stat
 
 /// Build webview assets if the package has a framework-based webview.
 ///
-/// Detects the package manager from lockfiles (defaulting to bun),
-/// runs install + build and verifies that dist/index.html was produced.
-/// Skips silently if there is no webview/package.json (plain HTML or no webview).
-pub fn build_webview(package_dir: &Path, verbose: bool) -> Result<(), String> {
+/// Detects the package manager from lockfiles (defaulting to bun), runs
+/// install, the page's `check` script and build. It verifies that
+/// dist/index.html was produced. The check typechecks the page against the
+/// model's types; `check` says whether its errors fail the bundle. Skips
+/// silently if there is no webview/package.json (plain HTML or no webview).
+pub fn build_webview(package_dir: &Path, check: CheckMode, verbose: bool) -> Result<(), String> {
     let webview_dir = package_dir.join("webview");
     let package_json = webview_dir.join("package.json");
 
@@ -1096,6 +1118,24 @@ pub fn build_webview(package_dir: &Path, verbose: bool) -> Result<(), String> {
 
     if !status.success() {
         return Err(format!("{} install failed", cmd));
+    }
+
+    // Typecheck the page: vite strips the types without checking them.
+    let manifest = fs::read_to_string(&package_json).map_err(|e| format!("Failed to read webview/package.json: {}", e))?;
+    check_script(&manifest)?;
+    crate::verbose!(verbose, "    Running {} run check...", cmd);
+    let status = Command::new(cmd)
+        .args(["run", "check"])
+        .current_dir(&webview_dir)
+        .status()
+        .map_err(|e| format!("Failed to run {} run check: {}", cmd, e))?;
+    if !status.success() {
+        match check {
+            CheckMode::Fail => return Err("the page's check failed: see the errors above".to_string()),
+            CheckMode::Report => crate::status!(
+                "  The page's check failed (see above). The editor loads the page from the dev server, so the bundle goes on."
+            ),
+        }
     }
 
     // Run build

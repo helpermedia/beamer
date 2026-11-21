@@ -8,13 +8,14 @@
 //! it in `__BEAMER__.values`, so a part of the page that shows up later
 //! reads it at once.
 //!
-//! The plugin creates the sender in `prepare()` from the queue of its model
-//! and keeps it in the processor. Sending takes no lock, never allocates and
-//! never frees memory:
+//! The model declares it as a field, `#[value(id = "levels")]` on a
+//! [`WebViewValue`](crate::WebViewValue). The plugin creates the sender
+//! from that field in `prepare()` and keeps it in the processor. Sending
+//! takes no lock, never allocates and never frees memory:
 //!
 //! ```ignore
 //! // In prepare(), before `self` moves into the processor:
-//! MeterProcessor { levels: self.events.value_sender("levels", [0.0f32; 2]), model: self }
+//! MeterProcessor { levels: self.levels.sender([0.0f32; 2]), model: self }
 //!
 //! // In process(), once per block. No editor, nothing to measure:
 //! if self.model.events.is_editor_open() {
@@ -82,7 +83,7 @@ unsafe impl<T: Send> Sync for Link<T> {}
 /// The audio thread's end of a value for the web UI.
 ///
 /// Created by
-/// [`WebViewEventQueue::value_sender()`](crate::WebViewEventQueue::value_sender)
+/// [`WebViewValue::sender()`](crate::WebViewValue::sender)
 /// in `prepare()` and owned by the processor. See the
 /// [module documentation](self).
 pub struct WebViewValueSender<T> {
@@ -147,6 +148,9 @@ struct ValueEnd<T> {
     resend: bool,
     /// Whether a value that cannot be JSON was reported already.
     reported: bool,
+    /// Whether a number JSON does not hold as it is was reported already.
+    #[cfg(debug_assertions)]
+    number_reported: bool,
 }
 
 impl<T: Serialize + Send + 'static> SenderEnd for ValueEnd<T> {
@@ -185,6 +189,13 @@ impl<T: Serialize + Send + 'static> SenderEnd for ValueEnd<T> {
         // not touch it while it is the front slot. The lock of the queue's
         // senders makes this the only access from the queue's side.
         let value = unsafe { &*link.slots[usize::from(self.front)].get() };
+        #[cfg(debug_assertions)]
+        if !self.number_reported {
+            if let Some(found) = beamer_core::json_check::unfaithful_number(value) {
+                self.number_reported = true;
+                beamer_core::json_check::report(&format!("The value sender {}", self.name_json), &found);
+            }
+        }
         match serde_json::to_string(value) {
             Ok(json) => push_value(script, &self.name_json, &json),
             Err(error) => {
@@ -218,6 +229,8 @@ where
         // A page that is loaded already shows the initial value.
         resend: true,
         reported: false,
+        #[cfg(debug_assertions)]
+        number_reported: false,
     };
     (WebViewValueSender { link, back: 2 }, Box::new(end))
 }
@@ -423,7 +436,7 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "WebViewEventQueue::value_sender() was called in process()")]
+    #[should_panic(expected = "WebViewValue::sender() was called in process()")]
     fn test_creating_a_sender_in_process_panics() {
         let events = open_queue();
         let _scope = beamer_core::ProcessScope::enter();

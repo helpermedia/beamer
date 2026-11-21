@@ -76,6 +76,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
+ "serde_derive_internals",
  "syn 3.0.6",
  "toml",
 ]
@@ -103,6 +104,7 @@ name = "beamer-webview"
 version = "0.2.4"
 dependencies = [
  "beamer-core",
+ "beamer-utils",
  "log",
  "objc2",
  "objc2-app-kit",
@@ -592,6 +594,17 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",

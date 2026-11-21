@@ -1,7 +1,7 @@
 //! Code generation for the model and group attributes.
 //!
 //! This module generates the Rust code for the `Parameters`, `Saved`,
-//! `WebViewEvents` and (for a model) `WebViewDispatch` trait
+//! `WebViewFields` and (for a model) `WebViewDispatch` trait
 //! implementations from the validated IR. The `ParameterStore` of the
 //! struct follows from `Parameters`.
 
@@ -18,7 +18,7 @@ pub fn generate(ir: &ModelIR) -> TokenStream {
     let units_impl = generate_groups_impl(ir);
     let parameters_impl = generate_parameters_impl(ir);
     let saved_impl = generate_saved_impl(ir);
-    let webview_events_impl = generate_webview_events_impl(ir);
+    let webview_fields_impl = generate_webview_fields_impl(ir);
     let webview_dispatch_impl = generate_webview_dispatch_impl(ir);
     let set_group_ids_impl = generate_set_group_ids(ir);
     let default_impl = generate_default_impl(ir);
@@ -28,7 +28,7 @@ pub fn generate(ir: &ModelIR) -> TokenStream {
         #units_impl
         #parameters_impl
         #saved_impl
-        #webview_events_impl
+        #webview_fields_impl
         #webview_dispatch_impl
         #set_group_ids_impl
         #default_impl
@@ -600,7 +600,21 @@ fn generate_assign_ids(ir: &ModelIR) -> TokenStream {
         })
         .collect();
 
-    if parameter_assignments.is_empty() && nested_assignments.is_empty() {
+    // A model connects its declared senders and events to its queue once
+    // all names are known, those of its nested groups too. A group is
+    // connected by the model it sits in.
+    let connect = if ir.generate_dispatch {
+        quote! {
+            let queue = ::beamer::webview::WebViewFields::webview_queue(self).cloned();
+            if let ::std::option::Option::Some(queue) = queue {
+                ::beamer::webview::WebViewFields::connect_webview(self, prefix, &queue);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    if parameter_assignments.is_empty() && nested_assignments.is_empty() && !ir.generate_dispatch {
         // Nothing to name: use the default no-op.
         return quote! {};
     }
@@ -609,6 +623,7 @@ fn generate_assign_ids(ir: &ModelIR) -> TokenStream {
         fn assign_ids(&mut self, prefix: &str) {
             #(#parameter_assignments)*
             #(#nested_assignments)*
+            #connect
         }
     }
 }
@@ -759,17 +774,22 @@ fn generate_saved_impl(ir: &ModelIR) -> TokenStream {
     }
 }
 
-/// Generate the `WebViewEvents` trait implementation: where the event queue
-/// of the web UI is.
-fn generate_webview_events_impl(ir: &ModelIR) -> TokenStream {
+/// Generate the `WebViewFields` trait implementation: where the queue of
+/// events is, the connection of the declared senders and events to it and
+/// the ids and types of the page's model types.
+fn generate_webview_fields_impl(ir: &ModelIR) -> TokenStream {
     let struct_name = &ir.struct_name;
     let (impl_generics, ty_generics, where_clause) = ir.generics.split_for_impl();
 
-    let webview_events_impl = generate_webview_events(ir);
+    let webview_queue = generate_webview_queue(ir);
+    let connect_webview = generate_connect_webview(ir);
+    let describe_model_types = generate_describe_model_types(ir);
 
     quote! {
-        impl #impl_generics ::beamer::webview::WebViewEvents for #struct_name #ty_generics #where_clause {
-            #webview_events_impl
+        impl #impl_generics ::beamer::webview::WebViewFields for #struct_name #ty_generics #where_clause {
+            #webview_queue
+            #connect_webview
+            #describe_model_types
         }
     }
 }
@@ -797,12 +817,12 @@ fn generate_state_generation(ir: &ModelIR) -> TokenStream {
     }
 }
 
-/// Generate `webview_events()`: the queue of this struct, or else the first
+/// Generate `webview_queue()`: the queue of this struct, or else the first
 /// one a nested group has.
-fn generate_webview_events(ir: &ModelIR) -> TokenStream {
+fn generate_webview_queue(ir: &ModelIR) -> TokenStream {
     if let Some(field) = ir.event_queue_fields().next() {
         return quote! {
-            fn webview_events(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
+            fn webview_queue(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
                 Some(&self.#field)
             }
         };
@@ -813,8 +833,8 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
         .map(|nested| {
             let field = &nested.field_name;
             quote! {
-                if let Some(events) = ::beamer::webview::WebViewEvents::webview_events(&self.#field) {
-                    return Some(events);
+                if let Some(queue) = ::beamer::webview::WebViewFields::webview_queue(&self.#field) {
+                    return Some(queue);
                 }
             }
         })
@@ -826,9 +846,168 @@ fn generate_webview_events(ir: &ModelIR) -> TokenStream {
     }
 
     quote! {
-        fn webview_events(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
+        fn webview_queue(&self) -> Option<&::beamer::webview::WebViewEventQueue> {
             #(#nested)*
             None
+        }
+    }
+}
+
+/// Generate `connect_webview()`: each declared sender and event gets its
+/// name (the id behind `prefix`) and the queue; then the nested groups,
+/// under the names of their fields.
+fn generate_connect_webview(ir: &ModelIR) -> TokenStream {
+    let fields: Vec<TokenStream> = ir
+        .webview_fields()
+        .map(|webview| {
+            let field = &webview.field_name;
+            let id = &webview.id;
+            quote! {
+                self.#field.connect(::beamer::core::state_format::join_path(prefix, #id), queue);
+            }
+        })
+        .collect();
+    let nested: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field = &nested.field_name;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
+            quote! {
+                ::beamer::webview::WebViewFields::connect_webview(
+                    &mut self.#field,
+                    &::beamer::core::state_format::join_path(prefix, #segment),
+                    queue,
+                );
+            }
+        })
+        .collect();
+
+    // Nothing to connect: use the default.
+    if fields.is_empty() && nested.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        fn connect_webview(&mut self, prefix: &str, queue: &::beamer::webview::WebViewEventQueue) {
+            #(#fields)*
+            #(#nested)*
+        }
+    }
+}
+
+/// The TypeScript of what a field of type `field_type` carries, or `None`
+/// when that type has no `TypeScript`: chosen when the generated code is
+/// compiled, as the dispatch to a handler is.
+fn type_script_if_any(field_type: &syn::Type) -> TokenStream {
+    quote! {
+        |types: &mut ::beamer::webview::type_script::TypeScriptTypes| {
+            #[allow(unused_imports)]
+            use ::beamer::webview::type_script::__private::{HasTypeScript as _, LacksTypeScript as _};
+            (&::beamer::webview::type_script::__private::TypeProbe::<
+                <#field_type as ::beamer::webview::model_types::Carries>::Value,
+            >::new())
+                .type_script_if_any(types)
+        }
+    }
+}
+
+/// The first type parameter of `generics` that `ty` names, as a string.
+fn named_type_parameter(ty: &syn::Type, generics: &syn::Generics) -> Option<String> {
+    fn find(tokens: proc_macro2::TokenStream, names: &[String]) -> Option<String> {
+        tokens.into_iter().find_map(|token| match token {
+            proc_macro2::TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                names.contains(&name).then_some(name)
+            }
+            proc_macro2::TokenTree::Group(group) => find(group.stream(), names),
+            _ => None,
+        })
+    }
+    let names: Vec<String> = generics.type_params().map(|parameter| parameter.ident.to_string()).collect();
+    if names.is_empty() {
+        return None;
+    }
+    find(quote::ToTokens::to_token_stream(ty), &names)
+}
+
+/// Generate `describe_model_types()`: the `State` fields, senders and
+/// events of this struct with the types they carry, then those of the
+/// nested groups under the names of their fields. The parameters come from
+/// the model's store, in the order of the init dump.
+fn generate_describe_model_types(ir: &ModelIR) -> TokenStream {
+    let rust_type = |field_type: &syn::Type| {
+        quote! {
+            ::std::any::type_name::<<#field_type as ::beamer::webview::model_types::Carries>::Value>()
+        }
+    };
+    // The model's type parameter that a field's type names, for the note
+    // that its TypeScript needs a bound.
+    let type_parameter = |field_type: &syn::Type| match named_type_parameter(field_type, &ir.generics) {
+        Some(name) => quote!(::core::option::Option::Some(#name)),
+        None => quote!(::core::option::Option::None),
+    };
+    let states: Vec<TokenStream> = ir
+        .state_fields()
+        .map(|state| {
+            let id = &state.string_id;
+            let rust_type = rust_type(&state.field_type);
+            let type_parameter = type_parameter(&state.field_type);
+            let type_script = type_script_if_any(&state.field_type);
+            quote! {
+                types.state(
+                    ::beamer::core::state_format::join_path(prefix, #id),
+                    #rust_type,
+                    #type_parameter,
+                    #type_script,
+                );
+            }
+        })
+        .collect();
+    let webview: Vec<TokenStream> = ir
+        .webview_fields()
+        .map(|webview| {
+            let id = &webview.id;
+            let method = syn::Ident::new(webview.kind.model_types_method(), proc_macro2::Span::call_site());
+            let rust_type = rust_type(&webview.field_type);
+            let type_parameter = type_parameter(&webview.field_type);
+            let type_script = type_script_if_any(&webview.field_type);
+            quote! {
+                types.#method(
+                    ::beamer::core::state_format::join_path(prefix, #id),
+                    #rust_type,
+                    #type_parameter,
+                    #type_script,
+                );
+            }
+        })
+        .collect();
+    let nested: Vec<TokenStream> = ir
+        .nested_fields()
+        .map(|nested| {
+            let field_type = &nested.field_type;
+            let segment = syn::ext::IdentExt::unraw(&nested.field_name).to_string();
+            quote! {
+                <#field_type as ::beamer::webview::WebViewFields>::describe_model_types(
+                    types,
+                    &::beamer::core::state_format::join_path(prefix, #segment),
+                );
+            }
+        })
+        .collect();
+
+    // Nothing to describe: use the default.
+    if states.is_empty() && webview.is_empty() && nested.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        fn describe_model_types(types: &mut ::beamer::webview::ModelTypes, prefix: &str)
+        where
+            Self: Sized,
+        {
+            #(#states)*
+            #(#webview)*
+            #(#nested)*
         }
     }
 }
@@ -1049,6 +1228,10 @@ fn generate_default_impl(ir: &ModelIR) -> TokenStream {
             }
             FieldIR::State(s) => {
                 let field = &s.field_name;
+                quote! { #field: Default::default() }
+            }
+            FieldIR::WebView(w) => {
+                let field = &w.field_name;
                 quote! { #field: Default::default() }
             }
             // A field without an attribute, such as a `Handover`.

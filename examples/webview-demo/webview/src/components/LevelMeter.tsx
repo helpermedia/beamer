@@ -1,19 +1,13 @@
 import { fallingLevels } from "@helpermedia/beamer-controls";
 import { useReadable } from "@helpermedia/beamer-react";
 import { FLOOR_DB, dbPosition, levelDb } from "../decibels";
+import type { Levels } from "../model-types";
 
-// What the plugin sends: the held peak of each channel, linear. A level
-// that was not a finite number arrives as null.
-interface Levels {
-  peak: [number | null, number | null];
-}
-
-// The held peak of each channel in dB, the floor until the first value
-// and for what is not an array of two.
-function read(value: unknown): [number, number] {
-  const peak = (value as Partial<Levels> | undefined)?.peak;
-  if (!Array.isArray(peak) || peak.length !== 2) return [FLOOR_DB, FLOOR_DB];
-  return [levelDb(Number(peak[0]) || 0), levelDb(Number(peak[1]) || 0)];
+// The held peak of each channel in dB from what the plugin sends (linear
+// peaks), the floor until the first value.
+function read(value: Levels | undefined): [number, number] {
+  if (!value) return [FLOOR_DB, FLOOR_DB];
+  return [levelDb(value.peak[0]), levelDb(value.peak[1])];
 }
 
 // The plugin sends the levels with every block while the meter shows

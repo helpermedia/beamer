@@ -136,6 +136,18 @@ pub use beamer_macros::EnumParameter;
 pub use beamer_macros::export;
 #[cfg(feature = "derive")]
 pub use beamer_macros::{group, model};
+#[cfg(feature = "derive")]
+pub use beamer_macros::TypeScript;
+
+// The serde attributes `#[derive(TypeScript)]` refuses, as doc tests.
+#[cfg(feature = "derive")]
+#[doc(hidden)]
+pub mod type_script_refusals;
+
+// The errors of the web UI's declared fields, as doc tests.
+#[cfg(feature = "derive")]
+#[doc(hidden)]
+pub mod webview_field_errors;
 
 /// Generate plugin entry points for all enabled formats (AU, VST3).
 ///
@@ -268,9 +280,12 @@ pub mod prelude {
 
     // The web UI: events and values for it, the handler of its calls
     pub use beamer_webview::{
-        serde_json, WebViewEventQueue, WebViewEvents, WebViewHandler, WebViewStreamSender,
-        WebViewValueSender,
+        serde_json, WebViewEvent, WebViewEventQueue, WebViewFields, WebViewHandler, WebViewStream,
+        WebViewStreamSender, WebViewValue, WebViewValueSender,
     };
+
+    // The TypeScript of the types the web UI receives.
+    pub use beamer_webview::{TsType, TypeScript, TypeScriptTypes};
 
     // Plugin configuration
     pub use beamer_core::{Config, config::Category, config::Subcategory};
@@ -283,4 +298,8 @@ pub mod prelude {
     // macros live in different namespaces.
     #[cfg(feature = "derive")]
     pub use beamer_macros::EnumParameter;
+
+    // The TypeScript derive, under the name of its trait as well.
+    #[cfg(feature = "derive")]
+    pub use beamer_macros::TypeScript;
 }

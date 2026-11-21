@@ -128,8 +128,16 @@ which xtask does not do.
 
 ### WebView assets
 
-If the plugin has a `webview/package.json`, xtask runs the package
-manager's install and build before compiling and expects the result in
+If the plugin has a `webview/package.json`, xtask first writes the
+model's types into `webview/src/model-types.ts` (see
+[TypeScript Declaration](WEBVIEW.md#typescript-declaration)). It runs the
+test that `#[beamer::export]` adds, which compiles the plugin crate's
+tests for the build machine. `cargo xtask model-types <plugin>` does this
+step alone. Then xtask runs the package manager's install, the page's
+`check` script and its build, before compiling the plugin. The script is
+required: it typechecks the page against the model's types, which vite
+strips without checking them. An error fails the bundle, unless the editor loads
+the page from a dev server. The bundle expects the result in
 `webview/dist/index.html`. A plain `webview/index.html` needs no build
 step. For a dev server with live reload, see
 [Development Server](WEBVIEW.md#development-server).

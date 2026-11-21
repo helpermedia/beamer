@@ -20,6 +20,8 @@ proc-macro2 = { workspace = true }
 beamer-utils = { workspace = true }
 toml = "1"
 serde = { workspace = true }
+# Serde's own parser of its attributes, for #[derive(TypeScript)].
+serde_derive_internals = "0.30"
 
 [dev-dependencies]
 # Tests check the category table against the enum in beamer-core.

@@ -118,8 +118,13 @@ pub struct DelayModel {
     #[parameter(id = "mix", name = "Mix", default = 0.5, range = 0.0..=1.0, kind = "percent", smoothing = "exp:5.0")]
     pub mix: FloatParameter,
 
-    /// Events for the editor. The processor's status sender is made from
-    /// it.
+    /// What the editor needs to know of the processor, sent from the audio
+    /// thread. The page is plain JavaScript, so `Status` needs no
+    /// TypeScript.
+    #[value(id = "status")]
+    pub status: WebViewValue<Status>,
+
+    /// The queue the status sender delivers through.
     pub events: WebViewEventQueue,
 }
 
@@ -150,7 +155,7 @@ impl Model for DelayModel {
             delay_time,
             delay_time_set: false,
             sample_rate: sample_rate.hz(),
-            status_sender: self.events.value_sender("status", status),
+            status_sender: self.status.sender(status),
             status,
             model: self,
         }

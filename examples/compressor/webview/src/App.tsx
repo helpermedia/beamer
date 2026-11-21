@@ -12,7 +12,7 @@ import { ratioOf, SOFT_KNEE_DB } from "./curve";
 import type { Curve } from "./curve";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { useStatus } from "./hooks/useStatus";
-import type { Status } from "./hooks/useStatus";
+import type { Status } from "./model-types";
 
 // The latency the lookahead adds, in samples as the processor counts them
 // (`ms_to_samples()` in src/lib.rs) once the sample rate is known.

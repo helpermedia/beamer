@@ -1,7 +1,8 @@
 import { RadioGroup as RadioGroupControl, useParameter } from "@helpermedia/beamer-react";
+import type { ParameterId } from "@helpermedia/beamer-api";
 
 interface RadioGroupProps {
-  parameterId: string;
+  parameterId: ParameterId;
   // Names for the choices in place of the parameter's own, from the lowest
   // value up: for an on and off parameter shown as two choices.
   labels?: string[];

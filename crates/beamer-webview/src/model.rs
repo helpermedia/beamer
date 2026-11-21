@@ -1,14 +1,15 @@
 //! What the web UI reaches in a model.
 //!
-//! - [`WebViewEvents`] tells where the model's queue of events for the web
-//!   UI is.
+//! - [`WebViewFields`] reaches the fields of a model and its nested groups
+//!   that the web UI knows: the queue of events, the declared senders and
+//!   events, the ids and types the page's model types list.
 //! - [`WebViewHandler`] answers `__BEAMER__.invoke()` calls and custom
 //!   events from JavaScript. A plugin implements it when its web UI uses
 //!   them.
 //! - [`WebViewDispatch`] is how the format wrappers reach the handler.
 //!
-//! `#[beamer::model]` generates `WebViewEvents` and `WebViewDispatch`,
-//! `#[beamer::group]` generates `WebViewEvents`. The generated dispatch
+//! `#[beamer::model]` generates `WebViewFields` and `WebViewDispatch`,
+//! `#[beamer::group]` generates `WebViewFields`. The generated dispatch
 //! calls the model's `WebViewHandler` when it has one. Without one it
 //! rejects every call as an unknown method and ignores the events.
 //! Parameter synchronization is automatic and does not go through here.
@@ -17,22 +18,46 @@ use beamer_core::NoParameters;
 use serde_json::Value;
 
 use crate::event_queue::WebViewEventQueue;
+use crate::model_types::ModelTypes;
 
-/// Where the queue of events for the web UI is: a [`WebViewEventQueue`]
-/// field of this struct, or else the first one of a nested group in field
-/// order.
+/// The fields of a model or nested group that the web UI knows: the queue
+/// of events, the declared senders and events (see
+/// [`fields`](crate::fields)) and the ids and types of the page's model
+/// types.
 ///
 /// `#[beamer::model]` and `#[beamer::group]` generate this for a model and
 /// each of its nested groups. A hand-written model or group adds an empty
-/// `impl WebViewEvents for MyModel {}`, or returns its queue.
-pub trait WebViewEvents {
-    /// The plugin's queue of events for the web UI.
+/// `impl WebViewFields for MyModel {}`, or returns its queue.
+pub trait WebViewFields {
+    /// The plugin's queue of events for the web UI: a [`WebViewEventQueue`]
+    /// field of this struct, or else the first one of a nested group in
+    /// field order.
     ///
     /// The format wrappers deliver what is emitted into it while an editor
-    /// is open. `#[beamer::model]` and `#[beamer::group]` find the field by its type; the
-    /// default is for structs without one.
-    fn webview_events(&self) -> Option<&WebViewEventQueue> {
+    /// is open. The default is for structs without one.
+    fn webview_queue(&self) -> Option<&WebViewEventQueue> {
         None
+    }
+
+    /// Connect the declared senders and events of this struct and its
+    /// nested groups to `queue`, each under its name behind `prefix`.
+    ///
+    /// The model's `assign_ids` calls this with the model's own queue, so
+    /// that a sender made in `prepare()` delivers. The default is for
+    /// structs without such fields.
+    fn connect_webview(&mut self, prefix: &str, queue: &WebViewEventQueue) {
+        let _ = (prefix, queue);
+    }
+
+    /// Add the ids and types of this struct and its nested groups to
+    /// `types`, each path behind `prefix`: the parameters, the `State`
+    /// fields, the senders and the events. The test that
+    /// `#[beamer::export]` adds compares them with the page's model types.
+    fn describe_model_types(types: &mut ModelTypes, prefix: &str)
+    where
+        Self: Sized,
+    {
+        let _ = (types, prefix);
     }
 }
 
@@ -109,7 +134,7 @@ fn unknown_method(method: &str) -> String {
     format!("unknown method: {method}")
 }
 
-impl WebViewEvents for NoParameters {}
+impl WebViewFields for NoParameters {}
 
 impl WebViewDispatch for NoParameters {}
 
@@ -168,7 +193,7 @@ pub mod __private {
 #[macro_export]
 macro_rules! __without_web_ui {
     ($model:ty) => {
-        impl $crate::WebViewEvents for $model {}
+        impl $crate::WebViewFields for $model {}
 
         impl $crate::WebViewDispatch for $model {}
     };

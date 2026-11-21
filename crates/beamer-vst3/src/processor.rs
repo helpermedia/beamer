@@ -46,7 +46,7 @@ use beamer_core::midi1_translator::order_parameter_number_controllers;
 use beamer_core::sub_blocks::{offset_from_sub_block, run_sub_blocks, sort_by_offset};
 
 use crate::component_handler::ComponentHandler;
-use beamer_webview::{EditorNoteReceiver, EditorNotes, WebViewDispatch, WebViewEventQueue, WebViewEvents};
+use beamer_webview::{EditorNoteReceiver, EditorNotes, WebViewDispatch, WebViewEventQueue, WebViewFields};
 use crate::webview::WebViewConfig;
 use crate::factory::ComponentFactory;
 use crate::speakers;
@@ -855,7 +855,7 @@ where
     /// the parameter values changed (see `restart_notifier`).
     host_notifier: HostNotifier,
     /// The plugin's queue of events for the web UI, if it has one.
-    webview_events: Option<WebViewEventQueue>,
+    webview_queue: Option<WebViewEventQueue>,
     /// Where the web UI's invoke calls and events go: the model.
     webview_dispatch: Arc<dyn WebViewDispatch>,
     /// The notes the editor plays, for a plugin with an editor and MIDI
@@ -944,7 +944,7 @@ impl<P: Model> Vst3Processor<P> {
     /// The processor will be created when `setupProcessing()` is called.
     pub fn new(config: &'static Config) -> Self
     where
-        P: WebViewEvents + WebViewDispatch,
+        P: WebViewFields + WebViewDispatch,
     {
         let mut model = P::default();
         // Note names follow the plugin's middle C.
@@ -974,11 +974,11 @@ impl<P: Model> Vst3Processor<P> {
         // The plugin's queue of events for the web UI. Claiming it marks it
         // as delivered by this instance; without an editor its events are
         // dropped, as while no editor is open.
-        let events = WebViewEvents::webview_events(&*model);
+        let events = WebViewFields::webview_queue(&*model);
         if let Some(events) = events {
             events.claim();
         }
-        let webview_events = events.cloned();
+        let webview_queue = events.cloned();
         let webview_dispatch = Arc::clone(&model) as Arc<dyn WebViewDispatch>;
         // The notes the editor plays are MIDI input.
         let editor_notes = (config.midi_input && config.has_editor()).then(EditorNotes::new);
@@ -1031,7 +1031,7 @@ impl<P: Model> Vst3Processor<P> {
             parameter_ids,
             component_handler,
             host_notifier,
-            webview_events,
+            webview_queue,
             webview_dispatch,
             editor_notes,
             editor_note_receiver: UnsafeCell::new(editor_note_receiver),
@@ -1852,7 +1852,7 @@ impl<P: Model> Vst3Processor<P> {
     }
 }
 
-impl<P: Model + WebViewEvents + WebViewDispatch> ComponentFactory for Vst3Processor<P> {
+impl<P: Model + WebViewFields + WebViewDispatch> ComponentFactory for Vst3Processor<P> {
     fn create(config: &'static Config) -> Option<Self> {
         let processor = Self::new(config);
 
@@ -3001,7 +3001,7 @@ impl<P: Model> IEditControllerTrait for Vst3Processor<P> {
             self.shared_model(),
             Arc::clone(&self.component_handler),
             Arc::clone(&self.webview_dispatch),
-            self.webview_events.clone(),
+            self.webview_queue.clone(),
             self.editor_notes.clone(),
             Arc::clone(&self.known_state_generation),
         );
