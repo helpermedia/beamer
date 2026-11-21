@@ -76,7 +76,7 @@ The Beamer runtime (`beamer_runtime.js`) is injected as a user script before any
 
 `@helpermedia/beamer-api` (see [Packages for the Web UI](#packages-for-the-web-ui)) declares these types. The ids and values follow its `ModelTypes` interface, which a page augments with the model's parameter ids, `State` paths, sender names, events and methods. A section the page does not declare stays loose: any name is accepted and values are `unknown`. Events and stream senders share their names, so a page that declares one of the two gets the other as empty. Without any declaration, `ParameterId`, `StatePath`, `ValueSenderName`, `PluginEventName`, `PageEventName` and `MethodName` are plain strings.
 
-A plugin with a `webview/package.json` gets the declaration generated from its model, in `webview/src/model-types.ts`: the parameter ids, the `State` fields, the senders and the events, each with the TypeScript of the type it carries (`#[derive(TypeScript)]` next to `Serialize`). A model with `#[beamer::handler]` adds its methods and page events (see [Answering the Web UI](#answering-the-web-ui)). `cargo xtask bundle` writes the file before it builds the page, `cargo xtask model-types <plugin>` writes it on its own and `cargo test` fails while it differs from the model. Commit it with the change of the model.
+A plugin with a `webview/package.json` gets the declaration generated from its model, in `webview/src/model-types.ts` (see [Model Types](#model-types)).
 
 ```typescript
 interface BeamerParameterInfo {
@@ -166,7 +166,7 @@ The `State` fields of the model (see [State Beyond Parameters](REFERENCE.md#stat
 | `state.on(path, callback)` | Subscribe to changes, also those behind the UI's back (a loaded project, a handler that sets the field). Returns an unsubscribe function |
 | `state.ids()` | Get the paths of all `State` fields. Empty before `ready` |
 
-The value's type comes from the page's `ModelTypes` (see [TypeScript Declaration](#typescript-declaration)); without it the value is `unknown` and the page checks its shape. Listeners are called only when the value differs from the one the UI has, compared as JSON with the keys of objects sorted. Subscriptions before `ready` are queued as with parameters.
+The value's type comes from the page's `ModelTypes` (see [Model Types](#model-types)); without it the value is `unknown` and the page checks its shape. Listeners are called only when the value differs from the one the UI has, compared as JSON with the keys of objects sorted. Subscriptions before `ready` are queued as with parameters.
 
 Every `State` field is visible to the web UI and can be set by it. Keep data that the UI must not see or change in a `Handover` field instead. A large value (a wavetable, a sample) is turned into JSON and sent with every change; above 1 MB the plugin logs a warning, once per open editor.
 
@@ -371,7 +371,7 @@ The demo shows an output meter (a value sender) and a scrolling level history (a
 
 ```rust
 /// The output level as the meter shows it.
-#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, TypeScript)]
 #[serde(crate = "beamer::serde")]
 pub struct Levels {
     /// The held peak of each channel, linear.
@@ -412,8 +412,9 @@ impl Processor for WebViewDemoProcessor {
     }
 }
 
-// In measure(): the held peaks, sent only when they changed.
-if self.peaks != before {
+// In measure(): the held peaks, sent with every block while the meter
+// shows something. A meter at rest sends nothing.
+if self.peaks != before || self.peaks != [0.0; 2] {
     self.levels.send(&Levels { peak: self.peaks });
 }
 // One point of the history per 10 ms window.
@@ -478,7 +479,7 @@ __BEAMER__.emit("padHit", { pad: 0, velocity: 0.8 });
 - **`#[method(id = "...")]`:** the page calls it with `invoke("id", ...arguments)`. The arguments after `&self` are the positional arguments of `invoke()`, read with serde into owned values (`String`, not `&str`). What the method returns is what the Promise resolves to (`null` for nothing). A `Result` rejects the Promise with the error's text.
 - **`#[page_event(id = "...")]`:** the page sends it with `emit("id", data)`. The one argument after `&self` is the data, none for an event without data. It returns nothing: the page does not wait. Data that does not read is logged and dropped.
 - **The ids** are written as the page writes them, camelCase as `sampleRate`, so a search finds both ends. A method without an attribute is a helper of the block that the page cannot reach.
-- **The types** of the arguments, results and data go into the page's model types (see [TypeScript Declaration](#typescript-declaration)), so `invoke()` and `emit()` are checked like every other name: each type needs `#[derive(TypeScript)]` next to `Serialize` and `Deserialize`.
+- **The types** of the arguments, results and data go into the page's model types (see [Model Types](#model-types)), so `invoke()` and `emit()` are checked like every other name: each type needs `#[derive(TypeScript)]` next to `Serialize` and `Deserialize`.
 
 The attribute generates `WebViewHandler`. The format wrappers reach it through the `WebViewDispatch` that `#[beamer::model]` generates. A model without a handler rejects every call as an unknown method and ignores the events. A handler can also be written by hand: `on_invoke(method, args)` and `on_event(name, data)` match on the names. Its methods are not in the page's model types, so the page's `invoke()` and `emit()` stay loose. A hand-written model (without `#[beamer::model]`) adds an empty `impl WebViewDispatch for MyModel {}`, which rejects every call, or forwards its methods to its handler. The handler of a generic model holds for every type the struct takes, with no bounds beyond the struct's own: the dispatch does not find an impl for one type only.
 
@@ -527,6 +528,107 @@ const rate = await __BEAMER__.invoke("sampleRate");
 The demo then follows the sample rate through an event of the same name (see [Events from Rust](#events-from-rust)).
 
 A `State` field needs no method at all: the web UI reads, sets and follows it through `__BEAMER__.state` (see [State Methods](#state-methods)), also when it changes behind the UI's back, for example when the host loads a project while the editor is open.
+
+## Model Types
+
+A page built from a `webview/package.json` is checked against its plugin's model: each id it uses is one the model declares and each value has the model's type. A typo in an id or a value of the wrong shape is a compile error of the page, not a silent `undefined` in a host.
+
+### The Generated File
+
+`webview/src/model-types.ts` is written from the model's Rust code. The one of `webview-demo`, shortened:
+
+```typescript
+// Generated from the plugin's model. Do not edit: `cargo test` fails
+// while this file differs from the model. `cargo xtask bundle` writes
+// it, or on its own:
+//
+//   cargo xtask model-types webview-demo
+
+/** The output level as the meter shows it. */
+export interface Levels {
+  /** The held peak of each channel, linear. */
+  peak: [number, number];
+}
+
+declare module "@helpermedia/beamer-api" {
+  interface ModelTypes {
+    parameters: "gain" | "pan";
+    state: {
+      pan_law: PanLaw;
+    };
+    values: {
+      levels: Levels;
+    };
+    streams: {
+      history: number;
+    };
+    events: {
+      sampleRate: number;
+    };
+    methods: {
+      info: { arguments: []; result: Info };
+      sampleRate: { arguments: []; result: number };
+    };
+    pageEvents: {};
+  }
+}
+```
+
+| Section | Holds |
+|---------|-------|
+| `parameters` | The string id of each parameter, in the order of the init dump |
+| `state` | Each `State` field by its path, with the type of its value |
+| `values` | Each `#[value]` sender with the type it sends |
+| `streams` | Each `#[stream]` sender with the type of one value: the page receives arrays of them |
+| `events` | Each `#[event]` with the type of its data |
+| `methods` | Each `#[method]` of the handler with its arguments and result |
+| `pageEvents` | Each `#[page_event]` of the handler with the type of its data, `null` for none |
+
+The names in a nested group have the group's field name in front, quoted in the file (`"note/pressed"`). The model's structs and enums without generics become named declarations with their doc comments, which the page imports where it names them (a generic type is written out at each use):
+
+```typescript
+import type { Info } from "./model-types";
+```
+
+The packages read the file through module augmentation (see [TypeScript Declaration](#typescript-declaration)), so the page needs no import for the ids: `parameter("gian")` is an error as soon as the file is part of the page's TypeScript program (its `tsconfig.json` includes `src`, as the examples' do).
+
+### Writing and Checking It
+
+- **`cargo xtask bundle`** writes the file first. It compiles the test that `#[beamer::export]` adds to the plugin and runs it for the build machine. Then it runs the package manager's install, the page's `check` script and its `build` script, then compiles the plugin. An error of the check fails the bundle. With a dev server (`BEAMER_DEV_URL`) the check reports errors and the bundle goes on, so a half-edited page does not block the editor.
+- **The `check` script** is required in `webview/package.json`: vite strips the types without checking them. `"check": "tsc -b"` for a React page, `"check": "svelte-check --tsconfig ./tsconfig.json"` for a Svelte page (which fails on errors, not on warnings). A page of another kind puts the command that typechecks it there; a page in plain JavaScript with a build step, which has nothing to check, puts `"check": "exit 0"`.
+- **`cargo xtask model-types <plugin>`** writes the file on its own after a change of the model, so that the language server of your code editor sees the new types without a bundle. The file is only written when it changes.
+- **`cargo test`** of the plugin fails while the file differs from the model, naming the command that writes it. Commit the file with the change of the model.
+
+### Types from Rust
+
+Each struct and enum a typed page receives needs `#[derive(TypeScript)]` next to its serde derives: the types of `State` fields, of what senders and events carry and of a handler's arguments and results. Booleans, numbers, strings, `Option`, `Vec`, arrays, tuples and maps of these need none. `TypeScript` comes with `beamer::prelude::*`.
+
+```rust
+/// The output level as the meter shows it.
+#[derive(Debug, Default, Clone, Copy, Serialize, TypeScript)]
+#[serde(crate = "beamer::serde")]
+pub struct Levels {
+    /// The held peak of each channel, linear.
+    pub peak: [f32; 2],
+}
+```
+
+The derive reads the serde attributes with serde's own parser, so renames, `tag`, `content`, `untagged`, `flatten`, `skip` and `transparent` come out as `serde_json` writes them. A field with `skip_serializing_if` is optional (`name?: T`). The mapping of the standard types is in the documentation of `beamer::webview::type_script`: integers and floats are `number`, `Option<T>` is `T | null`, a map is a `Record`. `#[type_script(type = "...")]` on a type or a field writes its TypeScript by hand. `#[type_script(rename = "Name")]` gives the declaration another name: two Rust types under one name are an error of the file.
+
+The page sends back what it gets, a `State` value or an argument, so Rust has to read every value it writes. The derive refuses the serde attributes under which it would not: a name per direction, `skip_serializing` or `skip_serializing_if` without `default` (an `Option` left out when it is `None` needs none), `skip_deserializing` and a field skipped one way in a tuple. It also refuses the attributes that change the shape where it cannot see it (`with`, `serialize_with`, `into`, `from`, `remote` and the like), unless `#[type_script(type = "...")]` gives the TypeScript by hand.
+
+A type without TypeScript:
+
+- **of a `State` field** is `unknown` in the file, with a note above it that xtask prints when it writes the file. Such a type may exist for saving alone.
+- **of a sender, an event or a handler's method** is an error that names it: these exist for the page only, so the file is not written without them.
+
+A generic model gives its type parameters a `TypeScript` bound for the types that use them.
+
+The file gives a float as `number`. A value that is not finite arrives as `null`, which JSON writes for it: debug builds report it (see [Data from the Audio Thread](#data-from-the-audio-thread)).
+
+### Loose Sections
+
+Without the file every id is a plain string and every value `unknown`, as for the `delay` example in plain JavaScript. A section the file does not hold stays loose in the same way: a model without `#[beamer::handler]`, or with a hand-written `WebViewHandler`, gets no `methods` and `pageEvents`, so `invoke()` and `emit()` take any name. An empty section (`{}`, `never` for the parameters) allows no name at all. The built-in method `_beamer/parameterTextToNormalized` is typed in every case.
 
 ## Parameter Synchronization
 

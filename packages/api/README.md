@@ -51,7 +51,9 @@ document.querySelector("#reset")!.addEventListener("click", () => mix.reset());
 Every function that takes an id takes it as one of these types. A page
 augments the empty `ModelTypes` interface with the model's names and value
 types; each id is then one the model declares and each value has its
-type, so a typo is a compile error:
+type, so a typo is a compile error. A plugin's page gets the augmentation
+generated from the model's Rust code, in `webview/src/model-types.ts`
+(see [Model Types](../../docs/WEBVIEW.md#model-types)). In outline:
 
 ```ts
 import { stateField } from "@helpermedia/beamer-api";
@@ -72,8 +74,10 @@ stateField("pan_lwa");
 The file that holds the declaration must be a module (it imports or
 exports something); in a script, `declare module` replaces beamer-api's
 types instead of adding to them. A section the page does not declare stays
-loose: any name, values `unknown`. An empty section (`{}`, `never` for the
-parameters) allows no name.
+loose: any name, values `unknown`. A model without a `#[beamer::handler]`
+has no `methods` and `pageEvents`, so `invoke` and `emit` take any name.
+An empty section (`{}`, `never` for the parameters) allows no name, apart
+from the built-in method `_beamer/parameterTextToNormalized`.
 Events and stream senders share their names: a page that declares
 `events` or `streams` gets the other as empty.
 

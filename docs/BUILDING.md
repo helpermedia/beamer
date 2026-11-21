@@ -130,7 +130,7 @@ which xtask does not do.
 
 If the plugin has a `webview/package.json`, xtask first writes the
 model's types into `webview/src/model-types.ts` (see
-[TypeScript Declaration](WEBVIEW.md#typescript-declaration)). It runs the
+[Model Types](WEBVIEW.md#model-types)). It runs the
 test that `#[beamer::export]` adds, which compiles the plugin crate's
 tests for the build machine. `cargo xtask model-types <plugin>` does this
 step alone. Then xtask runs the package manager's install, the page's

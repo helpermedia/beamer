@@ -165,6 +165,7 @@ impl Processor for GainProcessor {
 The `#[beamer::export]` macro on the model struct reads `Config.toml` from the crate root at compile time and generates:
 - `pub static CONFIG: Config` from the TOML configuration
 - Format-specific plugin entry points for AU and VST3
+- For a plugin with a `webview/package.json`, a test that compares the page's `webview/src/model-types.ts` with the model (see [Model Types](WEBVIEW.md#model-types))
 
 `#[beamer::export]` and `#[beamer::model]` can be written in either order.
 
@@ -732,7 +733,7 @@ let path = self.sample_path.current();
 
 A web UI reaches every `State` field by its path without any code in the plugin: `__BEAMER__.state` reads and sets it and tells the UI when it changes, also behind its back (see [State Methods](WEBVIEW.md#state-methods)).
 
-**What `T` can be:** any `Send + Sync` type that derives serde's `Serialize` and `Deserialize`. A generated `Default` of the model needs `Default` for it too. The value is saved as JSON. A plugin without a serde dependency of its own derives through the re-export:
+**What `T` can be:** any `Send + Sync` type that derives serde's `Serialize` and `Deserialize`. A generated `Default` of the model needs `Default` for it too. The value is saved as JSON. A plugin whose page has generated model types derives `TypeScript` for `T` as well, so that the page knows the value's type (see [Model Types](WEBVIEW.md#model-types)); without the derive the page reads the value as `unknown`. A plugin without a serde dependency of its own derives through the re-export:
 
 ```rust
 use beamer::serde::{Deserialize, Serialize};
@@ -745,7 +746,7 @@ pub struct Sample {
 }
 ```
 
-JSON cannot hold floats that are not finite (NaN, infinity): a value that contains one does not come back from a saved state. A `HashMap` is saved in a different order each time, so use a `BTreeMap` where the saved bytes should be stable.
+JSON cannot hold floats that are not finite (NaN, infinity): a value that contains one does not come back from a saved state. Debug builds report the first one a `State` saves. A `HashMap` is saved in a different order each time, so use a `BTreeMap` where the saved bytes should be stable.
 
 **Defaults:** the generated `Default` creates a state with `T::default()`. That is also the value it goes back to when a saved state has no entry for it. A model whose `Default` is written by hand (with `no_default`) creates its states itself, with `State::new(value)`: that value is then the default. It also initializes its fields without an attribute.
 
@@ -765,7 +766,7 @@ pub struct SamplerModel {
 
 **Threads:** `set()` may wait for another thread that sets the same value and may free memory, so it is not for the audio thread. The audio thread only reads. In debug builds, a call of `get()`, `set()`, `reader()`, `reset()`, `save()` or `load()` from `process()` panics and names the call; release builds do not check. A value the reader no longer uses is released by a later `set()` or when the reader goes away with the Processor, on a host thread. The `webview-demo` example keeps its pan law in a `State` and shows it in its web UI.
 
-**The other way:** Data the audio thread produces for the web UI (a meter, a spectrum, a scrolling history) goes through a `WebViewValueSender` or a `WebViewStreamSender`. The model creates them from its `WebViewEventQueue` in `prepare()` (see [Data from the Audio Thread](WEBVIEW.md#data-from-the-audio-thread)).
+**The other way:** Data the audio thread produces for the web UI (a meter, a spectrum, a scrolling history) goes through a sender: the model declares a `#[value]` or `#[stream]` field and makes the sender from it in `prepare()` (see [Data from the Audio Thread](WEBVIEW.md#data-from-the-audio-thread)).
 
 **Telling the host:** A host learns that the user changed a parameter through its edits. A change of a `State` field is not an edit, so while the editor is open the VST3 wrapper checks for one at each sync tick (60 times a second) and tells the host that the plugin state changed (`IComponentHandler2::setDirty`), whichever thread set the field. The host can then offer to save the project. A state the host loads does not count as a change.
 
@@ -773,7 +774,7 @@ Audio Units have no such call, so their wrappers do not tell the host. The neare
 
 #### Low-Level Traits
 
-For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewFields`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewFields` is for a struct without a queue or declared senders and events; a struct with a `WebViewEventQueue` returns it from `webview_queue()`; one with declared fields connects them in `connect_webview()`. Its `describe_model_types()` lists the `State` fields, senders and events with their types for the page's generated model types (see [TypeScript Declaration](WEBVIEW.md#typescript-declaration)). The default lists none, so a page with generated model types can name none of them: list each with `types.state(join_path(prefix, "pan_law"), std::any::type_name::<PanLaw>(), None, |types| Some(PanLaw::type_script(types)))`. `types.value()`, `types.stream()` and `types.event()` take the same arguments. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
+For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewFields`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewFields` is for a struct without a queue or declared senders and events; a struct with a `WebViewEventQueue` returns it from `webview_queue()`; one with declared fields connects them in `connect_webview()`. Its `describe_model_types()` lists the `State` fields, senders and events with their types for the page's generated model types (see [Model Types](WEBVIEW.md#model-types)). The default lists none, so a page with generated model types can name none of them: list each with `types.state(join_path(prefix, "pan_law"), std::any::type_name::<PanLaw>(), None, |types| Some(PanLaw::type_script(types)))`. `types.value()`, `types.stream()` and `types.event()` take the same arguments. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.
 
 Every `Parameters` is also a `ParameterStore`: the parameters as the host sees them, looked up through `Parameters`. A store that keeps values without parameter objects implements `ParameterStore` directly. For a `Parameters`, `info(index)` walks the parameters and allocates. It is for listing them on host and editor threads, never per frame or on the audio thread. `info_by_id()` looks one up through `by_id()` and does not allocate. The trait and the metadata it returns:
 
