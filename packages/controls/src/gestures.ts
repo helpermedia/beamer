@@ -185,6 +185,16 @@ export function wheelPixels(event: WheelInput, cap: number): number {
   return Math.max(-cap, Math.min(cap, up));
 }
 
+/** The steps a key moves a float parameter with a step. */
+const STEPPED_KEYS: Readonly<Record<string, number>> = {
+  ArrowUp: 1,
+  ArrowRight: 1,
+  ArrowDown: -1,
+  ArrowLeft: -1,
+  PageUp: 10,
+  PageDown: -10,
+};
+
 /** The normalized value a key sets, or undefined for a key without one. */
 export function keyValue(key: string, value: number, step: number, pageStep: number): number | undefined {
   switch (key) {
@@ -443,6 +453,15 @@ export function attachGestures(
   listen<KeyboardEvent>("keydown", (event) => {
     // Shortcuts with Command, Control or Alt belong to the page.
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // A float parameter with a step moves one step per arrow key and ten
+    // per page key, Shift or not: the plugin works out the next step,
+    // whatever its mapping, as it snaps the values anyway.
+    const stepped = STEPPED_KEYS[event.key];
+    if (stepped !== undefined && (target.info?.stepSize ?? 0) > 0) {
+      event.preventDefault();
+      void target.step(stepped);
+      return;
+    }
     // A discrete parameter moves one choice per key, whatever the step.
     const steps = target.info?.steps ?? 0;
     const keyStep = steps > 0 ? 1 / steps : settings.keyStep;

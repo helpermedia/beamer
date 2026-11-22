@@ -53,6 +53,11 @@ use crate::parameter_dump::parameters_to_init_json;
 /// plugin.
 const PARAMETER_TEXT_TO_NORMALIZED: &str = "_beamer/parameterTextToNormalized";
 
+/// The built-in invoke method that gives the normalized value a number of
+/// steps from a normalized value, as a control's arrow key moves a
+/// parameter with steps. It never reaches the plugin.
+const PARAMETER_STEP_TO_NORMALIZED: &str = "_beamer/parameterStepToNormalized";
+
 /// What a format wrapper does in the host when the web UI edits a
 /// parameter.
 ///
@@ -334,16 +339,27 @@ impl EditorSync {
     /// Answer an invoke call: a built-in method here, any other one by the
     /// plugin.
     fn invoke(&self, method: &str, args: &[Value]) -> Result<Value, String> {
-        if method != PARAMETER_TEXT_TO_NORMALIZED {
-            return self.dispatch.dispatch_invoke(method, args);
-        }
-        // The id of the parameter and the text. `null` for text the
-        // parameter cannot read and for arguments that do not fit.
+        let parameters = self.model.parameter_store();
         let id = args.first().and_then(Value::as_u64).and_then(|id| ParameterId::try_from(id).ok());
-        let text = args.get(1).and_then(Value::as_str);
-        let normalized = match (id, text) {
-            (Some(id), Some(text)) => self.model.parameter_store().string_to_normalized(id, text),
-            _ => None,
+        let normalized = match method {
+            // The id of the parameter and the text. `null` for text the
+            // parameter cannot read and for arguments that do not fit.
+            PARAMETER_TEXT_TO_NORMALIZED => match (id, args.get(1).and_then(Value::as_str)) {
+                (Some(id), Some(text)) => parameters.string_to_normalized(id, text),
+                _ => None,
+            },
+            // The id, the normalized value to count from and the number of
+            // steps. `null` for a parameter without steps and for arguments
+            // that do not fit.
+            PARAMETER_STEP_TO_NORMALIZED => {
+                let from = args.get(1).and_then(Value::as_f64);
+                let steps = args.get(2).and_then(Value::as_i64).and_then(|steps| i32::try_from(steps).ok());
+                match (id, from, steps) {
+                    (Some(id), Some(from), Some(steps)) => parameters.step_from(id, from, steps),
+                    _ => None,
+                }
+            }
+            _ => return self.dispatch.dispatch_invoke(method, args),
         };
         Ok(normalized.map_or(Value::Null, Value::from))
     }
@@ -592,6 +608,14 @@ mod tests {
         fn plain_to_normalized(&self, _id: ParameterId, plain: ParameterValue) -> ParameterValue {
             plain
         }
+
+        // The second parameter has steps of a quarter, the first none.
+        fn step_from(&self, id: ParameterId, normalized: ParameterValue, steps: i32) -> Option<ParameterValue> {
+            match id {
+                20 => Some((normalized + 0.25 * f64::from(steps)).clamp(0.0, 1.0)),
+                _ => None,
+            }
+        }
     }
 
     // Values without parameter objects: a `Parameters` impl would have to
@@ -813,6 +837,27 @@ mod tests {
         assert_eq!(invoke(r#"[20,"0.5"]"#).as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":0.5});"#));
         assert_eq!(invoke(r#"[10,"0.5"]"#).as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
         assert_eq!(invoke("[20]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
+    }
+
+    #[test]
+    fn test_built_in_invoke_steps_a_parameter() {
+        let (_, mut sync) = echo_sync();
+        let mut host = RecordingHost::default();
+        let mut invoke = |args: &str| {
+            let json = format!(
+                r#"{{"type":"invoke","method":"_beamer/parameterStepToNormalized","args":{args},"callId":1}}"#
+            );
+            message(&mut sync, &mut host, &json)
+        };
+
+        // The plugin never sees the method: it would reject it.
+        assert_eq!(invoke("[20,0.25,1]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":0.5});"#));
+        assert_eq!(invoke("[20,0.25,-2]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":0.0});"#));
+        // A parameter without steps, a count that is no whole number,
+        // missing arguments.
+        assert_eq!(invoke("[10,0.25,1]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
+        assert_eq!(invoke("[20,0.25,0.5]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
+        assert_eq!(invoke("[20,0.25]").as_deref(), Some(r#"window.__BEAMER__._onResult(1,{"ok":null});"#));
     }
 
     #[test]

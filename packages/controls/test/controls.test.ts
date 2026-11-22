@@ -104,6 +104,26 @@ test("a dial takes the gestures and their options", () => {
   expect(runtime.calls).toEqual(["begin gain", "set gain 0.75", "end gain", "begin gain", "set gain 1", "end gain"]);
 });
 
+test("keys move a float parameter with a step by whole steps the plugin works out", async () => {
+  const runtime = installRuntime([{ info: { stringId: "reference", stepSize: 0.1, value: 0.5 } }]);
+  const dial = element("div");
+  attachDial(dial, parameter("reference"), { keyStep: 0.25 });
+  key(dial, "ArrowUp");
+  await Bun.sleep(0);
+  key(dial, "ArrowDown", { shiftKey: true });
+  await Bun.sleep(0);
+  key(dial, "PageUp");
+  await Bun.sleep(0);
+  // Home and End still go to the ends.
+  key(dial, "End");
+  expect(runtime.calls).toEqual([
+    "step 1", "begin reference", "set reference 0.6", "end reference",
+    "step -1", "begin reference", "set reference 0.5", "end reference",
+    "step 10", "begin reference", "set reference 1", "end reference",
+    "begin reference", "set reference 1", "end reference",
+  ]);
+});
+
 // A slider of 100 pixels along its orientation and 20 across, at the top
 // left.
 function slider(orientation: "vertical" | "horizontal" = "vertical") {

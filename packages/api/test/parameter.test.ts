@@ -21,6 +21,7 @@ function info(stringId: string, extra: Partial<BeamerParameterInfo> = {}): Beame
     max: 1,
     units: "%",
     steps: 0,
+    stepSize: 0,
     valueTexts: [],
     ...extra,
   };
@@ -169,6 +170,35 @@ test("a gesture that begins while a typed value is read wins", async () => {
   expect(await typed).toBe(false);
   mix.end();
   expect(calls).toEqual(["begin mix", "set mix 0.6", "end mix"]);
+});
+
+test("a step goes to the value the plugin works out", async () => {
+  expect(await parameter("mix").step(-1)).toBe(true);
+  expect(calls).toEqual(["invoke _beamer/parameterStepToNormalized 3 0.5 -1", "begin mix", "set mix 0.75", "end mix"]);
+});
+
+test("a gesture that begins while a step is worked out wins", async () => {
+  let answer: (normalized: number) => void = () => {};
+  install({ invoke: () => new Promise((resolve) => (answer = resolve)) });
+  const mix = parameter("mix");
+  const stepped = mix.step(1);
+  mix.begin();
+  mix.set(0.6);
+  answer(0.75);
+  expect(await stepped).toBe(false);
+  mix.end();
+  expect(calls).toEqual(["begin mix", "set mix 0.6", "end mix"]);
+});
+
+test("a count that is no whole number asks nothing", async () => {
+  expect(await parameter("mix").step(0.5)).toBe(false);
+  expect(calls).toEqual([]);
+});
+
+test("a parameter without steps does not step", async () => {
+  install({ invoke: async () => null });
+  expect(await parameter("mix").step(1)).toBe(false);
+  expect(calls).toEqual([]);
 });
 
 test("text that is no value changes nothing", async () => {

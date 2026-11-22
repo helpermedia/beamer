@@ -98,6 +98,7 @@ export type PageEventArguments<N extends PageEventName> = "pageEvents" extends k
 // The methods the runtime answers itself, with or without the file.
 type BuiltInMethods = {
   "_beamer/parameterTextToNormalized": { arguments: [id: number, text: string]; result: number | null };
+  "_beamer/parameterStepToNormalized": { arguments: [id: number, normalized: number, steps: number]; result: number | null };
 };
 
 type MethodTypes = Section<"methods", { [name: string]: { arguments: unknown[]; result: unknown } }> & BuiltInMethods;

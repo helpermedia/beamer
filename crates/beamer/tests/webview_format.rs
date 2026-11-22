@@ -33,6 +33,9 @@ struct TestModel {
 
     #[parameter(id = "offset", name = "Offset", default = 0, range = 0..=128)]
     offset: IntParameter,
+
+    #[parameter(id = "reference", name = "Reference", default = 440.0, range = 400.0..=480.0, kind = "hz", step = 0.1)]
+    reference: FloatParameter,
 }
 
 /// The entry of a parameter in the init dump.
@@ -53,6 +56,16 @@ fn value_texts(dump: &serde_json::Value, string_id: &str) -> Vec<String> {
         .iter()
         .map(|text| text.as_str().expect("a text").to_owned())
         .collect()
+}
+
+#[test]
+fn test_init_dump_reports_the_step_of_a_float_parameter_with_one() {
+    let model = TestModel::default();
+    let dump: serde_json::Value = serde_json::from_str(&beamer::webview::parameters_to_init_json(&model)).expect("valid JSON");
+    assert_eq!(entry(&dump, "reference")["stepSize"], 0.1);
+    assert_eq!(entry(&dump, "reference")["steps"], 0);
+    assert_eq!(entry(&dump, "gain")["stepSize"], 0.0);
+    assert_eq!(entry(&dump, "voices")["stepSize"], 0.0);
 }
 
 #[test]

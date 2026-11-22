@@ -92,6 +92,7 @@ interface BeamerParameterInfo {
   max: number;
   units: string;
   steps: number;
+  stepSize: number;
   valueTexts: string[];
 }
 
@@ -195,11 +196,18 @@ A call does not wait for `ready`: the plugin answers it while the parameters are
 
 If the method returns `Err(error)`, the Promise rejects with the error's text. A method the plugin does not know rejects too, with `"unknown method: ..."`, as do arguments that do not fit the method. With the page's generated model types, a name or an argument that does not fit is a compile error of the page instead.
 
-One method is built in and never reaches the model: `_beamer/parameterTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
+Two methods are built in and never reach the model. `_beamer/parameterTextToNormalized` converts text a user typed into a normalized value, using the parameter's own parser. It takes the numeric parameter ID and the text. It resolves to `null` when the text cannot be parsed:
 
 ```javascript
 const info = __BEAMER__.parameters.info("gain");
 const normalized = await __BEAMER__.invoke("_beamer/parameterTextToNormalized", info.id, "-6");
+```
+
+`_beamer/parameterStepToNormalized` gives the normalized value a number of steps from a normalized value (down for a negative count), counted from the nearest step and kept within the range: the next choice of a discrete parameter, the next step of a float parameter with a step (`stepSize` above 0), whatever its mapping. It takes the numeric parameter ID, the normalized value and the whole number of steps. It resolves to `null` for a continuous parameter. beamer-api's `Parameter.step()` calls it, as beamer-controls does for the arrow keys:
+
+```javascript
+const info = __BEAMER__.parameters.info("reference");
+const next = await __BEAMER__.invoke("_beamer/parameterStepToNormalized", info.id, __BEAMER__.parameters.get("reference"), 1);
 ```
 
 ### Custom Events
@@ -642,10 +650,10 @@ Each time the WebView finishes loading the page (see [When the Page Loads Again]
 window.__BEAMER__._onInit([
   {"id":0,"stringId":"gain","name":"Gain","min":-60.0,"max":12.0,
    "defaultValue":0.8333,"value":0.8333,"plainValue":0.0,"displayText":"0.0",
-   "format":"db","units":"dB","steps":0,"valueTexts":[]},
+   "format":"db","units":"dB","steps":0,"stepSize":0.0,"valueTexts":[]},
   {"id":1,"stringId":"pan","name":"Pan","min":-1.0,"max":1.0,
    "defaultValue":0.5,"value":0.5,"plainValue":0.0,"displayText":"C",
-   "format":"pan","units":"","steps":0,"valueTexts":[]}
+   "format":"pan","units":"","steps":0,"stepSize":0.0,"valueTexts":[]}
 ], {"pluginFormat":"vst3","middleC":"C3","state":{"pan_law":"constant_power"}})
 ```
 
@@ -666,7 +674,8 @@ Each entry corresponds to a `ParameterInitEntry`:
 | `displayText` | `string` | Current value as formatted by the parameter, without the unit |
 | `format` | `string` | Formatter kind as reported by the parameter. Float and integer parameters report the kind of their formatter: `float` (the default), `db`, `hz`, `ms`, `s`, `percent`, `pan`, `ratio`, `semitones` or `note_number`. Boolean parameters report `boolean` and enum parameters `enum` |
 | `units` | `string` | Unit suffix (e.g. `"dB"`, `""`) |
-| `steps` | `i32` | Step count (0 for continuous, >0 for discrete) |
+| `steps` | `i32` | Step count (0 for continuous, >0 for discrete). A float parameter with a step counts as continuous: its values snap to the step in Rust |
+| `stepSize` | `f64` | The step of a float parameter with one in plain units, 0 for none. The arrow keys of a beamer-controls control move such a parameter by whole steps through `_beamer/parameterStepToNormalized` |
 | `valueTexts` | `string[]` | The display text of each value of a discrete parameter, from the lowest up: the choices of an enum parameter, `Off` and `On` for a boolean one. Value `i` has the normalized value `i / steps`. Empty for a continuous parameter and for one with more than 128 values |
 
 The runtime resolves the `ready` promise after processing this dump, so any code awaiting `__BEAMER__.ready` can safely call `parameters.get()` and `state.get()`.

@@ -51,6 +51,15 @@ export interface Parameter extends Readable<number> {
    * dropped and the call resolves to false.
    */
   typeValue(text: string): Promise<boolean>;
+  /**
+   * Move a parameter with steps by `count` steps (down for a negative
+   * count) from the step nearest its value, as a gesture of its own: the
+   * next choice of a discrete parameter, the next step of a float parameter
+   * with a step, which the plugin works out whatever its mapping. Resolves
+   * to false for a continuous parameter, when the plugin could not answer
+   * or when a gesture of the parameter began meanwhile, which wins.
+   */
+  step(count: number): Promise<boolean>;
 
   /** The display text of each choice of a discrete parameter. */
   choices(): string[];
@@ -147,6 +156,21 @@ class ParameterHandle implements Parameter {
     let normalized: unknown;
     try {
       normalized = await this.beamer.invoke("_beamer/parameterTextToNormalized", info.id, text);
+    } catch {
+      return false;
+    }
+    if (typeof normalized !== "number" || this.#gestures !== gestures) return false;
+    this.edit(normalized);
+    return true;
+  }
+
+  async step(count: number): Promise<boolean> {
+    const info = this.info;
+    if (!info || !Number.isInteger(count)) return false;
+    const gestures = this.#gestures;
+    let normalized: unknown;
+    try {
+      normalized = await this.beamer.invoke("_beamer/parameterStepToNormalized", info.id, this.get(), count);
     } catch {
       return false;
     }

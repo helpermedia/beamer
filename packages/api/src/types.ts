@@ -41,6 +41,12 @@ export interface BeamerParameterInfo {
   units: string;
   /** 0 for a continuous parameter, the number of steps for a discrete one. */
   steps: number;
+  /**
+   * The step of a float parameter with one, in plain units, 0 for none. Its
+   * `steps` are 0: the plugin snaps its values, so a control asks it for
+   * the next step (`Parameter.step`) instead of adding a part of the range.
+   */
+  stepSize: number;
   /** The display text of each value of a discrete parameter, from the lowest up. Empty for a continuous one and above 128 values. */
   valueTexts: string[];
 }

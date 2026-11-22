@@ -82,6 +82,9 @@ Both get ARIA's `role="slider"`: ARIA has no role of its own for a dial.
   notch moves about as far in every browser engine. A scroll is one gesture
   until the wheel rests.
 - **Keys:** arrows, Page Up and Page Down, Home and End, finer with shift.
+  A float parameter with a step (`stepSize` above 0) moves one step per
+  arrow and ten per page key, Shift or not, through `Parameter.step()`:
+  the plugin works out the next step, whatever its mapping.
   A discrete parameter moves one choice per key.
 - **Reset:** a double click (default), a click with Command or Control
   held, or both. `reset` takes a list of the ones to use; an empty list

@@ -77,7 +77,8 @@ types instead of adding to them. A section the page does not declare stays
 loose: any name, values `unknown`. A model without a `#[beamer::handler]`
 has no `methods` and `pageEvents`, so `invoke` and `emit` take any name.
 An empty section (`{}`, `never` for the parameters) allows no name, apart
-from the built-in method `_beamer/parameterTextToNormalized`.
+from the built-in methods `_beamer/parameterTextToNormalized` and
+`_beamer/parameterStepToNormalized`.
 Events and stream senders share their names: a page that declares
 `events` or `streams` gets the other as empty.
 

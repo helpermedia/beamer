@@ -25,6 +25,7 @@ pub fn parameters_to_init_json(store: &dyn ParameterStore) -> String {
                 format: store.formatter_kind(info.id),
                 units: info.units,
                 steps: info.step_count,
+                step_size: store.step_size(info.id).unwrap_or(0.0),
                 value_texts: value_texts(store, info.id, info.step_count),
             })
         })
@@ -47,6 +48,10 @@ struct ParameterInitEntry<'a> {
     format: &'static str,
     units: &'static str,
     steps: i32,
+    /// The step of a float parameter with one in plain units, 0 for none:
+    /// a web UI asks the plugin for the next step instead of adding a part
+    /// of the range.
+    step_size: f64,
     value_texts: Vec<String>,
 }
 

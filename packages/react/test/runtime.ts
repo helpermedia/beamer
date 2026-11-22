@@ -21,7 +21,7 @@ export const push = {
 };
 
 const base: Omit<BeamerParameterInfo, "id" | "stringId" | "name"> = {
-  value: 0, plainValue: 0, displayText: "", format: "float", defaultValue: 0, min: 0, max: 1, units: "", steps: 0, valueTexts: [],
+  value: 0, plainValue: 0, displayText: "", format: "float", defaultValue: 0, min: 0, max: 1, units: "", steps: 0, stepSize: 0, valueTexts: [],
 };
 
 /**

@@ -18,6 +18,9 @@ export interface FakeRuntime {
   init(): void;
   // What `_beamer/parameterTextToNormalized` answers, by text.
   parsed: Map<string, number>;
+  // What `_beamer/parameterStepToNormalized` answers: from the value and
+  // the steps, as a plugin with a step of a tenth of the range would.
+  stepped: (from: number, steps: number) => number | null;
 }
 
 /**
@@ -42,7 +45,7 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
     parameters.map(({ info, text }) => {
       const full: BeamerParameterInfo = {
         id: 1, name: info.stringId, value: 0, plainValue: 0, displayText: "", format: "float",
-        defaultValue: 0, min: 0, max: 1, units: "", steps: 0, valueTexts: [], ...info,
+        defaultValue: 0, min: 0, max: 1, units: "", steps: 0, stepSize: 0, valueTexts: [], ...info,
       };
       return [info.stringId, { info: full, value: full.value, text: text ?? ((v: number) => v.toFixed(2)) }];
     }),
@@ -87,10 +90,15 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
       get: (name) => values.get(name),
       on: (name, callback) => on(`value:${name}`, callback),
     },
-    invoke: async (method, _id, text) => {
+    invoke: async (method, _id, ...args) => {
+      if (method === "_beamer/parameterStepToNormalized") {
+        const [from, steps] = args as [number, number];
+        calls.push(`step ${steps}`);
+        return fake.stepped(from, steps);
+      }
       if (method !== "_beamer/parameterTextToNormalized") return null;
-      calls.push(`parse ${text}`);
-      return parsed.get(String(text)) ?? null;
+      calls.push(`parse ${args[0]}`);
+      return parsed.get(String(args[0])) ?? null;
     },
     on: (name, callback) => on(`event:${name}`, callback),
     emit: () => {},
@@ -100,9 +108,10 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
   };
   globalThis.__BEAMER__ = beamer;
 
-  return {
+  const fake: FakeRuntime = {
     calls,
     parsed,
+    stepped: (from, steps) => Math.min(1, Math.max(0, Math.round(from * 10 + steps) / 10)),
     push(id, value) {
       entry(id).value = value;
       emit(`parameter:${id}`, value);
@@ -116,4 +125,5 @@ export function installRuntime(parameters: FakeParameter[], ready = true): FakeR
       for (const [id, { value }] of byId) emit(`parameter:${id}`, value);
     },
   };
+  return fake;
 }
