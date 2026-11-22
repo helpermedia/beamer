@@ -15,7 +15,7 @@ function MixDial() {
   const { parameter } = useParameter("mix");
   return (
     <div>
-      {/* Drag, scroll, arrow keys and double click to reset. */}
+      {/* Drag, scroll, arrow keys; double click, Cmd/Ctrl click or Option/Alt click to reset. */}
       <Dial parameter={parameter} className="size-16">
         {({ angle }) => (
           <svg viewBox="0 0 64 64">

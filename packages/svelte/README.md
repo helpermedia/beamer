@@ -18,7 +18,7 @@ markup you put inside.
   const level = parameter("level");
 </script>
 
-<!-- Drag the thumb or the track, scroll, arrow keys, double click to reset. -->
+<!-- Drag the thumb or the track, scroll, arrow keys; double click, Cmd/Ctrl click or Option/Alt click to reset. -->
 <Slider parameter={level} thumbLength={0.1} class="relative h-48 w-8">
   {#snippet children({ position })}
     <span class="absolute inset-x-0 h-[10%] bg-neutral-700" style:bottom="{(position - 0.05) * 100}%"></span>

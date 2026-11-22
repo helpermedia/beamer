@@ -253,7 +253,7 @@ test("the options stay off the element", () => {
     pageStep: 0.2,
     wheelCap: 8,
     wheelRestMs: 200,
-    reset: ["modifier-click"],
+    reset: ["ctrl-click"],
   } satisfies Required<DialOptions>;
   const sliderOptions = {
     orientation: "horizontal",

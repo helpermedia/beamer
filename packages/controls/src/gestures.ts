@@ -14,8 +14,12 @@ export type DialDrag = "vertical" | "horizontal" | "both" | "arc";
 /** The direction a slider moves in: up raises an upright one, right a lying one. */
 export type SliderOrientation = "vertical" | "horizontal";
 
-/** A way to reset a value to its default: a double click, or a click with Command or Control held. */
-export type ResetGesture = "double-click" | "modifier-click";
+/**
+ * A way to reset a value to its default: a double click, a click with the
+ * shortcut key held (Command on macOS, Control elsewhere) or a click with
+ * Alt held (Option on macOS).
+ */
+export type ResetGesture = "double-click" | "ctrl-click" | "alt-click";
 
 /** How a dial or a slider takes pointer, wheel and key input. */
 export interface InputOptions {
@@ -36,9 +40,10 @@ export interface InputOptions {
   /** A scroll ends when no wheel event came for this long, in ms. Default 300. */
   wheelRestMs?: number;
   /**
-   * What resets the value to its default: a double click, a click with
-   * Command or Control held, or both. An empty list turns reset off.
-   * Default a double click.
+   * What resets the value to its default, any of: a double click, a click
+   * with Command held (Control outside macOS) and a click with Option held
+   * (Alt outside macOS). An empty list turns reset off. Default all three. A page that types a value on a double click leaves
+   * "double-click" out.
    */
   reset?: ResetGesture[];
 }
@@ -108,13 +113,19 @@ const DEFAULTS: Required<DialOptions> = {
   pageStep: 0.1,
   wheelCap: 10,
   wheelRestMs: 300,
-  reset: ["double-click"],
+  reset: ["double-click", "ctrl-click", "alt-click"],
 };
 
 // Pixels a wheel event counts for per line and per page, when it reports
 // its delta in lines or pages.
 const PIXELS_PER_LINE = 8;
 const PIXELS_PER_PAGE = 100;
+
+// Whether the page runs on an Apple platform, where Command is the
+// shortcut key and a click with Control held is a right click.
+function onApplePlatform(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
 
 /** The angle of a point around a center in degrees, clockwise on screen from the right. */
 export function angleAround(centerX: number, centerY: number, x: number, y: number): number {
@@ -303,9 +314,16 @@ export function attachGestures(
     drag = null;
     target.end();
   };
-  // Whether the last click reset the value, so that its context menu stays
-  // closed.
-  let resetByClick = false;
+  // Whether a press resets the value: Command or Option held on macOS,
+  // Control or Alt elsewhere, as the reset gestures allow. On macOS a click
+  // with Control held is a right click, never a reset, so its context menu
+  // opens.
+  const apple = onApplePlatform();
+  const resetsByClick = (event: PointerEvent): boolean => {
+    if (apple && event.ctrlKey) return false;
+    const shortcutKey = apple ? event.metaKey : event.ctrlKey;
+    return (settings.reset.includes("ctrl-click") && shortcutKey) || (settings.reset.includes("alt-click") && event.altKey);
+  };
 
   const gapHalf = Math.max(1, (360 - settings.arcSweep) / 2);
   const moveArc = (arc: ArcDrag, event: PointerEvent) => {
@@ -340,15 +358,14 @@ export function attachGestures(
     // The primary button only: a right click opens the context menu, which
     // takes the release.
     if (event.button !== 0 || drag || !target.info) return;
-    if (settings.reset.includes("modifier-click") && (event.metaKey || event.ctrlKey)) {
-      target.reset();
-      resetByClick = true;
-      return;
-    }
     // No text selection or image drag. That also stops the click from
     // focusing the element, so focus it here.
     event.preventDefault();
     element.focus({ preventScroll: true });
+    if (resetsByClick(event)) {
+      target.reset();
+      return;
+    }
     element.setPointerCapture(event.pointerId);
     target.begin(() => {
       drag = null;
@@ -410,15 +427,8 @@ export function attachGestures(
   listen("lostpointercapture", endDrag);
 
   // On macOS a click with Control held opens the context menu, which takes
-  // the release: end the drag it began. A click that reset the value shows
-  // no menu.
-  listen<MouseEvent>("contextmenu", (event) => {
-    endDrag();
-    if (resetByClick) {
-      event.preventDefault();
-      resetByClick = false;
-    }
-  });
+  // the release: end the drag it began.
+  listen("contextmenu", endDrag);
 
   // Scrolling moves the value by the distance, as far as a drag would. A
   // trackpad sends many small events, so one gesture lasts until the wheel

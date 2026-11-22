@@ -98,9 +98,9 @@ test("a dial gets its label and values once the parameters arrive", () => {
 test("a dial takes the gestures and their options", () => {
   const runtime = setup();
   const dial = element("div");
-  attachDial(dial, parameter("gain"), { keyStep: 0.25, reset: ["modifier-click"] });
+  attachDial(dial, parameter("gain"), { keyStep: 0.25, reset: ["alt-click"] });
   key(dial, "ArrowUp");
-  pointer(dial, "pointerdown", { metaKey: true });
+  pointer(dial, "pointerdown", { altKey: true });
   expect(runtime.calls).toEqual(["begin gain", "set gain 0.75", "end gain", "begin gain", "set gain 1", "end gain"]);
 });
 

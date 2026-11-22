@@ -46,6 +46,22 @@ function fakeParameter(value: number, steps = 0) {
   return { parameter: parameter as unknown as Parameter, calls };
 }
 
+// The platforms as `navigator.platform` reports them in WebKit on macOS
+// and in WebView2 on Windows.
+const MAC = "MacIntel";
+const WINDOWS = "Win32";
+
+// Run `body` with `navigator.platform` set to `platform`.
+function onPlatform(platform: string, body: () => void) {
+  Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
+  try {
+    body();
+  } finally {
+    // Back to happy-dom's own, on the prototype.
+    delete (navigator as { platform?: string }).platform;
+  }
+}
+
 function dial() {
   const element = document.createElement("div");
   element.tabIndex = 0;
@@ -195,37 +211,93 @@ test("a key moves a discrete parameter one choice", () => {
   expect(calls).toEqual(["begin", "set 0.750", "end"]);
 });
 
-test("a modifier click resets with Command or Control", () => {
-  const element = dial();
-  const { parameter, calls } = fakeParameter(0.5);
-  attachGestures(element, parameter, { reset: ["modifier-click"] });
-  pointer(element, "pointerdown", { ctrlKey: true });
-  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+test("on macOS a Command click and an Option click reset, a Control click does not", () => {
+  onPlatform(MAC, () => {
+    const element = dial();
+    const { parameter, calls } = fakeParameter(0.5);
+    attachGestures(element, parameter);
+    pointer(element, "pointerdown", { metaKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+    parameter.set(0.5);
+    calls.length = 0;
+    pointer(element, "pointerdown", { altKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+    parameter.set(0.5);
+    calls.length = 0;
+    // A Control click is a right click: a drag that does not move.
+    pointer(element, "pointerdown", { ctrlKey: true });
+    pointer(element, "pointerup", {});
+    // With Control held, Command or Option resets neither.
+    pointer(element, "pointerdown", { ctrlKey: true, metaKey: true });
+    pointer(element, "pointerup", {});
+    pointer(element, "pointerdown", { ctrlKey: true, altKey: true });
+    pointer(element, "pointerup", {});
+    expect(calls).toEqual(["begin", "end", "begin", "end", "begin", "end"]);
+  });
 });
 
-test("by default a double click resets, a modifier click does not", () => {
+test("outside macOS a Control click and an Alt click reset, a Windows key click does not", () => {
+  onPlatform(WINDOWS, () => {
+    const element = dial();
+    const { parameter, calls } = fakeParameter(0.5);
+    attachGestures(element, parameter);
+    pointer(element, "pointerdown", { ctrlKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+    parameter.set(0.5);
+    calls.length = 0;
+    pointer(element, "pointerdown", { altKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+    parameter.set(0.5);
+    calls.length = 0;
+    pointer(element, "pointerdown", { metaKey: true });
+    pointer(element, "pointerup", {});
+    expect(calls).toEqual(["begin", "end"]);
+  });
+});
+
+test("a reset click focuses the element and selects no text", () => {
+  onPlatform(MAC, () => {
+    const element = dial();
+    const { parameter } = fakeParameter(0.5);
+    attachGestures(element, parameter);
+    const press = new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, button: 0, altKey: true });
+    element.dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(element);
+  });
+});
+
+test("by default a double click resets too", () => {
   const element = dial();
   const { parameter, calls } = fakeParameter(0.5);
   attachGestures(element, parameter);
-  // A Command click is a drag that does not move.
-  pointer(element, "pointerdown", { metaKey: true });
-  pointer(element, "pointerup", {});
-  expect(calls).toEqual(["begin", "end"]);
-  calls.length = 0;
   element.dispatchEvent(new MouseEvent("dblclick"));
   expect(calls).toEqual(["begin", "set 0.250", "end"]);
 });
 
-test("both resets together", () => {
-  const element = dial();
-  const { parameter, calls } = fakeParameter(0.5);
-  attachGestures(element, parameter, { reset: ["double-click", "modifier-click"] });
-  element.dispatchEvent(new MouseEvent("dblclick"));
-  expect(calls).toEqual(["begin", "set 0.250", "end"]);
-  parameter.set(0.5);
-  calls.length = 0;
-  pointer(element, "pointerdown", { metaKey: true });
-  expect(calls).toEqual(["begin", "set 0.250", "end"]);
+test("each reset works only when listed", () => {
+  onPlatform(MAC, () => {
+    const element = dial();
+    const { parameter, calls } = fakeParameter(0.5);
+    // A page that types a value on a double click.
+    attachGestures(element, parameter, { reset: ["ctrl-click", "alt-click"] });
+    element.dispatchEvent(new MouseEvent("dblclick"));
+    expect(calls).toEqual([]);
+    pointer(element, "pointerdown", { metaKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+  });
+  onPlatform(MAC, () => {
+    const element = dial();
+    const { parameter, calls } = fakeParameter(0.5);
+    attachGestures(element, parameter, { reset: ["alt-click"] });
+    // A Command click is a drag that does not move.
+    pointer(element, "pointerdown", { metaKey: true });
+    pointer(element, "pointerup", {});
+    expect(calls).toEqual(["begin", "end"]);
+    calls.length = 0;
+    pointer(element, "pointerdown", { altKey: true });
+    expect(calls).toEqual(["begin", "set 0.250", "end"]);
+  });
 });
 
 test("an option given as undefined keeps its default", () => {
@@ -243,7 +315,9 @@ test("an empty reset list turns reset off", () => {
   element.dispatchEvent(new MouseEvent("dblclick"));
   pointer(element, "pointerdown", { ctrlKey: true });
   pointer(element, "pointerup", {});
-  expect(calls).toEqual(["begin", "end"]);
+  pointer(element, "pointerdown", { altKey: true });
+  pointer(element, "pointerup", {});
+  expect(calls).toEqual(["begin", "end", "begin", "end"]);
 });
 
 test("an arc drag jumps to the pointer and follows it", () => {
@@ -356,28 +430,18 @@ test("detaching ends an open drag and gives the element its touch action back", 
   expect(element.style.touchAction).toBe("pan-y");
 });
 
-test("the context menu of a Control click ends the drag it began", () => {
-  const element = dial();
-  const { parameter, calls } = fakeParameter(0.5);
-  // Without the modifier click reset (the default), a Control click begins
-  // a drag.
-  attachGestures(element, parameter);
-  pointer(element, "pointerdown", { clientY: 100, ctrlKey: true });
-  const menu = new MouseEvent("contextmenu", { cancelable: true });
-  element.dispatchEvent(menu);
-  pointer(element, "pointermove", { clientY: 50 });
-  expect(calls).toEqual(["begin", "end"]);
-  expect(menu.defaultPrevented).toBe(false);
-});
-
-test("a Control click that resets shows no context menu", () => {
-  const element = dial();
-  const { parameter } = fakeParameter(0.5);
-  attachGestures(element, parameter, { reset: ["modifier-click"] });
-  pointer(element, "pointerdown", { ctrlKey: true });
-  const menu = new MouseEvent("contextmenu", { cancelable: true });
-  element.dispatchEvent(menu);
-  expect(menu.defaultPrevented).toBe(true);
+test("on macOS the context menu of a Control click opens and ends the drag it began", () => {
+  onPlatform(MAC, () => {
+    const element = dial();
+    const { parameter, calls } = fakeParameter(0.5);
+    attachGestures(element, parameter);
+    pointer(element, "pointerdown", { clientY: 100, ctrlKey: true });
+    const menu = new MouseEvent("contextmenu", { cancelable: true });
+    element.dispatchEvent(menu);
+    pointer(element, "pointermove", { clientY: 50 });
+    expect(calls).toEqual(["begin", "end"]);
+    expect(menu.defaultPrevented).toBe(false);
+  });
 });
 
 test("keys with Command, Control or Alt are left to the page", () => {

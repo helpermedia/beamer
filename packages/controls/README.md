@@ -18,7 +18,7 @@ await ready();
 
 const mix = parameter("mix");
 
-// Drag, scroll, arrow keys and double click to reset.
+// Drag, scroll, arrow keys; double click, Cmd/Ctrl click or Option/Alt click to reset.
 const detachDial = attachDial(document.querySelector<SVGElement>("#mix")!, mix);
 
 // The value; a click opens it to type one.
@@ -86,9 +86,13 @@ Both get ARIA's `role="slider"`: ARIA has no role of its own for a dial.
   arrow and ten per page key, Shift or not, through `Parameter.step()`:
   the plugin works out the next step, whatever its mapping.
   A discrete parameter moves one choice per key.
-- **Reset:** a double click (default), a click with Command or Control
-  held, or both. `reset` takes a list of the ones to use; an empty list
-  turns reset off.
+- **Reset:** a double click, a click with Command held (`"ctrl-click"`,
+  Control outside macOS) and a click with Option held (`"alt-click"`, Alt
+  outside macOS), all three by default. `reset` takes a list of the ones
+  to use; an empty list turns reset off. A page that types a value on a
+  double click leaves `"double-click"` out and opens its text field with
+  `openTextField`. On macOS a click with Control held is a right click: it
+  never resets, so the context menu opens.
 
 A dial's drag and a scroll move the value from where they started, a
 slider's drag from the pointer's position, so a discrete parameter that

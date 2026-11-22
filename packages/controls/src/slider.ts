@@ -19,7 +19,8 @@ import { attachSliderRole } from "./slider-role.js";
  * brings the thumb to the pointer and a press on the thumb grabs it. The
  * thumb then follows the pointer along the slider (finer with shift). Also
  * the wheel, arrow keys, Page Up and Page Down, Home and End. A double
- * click or a modifier click resets it. A press focuses the element; while
+ * click, a Command click or an Option click (Control or Alt outside macOS)
+ * resets it, as `options.reset` allows. A press focuses the element; while
  * it has focus from the keyboard it has the `data-keyboard-focus`
  * attribute.
  *

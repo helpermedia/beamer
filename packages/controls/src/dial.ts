@@ -15,8 +15,9 @@ import { attachSliderRole } from "./slider-role.js";
  *
  * Input, each change one undo step in the host: drag (vertical by default
  * and finer with shift, or around the center with `drag: "arc"`), the wheel,
- * arrow keys, Page Up and Page Down, Home and End. A double click or a
- * modifier click resets it. A press focuses the element; while it has
+ * arrow keys, Page Up and Page Down, Home and End. A double click, a
+ * Command click or an Option click (Control or Alt outside macOS) resets
+ * it, as `options.reset` allows. A press focuses the element; while it has
  * focus from the keyboard it has the `data-keyboard-focus` attribute.
  *
  * Returns the function that detaches it and removes what it set.
